@@ -711,7 +711,7 @@ class ToolActionExecutor(object):
                 continue
 
             if tool is None:
-                tool_name = "async_" + action.tool_name
+                tool_name = action.tool_name
                 tool = self.tools.get(tool_name)
                 if tool is None:
                     tool = ToolFactory(
@@ -748,13 +748,16 @@ class ToolActionExecutor(object):
         if action_name not in ActionFactory:
             action_name = action_model.tool_name + action_model.action_name
             if action_name not in ActionFactory:
-                raise ValueError(
-                    f'Action {action_model.action_name} not found in ActionFactory')
+                # for auto register
+                if action_name.startswith("async_"):
+                    action_name = action_name[6:]
+                    if action_name not in ActionFactory:
+                        raise ValueError(
+                            f'Action {action_model.action_name} not found in ActionFactory')
 
         action = ActionFactory(action_name)
         action_result, page = await action.async_act(action_model, tool=tool, **kwargs)
-        logger.info(
-            f"{tool.name()}-{action_model.action_name} execute finished")
+        logger.info(f"{tool.name()}-{action_model.action_name} execute finished")
         return action_result, page
 
 

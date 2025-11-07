@@ -1,4 +1,8 @@
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
 import json
+from typing import Any, Sequence
+
 from pydantic import create_model
 from mcp.server.fastmcp import FastMCP
 from mcp.types import Tool as MCPTool, ContentBlock, TextContent
@@ -21,12 +25,12 @@ class AgentMCP(FastMCP):
         self._tool_name_prefix = "_aworld_agent_"
 
     def _agent_exec_input_schema(self) -> dict:
-        AgentExecModel = create_model(
+        agent_model = create_model(
             'AgentExecModel',
             question=(Any, None),
             task_conf=(TaskConfig, None)
         )
-        input_schema = AgentExecModel.model_json_schema()
+        input_schema = agent_model.model_json_schema()
         input_schema['required'] = ['question']
         return input_schema
 
@@ -39,7 +43,7 @@ class AgentMCP(FastMCP):
         for agent_name, agent_val_dict in agent_desc.items():
             tool = MCPTool(
                 name=self._tool_name_prefix + agent_name,
-                desc=agent_val_dict["desc"],
+                description=agent_val_dict["desc"],
                 inputSchema=self._input_schema_cache
             )
             tool_list.append(tool)
@@ -56,7 +60,10 @@ class AgentMCP(FastMCP):
         question = arguments['question']
         task_conf = arguments.get('task_conf', None)
         try:
-            task_response: TaskResponse = await exec_agent(question=question, agent=agent, context=Context(), task_conf=task_conf)
+            task_response: TaskResponse = await exec_agent(question=question,
+                                                           agent=agent,
+                                                           context=Context(),
+                                                           task_conf=task_conf)
             return [TextContent(type="text", text=task_response.answer)]
         except Exception as e:
             return self._mcp_error(f"Error: {str(e)}")
