@@ -182,7 +182,7 @@ def build_memory_config():
     from aworld.core.memory import VectorDBConfig
     return MemoryConfig(
         provider="aworld",
-        llm_config=MemoryLLMConfig(
+        llm_config=ModelConfig(
             provider="openai",
             model_name=os.getenv("LLM_MODEL_NAME"),
             api_key=os.getenv("LLM_API_KEY"),
