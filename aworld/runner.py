@@ -7,7 +7,7 @@ from aworld.config import RunConfig, EvaluationConfig
 from aworld.config.conf import TaskConfig
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
-from aworld.core.common import Config
+from aworld.core.common import Config, StreamingMode
 from aworld.core.event.base import Message, Constants, TopicType, TaskMessage
 from aworld.core.task import Task, TaskResponse, Runner
 from aworld.evaluations.base import EvalTask
@@ -67,14 +67,14 @@ class Runners:
     @staticmethod
     async def streaming_run_task(
             task: Task,
-            streaming_mode: str = 'chunk',
+            streaming_mode: StreamingMode = StreamingMode.CORE,
             run_conf: RunConfig = None
     ) -> AsyncGenerator[Message, None]:
         """Run task with streaming message support.
 
         Args:
             task: Task to execute.
-            streaming_mode: Streaming mode ('chunk', 'core', 'all').
+            streaming_mode: Streaming mode.
             run_conf: Runtime configuration.
             
         Yields:
@@ -85,7 +85,7 @@ class Runners:
 
         # Set up task with streaming mode
         task.streaming_mode = streaming_mode
-        runners = await choose_runners([task], run_conf=run_conf)
+        runners = await choose_runners([task])
         stream_task = asyncio.create_task(execute_runner(runners, run_conf))
         runner: TaskEventRunner = runners[0]
         streaming_queue = runner.event_mng.streaming_eventbus
