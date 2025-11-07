@@ -277,6 +277,9 @@ class DirArtifact(Artifact):
         return mime_type or 'application/octet-stream'
 
     def to_dict(self) -> Dict[str, Any]:
+        """Convert DirArtifact to dictionary."""
+
+        self.reload_working_files()
         return {
             "artifact_id": self.artifact_id,
             "artifact_type": self.artifact_type.value,
