@@ -5,13 +5,14 @@ import traceback
 from datetime import datetime
 
 from dotenv import load_dotenv
-
 load_dotenv()
+
+from train.examples.train_gaia_with_aworld_verl.rollout.parallel import ParallelGaiaEvalTarget
+
 
 from aworld.config import EvaluationConfig, DataLoaderConfig
 from aworld.evaluations.base import EvalResult, EvalTask
 from aworld.runners.evaluate_runner import EvaluateRunner
-from train.examples.train_gaia_with_aworld_verl.datapipe import ParallelGaiaEvalTarget
 
 from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent, build_gaia_task, build_mcp_config
 
