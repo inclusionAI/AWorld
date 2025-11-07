@@ -74,6 +74,14 @@ class AsyncioMonitor:
         self._monitor_info: Dict[str, Dict[str, Any]] = {}
         self.add_detector([TaskCountDetector(), PendingReasonDetector(), BlockingLocationDetector()])
 
+    def __enter__(self):
+        self.start()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.stop()
+        return False
+
     def add_detector(self, detectors: List[MonitorDetector]):
         for detector in detectors:
             self._detectors[detector.get_name()] = detector
