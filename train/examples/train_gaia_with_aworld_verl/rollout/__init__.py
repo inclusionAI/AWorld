@@ -13,8 +13,6 @@ from .gaia import (
     GAIA_SYSTEM_PROMPT,
     build_gaia_agent,
     build_gaia_task,
-    build_amni_gaia_task,
-    build_common_gaia_task,
 )
 
 # Import custom_agent_loop last (depends on gaia and agent_loop)
@@ -26,8 +24,6 @@ __all__ = [
     "GAIA_SYSTEM_PROMPT",
     "build_gaia_agent",
     "build_gaia_task",
-    "build_amni_gaia_task",
-    "build_common_gaia_task",
     "build_mcp_config",
     "episode_memory_summary_rule",
     "episode_memory_summary_schema",

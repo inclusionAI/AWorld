@@ -591,7 +591,7 @@ class AworldMemory(Memory):
         # Calculate summary_created_time
         summary_created_time = datetime.now().isoformat()
         if len(agent_task_total_message) > len(to_be_summary_items) and len(to_be_summary_items) > 0:
-            idx1, idx2 = len(to_be_summary_items) - 1, len(to_be_summary_items)
+            idx1, idx2 = len(agent_task_total_message) - len(to_be_summary_items) - 1, len(agent_task_total_message) - len(to_be_summary_items)
             if idx2 < len(agent_task_total_message):
                 try:
                     msg1, msg2 = agent_task_total_message[idx1], agent_task_total_message[idx2]
