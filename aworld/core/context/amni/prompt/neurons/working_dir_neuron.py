@@ -13,11 +13,11 @@ class WorkingDirNeuron(Neuron):
         """Format working directory information"""
         await context.load_working_dir()
 
-        if not context._working_dir or not context._working_dir.inner_attachments:
+        if not context._working_dir or not context._working_dir.attachments:
             return []
 
         working_dir_context = []
-        for i, attachment in enumerate(context._working_dir.inner_attachments, 1):
+        for i, attachment in enumerate(context._working_dir.attachments, 1):
             item = (
                 f" <working_dir_attachment>\n"
                 f"  <attachment_id>{i}</attachment_id>\n"
@@ -25,12 +25,6 @@ class WorkingDirNeuron(Neuron):
                 f"  <file_path>{context.abs_file_path(attachment.filename)}</file_path>\n"
             )
 
-            # Add additional metadata information (if exists)
-            if hasattr(attachment, 'metadata') and attachment.metadata:
-                if 'repository_key' in attachment.metadata:
-                    item += f"  <repository_key>{attachment.metadata['repository_key']}</repository_key>\n"
-                if 'uploaded_at' in attachment.metadata:
-                    item += f"  <uploaded_at>{attachment.metadata['uploaded_at']}</uploaded_at>\n"
 
             item += f" </working_dir_attachment>\n"
             working_dir_context.append(item)

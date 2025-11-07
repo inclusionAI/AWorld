@@ -42,8 +42,8 @@ class ArtifactAttachment(BaseModel):
     content: Any = Field(..., description="Content", exclude=True)
     mime_type: Optional[str] = Field(default=None, description="MIME type")
     path: str = Field(default="", description="Path")
-    origin_type: Optional[str] = Field(default="local", description="Origin File Storage Type, Such as oss, local, http etc.")
-    origin_path: Optional[str] = Field(default="", description="Origin Path")
+    origin_type: Optional[str] = Field(default="local", description="Origin File Storage Type, Such as oss, local, http etc.", exclude=True)
+    origin_path: Optional[str] = Field(default="", description="Origin Path" , exclude=True)
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Metadata")
 
 class Artifact(Output):

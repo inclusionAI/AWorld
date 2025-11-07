@@ -43,9 +43,9 @@ async def get_workspace_artifacts(workspace_id: str, request: ArtifactRequest):
         filtered_artifacts = [a for a in filtered_artifacts if a.artifact_id in request.artifact_ids]
     if artifact_types:
         filtered_artifacts = [a for a in filtered_artifacts if a.artifact_type.name in artifact_types]
-    
+
     return {
-        "data": filtered_artifacts
+        "data": [workspace.get_artifact_data(a.artifact_id) for a in filtered_artifacts]
     }
 
 
