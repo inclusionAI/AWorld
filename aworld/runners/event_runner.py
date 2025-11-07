@@ -15,7 +15,7 @@ from aworld.core.common import TaskItem, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
-from aworld.core.task import Task, TaskResponse, TaskStatus
+from aworld.core.task import Task, TaskResponse, TaskStatus, TaskStatusValue
 from aworld.dataset.trajectory_dataset import generate_trajectory_from_strategy
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
@@ -280,7 +280,7 @@ class TaskEventRunner(TaskRunner):
                                                            time_cost=(
                                                                time.time() - start),
                                                            usage=self.context.token_usage,
-                                                           status=TaskStatus.SUCCESS if not msg else TaskStatus.FAILED)
+                                                           status=TaskStatusValue.SUCCESS if not msg else TaskStatusValue.FAILED)
                     break
                 logger.debug(f"{task_flag} task {self.task.id} next message snap")
                 # consume message
@@ -363,14 +363,14 @@ class TaskEventRunner(TaskRunner):
                 time_cost=(time.time() - self.start_time),
                 usage=self.context.token_usage,
                 msg=f'Task timeout after {time_cost} seconds.',
-                status=TaskStatus.TIMEOUT
+                status=TaskStatusValue.TIMEOUT
             )
-            await self.context.update_task_status(self.task.id, TaskStatus.TIMEOUT)
+            await self.context.update_task_status(self.task.id, TaskStatusValue.TIMEOUT)
             return True
 
         # Check Task status from context
-        task_status = await self.context.get_task_status(self.task.id)
-        if task_status == TaskStatus.INTERRUPTED or task_status == TaskStatus.CANCELLED:
+        task_status = await self.context.get_task_status()
+        if task_status == TaskStatusValue.INTERRUPTED or task_status == TaskStatusValue.CANCELLED:
             logger.warn(f"{task_flag} task {self.task.id} is {task_status}.")
             self._task_response = TaskResponse(
                 answer='',

@@ -5,8 +5,7 @@ import asyncio
 import enum
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Union, List, Dict, Callable, Optional
-
+from typing import Any, Union, List, Dict, Callable, Optional, Literal
 
 from aworld.utils.serialized_util import to_serializable
 
@@ -19,7 +18,8 @@ from aworld.output.outputs import Outputs, DefaultOutputs
 
 
 
-class TaskStatus(enum.Enum):
+class TaskStatusValue:
+    """Task status constants."""
     INIT = 'init'
     RUNNING = 'running'
     SUCCESS = 'success'
@@ -27,6 +27,8 @@ class TaskStatus(enum.Enum):
     CANCELLED = 'cancelled'
     INTERRUPTED = 'interrupted'
     TIMEOUT = 'timeout'
+
+TaskStatus = Literal['init', 'running', 'success', 'failed', 'cancelled', 'interrupted', 'timeout']
 
 
 @dataclass
@@ -66,7 +68,7 @@ class Task:
     max_retry_count: int = 0
     timeout: int = field(default=0)
     observation: Optional[Observation] = field(default=None)
-    task_status: TaskStatus = field(default=TaskStatus.INIT)
+    task_status: TaskStatus = field(default=TaskStatusValue.INIT)
     # streaming support
     streaming_mode: StreamingMode = field(default=None)
 
@@ -119,7 +121,7 @@ class TaskResponse:
     msg: str | None = field(default=None)
     trajectory: List[Dict[str, Any]] = field(default_factory=list)
     # task final status, e.g. success/failed/cancelled
-    status: TaskStatus | None = field(default=TaskStatus.SUCCESS)
+    status: TaskStatus | None = field(default=TaskStatusValue.SUCCESS)
 
 
 class Runner(object):

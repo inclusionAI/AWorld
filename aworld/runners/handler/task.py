@@ -10,7 +10,7 @@ from aworld.core.common import TaskItem
 from aworld.core.tool.base import Tool, AsyncTool
 
 from aworld.core.event.base import Message, Constants, TopicType
-from aworld.core.task import TaskResponse, TaskStatus
+from aworld.core.task import TaskResponse, TaskStatus, TaskStatusValue
 from aworld.logs.util import logger, trajectory_logger
 from aworld.output import Output
 from aworld.runners import HandlerFactory
@@ -139,7 +139,7 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
                                                       msg=f'cancellation message received: {task_item.msg}',
-                                                      status=TaskStatus.CANCELLED)
+                                                      status=TaskStatusValue.CANCELLED)
             await self.runner.stop()
             yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers, topic=TopicType.TASK_RESPONSE)
         elif topic == TopicType.INTERRUPT:
@@ -154,7 +154,7 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
                                                       msg=f'interruption message received: {task_item.msg}',
-                                                      status=TaskStatus.INTERRUPTED)
+                                                      status=TaskStatusValue.INTERRUPTED)
             await self.runner.stop()
             yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers,
                           topic=TopicType.TASK_RESPONSE)
