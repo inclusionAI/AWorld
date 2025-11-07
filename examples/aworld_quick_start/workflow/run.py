@@ -8,7 +8,7 @@ if __name__ == "__main__":
     swarm = Swarm(search, summary, max_steps=1)
     # swarm = WorkflowSwarm(search, summary, max_steps=1)
 
-    prefix = ""
+    prefix = "search: "
     res = Runners.sync_run(
         input=prefix + """What is an agent.""",
         swarm=swarm

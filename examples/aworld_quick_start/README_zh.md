@@ -1,9 +1,10 @@
 # AWorld教程
 
 ## 概念
+
 AWorld中有较多的概念，如Sandbox, LLModel等，
-其中最重要的是Agent和Swarm，Tool和MCP，Task和Runner，Memory和Context。 
-在AWorld中，这四对可能会引起混淆，实际是不同的概念和实体。
+其中最重要的是Agent和Swarm，Tool和MCP，Task和Runner，Memory和Context。
+在AWorld中，这四对可能会引起混淆，实际表示不同的概念和实体。
 
 - `Agent`是常规意义的代理，`Swarm`是表示多Agent的拓扑结构。
 - `Tool`是工具，`MCP`是具有标准协议的工具的一种形态。
@@ -11,7 +12,12 @@ AWorld中有较多的概念，如Sandbox, LLModel等，
 - `Memory`是记忆操作的实体，`Context`是更细粒度和更高维度的上下文实体。
 
 ## `aworld_quick_start` 目录
+
+各示例目录下均有一个run.py的脚本，用于运行示例。
+运行的前提是需要将.env_template文件复制为.env文件，并填写相应的参数。
+
 ### 任务执行示例
+
 - [使用Agent](define_agent)\
   Single-agent的运行示例。用于定义一个使用LLM的agent的场景。
 
@@ -39,7 +45,7 @@ AWorld中有较多的概念，如Sandbox, LLModel等，
 - [层级Swarm](hybrid_swarm) \
   混合swarm简单示例。用于复杂的multi-agent交互场景，比如工作流中的某个节点也是一个multi-agent。
 
-  
+
 - [多任务并行执行](parallel_task) \
   多个任务同时执行，可以选择不同的执行backend。主要用于简单的多query获取其回复的场景。
 
