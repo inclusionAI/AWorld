@@ -166,11 +166,10 @@ class LocalArtifactRepository(ArtifactRepository):
             for attachment in artifact.attachments:
                 attachment_path = content_path.parent / attachment.filename
                 attachment_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                with open(attachment_path, 'w') as f:
-                    f.write(attachment.content)
 
-
+                if attachment.content and isinstance(attachment.content, str):
+                    with open(attachment_path, 'w') as f:
+                        f.write(attachment.content)
 
         return "success"
 
