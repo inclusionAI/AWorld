@@ -41,9 +41,6 @@ class TaskEventRunner(TaskRunner):
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
 
-        # Custom event handlers (hooks)
-        self._cancel_handler = kwargs.get("cancel_handler", None)
-        self._interrupt_handler = kwargs.get("interrupt_handler", None)
 
     async def do_run(self, context: Context = None):
         if self.swarm and not self.swarm.initialized:
