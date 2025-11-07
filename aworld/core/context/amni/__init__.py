@@ -568,6 +568,8 @@ class ApplicationContext(AmniContext):
 
     async def build_sub_context(self, sub_task_content: str, sub_task_id: str = None, **kwargs):
         logger.info(f"build_sub_context: {self.task_id} -> {sub_task_id}: {sub_task_content}")
+        # force cast to string to avoid type error
+        sub_task_content = str(sub_task_content)
         sub_task_input = self.task_state.task_input.new_subtask(sub_task_content, sub_task_id)
         agents = kwargs.get("agents")
         agent_list = []

@@ -110,6 +110,7 @@ class BaseConfig(BaseModel):
 
 
 class ModelConfig(BaseConfig):
+    model_config = ConfigDict(extra='allow')
     llm_provider: str = "openai"
     llm_model_name: str = None
     llm_temperature: float = 1.

@@ -1,4 +1,4 @@
-from aworld.experimental.mcp_server.server import AgentMCP
+from aworld.experimental.mcp_server.agent_server import AgentMCP
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.logs.util import logger
