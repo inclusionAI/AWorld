@@ -9,9 +9,12 @@ from aworld.config import RunConfig
 from aworld.config.conf import TaskConfig
 from aworld.core.common import ActionModel
 from aworld.core.context.base import Context
+from aworld.core.event.base import Message, TopicType
 from aworld.core.task import Task, TaskResponse
+from aworld.logs.util import logger
 from aworld.output.outputs import Outputs
 from aworld.runners.utils import choose_runners, execute_runner
+from aworld.utils.common import sync_exec
 
 
 async def exec_tool(tool_name: str,
@@ -200,3 +203,31 @@ async def serial_exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()
         else:
             task_input = result.msg
     return res
+
+
+async def streaming_exec_task(task: Task, run_conf: RunConfig = RunConfig()):
+    task_id = task.id
+    runners = await choose_runners([task])
+    runner = runners[0]
+    streaming_queue = runner.event_mng.streaming_eventbus
+    stream_task = asyncio.create_task(execute_runner(runners, run_conf))
+    stream_task.add_done_callback(lambda _: sync_exec(streaming_queue.done, task_id))
+
+    def is_task_end_msg(msg: Message):
+        return msg and isinstance(msg, Message) and msg.topic == TopicType.TASK_RESPONSE
+
+    # Receive the messages from the streaming queue
+    try:
+        while True:
+            streaming_msg = await streaming_queue.get(task_id)
+            yield streaming_msg
+
+            # End the loop when receiving end signal
+            if is_task_end_msg(streaming_msg):
+                break
+
+    except asyncio.TimeoutError:
+        logger.warning(f"Streaming queue timeout for task {task.id}")
+    except Exception as e:
+        logger.error(f"Error reading from streaming queue: {e}")
+        raise
