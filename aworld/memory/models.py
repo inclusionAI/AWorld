@@ -294,7 +294,7 @@ class MemorySummary(MemoryItem):
         return {
             "id": self.id,
             "metadata": self.metadata,
-            "role": "user",
+            "role": self.metadata['role'],
             "content": self.content,
             "created_at": self.created_at
         }
