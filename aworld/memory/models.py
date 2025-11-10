@@ -96,6 +96,24 @@ class MemoryItem(BaseModel):
     def status(self, value: Literal["DRAFT", "ACCEPTED", "DISCARD"]) -> None:
         self.metadata['status'] = value
 
+    @property
+    def start_time(self) -> Optional[str]:
+        """获取消息开始时间"""
+        return self.metadata.get('start_time')
+
+    @property
+    def end_time(self) -> Optional[str]:
+        """获取消息结束时间"""
+        return self.metadata.get('end_time')
+
+    def set_start_time(self, start_time: str = datetime.now().isoformat()):
+        self.metadata['start_time'] = start_time
+        self.updated_at = datetime.now().isoformat()
+
+    def set_end_time(self, end_time: str = datetime.now().isoformat()):
+        self.metadata['end_time'] = end_time
+        self.updated_at = datetime.now().isoformat()
+
     @abstractmethod
     def to_openai_message(self) -> dict:
         pass
@@ -163,7 +181,8 @@ class AgentExperience(MemoryItem):
     def to_openai_message(self) -> dict:
         return {
             "role": "system",
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at
         }
 
 
@@ -210,7 +229,8 @@ class UserProfile(MemoryItem):
     def to_openai_message(self) -> dict:
         return {
             "role": "system",
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at
         }
 
 class Fact(MemoryItem):
@@ -247,7 +267,8 @@ class Fact(MemoryItem):
     def to_openai_message(self) -> dict:
         return {
             "role": "user",
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at
         }
 
 class MemorySummary(MemoryItem):
@@ -274,7 +295,8 @@ class MemorySummary(MemoryItem):
             "id": self.id,
             "metadata": self.metadata,
             "role": "user",
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at
         }
 
 
@@ -298,7 +320,8 @@ class ConversationSummary(MemoryItem):
     def to_openai_message(self) -> dict:
         return {
             "role": "assistant",
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at
         }
 
 
@@ -340,22 +363,7 @@ class MemoryMessage(MemoryItem):
     @property
     def agent_id(self) -> str:
         return self.metadata['agent_id']
-    
-    @property
-    def start_time(self) -> Optional[str]:
-        """获取消息开始时间"""
-        return self.metadata.get('start_time')
-    
-    @property
-    def end_time(self) -> Optional[str]:
-        """获取消息结束时间"""
-        return self.metadata.get('end_time')
-    
-    def set_end_time(self):
-        """设置消息结束时间"""
-        self.metadata['end_time'] = datetime.now().isoformat()
-        self.updated_at = datetime.now().isoformat()
-    
+
     @abstractmethod
     def to_openai_message(self) -> dict:
         pass
@@ -375,7 +383,8 @@ class MemorySystemMessage(MemoryMessage):
             "id": self.id,
             "metadata": self.metadata,
             "role": self.role,
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at
         }
 
     @property
@@ -402,7 +411,8 @@ class MemoryHumanMessage(MemoryMessage):
             "id": self.id,
             "metadata": self.metadata,
             "role": self.role,
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at
         }
 
 class MemoryAIMessage(MemoryMessage):
@@ -435,7 +445,8 @@ class MemoryAIMessage(MemoryMessage):
             "metadata": self.metadata,
             "role": self.role,
             "content": self.content,
-            "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls or []] or None
+            "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls or []] or None,
+            "created_at": self.created_at
         }
 
 class MemoryToolMessage(MemoryMessage):
@@ -472,6 +483,7 @@ class MemoryToolMessage(MemoryMessage):
             "role": self.role,
             "content": self.content,
             "tool_call_id": self.tool_call_id,
+            "created_at": self.created_at
         }
 
 

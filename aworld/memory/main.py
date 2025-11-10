@@ -540,7 +540,7 @@ class AworldMemory(Memory):
         if len(message_items) < 2:
             return message_items
 
-        # Find the last AI message in the sequence
+        # Find the last not summary category AI message in the sequence
         last_ai_index = -1
         for i in range(len(message_items) - 1, -1, -1):
             if isinstance(message_items[i], MemoryAIMessage):
@@ -579,28 +579,28 @@ class AworldMemory(Memory):
             }
         )
         to_be_summary_items = [item for item in agent_task_total_message if
-                               item.memory_type == "message" and not item.has_summary]
+                               item.memory_type in ["message", "summary"] and not item.has_summary]
         # filter summary items
         if not agent_memory_config.summary_summaried:
-            to_be_summary_items = [item for item in agent_task_total_message if
-                                  not item.memory_type == 'summary']
+            to_be_summary_items = [item for item in to_be_summary_items if
+                                  item.memory_type != 'summary']
 
         # Filter out incomplete message pairs
         to_be_summary_items = self._filter_incomplete_message_pairs(to_be_summary_items)
 
         # Calculate summary_created_time
+        start_time = datetime.now().isoformat()
         summary_created_time = datetime.now().isoformat()
-        if len(agent_task_total_message) > len(to_be_summary_items) and len(to_be_summary_items) > 0:
-            idx1, idx2 = len(agent_task_total_message) - len(to_be_summary_items) - 1, len(agent_task_total_message) - len(to_be_summary_items)
-            if idx2 < len(agent_task_total_message):
+        if len(to_be_summary_items) > 0:
+            last_item_idx = next(i for i, item in enumerate(agent_task_total_message) if item.id == to_be_summary_items[-1].id)
+            if last_item_idx < len(agent_task_total_message) - 1:
                 try:
-                    msg1, msg2 = agent_task_total_message[idx1], agent_task_total_message[idx2]
-                    t1 = msg1.created_at.replace('Z', '+00:00') if msg1.created_at and msg1.created_at.endswith('Z') else msg1.created_at
-                    t2 = msg2.created_at.replace('Z', '+00:00') if msg2.created_at and msg2.created_at.endswith('Z') else msg2.created_at
-                    dt1, dt2 = datetime.fromisoformat(t1), datetime.fromisoformat(t2)
+                    created_at1 = agent_task_total_message[last_item_idx].created_at
+                    created_at2 = agent_task_total_message[last_item_idx + 1].created_at
+                    dt1, dt2 = datetime.fromisoformat(created_at1), datetime.fromisoformat(created_at2)
                     summary_created_time = (dt1 + (dt2 - dt1) / 2).isoformat()
                 except (ValueError, AttributeError):
-                    pass 
+                    pass
 
         check_need_summary, trigger_reason = self._check_need_summary(to_be_summary_items, agent_memory_config)
         logger.info(
@@ -611,7 +611,7 @@ class AworldMemory(Memory):
 
         existed_summary_items = [item for item in agent_task_total_message if item.memory_type == "summary"]
         user_task_items = [item for item in agent_task_total_message if item.memory_type == "init"]
-        
+
         # 检查是否有配置的 summary_prompts
         if agent_memory_config.summary_prompts and len(agent_memory_config.summary_prompts) > 0:
             # 并行调用 summary_prompts 数组，为每种类型生成摘要
@@ -651,6 +651,9 @@ class AworldMemory(Memory):
                     metadata=summary_metadata,
                     created_at=summary_created_time,
                 )
+                # 设置 start_time 和 end_time
+                summary_memory.set_start_time(start_time)
+                summary_memory.set_end_time(datetime.now().isoformat())
 
                 # 添加到记忆存储
                 self.memory_store.add(summary_memory)
@@ -680,6 +683,9 @@ class AworldMemory(Memory):
                 metadata=summary_metadata,
                 created_at=summary_created_time,
             )
+            # 设置 start_time 和 end_time
+            summary_memory.set_start_time(start_time)
+            summary_memory.set_end_time(datetime.now().isoformat())
 
             # add summary to memory
             self.memory_store.add(summary_memory)
@@ -875,7 +881,7 @@ class AworldMemory(Memory):
                             (item.memory_type == "message") or (item.memory_type == 'summary')]
         else:
             result_items = [item for item in agent_task_total_message if
-                        (item.memory_type == "message" and not item.has_summary) or (item.memory_type == 'summary')]
+                        (item.memory_type == "message" and not item.has_summary) or (item.memory_type == 'summary' and not item.has_summary)]
 
         # if total messages <= requested rounds, return all messages
         if len(result_items) <= last_rounds:
