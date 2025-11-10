@@ -1,12 +1,9 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import copy
 import json
-import time
 import traceback
 import uuid
 from collections import OrderedDict
-from datetime import datetime
 from typing import Dict, Any, List, Callable, Optional
 
 import aworld.trace as trace
@@ -199,6 +196,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.use_tools_in_prompt = use_tools_in_prompt if use_tools_in_prompt else conf.use_tools_in_prompt
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
         self.event_handler_name = event_handler_name
+        self.context = kwargs.get("context", None)
 
     @property
     def llm(self):
@@ -482,6 +480,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             ActionModel sequence from agent policy
         """
         logger.info(f"Agent{type(self)}#{self.id()}: async_policy start")
+        # temporary state context
+        self.context = message.context
 
         # Get current step information for trace recording
         source_span = trace.get_current_span()

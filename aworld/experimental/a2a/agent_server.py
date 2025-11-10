@@ -31,6 +31,7 @@ class AgentServer:
 
         if self.config.keep_running:
             await self.serve
+        return self.serve
 
     async def stop(self):
         if self.server is None:
@@ -197,7 +198,7 @@ class AgentServer:
     def _build_request_handler(self):
         """Build the request handler of a2a for the server application."""
 
-        agent_executor = AworldAgentExecutor(agent=self.agent)
+        agent_executor = AworldAgentExecutor(agent=self.agent, streaming=self.config.streaming)
         notify_config_store = self.config.notify_config_store
         notify_sender = None
         if notify_config_store and self.config.notify_sender_cls_type:
