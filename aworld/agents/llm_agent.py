@@ -1,9 +1,12 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import copy
 import json
+import time
 import traceback
 import uuid
 from collections import OrderedDict
+from datetime import datetime
 from typing import Dict, Any, List, Callable, Optional
 
 import aworld.trace as trace
@@ -15,7 +18,7 @@ from aworld.core.context.prompts import StringPromptTemplate
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.events import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
-    MemoryEventType as MemoryType, MemoryEventMessage
+    MemoryEventType as MemoryType, MemoryEventMessage, ChunkMessage
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.config.conf import TaskConfig, TaskRunMode
@@ -684,6 +687,10 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     llm_response.usage = nest_dict_counter(
                         llm_response.usage, chunk.usage, ignore_zero=False)
                     llm_response.message.update(chunk.message)
+                    await send_message(ChunkMessage(payload=chunk,
+                                                    source_type="llm",
+                                                    session_id=message.context.session_id,
+                                                    headers=message.headers))
 
             else:
                 llm_response = await acall_llm_model(

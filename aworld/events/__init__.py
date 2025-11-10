@@ -5,3 +5,5 @@ from aworld.events.redis_backend import RedisEventbus
 
 # global
 eventbus = InMemoryEventbus()
+# 'streaming' eventbus will be initialized on-demand for streaming mode
+streaming_eventbus = None

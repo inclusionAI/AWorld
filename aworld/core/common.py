@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import enum
 
 from pydantic import BaseModel
 from typing import Dict, Any, Optional, Union, List
@@ -110,3 +111,16 @@ class CallbackResult(BaseModel):
     success: bool = False
     result_data: Any = None
     callback_action_type: CallbackActionType = None
+
+
+class StreamingMode(enum.Enum):
+    # core: only core message including agent, tool, chunk, task, group
+    CORE = 'core'
+    # chunk: only chunk message
+    CHUNK = 'chunk'
+    # output: only output message
+    OUTPUT = 'output'
+    # chunk_output: chunk and output message
+    CHUNK_OUTPUT = 'chunk_output'
+    # all: all message
+    ALL = 'all'
