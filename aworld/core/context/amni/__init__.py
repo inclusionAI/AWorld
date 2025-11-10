@@ -1455,6 +1455,13 @@ class ApplicationContext(AmniContext):
         self._working_dir.reload_working_files()
         return self._working_dir
 
+    async def refresh_working_dir(self):
+        await self.init_working_dir()
+        self._working_dir.reload_working_files()
+        await self._workspace.add_artifact(self._working_dir, index=False)
+
+
+
 
     #####################################################################
 
