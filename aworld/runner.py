@@ -179,7 +179,7 @@ class Runners:
         return await execute_runner([runner], run_conf)
 
     @staticmethod
-    async def start_agent_server(agent, serving_config: ServingConfig):
+    async def start_agent_server(agent: Union[Agent, Swarm], serving_config: ServingConfig):
         """Utility function for start an agent server."""
         agent_server = AgentServer(agent, serving_config)
         return await agent_server.start()
