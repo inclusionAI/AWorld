@@ -229,6 +229,9 @@ class DirArtifact(Artifact):
             # Convert remote files to ArtifactAttachment objects
             for file_info in remote_files:
                 try:
+                    # remove hidden files
+                    if file_info['filename'].startswith("."):
+                        continue
                     # Read file content from repository
                     file_content = self.file_repository.read_data(file_info['key'])
                     if file_content is None:
@@ -292,4 +295,6 @@ class DirArtifact(Artifact):
             "files": self.list_files()
         }
 
+    def need_save_attachment(self):
+        return False
 
