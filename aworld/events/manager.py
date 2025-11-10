@@ -2,9 +2,11 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import Dict, Any, List, Callable
 
+from aworld.core.common import StreamingMode
 from aworld.core.context.base import Context
-from aworld.events import eventbus
-from aworld.core.event.base import Constants, Message
+from aworld.events import eventbus, InMemoryEventbus
+import aworld.events
+from aworld.core.event.base import Constants, Message, TopicType
 from aworld.core.storage.data import Data
 from aworld.core.storage.inmemory_store import InmemoryStorage, InmemoryConfig
 
@@ -12,9 +14,16 @@ from aworld.core.storage.inmemory_store import InmemoryStorage, InmemoryConfig
 class EventManager:
     """The event manager is now used to build an event bus instance and store the messages recently."""
 
-    def __init__(self, context: Context, **kwargs):
+    def __init__(self, context: Context, streaming_mode: StreamingMode = None, **kwargs):
         # use conf to build event bus instance
         self.event_bus = eventbus
+        
+        # Initialize global streaming_eventbus if enable_stream is True
+        self.streaming_mode = streaming_mode
+        if self.streaming_mode and aworld.events.streaming_eventbus is None:
+            aworld.events.streaming_eventbus = InMemoryEventbus()
+        self.streaming_eventbus = aworld.events.streaming_eventbus
+        
         self.context = context
         # Record events in memory for re-consume.
         self.max_len = kwargs.get('max_len', 1000)
@@ -54,6 +63,7 @@ class EventManager:
         """Send the message to the event bus."""
         await self.store.create_data(Data(block_id=event.context.get_task().id, value=event, id=event.id))
         await self.event_bus.publish(event)
+        await self._handle_streaming(event)
         return True
 
     async def consume(self, nowait: bool = False):
@@ -126,3 +136,33 @@ class EventManager:
                 results.append(msg)
         results.sort(key=lambda x: x.timestamp)
         return results
+
+    async def _handle_streaming(self, msg: Message):
+        def filter_stream_message(message: Message, streaming_mode: StreamingMode):
+            if not streaming_mode:
+                return False
+            # Always allow task end messages through
+            if message.topic == TopicType.TASK_RESPONSE:
+                return True
+            if streaming_mode == StreamingMode.CORE and message.category in [Constants.AGENT, Constants.TOOL,
+                                                                             Constants.CHUNK, Constants.TASK,
+                                                                             Constants.GROUP]:
+                return True
+            if streaming_mode == StreamingMode.CHUNK and message.category == Constants.CHUNK:
+                return True
+            if streaming_mode == StreamingMode.OUTPUT and message.category == Constants.OUTPUT:
+                return True
+            if streaming_mode == StreamingMode.CHUNK_OUTPUT and message.category in [Constants.CHUNK, Constants.OUTPUT]:
+                return True
+            if streaming_mode == StreamingMode.ALL:
+                return True
+            return False
+
+        if not filter_stream_message(msg, self.streaming_mode):
+            return
+
+        if not self.streaming_eventbus:
+            return
+
+        await self.streaming_eventbus.publish(msg, type='stream')
+        return
