@@ -119,7 +119,7 @@ class OSSArtifactRepository(ArtifactRepository):
             content = json.dumps(data, indent=2, ensure_ascii=False, cls=CommonEncoder)
             self.bucket.put_object(content_key, content.encode('utf-8'))
             # Store attachments if any
-            if artifact.attachments:
+            if artifact.need_save_attachment() and artifact.attachments:
                 for attachment in artifact.attachments:
                     if isinstance(attachment, ArtifactAttachment):
                         attachment_key = self.attachment_path(artifact.artifact_id, attachment.filename)

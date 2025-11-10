@@ -177,3 +177,6 @@ class Artifact(Output):
     @property
     def title(self):
         return self.metadata.get('title')
+
+    def need_save_attachment(self):
+        return True
