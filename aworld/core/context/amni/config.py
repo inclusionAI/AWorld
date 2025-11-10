@@ -264,8 +264,12 @@ class AmniConfigFactory:
     def create(level: Optional[AmniConfigLevel] = None,
                neuron_names: Optional[list[str]] = None,
                debug_mode: bool = False,
-               env_config: ContextEnvConfig = None,
+               env_config: Optional[ContextEnvConfig] = None,
                **kwargs) -> AmniContextConfig:
+        # Use default ContextEnvConfig if not provided
+        if env_config is None:
+            env_config = ContextEnvConfig()
+        
         if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
             config = get_default_config()
             config.agent_config = AgentContextConfig()
