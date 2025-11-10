@@ -70,12 +70,12 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
             with open(f"logs/results/{batch_id}/{task_id}_{cur_time}_{o_input.eval_case_id}.txt", "w") as f:
                 f.write(result[task_id].answer)
             if isinstance(result, TaskResponse):
-                return {"answer": result.answer}
+                return {"answer": result[task_id].answer, "trajectory": result[task_id].trajectory}
             if isinstance(result, dict):
                 task_result = result[task_id]
                 eval_digest_logger.info(
                     f"eval_task_digest|{batch_id}|{task_id}|{task_result.time_cost:0.1f}|{task_result.usage}")
-                return {"answer": task_result.answer}
+                return {"answer": task_result.answer, "trajectory": task_result.trajectory}
             else:
                 return {"answer": result}
         except Exception as err:
