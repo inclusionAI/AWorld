@@ -76,7 +76,7 @@ async def batch_run():
                     "metric_name": "flight_judge",
                     "threshold": 0.5,
                 }
-            ],
+            ] if os.getenv('ENABLE_SCORE', 'True') == 'True' else [],
             eval_dataset_id_or_file_path=os.getenv(
                 'EVAL_DATASET_PATH',
                 os.path.join(os.path.dirname(os.path.abspath(__file__)), 'gaia_datasets', 'DeepSearch_decrypted.csv')
