@@ -8,13 +8,11 @@ from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ConfigDict, TaskConfig, SummaryPromptConfig, AgentMemoryConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni import TaskInput, ApplicationContext
-from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig, \
-    CONTEXT_OFFLOAD_TOOL_NAME_WHITE
-from aworld.core.memory import MemoryConfig, MemoryLLMConfig
+from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig
 from aworld.core.task import Task
 from aworld.logs.util import logger
 # from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
-from aworld.memory.main import AWORLD_MEMORY_EXTRACT_NEW_SUMMARY, MemoryFactory
+from aworld.memory.main import AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
 # Import from summary module directly to avoid circular import
 # (rollout/__init__.py imports this file at the top)
 from train.examples.train_gaia_with_aworld_verl.rollout.summary_prompts import (
@@ -34,8 +32,8 @@ def is_summary():
 
 def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, server_manager = None, tokenizer = None):
 
-    # # init middlewares
-    # init_middlewares()
+    # init middlewares
+    init_middlewares()
 
     # 1. config agent context
     conf=AgentConfig(
@@ -58,17 +56,6 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
         memory_config=AgentMemoryConfig()
     )
     if is_summary():
-        MemoryFactory.init(
-            config=MemoryConfig(
-                provider="aworld",
-                llm_config=MemoryLLMConfig(
-                    provider="openai",
-                    model_name=os.getenv("LLM_MODEL_NAME"),
-                    api_key=os.getenv("LLM_API_KEY"),
-                    base_url=os.getenv("LLM_BASE_URL")
-                )
-            )
-        )
         conf.memory_config = AgentMemoryConfig(history_rounds=100, enable_summary=True, summary_rounds=30, summary_context_length=32000)
 
     # 2. init agent
