@@ -9,9 +9,8 @@ from aworld.evaluations.base import EvalTarget, EvalDataCase
 from aworld.runner import Runners
 from aworld.runners.state_manager import RuntimeStateManager
 from train.examples.train_gaia_with_aworld_verl.env import build_mcp_config
-from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent
-# py-spy 性能分析
 from train.examples.train_gaia_with_aworld_verl.log_processor.pyspy_context import pyspy_profile
+from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent
 
 logging.basicConfig(level=logging.INFO, force=True, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 

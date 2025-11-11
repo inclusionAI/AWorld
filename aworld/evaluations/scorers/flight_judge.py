@@ -11,6 +11,8 @@ import glob
 
 def encode_image(imag_dir):
     # if image_content is a path to an image file, check type of the image_content to verify
+    if imag_dir is None:
+        raise ValueError("Image path is None, cannot encode image")
     if isinstance(imag_dir, str):
         with open(imag_dir, "rb") as image_file:
             return base64.b64encode(image_file.read()).decode("utf-8")
@@ -28,6 +30,11 @@ class FlightJudgeLLMScorer(LLMAsJudgeScorer):
     def build_pic_data(self, input: EvalDataCase[EvalCaseDataType]):
         screenshot_dir = "./logs/screen_shot/" + input.run_id + "_task#1"
         latest_screenshot = get_latest_file_os(screenshot_dir)
+        
+        # If screenshot doesn't exist, return data without image
+        if latest_screenshot is None:
+            return []
+        
         image_base64 = encode_image(latest_screenshot)
 
         return [
