@@ -10,7 +10,7 @@ from aworld.runner import Runners
 from aworld.runners.state_manager import RuntimeStateManager
 from train.examples.train_gaia_with_aworld_verl.env import build_mcp_config
 from train.examples.train_gaia_with_aworld_verl.log_processor.pyspy_context import pyspy_profile
-from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent
+from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent, build_gaia_task
 
 logging.basicConfig(level=logging.INFO, force=True, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -42,11 +42,11 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
         if 'screen_shot' in os.getenv("ENV_PLUGINS", ""):
             from ..env.hooks import PostLLMCallRolloutHook, PostToolCallRolloutHook
 
-        swarm = Swarm(build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
+        agent = build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
                                        llm_base_url=os.getenv("LLM_BASE_URL"),
                                        llm_api_key=os.getenv("LLM_API_KEY"),
-                                       mcp_config=await build_mcp_config()))
-        return Task(id=task_id, session_id=session_id, input=user_input, swarm=swarm, timeout=1200)
+                                       mcp_config=await build_mcp_config())
+        return await build_gaia_task(user_input=user_input, target=agent, timeout=1200)
 
 
     async def predict(self, index: int, o_input: EvalDataCase[dict]) -> dict:
