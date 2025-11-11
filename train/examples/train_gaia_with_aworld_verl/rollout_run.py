@@ -62,7 +62,6 @@ async def batch_run():
     eval_target = ParallelGaiaEvalTarget()
     task_id = f"eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
-    # ============= RUN EVALUATION =============
     result: EvalResult = await EvaluateRunner(
         task=EvalTask(task_id=task_id),
         config=EvaluationConfig(
