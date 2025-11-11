@@ -25,16 +25,15 @@ def get_latest_file_os(directory='.'):
 @scorer_register(MetricNames.FLIGHT_JUDGE)
 class FlightJudgeLLMScorer(LLMAsJudgeScorer):
 
-    def build_judge_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
-        screenshot_dir  = "./logs/screen_shot/" + input.run_id + "_task#1"
+    def build_pic_data(self, input: EvalDataCase[EvalCaseDataType]):
+        screenshot_dir = "./logs/screen_shot/" + input.run_id + "_task#1"
         latest_screenshot = get_latest_file_os(screenshot_dir)
         image_base64 = encode_image(latest_screenshot)
 
-        judge_prompt = json.dumps(
-            [
-                {
-                    "type": "text",
-                    "text": """[Task Description]
+        return [
+            {
+                "type": "text",
+                "text": """[Task Description]
 Your role is to act as an AI Agent Evaluator. Based on the user's query, the agent's execution path, and the final browser screenshot provided, you must determine if the agent's final answer successfully resolves the user's query.
 
 [Evaluation Criteria]
@@ -63,27 +62,30 @@ Please output in the following standard JSON format without any additional expla
 
 Here is the task: {task}
 """
-                },
-                {
-                    "type": "image_url",
-                    "image_url": {
-                        "url": "data:image/png;base64," + image_base64
-                    }
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64," + image_base64
                 }
-            ]
-        )
+            }
+        ]
 
-        return judge_prompt
+    def build_judge_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+        return ""
 
     def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
         question_column = self.eval_config.eval_dataset_query_column or 'question'
         response_column = self.eval_config.eval_output_answer_column or 'answer'
         trajectory_column = 'trajectory'
-        return f"""
+        judge_data = f"""
         [Question]: {input.case_data.get(question_column, '')}
         [Trajectory]: {output.get(trajectory_column, '')}
         [Final Answer]: {output.get(response_column, '')}
         """
+        pic_data = self.build_pic_data(input)
+        pic_data[0]['text'] = pic_data[0]['text'].format(task=judge_data)
+        return json.dumps(pic_data)
 
     def convert_judge_response_to_score(self, judge_response: str) -> Optional[dict[str, MetricResult]]:
         json_output = self.fetch_json_from_result(judge_response)

@@ -7,8 +7,10 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.task import TaskResponse, Task
 from aworld.evaluations.base import EvalTarget, EvalDataCase
 from aworld.runner import Runners
+from aworld.runners.state_manager import RuntimeStateManager
 from train.examples.train_gaia_with_aworld_verl.env import build_mcp_config
 from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent
+from train.examples.train_gaia_with_aworld_verl.log_processor.analyze_fire import plot_flame_graph
 
 
 logging.basicConfig(level=logging.INFO, force=True, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -65,6 +67,19 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
             cur_time = datetime.now().strftime('%Y%m%d%H%M%S')
             with open(f"logs/results/{batch_id}/{task_id}_{cur_time}_{o_input.eval_case_id}.txt", "w") as f:
                 f.write(result[task_id].answer)
+            
+            # 任务结束后，查询state_manager获取所有节点并绘制火焰图
+            try:
+                state_manager = RuntimeStateManager.instance()
+                if state_manager:
+                    nodes = state_manager.query_by_task(task_id)
+                    if nodes:
+                        os.makedirs(f"logs/flame_graphs/{batch_id}", exist_ok=True)
+                        flame_graph_path = f"logs/flame_graphs/{batch_id}/flame_{task_id}_{cur_time}.html"
+                        plot_flame_graph(nodes, task_id, flame_graph_path)
+            except Exception as flame_err:
+                logging.warning(f"绘制火焰图失败: {flame_err}, trace: {traceback.format_exc()}")
+            
             if isinstance(result, TaskResponse):
                 return {"answer": result[task_id].answer, "trajectory": result[task_id].trajectory}
             if isinstance(result, dict):

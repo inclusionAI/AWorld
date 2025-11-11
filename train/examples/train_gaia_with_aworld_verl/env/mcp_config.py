@@ -114,7 +114,7 @@ async def build_local_mcp_config():
 
 
 async def build_distributed_mcp_config():
-    config = {
+    return {
         "mcpServers": {
             "virtualpc-mcp-server": {
                 "type": "streamable-http",
@@ -127,12 +127,10 @@ async def build_distributed_mcp_config():
                     "MCP_SERVERS": "ms-playwright",
                     # "MCP_SERVERS": "e2b-code-server",
                     # "IMAGE_ENV": json.dumps({"E2B_API_KEY": os.getenv('MCP_E2B_API_KEY', '')}),
-                    "IMAGE_ENV": json.dumps({"E2B_API_KEY": os.getenv('MCP_E2B_API_KEY', '')})
-                            if os.getenv("IP_POOL_ENABLE", False) == False
+                    "IMAGE_ENV": json.dumps({"E2B_API_KEY": os.getenv('MCP_E2B_API_KEY', '')}) if os.getenv("IP_POOL_ENABLE", "False") == "False"
                             else json.dumps({"E2B_API_KEY": os.getenv('MCP_E2B_API_KEY', ''), "PLAYWRIGHT_PROXY_SERVER": await get_proxy_server()}),
                     # Specify environment variable values for tools on the client side, note JSON String structure
-                    "IMAGE_VERSION": f"{os.getenv('IMAGE_VERSION', '')}"
-                            if os.getenv("IP_POOL_ENABLE", False) == False
+                    "IMAGE_VERSION": f"{os.getenv('IMAGE_VERSION', '')}" if os.getenv("IP_POOL_ENABLE", "False") == "False"
                             else f"{os.getenv('IP_POOL_IMAGE_VERSION', '')}",
                 },
                 "timeout": 600,
