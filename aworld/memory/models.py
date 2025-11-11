@@ -182,7 +182,8 @@ class AgentExperience(MemoryItem):
         return {
             "role": "system",
             "content": self.content,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 
@@ -230,7 +231,8 @@ class UserProfile(MemoryItem):
         return {
             "role": "system",
             "content": self.content,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 class Fact(MemoryItem):
@@ -268,7 +270,8 @@ class Fact(MemoryItem):
         return {
             "role": "user",
             "content": self.content,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 class MemorySummary(MemoryItem):
@@ -296,7 +299,8 @@ class MemorySummary(MemoryItem):
             "metadata": self.metadata,
             "role": self.metadata['role'],
             "content": self.content,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 
@@ -321,7 +325,8 @@ class ConversationSummary(MemoryItem):
         return {
             "role": "assistant",
             "content": self.content,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 
@@ -384,7 +389,8 @@ class MemorySystemMessage(MemoryMessage):
             "metadata": self.metadata,
             "role": self.role,
             "content": self.content,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
     @property
@@ -412,7 +418,8 @@ class MemoryHumanMessage(MemoryMessage):
             "metadata": self.metadata,
             "role": self.role,
             "content": self.content,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 class MemoryAIMessage(MemoryMessage):
@@ -446,7 +453,8 @@ class MemoryAIMessage(MemoryMessage):
             "role": self.role,
             "content": self.content,
             "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls or []] or None,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 class MemoryToolMessage(MemoryMessage):
@@ -483,7 +491,8 @@ class MemoryToolMessage(MemoryMessage):
             "role": self.role,
             "content": self.content,
             "tool_call_id": self.tool_call_id,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 
