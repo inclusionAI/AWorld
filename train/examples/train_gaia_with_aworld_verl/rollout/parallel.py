@@ -38,7 +38,7 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
     ):
         super().__init__()
 
-    async def build_common_gaia_task(self, user_input: str, session_id, task_id):
+    async def build_gaia_task(self, user_input: str, session_id, task_id):
         if 'screen_shot' in os.getenv("ENV_PLUGINS", ""):
             from ..env.hooks import PostLLMCallRolloutHook, PostToolCallRolloutHook
 
@@ -46,7 +46,8 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
                                        llm_base_url=os.getenv("LLM_BASE_URL"),
                                        llm_api_key=os.getenv("LLM_API_KEY"),
                                        mcp_config=await build_mcp_config())
-        return await build_gaia_task(user_input=user_input, target=agent, timeout=1200)
+        return await build_gaia_task(user_input=user_input, target=agent, timeout=1200,
+                                     session_id=session_id, task_id=task_id)
 
 
     async def predict(self, index: int, o_input: EvalDataCase[dict]) -> dict:
@@ -54,7 +55,7 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
         input = o_input.case_data
         session_id = f"{batch_id}_session#{input['id']}"
         task_id = f"{batch_id}_task#{input['id']}"
-        task = await self.build_common_gaia_task(user_input=input['prompt'], session_id=session_id, task_id=task_id)
+        task = await self.build_gaia_task(user_input=input['prompt'], session_id=session_id, task_id=task_id)
         task_id = task.id
 
         try:
