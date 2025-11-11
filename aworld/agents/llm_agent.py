@@ -27,7 +27,7 @@ from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
-from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage
+from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process
@@ -340,38 +340,42 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         }, agent_memory_config=self.memory_config)
         if histories:
             tool_calls_map = {}
-            count = 0
+            last_tool_calls = []
             for history in histories:
-                count += 1
+                if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
+                    # Maintain the order of tool calls
+                    for tool_call_id in last_tool_calls:
+                        if tool_call_id not in tool_calls_map:
+                            raise AWorldRuntimeException(f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, messages: {messages}")
+                        messages.append(tool_calls_map.get(tool_call_id))
+                    tool_calls_map = {}
+                    last_tool_calls = []
+
                 if isinstance(history, MemoryMessage):
-                    messages.append(history.to_openai_message())
-                    if isinstance(history, MemoryAIMessage):
-                        tool_calls = messages[-1].get("tool_calls")
-                        if tool_calls:
-                            tool_calls_map.update({tool_call.get("id"): idx + count for idx, tool_call in enumerate(
-                                tool_calls)})
-                else:
-                    if not self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata[
-                        'tool_calls']:
-                        messages.append({'role': history.metadata['role'], 'content': history.content,
-                                         'tool_calls': [history.metadata["tool_calls"][0]]})
+                    if isinstance(history, MemoryToolMessage):
+                        tool_calls_map[history.tool_call_id] = history.to_openai_message()
                     else:
-                        messages.append({'role': history.metadata['role'], 'content': history.content,
-                                         "tool_call_id": history.metadata.get("tool_call_id")})
-
-            if tool_calls_map:
-                # keep consistent
-                final_messages = [''] * len(messages)
-                for idx, msg in enumerate(messages):
-                    if not msg.get("tool_call_id"):
-                        final_messages[idx] = msg
-                        continue
-
-                    real_idx = tool_calls_map.get(msg['tool_call_id'], -1)
-                    if real_idx < 0:
-                        raise AWorldRuntimeException(f"tool_calls mismatch! {tool_calls_map}, messages: {messages}")
-                    final_messages[real_idx] = msg
-                messages = final_messages
+                        messages.append(history.to_openai_message())
+                        if isinstance(history, MemoryAIMessage) and history.tool_calls:
+                            last_tool_calls.extend([tool_call.id for tool_call in history.tool_calls])
+                else:
+                    role = history.metadata['role']
+                    if role == 'tool':
+                        msg = {'role': history.metadata['role'], 'content': history.content,
+                               'tool_call_id': history.metadata.get('tool_call_id')}
+                        tool_calls_map[history.metadata.get("tool_call_id")] = msg
+                    else:
+                        if not self.use_tools_in_prompt and history.metadata.get('tool_calls'):
+                            messages.append({'role': history.metadata['role'], 'content': history.content,
+                                             'tool_calls': [history.metadata['tool_calls']]})
+                            last_tool_calls.extend([tool_call.get('id') for tool_call in history.metadata['tool_calls']])
+                        else:
+                            messages.append({'role': history.metadata['role'], 'content': history.content,
+                                             "tool_call_id": history.metadata.get("tool_call_id")})
+            if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
+                messages.extend([tool_calls_map.get(tool_call_id) for tool_call_id in last_tool_calls])
+                tool_calls_map = {}
+                last_tool_calls = []
 
         return messages
 
