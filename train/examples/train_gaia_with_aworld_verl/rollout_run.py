@@ -67,9 +67,10 @@ async def batch_run():
         task=EvalTask(task_id=task_id),
         config=EvaluationConfig(
             eval_target=eval_target,
+            eval_dataset_query_column="prompt",
             eval_criterias=[
                 {
-                    "metric_name": "answer_accuracy",
+                    "metric_name": "flight_judge",
                     "threshold": 0.5,
                 }
             ],
