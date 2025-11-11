@@ -5,7 +5,10 @@ import traceback
 from datetime import datetime
 
 from dotenv import load_dotenv
-load_dotenv()
+
+from aworld.logs.util import logger
+
+load_dotenv('.env')
 
 from train.examples.train_gaia_with_aworld_verl.rollout.parallel import ParallelGaiaEvalTarget
 
@@ -59,6 +62,7 @@ async def single_run(user_input: str):
 
 
 async def batch_run():
+    logger.info(f"runner_log|pid={os.getpid()}|ppid={os.getppid()}")
     eval_target = ParallelGaiaEvalTarget()
     task_id = f"eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
 
