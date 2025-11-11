@@ -373,7 +373,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                             messages.append({'role': history.metadata['role'], 'content': history.content,
                                              "tool_call_id": history.metadata.get("tool_call_id")})
             if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
-                messages.extend([tool_calls_map.get(tool_call_id) for tool_call_id in last_tool_calls])
+                for tool_call_id in last_tool_calls:
+                    if tool_call_id not in tool_calls_map:
+                        raise AWorldRuntimeException(
+                            f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, messages: {messages}")
+                    messages.append(tool_calls_map.get(tool_call_id))
                 tool_calls_map = {}
                 last_tool_calls = []
 
