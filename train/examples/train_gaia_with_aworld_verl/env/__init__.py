@@ -1,6 +1,4 @@
 from .mcp_config import (
-    LOCAL_MCP_CONFIG,
-    DISTRIBUTED_MCP_CONFIG,
     ensure_directories_exist,
     build_mcp_config,
 )
@@ -19,8 +17,6 @@ from .qwen_file_parser import (
 )
 
 __all__ = [
-    "LOCAL_MCP_CONFIG",
-    "DISTRIBUTED_MCP_CONFIG",
     "ensure_directories_exist",
     "build_mcp_config",
     "SingleFileParser",

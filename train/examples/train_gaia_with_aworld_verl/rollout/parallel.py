@@ -1,6 +1,3 @@
-"""
-简化的并行评估执行器
-"""
 import logging
 import os
 import traceback
@@ -34,7 +31,6 @@ eval_digest_logger.addHandler(file_handler)
 
 
 class ParallelGaiaEvalTarget(EvalTarget[dict]):
-    """简化的并行 Gaia 评估目标"""
 
     def __init__(
             self
@@ -48,7 +44,7 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
         swarm = Swarm(build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
                                        llm_base_url=os.getenv("LLM_BASE_URL"),
                                        llm_api_key=os.getenv("LLM_API_KEY"),
-                                       mcp_config=build_mcp_config()))
+                                       mcp_config=await build_mcp_config()))
         return Task(id=task_id, session_id=session_id, input=user_input, swarm=swarm, timeout=1200)
 
 

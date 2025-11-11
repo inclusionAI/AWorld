@@ -91,7 +91,7 @@ class AmniContextEvaluatable(EvalTarget):
         swarm = Swarm(build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
                                        llm_base_url=os.getenv("LLM_BASE_URL"),
                                        llm_api_key=os.getenv("LLM_API_KEY"),
-                                       mcp_config=build_mcp_config()))
+                                       mcp_config=await build_mcp_config()))
         return Task(id=task_id, session_id=session_id, input=user_input, swarm=swarm, timeout=1200)
 
 

@@ -216,7 +216,7 @@ class McpServers:
                         ):
                             # for debug vnc
                             message_str = message.replace('\n', '\\n') if message else message
-                            logger.debug(f"McpServers|progress_callback|{progress}|{total}|{message_str}")
+                            logger.info(f"McpServers|progress_callback|{progress}|{total}|{message_str}")
                             try:
                                 output = Output()
                                 output.data = message

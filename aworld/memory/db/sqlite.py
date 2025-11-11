@@ -177,13 +177,7 @@ class SQLiteMemoryStore(MemoryStore):
             if not content_data or not isinstance(content_data, str):
                 return None
             item_ids = memory_meta.get('item_ids', [])
-            summary_metadata = MessageMetadata(
-                agent_id=memory_meta.get('agent_id'),
-                agent_name=memory_meta.get('agent_name'),
-                session_id=memory_meta.get('session_id'),
-                task_id=memory_meta.get('task_id'),
-                user_id=memory_meta.get('user_id')
-            )
+            summary_metadata = MessageMetadata(**memory_meta)
             return MemorySummary(
                 item_ids=item_ids,
                 summary=content_data,
