@@ -5,10 +5,10 @@ import traceback
 from datetime import datetime
 
 from dotenv import load_dotenv
+load_dotenv('.env')
 
 from aworld.logs.util import logger
 
-load_dotenv('.env')
 
 from train.examples.train_gaia_with_aworld_verl.rollout.parallel import ParallelGaiaEvalTarget
 
