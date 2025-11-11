@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-分析trajectory文件中由于网络异常、登录拦截、验证码等原因无法得到结果的文件
+分析trajectory文件中由于网络异常、登录拦截、验证码、加载中等原因无法得到结果的文件
 """
 
 import os
@@ -29,6 +29,12 @@ class TrajectoryAnalyzer:
             'captcha': [
                 '验证码', 'captcha', '验证', '人机验证', '安全验证',
                 '图片验证', '滑动验证'
+            ],
+            'loading': [
+                '加载中', '正在加载', '页面加载', '加载失败', '加载超时',
+                '未渲染完毕', '渲染中', '等待加载', '加载问题',
+                '页面未加载', '加载缓慢', '加载卡住', '加载异常',
+                'loading', 'page loading', 'render', 'rendering'
             ]
         }
     
@@ -153,7 +159,8 @@ class TrajectoryAnalyzer:
             reason_name = {
                 'network': '网络异常',
                 'login': '登录拦截',
-                'captcha': '验证码'
+                'captcha': '验证码',
+                'loading': '加载中'
             }.get(reason, reason)
             print(f"  {reason_name}: {count} 个文件")
         

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
 分析轨迹文件中的工具调用和LLM调用的耗时分布
+python analyze_timing.py --log <log_file> <level_id1> <level_id2> <level_id3> [traj_base_dir] [output_path]
 """
 import json
 import ast

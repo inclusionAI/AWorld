@@ -3,6 +3,7 @@
 火焰图分析工具
 根据节点的execute_time和end_time绘制火焰图
 支持交互式显示和正确处理时间重叠
+
 """
 import logging
 from typing import List, Dict, Optional, Tuple

@@ -81,7 +81,7 @@ async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, sess
         context_config.agent_config = AgentContextConfig(
             history_rounds= 100,
             enable_summary= True,
-            summary_rounds= 30,
+            summary_rounds= 10,
             summary_context_length= 40960,
             summary_prompts=[
                 SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,
