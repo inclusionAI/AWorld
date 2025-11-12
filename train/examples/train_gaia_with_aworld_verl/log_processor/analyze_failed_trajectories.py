@@ -3,8 +3,6 @@
 分析trajectory文件中由于网络异常、登录拦截、验证码、加载中等原因无法得到结果的文件
 """
 
-import os
-import re
 import ast
 from pathlib import Path
 from typing import List, Dict, Tuple
@@ -55,21 +53,31 @@ class TrajectoryAnalyzer:
             print(f"错误: 读取文件 {file_path} 失败: {e}")
             return {}
     
-    def extract_answer_content(self, trajectory: Dict) -> List[str]:
-        """从trajectory中提取所有<answer>标签的内容"""
-        answers = []
+    def get_last_message_content(self, trajectory: Dict) -> str:
+        """获取trajectory中最后一条message的content"""
+        if not trajectory:
+            return ""
         
-        # 遍历所有消息
-        for key, message in trajectory.items():
+        # 尝试按key排序找到最后一条消息
+        # 如果key是数字，按数字排序；否则按字符串排序
+        try:
+            # 尝试将key转换为数字进行排序
+            sorted_items = sorted(
+                trajectory.items(),
+                key=lambda x: int(x[0]) if str(x[0]).isdigit() else float('inf')
+            )
+        except (ValueError, TypeError):
+            # 如果转换失败，按字符串排序
+            sorted_items = sorted(trajectory.items())
+        
+        # 从后往前查找最后一条有content的消息
+        for key, message in reversed(sorted_items):
             if isinstance(message, dict) and 'content' in message:
                 content = message.get('content', '')
                 if content and isinstance(content, str):
-                    # 使用正则表达式提取<answer>标签内容
-                    pattern = r'<answer>(.*?)</answer>'
-                    matches = re.findall(pattern, content, re.DOTALL | re.IGNORECASE)
-                    answers.extend(matches)
+                    return content
         
-        return answers
+        return ""
     
     def check_failure_reasons(self, answer_text: str) -> List[str]:
         """检查answer文本中是否包含失败原因"""
@@ -88,24 +96,21 @@ class TrajectoryAnalyzer:
     def analyze_file(self, file_path: str) -> Tuple[bool, List[str], str]:
         """
         分析单个文件
-        返回: (是否包含失败原因, 失败原因列表, answer内容摘要)
+        返回: (是否包含失败原因, 失败原因列表, 最后一条消息内容摘要)
         """
         trajectory = self.parse_trajectory_file(file_path)
         if not trajectory:
             return False, [], ""
         
-        answers = self.extract_answer_content(trajectory)
-        if not answers:
+        last_message_content = self.get_last_message_content(trajectory)
+        if not last_message_content:
             return False, [], ""
         
-        # 合并所有answer内容
-        all_answers = " ".join(answers)
-        
         # 检查失败原因
-        failure_reasons = self.check_failure_reasons(all_answers)
+        failure_reasons = self.check_failure_reasons(last_message_content)
         
         # 生成摘要（前200个字符）
-        summary = all_answers[:200].replace('\n', ' ') if all_answers else ""
+        summary = last_message_content[:200].replace('\n', ' ') if last_message_content else ""
         
         return len(failure_reasons) > 0, failure_reasons, summary
     

@@ -85,7 +85,7 @@ async def batch_run():
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,
-            parallel_num=100,
+            parallel_num=20,
             skip_passed_cases=True,
         )).run()
 

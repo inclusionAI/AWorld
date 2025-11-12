@@ -11,7 +11,7 @@ from aworld import trace
 from aworld.config import AgentConfig, ContextRuleConfig
 # lazy import
 from aworld.core.context.base import Context
-from aworld.events.util import send_message
+from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
@@ -1118,10 +1118,14 @@ class ApplicationContext(AmniContext):
             topic=TopicType.SYSTEM_PROMPT,
             headers={"context": self}
         )
-        await send_message(message)
-        logger.debug(f"ApplicationContext|pub_and_wait_system_prompt_event|send_finished|{namespace}|{agent_id}")
-        await long_wait_message_state(message)
-        logger.debug(f"ApplicationContext|pub_and_wait_system_prompt_event|wait_finished|{namespace}|{agent_id}")
+        # 默认通过消息系统发送
+        try:
+            future = await send_message_with_future(message)
+            results = await future.wait(timeout=300)
+            if not results:
+                logger.warning(f"context write task failed: {message}")
+        except Exception as e:
+            logger.warn(f"context write task failed: {traceback.format_exc()}")
 
     async def pub_and_wait_tool_result_event(self,
                                              tool_result: Any,

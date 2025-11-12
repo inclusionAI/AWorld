@@ -28,6 +28,10 @@ class Constants:
     MEMORY = "memory"
     CONTEXT = "context"
     CONTEXT_RESPONSE = "context_response"
+    REMOTE_TOOL_CALL = "REMOTE_TOOL_CALL"
+    INIT_TOOLS = "INIT_TOOLS"
+    LLM = "LLM"
+    HANDLER = "HANDLER"
 
 
 class TopicType:

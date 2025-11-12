@@ -78,6 +78,8 @@ class PySpyProfiler:
         self.subprocesses = subprocesses
         self.native = native
         self.formats = formats if isinstance(formats, list) else [formats]
+        # 按类型排序
+        self.formats = sorted(self.formats)
         
         # 生成输出路径
         if output is None:
@@ -103,40 +105,50 @@ class PySpyProfiler:
         
         # 为每种格式启动一个 py-spy 进程
         for fmt in self.formats:
-            output_file = self._get_output_file(fmt)
-            cmd = self._build_command(fmt, output_file)
-            
-            try:
-                # 启动 py-spy 进程（后台运行）
-                process = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    preexec_fn=os.setsid if hasattr(os, 'setsid') else None
-                )
-                
-                # 等待一小段时间检查进程是否立即失败
-                time.sleep(0.1)
-                
-                # 检查进程是否还在运行
-                if process.poll() is not None:
-                    # 进程已经结束，读取错误信息
-                    _, stderr = process.communicate()
-                    error_msg = stderr.decode('utf-8', errors='ignore') if stderr else "未知错误"
-                    logger.error(f"py-spy ({fmt}) 进程启动后立即退出，退出码: {process.returncode}")
-                    logger.error(f"错误信息: {error_msg}")
-                    if "Permission denied" in error_msg or "permission" in error_msg.lower():
-                        logger.error("提示: 可能需要 sudo 权限")
-                    continue
-                
-                self.processes.append((process, fmt, output_file))
-                logger.info(f"已启动 py-spy ({fmt})，输出文件: {output_file}")
-            except Exception as e:
-                logger.error(f"启动 py-spy ({fmt}) 失败: {e}")
-                if "Permission denied" in str(e):
-                    logger.error("提示: 可能需要 sudo 权限")
+            self._start_pyspy_process(fmt)
         
         return self
+    
+    def _start_pyspy_process(self, fmt: str):
+        """启动单个 py-spy 进程"""
+        output_file = self._get_output_file(fmt)
+        cmd = self._build_command(fmt, output_file)
+        
+        try:
+            process = self._create_pyspy_process(cmd)
+            
+            if not self._verify_process_started(process, fmt):
+                return
+            
+            self.processes.append((process, fmt, output_file))
+            logger.info(f"已启动 py-spy ({fmt})，输出文件: {output_file}")
+        except Exception as e:
+            logger.error(f"启动 py-spy ({fmt}) 失败: {e}")
+            if "Permission denied" in str(e):
+                logger.error("提示: 可能需要 sudo 权限")
+    
+    def _create_pyspy_process(self, cmd: List[str]) -> subprocess.Popen:
+        """创建 py-spy 进程"""
+        return subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            preexec_fn=os.setsid if hasattr(os, 'setsid') else None
+        )
+    
+    def _verify_process_started(self, process: subprocess.Popen, fmt: str) -> bool:
+        """验证进程是否成功启动"""
+        time.sleep(0.1)
+        
+        if process.poll() is not None:
+            _, stderr = process.communicate()
+            error_msg = stderr.decode('utf-8', errors='ignore') if stderr else "未知错误"
+            logger.error(f"py-spy ({fmt}) 进程启动后立即退出，退出码: {process.returncode}")
+            logger.error(f"错误信息: {error_msg}")
+            if "Permission denied" in error_msg or "permission" in error_msg.lower():
+                logger.error("提示: 可能需要 sudo 权限")
+            return False
+        return True
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         if not self.enable or not self.processes:
@@ -146,60 +158,69 @@ class PySpyProfiler:
         
         # 停止所有 py-spy 进程
         for process, fmt, output_file in self.processes:
-            try:
-                # 检查进程是否还在运行
-                if process.poll() is not None:
-                    # 进程已经结束，读取错误信息
-                    try:
-                        _, stderr = process.communicate(timeout=1)
-                        if stderr:
-                            error_msg = stderr.decode('utf-8', errors='ignore')
-                            if error_msg.strip():
-                                logger.warning(f"py-spy ({fmt}) 进程已结束，退出码: {process.returncode}")
-                                logger.debug(f"py-spy ({fmt}) 错误信息: {error_msg}")
-                    except subprocess.TimeoutExpired:
-                        pass
-                    
-                    if output_file.exists():
-                        logger.info(f"py-spy 分析结果已保存: {output_file}")
-                    else:
-                        logger.warning(f"py-spy 输出文件不存在: {output_file}")
-                        logger.debug(f"预期文件路径: {output_file.absolute()}")
-                    continue
-                
-                # 发送 SIGINT 信号停止 py-spy
-                if hasattr(os, 'killpg'):
-                    try:
-                        os.killpg(os.getpgid(process.pid), signal.SIGINT)
-                    except ProcessLookupError:
-                        # 进程组不存在，可能进程已经结束
-                        logger.debug(f"py-spy ({fmt}) 进程组不存在，进程可能已结束")
-                        continue
-                else:
-                    process.send_signal(signal.SIGINT)
-                
-                # 等待进程结束（最多等待5秒）
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"py-spy ({fmt}) 进程未在5秒内结束，强制终止")
-                    if process.poll() is None:  # 再次检查进程是否还在运行
-                        process.kill()
-                        process.wait()
-                
-                if output_file.exists():
-                    logger.info(f"py-spy 分析结果已保存: {output_file}")
-                else:
-                    logger.warning(f"py-spy 输出文件不存在: {output_file}")
-                    
-            except ProcessLookupError:
-                # 进程不存在
-                logger.debug(f"py-spy ({fmt}) 进程不存在，可能已经结束")
-            except Exception as e:
-                logger.error(f"停止 py-spy ({fmt}) 时出错: {e}")
+            self._stop_pyspy_process(process, fmt, output_file)
         
         self.processes.clear()
         return False  # 不抑制异常
+    
+    def _stop_pyspy_process(self, process: subprocess.Popen, fmt: str, output_file: Path):
+        """停止单个 py-spy 进程"""
+        try:
+            if process.poll() is not None:
+                self._handle_finished_process(process, fmt, output_file)
+                return
+            
+            self._terminate_process(process, fmt)
+            self._wait_for_process(process, fmt)
+            self._log_output_file(output_file)
+            
+        except ProcessLookupError:
+            logger.debug(f"py-spy ({fmt}) 进程不存在，可能已经结束")
+        except Exception as e:
+            logger.error(f"停止 py-spy ({fmt}) 时出错: {e}")
+    
+    def _handle_finished_process(self, process: subprocess.Popen, fmt: str, output_file: Path):
+        """处理已经结束的进程"""
+        try:
+            _, stderr = process.communicate(timeout=1)
+            if stderr:
+                error_msg = stderr.decode('utf-8', errors='ignore')
+                if error_msg.strip():
+                    logger.warning(f"py-spy ({fmt}) 进程已结束，退出码: {process.returncode}")
+                    logger.debug(f"py-spy ({fmt}) 错误信息: {error_msg}")
+        except subprocess.TimeoutExpired:
+            pass
+        
+        self._log_output_file(output_file)
+    
+    def _terminate_process(self, process: subprocess.Popen, fmt: str):
+        """发送停止信号给进程"""
+        if hasattr(os, 'killpg'):
+            try:
+                os.killpg(os.getpgid(process.pid), signal.SIGINT)
+            except ProcessLookupError:
+                logger.debug(f"py-spy ({fmt}) 进程组不存在，进程可能已结束")
+                raise
+        else:
+            process.send_signal(signal.SIGINT)
+    
+    def _wait_for_process(self, process: subprocess.Popen, fmt: str):
+        """等待进程结束"""
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            logger.warning(f"py-spy ({fmt}) 进程未在5秒内结束，强制终止")
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+    
+    def _log_output_file(self, output_file: Path):
+        """记录输出文件状态"""
+        if output_file.exists():
+            logger.info(f"py-spy 分析结果已保存: {output_file}")
+        else:
+            logger.warning(f"py-spy 输出文件不存在: {output_file}")
+            logger.debug(f"预期文件路径: {output_file.absolute()}")
     
     def _get_output_file(self, fmt: str) -> Path:
         """根据格式获取输出文件路径"""

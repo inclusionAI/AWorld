@@ -66,6 +66,7 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
         # MCP tool configuration for the agent
         mcp_config=mcp_config,
         mcp_servers=list(server_name for server_name in mcp_config.get("mcpServers", {}).keys()),
+        direct_memory_call=True
     )
 
 
@@ -116,7 +117,7 @@ async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, sess
     # 4. build swarm
     if isinstance(target, Swarm):
         swarm = target
-        Task(
+        return Task(
             id=context.task_id,
             user_id=context.user_id,
             session_id=context.session_id,

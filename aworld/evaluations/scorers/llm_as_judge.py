@@ -60,7 +60,7 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
         raise NotImplementedError("build_judge_prompt must be implemented in subclasses")
 
     @abc.abstractmethod
-    def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+    def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> [str, dict]:
         """Builds the input for the judge agent task.
 
         Args:

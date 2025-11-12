@@ -1,5 +1,6 @@
 import json
 
+from aworld.core.context.amni import TaskInput
 from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, MetricResult
 from typing import Optional
 from aworld.evaluations.scorers.metrics import MetricNames
@@ -81,7 +82,7 @@ Here is the task: {task}
     def build_judge_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
         return ""
 
-    def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+    def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> [str, dict]:
         question_column = self.eval_config.eval_dataset_query_column or 'question'
         response_column = self.eval_config.eval_output_answer_column or 'answer'
         trajectory_column = 'trajectory'
@@ -91,8 +92,9 @@ Here is the task: {task}
         [Final Answer]: {output.get(response_column, '')}
         """
         pic_data = self.build_pic_data(input)
+
         pic_data[0]['text'] = pic_data[0]['text'].format(task=judge_data)
-        return json.dumps(pic_data)
+        return pic_data
 
     def convert_judge_response_to_score(self, judge_response: str) -> Optional[dict[str, MetricResult]]:
         json_output = self.fetch_json_from_result(judge_response)
