@@ -69,13 +69,13 @@ Please output in the following standard JSON format without any additional expla
 
 Here is the task: {task}
 """
-            },
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": "data:image/png;base64," + image_base64
-                }
             }
+            # {
+            #     "type": "image_url",
+            #     "image_url": {
+            #         "url": "data:image/png;base64," + image_base64
+            #     }
+            # }
         ]
 
     def build_judge_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
@@ -84,10 +84,26 @@ Here is the task: {task}
     def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
         question_column = self.eval_config.eval_dataset_query_column or 'question'
         response_column = self.eval_config.eval_output_answer_column or 'answer'
-        trajectory_column = 'trajectory'
+        trajectory_list = [msg for key, msg in sorted(output.get('trajectory', {}).items())]
+
+        last_summary_idx = next(
+            (i for i in range(len(trajectory_list) - 1, -1, -1) if trajectory_list[i].get('memory_type') == 'summary'), -1
+        )
+
+        if last_summary_idx != -1:
+            messages_to_process = trajectory_list[:2] + trajectory_list[last_summary_idx:]
+        else:
+            messages_to_process = trajectory_list
+
+        new_trajectory = [
+            {"role": message["role"], "content": message["content"]}
+            for message in messages_to_process
+        ]
+        new_trajectory_str = json.dumps(new_trajectory, ensure_ascii=False)
+
         judge_data = f"""
         [Question]: {input.case_data.get(question_column, '')}
-        [Trajectory]: {output.get(trajectory_column, '')}
+        [Trajectory]: {new_trajectory_str}
         [Final Answer]: {output.get(response_column, '')}
         """
         pic_data = self.build_pic_data(input)
@@ -98,7 +114,7 @@ Here is the task: {task}
         json_output = self.fetch_json_from_result(judge_response)
         if json_output:
             return {
-                MetricNames.ANSWER_ACCURACY: MetricResult(
+                MetricNames.FLIGHT_JUDGE: MetricResult(
                     value=json_output.get('score', 0),
                     explanation=json_output.get('explanation', '')
                 )
