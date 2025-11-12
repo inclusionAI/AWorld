@@ -8,16 +8,17 @@ from aworld.config.conf import TaskConfig
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Config, StreamingMode
-from aworld.core.event.base import Message, Constants, TopicType, TaskMessage
-from aworld.core.task import Task, TaskResponse, Runner
+from aworld.core.event.base import Message
+from aworld.core.task import Task, TaskResponse
 from aworld.evaluations.base import EvalTask
+from aworld.experimental.a2a.agent_server import AgentServer
+from aworld.experimental.a2a.config import ServingConfig
 from aworld.logs.util import logger
 from aworld.output import StreamingOutputs
 from aworld.runners.evaluate_runner import EvaluateRunner
-from aworld.runners.event_runner import TaskEventRunner
-from aworld.runners.utils import execute_runner, choose_runners
+from aworld.runners.utils import execute_runner
 from aworld.utils.common import sync_exec
-from aworld.utils.run_util import exec_tasks
+from aworld.utils.run_util import exec_tasks, streaming_exec_task
 
 
 class Runners:
@@ -70,7 +71,7 @@ class Runners:
             streaming_mode: StreamingMode = StreamingMode.CORE,
             run_conf: RunConfig = None
     ) -> AsyncGenerator[Message, None]:
-        """Run task with streaming message support.
+        """Run task with streaming native message.
 
         Args:
             task: Task to execute.
@@ -85,33 +86,34 @@ class Runners:
 
         # Set up task with streaming mode
         task.streaming_mode = streaming_mode
-        runners = await choose_runners([task])
-        stream_task = asyncio.create_task(execute_runner(runners, run_conf))
-        runner: TaskEventRunner = runners[0]
-        streaming_queue = runner.event_mng.streaming_eventbus
-        task_id = task.id
+        async for msg in streaming_exec_task(task, run_conf):
+            yield msg
 
-        def is_task_end_msg(msg: Message):
-            return msg and isinstance(msg, Message) and msg.topic == TopicType.TASK_RESPONSE
+    @staticmethod
+    async def streaming_run(
+            input: str,
+            agent: Agent = None,
+            swarm: Swarm = None,
+            streaming_mode: StreamingMode = StreamingMode.CORE,
+            tool_names: List[str] = [],
+            session_id: str = None,
+            run_conf: RunConfig = None
+    ) -> AsyncGenerator[Message, None]:
+        """Run agent/swarm with streaming native message."""
+        if agent and swarm:
+            raise ValueError("`agent` and `swarm` only choose one.")
 
-        # Receive the messages from the streaming queue
-        try:
-            while True:
-                streaming_msg = await streaming_queue.get(task_id)
-                yield streaming_msg
+        if not input:
+            raise ValueError('`input` is empty.')
 
-                # End the loop when receiving end signal
-                if is_task_end_msg(streaming_msg):
-                    break
+        if agent:
+            agent.task = input
+            swarm = Swarm(agent)
 
-        except asyncio.TimeoutError:
-            logger.warning(f"Streaming queue timeout for task {task.id}")
-        except Exception as e:
-            logger.error(f"Error reading from streaming queue: {e}")
-            raise
-        finally:
-            # Clean up queue resources
-            await streaming_queue.done(task_id)
+        task = Task(input=input, swarm=swarm, tool_names=tool_names,
+                    event_driven=swarm.event_driven, session_id=session_id)
+        async for msg in Runners.streaming_run_task(task, streaming_mode, run_conf=run_conf):
+            yield msg
 
     @staticmethod
     def sync_run(
@@ -175,3 +177,9 @@ class Runners:
         # todo: unify in exec_tasks
         runner = EvaluateRunner(task=task, config=eval_conf)
         return await execute_runner([runner], run_conf)
+
+    @staticmethod
+    async def start_agent_server(agent: Union[Agent, Swarm], serving_config: ServingConfig):
+        """Utility function for start an agent server."""
+        agent_server = AgentServer(agent, serving_config)
+        return await agent_server.start()
