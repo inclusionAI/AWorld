@@ -42,7 +42,7 @@ MCP_CONFIG = {
             "args": [
                 "-y",
                 "@modelcontextprotocol/server-filesystem",
-                "/tmp/workspace"
+                "~/workspace"
             ]
         },
         "amnicontext-server": {
