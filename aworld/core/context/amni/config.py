@@ -226,7 +226,8 @@ def get_default_config() -> AmniContextConfig:
                 ),
                 priority=0
             )
-        ]
+        ],
+        debug_mode=True
     )
 
 

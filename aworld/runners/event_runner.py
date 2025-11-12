@@ -354,12 +354,17 @@ class TaskEventRunner(TaskRunner):
     async def generate_trajectory_for_memory(self):
         if not self.swarm or not self.swarm.cur_agent:
             return {}
+        root = self.swarm.communicate_agent[0] if isinstance(self.swarm.communicate_agent, list) else self.swarm.communicate_agent
+        
+        executor_ids = self.swarm.communicate_agent[1].executor_ids
+
+        
         memory_items = MemoryFactory.instance().get_last_n(100, filters={
-            "agent_id": self.swarm.cur_agent[0].id(),
+            "agent_id": root.id(),
             "session_id": self.context.session_id,
             "task_id": self.context.task_id,
             "include_summaried": True
-        }, agent_memory_config=self.swarm.cur_agent[0].memory_config)
+        }, agent_memory_config=root.memory_config)
 
         # Convert memory items to OpenAI message format
         result = {}
