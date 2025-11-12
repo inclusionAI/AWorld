@@ -31,12 +31,11 @@ class FlightJudgeLLMScorer(LLMAsJudgeScorer):
     def build_pic_data(self, input: EvalDataCase[EvalCaseDataType]):
         screenshot_dir = "./logs/screen_shot/" + input.run_id + "_task#1"
         latest_screenshot = get_latest_file_os(screenshot_dir)
-        
-        # If screenshot doesn't exist, return data without image
+
         if latest_screenshot is None:
-            return []
-        
-        image_base64 = encode_image(latest_screenshot)
+            image_base64 = ""
+        else:
+            image_base64 = encode_image(latest_screenshot)
 
         return [
             {
@@ -70,13 +69,13 @@ Please output in the following standard JSON format without any additional expla
 
 Here is the task: {task}
 """
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": "data:image/png;base64," + image_base64
+                }
             }
-            # {
-            #     "type": "image_url",
-            #     "image_url": {
-            #         "url": "data:image/png;base64," + image_base64
-            #     }
-            # }
         ]
 
     def build_judge_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
@@ -109,17 +108,9 @@ Here is the task: {task}
         """
         pic_data = self.build_pic_data(input)
         pic_data[0]['text'] = pic_data[0]['text'].format(task=judge_data)
-
-        messages = {
-            "role": "system",
-            "content": "You are a judge model that evaluates the quality of the response."
-        },
-        {
-            "role": "user",
-            "content": pic_data
-        }
-
-        return TaskInput(messages=messages,
+        return pic_data
+        return TaskInput(stream=False,
+                  messages=pic_data,
                   user_id=f"test_user",
                   session_id="123",
                   task_id="234",

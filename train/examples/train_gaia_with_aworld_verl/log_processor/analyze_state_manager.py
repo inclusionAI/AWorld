@@ -60,36 +60,13 @@ def _assign_y_positions(nodes: List[Dict], min_time: float) -> Dict[str, int]:
         start_time = node_info['start_time']
         end_time = node_info['end_time']
         duration = end_time - start_time
-        current_interval = (start_time, end_time)
         
-        # 从最底层（y=0）开始查找可以放置的层
-        layer_idx = None
-        for idx, layer_nodes in enumerate(occupied_layers):
-            # 检查该层上是否有节点与当前节点重叠
-            has_overlap = False
-            for other_node_id, other_start, other_end, other_duration in layer_nodes:
-                other_interval = (other_start, other_end)
-                # 如果时间完全相同，可以放在同一层
-                if start_time == other_start and end_time == other_end:
-                    continue
-                # 检查是否有交集（真正重叠）
-                if _check_overlap(current_interval, other_interval):
-                    has_overlap = True
-                    break
-            
-            # 如果该层上没有重叠的节点，可以放置在这里
-            if not has_overlap:
-                layer_idx = idx
-                break
-        
-        # 如果没有找到可用的层，创建新层
-        if layer_idx is None:
-            layer_idx = len(occupied_layers)
+        # 直接放在最底层（y=0）
+        y_positions[node_id] = 0
+        # 如果最底层还没有初始化，初始化它
+        if len(occupied_layers) == 0:
             occupied_layers.append([])
-        
-        # 将节点放置在该层
-        y_positions[node_id] = layer_idx
-        occupied_layers[layer_idx].append((node_id, start_time, end_time, duration))
+        occupied_layers[0].append((node_id, start_time, end_time, duration))
     
     # 第二步：处理其他节点，在已有层的基础上进行堆叠
     for node_info in other_nodes:
