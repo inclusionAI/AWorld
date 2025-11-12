@@ -82,7 +82,7 @@ Here is the task: {task}
     def build_judge_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
         return ""
 
-    def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> [str, dict]:
+    def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> [str, TaskInput]:
         question_column = self.eval_config.eval_dataset_query_column or 'question'
         response_column = self.eval_config.eval_output_answer_column or 'answer'
         trajectory_list = [msg for key, msg in sorted(output.get('trajectory', {}).items())]
@@ -108,8 +108,23 @@ Here is the task: {task}
         [Final Answer]: {output.get(response_column, '')}
         """
         pic_data = self.build_pic_data(input)
-
         pic_data[0]['text'] = pic_data[0]['text'].format(task=judge_data)
+
+        messages = {
+            "role": "system",
+            "content": "You are a judge model that evaluates the quality of the response."
+        },
+        {
+            "role": "user",
+            "content": pic_data
+        }
+
+        TaskInput(messages=messages,
+                  user_id=f"test_user",
+                  session_id="123",
+                  task_id="234",
+                  task_content="hello",
+                  origin_user_input="hello")
         return pic_data
 
     def convert_judge_response_to_score(self, judge_response: str) -> Optional[dict[str, MetricResult]]:
