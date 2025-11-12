@@ -207,10 +207,10 @@ class DefaultMemoryHandler(DefaultHandler):
 
         # 如果 skip_summary 为 True，禁用 summary
         if skip_summary:
-            agent_memory_config['enable_summary'] = False
+            agent_memory_config.enable_summary = False
         await self.memory.add(ai_message, agent_memory_config=agent_memory_config)
         if skip_summary:
-            agent_memory_config['enable_summary'] = True
+            agent_memory_config.enable_summary = True
 
     async def add_human_input_to_memory(self, agent: Agent, content: Any, context: Context, memory_type="init"):
         """Add user input to memory"""
