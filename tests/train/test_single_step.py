@@ -8,7 +8,6 @@ from aworld.config import TaskConfig, TaskRunMode
 from aworld.runner import Runners
 from aworld.trace.server import get_trace_server
 import aworld.trace as trace
-from build.lib.aworld.output import observer
 import examples.common.tools
 from aworld.logs.util import logger
 
