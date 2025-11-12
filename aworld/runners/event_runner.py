@@ -184,6 +184,7 @@ class TaskEventRunner(TaskRunner):
 
                 results.append(message)
                 t = asyncio.create_task(self._raw_task(results))
+                # This creates a strong reference, see https://docs.python.org/3/library/asyncio-task.html#id4
                 self.background_tasks.add(t)
                 t.add_done_callback(partial(self._task_done_callback, message=message))
                 await asyncio.sleep(0)
@@ -191,6 +192,8 @@ class TaskEventRunner(TaskRunner):
             return results
 
     def _task_done_callback(self, task, message: Message, group: dict = None):
+        # To prevent keeping references to finished tasks forever, make each task remove its own reference
+        # from the set after completion, see https://docs.python.org/3/library/asyncio-task.html#id4
         self.background_tasks.discard(task)
         if not group:
             self.state_manager.end_message_node(message)
