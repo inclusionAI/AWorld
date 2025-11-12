@@ -139,11 +139,64 @@ Response: "skill browser activated, current skills: ['pdf', 'browser']..."
 
 > **Note**: Skill names are case-sensitive. Use lowercase names like `"pdf"`, `"browser"`, `"planning"` when activating.
 
+
 ## How It Works
 
 ### Step 1: Define Skills
 
-AWorld supports two types of skills:
+Here is the beginner-friendly way to think about skills: first decide **where the skill description lives**, then fill in **what the skill can do**.
+
+#### 1. Pick a declaration method
+
+Both options end up producing a `skill_configs` dictionary, so choose the one that feels easier for you.
+
+- **Inline Python configuration** – great for quick experiments or short usage tips.
+  ```python
+  from aworld.config import AgentConfig, ModelConfig
+
+  TEXT_SKILLS = {
+      "planning": {
+          "name": "Planning",
+          "desc": "Task planning and tracking capability",
+          "usage": "Use to create todos and track progress.",
+          "tool_list": {"amnicontext-server": ["add_todo", "get_todo"]},
+          "active": True,
+      }
+  }
+
+  agent_conf = AgentConfig(
+      llm_config=ModelConfig(...),
+      skill_configs=TEXT_SKILLS,
+  )
+  ```
+
+- **Markdown-based skills** – ideal when you want richer, well-formatted guidance. Each skill lives in `examples/skill_agent/skills/**/skill.md`.
+  ```markdown
+  ---
+  name: hypercode_forge
+  description: HyperCode Forge - competitive compression engine for MCP workflows
+  tool_list: {"terminal-server": ["execute_command"], "filesystem-server": ["write_file", "read_file"]}
+  active: True
+  ---
+
+  ## Usage
+  1. Batch MCP calls into a Python script.
+  2. Execute inside the sandbox to avoid repetitive LLM/tool loops.
+  ```
+
+  ```python
+  from pathlib import Path
+  from aworld.utils.skill_loader import collect_skill_docs
+
+  CUSTOM_SKILLS = collect_skill_docs(Path(__file__).resolve().parents[1] / "skills")
+  agent_conf = AgentConfig(..., skill_configs=CUSTOM_SKILLS)
+  ```
+
+- **Hybrid approach** – simply merge dictionaries from different sources. Example: `skill_configs = PLANNING_SKILLS | CUSTOM_SKILLS | DOCUMENT_SKILLS`.
+
+#### 2. Fill the skill content
+
+AWorld supports two major content patterns:
 
 #### Type A: Text-Based Skills (Pure Knowledge)
 
@@ -386,6 +439,49 @@ agent2 = Agent(name="coder", skill_configs={**shared_skills, "coding": {...}})
 - [Anthropic Agent Skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills)
 - [Multi-Agent Examples](../multi_agents/)
 
+## HyperCode Forge Skill
+
+
+### 🎯 What is HyperCode Forge?
+
+HyperCode Forge is a pattern for optimizing MCP tool usage: **combine multiple MCP tool calls into a single Python script and complete them in one shot within the code execution environment**.
+
+
+### 💡 Core Idea
+
+Traditional approach (Direct Tool Calls):
+```
+LLM → Tool Call 1 → Result 1 → LLM → Tool Call 2 → Result 2 → LLM → ...
+```
+- ❌ Every tool invocation must pass through the LLM
+- ❌ Intermediate results consume a large number of context tokens
+- ❌ High round-trip latency and low efficiency
+
+Code Mode approach:
+```
+LLM → Generate Python code → Execution environment completes all tool calls in one run → Return the final result
+```
+- ✅ Only one LLM interaction needed
+- ✅ Intermediate results are handled in the execution environment, consuming no context
+- ✅ Loops, conditionals, and other programming constructs are available
+- ✅ Token usage drops by 98.7% (per Anthropic case study)
+
+
+### Example
+
+Query: 
+> “By December 31, 2024, how big is the spread between the highest and lowest Shanghai Gold Exchange Au(T+D) prices?”
+
+The agent enabled the `hypercode_forge` skill, first inspected the page DOM to understand the table layout and pagination logic, then generated a single Python script and finished the scrape in one run. Compared with step-by-step tool calls, the script reduced token usage by **≈75.9%**, cut conversation turns by **≈71.4%**, and saved **≈16 minutes** end-to-end—showing that the pattern boosts efficiency while remaining generalizable across similar data-extraction tasks.
+
+![](../../readme_assets/skill_hyper_code.png)
+One script, one execution, answer delivered. That is the HyperCode Forge advantage.
+Our finding: harnessing the pattern requires MCP servers with general-purpose capabilities; relying only on AWorld-internal MCP calls currently limits quality, so broader tools or reusable scripts—TypeScript support is on our roadmap—unlock far better outcomes.
+
+### Acknowledgements
+
+https://www.anthropic.com/engineering/code-execution-with-mcp
+https://blog.cloudflare.com/code-mode/
 ---
 
 **Built with 🚀 by the AWorld Team**
