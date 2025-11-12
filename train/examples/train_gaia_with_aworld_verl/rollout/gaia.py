@@ -25,7 +25,7 @@ from train.examples.train_gaia_with_aworld_verl.rollout.summary_prompts import (
 )
 
 GAIA_SYSTEM_PROMPT = os.getenv("GAIA_SYSTEM_PROMPT")
-logger.info("GAIA_SYSTEM_PROMPT", GAIA_SYSTEM_PROMPT)
+# logger.info("GAIA_SYSTEM_PROMPT", GAIA_SYSTEM_PROMPT)
 
 def is_summary():
     return os.getenv("GAIA_AGENT_CONTEXT", 'common') == 'amni'
@@ -116,7 +116,7 @@ async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, sess
     # 4. build swarm
     if isinstance(target, Swarm):
         swarm = target
-        Task(
+        return Task(
             id=context.task_id,
             user_id=context.user_id,
             session_id=context.session_id,
