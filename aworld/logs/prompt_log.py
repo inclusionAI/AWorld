@@ -136,7 +136,7 @@ class PromptLogger:
             f"│ 🤖 Context ID: {str(id(context)) + '|' + context.task_id + '|' + agent.id() + '|' + str(ts):<{BORDER_WIDTH - 12}}  │")
         prompt_logger.info(f"│ 🤖 Agent ID: {agent.id():<{BORDER_WIDTH - 12}} │")
         prompt_logger.info(f"│ 📋 Task ID:  {context.task_id:<{BORDER_WIDTH - 12}} │")
-        prompt_logger.info(f"│ 📝 Task Input: {context.task_input:<{BORDER_WIDTH - 13}} │")
+        prompt_logger.info(f"│ 📝 Task Input: {str(context.task_input):<{BORDER_WIDTH - 13}} │")
         prompt_logger.info(f"│ 👨🏻 User ID:  {getattr(context, 'id', ''):<{BORDER_WIDTH - 12}} │")
         prompt_logger.info(f"│ 💬 Session ID:  {context.session_id:<{BORDER_WIDTH - 14}} │")
         prompt_logger.info(
