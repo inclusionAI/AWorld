@@ -119,13 +119,12 @@ Here is the task: {task}
             "content": pic_data
         }
 
-        TaskInput(messages=messages,
+        return TaskInput(messages=messages,
                   user_id=f"test_user",
                   session_id="123",
                   task_id="234",
                   task_content="hello",
                   origin_user_input="hello")
-        return pic_data
 
     def convert_judge_response_to_score(self, judge_response: str) -> Optional[dict[str, MetricResult]]:
         json_output = self.fetch_json_from_result(judge_response)
