@@ -1,0 +1,1 @@
+gaia_playwright_mcp_servers = ["gaia-playwright-mcp"]

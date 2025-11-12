@@ -1,0 +1,236 @@
+hydra:
+  run:
+    dir: outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
+  launcher:
+    _target_: hydra._internal.core_plugins.basic_launcher.BasicLauncher
+  sweeper:
+    _target_: hydra._internal.core_plugins.basic_sweeper.BasicSweeper
+    max_batch_size: null
+    params: null
+  help:
+    app_name: ${hydra.job.name}
+    header: '${hydra.help.app_name} is powered by Hydra.
+
+      '
+    footer: 'Powered by Hydra (https://hydra.cc)
+
+      Use --hydra-help to view Hydra specific help
+
+      '
+    template: '${hydra.help.header}
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (group=option)
+
+
+      $APP_CONFIG_GROUPS
+
+
+      == Config ==
+
+      Override anything in the config (foo.bar=value)
+
+
+      $CONFIG
+
+
+      ${hydra.help.footer}
+
+      '
+  hydra_help:
+    template: 'Hydra (${hydra.runtime.version})
+
+      See https://hydra.cc for more info.
+
+
+      == Flags ==
+
+      $FLAGS_HELP
+
+
+      == Configuration groups ==
+
+      Compose your configuration from those groups (For example, append hydra/job_logging=disabled
+      to command line)
+
+
+      $HYDRA_CONFIG_GROUPS
+
+
+      Use ''--cfg hydra'' to Show the Hydra config.
+
+      '
+    hydra_help: ???
+  hydra_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][HYDRA] %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+    root:
+      level: INFO
+      handlers:
+      - console
+    loggers:
+      logging_example:
+        level: DEBUG
+    disable_existing_loggers: false
+  job_logging:
+    version: 1
+    formatters:
+      simple:
+        format: '[%(asctime)s][%(name)s][%(levelname)s] - %(message)s'
+    handlers:
+      console:
+        class: logging.StreamHandler
+        formatter: simple
+        stream: ext://sys.stdout
+      file:
+        class: logging.FileHandler
+        formatter: simple
+        filename: ${hydra.runtime.output_dir}/${hydra.job.name}.log
+    root:
+      level: INFO
+      handlers:
+      - console
+      - file
+    disable_existing_loggers: false
+  env: {}
+  mode: RUN
+  searchpath: []
+  callbacks: {}
+  output_subdir: .hydra
+  overrides:
+    hydra:
+    - hydra.mode=RUN
+    task:
+    - algorithm.adv_estimator=grpo
+    - algorithm.use_kl_in_reward=false
+    - algorithm.kl_ctrl.kl_coef=0.0
+    - data.train_files=['/ossfs/workspace/aworld/rlhf/verl/data/simple_dataset_only20.parquet']
+    - data.val_files=['/ossfs/workspace/aworld/rlhf/verl/data/simple_dataset_only20.parquet']
+    - data.return_raw_chat=true
+    - data.train_batch_size=1
+    - data.max_prompt_length=65536
+    - data.max_response_length=65536
+    - data.filter_overlong_prompts=true
+    - data.truncation=error
+    - actor_rollout_ref.model.path=/agent/share/public/yingyu/aworld_sft_yingyu_182
+    - actor_rollout_ref.model.use_remove_padding=true
+    - actor_rollout_ref.model.enable_gradient_checkpointing=true
+    - actor_rollout_ref.model.use_fused_kernels=true
+    - actor_rollout_ref.actor.use_kl_loss=false
+    - actor_rollout_ref.actor.kl_loss_coef=0.0
+    - actor_rollout_ref.actor.clip_ratio_low=0.2
+    - actor_rollout_ref.actor.clip_ratio_high=0.28
+    - actor_rollout_ref.actor.clip_ratio_c=10.0
+    - actor_rollout_ref.actor.optim.lr=1e-6
+    - actor_rollout_ref.actor.use_dynamic_bsz=false
+    - actor_rollout_ref.actor.ppo_mini_batch_size=1
+    - actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1
+    - actor_rollout_ref.actor.ppo_max_token_len_per_gpu=131072
+    - actor_rollout_ref.actor.ulysses_sequence_parallel_size=8
+    - actor_rollout_ref.actor.strategy=fsdp2
+    - actor_rollout_ref.actor.fsdp_config.model_dtype=bf16
+    - actor_rollout_ref.actor.fsdp_config.param_offload=true
+    - actor_rollout_ref.actor.fsdp_config.optimizer_offload=true
+    - actor_rollout_ref.actor.fsdp_config.fsdp_size=-1
+    - actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=131072
+    - actor_rollout_ref.rollout.name=vllm
+    - actor_rollout_ref.rollout.mode=async
+    - actor_rollout_ref.rollout.max_num_batched_tokens=32768
+    - actor_rollout_ref.rollout.tensor_model_parallel_size=8
+    - actor_rollout_ref.rollout.enforce_eager=true
+    - actor_rollout_ref.rollout.free_cache_engine=true
+    - actor_rollout_ref.rollout.temperature=1.0
+    - actor_rollout_ref.rollout.top_p=1.0
+    - actor_rollout_ref.rollout.top_k=80
+    - actor_rollout_ref.rollout.dtype=bfloat16
+    - actor_rollout_ref.rollout.multi_turn.enable=false
+    - actor_rollout_ref.rollout.multi_turn.max_user_turns=8
+    - actor_rollout_ref.rollout.multi_turn.max_assistant_turns=8
+    - actor_rollout_ref.rollout.multi_turn.tool_config_path=/ossfs/workspace/aworld/AWorld/train/examples/train_gaia_with_aworld_verl/dummy_tool_config.yaml
+    - actor_rollout_ref.rollout.multi_turn.format=hermes
+    - actor_rollout_ref.rollout.agent.agent_loop_config_path=/ossfs/workspace/aworld/AWorld/train/examples/train_gaia_with_aworld_verl/agent.yaml
+    - actor_rollout_ref.rollout.gpu_memory_utilization=0.8
+    - actor_rollout_ref.rollout.max_num_seqs=8
+    - actor_rollout_ref.rollout.n=8
+    - actor_rollout_ref.rollout.val_kwargs.top_p=0.6
+    - actor_rollout_ref.rollout.val_kwargs.temperature=1.0
+    - actor_rollout_ref.rollout.val_kwargs.n=1
+    - actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1
+    - actor_rollout_ref.rollout.trace.backend=mlflow
+    - custom_reward_function.path=/ossfs/workspace/aworld/AWorld/train/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py
+    - custom_reward_function.name=gaia_reward_func
+    - trainer.logger=['console', 'mlflow']
+    - trainer.project_name=gaia
+    - trainer.experiment_name=qwen3_32b_sft_rl_1014
+    - trainer.n_gpus_per_node=8
+    - trainer.val_before_train=false
+    - trainer.log_val_generations=0
+    - trainer.nnodes=1
+    - trainer.save_freq=30
+    - trainer.default_local_dir=/ossfs/workspace/ckpt/gaia/qwen3_32b_sft_rl_1014
+    - trainer.test_freq=0
+    - trainer.total_epochs=1
+  job:
+    name: main_ppo
+    chdir: null
+    override_dirname: actor_rollout_ref.actor.clip_ratio_c=10.0,actor_rollout_ref.actor.clip_ratio_high=0.28,actor_rollout_ref.actor.clip_ratio_low=0.2,actor_rollout_ref.actor.fsdp_config.fsdp_size=-1,actor_rollout_ref.actor.fsdp_config.model_dtype=bf16,actor_rollout_ref.actor.fsdp_config.optimizer_offload=true,actor_rollout_ref.actor.fsdp_config.param_offload=true,actor_rollout_ref.actor.kl_loss_coef=0.0,actor_rollout_ref.actor.optim.lr=1e-6,actor_rollout_ref.actor.ppo_max_token_len_per_gpu=131072,actor_rollout_ref.actor.ppo_micro_batch_size_per_gpu=1,actor_rollout_ref.actor.ppo_mini_batch_size=1,actor_rollout_ref.actor.strategy=fsdp2,actor_rollout_ref.actor.ulysses_sequence_parallel_size=8,actor_rollout_ref.actor.use_dynamic_bsz=false,actor_rollout_ref.actor.use_kl_loss=false,actor_rollout_ref.model.enable_gradient_checkpointing=true,actor_rollout_ref.model.path=/agent/share/public/yingyu/aworld_sft_yingyu_182,actor_rollout_ref.model.use_fused_kernels=true,actor_rollout_ref.model.use_remove_padding=true,actor_rollout_ref.ref.log_prob_max_token_len_per_gpu=131072,actor_rollout_ref.rollout.agent.agent_loop_config_path=/ossfs/workspace/aworld/AWorld/train/examples/train_gaia_with_aworld_verl/agent.yaml,actor_rollout_ref.rollout.dtype=bfloat16,actor_rollout_ref.rollout.enforce_eager=true,actor_rollout_ref.rollout.free_cache_engine=true,actor_rollout_ref.rollout.gpu_memory_utilization=0.8,actor_rollout_ref.rollout.log_prob_micro_batch_size_per_gpu=1,actor_rollout_ref.rollout.max_num_batched_tokens=32768,actor_rollout_ref.rollout.max_num_seqs=8,actor_rollout_ref.rollout.mode=async,actor_rollout_ref.rollout.multi_turn.enable=false,actor_rollout_ref.rollout.multi_turn.format=hermes,actor_rollout_ref.rollout.multi_turn.max_assistant_turns=8,actor_rollout_ref.rollout.multi_turn.max_user_turns=8,actor_rollout_ref.rollout.multi_turn.tool_config_path=/ossfs/workspace/aworld/AWorld/train/examples/train_gaia_with_aworld_verl/dummy_tool_config.yaml,actor_rollout_ref.rollout.n=8,actor_rollout_ref.rollout.name=vllm,actor_rollout_ref.rollout.temperature=1.0,actor_rollout_ref.rollout.tensor_model_parallel_size=8,actor_rollout_ref.rollout.top_k=80,actor_rollout_ref.rollout.top_p=1.0,actor_rollout_ref.rollout.trace.backend=mlflow,actor_rollout_ref.rollout.val_kwargs.n=1,actor_rollout_ref.rollout.val_kwargs.temperature=1.0,actor_rollout_ref.rollout.val_kwargs.top_p=0.6,algorithm.adv_estimator=grpo,algorithm.kl_ctrl.kl_coef=0.0,algorithm.use_kl_in_reward=false,custom_reward_function.name=gaia_reward_func,custom_reward_function.path=/ossfs/workspace/aworld/AWorld/train/examples/train_gaia_with_aworld_verl/metrics/gaia_reward_function.py,data.filter_overlong_prompts=true,data.max_prompt_length=65536,data.max_response_length=65536,data.return_raw_chat=true,data.train_batch_size=1,data.train_files=['/ossfs/workspace/aworld/rlhf/verl/data/simple_dataset_only20.parquet'],data.truncation=error,data.val_files=['/ossfs/workspace/aworld/rlhf/verl/data/simple_dataset_only20.parquet'],trainer.default_local_dir=/ossfs/workspace/ckpt/gaia/qwen3_32b_sft_rl_1014,trainer.experiment_name=qwen3_32b_sft_rl_1014,trainer.log_val_generations=0,trainer.logger=['console',
+      'mlflow'],trainer.n_gpus_per_node=8,trainer.nnodes=1,trainer.project_name=gaia,trainer.save_freq=30,trainer.test_freq=0,trainer.total_epochs=1,trainer.val_before_train=false
+    id: ???
+    num: ???
+    config_name: ppo_trainer
+    env_set: {}
+    env_copy: []
+    config:
+      override_dirname:
+        kv_sep: '='
+        item_sep: ','
+        exclude_keys: []
+  runtime:
+    version: 1.3.2
+    version_base: '1.3'
+    cwd: /Users/xiezhitian/Codes/PycharmProjects/AWorld_for_test/AWorld/train/examples/train_gaia_with_aworld_verl
+    config_sources:
+    - path: hydra.conf
+      schema: pkg
+      provider: hydra
+    - path: /Users/xiezhitian/Codes/PycharmProjects/AWorld_for_test/AWorld/.conda_envs/aworld_fight_for_test/lib/python3.11/site-packages/verl/trainer/config
+      schema: file
+      provider: main
+    - path: ''
+      schema: structured
+      provider: schema
+    output_dir: /Users/xiezhitian/Codes/PycharmProjects/AWorld_for_test/AWorld/train/examples/train_gaia_with_aworld_verl/outputs/2025-11-11/18-26-23
+    choices:
+      reward_model: dp_reward_model
+      critic: dp_critic
+      critic/../engine@critic.model.fsdp_config: fsdp
+      critic/../optim@critic.optim: fsdp
+      model@actor_rollout_ref.model: hf_model
+      rollout@actor_rollout_ref.rollout: rollout
+      ref@actor_rollout_ref.ref: dp_ref
+      ref/../engine@actor_rollout_ref.ref.fsdp_config: fsdp
+      data: legacy_data
+      actor@actor_rollout_ref.actor: dp_actor
+      actor/../engine@actor_rollout_ref.actor.fsdp_config: fsdp
+      actor/../optim@actor_rollout_ref.actor.optim: fsdp
+      hydra/env: default
+      hydra/callbacks: null
+      hydra/job_logging: default
+      hydra/hydra_logging: default
+      hydra/hydra_help: default
+      hydra/help: default
+      hydra/sweeper: basic
+      hydra/launcher: basic
+      hydra/output: default
+  verbose: false

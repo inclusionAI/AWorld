@@ -2,8 +2,16 @@ import logging
 import os
 import traceback
 from datetime import datetime
+from typing import Optional
 
-from aworld.core.agent.swarm import Swarm
+from aworld.config.conf import AgentConfig, ModelConfig
+from train.examples.train_gaia_with_aworld_verl.rollout.playwright_zhitian.executor_agent_shell import GaiaPlayWrightAgent
+from train.examples.train_gaia_with_aworld_verl.rollout.playwright_zhitian.flight_plan_agent import FlightPlanAgent
+from train.examples.train_gaia_with_aworld_verl.rollout.playwright_zhitian.mcp.gaia_playwright_mcp_config import gaia_playwright_mcp_config
+from train.examples.train_gaia_with_aworld_verl.rollout.playwright_zhitian.mcp.gaia_playwright_mcp_servers import gaia_playwright_mcp_servers
+from train.examples.train_gaia_with_aworld_verl.rollout.playwright_zhitian.prompt.flight_plan_prompt import get_flight_plan_agent_system_prompt
+from train.examples.train_gaia_with_aworld_verl.rollout.playwright_zhitian.prompt.gaia_playwright_prompt import get_gaia_playwright_agent_system_prompt
+from aworld.core.agent.swarm import Swarm, TeamSwarm
 from aworld.core.task import TaskResponse, Task
 from aworld.evaluations.base import EvalTarget, EvalDataCase
 from aworld.runner import Runners
@@ -11,6 +19,7 @@ from aworld.runners.state_manager import RuntimeStateManager
 from train.examples.train_gaia_with_aworld_verl.env import build_mcp_config
 from train.examples.train_gaia_with_aworld_verl.log_processor.pyspy_context import pyspy_profile
 from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent, build_gaia_task
+from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig
 
 logging.basicConfig(level=logging.INFO, force=True, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -31,7 +40,7 @@ eval_digest_logger.setLevel(level=logging.INFO)
 eval_digest_logger.addHandler(file_handler)
 
 
-class ParallelGaiaEvalTarget(EvalTarget[dict]):
+class ParallelFlightEvalTarget(EvalTarget[dict]):
 
     def __init__(
             self
@@ -42,19 +51,77 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
         if 'screen_shot' in os.getenv("ENV_PLUGINS", ""):
             from ..env.hooks import PostLLMCallRolloutHook, PostToolCallRolloutHook
 
-        agent = build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
-                                       llm_base_url=os.getenv("LLM_BASE_URL"),
-                                       llm_api_key=os.getenv("LLM_API_KEY"),
-                                       mcp_config=await build_mcp_config())
-        return await build_gaia_task(user_input=user_input, target=agent, timeout=1200)
+        # agent = build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
+        #                                llm_base_url=os.getenv("LLM_BASE_URL"),
+        #                                llm_api_key=os.getenv("LLM_API_KEY"),
+        #                                mcp_config=await build_mcp_config())
+        a = await self._build_swarm()
+        return await build_gaia_task(user_input=user_input, target=a, timeout=1200)
 
+    async def _build_swarm(self) -> Optional[Swarm]:
+        init_middlewares()
+        agent_config_plan = AgentConfig(
+            llm_config=ModelConfig(
+                llm_model_name=os.getenv("FLIGHT_PLAN_AGENT_LLM_MODEL_NAME"),
+                llm_base_url=os.getenv("FLIGHT_PLAN_AGENT_LLM_MODEL_URL"),
+                llm_api_key=os.getenv("FLIGHT_PLAN_AGENT_LLM_MODEL_API_KEY"),
+            ),
+            # memory_config=AgentMemoryConfig(history_rounds=4),
+            use_vision=False
+        )
+
+        agent_config_execute = AgentConfig(
+            llm_config=ModelConfig(
+                llm_model_name=os.getenv("FLIGHT_EXECUTOR_AGENT_LLM_MODEL_NAME"),
+                llm_base_url=os.getenv("FLIGHT_EXECUTOR_AGENT_LLM_MODEL_URL"),
+                llm_api_key=os.getenv("FLIGHT_EXECUTOR_AGENT_LLM_MODEL_API_KEY"),
+            ),
+            # memory_config=AgentMemoryConfig(history_rounds=4),
+            use_vision=False
+        )
+
+        plan_agent = FlightPlanAgent(
+            conf=agent_config_plan,
+            name="plan_agent",
+            system_prompt=get_flight_plan_agent_system_prompt(),
+            mcp_servers=gaia_playwright_mcp_servers,
+            mcp_config=gaia_playwright_mcp_config
+
+        )
+
+        a = get_flight_plan_agent_system_prompt()
+        print('planner_system_prompt ', a)
+
+        execute_agent = GaiaPlayWrightAgent(
+            conf=agent_config_execute,
+            name="exec_agent",
+            agent_id = "flight_search_agent",
+            system_prompt=get_gaia_playwright_agent_system_prompt(),
+            mcp_servers=gaia_playwright_mcp_servers,
+            mcp_config=gaia_playwright_mcp_config
+        )
+        return TeamSwarm(plan_agent, execute_agent, max_steps=100)
 
     async def predict(self, index: int, o_input: EvalDataCase[dict]) -> dict:
         batch_id = o_input.run_id
-        input = o_input.case_data
-        session_id = f"{batch_id}_session#{input['id']}"
-        task_id = f"{batch_id}_task#{input['id']}"
-        task = await self.build_common_gaia_task(user_input=input['prompt'], session_id=session_id, task_id=task_id)
+        case_data = o_input.case_data or {}
+
+        # Some CSV exports may include a UTF-8 BOM in the header, leading to '\ufeffid'
+        case_id = (
+            case_data.get('id')
+            or case_data.get('\ufeffid')
+            or case_data.get('case_id')
+            or case_data.get('sample_id')
+            or f"case_{index}"
+        )
+
+        prompt = case_data.get('prompt') or case_data.get('\ufeffprompt')
+        if prompt is None:
+            raise KeyError("prompt")
+
+        session_id = f"{batch_id}_session#{case_id}"
+        task_id = f"{batch_id}_task#{case_id}"
+        task = await self.build_common_gaia_task(user_input=prompt, session_id=session_id, task_id=task_id)
         task_id = task.id
 
         try:
