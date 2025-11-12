@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 
 import abc
+import time
 import traceback
 from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
 
@@ -543,6 +544,13 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     session_id=context.session_id if context else "",
                     headers={"context": context}
                 )
+
+                # 如果开启了直接调用模式，直接调用 handler 而不通过消息系统
+                if hasattr(receive_agent, 'direct_memory_call') and receive_agent.direct_memory_call == True:
+                    from aworld.runners.handler.memory import DefaultMemoryHandler
+                    await DefaultMemoryHandler.handle_memory_message_directly(memory_msg, context)
+                    return
+                # 默认通过消息系统发送
                 try:
                     future = await send_message_with_future(memory_msg)
                     results = await future.wait(timeout=300)

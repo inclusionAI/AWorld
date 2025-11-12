@@ -159,6 +159,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  event_handler_name: str = None,
                  event_driven: bool = True,
                  skill_configs: Dict[str, Any] = None,
+                 direct_memory_call: bool = False,
                  **kwargs):
         """A api class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 
@@ -202,6 +203,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.use_tools_in_prompt = use_tools_in_prompt if use_tools_in_prompt else conf.use_tools_in_prompt
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
         self.event_handler_name = event_handler_name
+        self.direct_memory_call = direct_memory_call
 
     @property
     def llm(self):
@@ -517,7 +519,16 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         llm_call_start_time = datetime.now().isoformat()
         message.context.context_info["llm_call_start_time"] = llm_call_start_time
         try:
-            llm_response = await self.invoke_model(messages, message=message, **kwargs)
+            # time metrics
+            from aworld.runners.state_manager import RunNodeBusiType
+            from aworld.runners.utils import managed_runtime_node
+
+            async with managed_runtime_node(
+                    context=message.context,
+                    busi_type=RunNodeBusiType.LLM,
+                    busi_id=""
+            ):
+                llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
             logger.warn(traceback.format_exc())
             raise e
@@ -651,7 +662,17 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             observation: The state observed from the environment
             info: Extended information to assist the agent in decision-making
         """
-        await self.async_desc_transform(message.context)
+        from aworld.runners.state_manager import RunNodeBusiType
+        from aworld.runners.utils import managed_runtime_node
+        
+        async with managed_runtime_node(
+            context=message.context,
+            busi_type=RunNodeBusiType.INIT_TOOLS,
+            busi_id=""
+        ):
+            await self.async_desc_transform(message.context)
+
+
         # observation secondary processing
         observation = await self.init_observation(observation)
         images = observation.images if self.conf.use_vision else None
@@ -781,6 +802,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             memory_event_type=message_type,
             headers={"context": context, "skip_summary": skip_summary}
         )
+
+        # 如果开启了直接调用模式，直接调用 handler 而不通过消息系统
+        if self.direct_memory_call:
+            from aworld.runners.handler.memory import DefaultMemoryHandler
+            await DefaultMemoryHandler.handle_memory_message_directly(memory_msg, context)
+            return
+        
+        # 默认通过消息系统发送
         try:
             future = await send_message_with_future(memory_msg)
             results = await future.wait(timeout=300)

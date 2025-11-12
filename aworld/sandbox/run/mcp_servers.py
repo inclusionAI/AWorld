@@ -233,11 +233,21 @@ class McpServers:
 
                         await self.check_tool_params(context=context, server_name=server_name, tool_name=tool_name,
                                                      parameter=parameter)
-                        call_result_raw = await asyncio.wait_for(
-                            server.call_tool(tool_name=tool_name, arguments=parameter,
-                                           progress_callback=progress_callback),
-                            timeout=120
-                        )
+                        from aworld.runners.utils import managed_runtime_node
+                        from aworld.runners.state_manager import RunNodeBusiType
+                        async with managed_runtime_node(
+                            context=context,
+                            busi_type=RunNodeBusiType.REMOTE_TOOL_CALL,
+                            busi_id=result_key,
+                            session_id=session_id,
+                            task_id=task_id
+                        ):
+                            call_result_raw = await asyncio.wait_for(
+                                server.call_tool(tool_name=tool_name, arguments=parameter,
+                                               progress_callback=progress_callback),
+                                timeout=120
+                            )
+
                         break
                     except BaseException as e:
                         call_mcp_e = e

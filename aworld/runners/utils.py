@@ -1,6 +1,8 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import List, Dict
+from typing import List, Dict, Optional
+from contextlib import asynccontextmanager
+import uuid
 
 from aworld.config import RunConfig, EngineName, ConfigDict, TaskConfig
 from aworld.core.agent.swarm import GraphBuildType
@@ -152,4 +154,96 @@ async def long_wait_message_state(message: Message):
     else:
         logger.debug(f"long_wait_message_state|failed with node: {res_node}.")
         raise ValueError(f"long_wait_message_state|failed with node: {res_node}")
+
+
+@asynccontextmanager
+async def managed_runtime_node(
+    context,
+    busi_type,
+    busi_id: str = "",
+    session_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+    node_id: Optional[str] = None,
+    parent_node_id: Optional[str] = None,
+    msg_id: Optional[str] = None,
+    msg_from: Optional[str] = None,
+    group_id: Optional[str] = None,
+    sub_group_root_id: Optional[str] = None,
+    metadata: Optional[dict] = None
+):
+    """上下文管理器，用于创建、运行和管理运行时节点的状态。
+    
+    Args:
+        context: 消息上下文对象，包含session_id和task_id
+        busi_type: 业务类型 (RunNodeBusiType)
+        busi_id: 业务ID，默认为空字符串
+        session_id: 会话ID，如果提供则优先使用，否则从context获取
+        task_id: 任务ID，如果提供则优先使用，否则从context获取
+        node_id: 节点ID，如果不提供则自动生成UUID
+        parent_node_id: 父节点ID，用于建立节点层级关系
+        msg_id: 消息ID，关联的消息ID
+        msg_from: 消息发送者
+        group_id: 组ID
+        sub_group_root_id: 子组根节点ID
+        metadata: 元数据字典
+    
+    Yields:
+        node: 创建的RunNode对象，如果创建成功则返回，否则返回None
+    
+    Example:
+        async with managed_runtime_node(
+            context=message.context,
+            busi_type=RunNodeBusiType.LLM,
+            busi_id="",
+            parent_node_id=message.id,
+            msg_id=message.id
+        ) as node:
+            # 执行操作
+            result = await some_operation()
+            # 如果操作成功，上下文管理器会自动调用run_succeed
+            # 如果发生异常，会自动调用run_failed
+    """
+    from aworld.runners.state_manager import RuntimeStateManager
+    
+    state_manager = RuntimeStateManager.instance()
+    
+    # 获取session_id和task_id，优先使用传入的参数，否则从context获取
+    current_session_id = session_id
+    current_task_id = task_id
+    
+    if context:
+        if current_session_id is None and hasattr(context, 'session_id'):
+            current_session_id = context.session_id
+        if current_task_id is None and hasattr(context, 'task_id'):
+            current_task_id = context.task_id
+    
+    # 创建节点
+    node = state_manager.create_node(
+        node_id=node_id or str(uuid.uuid4()),
+        busi_type=busi_type,
+        busi_id=busi_id,
+        session_id=current_session_id or "",
+        task_id=current_task_id,
+        parent_node_id=parent_node_id,
+        msg_id=msg_id,
+        msg_from=msg_from,
+        group_id=group_id,
+        sub_group_root_id=sub_group_root_id,
+        metadata=metadata
+    )
+    
+    # 如果节点创建成功，开始运行
+    if node and hasattr(node, 'node_id'):
+        state_manager.run_node(node.node_id)
+    
+    try:
+        yield node
+        # 如果执行成功，标记为成功
+        if node and hasattr(node, 'node_id'):
+            state_manager.run_succeed(node.node_id)
+    except Exception:
+        # 如果发生异常，标记为失败
+        if node and hasattr(node, 'node_id'):
+            state_manager.run_failed(node.node_id)
+        raise
 

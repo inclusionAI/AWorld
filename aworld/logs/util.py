@@ -146,7 +146,7 @@ class AWorldLogger:
                             level=file_level,
                             rotation='32 MB',
                             retention='1 days',
-                            enqueue=True,
+                            enqueue=False,
                             backtrace=True,
                             compression='zip')
             AWorldLogger._added_handlers.add(handler_key)
@@ -160,7 +160,7 @@ class AWorldLogger:
                             level='WARNING',
                             rotation='32 MB',
                             retention='7 days',
-                            enqueue=True,
+                            enqueue=False,
                             backtrace=True,
                             compression='zip')
             AWorldLogger._added_handlers.add(error_handler_key)

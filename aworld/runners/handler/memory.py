@@ -1,5 +1,6 @@
 # aworld/runners/handler/output.py
 import json
+import time
 import traceback
 from datetime import datetime
 from typing import AsyncGenerator, Any
@@ -206,11 +207,11 @@ class DefaultMemoryHandler(DefaultHandler):
             agent_memory_config = context.get_config().get_agent_context_config(agent.id())
 
         # 如果 skip_summary 为 True，禁用 summary
-        if skip_summary:
-            agent_memory_config['enable_summary'] = False
+        if skip_summary and agent_memory_config:
+            agent_memory_config.enable_summary = False
         await self.memory.add(ai_message, agent_memory_config=agent_memory_config)
-        if skip_summary:
-            agent_memory_config['enable_summary'] = True
+        if skip_summary and agent_memory_config:
+            agent_memory_config.enable_summary = True
 
     async def add_human_input_to_memory(self, agent: Agent, content: Any, context: Context, memory_type="init"):
         """Add user input to memory"""
@@ -309,3 +310,38 @@ class DefaultMemoryHandler(DefaultHandler):
     def _is_amni_context(self, context: Context):
         from aworld.core.context.amni import AmniContext
         return isinstance(context, AmniContext)
+
+    @staticmethod
+    async def handle_memory_message_directly(memory_msg: MemoryEventMessage, context: Context):
+        """直接处理内存消息，不通过消息系统
+        
+        Args:
+            memory_msg: 内存事件消息
+            context: 上下文对象
+        """
+        from aworld.runners.state_manager import RunNodeBusiType
+        from aworld.runners.utils import managed_runtime_node
+        
+        try:
+            # 创建一个简单的 runner 对象，只需要有 task 属性
+            class SimpleRunner:
+                def __init__(self, task):
+                    self.task = task
+                    self.start_time = 0
+            
+            task = context.get_task()
+            simple_runner = SimpleRunner(task)
+            handler = DefaultMemoryHandler(simple_runner)
+            start_time = time.time()
+            # 使用 managed_runtime_node 创建并管理 MEMORY 类型的 node
+            async with managed_runtime_node(
+                context=context,
+                busi_type=RunNodeBusiType.MEMORY,
+                busi_id=memory_msg.receiver or ""
+            ):
+                # 直接调用 _do_handle 方法
+                async for _ in handler._do_handle(memory_msg):
+                    pass  # _do_handle 是异步生成器，需要消费
+            logger.info(f"Direct memory call completed in {1000*(time.time() - start_time):.2f}ms {memory_msg}")
+        except Exception as e:
+            logger.warn(f"Direct memory call failed: {traceback.format_exc()}")
