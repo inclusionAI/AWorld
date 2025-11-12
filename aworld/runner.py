@@ -3,7 +3,7 @@
 import asyncio
 from typing import List, Dict, Union, AsyncGenerator, Tuple, Any
 
-from aworld.config import RunConfig, EvaluationConfig
+from aworld.config import RunConfig, EvaluationConfig, TaskRunMode
 from aworld.config.conf import TaskConfig
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
@@ -77,7 +77,7 @@ class Runners:
             task: Task to execute.
             streaming_mode: Streaming mode.
             run_conf: Runtime configuration.
-            
+
         Yields:
             Message objects from the streaming queue.
         """
@@ -183,3 +183,17 @@ class Runners:
         """Utility function for start an agent server."""
         agent_server = AgentServer(agent, serving_config)
         return await agent_server.start()
+
+    @staticmethod
+    async def step(task: Task, run_conf: RunConfig = None) -> Tuple[bool, str, TaskResponse]:
+        """Run a single step of the task."""
+        is_finished = True
+        observation = None
+        task.conf.run_mode = TaskRunMode.INTERACTIVAE
+        responses = await Runners.run_task(task, run_conf=run_conf)
+        resp = responses.get(task.id)
+        if resp.status == "running":
+            is_finished = False
+            observation = resp.answer
+            task.observation = observation
+        return is_finished, observation, resp
