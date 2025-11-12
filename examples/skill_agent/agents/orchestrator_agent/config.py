@@ -1,6 +1,9 @@
 import os
+from pathlib import Path
 
 from aworld.config import AgentConfig, ModelConfig
+from aworld.utils.skill_loader import collect_skill_docs
+
 
 BASIC_SKILLS = {
     "bash": {
@@ -9,13 +12,11 @@ BASIC_SKILLS = {
         "usage": "Automate bash tasks, manipulate files, and execute bash commands",
         "tool_list": {
             "terminal-server": ["execute_command"]
-        }
+        },
+        "active": True
     }
 }
 
-WEBSITE_SKILLS = {
-
-}
 
 DOCUMENT_SKILLS = {
     "excel": {
@@ -52,7 +53,8 @@ PLANNING_SKILLS = {
         "usage": "Create, manage and track todos to monitor task execution progress and organize work efficiently",
         "tool_list": {
             "amnicontext-server": ["add_todo", "get_todo"]
-        }
+        },
+        "active": True
     },
     "scratchpad": {
         "name": "Scratchpad",
@@ -61,7 +63,8 @@ PLANNING_SKILLS = {
         "tool_list": {
             "amnicontext-server": ["add_knowledge", "get_knowledge", "grep_knowledge", "list_knowledge_info",
                                    "update_knowledge"]
-        }
+        },
+        "active": True
     }
 }
 
@@ -72,35 +75,14 @@ BROWSER_SKILLS = {
         "usage": "Automate web browsing tasks, navigate websites, interact with web elements, and extract information from web pages",
         "tool_list": {
             "ms-playwright": []
-        }
+        },
+        "active": True
     }
 }
 
-TEXT_SKILLS = {
-    "arxiv_research": {
-        "name": "ArXiv Research Guide",
-        "desc": "Best practices for searching and analyzing academic papers",
-        "usage": """
-1. Use specific search terms from the paper's abstract or title
-2. Navigate to https://arxiv.org/search/?query=<keywords>&searchtype=all
-3. Filter by category (cs.AI, cs.CL, etc.) and date range
-4. Access PDF directly via https://arxiv.org/pdf/<paper_id>.pdf
-5. Check citations and related work for additional papers
-        """
-    },
+SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
-    "github_navigation": {
-        "name": "GitHub Navigation Guide",
-        "desc": "Efficient strategies for analyzing repositories",
-        "usage": """
-1. Start with README.md for project overview
-2. Check /docs or /documentation for detailed guides
-3. Review /examples for usage patterns
-4. Examine /tests for implementation details
-5. Check Issues and Discussions for common problems
-        """
-    }
-}
+CUSTOM_SKILLS = collect_skill_docs(SKILLS_DIR)
 
 orchestrator_agent_config = AgentConfig(
     llm_config=ModelConfig(
@@ -111,5 +93,6 @@ orchestrator_agent_config = AgentConfig(
         llm_base_url=os.environ.get("LLM_BASE_URL")
     ),
     use_vision=False,
-    skill_configs=BASIC_SKILLS | DOCUMENT_SKILLS | PLANNING_SKILLS | BROWSER_SKILLS | TEXT_SKILLS
+    skill_configs= PLANNING_SKILLS | CUSTOM_SKILLS
+    # skill_configs= PLANNING_SKILLS | BASIC_SKILLS | BROWSER_SKILLS
 )
