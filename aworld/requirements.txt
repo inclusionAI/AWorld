@@ -20,3 +20,4 @@ click
 packaging
 numpy
 langchain-text-splitters~=0.3.8
+json_repair

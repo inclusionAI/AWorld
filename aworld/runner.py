@@ -11,8 +11,6 @@ from aworld.core.common import Config, StreamingMode
 from aworld.core.event.base import Message
 from aworld.core.task import Task, TaskResponse
 from aworld.evaluations.base import EvalTask
-from aworld.experimental.a2a.agent_server import AgentServer
-from aworld.experimental.a2a.config import ServingConfig
 from aworld.logs.util import logger
 from aworld.output import StreamingOutputs
 from aworld.runners.evaluate_runner import EvaluateRunner
@@ -179,8 +177,10 @@ class Runners:
         return await execute_runner([runner], run_conf)
 
     @staticmethod
-    async def start_agent_server(agent: Union[Agent, Swarm], serving_config: ServingConfig):
+    async def start_agent_server(agent: Union[Agent, Swarm], serving_config):
         """Utility function for start an agent server."""
+        from aworld.experimental.a2a.agent_server import AgentServer
+
         agent_server = AgentServer(agent, serving_config)
         return await agent_server.start()
 
