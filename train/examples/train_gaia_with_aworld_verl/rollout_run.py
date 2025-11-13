@@ -100,22 +100,22 @@ async def batch_run():
         f.write(f"START: {datetime.fromtimestamp((int(result.create_time))).strftime('%Y%m%d %H%M%S')}\n")
         f.write(f"END: {datetime.now().strftime('%Y%m%d %H%M%S')}\n")
 
-        f.write(f"---------- SUMMARY --------------\n")
-        f.write(f"{result.summary.get('AnswerAccuracyLLMScorer')}\n\n")
+        f.write(f"---------- EVAL RESULT --------------\n")
+        f.write(f"{result.summary.get('FlightJudgeLLMScorer')}\n\n")
 
         f.write("---------- DETAIL -------------\n")
         for case_result in result.eval_case_results:
-            if not case_result.score_rows or not case_result.score_rows.get('AnswerAccuracyLLMScorer'):
+            if not case_result.score_rows or not case_result.score_rows.get('FlightJudgeLLMScorer'):
                 continue
-            answer_acc = case_result.score_rows.get('AnswerAccuracyLLMScorer').metric_results.get('answer_accuracy')
+            answer_acc = case_result.score_rows.get('FlightJudgeLLMScorer').metric_results.get('flight_judge')
             time_cost_scorer = case_result.score_rows.get('TimeCostScorer')
             cost_time = time_cost_scorer.metric_results.get('predict_time_cost_ms') if time_cost_scorer and time_cost_scorer.metric_results else None
 
             # resolve None
-            answer_status = answer_acc.get('eval_status') if answer_acc else 'N/A'
+            # answer_status = answer_acc.get('eval_status') if answer_acc else 'N/A'
             cost_time_value = int(cost_time.get('value')/1000) if cost_time and cost_time.get('value') else 0
 
-            f.write(f"{case_result.eval_case_id}|{case_result.input.case_data.get('id')}|{answer_status}|{cost_time_value}\n")
+            f.write(f"{case_result.eval_case_id}|{case_result.input.case_data.get('id')}|{answer_acc}|{cost_time_value}\n")
 
 
 if __name__ == '__main__':

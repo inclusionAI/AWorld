@@ -6,12 +6,15 @@ import uuid
 from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union, Iterable
+from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, TYPE_CHECKING, ClassVar
 
 import yaml
 from pydantic import BaseModel, Field
 
 from aworld.logs.util import logger
+
+if TYPE_CHECKING:
+    from aworld.dataset.trajectory_strategy import TrajectoryStrategy
 
 
 def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
@@ -107,6 +110,7 @@ class BaseConfig(BaseModel):
 
 
 class ModelConfig(BaseConfig):
+    model_config = ConfigDict(extra='allow')
     llm_provider: str = "openai"
     llm_model_name: str = None
     llm_temperature: float = 1.
@@ -240,14 +244,16 @@ class AgentConfig(BaseConfig):
 
 
 class TaskRunMode(Enum):
-    INTERACTIVAE = "INTERACTIVAE"
+    INTERACTIVE = "INTERACTIVE"
     ONE_WAY = "ONE_WAY"
 
 
 class TaskConfig(BaseConfig):
+    model_config = {"arbitrary_types_allowed": True}
     task_id: str = str(uuid.uuid4())
     task_name: str | None = None
     max_steps: int = 100
+    trajectory_strategy: Optional[Type['TrajectoryStrategy']] = None
     stream: bool = False
     resp_carry_context: bool = True
     resp_carry_raw_llm_resp: bool = False

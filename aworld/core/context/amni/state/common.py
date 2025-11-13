@@ -40,6 +40,7 @@ class OpenAIChatCompletionForm(BaseModel):
     stream: bool = True
     model: Optional[str] = Field(default=None)
     messages: Optional[list[OpenAIChatMessage]] = Field(default_factory=list)
+    metadata: dict = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="allow")
 
@@ -68,10 +69,10 @@ class TaskInput(OpenAIChatCompletionForm):
     task_id: str
 
     # Task input content
-    task_content: Union[Optional[str], list[OpenAIChatMessage]]
+    task_content: Union[Optional[str], list[dict]]
 
     # Original user input content
-    origin_user_input: Union[Optional[str], list[OpenAIChatMessage]]
+    origin_user_input: Union[Optional[str], list[dict]]
     model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
 
     @property

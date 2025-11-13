@@ -15,7 +15,7 @@ import traceback
 
 from functools import wraps
 from pathlib import Path
-from types import FunctionType
+from types import FunctionType, MethodType
 from typing import Callable, Any, Tuple, List, Iterator, Dict, Union
 
 from aworld.logs.util import logger
@@ -356,6 +356,27 @@ def get_local_hostname():
     except Exception:
         # Final fallback strategy
         return "localhost"
+
+
+def experimental(msg: Union[str, FunctionType, MethodType] = None):
+    """Experimental function decorator, triggers a warning when interface used as it may be adjusted in the future."""
+
+    def _decorator(func):
+        @wraps(func)
+        def _new_func(*args, **kwargs):
+            warn_msg = f"Call to experimental function {func.__name__}."
+            if isinstance(msg, str):
+                warn_msg += f"\n{msg}"
+
+            logger.warning(warn_msg)
+            return func(*args, **kwargs)
+
+        _new_func.__doc__ = None
+        return _new_func
+
+    if isinstance(msg, (FunctionType, MethodType)):
+        return _decorator(msg)
+    return _decorator
 
 
 def load_mcp_config():

@@ -98,10 +98,10 @@ class RetrieverFactory:
         retriever_config = RetrieverConfig(
             type=os.environ.get("AMNI_RAG_TYPE", "amni"),
             chunk_config=ChunkConfig(
-                provider=os.getenv("CHUNK_PROVIDER"),
+                provider=os.getenv("CHUNK_PROVIDER", "smart"),
                 chunk_size=int(os.getenv("CHUNK_SIZE", "512")),
                 chunk_overlap=int(os.getenv("CHUNK_OVERLAP", "200")),
-                chunk_separator=os.getenv("CHUNK_SEPARATOR"),
+                chunk_separator=os.getenv("CHUNK_SEPARATOR", "\n"),
             ),
             chunk_store_config=ChunkStoreConfig(
                 provider=os.getenv("CHUNK_STORE_TYPE", "sqlite"),
@@ -121,9 +121,9 @@ class RetrieverFactory:
             reranker_config=RerankConfig(
                 provider=os.getenv("RERANKER_PROVIDER", "http"),
                 config={
-                    "base_url": os.getenv("RERANKER_BASE_URL"),
-                    "api_key": os.getenv("RERANKER_API_KEY"),
-                    "model_name": os.getenv("RERANKER_MODEL_NAME"),
+                    "base_url": os.getenv("RERANKER_BASE_URL", ""),
+                    "api_key": os.getenv("RERANKER_API_KEY", ""),
+                    "model_name": os.getenv("RERANKER_MODEL_NAME", ""),
                 }
             )
         )

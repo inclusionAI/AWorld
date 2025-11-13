@@ -4,7 +4,7 @@ from typing import Optional, Any, Literal, Union, List, Dict
 
 from pydantic import BaseModel, Field
 
-from aworld.config import ConfigDict, AgentMemoryConfig
+from aworld.config import ConfigDict, AgentMemoryConfig, ModelConfig
 from aworld.memory.models import AgentExperience, LongTermMemoryTriggerParams, UserProfile, MemoryItem, Fact
 from aworld.models.llm import LLMModel, get_llm_model
 
@@ -450,7 +450,7 @@ class MemoryConfig(BaseModel):
     provider: Literal['aworld', 'mem0'] = 'aworld'
 
     # LLM settings
-    llm_config: Optional[MemoryLLMConfig] = Field(default=None, description="LLM config")
+    llm_config: Optional[ModelConfig] = Field(default=None, description="LLM config")
 
     # semantic search settings
     embedding_config: Optional[EmbeddingsConfig] = Field(default=None, description="embedding_config")
@@ -468,12 +468,7 @@ class MemoryConfig(BaseModel):
 
     def get_llm_instance(self) -> Union[LLMModel, 'ChatOpenAI']:
         if self.llm_config:
-            return get_llm_model(conf=ConfigDict({
-                "llm_model_name": self.llm_config.model_name,
-                "llm_api_key": self.llm_config.api_key,
-                "llm_base_url": self.llm_config.base_url,
-                "temperature": self.llm_config.temperature,
-            }))
+            return get_llm_model(self.llm_config)
         return None
 
     @property

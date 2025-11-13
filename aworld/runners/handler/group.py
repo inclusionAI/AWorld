@@ -292,11 +292,11 @@ class DefaultGroupHandler(GroupHandler):
         tasks = {}
         messages_ids = []
         for agent_name, acts in agent_messages.items():
-            for act in acts:
+            for idx, act in enumerate(acts):
                 agent_message = act[2]
                 messages_ids.append(agent_message.id)
-                tasks[agent_message.id] = exec_agent(act[0], act[1], self.context, sub_task=True, outputs=self.context.outputs)
-
+                tasks[agent_message.id] = exec_agent(act[0], act[1], self.context, sub_task=True,
+                                                     outputs=self.context.outputs)
         return messages_ids, tasks
 
     async def process_agent_tasks(self, agent_tasks, input_message):

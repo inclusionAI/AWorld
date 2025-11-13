@@ -23,14 +23,30 @@ def _check_overlap(interval1: Tuple[float, float], interval2: Tuple[float, float
 def _assign_y_positions(nodes: List[Dict], min_time: float) -> Dict[str, int]:
     """
     为节点分配y位置，处理时间重叠的情况
+    先将AGENT和TOOL类型的节点固定在最底层（y=0），然后其他节点再按堆叠逻辑处理
     只有当时间区间真正重叠（有交集）时才堆叠，时间完全相同的节点放在同一层
-    堆叠时，耗时长的节点放在下面（y值小），耗时短的节点放在上面（y值大）
     """
-    # 先按耗时从大到小排序，这样大节点会先分配，放在较低的层
-    sorted_nodes = sorted(nodes, key=lambda n: (
-        -(n['end_time'] - n['start_time']),  # 耗时从大到小（负号表示降序）
-        n['start_time'],  # 耗时相同时按开始时间排序
-        n.get('tree_depth', 0)
+    # 分离AGENT/TOOL节点和其他节点
+    agent_tool_nodes = []
+    other_nodes = []
+    
+    for node_info in nodes:
+        busi_type = node_info['node'].busi_type
+        if busi_type in ['AGENT', 'TOOL']:
+            agent_tool_nodes.append(node_info)
+        else:
+            other_nodes.append(node_info)
+    
+    # 对AGENT/TOOL节点按耗时从大到小排序
+    agent_tool_nodes.sort(key=lambda n: (
+        -(n['end_time'] - n['start_time']),  # 耗时从大到小
+        n['start_time']  # 耗时相同时按开始时间排序
+    ))
+    
+    # 对其他节点按耗时从大到小排序
+    other_nodes.sort(key=lambda n: (
+        -(n['end_time'] - n['start_time']),  # 耗时从大到小
+        n['start_time']  # 耗时相同时按开始时间排序
     ))
     
     # 为每个节点分配y位置
@@ -38,65 +54,49 @@ def _assign_y_positions(nodes: List[Dict], min_time: float) -> Dict[str, int]:
     # 每个元素是一个列表，包含该层上所有节点的 (node_id, start_time, end_time, duration) 元组
     occupied_layers = []
     
-    for node_info in sorted_nodes:
+    # 第一步：处理AGENT和TOOL节点，固定在最底层（y=0）
+    for node_info in agent_tool_nodes:
+        node_id = node_info['node'].node_id
+        start_time = node_info['start_time']
+        end_time = node_info['end_time']
+        duration = end_time - start_time
+        
+        # 直接放在最底层（y=0）
+        y_positions[node_id] = 0
+        # 如果最底层还没有初始化，初始化它
+        if len(occupied_layers) == 0:
+            occupied_layers.append([])
+        occupied_layers[0].append((node_id, start_time, end_time, duration))
+    
+    # 第二步：处理其他节点，在已有层的基础上进行堆叠
+    for node_info in other_nodes:
         node_id = node_info['node'].node_id
         start_time = node_info['start_time']
         end_time = node_info['end_time']
         duration = end_time - start_time
         current_interval = (start_time, end_time)
         
-        # 找到第一个可以放置的层（从低层开始查找）
+        # 从最底层开始查找可以放置的层
         layer_idx = None
         for idx, layer_nodes in enumerate(occupied_layers):
-            # 检查该层上是否有节点与当前节点真正重叠
+            # 检查该层上是否有节点与当前节点重叠
             has_overlap = False
             for other_node_id, other_start, other_end, other_duration in layer_nodes:
                 other_interval = (other_start, other_end)
-                # 检查是否真正重叠（有交集但不完全相同）
-                # 如果时间完全相同，不算重叠，可以放在同一层
-                if (start_time == other_start and end_time == other_end):
-                    # 时间完全相同，可以放在同一层
+                # 如果时间完全相同，可以放在同一层
+                if start_time == other_start and end_time == other_end:
                     continue
                 # 检查是否有交集（真正重叠）
                 if _check_overlap(current_interval, other_interval):
-                    # 如果当前节点耗时更长，可以"抢占"该层，把耗时短的节点移到更高层
-                    if duration > other_duration:
-                        # 将耗时短的节点移到更高层
-                        layer_nodes.remove((other_node_id, other_start, other_end, other_duration))
-                        # 找到更高层放置被挤出的节点
-                        moved = False
-                        for higher_idx in range(idx + 1, len(occupied_layers)):
-                            higher_layer = occupied_layers[higher_idx]
-                            # 检查更高层是否有重叠
-                            can_place_in_higher = True
-                            for h_node_id, h_start, h_end, h_duration in higher_layer:
-                                if _check_overlap((h_start, h_end), other_interval) and not (h_start == other_start and h_end == other_end):
-                                    can_place_in_higher = False
-                                    break
-                            if can_place_in_higher:
-                                higher_layer.append((other_node_id, other_start, other_end, other_duration))
-                                y_positions[other_node_id] = higher_idx
-                                moved = True
-                                break
-                        if not moved:
-                            # 创建新层
-                            new_layer_idx = len(occupied_layers)
-                            occupied_layers.append([(other_node_id, other_start, other_end, other_duration)])
-                            y_positions[other_node_id] = new_layer_idx
-                        # 当前节点可以放在这个层
-                        layer_idx = idx
-                        break
-                    else:
-                        # 当前节点耗时更短，不能抢占，需要找更高层
-                        has_overlap = True
-                        break
+                    has_overlap = True
+                    break
             
             # 如果该层上没有重叠的节点，可以放置在这里
-            if not has_overlap and layer_idx is None:
+            if not has_overlap:
                 layer_idx = idx
                 break
         
-        # 如果没有找到可用的层，创建新层（新层会添加到列表末尾，对应更高的y值）
+        # 如果没有找到可用的层，创建新层
         if layer_idx is None:
             layer_idx = len(occupied_layers)
             occupied_layers.append([])
@@ -228,13 +228,34 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
     
     # 为不同的busi_type设置颜色
     busi_type_colors = {
-        'TASK': '#FF6B6B',
         'AGENT': '#4ECDC4',
         'TOOL': '#95E1D3',
+        'TASK': '#FF6B6B',
         'TOOL_CALLBACK': '#F38181',
+        "REMOTE_TOOL_CALL": '#CCCCCC',
+        "LLM": '#9B59B6',
         'HUMAN': '#AA96DA',
         'MEMORY': '#FCBAD3',
-        'CONTEXT': '#FFD93D'
+        'CONTEXT': '#FFD93D',
+        'INIT_TOOLS': '#FFA500',
+        'INIT_SERVER': '#FF8C00',
+        'HANDLER': '#2ECC71'
+    }
+    
+    # 为不同的busi_type设置HTML页面显示的标签名
+    busi_type_labels = {
+        'AGENT': 'AGENT',
+        'TOOL': 'TOOL',
+        'TASK': 'TASK',
+        'TOOL_CALLBACK': 'TOOL_CALLBACK',
+        "REMOTE_TOOL_CALL": 'REMOTE_TOOL_CALL',
+        "LLM": 'LLM',
+        'HUMAN': 'HUMAN',
+        'MEMORY': 'HISTORY',
+        'CONTEXT': 'CONTEXT',
+        'INIT_TOOLS': 'INIT_TOOLS',
+        'INIT_SERVER': 'INIT_SERVER',
+        'HANDLER': 'HANDLER'
     }
     
     # 创建子图：主图和统计信息
@@ -249,8 +270,11 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
     # 使用填充区域绘制矩形，支持hover
     annotations = []
     
-    # 按类型分组绘制
-    for busi_type in busi_type_colors.keys():
+    # 定义绘制顺序：先绘制AGENT和TOOL（基础类型，应该在最下层），然后绘制其他类型
+    draw_order = ['AGENT', 'TOOL'] + [t for t in busi_type_colors.keys() if t not in ['AGENT', 'TOOL']]
+    
+    # 按类型分组绘制，先绘制AGENT和TOOL
+    for busi_type in draw_order:
         type_nodes = [nd for nd in node_data if nd['node'].busi_type == busi_type]
         if not type_nodes:
             continue
@@ -264,8 +288,8 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
             end_time = node_info['end_time']
             duration = node_info['duration']
             
-            x_start = (start_time - min_time) / total_duration
-            x_end = (end_time - min_time) / total_duration
+            x_start = start_time - min_time  # 以秒为单位
+            x_end = end_time - min_time  # 以秒为单位
             width = x_end - x_start
             
             y_pos = y_positions[node.node_id]
@@ -273,15 +297,9 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
             y_top = y_pos + 0.4
             
             # 准备hover信息
+            display_label = busi_type_labels.get(node.busi_type, node.busi_type)
             hover_text = (
-                f"<b>{node.busi_type}: {node.busi_id}</b><br>"
-                f"<b>开始时间:</b> {start_time:.6f} (相对: {start_time - min_time:.3f}s)<br>"
-                f"<b>结束时间:</b> {end_time:.6f} (相对: {end_time - min_time:.3f}s)<br>"
-                f"<b>耗时:</b> {duration:.3f}s<br>"
-                f"节点ID: {node.node_id}<br>"
-                f"状态: {node.status.value if node.status else 'N/A'}<br>"
-                f"父节点: {node.parent_node_id or 'N/A'}<br>"
-                f"树深度: {node_info['tree_depth']}"
+                f"<b>asd {duration:.3f}s {display_label}: {node.busi_id}</b><br>"
             )
             
             # 使用填充区域绘制矩形（顺时针绘制矩形四个顶点）
@@ -293,8 +311,8 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
                     fill='toself',
                     fillcolor=color,
                     line=dict(color='black', width=1),
-                    hovertemplate=hover_text + '<extra></extra>',
-                    name=busi_type,
+                    hovertemplate=hover_text,
+                    name=busi_type_labels.get(busi_type, busi_type),
                     showlegend=(node_info == type_nodes[0]),  # 只为第一个节点显示图例
                     legendgroup=busi_type,
                     opacity=0.8
@@ -302,11 +320,12 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
                 row=1, col=1
             )
             
-            # 添加文本标签（如果宽度足够）
-            if width > 0.02:
-                label = f"{node.busi_type}:{node.busi_id}"
-                if len(label) > 20:
-                    label = label[:17] + "..."
+            # 添加文本标签（如果宽度足够，以秒为单位判断）
+            if width > total_duration * 0.02:  # 宽度至少占总时长的2%
+                display_label = busi_type_labels.get(node.busi_type, node.busi_type)
+                label = f"{display_label}:{duration:.3f}"
+                # if len(label) > 20:
+                #     label = label[:17] + "..."
                 annotations.append(dict(
                     x=(x_start + x_end) / 2,
                     y=y_pos,
@@ -322,8 +341,8 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
     # 设置主图坐标轴
     max_y = max(y_positions.values()) if y_positions else 0
     fig.update_xaxes(
-        title_text=f'时间 (总时长: {total_duration:.2f}秒)',
-        range=[0, 1],
+        title_text=f'时间 (秒)',
+        range=[0, total_duration],
         row=1, col=1
     )
     fig.update_yaxes(
@@ -343,8 +362,9 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
     # 按类型统计
     table_data.append(['<b>类型统计</b>', '<b>数值</b>'])
     for busi_type, type_stats in sorted(stats['by_type'].items()):
+        display_label = busi_type_labels.get(busi_type, busi_type)
         table_data.append([
-            f"{busi_type}",
+            f"{display_label}",
             f"数量: {type_stats['count']}, "
             f"总耗时: {type_stats['total_time']:.3f}s, "
             f"平均: {type_stats['avg_time']:.3f}s, "

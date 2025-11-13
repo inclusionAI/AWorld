@@ -35,16 +35,6 @@ async def get_workspace_artifacts(workspace_id: str, request: ArtifactRequest):
         Dict with filtered artifacts
     """
     artifact_types = request.artifact_types
-    if artifact_types:
-        # Validate all types
-        invalid_types = [t for t in artifact_types if t not in ArtifactType.__members__]
-        if invalid_types:
-            logger.error(f"Invalid artifact_types: {invalid_types}")
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
-                                detail=f"Invalid artifact types: {invalid_types}")
-        logger.info(f"Fetching artifacts of types: {artifact_types}")
-    else:
-        logger.info(f"Fetching all artifacts (no type filter)")
 
     workspace = await get_workspace(workspace_id)
     all_artifacts = workspace.list_artifacts()
@@ -53,9 +43,9 @@ async def get_workspace_artifacts(workspace_id: str, request: ArtifactRequest):
         filtered_artifacts = [a for a in filtered_artifacts if a.artifact_id in request.artifact_ids]
     if artifact_types:
         filtered_artifacts = [a for a in filtered_artifacts if a.artifact_type.name in artifact_types]
-    
+
     return {
-        "data": filtered_artifacts
+        "data": [workspace.get_artifact_data(a.artifact_id) for a in filtered_artifacts]
     }
 
 
