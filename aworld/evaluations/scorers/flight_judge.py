@@ -1,5 +1,6 @@
 import json
 
+from aworld.core.context.amni import TaskInput
 from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, MetricResult
 from typing import Optional
 from aworld.evaluations.scorers.metrics import MetricNames
@@ -28,14 +29,13 @@ def get_latest_file_os(directory='.'):
 class FlightJudgeLLMScorer(LLMAsJudgeScorer):
 
     def build_pic_data(self, input: EvalDataCase[EvalCaseDataType]):
-        screenshot_dir = "./logs/screen_shot/" + input.run_id + "_task#1"
+        screenshot_dir = "./logs/screen_shot/" + input.run_id + "_task#" + input.case_data['id']
         latest_screenshot = get_latest_file_os(screenshot_dir)
-        
-        # If screenshot doesn't exist, return data without image
+
         if latest_screenshot is None:
-            return []
-        
-        image_base64 = encode_image(latest_screenshot)
+            image_base64 = ""
+        else:
+            image_base64 = encode_image(latest_screenshot)
 
         return [
             {
@@ -44,8 +44,7 @@ class FlightJudgeLLMScorer(LLMAsJudgeScorer):
 Your role is to act as an AI Agent Evaluator. Based on the user's query, the agent's execution path, and the final browser screenshot provided, you must determine if the agent's final answer successfully resolves the user's query.
 
 [Evaluation Criteria]
-
-1. Accuracy and Completeness:
+1. Accuracy:
 The final answer must directly and accurately address the user's question.
 It must fulfill all explicit and implicit requirements mentioned in the query (e.g., location, date, direct flights, layovers, airline preferences, departure/arrival times, etc.).
 
@@ -53,8 +52,10 @@ It must fulfill all explicit and implicit requirements mentioned in the query (e
 The final answer must be strictly grounded in the information visible in the final browser screenshot and be logically consistent with the agent's execution path.
 No fabricated or hallucinated information is allowed. Every piece of data in the answer (e.g., prices, times, flight numbers) must be verifiable from the provided evidence.
 
-[Output Format]
+3. Execution Integrity:
+The agent successfully retrieved the flight information by navigating the process unimpeded by anti-scraping measures, such as CAPTCHAs or login walls.
 
+[Output Format]
 Score:
 If the final answer meets both of the above criteria, the score is 1.
 If either criterion is not met, the score is 0.
@@ -81,24 +82,40 @@ Here is the task: {task}
     def build_judge_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
         return ""
 
-    def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+    def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> [str, TaskInput]:
         question_column = self.eval_config.eval_dataset_query_column or 'question'
         response_column = self.eval_config.eval_output_answer_column or 'answer'
-        trajectory_column = 'trajectory'
+        trajectory_list = [msg for key, msg in sorted(output.get('trajectory', {}).items())]
+
+        last_summary_idx = next(
+            (i for i in range(len(trajectory_list) - 1, -1, -1) if trajectory_list[i].get('memory_type') == 'summary'), -1
+        )
+
+        if last_summary_idx != -1:
+            messages_to_process = trajectory_list[:2] + trajectory_list[last_summary_idx:]
+        else:
+            messages_to_process = trajectory_list
+
+        new_trajectory = [
+            {"role": message["role"], "content": message["content"]}
+            for message in messages_to_process
+        ]
+        new_trajectory_str = json.dumps(new_trajectory, ensure_ascii=False)
+
         judge_data = f"""
         [Question]: {input.case_data.get(question_column, '')}
-        [Trajectory]: {output.get(trajectory_column, '')}
+        [Trajectory]: {new_trajectory_str}
         [Final Answer]: {output.get(response_column, '')}
         """
         pic_data = self.build_pic_data(input)
         pic_data[0]['text'] = pic_data[0]['text'].format(task=judge_data)
-        return json.dumps(pic_data)
+        return pic_data
 
     def convert_judge_response_to_score(self, judge_response: str) -> Optional[dict[str, MetricResult]]:
         json_output = self.fetch_json_from_result(judge_response)
         if json_output:
             return {
-                MetricNames.ANSWER_ACCURACY: MetricResult(
+                MetricNames.FLIGHT_JUDGE: MetricResult(
                     value=json_output.get('score', 0),
                     explanation=json_output.get('explanation', '')
                 )

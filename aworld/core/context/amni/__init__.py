@@ -5,13 +5,13 @@ import os
 import time
 import traceback
 import uuid
-from typing import Optional, Any, Literal, List, Dict
+from typing import Optional, Any, Literal, List, Dict, Tuple
 
 from aworld import trace
 from aworld.config import AgentConfig, ContextRuleConfig
 # lazy import
 from aworld.core.context.base import Context
-from aworld.events.util import send_message
+from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
@@ -388,7 +388,9 @@ class AmniContext(Context):
 
         self.put(ACTIVE_SKILLS_KEY, activate_skills, namespace=namespace)
         return (f"skill {skill_name} activated, current skills: {activate_skills} \n\n"
-                f"<skill_guide>{skill.get('usage', '')}</skill_guide>")
+                    f"<skill_guide>{skill.get('usage', '')}</skill_guide>\n\n"
+                    f"<skill_path>{skill.get('skill_path', '')}</skill_path>\n\n"
+                )
 
     async def offload_skill(self, skill_name: str,namespace: str) -> str:
         """
@@ -505,17 +507,21 @@ class ApplicationContext(AmniContext):
 
                     # Clear checkpoint to avoid duplicate context restoration when creating sub-task
                     get_context_manager().delete_checkpoint(task_input.session_id)
+                    await context.init_working_dir()
                     return context
                 else:
                     logger.info(f"[CONTEXT BUILD]Build new context {task_input.session_id}:{task_input.task_id}")
                     task_state = await cls._build_new_task_state(task_input)
-                    return ApplicationContext(task_state, workspace, context_config)
+                    context = ApplicationContext(task_state, workspace, context_config=context_config)
+                    await context.init_working_dir()
+                    return context
             else:
                 task_state = await cls._build_new_task_state(task_input)
                 context = ApplicationContext(task_state, workspace = workspace, context_config = context_config)
                 # Store current round's input as a separate field
                 context.put("origin_task_input", context.task_input)
                 context.put("origin_task_output", context.task_output)
+                await context.init_working_dir()
                 return context
         except Exception as e:
             # Handle specific exceptions or re-raise with context
@@ -564,6 +570,8 @@ class ApplicationContext(AmniContext):
 
     async def build_sub_context(self, sub_task_content: str, sub_task_id: str = None, **kwargs):
         logger.info(f"build_sub_context: {self.task_id} -> {sub_task_id}: {sub_task_content}")
+        # force cast to string to avoid type error
+        sub_task_content = str(sub_task_content)
         sub_task_input = self.task_state.task_input.new_subtask(sub_task_content, sub_task_id)
         agents = kwargs.get("agents")
         agent_list = []
@@ -877,6 +885,8 @@ class ApplicationContext(AmniContext):
             # Get context identifier
             context_id = getattr(context, 'task_id', None) or getattr(context, 'session_id', 'unknown')
             task_content = getattr(context, 'task_input', '')
+            if isinstance(task_content, list):
+                task_content = task_content[0]['text']
 
             # Build description
             swarm_desc = ':'.join([agent.name() for agent in context.swarm.topology])
@@ -931,6 +941,8 @@ class ApplicationContext(AmniContext):
                 subtask_content = ""
                 if hasattr(sub_task, 'input') and sub_task.input:
                     subtask_content = getattr(sub_task.input, 'task_content', str(sub_task.input))
+                    if isinstance(subtask_content, list):
+                        subtask_content = subtask_content[0]['text']
                 else:
                     subtask_content = str(sub_task)
 
@@ -1118,10 +1130,14 @@ class ApplicationContext(AmniContext):
             topic=TopicType.SYSTEM_PROMPT,
             headers={"context": self}
         )
-        await send_message(message)
-        logger.debug(f"ApplicationContext|pub_and_wait_system_prompt_event|send_finished|{namespace}|{agent_id}")
-        await long_wait_message_state(message)
-        logger.debug(f"ApplicationContext|pub_and_wait_system_prompt_event|wait_finished|{namespace}|{agent_id}")
+        # 默认通过消息系统发送
+        try:
+            future = await send_message_with_future(message)
+            results = await future.wait(timeout=300)
+            if not results:
+                logger.warning(f"context write task failed: {message}")
+        except Exception as e:
+            logger.warn(f"context write task failed: {traceback.format_exc()}")
 
     async def pub_and_wait_tool_result_event(self,
                                              tool_result: Any,
@@ -1330,7 +1346,7 @@ class ApplicationContext(AmniContext):
     ####################### Context Write #######################
 
     def put(self, key: str, value: Any, namespace: str = "default") -> None:
-        logger.info(f"{id(self)}#put key: {key}, value: {value}, namespace: {namespace}")
+        logger.debug(f"{id(self)}#put key: {key}, value: {value}, namespace: {namespace}")
         if self._is_default_namespace(namespace):
             self.task_state.working_state.kv_store[key] = value
             return
@@ -1367,44 +1383,91 @@ class ApplicationContext(AmniContext):
     ####################### Context User Working Directory #######################
 
     @property
-    def working_dir_root(self) -> str:
-        return os.environ['DIR_ARTIFACT_MOUNT_BASE_PATH']
+    def working_dir_env_mounted_path(self) -> str:
+        """
+        # This property returns the absolute path where the working directory (dir_artifact) is mounted inside the environment.
+        # The working directory acts as a shared workspace and can be stored either locally or remotely.
+        # When using a remote environment, the remote working directory will be mounted to the environment for the agent to use.
+        # The agent interacts with the environment through the env-client (also known as mcp), which accesses files via this mounted directory.
+        #
+        # Diagram:
+        #
+        #          +------------------------------+
+        #          |        Working Dir           |  <--- working_dir_path(local or remote storage)
+        #          +------------------------------+
+        #                       |
+        #                       v   (mounted/sync)
+        #           +----------------------------+
+        #           |      Environment           | <--- env_mounted_path
+        #           +----------------------------+
+        #                       |
+        #                       v   (file operations)
+        #           +----------------------------+
+        #           |   env-client (mcp)         |
+        #           +----------------------------+
+        #                       |
+        #                       v
+        #                  Agent logic
+        #
+        # The agent accesses and manages files in the environment through the env-client interface, which ultimately interacts with the mounted working directory.
+        """
+        return self._config.env_config.env_mount_path
+
+
+    def get_working_dir_path(self) -> str:
+        return self._working_dir.base_path
+
+    def abs_file_path(self, filename: str):
+        return self.working_dir_env_mounted_path + "/" + filename
 
     async def add_file(self, filename: Optional[str], content: Optional[Any], mime_type: Optional[str] = "text",
-                       knowledge_id: Optional[str] = None, namespace: str = "default"):
+                       namespace: str = "default", origin_type: str = None, origin_path : str = None) -> Tuple[bool, Optional[str], Optional[str]]:
         # Save metadata
-        file = ArtifactAttachment(filename=filename, mime_type=mime_type, content=content)
-        dir_artifact: DirArtifact = await self.load_working_dir(knowledge_id)
+        file = ArtifactAttachment(filename=filename, mime_type=mime_type, content=content, origin_type=origin_type, origin_path=origin_path)
+        dir_artifact: DirArtifact = await self.load_working_dir()
         # Persist the new file to the directory
-        dir_artifact.add_file(file)
+        success, file_path, content = await dir_artifact.add_file(file)
+        if not success:
+            return False, None, None
         # Refresh directory index
         await self.add_knowledge(dir_artifact, namespace, index=False)
+        return True, self.abs_file_path(filename), content
 
-    async def init_working_dir(self, knowledge_id: Optional[str] = None) -> DirArtifact:
-        if knowledge_id:
-            # Reset current context working dir
-            self._working_dir = await self.get_knowledge_by_id(knowledge_id)
-            return self._working_dir
+    async def init_working_dir(self) -> DirArtifact:
         if self._working_dir:
             return self._working_dir
-        # Initialize by env. Using with_local_repository for local testing may cause file not found issues
-        # because MCP container has no local environment and local MCP tool implementation is incomplete
 
-        self._working_dir = DirArtifact.with_local_repository(base_path=str(self._workspace.repository.storage_path) + "/tempfiles")
-        # else:
-        #     self._working_dir = DirArtifact.with_oss_repository(
-        #         access_key_id=os.environ['DIR_ARTIFACT_OSS_ACCESS_KEY_ID'],
-        #         access_key_secret=os.environ['DIR_ARTIFACT_OSS_ACCESS_KEY_SECRET'],
-        #         endpoint=os.environ['DIR_ARTIFACT_OSS_ENDPOINT'],
-        #         bucket_name=os.environ['DIR_ARTIFACT_OSS_BUCKET_NAME'],
-        #         base_path=os.environ['DIR_ARTIFACT_OSS_BASE_PATH'] + "/sid-" + self.session_id)
+        # Initialize working directory
+        if self._config.env_config.env_type == 'remote':
+            self._working_dir = DirArtifact.with_oss_repository(
+                access_key_id=os.environ.get('WORKING_DIR_OSS_ACCESS_KEY_ID', os.environ.get('OSS_ACCESS_KEY_ID')),
+                access_key_secret=os.environ.get('WORKING_DIR_OSS_ACCESS_KEY_SECRET',
+                                                 os.environ.get('OSS_ACCESS_KEY_SECRET')),
+                endpoint=os.environ.get('WORKING_DIR_OSS_ENDPOINT', os.environ.get('OSS_ENDPOINT')),
+                bucket_name=os.environ.get('WORKING_DIR_OSS_BUCKET_NAME', os.environ.get('OSS_BUCKET_NAME')),
+                base_path=os.environ.get('WORKING_DIR_OSS_BASE_PATH',
+                                         os.environ.get('WORKSPACE_PATH')) + "/" + self.session_id + "/files",
+                mount_path=self.get_config().env_config.env_mount_path
+            )
+        else:
+            # default local
+            self._working_dir = DirArtifact.with_local_repository(base_path=os.environ.get('WORKSPACE_PATH')  + "/" + self.session_id + "/files")
+
 
         return self._working_dir
 
-    async def load_working_dir(self, knowledge_id: Optional[str] = None) -> DirArtifact:
-        await self.init_working_dir(knowledge_id)
+    async def load_working_dir(self) -> DirArtifact:
+        await self.init_working_dir()
         self._working_dir.reload_working_files()
         return self._working_dir
+
+    async def refresh_working_dir(self):
+        await self.init_working_dir()
+        self._working_dir.reload_working_files()
+        await self._workspace.add_artifact(self._working_dir, index=False)
+
+
+
 
     #####################################################################
 

@@ -5,8 +5,9 @@ import time
 from collections import OrderedDict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
-from typing import Dict, Any, TYPE_CHECKING, List, Literal
+from typing import Dict, Any, TYPE_CHECKING, List, Literal, Optional
 
+from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
 from aworld.config import ConfigDict
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
@@ -14,7 +15,7 @@ from aworld.logs.util import logger
 from aworld.utils.common import nest_dict_counter
 
 if TYPE_CHECKING:
-    from aworld.core.task import Task, TaskResponse
+    from aworld.core.task import Task, TaskResponse, TaskStatus, TaskStatusValue
     from aworld.core.agent.swarm import Swarm
     from aworld.events.manager import EventManager
     from aworld.core.agent import BaseAgent
@@ -141,7 +142,7 @@ class Context:
         self._init(task_id=task_id, trace_id=trace_id,
                    session=session, engine=engine, **kwargs)
 
-    def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, engine: str = None):
+    def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, engine: str = None, **kwargs):
         self._task_id = task_id
         self._task = None
         self._engine = engine
@@ -158,6 +159,8 @@ class Context:
         # TODO workspace
         self._swarm = None
         self._event_manager = None
+        # checkpoint repository for saving/restoring context state
+        self._checkpoint_repository = kwargs.get('checkpoint_repository', InMemoryCheckpointRepository())
         self._start = time.time()
         # agent_id -> token_id trajectory
         self._agent_token_id_traj: Dict[str, List[AgentTokenIdTrajectory]] = {}
@@ -246,6 +249,24 @@ class Context:
     @event_manager.setter
     def event_manager(self, event_manager: 'EventManager'):
         self._event_manager = event_manager
+
+    @property
+    def checkpoint_repository(self):
+        """Get checkpoint repository.
+
+        Returns:
+            The checkpoint repository if set, otherwise None
+        """
+        return self._checkpoint_repository
+
+    @checkpoint_repository.setter
+    def checkpoint_repository(self, repository: 'BaseCheckpointRepository'):
+        """Set checkpoint repository.
+
+        Args:
+            repository: BaseCheckpointRepository instance for checkpoint storage
+        """
+        self._checkpoint_repository = repository
 
     @property
     def task_input(self):
@@ -605,3 +626,113 @@ class Context:
         for agent_id, token_id_trajs in sub_task_context._agent_token_id_traj.items():
             for traj in token_id_trajs:
                 self._agent_token_id_traj[agent_id].append(traj)
+
+
+    """
+        Context Checkpoint Support
+    """
+    def _create_checkpoint_values(self) -> Dict[str, Any]:
+        """Extract key state information from context for checkpoint.
+
+        Returns:
+            Dict containing context state values for checkpoint.
+        """
+        return {
+            # Context state information
+            'context_info': self.context_info.to_dict() if self.context_info else {},
+
+            # Agent configuration
+            'agent_info': dict(self.agent_info) if self.agent_info else {},
+
+            # Execution trajectories
+            'trajectories': dict(self.trajectories) if self.trajectories else {},
+
+            # Token usage statistics
+            'token_usage': copy.deepcopy(self._token_usage) if self._token_usage else {},
+
+            # Basic identifiers
+            'user': self._user,
+            'task_id': self._task_id,
+            'trace_id': self._trace_id,
+            'engine': self._engine,
+
+            # Timestamp for checkpoint creation
+            'checkpoint_created_at': datetime.now().isoformat(),
+        }
+
+    def _create_checkpoint_metadata(self, metadata_extra: Optional[Dict[str, Any]] = None) -> 'CheckpointMetadata':
+        """Create checkpoint metadata.
+
+        Args:
+            metadata_extra: Extra metadata to include.
+
+        Returns:
+            CheckpointMetadata object.
+        """
+        from aworld.checkpoint import CheckpointMetadata
+
+        metadata_dict = {
+            'session_id': self.session_id or 'unknown',
+            'task_id': self._task_id or 'unknown',
+        }
+
+        # Add extra metadata if provided
+        if metadata_extra:
+            metadata_dict.update(metadata_extra)
+
+        return CheckpointMetadata(**metadata_dict)
+
+    async def snapshot(self):
+        """Save current context state to a checkpoint.
+
+        This method serializes the current context state into a Checkpoint object,
+        which will be automatically saved to the internal checkpoint_repository
+        if one has been set via `context.checkpoint_repository = repo`.
+        """
+        from aworld.checkpoint import create_checkpoint, VersionUtils
+
+        # Extract checkpoint values
+        checkpoint_values = self._create_checkpoint_values()
+
+        # Create checkpoint metadata
+        from aworld.checkpoint import CheckpointMetadata
+
+        checkpoint_metadata = CheckpointMetadata(
+            session_id=self.session_id,
+            task_id=self._task_id
+        )
+
+        # Get version for the checkpoint
+        version = 1
+        if self._checkpoint_repository:
+            try:
+                # Try to get last checkpoint for this session to determine next version
+                last_checkpoint = await self._checkpoint_repository.aget_by_session(self.session_id)
+                if last_checkpoint:
+                    version = VersionUtils.get_next_version(last_checkpoint.version)
+            except Exception as e:
+                logger.warning(f"Failed to get last checkpoint version: {e}")
+
+        # Create the checkpoint
+        checkpoint = create_checkpoint(
+            values=checkpoint_values,
+            metadata=checkpoint_metadata,
+            version=version
+        )
+
+        # Save asynchronously if repository available
+        if self._checkpoint_repository:
+            try:
+                await self._checkpoint_repository.aput(checkpoint)
+                logger.info(f"Checkpoint {checkpoint.id} saved asynchronously for task {self._task_id}")
+            except Exception as e:
+                logger.error(f"Failed to save checkpoint asynchronously: {e}")
+
+        return checkpoint
+
+    async def get_task_status(self):
+        from aworld.core.task import TaskStatusValue
+        return TaskStatusValue.SUCCESS
+
+    async def update_task_status(self, task_id: str, status: 'TaskStatus'):
+        pass

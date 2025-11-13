@@ -15,7 +15,7 @@ from aworld.core.common import ActionResult, Observation, ActionModel, Config, T
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
-    MemoryEventType as MemoryType, MemoryEventMessage
+    MemoryEventType as MemoryType, MemoryEventMessage, ChunkMessage
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
@@ -25,8 +25,7 @@ from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
-from aworld.memory.models import MemoryItem, MemoryAIMessage
-from aworld.memory.models import MemoryMessage
+from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template
 from aworld.models.model_response import ModelResponse, ToolCall
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process
@@ -84,7 +83,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                 agent_info = AgentFactory.agent_instance(agent_id)
                 if full_name and not full_name.startswith(
                         "mcp__") and agent_info and agent_info.sandbox and agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers and len(
-                        agent_info.sandbox.mcpservers.mcp_servers) > 0:
+                    agent_info.sandbox.mcpservers.mcp_servers) > 0:
                     if agent_info.sandbox.mcpservers.map_tool_list:
                         _server_name = agent_info.sandbox.mcpservers.map_tool_list.get(full_name)
                         if _server_name:
@@ -159,6 +158,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  event_handler_name: str = None,
                  event_driven: bool = True,
                  skill_configs: Dict[str, Any] = None,
+                 direct_memory_call: bool = False,
                  **kwargs):
         """A api class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 
@@ -195,13 +195,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.need_reset = need_reset if need_reset else conf.need_reset
         # whether to keep contextual information, False means keep, True means reset in every step by the agent call
         self.step_reset = step_reset
-        # tool_name: [tool_action1, tool_action2, ...]
-        # self.black_tool_actions: Dict[str, List[str]] = black_tool_actions if black_tool_actions \
-        #     else conf.get('black_tool_actions', {})
         self.model_output_parser = model_output_parser
         self.use_tools_in_prompt = use_tools_in_prompt if use_tools_in_prompt else conf.use_tools_in_prompt
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
         self.event_handler_name = event_handler_name
+        self.context = kwargs.get("context", None)
+        self.direct_memory_call = direct_memory_call
 
     @property
     def llm(self):
@@ -209,7 +208,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if self._llm is None:
             llm_config = self.conf.llm_config or None
             conf = llm_config if llm_config and (
-                llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
+                    llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
             self._llm = get_llm_model(conf)
         return self._llm
 
@@ -343,52 +342,54 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         }, agent_memory_config=self.memory_config)
         if histories:
             tool_calls_map = {}
-            count = 0
+            last_tool_calls = []
             for history in histories:
-                count += 1
+                if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
+                    # Maintain the order of tool calls
+                    for tool_call_id in last_tool_calls:
+                        if tool_call_id not in tool_calls_map:
+                            raise AWorldRuntimeException(f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, messages: {messages}")
+                        messages.append(tool_calls_map.get(tool_call_id))
+                    tool_calls_map = {}
+                    last_tool_calls = []
+
                 if isinstance(history, MemoryMessage):
-                    messages.append(history.to_openai_message())
-                    if isinstance(history, MemoryAIMessage):
-                        tool_calls = messages[-1].get("tool_calls")
-                        if tool_calls:
-                            tool_calls_map.update({tool_call.get("id"): idx + count for idx, tool_call in enumerate(
-                                tool_calls)})
-                else:
-                    if not self.use_tools_in_prompt and "tool_calls" in history.metadata and history.metadata[
-                            'tool_calls']:
-                        messages.append({'role': history.metadata['role'], 'content': history.content,
-                                         'tool_calls': [history.metadata["tool_calls"][0]]})
+                    if isinstance(history, MemoryToolMessage):
+                        tool_calls_map[history.tool_call_id] = history.to_openai_message()
                     else:
-                        messages.append({'role': history.metadata['role'], 'content': history.content,
-                                         "tool_call_id": history.metadata.get("tool_call_id")})
-
-            if tool_calls_map:
-                # keep consistent
-                final_messages = [''] * len(messages)
-                for idx, msg in enumerate(messages):
-                    if not msg.get("tool_call_id"):
-                        final_messages[idx] = msg
-                        continue
-
-                    real_idx = tool_calls_map.get(msg['tool_call_id'], -1)
-                    if real_idx < 0:
-                        raise AWorldRuntimeException(f"tool_calls mismatch! {tool_calls_map}, messages: {messages}")
-                    final_messages[real_idx] = msg
-                messages = final_messages
+                        messages.append(history.to_openai_message())
+                        if isinstance(history, MemoryAIMessage) and history.tool_calls:
+                            last_tool_calls.extend([tool_call.id for tool_call in history.tool_calls])
+                else:
+                    role = history.metadata['role']
+                    if role == 'tool':
+                        msg = {'role': history.metadata['role'], 'content': history.content,
+                               'tool_call_id': history.metadata.get('tool_call_id')}
+                        tool_calls_map[history.metadata.get("tool_call_id")] = msg
+                    else:
+                        if not self.use_tools_in_prompt and history.metadata.get('tool_calls'):
+                            messages.append({'role': history.metadata['role'], 'content': history.content,
+                                             'tool_calls': [history.metadata['tool_calls']]})
+                            last_tool_calls.extend([tool_call.get('id') for tool_call in history.metadata['tool_calls']])
+                        else:
+                            messages.append({'role': history.metadata['role'], 'content': history.content,
+                                             "tool_call_id": history.metadata.get("tool_call_id")})
+            if len(last_tool_calls) > 0 and len(tool_calls_map) == len(last_tool_calls):
+                for tool_call_id in last_tool_calls:
+                    if tool_call_id not in tool_calls_map:
+                        raise AWorldRuntimeException(
+                            f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, messages: {messages}")
+                    messages.append(tool_calls_map.get(tool_call_id))
+                tool_calls_map = {}
+                last_tool_calls = []
 
         return messages
 
     async def init_observation(self, observation: Observation) -> Observation:
-        # supported string only
-        # if self.task and isinstance(self.task, str) and self.task != observation.content:
-        #     observation.content = f"base task is: {self.task}\n{observation.content}"
-        #     # `task` only needs to be processed once and reflected in the context
-        #     self.task = None
-
         # default use origin observation
         return observation
 
-    def _log_messages(self, messages: List[Dict[str, Any]],context: Context,  **kwargs) -> None:
+    def _log_messages(self, messages: List[Dict[str, Any]], context: Context, **kwargs) -> None:
         PromptLogger.log_agent_call_llm_messages(self, messages=messages, context=context, **kwargs)
 
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
@@ -467,7 +468,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         )
 
     def policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[
-            ActionModel]:
+        ActionModel]:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
         Args:
@@ -491,6 +492,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             ActionModel sequence from agent policy
         """
         logger.info(f"Agent{type(self)}#{self.id()}: async_policy start")
+        # temporary state context
+        self.context = message.context
 
         # Get current step information for trace recording
         source_span = trace.get_current_span()
@@ -517,7 +520,16 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         llm_call_start_time = datetime.now().isoformat()
         message.context.context_info["llm_call_start_time"] = llm_call_start_time
         try:
-            llm_response = await self.invoke_model(messages, message=message, **kwargs)
+            # time metrics
+            from aworld.runners.state_manager import RunNodeBusiType
+            from aworld.runners.utils import managed_runtime_node
+
+            async with managed_runtime_node(
+                    context=message.context,
+                    busi_type=RunNodeBusiType.LLM,
+                    busi_id=""
+            ):
+                llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
             logger.warn(traceback.format_exc())
             raise e
@@ -557,7 +569,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             logger.debug(traceback.format_exc())
 
         logger.info(f"agent_result: {agent_result}")
-        policy_result: Optional[List[ActionModel]] = None
+
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
         else:
@@ -565,7 +577,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             for act in agent_result.actions:
                 tool_call_start_time = datetime.now().isoformat()
                 message.context.context_info[f"tool_call_start_time_{act.tool_call_id}"] = tool_call_start_time
-            
+
             if not self.wait_tool_result:
                 policy_result = agent_result.actions
             else:
@@ -651,7 +663,17 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             observation: The state observed from the environment
             info: Extended information to assist the agent in decision-making
         """
-        await self.async_desc_transform(message.context)
+        from aworld.runners.state_manager import RunNodeBusiType
+        from aworld.runners.utils import managed_runtime_node
+
+        async with managed_runtime_node(
+            context=message.context,
+            busi_type=RunNodeBusiType.INIT_TOOLS,
+            busi_id=""
+        ):
+            await self.async_desc_transform(message.context)
+
+
         # observation secondary processing
         observation = await self.init_observation(observation)
         images = observation.images if self.conf.use_vision else None
@@ -688,7 +710,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         try:
             tools = await self._filter_tools(message.context)
             self._log_messages(messages, tools=tools, context=message.context)
-            stream_mode = kwargs.get("stream", False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
+            stream_mode = kwargs.get("stream",
+                                     False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
             float_temperature = float(self.conf.llm_config.llm_temperature)
             if stream_mode:
                 llm_response = ModelResponse(
@@ -716,9 +739,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     llm_response.usage = nest_dict_counter(
                         llm_response.usage, chunk.usage, ignore_zero=False)
                     llm_response.message.update(chunk.message)
+                    await send_message(ChunkMessage(payload=chunk,
+                                                    source_type="llm",
+                                                    session_id=message.context.session_id,
+                                                    headers=message.headers))
 
             else:
-                logger.debug(f"llm_agent|invoke_model|tools={self.tools}")
                 llm_response = await acall_llm_model(
                     self.llm,
                     messages=messages,
@@ -781,6 +807,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             memory_event_type=message_type,
             headers={"context": context, "skip_summary": skip_summary}
         )
+
+        # 如果开启了直接调用模式，直接调用 handler 而不通过消息系统
+        if self.direct_memory_call:
+            from aworld.runners.handler.memory import DefaultMemoryHandler
+            await DefaultMemoryHandler.handle_memory_message_directly(memory_msg, context)
+            return
+
+        # 默认通过消息系统发送
         try:
             future = await send_message_with_future(memory_msg)
             results = await future.wait(timeout=300)
@@ -831,11 +865,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # get current active skills
         skills = await context.get_active_skills(namespace=self.id())
 
-        return await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools, tool_mapping=self.tool_mapping)
+        return await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools,
+                                           tool_mapping=self.tool_mapping)
 
     async def _add_tool_result_token_ids_to_context(self, context: Context):
         """Add tool result token ids to context"""
-        if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVAE:
+        if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVE:
             return
         histories = self.memory.get_all(filters={
             "agent_id": self.id(),
@@ -860,3 +895,36 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             context.add_tool_resp_token_ids(tool_resp_token_ids=tool_result_token_ids,
                                             resp_tool_call_ids=tool_call_ids,
                                             agent_id=self.id())
+
+    @staticmethod
+    async def to_dict(agent, override: Dict[str, Any] = None):
+        """Agent attribute dict."""
+        attr_dict = {
+            "name": agent.name(),
+            "conf": agent.conf,
+            "desc": agent.desc(),
+            "task": agent.task,
+            "tool_names": agent.tool_names,
+            "agent_names": agent.handoffs,
+            "mcp_servers": agent.mcp_servers,
+            "mcp_config": agent.mcp_config,
+            "feedback_tool_result": agent.feedback_tool_result,
+            "wait_tool_result": agent.wait_tool_result,
+            "system_prompt": agent.system_prompt,
+            "need_reset": agent.need_reset,
+            "step_reset": agent.step_reset,
+            "use_tools_in_prompt": agent.use_tools_in_prompt,
+            "black_tool_actions": agent.black_tool_actions,
+            "model_output_parser": agent.model_output_parser,
+            "tool_aggregate_func": agent.tools_aggregate_func,
+            "event_handler_name": agent.event_handler_name,
+            "event_driven": agent.event_driven,
+            "skill_configs": agent.skill_configs
+        }
+        if override:
+            attr_dict.update(override)
+        return attr_dict
+
+    @staticmethod
+    def from_dict(attr_dict: Dict[str, Any]) -> 'Agent':
+        return Agent(**attr_dict)

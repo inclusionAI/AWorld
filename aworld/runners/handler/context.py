@@ -29,10 +29,6 @@ class ContextProcessorHandler(DefaultHandler):
 
         self.agent_calls = []
 
-    # def __init__(self, priority: int = 20):
-    #     super().__init__("memory_processor", self.process_messages, priority=priority)
-    #     self.thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="async_processor")
-
     def is_valid_message(self, message: Message):
         if message.category != Constants.CONTEXT \
                 or not isinstance(message, ContextMessage):

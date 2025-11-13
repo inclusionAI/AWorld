@@ -161,12 +161,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.mcp_servers = replace_mcp_servers_variables(self.skill_configs, self.mcp_servers, [])
             from aworld.core.context.amni.tool.context_skill_tool import ContextSkillTool
             self.tool_names.extend(["SKILL"])
+        # tool_name: [tool_action1, tool_action2, ...]
         self.black_tool_actions: Dict[str, List[str]] = black_tool_actions or {}
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
         # all tools that the agent can use. note: string name/id only
         self.tools = []
-        tool_mapping= {}
-        self.context = None
         self.state = AgentStatus.START
         self._finished = True
         self.hooks: Dict[str, List[str]] = {}
@@ -194,7 +193,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     def run(self, message: Message, **kwargs) -> Message:
         message.context.agent_info.current_agent_id = self.id()
         task = message.context.get_task()
-        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE:
+        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
             agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
             message.context.new_trajectory_step(agent.id())
         caller = message.caller
@@ -233,7 +232,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     async def async_run(self, message: Message, **kwargs) -> Message:
         message.context.agent_info.current_agent_id = self.id()
         task = message.context.get_task()
-        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE:
+        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
             agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
             message.context.new_trajectory_step(agent.id())
         caller = message.caller

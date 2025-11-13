@@ -166,7 +166,6 @@ class Swarm(object):
             if not agent.task:
                 agent.task = self.task
             if hasattr(agent, 'need_reset') and agent.need_reset:
-                agent.context = context
                 agent.reset()
             # global tools
             agent.tool_names.extend(self.tools)
@@ -404,6 +403,10 @@ class TeamSwarm(Swarm):
                          build_type=GraphBuildType.TEAM,
                          builder_cls=builder_cls,
                          event_driven=event_driven)
+
+
+# Alias for TeamSwarm
+Team = TeamSwarm
 
 
 class HandoffSwarm(Swarm):

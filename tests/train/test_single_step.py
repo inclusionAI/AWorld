@@ -9,7 +9,7 @@ from aworld.runner import Runners
 from aworld.trace.server import get_trace_server
 import aworld.trace as trace
 import examples.common.tools
-
+from aworld.logs.util import logger
 
 from dotenv import load_dotenv
 
@@ -18,7 +18,7 @@ trace.configure(trace.ObservabilityConfig(trace_server_enabled=True))
 
 class SingleStepTest(unittest.IsolatedAsyncioTestCase):
 
-    async def test_single_step(self):
+    async def init_task(self):
         load_dotenv()
         agent = Agent(
             conf=AgentConfig(
@@ -36,9 +36,7 @@ class SingleStepTest(unittest.IsolatedAsyncioTestCase):
         context = Context()
         task_id = "test_task"
 
-        # step 1
-        step = 1
-        task = Task(
+        return Task(
             id=task_id,
             user_id="test_user",
             input="How many men are there in the capital of France?",
@@ -46,19 +44,41 @@ class SingleStepTest(unittest.IsolatedAsyncioTestCase):
             conf=TaskConfig(
                 stream=False,
                 resp_carry_context=True,
-                run_mode=TaskRunMode.INTERACTIVAE
+                run_mode=TaskRunMode.INTERACTIVE
             ),
             context=context
         )
+
+    async def test_single_step(self):
+        # step 1
+        step = 1
+        task = await self.init_task()
         responses = await Runners.run_task(task)
-        resp = responses[task_id]
-        print(f"step {step} resp: {resp}")
+        resp = responses[task.id]
+        logger.info(f"step {step} resp: {resp}")
 
         while resp.status == "running":
             step += 1
             task.observation = resp.answer
             responses = await Runners.run_task(task)
-            resp = responses[task_id]
-            print(f"step {step} resp: {resp.answer}")
+            resp = responses[task.id]
+            logger.info(f"step {step} resp: {resp.answer}")
+
+        # get_trace_server().join()
+
+    async def test_single_step_api(self):
+        '''
+            python -m pytest tests/train/test_single_step.py::SingleStepTest::test_single_step_api -v
+        '''
+        # step 1
+        step = 1
+        task = await self.init_task()
+        is_finished, observation, response = await Runners.step(task)
+        logger.info(f"step {step} observation: {observation}")
+
+        while not is_finished:
+            step += 1
+            is_finished, observation, response = await Runners.step(task)
+            logger.info(f"step {step} observation: {observation}")
 
         # get_trace_server().join()

@@ -47,7 +47,7 @@ class ParallelFlightEvalTarget(EvalTarget[dict]):
     ):
         super().__init__()
 
-    async def build_common_gaia_task(self, user_input: str, session_id, task_id):
+    async def build_gaia_task(self, user_input: str, session_id, task_id):
         if 'screen_shot' in os.getenv("ENV_PLUGINS", ""):
             from ..env.hooks import PostLLMCallRolloutHook, PostToolCallRolloutHook
 
@@ -140,7 +140,7 @@ class ParallelFlightEvalTarget(EvalTarget[dict]):
             ):
                 result = await Runners.run_task(task=task)
             os.makedirs(f"logs/trajectory/{batch_id}", exist_ok=True)
-            with open(f"logs/trajectory/{batch_id}/traj_{index}.json", "a") as f:
+            with open(f"logs/trajectory/{batch_id}/traj_{index+1}.json", "a") as f:
                 f.write(str(result[task_id].trajectory))
             os.makedirs(f"logs/results/{batch_id}", exist_ok=True)
             cur_time = datetime.now().strftime('%Y%m%d%H%M%S')

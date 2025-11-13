@@ -11,7 +11,6 @@ from aworld.core.common import ActionModel, ActionResult
 from aworld.core.tool.action import ExecutableAction
 from aworld.core.tool.action_factory import ActionFactory
 from aworld.logs.util import logger
-from aworld.utils.async_func import async_func
 
 
 @ActionFactory.register(name="{name}",
@@ -32,7 +31,8 @@ class {name}Act(ExecutableAction):
 
     async def async_act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         try:
-            res = await {call_func}(**action.params)
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, lambda: {call_func}(**action.params))
             if not res:
                 raise ValueError(f"{func} no result return.")
             return ActionResult(content=res, success=True), None

@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 
 import abc
+import time
 import traceback
 from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
 
@@ -471,50 +472,40 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                   action: List[ActionModel],
                                   message: Message,
                                   **kwargs):
+        from aworld.runners.state_manager import RunNodeStatus
+
         logger.info(f"send callback message: {message}")
-        await send_message(message)
+        # 默认通过消息系统发送
+        try:
+            future = await send_message_with_future(message)
+            results = await future.wait(timeout=300)
+            if not results:
+                logger.warning(f"context write task failed: {message}")
+        except Exception as e:
+            logger.warn(f"context write task failed: {traceback.format_exc()}")
 
-        from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
-        state_mng = RuntimeStateManager.instance()
-        msg_id = message.id
-        msg_node = state_mng.get_node(msg_id)
-        state_mng.create_node(
-            node_id=msg_id,
-            busi_type=RunNodeBusiType.from_message_category(
-                Constants.TOOL_CALLBACK),
-            busi_id=message.receiver or "",
-            session_id=message.session_id,
-            task_id=message.task_id,
-            msg_id=msg_id,
-            msg_from=message.sender)
-        res_node = await state_mng.wait_for_node_completion(msg_id)
-        if res_node.status == RunNodeStatus.SUCCESS or res_node.results:
-            tool_act_results = step_res[0].action_result
-            callback_act_results = res_node.results
-            if not callback_act_results:
-                logger.warn(
-                    f"tool {self.name()} callback finished with empty node result.")
-                return
-            if len(tool_act_results) != len(callback_act_results):
-                logger.warn(
-                    "tool action result and callback action result length not match.")
-                return
-            for idx, res in enumerate(callback_act_results):
-                if res.status == RunNodeStatus.SUCCESS:
-                    callback_res = res.result.payload
-                    if isinstance(callback_res, CallbackResult):
-                        if callback_res.callback_action_type == CallbackActionType.OVERRIDE:
-                            tool_act_results[idx].content = callback_res.result_data
-                else:
-                    logger.warn(
-                        f"tool {self.name()} callback finished with node result: {res}.")
-                    continue
-
-            return
-        else:
+        tool_act_results = step_res[0].action_result
+        callback_act_results = results.results
+        if not callback_act_results:
             logger.warn(
-                f"tool {self.name()} callback failed with node: {res_node}.")
+                f"tool {self.name()} callback finished with empty node result.")
             return
+        if len(tool_act_results) != len(callback_act_results):
+            logger.warn(
+                "tool action result and callback action result length not match.")
+            return
+        for idx, res in enumerate(callback_act_results):
+            if res.status == RunNodeStatus.SUCCESS:
+                callback_res = res.result.payload
+                if isinstance(callback_res, CallbackResult):
+                    if callback_res.callback_action_type == CallbackActionType.OVERRIDE:
+                        tool_act_results[idx].content = callback_res.result_data
+            else:
+                logger.warn(
+                    f"tool {self.name()} callback finished with node result: {res}.")
+                continue
+
+        return
 
     async def _add_tool_results_to_memory(self,
                                           step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
@@ -543,6 +534,13 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     session_id=context.session_id if context else "",
                     headers={"context": context}
                 )
+
+                # 如果开启了直接调用模式，直接调用 handler 而不通过消息系统
+                if hasattr(receive_agent, 'direct_memory_call') and receive_agent.direct_memory_call == True:
+                    from aworld.runners.handler.memory import DefaultMemoryHandler
+                    await DefaultMemoryHandler.handle_memory_message_directly(memory_msg, context)
+                    return
+                # 默认通过消息系统发送
                 try:
                     future = await send_message_with_future(memory_msg)
                     results = await future.wait(timeout=300)
@@ -721,7 +719,7 @@ class ToolActionExecutor(object):
                 continue
 
             if tool is None:
-                tool_name = "async_" + action.tool_name
+                tool_name = action.tool_name
                 tool = self.tools.get(tool_name)
                 if tool is None:
                     tool = ToolFactory(
@@ -758,13 +756,16 @@ class ToolActionExecutor(object):
         if action_name not in ActionFactory:
             action_name = action_model.tool_name + action_model.action_name
             if action_name not in ActionFactory:
-                raise ValueError(
-                    f'Action {action_model.action_name} not found in ActionFactory')
+                # for auto register
+                if action_name.startswith("async_"):
+                    action_name = action_name[6:]
+                    if action_name not in ActionFactory:
+                        raise ValueError(
+                            f'Action {action_model.action_name} not found in ActionFactory')
 
         action = ActionFactory(action_name)
         action_result, page = await action.async_act(action_model, tool=tool, **kwargs)
-        logger.info(
-            f"{tool.name()}-{action_model.action_name} execute finished")
+        logger.info(f"{tool.name()}-{action_model.action_name} execute finished")
         return action_result, page
 
 

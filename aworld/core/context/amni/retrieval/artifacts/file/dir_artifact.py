@@ -1,24 +1,26 @@
 import traceback
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 from pydantic import Field
 
 from aworld.logs.util import logger
 from aworld.output.artifact import ArtifactAttachment,Artifact, ArtifactType
 from .file_repository import FileRepository, OssFileRepository, LocalFileRepository
+from .utils import FileUtils
 
 
 class DirArtifact(Artifact):
     base_path: Optional[str] = Field(default='', description="base path for file uploads")
     file_repository: Optional[FileRepository] = Field(default=None, description="file repository", exclude=True)
-    inner_attachments: Optional[List[ArtifactAttachment]] = Field(default=None, description="inner attachments", exclude=True)
+    mount_path: Optional[str] = Field(default='', description="mount path for file uploads")
 
     def __init__(self, 
                  content: Any = None,
                  metadata: Optional[Dict[str, Any]] = None,
                  file_repository: Optional[FileRepository] = None,
                  base_path: Optional[str] = None,
+                 mount_path: Optional[str] = None,
                  **kwargs):
         # Set default artifact type to DIR for file artifacts
         artifact_type = kwargs.get('artifact_type', ArtifactType.DIR)
@@ -33,6 +35,8 @@ class DirArtifact(Artifact):
         
         # Set base path for file uploads
         self.base_path = base_path or ""
+
+        self.mount_path = mount_path or base_path or ""
         
         # Initialize file repository (defaults to OSS if not provided)
         self.file_repository = file_repository or OssFileRepository()
@@ -41,7 +45,7 @@ class DirArtifact(Artifact):
     def with_local_repository(cls, base_path: str, **kwargs) -> 'DirArtifact':
         """Create a DirArtifact with a local file repository."""
         local_repo = LocalFileRepository(base_path)
-        return cls(file_repository=local_repo, base_path=base_path, **kwargs)
+        return cls(file_repository=local_repo, base_path=base_path, mount_path=base_path, **kwargs)
     
     @classmethod
     def with_oss_repository(cls, 
@@ -60,44 +64,48 @@ class DirArtifact(Artifact):
         )
         return cls(file_repository=oss_repo, base_path=base_path, **kwargs)
 
-    def add_file(self, attachment: ArtifactAttachment) -> bool:
+    async def add_file(self, attachment: ArtifactAttachment) -> Tuple[bool, Optional[str], Optional[str]]:
         try:
             if not isinstance(attachment, ArtifactAttachment):
                 raise ValueError("attachment must be an instance of ArtifactAttachment")
             
-            # Initialize inner_attachments list if it doesn't exist
-            if self.inner_attachments is None:
-                self.inner_attachments = []
+            # Initialize attachments list if it doesn't exist
+            if self.attachments is None:
+                self.attachments = []
             
 
             # Update metadata
-            self.metadata['attachment_count'] = len(self.inner_attachments)
+            self.metadata['attachment_count'] = len(self.attachments)
             self.updated_at = datetime.now().isoformat()
             
             # upload to repository
-            self._upload_file_to_repository(attachment)
+            await self._upload_file_to_repository(attachment)
 
             # Add the attachment
             if not self.check_attachment_exists(attachment):
-                self.inner_attachments.append(attachment)
-            return True
+                self.attachments.append(attachment)
+
+            if isinstance(attachment.content, str):
+               return True, attachment.path,attachment.content
+            else:
+                return True, attachment.path,None
             
         except Exception as e:
             logger.error(f"❌ Error adding attachment: {e}")
             logger.debug(f"❌ Traceback: {traceback.format_exc()}")
-            return False
+            return False, None, None
 
     def check_attachment_exists(self, attachment: ArtifactAttachment) -> bool:
-        if not self.inner_attachments:
+        if not self.attachments:
             return False
 
-        for att in self.inner_attachments:
+        for att in self.attachments:
             if att.filename == attachment.filename:
                 return True
 
         return False
 
-    def _upload_file_to_repository(self, attachment: ArtifactAttachment, 
+    async def _upload_file_to_repository(self, attachment: ArtifactAttachment,
                                   custom_key: Optional[str] = None) -> Optional[str]:
         try:
             if not self.file_repository:
@@ -114,11 +122,16 @@ class DirArtifact(Artifact):
                     custom_key = f"{self.base_path}/{attachment.filename}"
                 else:
                     custom_key = f"{attachment.filename}"
+
+            # Download content from original source
+            content = attachment.content
+            if not content and attachment.origin_type and attachment.origin_path:
+                content = await FileUtils.read_origin_file_content(attachment.origin_type, attachment.origin_path, attachment.filename)
             
             # Upload content to file repository
-            success = self.file_repository.upload_data(
+            success, file_path = self.file_repository.upload_data(
                 key=custom_key,
-                data=attachment.content,
+                data=content,
                 metadata={
                     'filename': attachment.filename,
                     'mime_type': attachment.mime_type,
@@ -131,6 +144,7 @@ class DirArtifact(Artifact):
                 # Update artifact metadata
                 self.metadata['last_attachment_upload'] = datetime.now().isoformat()
                 self.updated_at = datetime.now().isoformat()
+                attachment.path = file_path
                 
                 return custom_key
             else:
@@ -141,12 +155,14 @@ class DirArtifact(Artifact):
             logger.error(f"❌ Error uploading attachment to repository: {e}")
             logger.debug(f"❌ Traceback: {traceback.format_exc()}")
             return None
+
+
     
     def get_file(self, filename: str) -> Optional[ArtifactAttachment]:
-        if not self.inner_attachments:
+        if not self.attachments:
             return None
         
-        for attachment in self.inner_attachments:
+        for attachment in self.attachments:
             if attachment.filename == filename:
                 return attachment
         
@@ -154,13 +170,13 @@ class DirArtifact(Artifact):
 
     def remove_file(self, filename: str) -> bool:
         try:
-            if not self.inner_attachments:
+            if not self.attachments:
                 return False
 
-            for i, attachment in enumerate(self.inner_attachments):
+            for i, attachment in enumerate(self.attachments):
                 if attachment.filename == filename:
-                    del self.inner_attachments[i]
-                    self.metadata['attachment_count'] = len(self.inner_attachments)
+                    del self.attachments[i]
+                    self.metadata['attachment_count'] = len(self.attachments)
                     self.updated_at = datetime.now().isoformat()
                     return True
 
@@ -171,25 +187,22 @@ class DirArtifact(Artifact):
             return False
 
     def list_files(self) -> List[Dict[str, Any]]:
-        if not self.inner_attachments:
+        if not self.attachments:
             return []
         
         return [
             {
                 'filename': att.filename,
-                'mime_type': att.mime_type,
-                'path': att.path,
-                'repository_key': getattr(att, 'metadata', {}).get('repository_key'),
-                'uploaded_at': getattr(att, 'metadata', {}).get('uploaded_at')
+                'path': f"{self.base_path}/{att.filename}"
             }
-            for att in self.inner_attachments
+            for att in self.attachments
         ]
     
     def reload_working_files(self) -> None:
         """
         Reload working files from the base_path in the remote repository.
         This method queries the file repository for files in the base_path
-        and populates the inner_attachments list with the found files.
+        and populates the attachments list with the found files.
         """
         try:
             if not self.file_repository:
@@ -207,15 +220,18 @@ class DirArtifact(Artifact):
             
             logger.debug(f"📁 Reload Working Files: Found {len(remote_files)} files in repository")
             
-            # Clear existing inner_attachments
-            if self.inner_attachments is None:
-                self.inner_attachments = []
+            # Clear existing attachments
+            if self.attachments is None:
+                self.attachments = []
             else:
-                self.inner_attachments.clear()
+                self.attachments.clear()
             
             # Convert remote files to ArtifactAttachment objects
             for file_info in remote_files:
                 try:
+                    # remove hidden files
+                    if file_info['filename'].startswith("."):
+                        continue
                     # Read file content from repository
                     file_content = self.file_repository.read_data(file_info['key'])
                     if file_content is None:
@@ -239,7 +255,7 @@ class DirArtifact(Artifact):
                         }
                     )
                     
-                    self.inner_attachments.append(attachment)
+                    self.attachments.append(attachment)
                     logger.debug(f"✅ Reload Working Files: {file_info['filename']} ({file_info.get('size', 0)} bytes)")
                     
                 except Exception as e:
@@ -247,11 +263,11 @@ class DirArtifact(Artifact):
                     continue
             
             # Update metadata
-            self.metadata['attachment_count'] = len(self.inner_attachments)
+            self.metadata['attachment_count'] = len(self.attachments)
             self.metadata['last_reload'] = datetime.now().isoformat()
             self.updated_at = datetime.now().isoformat()
             
-            # logger.info(f"✅ Successfully reloaded {len(self.inner_attachments)} files from {self.base_path}")
+            # logger.info(f"✅ Successfully reloaded {len(self.attachments)} files from {self.base_path}")
         except Exception as e:
             logger.error(f"❌ Error reloading working files: {e}")
             logger.debug(f"❌ Traceback: {traceback.format_exc()}")
@@ -262,4 +278,23 @@ class DirArtifact(Artifact):
         import mimetypes
         mime_type, _ = mimetypes.guess_type(filename)
         return mime_type or 'application/octet-stream'
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert DirArtifact to dictionary."""
+
+        self.reload_working_files()
+        return {
+            "artifact_id": self.artifact_id,
+            "artifact_type": self.artifact_type.value,
+            "content": self.content,
+            "metadata": self.metadata,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "status": self.status.name,
+            "version_count": len(self.version_history),
+            "files": self.list_files()
+        }
+
+    def need_save_attachment(self):
+        return False
 
