@@ -226,17 +226,21 @@ logger = AWorldLogger(tag='AWorld', name='AWorld')
 trace_logger = AWorldLogger(tag='Trace', name='AWorld')
 trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld')
 
-
 prompt_logger = AWorldLogger(tag='prompt_logger', name='AWorld',
                              formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | prompt | {level} |</black> <level>{message}</level>")
 digest_logger = AWorldLogger(tag='digest_logger', name='AWorld',
-                             formatter="{time:YYYY-MM-DD HH:mm:ss.SSS} - {message}")
+                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | digest | {level} |</black> <level>{message}</level>")
+
+asyncio_monitor_logger = AWorldLogger(tag='asyncio_monitor', name='AWorld',
+                                      formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | </black> <level>{message}</level>")
 
 monkey_logger(logger)
 monkey_logger(trace_logger)
 monkey_logger(trajectory_logger)
 monkey_logger(prompt_logger)
 # monkey_logger(digest_logger)
+monkey_logger(asyncio_monitor_logger)
+
 
 # log examples:
 # the same as debug, warn, error, fatal

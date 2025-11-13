@@ -1,12 +1,13 @@
 # coding: utf-8
-# Example: load agents and swarm from a YAML file and run
+import os
 
-from aworld.config.agent_loader import load_agents_from_yaml, load_swarm_from_yaml
+from aworld.config.agent_loader import load_swarm_from_yaml
 from aworld.runner import Runners
 
+# Example: load agents and swarm from a YAML file and run
 if __name__ == "__main__":
     # You can change the config path as needed
-    swarm, agents = load_swarm_from_yaml("examples/load_config/agents.yaml")
+    swarm, agents = load_swarm_from_yaml(f"{os.path.dirname(__file__)}/agents.yaml")
 
     # Access a specific agent if needed
     summarizer = agents["summarizer"]

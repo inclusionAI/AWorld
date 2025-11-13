@@ -10,7 +10,6 @@ from aworld.core.event.base import Constants, TopicType, HumanMessage, Message
 from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.events.util import send_message
 from aworld.logs.util import logger
-from aworld.runners.utils import long_wait_message_state
 from aworld.tools.human.actions import HumanExecuteAction
 from aworld.tools.utils import build_observation
 
@@ -50,6 +49,8 @@ class HumanTool(AsyncTool):
 
     async def do_step(self, actions: list[ActionModel], message:Message = None, **kwargs) -> Tuple[
         Observation, float, bool, bool, Dict[str, Any]]:
+        from aworld.runners.utils import long_wait_message_state
+
         self.step_finished = False
         reward = 0.
         fail_error = ""

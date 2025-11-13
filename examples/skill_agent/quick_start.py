@@ -81,5 +81,8 @@ async def run(user_input: str):
 
 
 if __name__ == '__main__':
-    asyncio.run(run(user_input="read https://arxiv.org/pdf/2510.23595v1 and tell me the abstract and conclusion of this paper"))
+    asyncio.run(run(user_input="截至2024年12月31日，2024年上海黄金交易所Au(T+D)合约的“最高价”与“最低价”之差约为多少元/克？"))
+    # asyncio.run(run(user_input="https://huggingface.co/datasets/xbench/DeepSearch 帮我把这个数据下载然后解密给我么，请参考xbench_evals github repo中的解密代码获取纯文本数据。"))
+    # asyncio.run(run(user_input="帮我看看这周日从杭州到郑州的机票价格和时间(必须使用code mode 模式， 你应该先使用访问网站，然后获取到所有的元素之后再用codemode进行填充)"))
+    # asyncio.run(run(user_input="read https://arxiv.org/pdf/2510.23595v1 and tell me the abstract and conclusion of this paper"))
     # asyncio.run(run(user_input="Help me find the latest week stock price of BABA. And Analysis the trend of news."))

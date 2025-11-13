@@ -28,6 +28,7 @@ class Constants:
     MEMORY = "memory"
     CONTEXT = "context"
     CONTEXT_RESPONSE = "context_response"
+    CHUNK = "chunk"
     REMOTE_TOOL_CALL = "REMOTE_TOOL_CALL"
     INIT_TOOLS = "INIT_TOOLS"
     INIT_SERVER = "INIT_SERVER"
@@ -43,6 +44,7 @@ class TopicType:
     RERUN = "__rerun"
     HUMAN_CONFIRM = "__human_confirm"
     CANCEL = "__cancel"
+    INTERRUPT = "__interrupt"
     # for dynamic subscribe
     SUBSCRIBE_TOOL = "__subscribe_tool"
     SUBSCRIBE_AGENT = "__subscribe_agent"
@@ -51,6 +53,7 @@ class TopicType:
     AGENT_RESULT = "__agent_result"
     SYSTEM_PROMPT = "__system_prompt"
     TOOL_RESULT = "__tool_result"
+    TASK_RESPONSE = "__task_response"
 
 
 DataType = TypeVar('DataType')
@@ -103,6 +106,22 @@ class Message(Generic[DataType]):
 
     def is_error(self):
         return self.topic == TopicType.ERROR
+
+    def debug_repr(self) -> str:
+        """Return a full representation including payload for debugging."""
+        return (
+            f"Message(session_id={self.session_id!r}, "
+            f"sender={self.sender!r}, "
+            f"receiver={self.receiver!r}, "
+            f"caller={self.caller!r}, "
+            f"category={self.category!r}, "
+            f"topic={self.topic!r}, "
+            f"priority={self.priority!r}, "
+            f"timestamp={self.timestamp!r}, "
+            f"id={self.id!r}, "
+            f"payload={self.payload!r}), "
+            f"headers={self.headers!r}"
+        )
 
     @property
     def task_id(self):
@@ -183,6 +202,7 @@ class MemoryEventMessage(Message[Any]):
     category: str = 'memory'
     agent: 'BaseAgent' = field(default=None)
     memory_event_type: MemoryEventType = field(default=None)
+    priority: int = field(default=-2)
 
 
 @dataclass
@@ -194,6 +214,12 @@ class HumanMessage(Message[Any]):
     """
     category: str = 'human'
     priority: int = field(default=-1)
+
+@dataclass
+class ChunkMessage(Message[Any]):
+    """Chunk message is used to stream the response of the LLM or tool."""
+    category: str = 'chunk'
+    source_type: str = field(default=None)
 
 
 @dataclass

@@ -126,7 +126,8 @@ class ModelResponse:
             error: str = None,
             raw_response: Any = None,
             message: Dict[str, Any] = None,
-            reasoning_content: str = None
+            reasoning_content: str = None,
+            finish_reason: str = None
     ):
         """
         Initialize ModelResponse object
@@ -169,6 +170,8 @@ class ModelResponse:
 
         self.created_at = datetime.now().isoformat()
 
+        self.finish_reason = finish_reason
+
     @classmethod
     def _get_item_from_openai_message(cls, message:Any, key: str, default_value: Any = None) -> Any:
         if not message:
@@ -204,10 +207,13 @@ class ModelResponse:
 
         # Normal case
         message = None
+        finish_reason = None
         if hasattr(response, 'choices') and response.choices:
             message = response.choices[0].message
+            finish_reason = response.choices[0].finish_reason
         elif isinstance(response, dict) and response.get('choices'):
             message = response['choices'][0].get('message', {})
+            finish_reason = response['choices'][0].get('finish_reason')
 
         if not message:
             raise LLMResponseError(
@@ -290,7 +296,8 @@ class ModelResponse:
             usage=usage,
             raw_response=response,
             message=message_dict,
-            reasoning_content=reasoning_content
+            reasoning_content=reasoning_content,
+            finish_reason=finish_reason
         )
 
     @classmethod
@@ -315,14 +322,33 @@ class ModelResponse:
                 chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
                 chunk
             )
+
+        # Extract usage information
+        usage = {}
+        if hasattr(chunk, 'usage') and chunk.usage:
+            usage = {
+                "completion_tokens": cls._get_item_from_openai_message(chunk.usage, 'completion_tokens', 0),
+                "prompt_tokens": cls._get_item_from_openai_message(chunk.usage, 'prompt_tokens', 0),
+                "total_tokens": cls._get_item_from_openai_message(chunk.usage, 'total_tokens', 0)
+            }
+        elif isinstance(chunk, dict) and chunk.get('usage'):
+            usage = chunk['usage']
+
         # Handle finish reason chunk (end of stream)
-        if hasattr(chunk, 'choices') and chunk.choices and chunk.choices[0].finish_reason:
+        finish_reason = None
+        if hasattr(chunk, 'choices') and chunk.choices:
+            finish_reason = chunk.choices[0].finish_reason
+        elif isinstance(chunk, dict) and chunk.get('choices'):
+            finish_reason = chunk['choices'][0].get('finish_reason')
+        if finish_reason:
             return cls(
                 id=chunk.id if hasattr(chunk, 'id') else chunk.get('id', 'unknown'),
                 model=chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
                 content="",
+                usage=usage,
                 raw_response=chunk,
-                message={"role": "assistant", "content": "", "finish_reason": chunk.choices[0].finish_reason}
+                message={"role": "assistant", "content": "", "finish_reason": chunk.choices[0].finish_reason},
+                finish_reason=finish_reason
             )
 
         # Normal chunk with delta content
@@ -363,17 +389,6 @@ class ModelResponse:
             if raw_tool_calls:
                 for tool_call in raw_tool_calls:
                     processed_tool_calls.append(ToolCall.from_dict(tool_call))
-
-        # Extract usage information
-        usage = {}
-        if hasattr(chunk, 'usage') and chunk.usage:
-            usage = {
-                "completion_tokens": cls._get_item_from_openai_message(chunk.usage, 'completion_tokens', 0),
-                "prompt_tokens": cls._get_item_from_openai_message(chunk.usage, 'prompt_tokens', 0),
-                "total_tokens": cls._get_item_from_openai_message(chunk.usage, 'total_tokens', 0)
-            }
-        elif isinstance(chunk, dict) and chunk.get('usage'):
-            usage = chunk['usage']
 
         # Create message object
         message = {
@@ -600,7 +615,8 @@ class ModelResponse:
             "error": self.error,
             "message": self.message,
             "reasoning_content": self.reasoning_content,
-            "created_at": self.created_at
+            "created_at": self.created_at,
+            "finish_reason": self.finish_reason
         }
 
     def get_message(self) -> Dict[str, Any]:
