@@ -7,7 +7,7 @@ import traceback
 import aworld.trace as trace
 
 from functools import partial
-from typing import List, Callable, Any
+from typing import List, Callable, Any, Optional, Dict
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.base import BaseAgent
@@ -15,7 +15,7 @@ from aworld.core.common import TaskItem, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
-from aworld.core.task import Task, TaskResponse
+from aworld.core.task import Task, TaskResponse, TaskStatus, TaskStatusValue
 from aworld.dataset.trajectory_dataset import generate_trajectory_from_strategy
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
@@ -23,6 +23,7 @@ from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.task_runner import TaskRunner
 from aworld.runners.state_manager import EventRuntimeStateManager
+
 from aworld.trace.base import get_trace_id
 from aworld.utils.common import override_in_subclass, new_instance
 
@@ -33,12 +34,13 @@ class TaskEventRunner(TaskRunner):
     def __init__(self, task: Task, *args, **kwargs):
         super().__init__(task, *args, **kwargs)
         self._task_response = None
-        self.event_mng = EventManager(self.context)
+        self.event_mng = EventManager(self.context, streaming_mode=task.streaming_mode)
         self.hooks = {}
         self.handlers = []
         self.init_messages = []
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
+
 
     async def do_run(self, context: Context = None):
         if self.swarm and not self.swarm.initialized:
@@ -105,7 +107,8 @@ class TaskEventRunner(TaskRunner):
                 self.handlers.append(new_instance(hand, self))
         else:
             for handler in HandlerFactory:
-                self.handlers.append(HandlerFactory(handler, runner=self))
+                handler_instance = HandlerFactory(handler, runner=self)
+                self.handlers.append(handler_instance)
 
         self.task_flag = "sub" if self.task.is_sub_task else "main"
         logger.debug(f"{self.task_flag} task: {self.task.id} pre run finish, will start to run...")
@@ -160,20 +163,12 @@ class TaskEventRunner(TaskRunner):
             self.state_manager.start_message_node(message)
             logger.debug(f"start_message_node end message id: {message.id} of task {self.task.id}")
             if handlers:
-                if message.topic:
-                    handlers = {message.topic: handlers.get(message.topic, [])}
-                elif message.receiver:
-                    handlers = {message.receiver: handlers.get(
-                        message.receiver, [])}
-                else:
-                    logger.warning(f"{message.id} no receiver and topic, be ignored.")
+                handler_list = handlers.get(message.topic) or handlers.get(message.receiver)
+                if not handler_list:
+                    logger.warning(f"{message.topic}/{message.receiver} no handler, ignore.")
                     handlers.clear()
-
-                handle_map = {}
-                for topic, handler_list in handlers.items():
-                    if not handler_list:
-                        logger.warning(f"{topic} no handler, ignore.")
-                        continue
+                else:
+                    handle_map = {}
 
                     for handler in handler_list:
                         t = asyncio.create_task(self._handle_task(message, handler))
@@ -189,6 +184,7 @@ class TaskEventRunner(TaskRunner):
 
                 results.append(message)
                 t = asyncio.create_task(self._raw_task(results))
+                # This creates a strong reference, see https://docs.python.org/3/library/asyncio-task.html#id4
                 self.background_tasks.add(t)
                 t.add_done_callback(partial(self._task_done_callback, message=message))
                 await asyncio.sleep(0)
@@ -196,6 +192,8 @@ class TaskEventRunner(TaskRunner):
             return results
 
     def _task_done_callback(self, task, message: Message, group: dict = None):
+        # To prevent keeping references to finished tasks forever, make each task remove its own reference
+        # from the set after completion, see https://docs.python.org/3/library/asyncio-task.html#id4
         self.background_tasks.discard(task)
         if not group:
             self.state_manager.end_message_node(message)
@@ -265,20 +263,12 @@ class TaskEventRunner(TaskRunner):
         msg = None
         answer = None
         message = None
+
         try:
             while True:
-                if 0 < self.task.timeout < time.time() - self.start_time:
-                    logger.warn(
-                        f"{task_flag} task {self.task.id} timeout after {time.time() - self.start_time} seconds.")
-                    self._task_response = TaskResponse(answer='',
-                                                       success=False,
-                                                       context=message.context,
-                                                       id=self.task.id,
-                                                       time_cost=(time.time() - self.start_time),
-
-                                                       usage=self.context.token_usage,
-                                                       msg='cancellation: task timeout',
-                                                       status='cancelled')
+                # External control - Check task status before processing each message
+                should_stop_task = await self.should_stop_task(message)
+                if should_stop_task:
                     await self.stop()
                 if await self.is_stopped():
                     logger.info(f"{task_flag} task {self.task.id} stoped and will break snap")
@@ -293,7 +283,7 @@ class TaskEventRunner(TaskRunner):
                                                            time_cost=(
                                                                time.time() - start),
                                                            usage=self.context.token_usage,
-                                                           status='success' if not msg else 'failed')
+                                                           status=TaskStatusValue.SUCCESS if not msg else TaskStatusValue.FAILED)
                     break
                 logger.debug(f"{task_flag} task {self.task.id} next message snap")
                 # consume message
@@ -359,3 +349,41 @@ class TaskEventRunner(TaskRunner):
             self._task_response.trajectory = trajectory
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
+
+    async def should_stop_task(self, message: Message):
+        task_flag = self.task_flag
+        time_cost = time.time() - self.start_time
+
+        # Check timeout
+        if 0 < self.task.timeout < time_cost:
+            logger.warn(
+                f"{task_flag} task {self.task.id} timeout after {time_cost} seconds.")
+            self._task_response = TaskResponse(
+                answer='',
+                success=False,
+                context=message.context if message else self.context,
+                id=self.task.id,
+                time_cost=(time.time() - self.start_time),
+                usage=self.context.token_usage,
+                msg=f'Task timeout after {time_cost} seconds.',
+                status=TaskStatusValue.TIMEOUT
+            )
+            await self.context.update_task_status(self.task.id, TaskStatusValue.TIMEOUT)
+            return True
+
+        # Check Task status from context
+        task_status = await self.context.get_task_status()
+        if task_status == TaskStatusValue.INTERRUPTED or task_status == TaskStatusValue.CANCELLED:
+            logger.warn(f"{task_flag} task {self.task.id} is {task_status}.")
+            self._task_response = TaskResponse(
+                answer='',
+                success=False,
+                context=message.context if message else self.context,
+                id=self.task.id,
+                time_cost=time_cost,
+                usage=self.context.token_usage,
+                msg=f'Task is {task_status}.',
+                status=task_status
+            )
+            return True
+        return False

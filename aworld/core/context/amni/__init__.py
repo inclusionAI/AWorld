@@ -388,7 +388,9 @@ class AmniContext(Context):
 
         self.put(ACTIVE_SKILLS_KEY, activate_skills, namespace=namespace)
         return (f"skill {skill_name} activated, current skills: {activate_skills} \n\n"
-                f"<skill_guide>{skill.get('usage', '')}</skill_guide>")
+                    f"<skill_guide>{skill.get('usage', '')}</skill_guide>\n\n"
+                    f"<skill_path>{skill.get('skill_path', '')}</skill_path>\n\n"
+                )
 
     async def offload_skill(self, skill_name: str,namespace: str) -> str:
         """
@@ -1454,6 +1456,13 @@ class ApplicationContext(AmniContext):
         await self.init_working_dir()
         self._working_dir.reload_working_files()
         return self._working_dir
+
+    async def refresh_working_dir(self):
+        await self.init_working_dir()
+        self._working_dir.reload_working_files()
+        await self._workspace.add_artifact(self._working_dir, index=False)
+
+
 
 
     #####################################################################

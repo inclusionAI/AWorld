@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import Type, Union
+from typing import Type
 
 from a2a.server.apps import A2AFastAPIApplication, A2AStarletteApplication
 from a2a.server.tasks import PushNotificationConfigStore, TaskStore, BasePushNotificationSender, InMemoryTaskStore
@@ -24,6 +24,7 @@ class ServingConfig(BaseConfig):
     port: int = 0
     endpoint: str = "/"
     streaming: bool = False
+    serving_type: str = "a2a" # options: a2a, mcp
     keep_running: bool = True
     skills: list[AgentSkill] = []
     input_modes: list[str] = ["text"]
