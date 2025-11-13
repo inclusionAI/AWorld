@@ -1,7 +1,7 @@
 
 import os
 from abc import abstractmethod
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 
 from pydantic import BaseModel, Field
 
@@ -25,7 +25,7 @@ class FileRepository(BaseModel):
         pass
     
     @abstractmethod
-    def upload_data(self, key: str, data: Any, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    def upload_data(self, key: str, data: Any, metadata: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str]]:
         """Upload data to the repository with the given key."""
         pass
     
@@ -66,7 +66,7 @@ class LocalFileRepository(FileRepository):
             logger.error(f"❌ Error reading file {file_path}: {e}")
             return None
     
-    def upload_data(self, key: str, data: Any, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    def upload_data(self, key: str, data: Any, metadata: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str]]:
         """
         Upload data to local file system with immediate disk sync.
         
@@ -91,10 +91,10 @@ class LocalFileRepository(FileRepository):
             with open(file_path, 'wb') as f:
                 f.write(data)
             logger.info(f"✅ uploading file {file_path} success")
-            return True
+            return True, file_path
         except Exception as e:
             logger.error(f"❌ Error uploading file {file_path}: {e}")
-            return False
+            return False, None
     
     def delete_data(self, key: str) -> bool:
         """Delete data from local file system."""
@@ -156,10 +156,10 @@ class OssFileRepository(FileRepository):
         Initialize OSS file repository.
         
         Args:
-            access_key_id: OSS access key ID (defaults to DIR_ARTIFACT_OSS_ACCESS_KEY_ID env var)
-            access_key_secret: OSS access key secret (defaults to DIR_ARTIFACT_OSS_ACCESS_KEY_SECRET env var)
-            endpoint: OSS endpoint (defaults to DIR_ARTIFACT_OSS_ENDPOINT env var)
-            bucket_name: OSS bucket name (defaults to DIR_ARTIFACT_OSS_BUCKET_NAME env var)
+            access_key_id: OSS access key ID (defaults to WORKING_DIR_OSS_ACCESS_KEY_ID env var)
+            access_key_secret: OSS access key secret (defaults to WORKING_DIR_OSS_ACCESS_KEY_SECRET env var)
+            endpoint: OSS endpoint (defaults to WORKING_DIR_OSS_ENDPOINT env var)
+            bucket_name: OSS bucket name (defaults to WORKING_DIR_OSS_BUCKET_NAME env var)
             enable_export: Whether to enable export functionality
         """
         super().__init__()
@@ -182,15 +182,16 @@ class OssFileRepository(FileRepository):
                               enable_export: bool = True):
         """Initialize OSS client using provided parameters or environment variables."""
         if not OSS2_AVAILABLE:
-            self.bucket = None
+            from oss2 import Bucket
+            self.bucket: Bucket = None
             return
             
         try:
             # Use provided parameters or fall back to environment variables
-            final_access_key_id = access_key_id or os.getenv('DIR_ARTIFACT_OSS_ACCESS_KEY_ID')
-            final_access_key_secret = access_key_secret or os.getenv('DIR_ARTIFACT_OSS_ACCESS_KEY_SECRET')
-            final_endpoint = endpoint or os.getenv('DIR_ARTIFACT_OSS_ENDPOINT')
-            final_bucket_name = bucket_name or os.getenv('DIR_ARTIFACT_OSS_BUCKET_NAME')
+            final_access_key_id = access_key_id or os.getenv('WORKING_DIR_OSS_ACCESS_KEY_ID')
+            final_access_key_secret = access_key_secret or os.getenv('WORKING_DIR_OSS_ACCESS_KEY_SECRET')
+            final_endpoint = endpoint or os.getenv('WORKING_DIR_OSS_ENDPOINT')
+            final_bucket_name = bucket_name or os.getenv('WORKING_DIR_OSS_BUCKET_NAME')
 
             auth = oss2.Auth(final_access_key_id, final_access_key_secret)
             self.bucket = oss2.Bucket(auth, final_endpoint, final_bucket_name)
@@ -210,17 +211,18 @@ class OssFileRepository(FileRepository):
             logger.error(f"❌ Error reading data from OSS with key {key}: {e}")
             return None
     
-    def upload_data(self, key: str, data: Any, metadata: Optional[Dict[str, Any]] = None) -> bool:
+    def upload_data(self, key: str, data: Any, metadata: Optional[Dict[str, Any]] = None) -> Tuple[bool, Optional[str]]:
         """Upload data to OSS."""
         if not self.bucket:
             logger.error("❌ OSS client not initialized")
-            return False
+            return False, key
         
         try:
-            return self.bucket.put_object(key=key, data=data)
+            result = self.bucket.put_object(key=key, data=data)
+            return result.status == 200, key
         except Exception as e:
             logger.error(f"❌ Error uploading data to OSS with key {key}: {e}")
-            return False
+            return False, key
     
     def delete_data(self, key: str) -> bool:
         """Delete data from OSS."""

@@ -85,7 +85,7 @@ class AworldMultiTurnWorkflow(RolloutWorkflow):
                            input=data["messages"][0].get("content"),
                            agent=agent,
                            context=context,
-                           conf=TaskConfig(resp_carry_context=True, run_mode=TaskRunMode.INTERACTIVAE))
+                           conf=TaskConfig(resp_carry_context=True, run_mode=TaskRunMode.INTERACTIVE))
         while reward == 0 and t < self.max_turns:
             # Send generate request to get the response.
             responses = await Runners.run_task(aworld_task)

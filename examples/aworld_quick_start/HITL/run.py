@@ -3,22 +3,15 @@
 import os
 
 from aworld.agents.llm_agent import Agent
-from aworld.config.conf import AgentConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 from aworld.tools.human.human import HUMAN
-import examples
+from examples.aworld_quick_start.common import agent_config
 
 if __name__ == '__main__':
-    conf = AgentConfig(
-        llm_provider=os.getenv("LLM_PROVIDER", "openai"),
-        llm_model_name=os.getenv("LLM_MODEL_NAME"),
-        llm_base_url=os.getenv("LLM_BASE_URL"),
-        llm_api_key=os.getenv("LLM_API_KEY"),
-    )
     # human in the loop
     agent = Agent(
-        conf=conf,
+        conf=agent_config,
         name='human_test',
         system_prompt="You are a helpful assistant.",
         tool_names=[HUMAN]

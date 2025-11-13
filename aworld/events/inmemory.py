@@ -18,24 +18,38 @@ class InMemoryEventbus(Eventbus):
         # use asyncio Queue as default, isolation based on session_id
         # self._message_queue: Queue = Queue()
         self._message_queue: Dict[str, Queue] = {}
+    
 
     async def wait_consume_size(self, id: str) -> int:
         return self._message_queue.get(id, Queue()).qsize()
 
     async def publish(self, message: Message, **kwargs):
-        logger.info(f"publish message: {message} of task: {message.task_id}")
+        type = kwargs.get("type", "")
+        logger.info(f"{type}|publish message: {message} of task: {message.task_id}")
         queue = self._message_queue.get(message.task_id)
         if not queue:
             queue = PriorityQueue()
             self._message_queue[message.task_id] = queue
-        logger.debug(f"publish message: {message.task_id}:  {message.session_id}, queue: {id(queue)}")
+        logger.debug(f"{type}|publish message: {message.task_id}:  {message.session_id}, queue: {id(queue)}")
         await queue.put(message)
 
     async def consume(self, message: Message, **kwargs):
-        return await self._message_queue.get(message.task_id, PriorityQueue()).get()
+        return await self.get(message.task_id)
 
     async def consume_nowait(self, message: Message):
-        return self._message_queue.get(message.task_id, PriorityQueue()).get_nowait()
+        return await self.get_nowait(message.task_id)
+
+    async def get_nowait(self, task_id: str):
+        # Ensure the queue exists in the dict before waiting
+        if task_id not in self._message_queue:
+            self._message_queue[task_id] = PriorityQueue()
+        return self._message_queue[task_id].get_nowait()
+
+    async def get(self, task_id: str):
+        # Ensure the queue exists in the dict before waiting
+        if task_id not in self._message_queue:
+            self._message_queue[task_id] = PriorityQueue()
+        return await self._message_queue[task_id].get()
 
     async def done(self, id: str):
         # Only operate on an existing queue; avoid creating a new temporary queue via dict.get default
