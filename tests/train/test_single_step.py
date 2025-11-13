@@ -44,7 +44,7 @@ class SingleStepTest(unittest.IsolatedAsyncioTestCase):
             conf=TaskConfig(
                 stream=False,
                 resp_carry_context=True,
-                run_mode=TaskRunMode.INTERACTIVAE
+                run_mode=TaskRunMode.INTERACTIVE
             ),
             context=context
         )

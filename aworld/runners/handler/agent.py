@@ -93,7 +93,7 @@ class DefaultAgentHandler(AgentHandler):
                 yield msg
                 return
 
-            if message.context.get_task().conf.get("run_mode") == TaskRunMode.INTERACTIVAE and data.action_result:
+            if message.context.get_task().conf.get("run_mode") == TaskRunMode.INTERACTIVE and data.action_result:
                 # train mode, send finished message to task after single-step completion.
                 headers = {"step_interrupt": True}
                 headers.update(message.headers)
