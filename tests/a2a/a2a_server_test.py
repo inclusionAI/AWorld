@@ -19,5 +19,5 @@ async def run():
     agent_server = AgentServer(agent=agent, config=ServingConfig(port=7500, streaming=True))
     await agent_server.start()
 
-if __name__ == "__main__":
-    asyncio.run(run())
+# if __name__ == "__main__":
+#     asyncio.run(run())
