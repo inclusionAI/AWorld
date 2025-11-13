@@ -23,7 +23,6 @@ from aworld.experimental.a2a.config import ClientConfig
 from aworld.logs.util import logger
 from aworld.core.task import Task, TaskResponse
 from aworld.config import RunConfig
-from aworld.output import StreamingOutputs
 
 
 class A2AClientProxy:
@@ -140,6 +139,7 @@ class A2AClientProxy:
             'mcp_servers_conf': task.mcp_servers_conf,
             'task_conf': task.conf,
             'run_conf': run_conf,
+            'streaming_mode': self._config.streaming_mode,
         }
         a2a_text_message.metadata = request_meta
 

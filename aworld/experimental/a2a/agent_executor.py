@@ -26,6 +26,11 @@ class AworldAgentExecutor(AgentExecutor):
         self.agent = agent
         self.streaming = streaming
 
+    def _get_message_meta_str(self, metadata, key: str) -> str:
+        if not metadata:
+            return None
+        return metadata.get(key, None)
+
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         if not context.message:
             raise ValueError(f"No message in context {context}")
@@ -38,11 +43,19 @@ class AworldAgentExecutor(AgentExecutor):
 
         updater = TaskUpdater(event_queue, task.id, task.context_id)
 
-        aworld_task = Task(input=query, agent=self.agent)
+        aworld_task = Task(input=query,
+                           agent=self.agent,
+                           user_id=self._get_message_meta_str(context.message.metadata, 'user_id'),
+                           session_id=self._get_message_meta_str(context.message.metadata, 'session_id'),
+                           id=self._get_message_meta_str(context.message.metadata, 'task_id'),
+                           conf=self._get_message_meta_str(context.message.metadata, 'task_conf'),
+                           )
+        run_conf = self._get_message_meta_str(context.message.metadata, 'run_conf')
+        streaming_mode = self._get_message_meta_str(context.message.metadata, 'streaming_mode')
 
         if self.streaming:
-            aworld_task.streaming_mode = StreamingMode.CORE
-            async for msg in streaming_exec_task(aworld_task):
+            aworld_task.streaming_mode = StreamingMode(streaming_mode) if streaming_mode else StreamingMode.CORE
+            async for msg in streaming_exec_task(aworld_task, run_conf):
                 if msg.topic == TopicType.TASK_RESPONSE and msg.task_id == aworld_task.id:
                     output_parts = [Part(root=TextPart(text=msg.payload.answer))]
                     await updater.add_artifact(
@@ -60,8 +73,10 @@ class AworldAgentExecutor(AgentExecutor):
                         content = payload.content or payload.tool_calls
                     elif msg.topic == TopicType.TASK_RESPONSE:
                         content = payload.answer
-                    elif msg.category == Constants.TOOL or msg.category == Constants.AGENT:
+                    elif msg.category == Constants.TOOL:
                         content = json.dumps(to_serializable(payload))
+                    elif msg.category == Constants.AGENT:
+                        continue
                     else:
                         content = str(payload)
 
@@ -71,7 +86,7 @@ class AworldAgentExecutor(AgentExecutor):
                         message=new_agent_text_message(content, task.context_id, task.id)
                     )
         else:
-            resp = await exec_tasks([aworld_task])
+            resp = await exec_tasks([aworld_task], run_conf)
 
             logger.info(f"task: {aworld_task.id} execute finished. {resp.get(aworld_task.id)}")
 
