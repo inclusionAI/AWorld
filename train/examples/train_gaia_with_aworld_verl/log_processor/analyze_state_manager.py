@@ -238,7 +238,24 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
         'MEMORY': '#FCBAD3',
         'CONTEXT': '#FFD93D',
         'INIT_TOOLS': '#FFA500',
+        'INIT_SERVER': '#FF8C00',
         'HANDLER': '#2ECC71'
+    }
+    
+    # 为不同的busi_type设置HTML页面显示的标签名
+    busi_type_labels = {
+        'AGENT': 'AGENT',
+        'TOOL': 'TOOL',
+        'TASK': 'TASK',
+        'TOOL_CALLBACK': 'TOOL_CALLBACK',
+        "REMOTE_TOOL_CALL": 'REMOTE_TOOL_CALL',
+        "LLM": 'LLM',
+        'HUMAN': 'HUMAN',
+        'MEMORY': 'HISTORY',
+        'CONTEXT': 'CONTEXT',
+        'INIT_TOOLS': 'INIT_TOOLS',
+        'INIT_SERVER': 'INIT_SERVER',
+        'HANDLER': 'HANDLER'
     }
     
     # 创建子图：主图和统计信息
@@ -271,8 +288,8 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
             end_time = node_info['end_time']
             duration = node_info['duration']
             
-            x_start = (start_time - min_time) / total_duration
-            x_end = (end_time - min_time) / total_duration
+            x_start = start_time - min_time  # 以秒为单位
+            x_end = end_time - min_time  # 以秒为单位
             width = x_end - x_start
             
             y_pos = y_positions[node.node_id]
@@ -280,8 +297,9 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
             y_top = y_pos + 0.4
             
             # 准备hover信息
+            display_label = busi_type_labels.get(node.busi_type, node.busi_type)
             hover_text = (
-                f"<b>asd {duration:.3f}s {node.busi_type if node.busi_type != 'MEMORY' else 'HISTORY'}: {node.busi_id}</b><br>"
+                f"<b>asd {duration:.3f}s {display_label}: {node.busi_id}</b><br>"
             )
             
             # 使用填充区域绘制矩形（顺时针绘制矩形四个顶点）
@@ -293,8 +311,8 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
                     fill='toself',
                     fillcolor=color,
                     line=dict(color='black', width=1),
-                    hovertemplate=hover_text + '<extra></extra>',
-                    name=busi_type,
+                    hovertemplate=hover_text,
+                    name=busi_type_labels.get(busi_type, busi_type),
                     showlegend=(node_info == type_nodes[0]),  # 只为第一个节点显示图例
                     legendgroup=busi_type,
                     opacity=0.8
@@ -302,11 +320,12 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
                 row=1, col=1
             )
             
-            # 添加文本标签（如果宽度足够）
-            if width > 0.02:
-                label = f"{node.busi_type}:{node.busi_id}"
-                if len(label) > 20:
-                    label = label[:17] + "..."
+            # 添加文本标签（如果宽度足够，以秒为单位判断）
+            if width > total_duration * 0.02:  # 宽度至少占总时长的2%
+                display_label = busi_type_labels.get(node.busi_type, node.busi_type)
+                label = f"{display_label}:{duration:.3f}"
+                # if len(label) > 20:
+                #     label = label[:17] + "..."
                 annotations.append(dict(
                     x=(x_start + x_end) / 2,
                     y=y_pos,
@@ -322,8 +341,8 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
     # 设置主图坐标轴
     max_y = max(y_positions.values()) if y_positions else 0
     fig.update_xaxes(
-        title_text=f'时间 (总时长: {total_duration:.2f}秒)',
-        range=[0, 1],
+        title_text=f'时间 (秒)',
+        range=[0, total_duration],
         row=1, col=1
     )
     fig.update_yaxes(
@@ -343,8 +362,9 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
     # 按类型统计
     table_data.append(['<b>类型统计</b>', '<b>数值</b>'])
     for busi_type, type_stats in sorted(stats['by_type'].items()):
+        display_label = busi_type_labels.get(busi_type, busi_type)
         table_data.append([
-            f"{busi_type}",
+            f"{display_label}",
             f"数量: {type_stats['count']}, "
             f"总耗时: {type_stats['total_time']:.3f}s, "
             f"平均: {type_stats['avg_time']:.3f}s, "

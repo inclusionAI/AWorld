@@ -43,8 +43,7 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
             llm_api_key=llm_api_key,
             llm_provider="openai",
             llm_temperature=1.0,
-            top_p=1.0,
-            top_k=80,
+            top_k=20,
             timeout=7200,
             params={
                 "client": server_manager,

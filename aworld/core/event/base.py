@@ -30,6 +30,7 @@ class Constants:
     CONTEXT_RESPONSE = "context_response"
     REMOTE_TOOL_CALL = "REMOTE_TOOL_CALL"
     INIT_TOOLS = "INIT_TOOLS"
+    INIT_SERVER = "INIT_SERVER"
     LLM = "LLM"
     HANDLER = "HANDLER"
 
