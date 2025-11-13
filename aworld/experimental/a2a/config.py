@@ -10,6 +10,7 @@ from a2a.client.client import Consumer
 from collections.abc import Callable
 
 from aworld.config import BaseConfig
+from aworld.core.common import StreamingMode
 
 SERVER_APP_MAPPING = {"fastapi": A2AFastAPIApplication,
                       "starlette": A2AStarletteApplication,
@@ -24,7 +25,7 @@ class ServingConfig(BaseConfig):
     port: int = 0
     endpoint: str = "/"
     streaming: bool = False
-    serving_type: str = "a2a" # options: a2a, mcp
+    serving_type: str = "a2a"  # options: a2a, mcp
     keep_running: bool = True
     skills: list[AgentSkill] = []
     input_modes: list[str] = ["text"]
@@ -39,6 +40,7 @@ class ServingConfig(BaseConfig):
 
 class ClientConfig(BaseConfig):
     streaming: bool = False
+    streaming_mode: str = StreamingMode.OUTPUT.value
     # Whether client prefers to poll for updates from message:send. It is the callers job to check if the response is completed and if not run a polling loop.
     polling: bool = False
     timeout: float = 600.0
