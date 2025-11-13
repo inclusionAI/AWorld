@@ -194,6 +194,6 @@ class Runners:
         resp = responses.get(task.id)
         if resp.status == "running":
             is_finished = False
-            observation = resp.answer
             task.observation = observation
+        observation = resp.answer if resp else None
         return is_finished, observation, resp
