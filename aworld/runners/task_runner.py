@@ -69,7 +69,7 @@ class TaskRunner(Runner):
         self._exception = None
         self.start_time = time.time()
         self.step_agent_counter = {}
-        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE and self.task.agent:
+        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVE and self.task.agent:
             self.task.agent.wait_tool_result = True
 
         if task.streaming_mode:
