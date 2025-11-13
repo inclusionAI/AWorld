@@ -106,11 +106,15 @@ class MemoryItem(BaseModel):
         """获取消息结束时间"""
         return self.metadata.get('end_time')
 
-    def set_start_time(self, start_time: str = datetime.now().isoformat()):
+    def set_start_time(self, start_time: str = None):
+        if not start_time:
+            start_time = datetime.now().isoformat()
         self.metadata['start_time'] = start_time
         self.updated_at = datetime.now().isoformat()
 
-    def set_end_time(self, end_time: str = datetime.now().isoformat()):
+    def set_end_time(self, end_time: str = None):
+        if not end_time:
+            end_time = datetime.now().isoformat()
         self.metadata['end_time'] = end_time
         self.updated_at = datetime.now().isoformat()
 

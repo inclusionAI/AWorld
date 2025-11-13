@@ -74,7 +74,7 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
             ):
                 result = await Runners.run_task(task=task)
             os.makedirs(f"logs/trajectory/{batch_id}", exist_ok=True)
-            with open(f"logs/trajectory/{batch_id}/traj_{index}.json", "a") as f:
+            with open(f"logs/trajectory/{batch_id}/traj_{index+1}.json", "a") as f:
                 f.write(str(result[task_id].trajectory))
             os.makedirs(f"logs/results/{batch_id}", exist_ok=True)
             cur_time = datetime.now().strftime('%Y%m%d%H%M%S')
