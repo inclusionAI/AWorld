@@ -10,7 +10,7 @@ from aworld.core.common import TaskItem
 from aworld.core.tool.base import Tool, AsyncTool
 
 from aworld.core.event.base import Message, Constants, TopicType
-from aworld.core.task import TaskResponse
+from aworld.core.task import TaskResponse, TaskStatus, TaskStatusValue
 from aworld.logs.util import logger, trajectory_logger
 from aworld.output import Output
 from aworld.runners import HandlerFactory
@@ -83,7 +83,7 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
             await self.runner.stop()
-            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers)
+            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers, topic=TopicType.TASK_RESPONSE)
         elif topic == TopicType.FINISHED:
             async for event in self.run_hooks(message, HookPoint.FINISHED):
                 yield event
@@ -102,7 +102,7 @@ class DefaultTaskHandler(TaskHandler):
             logger.info(f"{task_flag} task {self.runner.task.id} receive finished message.")
 
             await self.runner.stop()
-            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers)
+            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers, topic=TopicType.TASK_RESPONSE)
         elif topic == TopicType.START:
             async for event in self.run_hooks(message, HookPoint.START):
                 yield event
@@ -126,10 +126,11 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
             await self.runner.stop()
-            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers)
+            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers, topic=TopicType.TASK_RESPONSE)
         elif topic == TopicType.CANCEL:
             # Avoid waiting to receive events and send a mock event for quick cancel
-            yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock', headers={"context": message.context})
+            yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock',
+                          headers={"context": message.context})
             # mark task response as cancelled
             self.runner._task_response = TaskResponse(answer='',
                                                       success=False,
@@ -138,9 +139,25 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
                                                       msg=f'cancellation message received: {task_item.msg}',
-                                                      status='cancelled')
+                                                      status=TaskStatusValue.CANCELLED)
             await self.runner.stop()
-            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers)
+            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers, topic=TopicType.TASK_RESPONSE)
+        elif topic == TopicType.INTERRUPT:
+            # Avoid waiting to receive events and send a mock event for quick interrupt
+            yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock',
+                          headers={"context": message.context})
+            # mark task response as interrupted
+            self.runner._task_response = TaskResponse(answer='',
+                                                      success=False,
+                                                      context=message.context,
+                                                      id=self.runner.task.id,
+                                                      time_cost=(time.time() - self.runner.start_time),
+                                                      usage=self.runner.context.token_usage,
+                                                      msg=f'interruption message received: {task_item.msg}',
+                                                      status=TaskStatusValue.INTERRUPTED)
+            await self.runner.stop()
+            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers,
+                          topic=TopicType.TASK_RESPONSE)
 
     def _log_trajectory(self, message: Message):
         """Log the trajectory of the agent."""

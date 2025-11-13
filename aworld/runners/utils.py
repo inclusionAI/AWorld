@@ -16,7 +16,8 @@ async def choose_runners(tasks: List[Task], agent_oriented: bool = True) -> List
     """Choose the correct runner to run the task.
 
     Args:
-        task: A task that contains agents, tools and datas.
+        tasks: A list of tasks that contains agents, tools and datas.
+        agent_oriented: Whether the runner is agent-oriented.
 
     Returns:
         Runner instance or exception.

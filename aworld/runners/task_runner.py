@@ -69,8 +69,15 @@ class TaskRunner(Runner):
         self._exception = None
         self.start_time = time.time()
         self.step_agent_counter = {}
-        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVAE and self.task.agent:
+        if task.conf.get("run_mode") == TaskRunMode.INTERACTIVE and self.task.agent:
             self.task.agent.wait_tool_result = True
+
+        if task.streaming_mode:
+            agents = task.swarm.agents
+            if not agents:
+                raise ValueError("Cannot find `agent` or `swarm` in task.")
+            for agent_id, agent in agents.items():
+                agent.conf.llm_config.llm_stream_call = True
 
     async def pre_run(self):
         task = self.task

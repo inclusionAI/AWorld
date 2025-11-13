@@ -473,7 +473,20 @@ class PlaywrightHelper:
 class PlaywrightSnapshotArtifact(Artifact):
 
     @staticmethod
-    def create(url: str, content: str, clickable_types: list = ['link', 'button', 'textbox', 'combobox'], **kwargs):
+    def create(url: str, content: str, clickable_types: Optional[List[str]] = None, **kwargs) -> "PlaywrightSnapshotArtifact":
+        """
+        Create a Playwright snapshot artifact with structured metadata and content.
+
+        Args:
+            url (str): Target page url.
+            content (str): Raw snapshot content captured by Playwright.
+            clickable_types (Optional[List[str]]): Element types that should be captured as clickable elements.
+            **kwargs: Additional keyword arguments (reserved for future use).
+
+        Returns:
+            PlaywrightSnapshotArtifact: Structured artifact containing snapshot details.
+        """
+        clickable_types = clickable_types or ['link', 'button', 'textbox', 'combobox']
         click_elements = PlaywrightHelper.extract_clickable_items(content)
         click_elements = [item.model_dump() for item in click_elements if item.element_type in clickable_types][:1000]
         
@@ -491,17 +504,36 @@ class PlaywrightSnapshotArtifact(Artifact):
         logger.debug(f"[PlaywrightSnapshotArtifact] result: {result}")
         open_tabs = PlaywrightHelper.extract_open_tabs(content)
 
+        text_content = content or ""
         if result:
-            if result.get("raw_result") and len(result.get("raw_result")) > 10000:
-                result = result.get("raw_result") + (f"... (truncated content is too long {len(result.get('raw_result'))})) \n\n "
-                                                     f"if you want to see the full content, please use browser tools to extract detailed content if needed")
-            content = result
+            if isinstance(result, dict):
+                raw_result = result.get("raw_result")
+                if isinstance(raw_result, str):
+                    if len(raw_result) > 10000:
+                        text_content = (
+                            f"{raw_result}... (truncated content is too long {len(raw_result)})) \n\n "
+                            "if you want to see the full content, please use browser tools to extract detailed content if needed"
+                        )
+                    else:
+                        text_content = raw_result
+                else:
+                    text_content = json.dumps(result, cls=CommonEncoder, ensure_ascii=False)
+            else:
+                text_content = str(result)
+
+        if not isinstance(text_content, str):
+            text_content = json.dumps(text_content, cls=CommonEncoder, ensure_ascii=False)
+
         if downloads:
-            content += f"Downloading Files list\n {downloads}"
+            download_lines = "\n".join(
+                f"- {download.get('filename', 'unknown file')} -> {download.get('filepath', '')}"
+                for download in downloads
+            )
+            text_content = f"{text_content}\nDownloading Files list\n{download_lines}"
 
         return PlaywrightSnapshotArtifact(
             artifact_type=ArtifactType.PLAYWRIGHT,
-            content=result if result else content,
+            content=text_content,
             metadata={
                 "url": page_url,
                 "title": page_title,

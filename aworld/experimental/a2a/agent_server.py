@@ -32,6 +32,7 @@ class AgentServer:
 
         if self.config.keep_running:
             await self.serve
+        return self.serve
 
     async def stop(self):
         if self.server is None:

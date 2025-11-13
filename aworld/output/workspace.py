@@ -300,6 +300,10 @@ class WorkSpace(BaseModel):
                 return artifact
         return None
 
+    def get_artifact_data(self, artifact_id: str) -> Optional[Dict]:
+        """Get artifact data with the specified ID"""
+        return self.repository.retrieve_latest_artifact(artifact_id)
+
 
     def get_terminal(self) -> str:
         pass

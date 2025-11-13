@@ -3,13 +3,11 @@
 import abc
 from typing import Callable, Any, Dict, List
 
-from aworld.core.singleton import InheritanceSingleton
-
 from aworld.core.common import Config
 from aworld.core.event.base import Message, Messageable
 
 
-class Eventbus(Messageable, InheritanceSingleton):
+class Eventbus(Messageable):
     __metaclass__ = abc.ABCMeta
 
     def __init__(self, conf: Config = None, **kwargs):
