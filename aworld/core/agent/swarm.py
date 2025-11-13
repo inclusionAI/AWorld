@@ -362,6 +362,14 @@ class Swarm(object):
     def finished(self, finished):
         self._finished = finished
 
+    def add_agents(self, agents: List[BaseAgent]):
+        logger.info(f"add agents {agents} to swarm.agents: {self.agents}")
+        registered_agents = set([agent.id() for agent in self.register_agents])
+        for agent in agents:
+            if agent.id() not in registered_agents:
+                self.register_agents.append(agent)
+        Swarm.register_agent(agents)
+
 
 class WorkflowSwarm(Swarm):
     """Workflow Paradigm."""
@@ -1038,7 +1046,8 @@ class TeamBuilder(TopologyBuilder):
                 raise RuntimeError(f"agent in {agent} is not a agent or agent list, please check it.")
 
         if not valid_agents and not single_agents:
-            raise RuntimeError(f"no valid agent in swarm to build execution graph.")
+            return agent_graph
+            # raise RuntimeError(f"no valid agent in swarm to build execution graph.")
 
         for agent in single_agents:
             if isinstance(root_agent, Swarm):
