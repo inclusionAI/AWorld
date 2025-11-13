@@ -109,13 +109,6 @@ Here is the task: {task}
         pic_data = self.build_pic_data(input)
         pic_data[0]['text'] = pic_data[0]['text'].format(task=judge_data)
         return pic_data
-        return TaskInput(stream=False,
-                  messages=pic_data,
-                  user_id=f"test_user",
-                  session_id="123",
-                  task_id="234",
-                  task_content="hello",
-                  origin_user_input="hello")
 
     def convert_judge_response_to_score(self, judge_response: str) -> Optional[dict[str, MetricResult]]:
         json_output = self.fetch_json_from_result(judge_response)
