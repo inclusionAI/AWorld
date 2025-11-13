@@ -39,13 +39,12 @@ class ServingConfig(BaseConfig):
 class ClientConfig(BaseConfig):
     streaming: bool = False
     # Whether client prefers to poll for updates from message:send. It is the callers job to check if the response is completed and if not run a polling loop.
-    polling = False
+    polling: bool = False
     timeout: float = 600.0
-    supported_transports: list[TransportProtocol] = [TransportProtocol.JSONRPC]
+    supported_transports: list[TransportProtocol] = [TransportProtocol.jsonrpc]
     grpc_channel_factory: Callable[[str], Channel] | None = None
     # Whether to use client transport preferences over server preferences. Recommended to use server preferences in most situations.
     use_client_preference: bool = False
     accepted_output_modes: list[str] = []
     push_notification_configs: list[PushNotificationConfig] = []
     consumers: list[Consumer] = []
-
