@@ -35,6 +35,6 @@ async def run_stream():
     ):
         logger.info(f"send_task event: {event}")
 
-if __name__ == "__main__":
-    # asyncio.run(run())
-    asyncio.run(run_stream())
+# if __name__ == "__main__":
+#     # asyncio.run(run())
+#     asyncio.run(run_stream())
