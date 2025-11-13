@@ -847,7 +847,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
     async def _add_tool_result_token_ids_to_context(self, context: Context):
         """Add tool result token ids to context"""
-        if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVAE:
+        if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVE:
             return
         histories = self.memory.get_all(filters={
             "agent_id": self.id(),

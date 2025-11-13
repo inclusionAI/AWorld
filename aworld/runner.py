@@ -189,7 +189,7 @@ class Runners:
         """Run a single step of the task."""
         is_finished = True
         observation = None
-        task.conf.run_mode = TaskRunMode.INTERACTIVAE
+        task.conf.run_mode = TaskRunMode.INTERACTIVE
         responses = await Runners.run_task(task, run_conf=run_conf)
         resp = responses.get(task.id)
         if resp.status == "running":
