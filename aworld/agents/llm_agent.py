@@ -15,9 +15,8 @@ from aworld.core.common import ActionResult, Observation, ActionModel, Config, T
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
-    MemoryEventType as MemoryType, MemoryEventMessage
-from aworld.core.exceptions import AWorldRuntimeException
     MemoryEventType as MemoryType, MemoryEventMessage, ChunkMessage
+from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events import eventbus
@@ -26,8 +25,6 @@ from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
-from aworld.memory.models import MemoryItem, MemoryAIMessage
-from aworld.memory.models import MemoryMessage
 from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template
 from aworld.models.model_response import ModelResponse, ToolCall

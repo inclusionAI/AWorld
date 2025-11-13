@@ -10,6 +10,7 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig
 from aworld.core.task import Task
+from aworld.dataset.trajectory_strategy import MemoryTrajectoryStrategy
 from aworld.logs.util import logger
 # from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from aworld.memory.main import AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
@@ -126,7 +127,8 @@ async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, sess
             context=context,
             conf=TaskConfig(
                 stream=False,
-                exit_on_failure=True
+                exit_on_failure=True,
+                trajectory_strategy=MemoryTrajectoryStrategy
             ),
             timeout=timeout
         )
@@ -142,7 +144,8 @@ async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, sess
             context=context,
             conf=TaskConfig(
                 stream=False,
-                exit_on_failure=True
+                exit_on_failure=True,
+                trajectory_strategy=MemoryTrajectoryStrategy
             ),
             timeout=timeout
         )

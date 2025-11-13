@@ -10,7 +10,10 @@ from task execution. Users can implement custom strategies by extending Trajecto
 import abc
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
+from aworld.core.agent.swarm import Swarm
+from aworld.core.context.base import Context
 from aworld.logs.util import logger
+from aworld.memory.main import MemoryFactory
 
 if TYPE_CHECKING:
     from aworld.runners.task_runner import TaskRunner
@@ -259,4 +262,105 @@ class FilteredTrajectoryStrategy(TrajectoryStrategy):
         except Exception as e:
             logger.error(f"Failed to generate filtered trajectory for task {task_id}: {str(e)}")
             return None
+
+class MemoryTrajectoryStrategy(TrajectoryStrategy):
+
+    def filter_by_agent(self, agent_id: str) -> bool:
+        """
+        Override this method to filter by agent ID.
+
+        Args:
+            agent_id: The agent identifier
+
+        Returns:
+            bool: True to keep this item, False to filter it out
+        """
+        return True  # Default: keep all agents
+
+    def filter_by_step(self, step: int) -> bool:
+        """
+        Override this method to filter by step number.
+
+        Args:
+            step: The step number
+
+        Returns:
+            bool: True to keep this item, False to filter it out
+        """
+        return True  # Default: keep all steps
+
+    def filter_by_item(self, item: Dict[str, Any]) -> bool:
+        """
+        Override this method for custom filtering logic.
+
+        Args:
+            item: The trajectory item dictionary
+
+        Returns:
+            bool: True to keep this item, False to filter it out
+        """
+        return True  # Default: keep all items
+
+    async def generate_trajectory_for_memory(self, swarm: Swarm, context: Context):
+        if not swarm or not swarm.cur_agent:
+            return {}
+        memory_items = MemoryFactory.instance().get_last_n(100, filters={
+            "agent_id": swarm.cur_agent[0].id(),
+            "session_id": context.session_id,
+            "task_id": context.task_id,
+            "include_summaried": True
+        }, agent_memory_config=swarm.cur_agent[0].memory_config)
+
+        # Convert memory items to OpenAI message format
+        result = {}
+        for i, item in enumerate(memory_items):
+            # Check if item has to_openai_message method
+            if hasattr(item, 'to_openai_message'):
+                message = item.to_openai_message()
+                # Add usage to the message if it exists in metadata
+                if hasattr(item, 'metadata') and item.metadata and 'usage' in item.metadata:
+                    message['usage'] = item.metadata['usage']
+                result[i] = message
+            else:
+                # If item doesn't have to_openai_message, return the item as is
+                result[i] = item
+
+        return result
+
+    async def generate(
+            self,
+            task_id: str,
+            event_runner: 'TaskRunner'
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Generate trajectory using the default strategy.
+
+        Args:
+            task_id (str): The unique identifier of the task
+            event_runner (TaskRunner): The task runner instance
+
+        Returns:
+            Optional[List[Dict[str, Any]]]: Serialized trajectory data or None if failed
+        """
+
+        try:
+            logger.info(f"Generating trajectory for task {task_id} using default strategy")
+
+            swarm = event_runner.swarm
+            context = event_runner.context
+            trajectory = await self.generate_trajectory_for_memory(swarm=swarm, context=context)
+
+            if trajectory and self.validate_trajectory(trajectory):
+                logger.info(f"Successfully generated {len(trajectory)} trajectory items for task {task_id}")
+                return trajectory
+            else:
+                logger.warning(f"Generated trajectory validation failed for task {task_id}")
+                return None
+
+        except Exception as e:
+            logger.error(f"Failed to generate trajectory for task {task_id}: {str(e)}")
+            return None
+
+    def validate_trajectory(self, trajectory: List[Dict[str, Any]]) -> bool:
+        return True
+
 
