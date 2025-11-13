@@ -351,20 +351,14 @@ class TaskEventRunner(TaskRunner):
         self._task_response.trace_id = get_trace_id()
         return self._task_response
 
-    async def generate_trajectory_for_memory(self):
-        if not self.swarm or not self.swarm.cur_agent:
-            return {}
-        root = self.swarm.communicate_agent[0] if isinstance(self.swarm.communicate_agent, list) else self.swarm.communicate_agent
-        
-        executor_ids = self.swarm.communicate_agent[1].executor_ids
+    async def query_single_agent_trajectory(self, agent_id, memory_config):
 
-        
         memory_items = MemoryFactory.instance().get_last_n(100, filters={
-            "agent_id": root.id(),
+            "agent_id": agent_id,
             "session_id": self.context.session_id,
             "task_id": self.context.task_id,
             "include_summaried": True
-        }, agent_memory_config=root.memory_config)
+        }, agent_memory_config=memory_config)
 
         # Convert memory items to OpenAI message format
         result = {}
@@ -379,8 +373,22 @@ class TaskEventRunner(TaskRunner):
             else:
                 # If item doesn't have to_openai_message, return the item as is
                 result[i] = item
-        
-        return result
+
+
+    async def generate_trajectory_for_memory(self):
+        if not self.swarm or not self.swarm.cur_agent:
+            return {}
+        root = self.swarm.communicate_agent[0] if isinstance(self.swarm.communicate_agent, list) else self.swarm.communicate_agent
+        memory_config = root.memory_config
+        traj_dict = {
+            root.id(): self.query_single_agent_trajectory(root.id(), memory_config)
+        }
+
+        executors = self.swarm.communicate_agent[1].executors
+        for item in executors:
+            traj_dict[item['agent_id']] = self.query_single_agent_trajectory(item.id(), memory_config)
+        print(executors)
+        return traj_dict
 
     async def _save_trajectories(self):
         try:

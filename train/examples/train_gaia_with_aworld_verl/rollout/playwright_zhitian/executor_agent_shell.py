@@ -20,8 +20,7 @@ from aworld.logs.util import logger
 
 class GaiaPlayWrightAgent(Agent):
     start_flag: bool = True
-    executor_ids = []
-    sub_task_ids = dict()
+    executors = []
 
     def get_task_context(self, message: Message) -> Context:
         return message.context
@@ -87,10 +86,10 @@ class GaiaPlayWrightAgent(Agent):
         """
         print(f"action: {action}, index: {index}")
         execute_agent = await self.build_execute_agent(index=index)
-        self.executor_ids.append(execute_agent.id())
         sub_task = await self.build_sub_aworld_run_task(index=index, input=action, agent=execute_agent,
                                                         sub_task_context=context, parent_task=current_task)
-        self.sub_task_.append(sub_task.id)
+        self.executors.append({"agent_id": execute_agent.id(), "task_id": sub_task.id, "query": action})
+
         task_result = await Runners.run_task(sub_task)
         task_response = task_result[sub_task.id] if task_result else None
         answer = task_response.answer if task_response is not None else None
