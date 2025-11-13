@@ -234,7 +234,7 @@ class AgentConfig(BaseConfig):
 
 
 class TaskRunMode(Enum):
-    INTERACTIVAE = "INTERACTIVAE"
+    INTERACTIVE = "INTERACTIVE"
     ONE_WAY = "ONE_WAY"
 
 
