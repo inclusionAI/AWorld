@@ -1,3 +1,4 @@
+---
 name: hypercode_forge
 description: 🚀 HyperCode Forge - Competitive compression engine for MCP workflows
 tool_list: {"terminal-server": ["execute_command"], "filesystem-server": ["write_file", "read_file"], "ms-playwright": []}
