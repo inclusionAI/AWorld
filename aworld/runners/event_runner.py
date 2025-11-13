@@ -3,30 +3,26 @@
 import asyncio
 import time
 import traceback
+from functools import partial
+from typing import List, Callable, Any
 
 import aworld.trace as trace
-
-from functools import partial
-from typing import List, Callable, Any, Optional, Dict
-
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.base import BaseAgent
 from aworld.core.common import TaskItem, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
-from aworld.core.task import Task, TaskResponse, TaskStatus, TaskStatusValue
+from aworld.core.task import Task, TaskResponse, TaskStatusValue
 from aworld.dataset.trajectory_dataset import generate_trajectory_from_strategy
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
-from aworld.memory.main import MemoryFactory
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
-from aworld.runners.task_runner import TaskRunner
 from aworld.runners.state_manager import EventRuntimeStateManager
-
+from aworld.runners.task_runner import TaskRunner
 from aworld.trace.base import get_trace_id
-from aworld.utils.common import override_in_subclass, new_instance, scan_packages
+from aworld.utils.common import override_in_subclass, new_instance
 
 
 class TaskEventRunner(TaskRunner):
@@ -343,40 +339,12 @@ class TaskEventRunner(TaskRunner):
         self._task_response.trace_id = get_trace_id()
         return self._task_response
 
-    async def generate_trajectory_for_memory(self):
-        if not self.swarm or not self.swarm.cur_agent:
-            return {}
-        memory_items = MemoryFactory.instance().get_last_n(100, filters={
-            "agent_id": self.swarm.cur_agent[0].id(),
-            "session_id": self.context.session_id,
-            "task_id": self.context.task_id,
-            "include_summaried": True
-        }, agent_memory_config=self.swarm.cur_agent[0].memory_config)
-
-        # Convert memory items to OpenAI message format
-        result = {}
-        for i, item in enumerate(memory_items):
-            # Check if item has to_openai_message method
-            if hasattr(item, 'to_openai_message'):
-                message = item.to_openai_message()
-                # Add usage to the message if it exists in metadata
-                if hasattr(item, 'metadata') and item.metadata and 'usage' in item.metadata:
-                    message['usage'] = item.metadata['usage']
-                result[i] = message
-            else:
-                # If item doesn't have to_openai_message, return the item as is
-                result[i] = item
-        
-        return result
-
     async def _save_trajectories(self):
         try:
             trajectory_strategy = self.conf.get('trajectory_strategy', None)
             trajectory = await generate_trajectory_from_strategy(self.task.id, trajectory_strategy, self)
             self._task_response.trajectory = trajectory
 
-            # TODO from memory
-            self._task_response.trajectory = await self.generate_trajectory_for_memory()
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
 

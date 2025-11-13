@@ -249,10 +249,11 @@ class TaskRunMode(Enum):
 
 
 class TaskConfig(BaseConfig):
+    model_config = {"arbitrary_types_allowed": True}
     task_id: str = str(uuid.uuid4())
     task_name: str | None = None
     max_steps: int = 100
-    trajectory_strategy: ClassVar[Type['TrajectoryStrategy']] = None
+    trajectory_strategy: Optional[Type['TrajectoryStrategy']] = None
     stream: bool = False
     resp_carry_context: bool = True
     resp_carry_raw_llm_resp: bool = False
