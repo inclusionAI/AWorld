@@ -24,6 +24,7 @@ class RunNodeBusiType(Enum):
     MEMORY = 'MEMORY'
     REMOTE_TOOL_CALL = "REMOTE_TOOL_CALL"
     INIT_TOOLS = "INIT_TOOLS"
+    INIT_SERVER = "INIT_SERVER"
     LLM = "LLM"
     HANDLER = "HANDLER"
 
@@ -51,6 +52,8 @@ class RunNodeBusiType(Enum):
             return RunNodeBusiType.INIT_TOOLS
         if category == Constants.HANDLER:
             return RunNodeBusiType.HANDLER
+        if category == Constants.INIT_SERVER:
+            return RunNodeBusiType.INIT_SERVER
         return None
 
 
