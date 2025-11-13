@@ -5,8 +5,8 @@ from typing import Union
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
-from a2a.types import Part, TextPart, TaskStatusUpdateEvent, TaskStatus, TaskState, TaskArtifactUpdateEvent
-from a2a.utils import new_task, new_text_artifact, new_agent_text_message, Task as A2ATask
+from a2a.types import Part, TextPart, TaskStatusUpdateEvent, TaskStatus, TaskState, TaskArtifactUpdateEvent, Task as A2ATask
+from a2a.utils import new_task, new_text_artifact, new_agent_text_message
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
@@ -23,9 +23,14 @@ from aworld.output.base import MessageOutput, ToolResultOutput, StepOutput, Outp
 
 
 class AworldAgentExecutor(AgentExecutor):
-    def __init__(self, agent: Union[Agent, Swarm]):
+    def __init__(self, agent: Union[Agent, Swarm], streaming: bool = False):
         self.agent = agent
-        self.streaming = False
+        self.streaming = streaming
+
+    def _get_message_meta_str(self, metadata, key: str) -> str:
+        if not metadata:
+            return None
+        return metadata.get(key, None)
 
     async def execute(self, context: RequestContext, event_queue: EventQueue) -> None:
         if not context.message:
@@ -39,14 +44,21 @@ class AworldAgentExecutor(AgentExecutor):
 
         updater = TaskUpdater(event_queue, task.id, task.context_id)
 
-        aworld_task = Task(input=query, agent=self.agent)
-
+        logger.debug(f"AworldAgentExecutor metadata: {context.message.metadata}")
+        aworld_task = Task(input=query,
+                           agent=self.agent,
+                           user_id=self._get_message_meta_str(context.message.metadata, 'user_id'),
+                           session_id=self._get_message_meta_str(context.message.metadata, 'session_id'),
+                           id=self._get_message_meta_str(context.message.metadata, 'task_id'),
+                           conf=self._get_message_meta_str(context.message.metadata, 'task_conf'),
+                           )
+        run_conf = self._get_message_meta_str(context.message.metadata, 'run_conf')
         if self.streaming:
-            async for output in Runners.streamed_run_task(aworld_task).stream_events():
+            async for output in Runners.streamed_run_task(aworld_task, run_conf=run_conf).stream_events():
                 logger.info(f"task: {aworld_task.id} execute streaming. {output}")
-
+                await self._stream_output_process(output, event_queue, task)
         else:
-            resp = await exec_tasks([aworld_task])
+            resp = await exec_tasks([aworld_task], run_conf=run_conf)
 
             logger.info(f"task: {aworld_task.id} execute finished. {resp.get(aworld_task.id)}")
 
@@ -82,22 +94,14 @@ class AworldAgentExecutor(AgentExecutor):
         elif isinstance(output, StepOutput):
             event = await self._step(output)
 
+        if not event:
+            event = {'status': 'working', 'content': output.data, 'type': 'unknown'}
+
         if event and event['status'] == 'completed':
             await event_queue.enqueue_event(
-                TaskArtifactUpdateEvent(
-                    append=True,
-                    context_id=task.context_id,
-                    task_id=task.id,
-                    artifact=new_text_artifact(
-                        name='current_result',
-                        description='Result of request to agent.',
-                        text=event['content'],
-                    ),
-                )
-            )
-            await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
-                    status=TaskStatus(state=TaskState.completed),
+                    status=TaskStatus(state=TaskState.completed,
+                                      message=new_agent_text_message(event['content'], task.context_id, task.id)),
                     final=True,
                     context_id=task.context_id,
                     task_id=task.id,
@@ -113,6 +117,20 @@ class AworldAgentExecutor(AgentExecutor):
                 )
             )
         else:
+            if event and event['type'] == 'response':
+                await event_queue.enqueue_event(
+                    TaskArtifactUpdateEvent(
+                        append=False,
+                        last_chunk=True,
+                        context_id=task.context_id,
+                        task_id=task.id,
+                        artifact=new_text_artifact(
+                            name='current_result',
+                            description='Result of request to agent.',
+                            text=event['content'],
+                        ),
+                    )
+                )
             await event_queue.enqueue_event(
                 TaskStatusUpdateEvent(
                     append=True,
@@ -142,31 +160,30 @@ class AworldAgentExecutor(AgentExecutor):
 
         if __output__.reason_generator:
             await consume_content(__output__.reason_generator, _reason_call_back)
-            return {"status": "working", "content": reason_result}
+            return {"status": "working", "content": ''.join(reason_result), "type": "reasoning"}
         elif __output__.reasoning:
             await consume_content(__output__.reasoning, _reason_call_back)
-            return {"status": "working", "content": reason_result}
+            return {"status": "working", "content": ''.join(reason_result), "type": "reasoning"}
 
         if __output__.response_generator:
             await consume_content(__output__.response_generator, _response_call_back)
-            return {"status": "working", "content": response_result}
+            return {"status": "working", "content": ''.join(response_result), "type": "response"}
         else:
             await consume_content(__output__.response, _response_call_back)
-            return {"status": "working", "content": response_result}
+            return {"status": "working", "content": ''.join(response_result), "type": "response"}
 
     async def _tool_result(self, output: ToolResultOutput):
         """
             tool_result
         """
-        return {"status": "working", "content": f"tool_call_function: {output.origin_tool_call.function.name}, tool_call_arguments: {output.origin_tool_call.function.arguments}, tool_result: {output.data}"}
+        return {"status": "working", "content": f"tool_call_function: {output.origin_tool_call.function.name}, tool_call_arguments: {output.origin_tool_call.function.arguments}, tool_result: {output.data}", "type": "tool"}
 
     async def _step(self, output: StepOutput):
         if output.status == "START":
-            return {"status": "working", "content": f"[bold green]{output.name} ✈️START ..."}
+            return {"status": "working", "content": f"[bold green]{output.name} ✈️START ...", "type": "step"}
         elif output.status == "FINISHED":
-            return {"status": "completed", "content": f"[bold green]{output.name} 🛬FINISHED ..."}
+            return {"status": "completed", "content": f"[bold green]{output.name} 🛬FINISHED ...", "type": "step"}
         elif output.status == "FAILED":
-            return {"status": "failed", "content": f"[bold red]{output.name} 💥FAILED ..."}
+            return {"status": "failed", "content": f"[bold red]{output.name} 💥FAILED ...", "type": "step"}
         else:
-            self.status.stop()
-            self.console.print(f"============={output.name} ❓❓❓UNKNOWN#{output.status} ======================")
+            return {"status": "working", "content": f"============={output.name} ❓❓❓UNKNOWN#{output.status} ======================", "type": "step"}
