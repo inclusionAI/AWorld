@@ -29,7 +29,7 @@ def get_latest_file_os(directory='.'):
 class FlightJudgeLLMScorer(LLMAsJudgeScorer):
 
     def build_pic_data(self, input: EvalDataCase[EvalCaseDataType]):
-        screenshot_dir = "./logs/screen_shot/" + input.run_id + "_task#1"
+        screenshot_dir = "./logs/screen_shot/" + input.run_id + "_task#" + input.case_data['id']
         latest_screenshot = get_latest_file_os(screenshot_dir)
 
         if latest_screenshot is None:
@@ -44,8 +44,7 @@ class FlightJudgeLLMScorer(LLMAsJudgeScorer):
 Your role is to act as an AI Agent Evaluator. Based on the user's query, the agent's execution path, and the final browser screenshot provided, you must determine if the agent's final answer successfully resolves the user's query.
 
 [Evaluation Criteria]
-
-1. Accuracy and Completeness:
+1. Accuracy:
 The final answer must directly and accurately address the user's question.
 It must fulfill all explicit and implicit requirements mentioned in the query (e.g., location, date, direct flights, layovers, airline preferences, departure/arrival times, etc.).
 
@@ -53,8 +52,10 @@ It must fulfill all explicit and implicit requirements mentioned in the query (e
 The final answer must be strictly grounded in the information visible in the final browser screenshot and be logically consistent with the agent's execution path.
 No fabricated or hallucinated information is allowed. Every piece of data in the answer (e.g., prices, times, flight numbers) must be verifiable from the provided evidence.
 
-[Output Format]
+3. Execution Integrity:
+The agent successfully retrieved the flight information by navigating the process unimpeded by anti-scraping measures, such as CAPTCHAs or login walls.
 
+[Output Format]
 Score:
 If the final answer meets both of the above criteria, the score is 1.
 If either criterion is not met, the score is 0.
