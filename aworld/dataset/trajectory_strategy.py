@@ -10,6 +10,7 @@ from task execution. Users can implement custom strategies by extending Trajecto
 import abc
 import json
 import os
+from datetime import datetime
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from aworld.core.agent.swarm import Swarm
@@ -348,10 +349,12 @@ class MemoryTrajectoryStrategy(TrajectoryStrategy):
         # 写入trajectory文件，每个agent_id一个单独的目录
         task_id = context.task_id
         if task_id:
+            # 生成时间戳前缀（年月日时分）
+            timestamp_prefix = datetime.now().strftime("%Y%m%d%H%M")
             for agent_id, trajectory in traj_dict.items():
                 if trajectory is not None:
-                    # 创建目录 logs/trajectory/{task_id}/{agent_id}
-                    dir_path = f"logs/trajectory/{task_id}/{agent_id}"
+                    # 创建目录 logs/trajectory/{task_id}/{timestamp_prefix}_{agent_id}
+                    dir_path = f"logs/trajectory/{task_id}/{timestamp_prefix}_{agent_id}"
                     os.makedirs(dir_path, exist_ok=True)
                     # 写入trajectory文件
                     file_path = os.path.join(dir_path, "trajectory.json")
