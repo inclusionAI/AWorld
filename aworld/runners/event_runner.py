@@ -339,29 +339,6 @@ class TaskEventRunner(TaskRunner):
         self._task_response.trace_id = get_trace_id()
         return self._task_response
 
-    async def query_single_agent_trajectory(self, agent_id, memory_config):
-
-        memory_items = MemoryFactory.instance().get_last_n(100, filters={
-            "agent_id": agent_id,
-            "session_id": self.context.session_id,
-            "task_id": self.context.task_id,
-            "include_summaried": True
-        }, agent_memory_config=memory_config)
-
-        # Convert memory items to OpenAI message format
-        result = {}
-        for i, item in enumerate(memory_items):
-            # Check if item has to_openai_message method
-            if hasattr(item, 'to_openai_message'):
-                message = item.to_openai_message()
-                # Add usage to the message if it exists in metadata
-                if hasattr(item, 'metadata') and item.metadata and 'usage' in item.metadata:
-                    message['usage'] = item.metadata['usage']
-                result[i] = message
-            else:
-                # If item doesn't have to_openai_message, return the item as is
-                result[i] = item
-
 
     async def generate_trajectory_for_memory(self):
         if not self.swarm or not self.swarm.cur_agent:
