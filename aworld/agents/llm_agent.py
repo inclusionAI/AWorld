@@ -665,6 +665,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         llm_response = None
         try:
             tools = await self._filter_tools(message.context)
+            if not tools:
+                # Some model must be clearly defined as None
+                tools = None
             self._log_messages(messages, tools=tools, context=message.context)
             stream_mode = kwargs.get("stream",
                                      False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
