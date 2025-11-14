@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://github.com/inclusionAI/AWorld/Quickstart/multi-agent_system_construction/" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Multi-agent System Construction - AWorld Docs</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Multi-agent System Construction";
+        var mkdocs_page_input_path = "Quickstart/multi-agent_system_construction.md";
+        var mkdocs_page_url = "/inclusionAI/AWorld/Quickstart/multi-agent_system_construction/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> AWorld Docs
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption"><span class="caption-text">Quickstart</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../install/">Install</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../agent_construction/">Agent Construction</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../workflow_construction/">Workflow Construction</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Multi-agent System Construction</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#quick-mas-construction">Quick MAS Construction</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#specifying-entry-agent">Specifying Entry Agent</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#actions-group-parallel">Actions Group Parallel</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#dynamic-routing">Dynamic Routing</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#two-examples-of-overriding-routing-react-and-plan-execute">Two Examples of Overriding Routing: ReAct and Plan-Execute</a>
+    </li>
+        </ul>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#combination-and-recursion-of-mas-and-workflow">Combination and Recursion of MAS and Workflow</a>
+    </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../agent_training/">Agent Training</a>
+                  </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">AWorld Docs</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Quickstart</li>
+      <li class="breadcrumb-item active">Multi-agent System Construction</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/inclusionAI/AWorld/tree/main/docs/Quickstart/multi-agent_system_construction.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="building-and-running-multi-agent-systems-mas">Building and Running Multi-Agent Systems (MAS)</h1>
+<p>In the AWorld framework, similar to Workflow Construction, the fundamental building block for MAS is the Agent. By
+introducing the Swarm concept, users can easily, quickly, and efficiently build complex Multi-Agent Systems. In summary:</p>
+<ol>
+<li><strong>Workflow in AWorld</strong>: Static, pre-defined execution flows</li>
+<li><strong>MAS in AWorld</strong>: Dynamic, real-time decision-making execution flows</li>
+</ol>
+<p>This design ensures unified underlying capabilities (i.e., Agent, Graph-based Topology) while maintaining extensibility.</p>
+<p>MAS uses event mechanism as the communication basis, where the output from the previous agent serves as the input for
+the next agent.</p>
+<h2 id="quick-mas-construction">Quick MAS Construction</h2>
+<p>Similar to Workflows, we can easily define communication networks between Agents through topology. The key difference is
+that by using <code>build_type=GraphBuildType.HANDOFF</code>, we allow dynamic decision-making for inter-agent calling
+relationships:</p>
+<ol>
+<li><code>agent1</code> can selectively decide to call <code>agent2</code> and <code>agent3</code>; the number of calls is also dynamic (once or multiple
+   times)</li>
+<li><code>agent2</code> can selectively decide to call <code>agent3</code>; the number of calls is also dynamic (once or multiple times)</li>
+</ol>
+<pre><code class="language-python">from aworld.config.conf import AgentConfig
+from aworld.agents.llm_agent import Agent
+from aworld.core.agent.swarm import Swarm, GraphBuildType
+from aworld.runner import Runners
+
+# Configure agents
+agent_conf = AgentConfig(...)
+agent1 = Agent(name=&quot;agent1&quot;, conf=agent_conf)
+agent2 = Agent(name=&quot;agent2&quot;, conf=agent_conf)
+agent3 = Agent(name=&quot;agent3&quot;, conf=agent_conf)
+
+# Create swarm with dynamic handoff topology
+swarm = Swarm(
+    topology=[(agent1, agent2), (agent2, agent3), (agent1, agent3)],
+    build_type=GraphBuildType.HANDOFF
+)
+
+# Run the swarm
+Runners.run(input=&quot;your question&quot;, swarm=swarm)
+</code></pre>
+<h3 id="specifying-entry-agent">Specifying Entry Agent</h3>
+<p>Since MAS is essentially a Graph by definition, different Agents can accept external input. We can specify which Agent
+receives the query using the <code>root_agent</code> parameter.</p>
+<pre><code class="language-python">swarm = Swarm(
+    topology=[(agent1, agent2), (agent2, agent3), (agent1, agent3)],
+    build_type=GraphBuildType.HANDOFF,
+    root_agent=[agent1]
+)
+</code></pre>
+<h3 id="actions-group-parallel">Actions Group Parallel</h3>
+<p>The agent's policy may have multiple actions on a decision, including local tools, MCP tools, and agents.
+AWorld will merge these actions of the same type and automatically parallelize them. The results of parallel execution
+will be automatically merged and returned to the agent.</p>
+<p>If you have a custom policy for mixing different types of actions (tools, agents) in parallel, <code>GroupMessage</code> events can
+be used in <code>async_post_run()</code> or <code>post_run()</code> of <code>Agent</code>.</p>
+<pre><code class="language-python">import uuid
+from aworld.core.event.base import GroupMessage, TopicType, Message
+
+
+def async_post_run(self,
+                   policy_result,
+                   policy_input,
+                   message) -&gt; Message:
+    your_actions = [tool1_action1, tool1_action2, agent1, agent2, tool2_action]
+    group_id = f&quot;agent_id_{uuid.uuid1().hex}&quot;
+
+    # The setting of other parameters can refer to the implementation of the Agent
+    return GroupMessage(payload=your_actions,
+                        caller=...,
+                        sender=...,
+                        session_id=...,
+                        group_id=group_id,
+                        topic=TopicType.GROUP_ACTIONS,
+                        headers=...)
+
+
+</code></pre>
+<h3 id="dynamic-routing">Dynamic Routing</h3>
+<p>When the <code>async_policy()</code> or <code>policy()</code> function decides which agent to call next, for special cases, Agents may need
+customized routing based on specific business rules. You can override the handler in the corresponding Agent:</p>
+<pre><code class="language-python"># Handler name consistency must be maintained
+agent = Agent(..., event_handler_name=&quot;your_handler_name&quot;)
+</code></pre>
+<pre><code class="language-python">from aworld.runners import HandlerFactory
+from aworld.runners.handler import DefaultHandler
+from aworld.core.event.base import Message, ToolMessage, AgentMessage
+from typing import AsyncGenerator
+
+
+@HandlerFactory.register(name=&quot;your_handler_name&quot;)
+class YourHandler(DefaultHandler):
+    def is_valid_message(self, message: Message) -&gt; bool:
+        return message.category == &quot;your_handler_name&quot;
+
+    async def _do_handle(self, message: Message) -&gt; AsyncGenerator[Message, None]:
+        if not self.is_valid_message(message):
+            return
+
+        # The type of data is generally ActionModel, but can be customized
+        data = message.payload[0]
+        content = data.policy_info
+
+        if &quot;use_tool1&quot; in content:
+            # not tool call, but want to use tools
+            yield ToolMessage(
+                payload=...,
+                caller=...,
+                sender=...,
+                receiver=&quot;tool1&quot;,
+                session_id=...,
+                headers=...
+            )
+        elif &quot;use_agent1&quot; in data:
+            # want to use agent as next step
+            yield AgentMessage(
+                payload=...,
+                caller=...,
+                sender=...,
+                receiver=&quot;agent1&quot;,
+                session_id=...,
+                headers=...
+            )
+        else:
+            ...
+</code></pre>
+<p>You can refer to the implementation of <code>DefaultTaskHandler</code> in AWorld.</p>
+<h4 id="two-examples-of-overriding-routing-react-and-plan-execute">Two Examples of Overriding Routing: ReAct and Plan-Execute</h4>
+<h5 id="react">ReAct</h5>
+<pre><code class="language-python">@HandlerFactory.register(name='react')
+class ReactHandler(AgentHandler):
+    def is_valid_message(self, message: Message):
+        if message.category != 'react':
+            return False
+        return True
+
+    async def _do_handle(self, message: Message) -&gt; AsyncGenerator[Message, None]:
+        yield message
+</code></pre>
+<h5 id="plan-execute">Plan-Execute</h5>
+<p>Compared to ReAct, agent2 and agent3 can execute in parallel simultaneously.</p>
+<pre><code class="language-python">from aworld.core.common import Observation
+from aworld.core.event.base import AgentMessage
+from aworld.logs.util import logger
+
+
+@HandlerFactory.register(name='plan_execute')
+class PlanExecuteHandler(AgentHandler):
+    def is_valid_message(self, message: Message):
+        if message.category != 'plan_execute':
+            return False
+        return True
+
+    async def _do_handle(self, message: Message) -&gt; AsyncGenerator[Message, None]:
+        logger.info(f&quot;PlanExecuteHandler|handle|taskid={self.task_id}|is_sub_task={message.context._task.is_sub_task}&quot;)
+        content = message.payload
+
+        # Parse model plan
+        plan = parse_plan(content[0].policy_info)
+        logger.info(f&quot;PlanExecuteHandler|plan|{plan}&quot;)
+
+        # Execute steps
+        output, context = execution_steps(plan.steps)
+
+        # Send event message, notify the next processing agent
+        new_plan_input = Observation(content=output)
+        yield AgentMessage(
+            session_id=message.session_id,
+            payload=new_plan_input,
+            sender=self.name(),
+            receiver=self.swarm.communicate_agent.id(),
+            headers={'context': context}
+        )
+</code></pre>
+<p>For more details, refer to the examples.</p>
+<h2 id="combination-and-recursion-of-mas-and-workflow">Combination and Recursion of MAS and Workflow</h2>
+<p>Same or different types of Swarms can be deeply nested, providing multi-level Swarms with different interaction
+mechanisms to support complex multi-agent interactions. For example, when creating a travel itinerary planner, using a
+combination of Workflow + MAS, where Workflow provides deterministic processes and MAS handles multi-source information
+retrieval and integration.</p>
+<pre><code class="language-python">from aworld.config.conf import AgentConfig
+from aworld.agents.llm_agent import Agent
+from aworld.core.agent.swarm import Swarm, GraphBuildType
+
+# Configure agents
+agent_conf = AgentConfig(...)
+
+# Create five agents
+rewrite = Agent(name=&quot;rewrite&quot;, conf=agent_conf)
+plan = Agent(name=&quot;plan&quot;, conf=agent_conf)
+search = Agent(name=&quot;search&quot;, conf=agent_conf)
+summary = Agent(name=&quot;summary&quot;, conf=agent_conf)
+report = Agent(name=&quot;report&quot;, conf=agent_conf)
+
+# Construct a MAS
+mas = Swarm(
+    topology=[(plan, search), (plan, summary)],
+    build_type=GraphBuildType.HANDOFF,
+    root_agent=[plan]
+)
+
+# Construct a combination of a workflow with the MAS team
+combination = Swarm(
+    topology=[(rewrite, mas), (mas, report)],
+    root_agent=[rewrite]
+)
+</code></pre>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../workflow_construction/" class="btn btn-neutral float-left" title="Workflow Construction"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../agent_training/" class="btn btn-neutral float-right" title="Agent Training">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+      <p>© Copyright 2025 inclusionAI AWorld Team.</p>
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/inclusionAI/AWorld" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../workflow_construction/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../agent_training/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../js/hide-home-edit.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>

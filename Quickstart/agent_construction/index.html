@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html class="writer-html5" lang="en" >
+<head>
+    <meta charset="utf-8" />
+    <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><link rel="canonical" href="https://github.com/inclusionAI/AWorld/Quickstart/agent_construction/" />
+      <link rel="shortcut icon" href="../../img/favicon.ico" />
+    <title>Agent Construction - AWorld Docs</title>
+    <link rel="stylesheet" href="../../css/theme.css" />
+    <link rel="stylesheet" href="../../css/theme_extra.css" />
+        <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/styles/github.min.css" />
+    
+      <script>
+        // Current page data
+        var mkdocs_page_name = "Agent Construction";
+        var mkdocs_page_input_path = "Quickstart/agent_construction.md";
+        var mkdocs_page_url = "/inclusionAI/AWorld/Quickstart/agent_construction/";
+      </script>
+    
+    <!--[if lt IE 9]>
+      <script src="../../js/html5shiv.min.js"></script>
+    <![endif]-->
+      <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.8.0/highlight.min.js"></script>
+      <script>hljs.highlightAll();</script> 
+</head>
+
+<body class="wy-body-for-nav" role="document">
+
+  <div class="wy-grid-for-nav">
+    <nav data-toggle="wy-nav-shift" class="wy-nav-side stickynav">
+    <div class="wy-side-scroll">
+      <div class="wy-side-nav-search">
+          <a href="../.." class="icon icon-home"> AWorld Docs
+        </a><div role="search">
+  <form id ="rtd-search-form" class="wy-form" action="../../search.html" method="get">
+      <input type="text" name="q" placeholder="Search docs" aria-label="Search docs" title="Type search term here" />
+  </form>
+</div>
+      </div>
+
+      <div class="wy-menu wy-menu-vertical" data-spy="affix" role="navigation" aria-label="Navigation menu">
+              <p class="caption"><span class="caption-text">Quickstart</span></p>
+              <ul class="current">
+                  <li class="toctree-l1"><a class="reference internal" href="../install/">Install</a>
+                  </li>
+                  <li class="toctree-l1 current"><a class="reference internal current" href="#">Agent Construction</a>
+    <ul class="current">
+    <li class="toctree-l2"><a class="reference internal" href="#part-1-quick-agent-setup">Part 1: Quick Agent Setup</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#declaring-an-agent">Declaring an Agent</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#configuring-llm">Configuring LLM</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#method-1-using-environment-variables">Method 1: Using Environment Variables</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#method-2-using-agentconfig">Method 2: Using AgentConfig</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#method-3-using-shared-modelconfig">Method 3: Using Shared ModelConfig</a>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#configuring-prompts">Configuring Prompts</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#configuring-tools">Configuring Tools</a>
+        <ul>
+    <li class="toctree-l4"><a class="reference internal" href="#local-tools">Local Tools</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#mcp-model-context-protocol-tools">MCP (Model Context Protocol) Tools</a>
+    </li>
+    <li class="toctree-l4"><a class="reference internal" href="#agent-as-tool">Agent as Tool</a>
+    </li>
+        </ul>
+    </li>
+        </ul>
+    </li>
+    <li class="toctree-l2"><a class="reference internal" href="#part-2-customizing-agents">Part 2: Customizing Agents</a>
+        <ul>
+    <li class="toctree-l3"><a class="reference internal" href="#customizing-agent-input">Customizing Agent Input</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#customizing-model-input">Customizing Model Input</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#customizing-model-logic">Customizing Model Logic</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#customizing-model-output">Customizing Model Output</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#customizing-agent-response">Customizing Agent Response</a>
+    </li>
+    <li class="toctree-l3"><a class="reference internal" href="#custom-response-parsing">Custom Response Parsing</a>
+    </li>
+        </ul>
+    </li>
+    </ul>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../workflow_construction/">Workflow Construction</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../multi-agent_system_construction/">Multi-agent System Construction</a>
+                  </li>
+                  <li class="toctree-l1"><a class="reference internal" href="../agent_training/">Agent Training</a>
+                  </li>
+              </ul>
+      </div>
+    </div>
+    </nav>
+
+    <section data-toggle="wy-nav-shift" class="wy-nav-content-wrap">
+      <nav class="wy-nav-top" role="navigation" aria-label="Mobile navigation menu">
+          <i data-toggle="wy-nav-top" class="fa fa-bars"></i>
+          <a href="../..">AWorld Docs</a>
+        
+      </nav>
+      <div class="wy-nav-content">
+        <div class="rst-content"><div role="navigation" aria-label="breadcrumbs navigation">
+  <ul class="wy-breadcrumbs">
+    <li><a href="../.." class="icon icon-home" aria-label="Docs"></a></li>
+          <li class="breadcrumb-item">Quickstart</li>
+      <li class="breadcrumb-item active">Agent Construction</li>
+    <li class="wy-breadcrumbs-aside">
+          <a href="https://github.com/inclusionAI/AWorld/tree/main/docs/Quickstart/agent_construction.md" class="icon icon-github"> Edit on GitHub</a>
+    </li>
+  </ul>
+  <hr/>
+</div>
+          <div role="main" class="document" itemscope="itemscope" itemtype="http://schema.org/Article">
+            <div class="section" itemprop="articleBody">
+              
+                <h1 id="building-and-running-agents">Building and Running Agents</h1>
+<p>In AWorld's design, both Workflows and Multi-Agent Systems (MAS) are complex systems built around Agents as the core
+component. Using the most common llm_agent as an example, this tutorial provides detailed guidance on:</p>
+<ol>
+<li>How to quickly build an Agent</li>
+<li>How to customize an Agent
+   This document is divided into two parts to explain AWorld's design philosophy.</li>
+</ol>
+<h2 id="part-1-quick-agent-setup">Part 1: Quick Agent Setup</h2>
+<h3 id="declaring-an-agent">Declaring an Agent</h3>
+<pre><code class="language-python">from aworld.agents.llm_agent import Agent
+
+# Assign a name to your agent
+agent = Agent(name=&quot;my_agent&quot;)
+</code></pre>
+<h3 id="configuring-llm">Configuring LLM</h3>
+<h4 id="method-1-using-environment-variables">Method 1: Using Environment Variables</h4>
+<pre><code class="language-python">import os
+
+## Set up LLM service using environment variables
+os.environ[&quot;LLM_PROVIDER&quot;] = &quot;openai&quot;  # Choose from: openai, anthropic, azure_openai
+os.environ[&quot;LLM_MODEL_NAME&quot;] = &quot;gpt-4&quot;
+os.environ[&quot;LLM_API_KEY&quot;] = &quot;your-api-key&quot;
+os.environ[&quot;LLM_BASE_URL&quot;] = &quot;https://api.openai.com/v1&quot;  # Optional for OpenAI
+</code></pre>
+<h4 id="method-2-using-agentconfig">Method 2: Using AgentConfig</h4>
+<pre><code class="language-python">import os
+from aworld.agents.llm_agent import Agent
+from aworld.config.conf import AgentConfig
+
+agent_config = AgentConfig(
+    llm_provider=os.getenv(&quot;LLM_PROVIDER&quot;, &quot;openai&quot;),
+    llm_model_name=os.getenv(&quot;LLM_MODEL_NAME&quot;),
+    llm_base_url=os.getenv(&quot;LLM_BASE_URL&quot;),
+    llm_api_key=os.getenv(&quot;LLM_API_KEY&quot;),
+)
+
+agent = Agent(name=&quot;my_agent&quot;, conf=agent_config)
+</code></pre>
+<h4 id="method-3-using-shared-modelconfig">Method 3: Using Shared ModelConfig</h4>
+<p>When multiple agents use the same LLM service, you can specify a shared ModelConfig:</p>
+<pre><code class="language-python">import os
+from aworld.agents.llm_agent import Agent
+from aworld.config.conf import AgentConfig, ModelConfig
+
+# Create a shared model configuration
+model_config = ModelConfig(
+    llm_provider=os.getenv(&quot;LLM_PROVIDER&quot;, &quot;openai&quot;),
+    llm_model_name=os.getenv(&quot;LLM_MODEL_NAME&quot;),
+    llm_base_url=os.getenv(&quot;LLM_BASE_URL&quot;),
+    llm_api_key=os.getenv(&quot;LLM_API_KEY&quot;),
+)
+
+# Use the shared model config in agent configuration
+agent_config = AgentConfig(
+    llm_config=model_config,
+)
+
+agent = Agent(name=&quot;my_agent&quot;, conf=agent_config)
+</code></pre>
+<h3 id="configuring-prompts">Configuring Prompts</h3>
+<pre><code class="language-python">from aworld.agents.llm_agent import Agent
+import os
+from aworld.config.conf import AgentConfig, ModelConfig
+
+model_config = ModelConfig(
+    llm_provider=os.getenv(&quot;LLM_PROVIDER&quot;, &quot;openai&quot;),
+    llm_model_name=os.getenv(&quot;LLM_MODEL_NAME&quot;),
+    llm_base_url=os.getenv(&quot;LLM_BASE_URL&quot;),
+    llm_api_key=os.getenv(&quot;LLM_API_KEY&quot;),
+)
+
+agent_config = AgentConfig(
+    llm_config=model_config,
+)
+
+# Define your system prompt
+system_prompt = &quot;&quot;&quot;You are a helpful AI assistant that can assist users with various tasks.
+You should be polite, accurate, and provide clear explanations.&quot;&quot;&quot;
+
+agent = Agent(
+    name=&quot;my_agent&quot;,
+    conf=agent_config,
+    system_prompt=system_prompt
+)
+</code></pre>
+<h3 id="configuring-tools">Configuring Tools</h3>
+<h4 id="local-tools">Local Tools</h4>
+<pre><code class="language-python">from aworld.agents.llm_agent import Agent
+import os
+from aworld.config.conf import AgentConfig, ModelConfig
+from aworld.core.tool.func_to_tool import be_tool
+
+model_config = ModelConfig(
+    llm_provider=os.getenv(&quot;LLM_PROVIDER&quot;, &quot;openai&quot;),
+    llm_model_name=os.getenv(&quot;LLM_MODEL_NAME&quot;),
+    llm_base_url=os.getenv(&quot;LLM_BASE_URL&quot;),
+    llm_api_key=os.getenv(&quot;LLM_API_KEY&quot;),
+)
+
+agent_config = AgentConfig(
+    llm_config=model_config,
+)
+
+system_prompt = &quot;&quot;&quot;You are a helpful agent with access to various tools.&quot;&quot;&quot;
+
+
+# Define a local tool using the @be_tool decorator
+
+@be_tool(tool_name='greeting_tool', tool_desc=&quot;A simple greeting tool that returns a hello message&quot;)
+def greeting_tool() -&gt; str:
+    return &quot;Hello, world!&quot;
+
+
+agent = Agent(
+    name=&quot;my_agent&quot;,
+    conf=agent_config,
+    system_prompt=system_prompt,
+    tool_names=['greeting_tool']
+)
+</code></pre>
+<h4 id="mcp-model-context-protocol-tools">MCP (Model Context Protocol) Tools</h4>
+<pre><code class="language-python">from aworld.agents.llm_agent import Agent
+import os
+from aworld.config.conf import AgentConfig, ModelConfig
+
+model_config = ModelConfig(
+    llm_provider=os.getenv(&quot;LLM_PROVIDER&quot;, &quot;openai&quot;),
+    llm_model_name=os.getenv(&quot;LLM_MODEL_NAME&quot;),
+    llm_base_url=os.getenv(&quot;LLM_BASE_URL&quot;),
+    llm_api_key=os.getenv(&quot;LLM_API_KEY&quot;),
+)
+
+agent_config = AgentConfig(
+    llm_config=model_config,
+)
+
+system_prompt = &quot;&quot;&quot;You are a helpful agent with access to file system operations.&quot;&quot;&quot;
+
+# Configure MCP servers
+
+mcp_config = {
+    &quot;mcpServers&quot;: {
+        &quot;GorillaFileSystem&quot;: {
+            &quot;type&quot;: &quot;stdio&quot;,
+            &quot;command&quot;: &quot;python&quot;,
+            &quot;args&quot;: [&quot;examples/BFCL/mcp_tools/gorilla_file_system.py&quot;],
+        },
+    }
+}
+
+agent = Agent(
+    name=&quot;my_agent&quot;,
+    conf=agent_config,
+    system_prompt=system_prompt,
+    mcp_servers=list(mcp_config.get(&quot;mcpServers&quot;, {}).keys()),
+    mcp_config=mcp_config
+)
+</code></pre>
+<h4 id="agent-as-tool">Agent as Tool</h4>
+<pre><code class="language-python">from aworld.agents.llm_agent import Agent
+import os
+from aworld.config.conf import AgentConfig, ModelConfig
+
+model_config = ModelConfig(
+    llm_provider=os.getenv(&quot;LLM_PROVIDER&quot;, &quot;openai&quot;),
+    llm_model_name=os.getenv(&quot;LLM_MODEL_NAME&quot;),
+    llm_base_url=os.getenv(&quot;LLM_BASE_URL&quot;),
+    llm_api_key=os.getenv(&quot;LLM_API_KEY&quot;),
+)
+
+agent_config = AgentConfig(
+    llm_config=model_config,
+)
+
+system_prompt = &quot;&quot;&quot;You are a helpful agent that can delegate tasks to other specialized agents.&quot;&quot;&quot;
+
+# Create a specialized tool agent
+tool_agent = Agent(name=&quot;tool_agent&quot;, conf=agent_config)
+
+# Create the main agent that can use the tool agent
+agent = Agent(
+    name=&quot;my_agent&quot;,
+    conf=agent_config,
+    system_prompt=system_prompt,
+    agent_names=['tool_agent']
+)
+</code></pre>
+<h2 id="part-2-customizing-agents">Part 2: Customizing Agents</h2>
+<h3 id="customizing-agent-input">Customizing Agent Input</h3>
+<p>Override the <code>init_observation()</code> function to customize how your agent processes initial observations:</p>
+<pre><code class="language-python">async def init_observation(self, observation: Observation) -&gt; Observation:
+    # You can add extended information from other agents or third-party storage
+    # For example, enrich the observation with additional context
+    observation.metadata = {&quot;timestamp&quot;: time.time(), &quot;source&quot;: &quot;custom&quot;}
+    return observation
+</code></pre>
+<h3 id="customizing-model-input">Customizing Model Input</h3>
+<p>Override the <code>async_messages_transform()</code> function to customize how messages are transformed before being sent to the
+model:</p>
+<pre><code class="language-python">async def async_messages_transform(self,
+                                   image_urls: List[str] = None,
+                                   observation: Observation = None,
+                                   message: Message = None,
+                                   **kwargs) -&gt; List[Dict[str, Any]]:
+    &quot;&quot;&quot;
+    Transform input data into the format expected by the LLM.
+
+    Args:
+         image_urls: List of images encoded using base64
+         observation: Observation from the environment
+         message: Event received by the Agent
+    &quot;&quot;&quot;
+    messages = []
+
+    # Add system context
+    if hasattr(self, 'system_prompt'):
+        messages.append({&quot;role&quot;: &quot;system&quot;, &quot;content&quot;: self.system_prompt})
+
+    # Add user message
+    if message and message.content:
+        messages.append({&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: message.content})
+
+    # Add images if present
+    if image_urls:
+        for img_url in image_urls:
+            messages.append({
+                &quot;role&quot;: &quot;user&quot;,
+                &quot;content&quot;: [{&quot;type&quot;: &quot;image_url&quot;, &quot;image_url&quot;: {&quot;url&quot;: img_url}}]
+            })
+
+    return messages
+</code></pre>
+<h3 id="customizing-model-logic">Customizing Model Logic</h3>
+<p>Override the <code>invoke_model()</code> function to implement custom model logic:</p>
+<pre><code class="language-python">async def invoke_model(self,
+                       messages: List[Dict[str, str]] = [],
+                       message: Message = None,
+                       **kwargs) -&gt; ModelResponse:
+    &quot;&quot;&quot;Custom model invocation logic.
+       You can use neural networks, rule-based systems, or any other business logic.
+    &quot;&quot;&quot;
+
+      # Example: Use a custom model or business logic
+      if self.use_custom_logic:
+          # Your custom logic here
+          response_content = self.custom_model.predict(messages)
+      else:
+          # Use the default LLM
+          response_content = await self.llm_client.chat_completion(messages)
+
+      return ModelResponse(
+          id=f&quot;response_{int(time.time())}&quot;,
+          model=self.model_name,
+          content=response_content,
+          tool_calls=None  # Set if tool calls are present
+      )
+</code></pre>
+<h3 id="customizing-model-output">Customizing Model Output</h3>
+<p>Create a custom <code>ModelOutputParser</code> class and specify it using the <code>model_output_parser</code> parameter:</p>
+<pre><code class="language-python">from aworld.models.model_output_parser import ModelOutputParser
+
+
+class CustomOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
+    async def parse(self, resp: ModelResponse, **kwargs) -&gt; AgentResult:
+        &quot;&quot;&quot;Custom parsing logic based on your model's API response format.&quot;&quot;&quot;
+
+         # Extract relevant information from the model response
+         content = resp.content
+         tool_calls = resp.tool_calls
+
+         # Create your custom AgentResult
+         result = AgentResult(
+             content=content,
+             tool_calls=tool_calls,
+             metadata={&quot;parsed_at&quot;: time.time()}
+         )
+
+         return result
+
+# Use the custom parser
+
+agent = Agent(
+    name=&quot;my_agent&quot;,
+    conf=agent_config,
+    model_output_parser=CustomOutputParser()
+)
+</code></pre>
+<h3 id="customizing-agent-response">Customizing Agent Response</h3>
+<p>Override the <code>async_post_run()</code> function to customize how your agent responds:</p>
+<pre><code class="language-python">from aworld.core.message import Message
+
+class CustomMessage(Message):
+      def __init__(self, content: str, custom_field: str = None):
+            super().__init__(content=content)
+            self.custom_field = custom_field
+
+async def async_post_run(self,
+                        policy_result: List[ActionModel],
+                        policy_input: Observation,
+                        message: Message = None) -&gt; Message:
+      &quot;&quot;&quot;
+      Customize the agent's response after processing.
+      &quot;&quot;&quot;
+
+      # Process the policy result and create a custom response
+      response_content = f&quot;Processed {len(policy_result)} actions&quot;
+      custom_field = &quot;custom_value&quot;
+
+       return CustomMessage(
+           content=response_content,
+           custom_field=custom_field
+       )
+</code></pre>
+<h3 id="custom-response-parsing">Custom Response Parsing</h3>
+<p>If the framework doesn't support your response structure, you can create a custom response parser:</p>
+<pre><code class="language-python">from aworld.runners import HandlerFactory
+from aworld.runners.default_handler import DefaultHandler
+
+# Define a custom handler name
+custom_name = &quot;custom_handler&quot;
+
+
+@HandlerFactory.register(name=custom_name)
+class CustomHandler(DefaultHandler):
+    def is_valid_message(self, message: Message):
+        &quot;&quot;&quot;Check if this handler should process the message.&quot;&quot;&quot;
+        return message.category == custom_name
+
+
+async def _do_handle(self, message: Message) -&gt; AsyncGenerator[Message, None]:
+    &quot;&quot;&quot;Custom message processing logic.&quot;&quot;&quot;
+    if not self.is_valid_message(message):
+        return
+
+    # Implement your custom message processing logic here
+    processed_message = self.process_custom_message(message)
+    yield processed_message
+
+
+# Use the custom handler
+agent = Agent(
+    name=&quot;my_agent&quot;,
+    conf=agent_config,
+    event_handler_name=custom_name
+)
+</code></pre>
+<p><strong>Important Note:</strong> The <code>custom_name</code> variable value must remain consistent across your handler registration and agent
+configuration.</p>
+              
+            </div>
+          </div><footer>
+    <div class="rst-footer-buttons" role="navigation" aria-label="Footer Navigation">
+        <a href="../install/" class="btn btn-neutral float-left" title="Install"><span class="icon icon-circle-arrow-left"></span> Previous</a>
+        <a href="../workflow_construction/" class="btn btn-neutral float-right" title="Workflow Construction">Next <span class="icon icon-circle-arrow-right"></span></a>
+    </div>
+
+  <hr/>
+
+  <div role="contentinfo">
+    <!-- Copyright etc -->
+      <p>© Copyright 2025 inclusionAI AWorld Team.</p>
+  </div>
+
+  Built with <a href="https://www.mkdocs.org/">MkDocs</a> using a <a href="https://github.com/readthedocs/sphinx_rtd_theme">theme</a> provided by <a href="https://readthedocs.org">Read the Docs</a>.
+</footer>
+          
+        </div>
+      </div>
+
+    </section>
+
+  </div>
+
+  <div class="rst-versions" role="note" aria-label="Versions">
+  <span class="rst-current-version" data-toggle="rst-current-version">
+    
+        <span>
+          <a href="https://github.com/inclusionAI/AWorld" class="fa fa-github" style="color: #fcfcfc"> GitHub</a>
+        </span>
+    
+    
+      <span><a href="../install/" style="color: #fcfcfc">&laquo; Previous</a></span>
+    
+    
+      <span><a href="../workflow_construction/" style="color: #fcfcfc">Next &raquo;</a></span>
+    
+  </span>
+</div>
+    <script src="../../js/jquery-3.6.0.min.js"></script>
+    <script>var base_url = "../..";</script>
+    <script src="../../js/theme_extra.js"></script>
+    <script src="../../js/theme.js"></script>
+      <script src="../../js/hide-home-edit.js"></script>
+      <script src="../../search/main.js"></script>
+    <script>
+        jQuery(function () {
+            SphinxRtdTheme.Navigation.enable(true);
+        });
+    </script>
+
+</body>
+</html>
