@@ -57,7 +57,7 @@ class MessageFuture:
             self._task = asyncio.create_task(self._wait_internal(timeout))
             self._polling_started = True
 
-    async def wait(self, timeout: float = None):
+    async def wait(self, timeout: float = 30.0):
         """Wait for message completion and return result.
 
         Args:
