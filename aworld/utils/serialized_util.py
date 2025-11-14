@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import json
+from enum import Enum
 
 import numpy as np
 
@@ -24,6 +25,8 @@ def to_serializable(obj, _memo=None):
         return {k: to_serializable(v, _memo) for k, v in obj.items()}
     elif isinstance(obj, (list, set)):
         return [to_serializable(i, _memo) for i in obj]
+    elif isinstance(obj, Enum):
+        return obj.value
     elif hasattr(obj, "to_dict"):
         return obj.to_dict()
     elif hasattr(obj, "model_dump"):
