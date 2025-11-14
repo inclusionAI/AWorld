@@ -8,6 +8,8 @@ from task execution. Users can implement custom strategies by extending Trajecto
 """
 
 import abc
+import json
+import os
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from aworld.core.agent.swarm import Swarm
@@ -301,15 +303,13 @@ class MemoryTrajectoryStrategy(TrajectoryStrategy):
         """
         return True  # Default: keep all items
 
-    async def generate_trajectory_for_memory(self, swarm: Swarm, context: Context):
-        if not swarm or not swarm.cur_agent:
-            return {}
+    async def query_single_agent_trajectory(self, agent_id, memory_config, context: Context):
         memory_items = MemoryFactory.instance().get_last_n(100, filters={
-            "agent_id": swarm.cur_agent[0].id(),
+            "agent_id": agent_id,
             "session_id": context.session_id,
-            "task_id": context.task_id,
+            # "task_id": context.task_id, # 构建了子task train.examples.train_gaia_with_aworld_verl.rollout.playwright_zhitian.executor_agent_shell.GaiaPlayWrightAgent.build_sub_aworld_run_task
             "include_summaried": True
-        }, agent_memory_config=swarm.cur_agent[0].memory_config)
+        }, agent_memory_config=memory_config)
 
         # Convert memory items to OpenAI message format
         result = {}
@@ -324,8 +324,42 @@ class MemoryTrajectoryStrategy(TrajectoryStrategy):
             else:
                 # If item doesn't have to_openai_message, return the item as is
                 result[i] = item
-
         return result
+
+    async def generate_trajectory_for_memory(self, swarm: Swarm, context: Context):
+        if not swarm or not swarm.cur_agent:
+            return {}
+        root = swarm.communicate_agent[0] if isinstance(swarm.communicate_agent, list) else swarm.communicate_agent
+        memory_config = root.memory_config
+        traj_dict = {
+            root.id(): await self.query_single_agent_trajectory(root.id(), memory_config, context)
+        }
+
+        # 处理executor agents
+        swarm.communicate_agent = list(swarm.agents.values())
+        if isinstance(swarm.communicate_agent, list) and len(swarm.communicate_agent) > 1:
+            executors = getattr(swarm.communicate_agent[1], 'executors', [])
+            for item in executors:
+                agent_id = item.get('agent_id')
+                if agent_id:
+                    traj_dict[agent_id] = await self.query_single_agent_trajectory(agent_id, memory_config, context)
+        print(f"Generated trajectories for {len(traj_dict)} agents")
+
+        # 写入trajectory文件，每个agent_id一个单独的目录
+        task_id = context.task_id
+        if task_id:
+            for agent_id, trajectory in traj_dict.items():
+                if trajectory is not None:
+                    # 创建目录 logs/trajectory/{task_id}/{agent_id}
+                    dir_path = f"logs/trajectory/{task_id}/{agent_id}"
+                    os.makedirs(dir_path, exist_ok=True)
+                    # 写入trajectory文件
+                    file_path = os.path.join(dir_path, "trajectory.json")
+                    with open(file_path, "w", encoding="utf-8") as f:
+                        json.dump(trajectory, f, ensure_ascii=False, indent=2)
+                    logger.info(f"Saved trajectory for agent {agent_id} to {file_path}")
+        
+        return traj_dict
 
     async def generate(
             self,

@@ -56,7 +56,7 @@ class ParallelFlightEvalTarget(EvalTarget[dict]):
         #                                llm_api_key=os.getenv("LLM_API_KEY"),
         #                                mcp_config=await build_mcp_config())
         a = await self._build_swarm()
-        return await build_gaia_task(user_input=user_input, target=a, timeout=1200)
+        return await build_gaia_task(user_input=user_input, target=a, timeout=1200, session_id=session_id, task_id=task_id)
 
     async def _build_swarm(self) -> Optional[Swarm]:
         init_middlewares()
@@ -121,7 +121,7 @@ class ParallelFlightEvalTarget(EvalTarget[dict]):
 
         session_id = f"{batch_id}_session#{case_id}"
         task_id = f"{batch_id}_task#{case_id}"
-        task = await self.build_common_gaia_task(user_input=prompt, session_id=session_id, task_id=task_id)
+        task = await self.build_gaia_task(user_input=prompt, session_id=session_id, task_id=task_id)
         task_id = task.id
 
         try:
@@ -139,9 +139,6 @@ class ParallelFlightEvalTarget(EvalTarget[dict]):
                 enable=None  # None 表示从环境变量 ENABLE_PYSPY 读取
             ):
                 result = await Runners.run_task(task=task)
-            os.makedirs(f"logs/trajectory/{batch_id}", exist_ok=True)
-            with open(f"logs/trajectory/{batch_id}/traj_{index+1}.json", "a") as f:
-                f.write(str(result[task_id].trajectory))
             os.makedirs(f"logs/results/{batch_id}", exist_ok=True)
             cur_time = datetime.now().strftime('%Y%m%d%H%M%S')
             with open(f"logs/results/{batch_id}/{task_id}_{cur_time}_{o_input.eval_case_id}.txt", "w") as f:
