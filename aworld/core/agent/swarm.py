@@ -63,7 +63,7 @@ class Swarm(object):
         logger.debug(f"{type(self)}Swarm Agent List is : {[type(agent) for agent in self.topology]}")
 
         self.setting_build_type(build_type)
-        self.register_agents = register_agents
+        self.register_agents = register_agents or []
         self.max_steps = max_steps
         self._cur_step = 0
         self._event_driven = event_driven
@@ -157,9 +157,6 @@ class Swarm(object):
             self._communicate_agent = agent_graph.root_agent
         self.cur_agent = self.communicate_agent
         self.agent_graph = agent_graph
-
-        if context is None:
-            context = Context()
 
         for agent in agent_graph.agents.values():
             agent.event_driven = self.event_driven

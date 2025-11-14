@@ -1,4 +1,4 @@
-from aworld.core.agent.swarm import Swarm
+from aworld.core.agent.swarm import Swarm, TeamSwarm
 from .orchestrator_agent.agent import OrchestratorAgent
 from .orchestrator_agent.config import orchestrator_agent_config
 from .orchestrator_agent.prompt import orchestrator_agent_system_prompt
