@@ -16,6 +16,7 @@ from aworld.core.agent.swarm import Swarm
 from aworld.logs.util import logger
 from aworld.experimental.a2a.agent_executor import AworldAgentExecutor
 from aworld.experimental.a2a.config import ServingConfig, SERVER_APP_MAPPING
+from aworld.core.context.base import Context
 
 
 class AgentServer:
@@ -62,6 +63,7 @@ class AgentServer:
         if self.config.server_app == "grpc":
             grpc_server = await self.create_grpc_server()
             loop = asyncio.get_running_loop()
+
             async def shutdown(sig: signal.Signals) -> None:
                 """Gracefully shutdown the servers."""
                 logger.warning(f'Received exit signal {sig.name}...')
@@ -162,7 +164,7 @@ class AgentServer:
         agent = self.agent
         if not skills:
             skills = []
-            await agent.async_desc_transform(agent.context)
+            await agent.async_desc_transform(Context())
             for tool in agent.tools:
                 func_info = tool.get('function')
                 if not func_info:

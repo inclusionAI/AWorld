@@ -35,9 +35,9 @@ def setup_routes(storage: TraceStorage):
                 'trace_id': trace_id,
                 'root_span': trace_tree,
             })
-            response = {
-                "data": trace_data
-            }
+        response = {
+            "data": trace_data
+        }
         return JSONResponse(content=response)
 
     @app.get('/api/traces/{trace_id}')

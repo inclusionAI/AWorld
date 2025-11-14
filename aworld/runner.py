@@ -23,7 +23,7 @@ class Runners:
     """Unified entrance to the utility class of the runnable task of execution."""
 
     @staticmethod
-    def streamed_run_task(task: Task) -> StreamingOutputs:
+    def streamed_run_task(task: Task, run_conf: RunConfig = None) -> StreamingOutputs:
         """Run the task in stream output."""
         if not task.conf:
             task.conf = TaskConfig()
@@ -39,7 +39,7 @@ class Runners:
         logger.info(f"start task_id={task.id}, agent={task.agent}, swarm = {task.swarm} ")
 
         streamed_result._run_impl_task = asyncio.create_task(
-            Runners.run_task(task)
+            Runners.run_task(task, run_conf=run_conf)
         )
         return streamed_result
 
