@@ -379,20 +379,23 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             session_id=context.session_id if context else "",
             headers={"context": context}
         ))
-        await self._exec_tool_callback(step_res, action,
-                                       Message(
-                                           category=Constants.TOOL_CALLBACK,
-                                           payload=CallbackItem(
-                                               data=step_res,
-                                               actions=action,
-                                               node_id=input_message.id
+        try:
+            await self._exec_tool_callback(step_res, action,
+                                           Message(
+                                               category=Constants.TOOL_CALLBACK,
+                                               payload=CallbackItem(
+                                                   data=step_res,
+                                                   actions=action,
+                                                   node_id=input_message.id
+                                               ),
+                                               sender=self.name(),
+                                               receiver=action[0].agent_name,
+                                               session_id=context.session_id,
+                                               headers={"context": context}
                                            ),
-                                           sender=self.name(),
-                                           receiver=action[0].agent_name,
-                                           session_id=context.session_id,
-                                           headers={"context": context}
-                                       ),
-                                       **kwargs)
+                                           **kwargs)
+        except Exception as e:
+            logger.warning(f"AsyncTool {self.name()} exec tool callback failed: {traceback.format_exc()}")
 
     async def step(self, message: Message, **kwargs) -> Message:
         final_res = None
