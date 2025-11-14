@@ -85,7 +85,7 @@ class TrajectoryDataset(Dataset[DataRow]):
             else:
                 if not ext_info.get("agent_results"):
                     ext_info["agent_results"] = []
-                ext_info["agent_results"].append(handle_result)
+                ext_info["agent_results"].append(to_serializable(handle_result))
         messages = self._get_llm_messages_from_memory(message)
 
         def _get_attr_from_action(obj, attr, default=None):
