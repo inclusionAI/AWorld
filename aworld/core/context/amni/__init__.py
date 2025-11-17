@@ -392,14 +392,9 @@ class AmniContext(Context):
             agent_type = skill.get('agent_type', 'aworld.agents.llm_agent.Agent')
             if agent_type == "aworld.agents.llm_agent.Agent":
                 from aworld.agents.llm_agent import Agent
+                orchestrator_agent = self._swarm.agents.get(namespace)
                 agent_config = AgentConfig(
-                    llm_config=ModelConfig(
-                        llm_temperature=0.1,
-                        llm_model_name=os.environ.get("LLM_MODEL_NAME"),
-                        llm_provider=os.environ.get("LLM_PROVIDER"),
-                        llm_api_key=os.environ.get("LLM_API_KEY"),
-                        llm_base_url=os.environ.get("LLM_BASE_URL")
-                    ),
+                    llm_config = orchestrator_agent.conf.llm_config,
                     use_vision=False
                 )
                 skill_agent = Agent(
@@ -407,11 +402,11 @@ class AmniContext(Context):
                     desc=skill.get('description'),
                     conf=agent_config,
                     system_prompt=skill.get('usage', ''),
-                    mcp_servers=skill.get('tool_list', []),
-                    mcp_config=await self.load_skill_agent_mcp_config(skill_agent = skill.get('name'))
+                    mcp_servers=list(skill.get('tool_list').keys()),
+                    mcp_config=orchestrator_agent.mcp_config
                 )
                 self._swarm.add_agents([skill_agent])
-                AgentFactory.agent_instance(namespace).handoffs.append(skill_agent.id())
+                orchestrator_agent.handoffs.append(skill_agent.id())
             else:
                 raise Exception(f"agent type {agent_type} not supported")
 

@@ -503,6 +503,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 events.append(event)
         except Exception:
             logger.debug(traceback.format_exc())
+            raise e
 
         messages = await self.build_llm_input(observation, info, message=message, **kwargs)
 
@@ -775,6 +776,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     yield msg
             except Exception as e:
                 logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
+                raise e
 
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")

@@ -14,4 +14,4 @@ def build_swarm():
         mcp_config=MCP_CONFIG,
     )
 
-    return Swarm(orchestrator_agent)
+    return TeamSwarm(orchestrator_agent)
