@@ -2,7 +2,7 @@ import abc
 import time
 import asyncio
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from aworld.core.event.base import Message
 from enum import Enum
 from abc import ABC, abstractmethod, ABCMeta
@@ -12,6 +12,7 @@ from aworld.core.singleton import InheritanceSingleton, SingletonMeta
 from aworld.core.event.base import Constants
 from aworld.logs.util import logger
 from aworld.events.util import send_message
+from aworld.utils.serialized_util import to_serializable
 
 
 class RunNodeBusiType(Enum):
@@ -56,6 +57,14 @@ class HandleResult(BaseModel):
     status: RunNodeStatus = None
     result_msg: Optional[str] = None
     result: Optional[Message] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "status": self.status.value,
+            "result_msg": self.result_msg,
+            "result": to_serializable(self.result) if self.result else None
+        }
 
 
 class RunNode(BaseModel):
