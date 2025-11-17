@@ -29,18 +29,7 @@ def get_latest_file_os(directory='.'):
 class FlightJudgeLLMScorer(LLMAsJudgeScorer):
 
     def build_pic_data(self, input: EvalDataCase[EvalCaseDataType]):
-        screenshot_dir = "./logs/screen_shot/" + input.run_id + "_task#" + input.case_data['id']
-        latest_screenshot = get_latest_file_os(screenshot_dir)
-
-        if latest_screenshot is None:
-            image_base64 = ""
-        else:
-            image_base64 = encode_image(latest_screenshot)
-
-        return [
-            {
-                "type": "text",
-                "text": """[Task Description]
+        task_prompt = """[Task Description]
 Your role is to act as an AI Agent Evaluator. Based on the user's query, the agent's execution path, and the final browser screenshot provided, you must determine if the agent's final answer successfully resolves the user's query.
 
 [Evaluation Criteria]
@@ -63,13 +52,41 @@ If either criterion is not met, the score is 0.
 Explanation:
 You must provide a explanation for your score.
 For a score of 1, briefly explain how both criteria were met.
-For a score of 0, you must clearly state which criterion was violated and provide a specific example of the failure. 
+For a score of 0, you must clearly state which criterion was violated and provide a specific example of the failure.
 
 Please output in the following standard JSON format without any additional explanatory text:
 {{"score":0/1, "explanation":"explain why the final answer is correct or incorrect."}}
 
 Here is the task: {task}
 """
+        task_prompt = """[任务描述]
+根据答案、执行流程、最终浏览器截图，判断机票查询的执行流程中是否遇到连接问题或反爬虫机制，包括网页无法打开、用户登录验证、滑块验证等。
+注意必须是影响机票查询流程的问题，使得无法获取最终的机票信息或者航班信息无法加载。如果出现弹窗提示，但不影响信息获取则不算。
+确保在执行流程的每一步中都没有遇到反爬虫机制，才能输出没有遇到上述问题。
+
+[输出格式]
+score：score为0代表没有遇到上述问题，score为1代表遇到上述问题。
+explanation：如果遇到上述问题，必须解释遇到的具体问题；如果没有遇到上述问题，则为空。
+以json格式输出
+示例：
+{{"score":1, "explanation":"用户登录验证"}}
+{{"score":0, "explanation":""}}
+
+[开始任务]
+{task}
+"""
+
+        screenshot_dir = "./logs/screen_shot/" + input.run_id + "_task#" + input.case_data['id']
+        latest_screenshot = get_latest_file_os(screenshot_dir)
+        if latest_screenshot is None:
+            return task_prompt
+        
+        image_base64 = encode_image(latest_screenshot)
+
+        return [
+            {
+                "type": "text",
+                "text": task_prompt
             },
             {
                 "type": "image_url",
@@ -85,6 +102,8 @@ Here is the task: {task}
     def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> [str, TaskInput]:
         question_column = self.eval_config.eval_dataset_query_column or 'question'
         response_column = self.eval_config.eval_output_answer_column or 'answer'
+        if not output or 'trajectory' not in output:
+            return None
         trajectory_list = [msg for key, msg in sorted(output.get('trajectory', {}).items())]
 
         last_summary_idx = next(
@@ -102,10 +121,15 @@ Here is the task: {task}
         ]
         new_trajectory_str = json.dumps(new_trajectory, ensure_ascii=False)
 
+        # judge_data = f"""
+        # [Question]: {input.case_data.get(question_column, '')}
+        # [Trajectory]: {new_trajectory_str}
+        # [Final Answer]: {output.get(response_column, '')}
+        # """
         judge_data = f"""
-        [Question]: {input.case_data.get(question_column, '')}
-        [Trajectory]: {new_trajectory_str}
-        [Final Answer]: {output.get(response_column, '')}
+        [问题]: {input.case_data.get(question_column, '')}
+        [执行流程]: {new_trajectory_str}
+        [答案]: {output.get(response_column, '')}
         """
         pic_data = self.build_pic_data(input)
         pic_data[0]['text'] = pic_data[0]['text'].format(task=judge_data)

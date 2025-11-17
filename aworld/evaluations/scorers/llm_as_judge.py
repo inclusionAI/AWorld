@@ -106,6 +106,8 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
                             agent_prompt=self.build_judge_prompt(index=index, input=input, output=output))
 
         task_input = self.build_judge_data(index=index, input=input, output=output)
+        if not task_input:
+            return ScorerResult(scorer_name=self.name, metric_results={})
         response = await exec_agent(task_input, agent=score_agent, context=Context())
         metric_results = self.convert_judge_response_to_score(response.answer)
         if metric_results:
