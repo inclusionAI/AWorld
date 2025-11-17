@@ -8,8 +8,13 @@ from a2a.types import AgentSkill, TransportProtocol, PushNotificationConfig
 from a2a.client.optionals import Channel
 from a2a.client.client import Consumer
 from collections.abc import Callable
+from a2a.types import AgentSkill, TransportProtocol, PushNotificationConfig
+from a2a.client.optionals import Channel
+from a2a.client.client import Consumer
+from collections.abc import Callable
 
 from aworld.config import BaseConfig
+from aworld.core.common import StreamingMode
 from aworld.core.common import StreamingMode
 
 SERVER_APP_MAPPING = {"fastapi": A2AFastAPIApplication,
@@ -25,6 +30,7 @@ class ServingConfig(BaseConfig):
     port: int = 0
     endpoint: str = "/"
     streaming: bool = False
+    serving_type: str = "a2a"  # options: a2a, mcp
     serving_type: str = "a2a"  # options: a2a, mcp
     keep_running: bool = True
     skills: list[AgentSkill] = []
