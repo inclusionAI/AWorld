@@ -42,7 +42,11 @@ class Output(BaseModel):
         self.parts.append(OutputPart(content=content))
 
     def output_type(self):
-        return "default"
+        if self.metadata is None:
+            self.metadata = {}
+        if "type" not in self.metadata:
+            self.metadata["type"] = "default"
+        return self.metadata["type"]
 
 
 class ToolCallOutput(Output):
@@ -51,8 +55,9 @@ class ToolCallOutput(Output):
     def from_tool_call(cls, tool_call: ToolCall, task_id: str):
         return cls(data=tool_call, task_id=task_id)
 
-    def output_type(self):
-        return "tool_call"
+    @model_validator(mode='after')
+    def set_meta(self):
+        self.metadata["type"] = "tool_call"
 
 
 class ToolResultOutput(Output):
@@ -68,16 +73,16 @@ class ToolResultOutput(Output):
 
     action_name: str = Field(default=None)
 
-    def output_type(self):
-        return "tool_call_result"
-
-    pass
+    @model_validator(mode='after')
+    def set_meta(self):
+        self.metadata["type"] = "tool_call_result"
 
 
 class RunFinishedSignal(Output):
 
-    def output_type(self):
-        return "finished_signal"
+    @model_validator(mode='after')
+    def set_meta(self):
+        self.metadata["type"] = "finished_signal"
 
 
 RUN_FINISHED_SIGNAL = RunFinishedSignal()
@@ -125,6 +130,7 @@ class MessageOutput(Output):
         """
         Setup generators for reasoning and response
         """
+        self.metadata["type"] = "message"
         source = self.source
 
         # if ModelResponse
@@ -241,7 +247,7 @@ class MessageOutput(Output):
             return chunk
 
     def __split_reasoning_and_response__(self) -> tuple[
-        Generator[str, None, None], Generator[str, None, None]]:  # type: ignore
+            Generator[str, None, None], Generator[str, None, None]]:  # type: ignore
         """
         Split source into reasoning and response generators for sync source
         Returns:
@@ -337,9 +343,6 @@ class MessageOutput(Output):
             return json.loads(content)
         return content
 
-    def output_type(self):
-        return "message_output"
-
 
 class StepOutput(Output):
     name: str
@@ -348,6 +351,10 @@ class StepOutput(Output):
     status: Optional[str] = Field(default="START", description="step_status")
     started_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="started at")
     finished_at: str = Field(default_factory=lambda: datetime.now().isoformat(), description="finished at")
+
+    @model_validator(mode='after')
+    def set_meta(self):
+        self.metadata["type"] = "step"
 
     @classmethod
     def build_start_output(cls, name, step_num, alias_name=None, data=None, task_id: str = None):
@@ -360,9 +367,6 @@ class StepOutput(Output):
     @classmethod
     def build_failed_output(cls, name, step_num, alias_name=None, data=None, task_id: str = None):
         return cls(name=name, step_num=step_num, alias_name=alias_name, status='FAILED', data=data, task_id=task_id)
-
-    def output_type(self):
-        return "step_output"
 
     @property
     def show_name(self):
