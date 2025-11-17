@@ -1163,10 +1163,14 @@ class ApplicationContext(AmniContext):
             topic=TopicType.SYSTEM_PROMPT,
             headers={"context": self}
         )
-        await send_message(message)
-        logger.debug(f"ApplicationContext|pub_and_wait_tool_result_event|send_finished|{namespace}|{agent_id}")
-        await long_wait_message_state(message)
-        logger.debug(f"ApplicationContext|pub_and_wait_tool_result_event|wait_finished|{namespace}|{agent_id}")
+        # 默认通过消息系统发送
+        try:
+            future = await send_message_with_future(message)
+            results = await future.wait(timeout=300)
+            if not results:
+                logger.warning(f"context write task failed: {message}")
+        except Exception as e:
+            logger.warn(f"context write task failed: {traceback.format_exc()}")
 
     ####################### Context Write #######################
 
