@@ -19,16 +19,17 @@ async def get_proxy_server():
             response = requests.get(api)
             j = response.json()
             p = j["result"]["data"]
+            real_out_ip = p['real_out_ip']
             proxy = f"{p['proxy_public_ip']}:{p['proxy_port']}"
             
-            # 检查是否重复
-            if proxy in _used_proxies:
-                logger.warning(f"Duplicate proxy detected: {proxy}, retrying... (attempt {attempt + 1}/{_MAX_RETRIES})")
+            # 检查是否重复（按 real_out_ip 过滤）
+            if real_out_ip in _used_proxies:
+                logger.warning(f"Duplicate real_out_ip detected: {real_out_ip} (proxy: {proxy}), retrying... (attempt {attempt + 1}/{_MAX_RETRIES})")
                 continue
             
-            # 记录新 IP
-            _used_proxies.add(proxy)
-            logger.info(f"Got new proxy: {proxy}")
+            # 记录新 IP（按 real_out_ip 记录）
+            _used_proxies.add(real_out_ip)
+            logger.info(f"Got new proxy: {proxy} (real_out_ip: {real_out_ip})")
             return proxy
         except:
             logger.error(f"Get proxy server error: {traceback.format_exc()}")
