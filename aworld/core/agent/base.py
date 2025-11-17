@@ -18,7 +18,7 @@ from aworld.logs.util import logger
 from aworld.output.base import StepOutput
 from aworld.sandbox.base import Sandbox
 from aworld.utils.common import convert_to_snake, replace_env_variables, sync_exec
-from aworld.mcp_client.utils import replace_mcp_servers_variables
+from aworld.mcp_client.utils import replace_mcp_servers_variables, extract_mcp_servers_from_config
 
 INPUT = TypeVar("INPUT")
 OUTPUT = TypeVar("OUTPUT")
@@ -153,8 +153,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.tool_names.append(tool)
         # An agent can delegate tasks to other agent
         self.handoffs: List[str] = agent_names or []
-        self.mcp_servers: List[str] = mcp_servers or []
         self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
+        # extract mcp_servers from mcp_config if mcp_servers is empty
+        self.mcp_servers: List[str] = extract_mcp_servers_from_config(self.mcp_config, mcp_servers or [])
         self.skill_configs: Dict[str, Any] = self.conf.get("skill_configs", {})
         # derive mcp_servers from skill_configs if provided
         if self.skill_configs:
