@@ -40,7 +40,7 @@ class ServingConfig(BaseConfig):
 
 class ClientConfig(BaseConfig):
     streaming: bool = False
-    streaming_mode: str = StreamingMode.OUTPUT.value
+    streaming_mode: str = StreamingMode.CORE.value
     # Whether client prefers to poll for updates from message:send. It is the callers job to check if the response is completed and if not run a polling loop.
     polling: bool = False
     timeout: float = 600.0
