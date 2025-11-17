@@ -497,13 +497,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if hasattr(observation, 'context') and observation.context:
             self.task_histories = observation.context
 
-        try:
-            events = []
-            async for event in self.run_hooks(message.context, HookPoint.PRE_LLM_CALL):
-                events.append(event)
-        except Exception as e:
-            logger.error(f"{self.id()} failed to run PRE_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
-            raise e
 
         messages = await self.build_llm_input(observation, info, message=message, **kwargs)
 
@@ -512,6 +505,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         llm_response = None
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
+
+        try:
+            events = []
+            async for event in self.run_hooks(message.context, HookPoint.PRE_LLM_CALL):
+                events.append(event)
+        except Exception as e:
+            logger.error(f"{self.id()} failed to run PRE_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
+            raise e
+
         try:
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
@@ -769,7 +771,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     sender=self.id(),
                     session_id=context.session_id if hasattr(
                         context, 'session_id') else None,
-                    headers={"context": message.context}
+                    headers={"context": context}
                 )
 
                 # Execute hook
