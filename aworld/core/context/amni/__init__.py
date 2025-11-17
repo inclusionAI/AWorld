@@ -1791,7 +1791,7 @@ class ApplicationContext(AmniContext):
         )
 
     async def get_task_status(self):
-        return self._task.task_status
+        return self.root._task.task_status
 
     async def update_task_status(self, task_id: str, status: 'TaskStatus'):
         if task_id == self.task_id:
