@@ -18,11 +18,16 @@ def _emit_message_class_wrapper(tracer: Tracer):
                 if not event.headers:
                     event.headers = {}
                 current_span = trace_provider.get_current_span()
-                if current_span:
+                if current_span and current_span.is_recording():
                     trace_context = TraceContext(
                         trace_id=current_span.get_trace_id(), span_id=current_span.get_span_id())
                     propagator.inject(trace_context=trace_context,
                                       carrier=DictCarrier(event.headers))
+                else:
+                    global_trace_context = get_global_trace_context()
+                    if global_trace_context:
+                        propagator.inject(trace_context=global_trace_context.get(),
+                                          carrier=DictCarrier(event.headers))
                 logger.info(
                     f"EventManager emit_message trace propagate, event.headers={event.headers}")
         except Exception as e:
