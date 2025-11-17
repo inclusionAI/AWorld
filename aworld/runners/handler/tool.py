@@ -1,13 +1,15 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import traceback
 from typing import AsyncGenerator
 
 from aworld.config import ConfigDict
 from aworld.core.agent.base import is_agent
 from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
-from aworld.core.event.base import Message, Constants, TopicType, AgentMessage
+from aworld.core.event.base import Message, Constants, TopicType, AgentMessage, MemoryEventMessage, MemoryEventType
 from aworld.core.tool.base import AsyncTool, Tool, ToolFactory
+from aworld.events.util import send_message_with_future
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
@@ -88,19 +90,35 @@ class DefaultToolHandler(ToolHandler):
                 except Exception as e:
                     logger.error(f"create tool {act.tool_name} failed: {str(e)}")
                     err_msg = f"Failed to execute {act.tool_name}: {str(e)}"
+                    # add tool result to memory
+                    tool_res = ActionResult(
+                        tool_name=act.tool_name,
+                        tool_call_id=act.tool_call_id,
+                        content=err_msg,
+                        error=str(e),
+                        success=False
+                    )
+                    receiver_agent = message.context.swarm.agents.get(act.agent_name)
+                    memory_msg = MemoryEventMessage(
+                        payload=tool_res,
+                        agent=receiver_agent,
+                        memory_event_type=MemoryEventType.TOOL,
+                        headers={"context": message.context}
+                    )
+                    try:
+                        future = await send_message_with_future(memory_msg)
+                        results = await future.wait()
+                        if not results:
+                            logger.warning(f"Memory write task failed: {memory_msg}")
+                    except Exception as e:
+                        logger.warn(f"Memory write task failed: {traceback.format_exc()}")
+
+                    # send message to agent
                     yield AgentMessage(
                         category=Constants.AGENT,
                         payload=Observation(
                             content=err_msg,
-                            action_result=[
-                                ActionResult(
-                                    tool_name=act.tool_name,
-                                    tool_call_id=act.tool_call_id,
-                                    content=err_msg,
-                                    error=str(e),
-                                    success=False,
-                                )
-                            ]
+                            action_result=[tool_res]
                         ),
                         sender=act.tool_name,
                         session_id=message.session_id,
