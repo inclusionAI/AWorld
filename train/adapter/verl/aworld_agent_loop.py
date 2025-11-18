@@ -91,7 +91,7 @@ class AworldAgentLoop(AgentLoopBase):
 
         return output
 
-    async def run_agents(self, input: Any, agent: Agent):
+    async def run_agents(self, input: Any, agent: Union[Agent, Swarm]):
 
         async def run(task: Task):
             # collect trajectory
@@ -105,7 +105,7 @@ class AworldAgentLoop(AgentLoopBase):
         if isinstance(input, dict):
             input = input.get("content", "")
 
-        task = Task(id=str(uuid.uuid4()), input=input, timeout=1200)
+        task = Task(id=str(uuid.uuid4()), input=input, timeout=1200, agent=agent)
         resp = TaskResponse(id=task.id, trajectory=[{
             "exp_meta": {
                 "task_id": "timeout_default",

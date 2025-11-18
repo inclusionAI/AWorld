@@ -20,6 +20,8 @@ from train.trainer.trainer_wrapper import TrainerWrapper
 
 class VerlTrainer(TrainerWrapper):
     def train(self):
+        """Supported PPO/GRPO only now."""
+
         from verl.trainer.main_ppo import main
 
         if not self.initialized:
@@ -130,7 +132,7 @@ class VerlTrainer(TrainerWrapper):
     def check_config(self, config: Union[str, Any]):
         import verl.trainer.config
 
-        file_path = os.path.join(os.path.dirname(verl.trainer.config.__file__), "ppo_trainer.yaml")
+        file_path = os.path.join(os.path.dirname(verl.trainer.config.__file__), "_generated_ppo_trainer.yaml")
         try:
             with open(file_path, "r") as file:
                 yaml_data = yaml.safe_load(file)
@@ -139,8 +141,7 @@ class VerlTrainer(TrainerWrapper):
         except Exception:
             raise RuntimeError(f"{config} read fail.\n", traceback.format_exc())
 
-
-        configs = DictConfig(yaml_data) or DictConfig({})
+        configs = DictConfig(OmegaConf.to_container(DictConfig(yaml_data), resolve=True))
         if isinstance(config, str):
             try:
                 with open(config, "r") as file:
