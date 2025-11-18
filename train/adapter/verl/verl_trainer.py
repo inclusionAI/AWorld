@@ -8,6 +8,8 @@ import yaml
 from typing import Callable, Union, Any
 
 from datasets import Dataset
+from omegaconf import OmegaConf
+from omegaconf.dictconfig import DictConfig
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import BaseConfig, ConfigDict, load_config
@@ -114,11 +116,11 @@ class VerlTrainer(TrainWrapper):
         with open(f"{module}.py", 'w+') as write:
             write.writelines(con)
 
-        module = module.replace('/', '.')
-        if module[1] == '.':
+        module = module.replace(os.getcwd(), '').replace('/', '.')
+        if module[0] == '.':
             module = module[1:]
         con = f"""- name: {agent.name()}
-         _target_: {module}.VerlAgentLoop
+    _target_: {module}.VerlAgentLoop
                """
         with open(f"{self.run_path}/agent.yaml", "w+") as write:
             write.writelines(con)
@@ -126,7 +128,7 @@ class VerlTrainer(TrainWrapper):
         return self.agent_yaml
 
     def check_config(self, config: Union[str, Any]):
-        import verl
+        import verl.trainer.config
 
         file_path = os.path.join(os.path.dirname(verl.trainer.config.__file__), "ppo_trainer.yaml")
         try:
@@ -137,12 +139,13 @@ class VerlTrainer(TrainWrapper):
         except Exception:
             raise RuntimeError(f"{config} read fail.\n", traceback.format_exc())
 
-        configs = yaml_data or dict()
+
+        configs = DictConfig(yaml_data) or DictConfig({})
         if isinstance(config, str):
             try:
                 with open(config, "r") as file:
                     yaml_data = yaml.safe_load(file)
-                configs.update(yaml_data)
+                configs.merge_with(yaml_data)
             except FileNotFoundError:
                 raise ValueError(f"Can not find the file: {config}")
             except Exception:
@@ -151,7 +154,7 @@ class VerlTrainer(TrainWrapper):
         elif isinstance(config, Config):
             if isinstance(config, BaseConfig):
                 config_dict = ConfigDict(config.model_dump())
-                configs.update(config_dict)
+                configs.merge_with(config_dict)
 
         else:
             raise ValueError("Config must be a string or a Config")
@@ -166,22 +169,23 @@ class VerlTrainer(TrainWrapper):
             if not hasattr(self, 'reward_func_name'):
                 raise RuntimeError("Please check reward function first before check config")
             self.config['custom_reward_function']['name'] = self.reward_func_name
-        if self.config['custom_reward_function']['path']:
+        if not self.config['custom_reward_function']['path']:
             self.config['custom_reward_function']['path'] = self.reward_file_path
 
         if not self.config['data']['train_files']:
             if not hasattr(self, 'train_dataset_path'):
                 raise RuntimeError("Please check train dataset first before check config")
-            self.config['data']['train_files'] = self.train_dataset_path
+            self.config['data']['train_files'] = [self.train_dataset_path]
         if not self.config['data']['val_files']:
             if not hasattr(self, 'test_dataset_path'):
                 raise RuntimeError("Please check test dataset first before check config")
-            self.config['data']['val_files'] = self.test_dataset_path
+            self.config['data']['val_files'] = [self.test_dataset_path]
 
         if not self.config['trainer']['default_local_dir']:
             local_dir = os.path.join(self.run_path, 'checkpoints')
             os.makedirs(local_dir, exist_ok=True)
             self.config['trainer']['default_local_dir'] = local_dir
 
-        yaml.safe_dump(self.config, open(f"{self.run_path}/final_trainer.yaml", "w"))
+        # for check
+        yaml.safe_dump(OmegaConf.to_container(self.config), open(f"{self.run_path}/final_trainer.yaml", "w"))
         return self.config
