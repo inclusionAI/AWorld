@@ -1,0 +1,102 @@
+# config for actor, rollout and reference model
+actor_rollout_ref:
+  model:
+    path: Qwen/Qwen3-4B
+    use_remove_padding: true
+    enable_gradient_checkpointing: true
+    use_fused_kernels: true
+
+  actor:
+    use_kl_loss: flase
+    kl_loss_coef: 0.0
+    clip_ratio_low: 0.2
+    clip_ratio_high: 0.28
+    clip_ratio_c: 10.0
+    optim:
+      lr: 0.000006
+    use_dynamic_bsz: false
+    ppo_mini_batch_size: 1
+    ppo_micro_batch_size_per_gpu: 1
+    ppo_max_token_len_per_gpu: 131072
+    ulysses_sequence_parallel_size: 8
+    strategy: fsdp2
+    fsdp_config:
+      model_dtype: bf16
+      param_offload: true
+      optimizer_offload: true
+      fsdp_size: -1
+
+  ref:
+    log_prob_max_token_len_per_gpu: 131072
+    log_prob_micro_batch_size_per_gpu: 1
+
+  rollout:
+    name: vllm
+    mode: async
+    max_num_batched_tokens: 32768
+    tensor_model_parallel_size: 8
+    enforce_eager: true
+    free_cache_engine: true
+    gpu_memory_utilization: 0.8
+    n: 8
+    max_num_seqs: 8
+    log_prob_micro_batch_size_per_gpu: 1
+    temperature: 1.0
+    top_p: 1.0
+    top_k: 80
+    dtype: bfloat16
+    multi_turn:
+      enable: false
+      max_user_turns: 8
+      max_assistant_turns: 8
+      tool_config_path: train/examples/train_gaia_with_aworld_verl/dummy_tool_config.json
+      format: hermes
+    agent:
+      agent_loop_config_path:
+    val_kwargs:
+      top_p: 0.6
+      temperature: 1.0
+      n: 1
+    trace:
+      backend: mlflow
+
+data:
+  train_files:
+  val_files:
+  max_prompt_length: 65536
+  max_response_length: 65536
+  return_raw_chat: true
+  train_batch_size: 1
+  filter_overlong_prompts: true
+  truncation: error
+
+# custom reward function definition
+custom_reward_function:
+
+  # The path to the file containing your customized reward function.
+  # If not specified, pre-implemented reward functions will be used.
+  path:
+
+  # The name of the reward function within the specified file. Default is 'compute_score'.
+  name:
+
+# config for the algorithm
+algorithm:
+  adv_estimator: grpo
+  use_kl_in_reward: false
+  kl_ctrl:
+    kl_coef: 0.0
+
+# config for the trainer
+trainer:
+  logger: [ 'console' ]
+  project_name: verl_train
+  experiment_name: verl_experiment
+  nnodes: 1
+  n_gpus_per_node: 8
+  default_local_dir:
+  total_epochs: 1
+  val_before_train: false
+  log_val_generations: 0
+  save_freq: 30
+  test_freq: 0
