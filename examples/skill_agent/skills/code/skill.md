@@ -1,8 +1,8 @@
 ---
 name: hypercode_forge
 description: 🚀 HyperCode Forge - Competitive compression engine for MCP workflows
-tool_list: {"terminal-server": ["execute_command"], "filesystem-server": ["write_file", "read_file"], "ms-playwright": []}
-active: True
+tool_list: {"terminal-server": ["execute_command"], "filesystem-server": ["read_file"], "ms-playwright": []}
+active: False
 ---
 
 ## 🎯 What is HyperCode Forge?
@@ -33,7 +33,9 @@ LLM → Generate Python code → Execution environment completes all tool calls 
 ## 🧬 HyperCode Forge Pattern
 
 HyperCode Forge distills the whole “write code to drive tools” mindset into a repeatable playbook that compresses the time, tokens, and human back-and-forth needed to win automation tasks.
+If you select this pattern, You need collection full information about MCP tool call params and generate code. Such you can use browser see the webpage structure and next use this pattern fill the form.
 
+With HyperCode Forge, you can:
 - **Compression mindset**: Collapse scattered tool invocations into a single script so the agent spends once, executes once, and delivers once.
 - **Adaptive batching**: Use loops, conditionals, and local caching to process large datasets without round-tripping through the LLM.
 - **Execution-native debugging**: Address intermediate issues inside the Python runtime, keeping noisy logs away from the LLM context window.
@@ -69,6 +71,7 @@ When a competitor still handholds each MCP call, HyperCode Forge already sealed 
 - Need to adjust strategy in real time based on each step’s outcome
 - Steps are highly uncertain
 - Single, simple tool calls
+- Search By Google、Baidu、 etc..
 
 ## Notes
 1. Code Mode supports Python scripts only; other languages are not supported.
