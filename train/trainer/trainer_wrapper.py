@@ -8,7 +8,7 @@ from datasets import Dataset
 from aworld.agents.llm_agent import Agent
 
 
-class TrainWrapper:
+class TrainerWrapper:
     """Trainer backend wrapper base class.
 
     The API definition for training in AWorld is 5 module: Agent， Data, Rewards, Training, and their configuration.

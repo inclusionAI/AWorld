@@ -8,6 +8,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.common import Config
 from aworld.logs.util import logger
 from train.adapter.verl.verl_trainer import VerlTrainer
+from train.trainer.trainer_wrapper import TrainerWrapper
 
 TRAIN_BACKEND = {
     'verl': VerlTrainer,
@@ -56,6 +57,8 @@ class AgentTrainer:
             raise ValueError(f"{train_backend} is not supported")
 
         backend = backend_cls(self.run_path)
+        if isinstance(backend, TrainerWrapper):
+            raise ValueError(f"Train backend {train_backend} is not a TrainerWrapper")
 
         backend.check_agent(agent=agent)
         backend.check_dataset(dataset=train_dataset, test_dataset=test_dataset)

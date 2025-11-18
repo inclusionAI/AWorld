@@ -15,10 +15,10 @@ from aworld.agents.llm_agent import Agent
 from aworld.config import BaseConfig, ConfigDict, load_config
 from aworld.core.common import Config
 from train.adapter.verl.agent_template import VERL_TEMPLATE
-from train.trainer.trainer_wrapper import TrainWrapper
+from train.trainer.trainer_wrapper import TrainerWrapper
 
 
-class VerlTrainer(TrainWrapper):
+class VerlTrainer(TrainerWrapper):
     def train(self):
         from verl.trainer.main_ppo import main
 
@@ -120,7 +120,7 @@ class VerlTrainer(TrainWrapper):
         if module[0] == '.':
             module = module[1:]
         con = f"""- name: {agent.name()}
-    _target_: {module}.VerlAgentLoop
+  _target_: {module}.VerlAgentLoop
                """
         with open(f"{self.run_path}/agent.yaml", "w+") as write:
             write.writelines(con)
