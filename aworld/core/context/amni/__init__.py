@@ -1789,3 +1789,10 @@ class ApplicationContext(AmniContext):
             f"<chunk_content>{chunk.content}</chunk_content>\n"
             f"</knowledge_chunk>\n"
         )
+
+    async def get_task_status(self):
+        return self.root._task.task_status
+
+    async def update_task_status(self, task_id: str, status: 'TaskStatus'):
+        if task_id == self.task_id:
+            self._task.task_status = status
