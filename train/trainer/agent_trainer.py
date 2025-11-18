@@ -10,7 +10,7 @@ from aworld.logs.util import logger
 from train.adapter.verl.verl_trainer import VerlTrainer
 from train.trainer.trainer_wrapper import TrainerWrapper
 
-TRAIN_BACKEND = {
+TRAIN_ENGINE = {
     'verl': VerlTrainer,
 }
 
@@ -26,7 +26,7 @@ class AgentTrainer:
                  train_dataset: Union[str, Dataset],
                  test_dataset: Union[str, Dataset] = None,
                  run_path: str = None,
-                 train_backend: str = 'verl') -> None:
+                 train_engine_name: str = 'verl') -> None:
         """AgentTrainer initialization, 4 modules are required (agent, dataset, reward, config).
 
         Args:
@@ -44,7 +44,7 @@ class AgentTrainer:
         self.test_dataset = test_dataset
         self.reward_func = reward_func
         self.config = config
-        self.train_backend = train_backend
+        self.train_engine_name = train_engine_name
 
         if run_path is None:
             self.run_path = os.path.join(os.getcwd(), 'runs')
@@ -52,24 +52,24 @@ class AgentTrainer:
             self.run_path = run_path
         os.makedirs(self.run_path, exist_ok=True)
 
-        backend_cls = TRAIN_BACKEND.get(train_backend)
-        if not backend_cls:
-            raise ValueError(f"{train_backend} is not supported")
+        engine_cls = TRAIN_ENGINE.get(train_engine_name)
+        if not engine_cls:
+            raise ValueError(f"{train_engine_name} is not supported")
 
-        backend = backend_cls(self.run_path)
-        if not isinstance(backend, TrainerWrapper):
-            raise ValueError(f"{train_backend} train backend is not a TrainerWrapper")
+        train_engine = engine_cls(self.run_path)
+        if not isinstance(train_engine, TrainerWrapper):
+            raise ValueError(f"{train_engine_name} train backend is not a TrainerWrapper")
 
-        backend.check_agent(agent=agent)
-        backend.check_dataset(dataset=train_dataset, test_dataset=test_dataset)
-        backend.check_reward(reward_func=reward_func)
-        self.config = backend.check_config(config=config)
+        train_engine.check_agent(agent=agent)
+        train_engine.check_dataset(dataset=train_dataset, test_dataset=test_dataset)
+        train_engine.check_reward(reward_func=reward_func)
+        self.config = train_engine.check_config(config=config)
         logger.info(f"Train config: {self.config}")
-        backend.mark_initialized()
-        self.backend = backend
+        train_engine.mark_initialized()
+        self.train_engine = train_engine
 
     def train(self):
-        if self.backend.initialized:
-            self.backend.train()
+        if self.train_engine.initialized:
+            self.train_engine.train()
         else:
-            raise ValueError(f"Train backend {self.train_backend} is not initialized")
+            raise ValueError(f"Train engine {self.train_engine_name} is not initialized")
