@@ -1,8 +1,11 @@
 import asyncio
+import os
 import traceback
 from datetime import datetime
 
 from dotenv import load_dotenv
+
+from aworld.core.agent.swarm import Swarm
 
 load_dotenv()
 
@@ -29,17 +32,18 @@ async def build_task(task_content: str, context_config, session_id: str = None, 
         origin_user_input=task_content
     )
 
-    # 2. build context
-    async def build_context(_task_input: TaskInput) -> ApplicationContext:
-        """Important Config"""
-        return await ApplicationContext.from_input(_task_input, context_config=context_config)
-
-    context = await build_context(task_input)
-
-    # build swarm
+    # 2. build swarm
     swarm = build_swarm()
 
-    await context.build_agents_state(swarm.topology)
+
+    # 3. build context
+    async def build_context(_task_input: TaskInput, _swarm: Swarm) -> ApplicationContext:
+        """Important Config"""
+        _context = await ApplicationContext.from_input(_task_input, context_config=context_config)
+        await _context.init_swarm_state(_swarm)
+        return _context
+
+    context = await build_context(task_input, swarm)
 
     # 3. build task with context
     return Task(
@@ -56,7 +60,6 @@ async def build_task(task_content: str, context_config, session_id: str = None, 
         ),
         timeout=60 * 60
     )
-
 
 async def run(user_input: str):
     # 1. init middlewares
@@ -76,13 +79,13 @@ async def run(user_input: str):
     try:
         result = await Runners.run_task(task=task)
         print(result[task.id].answer)
+        if not os.path.exists("results"):
+            os.makedirs("results")
+        with open(f"results/{task.id}.txt", "w") as f:
+            f.write(result[task.id].answer)
     except Exception as err:
         print(f"err is {err}, trace is {traceback.format_exc()}")
 
 
 if __name__ == '__main__':
-    asyncio.run(run(user_input="截至2024年12月31日，2024年上海黄金交易所Au(T+D)合约的“最高价”与“最低价”之差约为多少元/克？"))
-    # asyncio.run(run(user_input="https://huggingface.co/datasets/xbench/DeepSearch 帮我把这个数据下载然后解密给我么，请参考xbench_evals github repo中的解密代码获取纯文本数据。"))
-    # asyncio.run(run(user_input="帮我看看这周日从杭州到郑州的机票价格和时间(必须使用code mode 模式， 你应该先使用访问网站，然后获取到所有的元素之后再用codemode进行填充)"))
-    # asyncio.run(run(user_input="read https://arxiv.org/pdf/2510.23595v1 and tell me the abstract and conclusion of this paper"))
-    # asyncio.run(run(user_input="Help me find the latest week stock price of BABA. And Analysis the trend of news."))
+    asyncio.run(run(user_input="Help me find the latest week stock price of BABA. And Analysis the trend of news."))

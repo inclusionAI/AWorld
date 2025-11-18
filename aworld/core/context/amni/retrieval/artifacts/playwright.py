@@ -638,10 +638,10 @@ class PlaywrightSnapshotArtifact(Artifact):
         result_context = ""
         if self.result:
             result_context = self.result
-            if len(self.result) > 10000:
-                result_context = f"{self.result[:10000]}... (truncated content is too long {len(self.result)})"
             result_context = f"\n{json.dumps(result_context, ensure_ascii=False, indent=2)}\n"
-        
+            if len(result_context) > 10000:
+                result_context = f"{result_context[:10000]}... (truncated content is too long {len(self.result)} you can use knowledge tool access to see the full content)"
+
         # Build tab information
         tabs_context = ""
         if self.open_tabs:

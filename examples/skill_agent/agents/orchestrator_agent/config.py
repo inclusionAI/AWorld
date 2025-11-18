@@ -86,13 +86,13 @@ CUSTOM_SKILLS = collect_skill_docs(SKILLS_DIR)
 
 orchestrator_agent_config = AgentConfig(
     llm_config=ModelConfig(
-        llm_temperature=0.1,
+        llm_temperature=0.,
         llm_model_name=os.environ.get("LLM_MODEL_NAME"),
         llm_provider=os.environ.get("LLM_PROVIDER"),
         llm_api_key=os.environ.get("LLM_API_KEY"),
         llm_base_url=os.environ.get("LLM_BASE_URL")
     ),
     use_vision=False,
-    skill_configs= PLANNING_SKILLS | CUSTOM_SKILLS
+    skill_configs= PLANNING_SKILLS | BROWSER_SKILLS| CUSTOM_SKILLS
     # skill_configs= PLANNING_SKILLS | BASIC_SKILLS | BROWSER_SKILLS
 )
