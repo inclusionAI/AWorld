@@ -79,7 +79,12 @@ explanation：如果遇到上述问题，必须解释遇到的具体问题；如
         screenshot_dir = "./logs/screen_shot/" + input.run_id + "_task#" + input.case_data['id']
         latest_screenshot = get_latest_file_os(screenshot_dir)
         if latest_screenshot is None:
-            return task_prompt
+            return [
+                {
+                    "type": "text",
+                    "text": task_prompt
+                }
+            ]
         
         image_base64 = encode_image(latest_screenshot)
 
