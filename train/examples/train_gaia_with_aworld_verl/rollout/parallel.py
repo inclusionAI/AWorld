@@ -45,7 +45,7 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
         agent = build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
                                        llm_base_url=os.getenv("LLM_BASE_URL"),
                                        llm_api_key=os.getenv("LLM_API_KEY"),
-                                       mcp_config=await build_mcp_config())
+                                       mcp_config=await build_mcp_config(user_input=user_input, session_id=session_id, task_id=task_id))
         return await build_gaia_task(user_input=user_input, target=agent, timeout=1200,
                                      session_id=session_id, task_id=task_id)
 
