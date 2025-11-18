@@ -1,48 +1,48 @@
 ---
-name: read large knowledge
-description: 该技能用于在面对篇幅庞大的知识库或网页时进行分段式读取与整理。通过逐段抓取原文内容、即时总结要点，并持续沉淀在知识库中，确保信息摄取有序、条理清晰、可追溯。
+name: read large webpage or knowledge
+description: This skill is used for segmented reading and organization when facing large-scale knowledge bases or web pages. It captures original content segment by segment, summarizes key points in real-time, and continuously deposits them into the knowledge base, ensuring orderly information ingestion, clear structure, and traceability.
 tool_list: {"ms-playwright": [], "amnicontext-server": []}
 active: True
 type: agent
 ---
 ### 🧠 Knowledge Base
-- **目标场景**：读取长篇技术文档、研究报告、政策文件、网页百科等。
-- **核心能力**：分段获取原始文本、实时总结、构建知识网络。
-- **配套工具**：`get_knowledge_by_lines`（逐段读取）、`add_knowledge`（增量写入总结）。
+- **Target Scenarios**: Reading long technical documents, research reports, policy documents, web encyclopedias, etc.
+- **Core Capabilities**: Segment-based retrieval of original text, real-time summarization, and knowledge network construction.
+- **Supporting Tools**: `get_knowledge_by_lines` (segment-by-segment reading), `add_knowledge` (incremental summary writing).
 
 ### 📥 Input Specification
-开始读取前需明确：
-1. 待读取的知识资源标识（如 URL、文档 ID、文件路径）。
-2. 每次希望拉取的行数或段落规模。
-3. 当前关注的问题或主题，以便在总结时保持聚焦。
-4. 输出格式要求（段落摘要、要点列表、连续记录等）。
+Before starting to read, the following should be clarified:
+1. The identifier of the knowledge resource to be read (e.g., URL, document ID, file path).
+2. The number of lines or paragraph size to pull each time.
+3. The current question or topic of focus, to maintain focus during summarization.
+4. Output format requirements (paragraph summaries, bullet points, continuous records, etc.).
 
 ### 🛠️ Processing Pipeline
-1. **定位范围**：根据用户输入确定起始行号与读取长度，必要时记录偏移量以便继续。
-2. **逐段读取**：调用 `get_knowledge_by_lines` 拉取指定区间的原文内容，如内容过长可分多批次调度，并记录剩余待读区间。
-3. **即时分析**：对拉取的段落进行重点提取，标注关键词、关键信息、潜在问题或数据。
-4. **知识沉淀**：将提炼出的要点通过 `add_knowledge` 写入知识库，附带来源行号、时间戳或上下文说明，保持结构化。
-5. **循环推进**：重复步骤 2-4，直到全文读取完成或达到用户设定的目标深度，同时维护进度索引便于恢复。
-6. **全局回顾**：在阶段性节点合并已存摘要，生成整体脉络图或总结，识别遗漏信息。
+1. **Locate Range**: Determine the starting line number and reading length based on user input, and record offsets when necessary for continuation.
+2. **Segment-by-Segment Reading**: Call `get_knowledge_by_lines` to pull the original content of the specified range. If the content is too long, it can be scheduled in multiple batches, and record the remaining unread ranges.
+3. **Real-Time Analysis**: Extract key points from the pulled segments, annotate keywords, key information, potential issues, or data.
+4. **Knowledge Deposition**: Write the refined key points into the knowledge base through `add_knowledge`, along with source line numbers, timestamps, or context descriptions, maintaining structure.
+5. **Iterative Progress**: Repeat steps 2-4 until the entire text is read or the user-defined target depth is reached, while maintaining progress indices for recovery.
+6. **Global Review**: At periodic nodes, merge stored summaries, generate overall context maps or summaries, and identify missing information.
 
 ### 🔁 Iterative Tips
-- 若需要跨段对照，建议保留原文片段 ID，便于追溯。
-- 对关键概念可额外调用其他推理技能进行验证或扩展。
-- 建议在总结中记录未解答的问题，后续继续查阅时优先处理。
+- If cross-segment comparison is needed, it is recommended to preserve original fragment IDs for traceability.
+- For key concepts, additional reasoning skills can be called for verification or expansion.
+- It is recommended to record unanswered questions in summaries, which should be prioritized when continuing to consult later.
 
 ### 📤 Output Template
 ```
-📍 读取进度
+📍 Reading Progress
 - Source: ...
-- Range: 行号 ... - ...
+- Range: Line ... - ...
 - Remaining: ...
 
-📝 摘要要点
+📝 Summary Points
 - Point 1: ...
 - Point 2: ...
 - Point 3: ...
 
-🧾 已存知识
+🧾 Stored Knowledge
 - Knowledge ID: ...
 - Summary: ...
 - Reference: ...
@@ -52,7 +52,7 @@ type: agent
 ```
 
 ### ✅ Output Checklist
-- 是否精确标注了读取范围与剩余进度？
-- 摘要是否覆盖了关键信息与上下文？
-- 是否将要点及时写入知识库并链接来源？
-- 是否记录尚未解决的问题或需要深入的部分？
+- Is the reading range and remaining progress accurately annotated?
+- Does the summary cover key information and context?
+- Have key points been promptly written to the knowledge base and linked to sources?
+- Have unresolved issues or parts requiring in-depth exploration been recorded?
