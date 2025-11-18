@@ -1,16 +1,16 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import os
-from typing import Callable, Union
+from typing import Callable, Union, Type, Dict
 
 from datasets import Dataset
 from aworld.agents.llm_agent import Agent
 from aworld.core.common import Config
 from aworld.logs.util import logger
 from train.adapter.verl.verl_trainer import VerlTrainer
-from train.trainer.trainer_wrapper import TrainerWrapper
+from train.trainer.trainer_processor import TrainerProcessor
 
-TRAIN_ENGINE = {
+TRAIN_PROCESSOR: Dict[str, Type[TrainerProcessor]] = {
     'verl': VerlTrainer,
 }
 
@@ -52,13 +52,13 @@ class AgentTrainer:
             self.run_path = run_path
         os.makedirs(self.run_path, exist_ok=True)
 
-        engine_cls = TRAIN_ENGINE.get(train_engine_name)
+        engine_cls = TRAIN_PROCESSOR.get(train_engine_name)
         if not engine_cls:
             raise ValueError(f"{train_engine_name} is not supported")
 
         train_engine = engine_cls(self.run_path)
-        if not isinstance(train_engine, TrainerWrapper):
-            raise ValueError(f"{train_engine_name} train backend is not a TrainerWrapper")
+        if not isinstance(train_engine, TrainerProcessor):
+            raise ValueError(f"{train_engine_name} train backend is not a TrainerProcessor")
 
         train_engine.check_agent(agent=agent)
         train_engine.check_dataset(dataset=train_dataset, test_dataset=test_dataset)
@@ -66,10 +66,22 @@ class AgentTrainer:
         self.config = train_engine.check_config(config=config)
         logger.info(f"Train config: {self.config}")
         train_engine.mark_initialized()
-        self.train_engine = train_engine
+        self.train_processor = train_engine
+
+    @staticmethod
+    def register_processor(train_engine_name: str, train_type: Type[TrainerProcessor]):
+        """Register a train engine processor for agent training."""
+        if train_engine_name in TRAIN_PROCESSOR:
+            raise ValueError(f"{train_engine_name} is already registered")
+
+        TRAIN_PROCESSOR[train_engine_name] = train_type
+
+    @staticmethod
+    def unregister_processor(train_engine_name: str):
+        TRAIN_PROCESSOR.pop(train_engine_name, None)
 
     def train(self):
-        if self.train_engine.initialized:
-            self.train_engine.train()
+        if self.train_processor.initialized:
+            self.train_processor.train()
         else:
             raise ValueError(f"Train engine {self.train_engine_name} is not initialized")
