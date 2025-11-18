@@ -107,7 +107,7 @@ class ContextManager(BaseModel):
             None
         """
         # 1. Save conversations to memory
-        # save_memory_task = self._save_conversations_to_memory(context)
+        save_memory_task = self._save_conversations_to_memory(context)
 
         # 2. Save checkpoint
         save_checkpoint_task = self._save_context_checkpoint_async(context, **kwargs)
@@ -118,7 +118,7 @@ class ContextManager(BaseModel):
 
         # 3. Execute all three tasks concurrently
         await asyncio.gather(
-            # save_memory_task,
+            save_memory_task,
             save_checkpoint_task,
             refresh_workspace_working_dir
         )
@@ -142,35 +142,37 @@ class ContextManager(BaseModel):
         logger.info(f"[ContextManager] add task result to memory, session {context.session_id}, task {context.task_id}")
 
         # Create async task for conversation summary with logging and callback
-        task_id = f"summary_{context.session_id}_{context.task_id}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        # task_id = f"summary_{context.session_id}_{context.task_id}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
-        async def summary_task_with_callback():
-            start_time = datetime.datetime.now()
-            try:
-                logger.info(
-                    f"[ContextManager] [{task_id}] Starting conversation summary task, session {context.session_id}, task {context.task_id}")
-                await self._add_conversations_summary(context, copy.deepcopy(metadata))
 
-                end_time = datetime.datetime.now()
-                duration = (end_time - start_time).total_seconds()
-                logger.info(
-                    f"[ContextManager] [{task_id}] Conversation summary task completed successfully, session {context.session_id}, task {context.task_id}, duration: {duration:.2f}s")
-
-                # Callback after successful completion
-                await self._on_summary_completed(context, metadata, task_id, duration)
-
-            except Exception as err:
-                end_time = datetime.datetime.now()
-                duration = (end_time - start_time).total_seconds()
-                logger.error(
-                    f"[ContextManager] [{task_id}] Conversation summary task failed, session {context.session_id}, task {context.task_id}, duration: {duration:.2f}s, error: {err}")
-                # Callback after failure
-                await self._on_summary_failed(context, metadata, err, task_id, duration)
 
         # Start the async task
-        asyncio.create_task(summary_task_with_callback())
-        logger.info(
-            f"[ContextManager] Created async summary task: {task_id}, session {context.session_id}, task {context.task_id}")
+        # asyncio.create_task(summary_task_with_callback())
+        # logger.info(
+        #     f"[ContextManager] Created async summary task: {task_id}, session {context.session_id}, task {context.task_id}")
+
+    async def summary_task_with_callback(self, task_id, context, metadata):
+        start_time = datetime.datetime.now()
+        try:
+            logger.info(
+                f"[ContextManager] [{task_id}] Starting conversation summary task, session {context.session_id}, task {context.task_id}")
+            await self._add_conversations_summary(context, copy.deepcopy(metadata))
+
+            end_time = datetime.datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            logger.info(
+                f"[ContextManager] [{task_id}] Conversation summary task completed successfully, session {context.session_id}, task {context.task_id}, duration: {duration:.2f}s")
+
+            # Callback after successful completion
+            await self._on_summary_completed(context, metadata, task_id, duration)
+
+        except Exception as err:
+            end_time = datetime.datetime.now()
+            duration = (end_time - start_time).total_seconds()
+            logger.error(
+                f"[ContextManager] [{task_id}] Conversation summary task failed, session {context.session_id}, task {context.task_id}, duration: {duration:.2f}s, error: {err}")
+            # Callback after failure
+            await self._on_summary_failed(context, metadata, err, task_id, duration)
 
     async def _add_conversations_summary(self, context: "ApplicationContext",
                                          summary_metadata: MessageMetadata) -> None:
