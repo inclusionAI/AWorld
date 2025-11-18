@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 
 export VLLM_USE_V1=1
-export VERL_LOGGING_LEVEL=DEBUG
-export NCCL_DEBUG=DEBUG
 export RAY_DEDUP_LOGS=0
 export MLFLOW_TRACKING_URI=sqlite:////tmp/mlruns.db
 export CUDA_LAUNCH_BLOCKING=1
@@ -193,6 +191,3 @@ python3 -m verl.trainer.main_ppo \
     trainer.default_local_dir="${ckpts_dir}" \
     trainer.test_freq=0 \
     trainer.total_epochs=1 "$@"
-
-
-#     # actor_rollout_ref.rollout.max_model_len=$max_model_len \
