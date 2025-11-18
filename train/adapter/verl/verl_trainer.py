@@ -13,12 +13,15 @@ from aworld.agents.llm_agent import Agent
 from aworld.config import BaseConfig, ConfigDict, load_config
 from aworld.core.common import Config
 from train.adapter.verl.agent_template import VERL_TEMPLATE
-from train.trainer_wrapper import TrainWrapper
+from train.trainer.trainer_wrapper import TrainWrapper
 
 
 class VerlTrainer(TrainWrapper):
     def train(self):
         from verl.trainer.main_ppo import main
+
+        if not self.initialized:
+            raise RuntimeError("Please check all components before training")
 
         main(self.config)
 
