@@ -19,5 +19,12 @@ async def run():
     agent_server = AgentServer(agent=agent, config=ServingConfig(port=7500, streaming=True))
     await agent_server.start()
 
-# if __name__ == "__main__":
-#     asyncio.run(run())
+
+async def run_summarize_agent():
+    agent = Agent("summarize_agent", system_prompt="You are a summary assistant. You must summarize the content you received from the search assistant.")
+    agent_server = AgentServer(agent=agent, config=ServingConfig(port=7500, streaming=True))
+    await agent_server.start()
+
+if __name__ == "__main__":
+    # asyncio.run(run())
+    asyncio.run(run_summarize_agent())
