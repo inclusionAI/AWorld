@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
 
-from train.agent_trainer import AgentTrainer
+from train.trainer.agent_trainer import AgentTrainer
 from train.examples.train_gaia_with_aworld_verl.metrics.gaia_reward_function import gaia_reward_func
 
 
