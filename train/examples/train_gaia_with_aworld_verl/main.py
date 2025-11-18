@@ -14,7 +14,11 @@ from train.examples.train_gaia_with_aworld_verl.metrics.gaia_reward_function imp
 
 
 def main():
+    # config module divided into environmental variables and training configurations
     success = load_dotenv()
+    custom_train_config = 'train/examples/train_gaia_with_aworld_verl/grpo_trainer.yaml'
+
+    # agent module contains agent and mcp tools in environment
     mcp_config = {
         "mcpServers": {
             "gaia_server": {
@@ -29,12 +33,10 @@ def main():
             }
         }
     }
-
     agent_config = AgentConfig(
         llm_provider="verl",
         top_k=80
     )
-
     agent = Agent(
         name="demo_agent",
         desc="demo_agent",
@@ -43,16 +45,19 @@ def main():
         mcp_servers=["gaia_server"],
         conf=agent_config
     )
-    import inspect
-    code = inspect.getfile(gaia_reward_func)
-    print(code)
 
-    train_dataset = load_dataset("", split="train")
-    test_dataset = load_dataset("", split="test")
+    # dataset module contains train and test dataset
+    # train_dataset = load_dataset("", split="train")
+    # test_dataset = load_dataset("", split="test")
+    train_dataset = '/AWorld/verl/data/simple_dataset.parquet'
+    test_dataset = '/AWorld/verl/data/simple_dataset.parquet'
+
+    # reward module contains reward function or reward function code file path
+    reward_func = gaia_reward_func
 
     trainer = AgentTrainer(agent=agent,
-                           config='examples/ppo_trainer.yaml',
-                           reward_func=gaia_reward_func,
+                           config=custom_train_config,
+                           reward_func=reward_func,
                            train_dataset=train_dataset,
                            test_dataset=test_dataset)
     trainer.train()
