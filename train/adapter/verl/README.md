@@ -1,24 +1,11 @@
-# VERL Adapter (AWorld Train)
+# VeRL Backend (AWorld Train)
 
-This module hosts the VERL integration for AWorld training workflows.
+This module hosts the VeRL integration for AWorld training workflows.
 
 - aworld_agent_loop.py: Base class bridging VERL AgentLoop with AWorld agents.
-- common.py: 
-  - Utilities for converting trajectories/messages to VERL AgentLoopOutput.
-  - Utilities for getting MCP server configuration.
-
-## Usage
-Import adapter entrypoints from your example code:
-
-```python
-from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
-```
-Then implement your example-specific loop:
-```python
-class MyLoop(AworldAgentLoop):
-    def build_agents(self):
-        ...
-```
+- verl_trainer.py: VeRL trainer wrapper.
+- agent_template.py: Template for new agents, supported `Agent` only now.
+- verl_provider.py: LLM provider for agents.
 
 ## Adding New Features
 - Avoid putting example-specific code here; that belongs in train/examples/.
