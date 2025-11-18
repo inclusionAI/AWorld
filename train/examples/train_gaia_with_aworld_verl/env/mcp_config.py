@@ -23,6 +23,7 @@ async def build_local_mcp_config():
                     "--isolated",
                     "--output-dir=/tmp/playwright",
                     "--timeout-action=10000"
+                    # "--browser", "chromium"
                 ],
                 "env": {
                     "PLAYWRIGHT_TIMEOUT": "120000",
@@ -196,7 +197,7 @@ def ensure_directories_exist():
         os.makedirs(chroma_path, exist_ok=True)
 
 
-async def build_mcp_config():
+async def build_mcp_config(user_input: str = None, session_id: str = None, task_id: str = None):
     if os.getenv('MCP_ENV', 'local') == 'local':
         # 确保必要的目录存在
         ensure_directories_exist()
@@ -204,7 +205,7 @@ async def build_mcp_config():
     else:
         mcp_config = await build_distributed_mcp_config()
 
-    logger.info(f"mcp_config={mcp_config}")
+    logger.info(f"user_input={user_input}|session_id={session_id}|task_id={task_id}|mcp_config={mcp_config}")
     # 未开启，移除相关的配置
     if os.getenv('GAIA_AGENT_CONTEXT', 'common') == 'common' and 'amnicontext-server' in mcp_config['mcpServers']:
         del mcp_config['mcpServers']['amnicontext-server']

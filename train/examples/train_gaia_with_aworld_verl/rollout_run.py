@@ -46,7 +46,7 @@ async def single_run(user_input: str):
     agent = build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
                              llm_base_url=os.getenv("LLM_BASE_URL"),
                              llm_api_key=os.getenv("LLM_API_KEY"),
-                             mcp_config=await build_mcp_config())
+                             mcp_config=await build_mcp_config(user_input))
 
     # 2. build task
     task = await build_gaia_task(user_input=user_input, target=agent, timeout=1200)
@@ -85,7 +85,7 @@ async def batch_run():
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,
-            parallel_num=1,
+            parallel_num=20,
             skip_passed_cases=True,
         )).run()
 
