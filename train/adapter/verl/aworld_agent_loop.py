@@ -1,21 +1,42 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
 import json
 import os
+import time
+import traceback
 import uuid
-from typing import Any, List, Dict, Union
+from typing import Any, List, Dict, Union, Sequence
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.agent_loader import _load_yaml
 from aworld.core.agent.swarm import Swarm
+from aworld.core.task import TaskResponse, Task
 from aworld.runner import Runners
 from aworld.logs.util import logger
 
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
 
+from aworld.trace.base import Span
+from aworld.trace.span_cosumer import register_span_consumer, SpanConsumer
 from train.adapter.common import encode_messages, turns_num
 from train.adapter.verl.verl_provider import VerlProvider
+
+
+@register_span_consumer()
+class MockSpanConsumer(SpanConsumer):
+    def consume(self, spans: Sequence[Span]) -> None:
+        for span in spans:
+            start_timestamp = span.start_time / 1e9
+            end_timestamp = span.end_time / 1e9
+            start_ms = int((span.start_time % 1e9) / 1e6)
+            end_ms = int((span.end_time % 1e9) / 1e6)
+            start_time = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(start_timestamp)) + f'.{start_ms:03d}',
+            end_time = time.strftime(
+                '%Y-%m-%d %H:%M:%S', time.localtime(end_timestamp)) + f'.{end_ms:03d}',
+            logger.info(
+                f"[trace_span]={span.name}, trace_id={span.get_trace_id()}, span_id={span.get_span_id()}, start_time={start_time}, end_time={end_time}, duration_ms={(span.end_time - span.start_time) / 1e6}")
 
 
 class AworldAgentLoop(AgentLoopBase):
@@ -50,7 +71,6 @@ class AworldAgentLoop(AgentLoopBase):
         agent = await self.build_agents()
 
         self.agent = agent
-        import time
         start_time = time.time()
         logger.warning(f"######## trajectory start ########\n")
 
@@ -66,26 +86,56 @@ class AworldAgentLoop(AgentLoopBase):
 
         # build agent loop output
         output = await self.convert_agent_output(trajectory=res)
+        if hasattr(result, 'id'):
+            output.extra_fields['task_id'] = result.id
+
         return output
 
-    async def run_agents(self, input, agent):
+    async def run_agents(self, input: Any, agent: Union[Agent, Swarm]):
+
+        async def run(task: Task):
+            # collect trajectory
+            if isinstance(agent, Swarm):
+                result = await Runners.run_task(task)
+            else:
+                result = await Runners.run_task(task)
+            result = result.get(task.id)
+            return result
+
         if isinstance(input, dict):
             input = input.get("content", "")
-        # collect trajectory
-        if isinstance(agent, Swarm):
-            result = await Runners.run(input=input, swarm=agent)
-        else:
-            result = await Runners.run(input=input, agent=agent)
 
-        return result
+        task = Task(id=str(uuid.uuid4()), input=input, timeout=1200, agent=agent)
+        resp = TaskResponse(id=task.id, trajectory=[{
+            "exp_meta": {
+                "task_id": "timeout_default",
+                "timestamp": time.localtime(time.time())
+            },
+            "exp_data": {
+                "messages": [
+                    {"role": "user", "content": str(input)},
+                    {"role": "assistant", "content": "Timeout, please try again."}
+                ],
+                "actions": []
+            }
+        }])
+        try:
+            # Execute agent task directly with timeout
+            return await asyncio.wait_for(run(task), timeout=task.timeout)
+        except asyncio.TimeoutError:
+            logger.warning(f"run agents timeout, will use default result, input={input}")
+            return resp
+        except Exception:
+            logger.error(f"run agents fail, will use default result, \nerror: {traceback.format_exc()}")
+            return resp
 
     async def get_agent_tool_config(self, config_path: str) -> Dict[str, Any]:
         """Load tool configuration, preferring YAML with simple fields.
 
-            Priority:
-            1) agent_tools.yaml (simple user config with url, Authorization, MCP_SERVERS)
-            2) mcp.json (legacy full config)
-            """
+        Priority:
+        1) agent_tools.yaml (simple user config with url, Authorization, MCP_SERVERS)
+        2) mcp.json (legacy full config)
+        """
 
         # 1) Try YAML (simple schema)
         try:
@@ -172,7 +222,7 @@ class AworldAgentLoop(AgentLoopBase):
                 for i in range(len(messages) - 1, -1, -1):
                     if messages[i].get("role") != "tool":
                         last_non_tool_index = i
-                        break 
+                        break
                 if last_non_tool_index != -1:
                     messages = messages[:last_non_tool_index + 1]
                 else:
