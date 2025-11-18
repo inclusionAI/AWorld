@@ -15,6 +15,8 @@ TRAIN_BACKEND = {
 
 
 class AgentTrainer:
+    """Aworld's agent training unified API entrance, supporting different train backends behind the trainer."""
+
     def __init__(self,
                  # Unsupported swarm now
                  agent: Union[str, Agent],
@@ -24,6 +26,18 @@ class AgentTrainer:
                  test_dataset: Union[str, Dataset] = None,
                  run_path: str = None,
                  train_backend: str = 'verl') -> None:
+        """AgentTrainer initialization, 4 modules are required (agent, dataset, reward, config).
+
+        Args:
+            agent: Agent module, AWorld agent, or agent config file path that can build the AWorld agent.
+            reward_func: Reward module, reward function or reward function code file path.
+            train_dataset: Dataset module, train dataset or dataset file path that can build the training dataset.
+            test_dataset: Dataset module, test dataset or dataset file path that can build the test dataset.
+            config: Train config module, custom training configuration of special train backend.
+            run_path: The path to save the running code, logs and checkpoints, default is 'workspace/runs'.
+            train_backend: The training backend to use, default is 'verl'.
+        """
+
         self.agent = agent
         self.train_dataset = train_dataset
         self.test_dataset = test_dataset
@@ -44,7 +58,7 @@ class AgentTrainer:
         backend = backend_cls(self.run_path)
 
         backend.check_agent(agent=agent)
-        backend.check_dataset(train_dataset)
+        backend.check_dataset(dataset=train_dataset, test_dataset=test_dataset)
         backend.check_reward(reward_func=reward_func)
         self.config = backend.check_config(config=config)
         logger.info(f"Train config: {self.config}")
@@ -52,4 +66,7 @@ class AgentTrainer:
         self.backend = backend
 
     def train(self):
-        self.backend.train()
+        if self.backend.initialized:
+            self.backend.train()
+        else:
+            raise ValueError(f"Train backend {self.train_backend} is not initialized")
