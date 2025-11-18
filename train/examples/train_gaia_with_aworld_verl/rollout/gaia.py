@@ -55,8 +55,6 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
         ),
         memory_config=AgentMemoryConfig()
     )
-    if is_summary():
-        conf.memory_config = AgentMemoryConfig(history_rounds=100, enable_summary=True, summary_rounds=30, summary_context_length=32000)
 
     # 2. init agent
     return Agent(
@@ -82,7 +80,7 @@ async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, sess
         context_config.agent_config = AgentContextConfig(
             history_rounds= 100,
             enable_summary= True,
-            summary_rounds= 10,
+            summary_rounds= 30,
             summary_context_length= 40960,
             summary_prompts=[
                 SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,

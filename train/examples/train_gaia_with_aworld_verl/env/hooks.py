@@ -31,7 +31,12 @@ class PostLLMCallRolloutHook(PostLLMCallHook):
             screen_shot_result = await mcp_screen_snapshot(agent, context)
             if screen_shot_result:
                 task_id = context.task_id if context and context.task_id else None
-                parse_and_save_screenshots(screen_shot_result, task_id=task_id)
+                saved_files, all_empty = parse_and_save_screenshots(screen_shot_result, task_id=task_id)
+                if all_empty:
+                    logger.error(f"All content is empty, retrying mcp_screen_snapshot. agent: {agent.name}, task_id: {task_id}")
+                    screen_shot_result = await mcp_screen_snapshot(agent, context)
+                    if screen_shot_result:
+                        parse_and_save_screenshots(screen_shot_result, task_id=task_id)
 
         pass
 
@@ -49,7 +54,12 @@ class PostToolCallRolloutHook(PostToolCallHook):
         screen_shot_result = await mcp_screen_snapshot(agent, context)
         if screen_shot_result:
             task_id = context.task_id if context and context.task_id else None
-            parse_and_save_screenshots(screen_shot_result, task_id=task_id)
+            saved_files, all_empty = parse_and_save_screenshots(screen_shot_result, task_id=task_id)
+            if all_empty:
+                logger.error(f"All content is empty, retrying mcp_screen_snapshot. agent: {agent.name}, task_id: {task_id}")
+                screen_shot_result = await mcp_screen_snapshot(agent, context)
+                if screen_shot_result:
+                    parse_and_save_screenshots(screen_shot_result, task_id=task_id)
         pass
 
 

@@ -11,13 +11,12 @@ from aworld import trace
 from aworld.config import AgentConfig, ContextRuleConfig
 # lazy import
 from aworld.core.context.base import Context
-from aworld.events.util import send_message, send_message_with_future
+from aworld.events.util import send_message_with_future
 from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace
 from aworld.output.artifact import ArtifactAttachment
-from aworld.runners.utils import long_wait_message_state
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .contexts import ContextManager
 from .prompt.prompts import AMNI_CONTEXT_PROMPT
@@ -30,8 +29,8 @@ from .state.agent_state import AgentWorkingState
 from .state.common import WorkingState, TaskInput
 from .state.task_state import SubTask
 from .utils.text_cleaner import truncate_content
-from .worksapces import ApplicationWorkspace, workspace_repo
 from .worksapces import ApplicationWorkspace
+from .worksapces import ApplicationWorkspace, workspace_repo
 from ...event.base import ContextMessage, Constants, TopicType
 
 DEFAULT_VALUE = None
