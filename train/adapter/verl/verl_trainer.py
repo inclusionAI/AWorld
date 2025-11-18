@@ -15,10 +15,10 @@ from aworld.agents.llm_agent import Agent
 from aworld.config import BaseConfig, ConfigDict, load_config
 from aworld.core.common import Config
 from train.adapter.verl.agent_template import VERL_TEMPLATE
-from train.trainer.trainer_wrapper import TrainerWrapper
+from train.trainer.trainer_processor import TrainerProcessor
 
 
-class VerlTrainer(TrainerWrapper):
+class VerlTrainer(TrainerProcessor):
     def train(self):
         """Supported PPO/GRPO only now."""
 
@@ -90,6 +90,7 @@ class VerlTrainer(TrainerWrapper):
 
     def check_agent(self, agent: Union[str, Agent]):
         if isinstance(agent, str):
+            # means an agent yaml config file path
             config_dict = load_config(agent)
             agent = Agent(**config_dict)
 
@@ -118,6 +119,7 @@ class VerlTrainer(TrainerWrapper):
         with open(f"{module}.py", 'w+') as write:
             write.writelines(con)
 
+        # VeRL agent config file
         module = module.replace(os.getcwd(), '').replace('/', '.')
         if module[0] == '.':
             module = module[1:]
@@ -161,6 +163,7 @@ class VerlTrainer(TrainerWrapper):
             raise ValueError("Config must be a string or a Config")
 
         self.config = configs
+        # replace to real value, because the values are dynamically generated
         if not self.config['actor_rollout_ref']['rollout']['agent']['agent_loop_config_path']:
             if not hasattr(self, 'agent_yaml'):
                 raise RuntimeError("Please check agent first before check config")
