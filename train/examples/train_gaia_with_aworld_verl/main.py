@@ -47,14 +47,14 @@ def main():
     code = inspect.getfile(gaia_reward_func)
     print(code)
 
-    # train_dataset = load_dataset("agentica-org/DeepScaleR-Preview-Dataset", split="train")
-    # test_dataset = load_dataset("HuggingFaceH4/aime_2024", split="test")
+    train_dataset = load_dataset("", split="train")
+    test_dataset = load_dataset("", split="test")
 
     trainer = AgentTrainer(agent=agent,
                            config='examples/ppo_trainer.yaml',
                            reward_func=gaia_reward_func,
-                           train_dataset='abc',
-                           test_dataset='efg')
+                           train_dataset=train_dataset,
+                           test_dataset=test_dataset)
     trainer.train()
 
 
