@@ -161,7 +161,7 @@ class TaskEventRunner(TaskRunner):
         async with trace.message_span(message=message):
             logger.debug(f"start_message_node message id: {message.id} of task {self.task.id}")
             self.state_manager.start_message_node(message)
-            logger.debug(f"start_message_node end message id: {message.id} of task {self.task.id}")
+            logger.info(f"start_message_node end message id: {message.id} of task {self.task.id}")
             if handlers:
                 handler_list = handlers.get(message.topic) or handlers.get(message.receiver)
                 if not handler_list:
