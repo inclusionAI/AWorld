@@ -649,6 +649,7 @@ class AworldMemory(Memory):
                     item_ids=[item.id for item in to_be_summary_items],
                     summary=combined_summary,
                     metadata=summary_metadata,
+                    role=getattr(agent_memory_config, 'summary_role', 'assistant'),
                     created_at=summary_created_time,
                 )
                 # 设置 start_time 和 end_time
@@ -681,6 +682,7 @@ class AworldMemory(Memory):
                 item_ids=[item.id for item in to_be_summary_items],
                 summary=summary_content,
                 metadata=summary_metadata,
+                role=getattr(agent_memory_config, 'summary_role', 'assistant'),
                 created_at=summary_created_time,
             )
             # 设置 start_time 和 end_time

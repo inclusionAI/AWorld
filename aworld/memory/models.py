@@ -287,10 +287,10 @@ class MemorySummary(MemoryItem):
         summary (str): The summary text.
         metadata (Optional[Dict[str, Any]]): Additional metadata.
     """
-    def __init__(self, item_ids: list[str], summary: str, metadata: MessageMetadata, memory_type: str = "summary", **kwargs) -> None:
+    def __init__(self, item_ids: list[str], summary: str, metadata: MessageMetadata, memory_type: str = "summary", role: str = "assistant", **kwargs) -> None:
         meta = metadata.to_dict
         meta['item_ids'] = item_ids
-        meta['role'] = "assistant"
+        meta['role'] = role
         super().__init__(content=summary, metadata=meta, memory_type=memory_type, **kwargs)
 
     @property

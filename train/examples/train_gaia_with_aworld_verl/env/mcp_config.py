@@ -8,13 +8,13 @@ from train.examples.train_gaia_with_aworld_verl.env.ip_pool import get_proxy_ser
 async def build_local_mcp_config():
     return {
         "mcpServers": {
-            "qwen_file_parser": {
-                "command": "python",
-                "args": [
-                    "-m",
-                    "train.examples.train_gaia_with_aworld_verl.qwen.qwen_file_parser"
-                ],
-            },
+            # "qwen_file_parser": {
+            #     "command": "python",
+            #     "args": [
+            #         "-m",
+            #         "train.examples.train_gaia_with_aworld_verl.qwen.qwen_file_parser"
+            #     ],
+            # },
             "ms-playwright": {
                 "command": "npx",
                 "args": [
@@ -22,41 +22,42 @@ async def build_local_mcp_config():
                     "--no-sandbox",
                     "--isolated",
                     "--output-dir=/tmp/playwright",
-                    "--timeout-action=10000"
-                    # "--browser", "chromium"
+                    "--timeout-action=10000",
+                    # "--user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Safari/537.36",
+                    "--browser", "chromium"
                 ],
                 "env": {
                     "PLAYWRIGHT_TIMEOUT": "120000",
                     "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
                 }
             },
-            "image_server": {
-                "command": "python",
-                "args": [
-                    "-m",
-                    "examples.xbench.mcp_tools.image_server"
-                ],
-                "env": {
-                    "LLM_API_KEY": os.environ.get("IMAGE_LLM_API_KEY"),
-                    "LLM_MODEL_NAME": os.environ.get("IMAGE_LLM_MODEL_NAME"),
-                    "LLM_BASE_URL": os.environ.get("IMAGE_LLM_BASE_URL"),
-                    "SESSION_REQUEST_CONNECT_TIMEOUT": "60"
-                }
-            },
-            "document_server": {
-                "command": "python",
-                "args": [
-                    "-m",
-                    "examples.xbench.mcp_tools.document_server"
-                ],
-                "env": {
-                    "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
-                }
-            },
-            "terminal-controller": {
-                "command": "python",
-                "args": ["-m", "terminal_controller"]
-            },
+            # "image_server": {
+            #     "command": "python",
+            #     "args": [
+            #         "-m",
+            #         "examples.xbench.mcp_tools.image_server"
+            #     ],
+            #     "env": {
+            #         "LLM_API_KEY": os.environ.get("IMAGE_LLM_API_KEY"),
+            #         "LLM_MODEL_NAME": os.environ.get("IMAGE_LLM_MODEL_NAME"),
+            #         "LLM_BASE_URL": os.environ.get("IMAGE_LLM_BASE_URL"),
+            #         "SESSION_REQUEST_CONNECT_TIMEOUT": "60"
+            #     }
+            # },
+            # "document_server": {
+            #     "command": "python",
+            #     "args": [
+            #         "-m",
+            #         "examples.xbench.mcp_tools.document_server"
+            #     ],
+            #     "env": {
+            #         "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
+            #     }
+            # },
+            # "terminal-controller": {
+            #     "command": "python",
+            #     "args": ["-m", "terminal_controller"]
+            # },
             # "terminal-server": {
             #     "command": "python",
             #     "args": [
@@ -66,15 +67,15 @@ async def build_local_mcp_config():
             #     "env": {
             #     }
             # },
-            "filesystem-server": {
-                "type": "stdio",
-                "command": "npx",
-                "args": [
-                    "-y",
-                    "@modelcontextprotocol/server-filesystem",
-                    "/tmp/workspace"
-                ]
-            },
+            # "filesystem-server": {
+            #     "type": "stdio",
+            #     "command": "npx",
+            #     "args": [
+            #         "-y",
+            #         "@modelcontextprotocol/server-filesystem",
+            #         "/tmp/workspace"
+            #     ]
+            # },
             "amnicontext-server": {
                 "command": "python",
                 "args": [
