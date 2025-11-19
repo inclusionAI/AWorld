@@ -7,7 +7,7 @@ import time
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Union
+from typing import Union, Optional
 
 from dotenv import load_dotenv
 from mcp.server import FastMCP
@@ -62,7 +62,7 @@ class CommandResult(BaseModel):
 class TerminalMetadata(BaseModel):
     """Metadata for terminal operation results."""
 
-    command: str
+    command: Optional[str] = Field(default=None)
     platform: str
     working_directory: str
     timeout_seconds: int
@@ -131,7 +131,7 @@ async def execute_command(
                 success=False,
                 message=f"Command rejected for security reasons: {safety_reason}",
                 metadata=TerminalMetadata(
-                    command=command,
+                    # command=command,
                     platform=platform_info["system"],
                     working_directory=str(workspace),
                     timeout_seconds=timeout,
@@ -162,11 +162,12 @@ async def execute_command(
         if result.stdout:
             outputs.append(result.stdout)
         output_data = "\n".join(outputs)
+        print(f"Terminal output_data: {output_data}")
 
 
         # Create metadata
         metadata = TerminalMetadata(
-            command=command,
+            # command=command,
             platform=platform_info["system"],
             working_directory=str(workspace),
             timeout_seconds=timeout,
@@ -391,7 +392,7 @@ def _format_command_output(result: CommandResult, output_format: str = "markdown
 
     elif output_format == "text":
         output_parts = [
-            f"Command: {result.command}",
+            # f"Command: {result.command}",
             f"Status: {'SUCCESS' if result.success else 'FAILED'}",
             f"Duration: {result.duration}",
             f"Return Code: {result.return_code}",
@@ -410,7 +411,7 @@ def _format_command_output(result: CommandResult, output_format: str = "markdown
 
         output_parts = [
             f"# Terminal Command Execution {status_emoji}",
-            f"**Command:** `{result.command}`",
+            # f"**Command:** `{result.command}`",
             f"**Status:** {'SUCCESS' if result.success else 'FAILED'}",
             f"**Duration:** {result.duration}",
             f"**Return Code:** {result.return_code}",

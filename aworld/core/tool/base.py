@@ -546,7 +546,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 # 默认通过消息系统发送
                 try:
                     future = await send_message_with_future(memory_msg)
-                    results = await future.wait(timeout=300)
+                    results = await future.wait()
                     if not results:
                         logger.warning(f"Memory write task failed: {memory_msg}")
                 except Exception as e:

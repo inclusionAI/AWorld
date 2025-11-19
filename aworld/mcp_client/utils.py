@@ -976,6 +976,58 @@ async def cleanup_server(server):
     except Exception as e:
         logger.warning(f"Failed to cleanup server: {e}")
 
+# Helper: extract mcp_servers from mcp_config if current_servers is empty
+
+
+def extract_mcp_servers_from_config(mcp_config: Dict[str, Any] = None,
+                                     current_servers: List[str] = None) -> List[str]:
+    """
+    Extract MCP server names from mcp_config if current_servers is empty.
+    
+    If current_servers is not empty, return it as is.
+    Otherwise, extract all keys from mcp_config["mcpServers"] as server names.
+    
+    Args:
+        mcp_config: MCP configuration dictionary with structure:
+            {
+                "mcpServers": {
+                    "server_name_1": {...},
+                    "server_name_2": {...},
+                    ...
+                }
+            }
+        current_servers: Current list of MCP server names. If empty or None,
+                        will extract from mcp_config.
+    
+    Returns:
+        List of MCP server names. Returns current_servers if not empty,
+        otherwise returns keys from mcp_config["mcpServers"].
+    """
+    if current_servers is None:
+        current_servers = []
+    
+    # If current_servers is not empty, return it as is
+    if current_servers:
+        return current_servers
+    
+    # If mcp_config is empty or None, return empty list
+    if not mcp_config:
+        return []
+    
+    server_list = []
+    try:
+        mcp_servers = mcp_config.get("mcpServers", {})
+        if isinstance(mcp_servers, dict):
+            for server_name in mcp_servers.keys():
+                if server_name:
+                    server_list.append(str(server_name))
+    except Exception as e:
+        logger.warning(f"Failed to extract MCP servers from config: {e}")
+        return []
+    
+    return server_list
+
+
 # Helper: derive mcp_servers from skill_configs if provided
 
 

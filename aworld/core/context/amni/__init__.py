@@ -17,7 +17,9 @@ from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace
 from aworld.output.artifact import ArtifactAttachment
+from examples.multi_agents.collaborative.debate.agent.debate_agent import truncate_content
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
+from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory, ContextEnvConfig
 from .contexts import ContextManager
 from .prompt.prompts import AMNI_CONTEXT_PROMPT
 from .retrieval.artifacts import SearchArtifact
@@ -385,11 +387,66 @@ class AmniContext(Context):
         activate_skills.append(skill_name)
         skill = await self.get_skill(skill_name=skill_name, namespace=namespace)
 
+        if skill.get('type') == "agent":
+            skill_name = skill.get('name')
+            agent_type = skill.get('agent_type', 'aworld.agents.llm_agent.Agent')
+            if agent_type == "aworld.agents.llm_agent.Agent":
+                from aworld.agents.llm_agent import Agent
+                orchestrator_agent = self._swarm.agents.get(namespace)
+                agent_config = AgentConfig(
+                    llm_config = orchestrator_agent.conf.llm_config,
+                    use_vision=False
+                )
+                skill_agent = Agent(
+                    name=skill.get('name'),
+                    desc=skill.get('description'),
+                    conf=agent_config,
+                    system_prompt=skill.get('usage', ''),
+                    mcp_servers=list(skill.get('tool_list').keys()),
+                    mcp_config=orchestrator_agent.mcp_config
+                )
+                self._swarm.add_agents([skill_agent])
+                orchestrator_agent.handoffs.append(skill_agent.id())
+            else:
+                raise Exception(f"agent type {agent_type} not supported")
+
         self.put(ACTIVE_SKILLS_KEY, activate_skills, namespace=namespace)
         return (f"skill {skill_name} activated, current skills: {activate_skills} \n\n"
                     f"<skill_guide>{skill.get('usage', '')}</skill_guide>\n\n"
                     f"<skill_path>{skill.get('skill_path', '')}</skill_path>\n\n"
                 )
+
+    async def load_skill_agent_mcp_config(self, skill_agent: str) -> Dict[str, Any]:
+        """
+        load skill agent mcp config
+        """
+        env_config_obj = await self.get_env_config(skill_agent)
+        mcp_config_path = env_config_obj.env_config.get('MCP_CONFIG_PATH')
+        if mcp_config_path:
+            with open(mcp_config_path, 'r') as f:
+                import json
+                return json.load(f)
+        return {}
+
+    async def get_env_config(self, namespace: str) -> ContextEnvConfig:
+        """
+        Retrieve the environment configuration for a given namespace.
+
+        Args:
+            namespace (str): Namespace used to locate the target agent configuration.
+
+        Returns:
+            ContextEnvConfig: Environment configuration object.
+        """
+        if isinstance(self.get_config().agent_config, Dict):
+            if (self.get_config().agent_config.get(namespace)
+                    and self.get_config().agent_config.get(namespace).env_config
+                    and isinstance(self.get_config().agent_config.get(namespace).env_config, ContextEnvConfig)):
+                return self.get_config().agent_config.get(namespace).env_config
+        if self.get_config().env_config:
+            return self.get_config().env_config
+        return ContextEnvConfig()
+
 
     async def offload_skill(self, skill_name: str,namespace: str) -> str:
         """
@@ -622,6 +679,16 @@ class ApplicationContext(AmniContext):
             kv_store=copy.deepcopy(
                 parent_working_state.kv_store) if parent_working_state and parent_working_state.kv_store else {}
         )
+
+    async def init_swarm_state(self, swarm):
+        """
+        Build Swarm's Private State(Hack Code)
+        Args:
+            swarm: Swarm
+        Returns:
+        """
+        self._swarm = swarm
+        await self.build_agents_state(swarm.topology)
 
     async def build_agents_state(self, agents):
         """Build Multi Agent's Private State
@@ -1796,3 +1863,10 @@ class ApplicationContext(AmniContext):
             f"<chunk_content>{chunk.content}</chunk_content>\n"
             f"</knowledge_chunk>\n"
         )
+
+    async def get_task_status(self):
+        return self.root._task.task_status
+
+    async def update_task_status(self, task_id: str, status: 'TaskStatus'):
+        if task_id == self.task_id:
+            self._task.task_status = status

@@ -18,6 +18,8 @@ Agent Skills transform general-purpose agents into specialized agents by packagi
 - [Implementation Details](#implementation-details)
 - [Best Practices](#best-practices)
 - [Core Implementation Logic](./IMPLEMENTATION.md) 📄
+- [Agentic Skill](#agentic-skill)
+- [HyperCode Forge Skill](#hypercode-forge-skill)
 
 ## Core Concepts
 
@@ -439,6 +441,123 @@ agent2 = Agent(name="coder", skill_configs={**shared_skills, "coding": {...}})
 - [Anthropic Agent Skills](https://www.anthropic.com/engineering/equipping-agents-for-the-real-world-with-agent-skills)
 - [Multi-Agent Examples](../multi_agents/)
 
+## Agentic Skill
+
+### 🎯 What is Agentic Skill?
+
+Agentic Skill is a special type of skill that **generates a sub-agent when activated**. Unlike regular skills that provide tools and guidance, Agentic Skills create dedicated agents with their own system prompts, tools, and execution context to handle complex, specialized tasks.
+
+### 💡 Core Idea
+
+Traditional approach (Regular Skill):
+```
+Orchestrator Agent → Activate Skill → Get Tools & Guidance → Use Tools Directly
+```
+- ✅ Skills provide tools and usage instructions
+- ✅ Agent uses tools within its own context
+- ❌ Complex tasks require orchestrator to manage all steps
+- ❌ Limited isolation and specialization
+
+Agentic Skill approach:
+```
+Orchestrator Agent → Activate Agentic Skill → Generate Sub-Agent → Delegate Task → Sub-Agent Executes Independently
+```
+- ✅ Sub-agent created with dedicated system prompt from skill.md
+- ✅ Sub-agent has isolated context and tools
+- ✅ Orchestrator can delegate complex tasks to specialized agents
+- ✅ Better separation of concerns and task specialization
+
+### 🧬 How It Works
+
+When an Agentic Skill is activated:
+
+1. **Skill Detection**: The system detects `type: agent` in the skill's frontmatter
+2. **Sub-Agent Creation**: A new Agent instance is created with:
+   - **Name**: From `name` field in skill.md
+   - **Description**: From `description` field
+   - **System Prompt**: From the `usage` field (or full markdown content)
+   - **MCP Servers**: From `tool_list` configuration
+   - **LLM Config**: Inherited from orchestrator agent
+3. **Swarm Integration**: The sub-agent is added to the swarm and registered in orchestrator's handoffs
+4. **Task Delegation**: Orchestrator can now delegate tasks to the specialized sub-agent
+
+### 📝 Skill Configuration
+
+To create an Agentic Skill, add `type: agent` to your skill.md frontmatter:
+
+```markdown
+---
+name: read large webpage or knowledge
+description: This skill is used for segmented reading and organization when facing large-scale knowledge bases or web pages.
+tool_list: {"ms-playwright": [], "amnicontext-server": []}
+active: True
+type: agent
+---
+
+### 🧠 Knowledge Base
+- **Target Scenarios**: Reading long technical documents, research reports, policy documents, web encyclopedias, etc.
+- **Core Capabilities**: Segment-based retrieval of original text, real-time summarization, and knowledge network construction.
+
+### 🛠️ Processing Pipeline
+1. **Locate Range**: Determine the starting line number and reading length...
+2. **Segment-by-Segment Reading**: Call `get_knowledge_by_lines` to pull content...
+3. **Real-Time Analysis**: Extract key points from pulled segments...
+...
+```
+
+The markdown content after the frontmatter becomes the sub-agent's system prompt, providing detailed instructions on how to perform the specialized task.
+
+### 📊 Example: Read Large Webpage Skill
+
+The `read_large_webpage` skill demonstrates Agentic Skill pattern:
+
+**Skill Definition** (`examples/skill_agent/skills/read_large_webpage/skill.md`):
+- Defines a specialized agent for reading and processing large documents
+- Provides step-by-step processing pipeline
+- Specifies tools: `ms-playwright` for web navigation, `amnicontext-server` for knowledge management
+
+**Activation Flow**:
+```
+User: "Read and summarize this 50-page technical document"
+Orchestrator: Activates "read large webpage" skill
+System: Creates sub-agent with specialized reading instructions
+Sub-Agent: Executes segmented reading, summarization, and knowledge storage
+Orchestrator: Receives results from sub-agent
+```
+
+### ✅ Suitable Scenarios
+
+**Highly suitable for Agentic Skills**:
+1. **Complex Multi-Step Tasks**: Tasks requiring specialized workflows (e.g., document processing, research analysis)
+2. **Isolated Execution Context**: Tasks that benefit from separate context and state management
+3. **Specialized Expertise**: Tasks requiring domain-specific knowledge and reasoning
+4. **Long-Running Operations**: Tasks that may take multiple turns and benefit from dedicated agent focus
+
+**Less suitable**:
+- Simple tool invocations
+- Quick information lookups
+- Single-step operations
+
+### 🔄 Implementation Details
+
+The Agentic Skill mechanism is implemented in `aworld/core/context/amni/__init__.py`:
+
+```python
+if skill.get('type') == "agent":
+    skill_agent = Agent(
+        name=skill.get('name'),
+        desc=skill.get('description'),
+        conf=agent_config,
+        system_prompt=skill.get('usage', ''),
+        mcp_servers=list(skill.get('tool_list').keys()),
+        mcp_config=orchestrator_agent.mcp_config
+    )
+    self._swarm.add_agents([skill_agent])
+    orchestrator_agent.handoffs.append(skill_agent.id())
+```
+
+This creates a fully functional sub-agent that can be delegated tasks by the orchestrator, enabling sophisticated multi-agent workflows.
+
 ## HyperCode Forge Skill
 
 
@@ -480,8 +599,9 @@ Our finding: harnessing the pattern requires MCP servers with general-purpose ca
 
 ### Acknowledgements
 
-https://www.anthropic.com/engineering/code-execution-with-mcp
-https://blog.cloudflare.com/code-mode/
+- https://www.anthropic.com/engineering/code-execution-with-mcp
+- https://blog.cloudflare.com/code-mode/
+
 ---
 
 **Built with 🚀 by the AWorld Team**
