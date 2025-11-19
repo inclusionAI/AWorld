@@ -62,7 +62,7 @@ async def consume_content(__content__, callback: Callable[..., Any]):
         await callback(__content__)
 
 
-async def load_workspace(workspace_id: str, workspace_type: str, workspace_parent_path: str) -> Optional[WorkSpace]:
+async def load_workspace(workspace_id: str, workspace_type: str, workspace_parent_path: str, **kwargs) -> Optional[WorkSpace]:
     """
     This function is used to get the workspace by its id.
     It first checks the workspace type and then creates the workspace accordingly.
@@ -72,9 +72,9 @@ async def load_workspace(workspace_id: str, workspace_type: str, workspace_paren
         raise RuntimeError("workspace_id is None")
 
     if workspace_type == "local":
-        workspace = WorkSpace.from_local_storages(workspace_id, storage_path=os.path.join(workspace_parent_path, workspace_id))
+        workspace = WorkSpace.from_local_storages(workspace_id, storage_path=os.path.join(workspace_parent_path, workspace_id), **kwargs)
     elif workspace_type == "oss":
-        workspace = WorkSpace.from_oss_storages(workspace_id, storage_path=os.path.join(workspace_parent_path, workspace_id))
+        workspace = WorkSpace.from_oss_storages(workspace_id, storage_path=os.path.join(workspace_parent_path, workspace_id), **kwargs)
     else:
         raise RuntimeError("Invalid workspace type")
     return workspace
