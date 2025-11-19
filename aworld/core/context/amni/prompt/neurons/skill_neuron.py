@@ -40,11 +40,12 @@ class SkillsNeuron(Neuron):
             return []
         items = []
         for skill_id, skill in total_skills.items():
+            skill_usage = f"    <skill_usage>{skill.get('usage', '')}</skill_usage>\n"  if skill.get("active", False) else ""
             items.append(
                 f"  <skill id=\"{skill_id}\" status=\"{skill.get('active', False)}\">\n"
                 f"    <skill_name>{skill.get('name')}</skill_name>\n"
                 f"    <skill_desc>{skill.get('description', skill.get('desc'))}</skill_desc>\n"
-                f"    <skill_usage>{skill.get('usage', '')}</skill_usage>\n" if skill.get("active", False) else ""
+                f"    {skill_usage}"
                 f"  </skill>")
 
         return items

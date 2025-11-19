@@ -94,11 +94,14 @@ def collect_skill_docs(root_path: Union[str, Path]) -> Dict[str, Dict[str, Any]]
             logger.warning(f"⚠️ tool_list for skill '{front_matter.get('name', '')}' is still a string, converting to empty dict")
             tool_list = {}
 
-        results[front_matter.get("name", "")] = {
-            "name": front_matter.get("name", ""),
+        skill_name = skill_file.parent.name
+
+        results[skill_name] = {
+            "name": skill_name,
             "description": desc,
             "tool_list": tool_list,
             "usage": usage,
+            "type": front_matter.get("type", ""),
             "active": front_matter.get("active", "False").lower() == "true",
             "skill_path": skill_file.as_posix(),
         }
