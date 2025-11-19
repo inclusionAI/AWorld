@@ -40,7 +40,7 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
 
     async def build_gaia_task(self, user_input: str, session_id, task_id):
         if 'screen_shot' in os.getenv("ENV_PLUGINS", ""):
-            from ..env.hooks import PostLLMCallRolloutHook, PostToolCallRolloutHook
+            from ..env.hooks import PostToolCallRolloutHook
 
         agent = build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
                                        llm_base_url=os.getenv("LLM_BASE_URL"),
