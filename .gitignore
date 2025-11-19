@@ -121,6 +121,7 @@ examples/gaia/gaia_dataset/
 
 # Node Modules
 node_modules/
+py_tmp/
 
 aworld.db
 .data/
