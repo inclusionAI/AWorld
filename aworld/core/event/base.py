@@ -29,11 +29,6 @@ class Constants:
     CONTEXT = "context"
     CONTEXT_RESPONSE = "context_response"
     CHUNK = "chunk"
-    REMOTE_TOOL_CALL = "REMOTE_TOOL_CALL"
-    INIT_TOOLS = "INIT_TOOLS"
-    INIT_SERVER = "INIT_SERVER"
-    LLM = "LLM"
-    HANDLER = "HANDLER"
 
 
 class TopicType:

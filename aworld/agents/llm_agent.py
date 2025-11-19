@@ -523,16 +523,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             raise e
 
         try:
-            # time metrics
-            from aworld.runners.state_manager import RunNodeBusiType
-            from aworld.runners.utils import managed_runtime_node
-
-            async with managed_runtime_node(
-                    context=message.context,
-                    busi_type=RunNodeBusiType.LLM,
-                    busi_id=""
-            ):
-                llm_response = await self.invoke_model(messages, message=message, **kwargs)
+            llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
             logger.warn(traceback.format_exc())
             raise e
@@ -670,15 +661,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             observation: The state observed from the environment
             info: Extended information to assist the agent in decision-making
         """
-        from aworld.runners.state_manager import RunNodeBusiType
-        from aworld.runners.utils import managed_runtime_node
-
-        async with managed_runtime_node(
-            context=message.context,
-            busi_type=RunNodeBusiType.INIT_TOOLS,
-            busi_id=""
-        ):
-            await self.async_desc_transform(message.context)
+        await self.async_desc_transform(message.context)
 
 
         # observation secondary processing

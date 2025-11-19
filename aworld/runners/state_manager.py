@@ -23,11 +23,6 @@ class RunNodeBusiType(Enum):
     HUMAN = 'HUMAN'
     CONTEXT = "CONTEXT"
     MEMORY = 'MEMORY'
-    REMOTE_TOOL_CALL = "REMOTE_TOOL_CALL"
-    INIT_TOOLS = "INIT_TOOLS"
-    INIT_SERVER = "INIT_SERVER"
-    LLM = "LLM"
-    HANDLER = "HANDLER"
 
     @staticmethod
     def from_message_category(category: str) -> 'RunNodeBusiType':
@@ -45,16 +40,6 @@ class RunNodeBusiType(Enum):
             return RunNodeBusiType.MEMORY
         if category == Constants.CONTEXT:
             return RunNodeBusiType.CONTEXT
-        if category == Constants.REMOTE_TOOL_CALL:
-            return RunNodeBusiType.REMOTE_TOOL_CALL
-        if category == Constants.LLM:
-            return RunNodeBusiType.LLM
-        if category == Constants.INIT_TOOLS:
-            return RunNodeBusiType.INIT_TOOLS
-        if category == Constants.HANDLER:
-            return RunNodeBusiType.HANDLER
-        if category == Constants.INIT_SERVER:
-            return RunNodeBusiType.INIT_SERVER
         return None
 
 
