@@ -5,7 +5,7 @@ from typing import Union
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 # from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
-from train.adapter.verl.agent_loop import AworldAgentLoop
+from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 # Import from submodules directly to avoid circular import
 # (rollout/__init__.py imports this file at the top)
 from train.examples.train_gaia_with_aworld_verl.rollout.gaia import build_gaia_agent
