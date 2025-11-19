@@ -185,26 +185,19 @@ class McpServers:
                         self._update_metadata(result_key, {"error": str(e)}, operation_info)
                     continue
 
-                from aworld.runners.utils import managed_runtime_node
-                from aworld.runners.state_manager import RunNodeBusiType
-                async with managed_runtime_node(
-                        context=context,
-                        busi_type=RunNodeBusiType.INIT_SERVER,
-                        busi_id=""
-                ):
-                    # Prioritize using existing server instances
-                    server = self.server_instances.get(server_name)
-                    if server is None:
-                        # If it doesn't exist, create a new instance and save it
-                        server = await get_server_instance(server_name, self.mcp_config,context)
-                        if server:
-                            self.server_instances[server_name] = server
-                            logger.info(f"Created and cached new server instance for {server_name}")
-                        else:
-                            logger.warning(f"Created new server failed: {server_name}, session_id: {session_id}, tool_name: {tool_name}")
+                # Prioritize using existing server instances
+                server = self.server_instances.get(server_name)
+                if server is None:
+                    # If it doesn't exist, create a new instance and save it
+                    server = await get_server_instance(server_name, self.mcp_config,context)
+                    if server:
+                        self.server_instances[server_name] = server
+                        logger.info(f"Created and cached new server instance for {server_name}")
+                    else:
+                        logger.warning(f"Created new server failed: {server_name}, session_id: {session_id}, tool_name: {tool_name}")
 
-                            self._update_metadata(result_key, {"error": "Failed to create server instance"}, operation_info)
-                            continue
+                        self._update_metadata(result_key, {"error": "Failed to create server instance"}, operation_info)
+                        continue
 
                 # Use server instance to call the tool
                 call_result_raw = None
@@ -240,20 +233,11 @@ class McpServers:
 
                         await self.check_tool_params(context=context, server_name=server_name, tool_name=tool_name,
                                                      parameter=parameter)
-                        from aworld.runners.utils import managed_runtime_node
-                        from aworld.runners.state_manager import RunNodeBusiType
-                        async with managed_runtime_node(
-                            context=context,
-                            busi_type=RunNodeBusiType.REMOTE_TOOL_CALL,
-                            busi_id=result_key,
-                            session_id=session_id,
-                            task_id=task_id
-                        ):
-                            call_result_raw = await asyncio.wait_for(
-                                server.call_tool(tool_name=tool_name, arguments=parameter,
-                                               progress_callback=progress_callback),
-                                timeout=120
-                            )
+                        call_result_raw = await asyncio.wait_for(
+                            server.call_tool(tool_name=tool_name, arguments=parameter,
+                                           progress_callback=progress_callback),
+                            timeout=120
+                        )
 
                         break
                     except BaseException as e:

@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 from typing import List, Dict, Optional
-from contextlib import asynccontextmanager
 import uuid
 
 from aworld.config import RunConfig, EngineName, ConfigDict, TaskConfig
@@ -157,94 +156,4 @@ async def long_wait_message_state(message: Message):
         raise ValueError(f"long_wait_message_state|failed with node: {res_node}")
 
 
-@asynccontextmanager
-async def managed_runtime_node(
-    context,
-    busi_type,
-    busi_id: str = "",
-    session_id: Optional[str] = None,
-    task_id: Optional[str] = None,
-    node_id: Optional[str] = None,
-    parent_node_id: Optional[str] = None,
-    msg_id: Optional[str] = None,
-    msg_from: Optional[str] = None,
-    group_id: Optional[str] = None,
-    sub_group_root_id: Optional[str] = None,
-    metadata: Optional[dict] = None
-):
-    """Context manager for creating, running, and managing runtime node states.
-    
-    Args:
-        context: Message context object containing session_id and task_id
-        busi_type: Business type (RunNodeBusiType)
-        busi_id: Business ID, defaults to empty string
-        session_id: Session ID, if provided will be used preferentially, otherwise obtained from context
-        task_id: Task ID, if provided will be used preferentially, otherwise obtained from context
-        node_id: Node ID, if not provided will be auto-generated as UUID
-        parent_node_id: Parent node ID, used to establish node hierarchy
-        msg_id: Message ID, associated message ID
-        msg_from: Message sender
-        group_id: Group ID
-        sub_group_root_id: Sub-group root node ID
-        metadata: Metadata dictionary
-    
-    Yields:
-        node: Created RunNode object, returns if creation succeeds, otherwise returns None
-    
-    Example:
-        async with managed_runtime_node(
-            context=message.context,
-            busi_type=RunNodeBusiType.LLM,
-            busi_id="",
-            parent_node_id=message.id,
-            msg_id=message.id
-        ) as node:
-            # Execute operation
-            result = await some_operation()
-            # If operation succeeds, context manager will automatically call run_succeed
-            # If exception occurs, will automatically call run_failed
-    """
-    from aworld.runners.state_manager import RuntimeStateManager
-    
-    state_manager = RuntimeStateManager.instance()
-    
-    # Get session_id and task_id, prioritize passed parameters, otherwise get from context
-    current_session_id = session_id
-    current_task_id = task_id
-    
-    if context:
-        if current_session_id is None and hasattr(context, 'session_id'):
-            current_session_id = context.session_id
-        if current_task_id is None and hasattr(context, 'task_id'):
-            current_task_id = context.task_id
-    
-    # Create node
-    node = state_manager.create_node(
-        node_id=node_id or str(uuid.uuid4()),
-        busi_type=busi_type,
-        busi_id=busi_id,
-        session_id=current_session_id or "",
-        task_id=current_task_id,
-        parent_node_id=parent_node_id,
-        msg_id=msg_id,
-        msg_from=msg_from,
-        group_id=group_id,
-        sub_group_root_id=sub_group_root_id,
-        metadata=metadata
-    )
-    
-    # If node creation succeeds, start running
-    if node and hasattr(node, 'node_id'):
-        state_manager.run_node(node.node_id)
-    
-    try:
-        yield node
-        # If execution succeeds, mark as success
-        if node and hasattr(node, 'node_id'):
-            state_manager.run_succeed(node.node_id)
-    except Exception:
-        # If exception occurs, mark as failed
-        if node and hasattr(node, 'node_id'):
-            state_manager.run_failed(node.node_id)
-        raise
 

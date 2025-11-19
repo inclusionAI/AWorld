@@ -319,9 +319,6 @@ class DefaultMemoryHandler(DefaultHandler):
             memory_msg: Memory event message
             context: Context object
         """
-        from aworld.runners.state_manager import RunNodeBusiType
-        from aworld.runners.utils import managed_runtime_node
-        
         try:
             # Create a simple runner object, only needs task attribute
             class SimpleRunner:
@@ -333,15 +330,9 @@ class DefaultMemoryHandler(DefaultHandler):
             simple_runner = SimpleRunner(task)
             handler = DefaultMemoryHandler(simple_runner)
             start_time = time.time()
-            # Use managed_runtime_node to create and manage MEMORY type node
-            async with managed_runtime_node(
-                context=context,
-                busi_type=RunNodeBusiType.MEMORY,
-                busi_id=memory_msg.receiver or ""
-            ):
-                # Directly call _do_handle method
-                async for _ in handler._do_handle(memory_msg):
-                    pass  # _do_handle is an async generator, needs to be consumed
+            # Directly call _do_handle method
+            async for _ in handler._do_handle(memory_msg):
+                pass  # _do_handle is an async generator, needs to be consumed
             logger.info(f"Direct memory call completed in {1000*(time.time() - start_time):.2f}ms {memory_msg}")
         except Exception as e:
             logger.warn(f"Direct memory call failed: {traceback.format_exc()}")
