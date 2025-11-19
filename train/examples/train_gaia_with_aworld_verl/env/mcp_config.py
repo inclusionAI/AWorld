@@ -179,12 +179,12 @@ async def build_distributed_mcp_config():
 
 
 def ensure_directories_exist():
-    """确保所有必要的目录存在"""
-    # 基本工作目录
+    """Ensure all necessary directories exist"""
+    # Basic working directories
     os.makedirs('/tmp/workspace', exist_ok=True)
     os.makedirs('/tmp/playwright', exist_ok=True)
 
-    # 从环境变量中获取的路径
+    # Paths obtained from environment variables
     workspace_path = os.environ.get('WORKSPACE_PATH')
     if workspace_path:
         os.makedirs(workspace_path, exist_ok=True)
@@ -200,14 +200,14 @@ def ensure_directories_exist():
 
 async def build_mcp_config(user_input: str = None, session_id: str = None, task_id: str = None):
     if os.getenv('MCP_ENV', 'local') == 'local':
-        # 确保必要的目录存在
+        # Ensure necessary directories exist
         ensure_directories_exist()
         mcp_config = await build_local_mcp_config()
     else:
         mcp_config = await build_distributed_mcp_config()
 
     logger.info(f"user_input={user_input}|session_id={session_id}|task_id={task_id}|mcp_config={mcp_config}")
-    # 未开启，移除相关的配置
+    # If not enabled, remove related configuration
     if os.getenv('GAIA_AGENT_CONTEXT', 'common') == 'common' and 'amnicontext-server' in mcp_config['mcpServers']:
         del mcp_config['mcpServers']['amnicontext-server']
 

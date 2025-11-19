@@ -172,24 +172,24 @@ async def managed_runtime_node(
     sub_group_root_id: Optional[str] = None,
     metadata: Optional[dict] = None
 ):
-    """上下文管理器，用于创建、运行和管理运行时节点的状态。
+    """Context manager for creating, running, and managing runtime node states.
     
     Args:
-        context: 消息上下文对象，包含session_id和task_id
-        busi_type: 业务类型 (RunNodeBusiType)
-        busi_id: 业务ID，默认为空字符串
-        session_id: 会话ID，如果提供则优先使用，否则从context获取
-        task_id: 任务ID，如果提供则优先使用，否则从context获取
-        node_id: 节点ID，如果不提供则自动生成UUID
-        parent_node_id: 父节点ID，用于建立节点层级关系
-        msg_id: 消息ID，关联的消息ID
-        msg_from: 消息发送者
-        group_id: 组ID
-        sub_group_root_id: 子组根节点ID
-        metadata: 元数据字典
+        context: Message context object containing session_id and task_id
+        busi_type: Business type (RunNodeBusiType)
+        busi_id: Business ID, defaults to empty string
+        session_id: Session ID, if provided will be used preferentially, otherwise obtained from context
+        task_id: Task ID, if provided will be used preferentially, otherwise obtained from context
+        node_id: Node ID, if not provided will be auto-generated as UUID
+        parent_node_id: Parent node ID, used to establish node hierarchy
+        msg_id: Message ID, associated message ID
+        msg_from: Message sender
+        group_id: Group ID
+        sub_group_root_id: Sub-group root node ID
+        metadata: Metadata dictionary
     
     Yields:
-        node: 创建的RunNode对象，如果创建成功则返回，否则返回None
+        node: Created RunNode object, returns if creation succeeds, otherwise returns None
     
     Example:
         async with managed_runtime_node(
@@ -199,16 +199,16 @@ async def managed_runtime_node(
             parent_node_id=message.id,
             msg_id=message.id
         ) as node:
-            # 执行操作
+            # Execute operation
             result = await some_operation()
-            # 如果操作成功，上下文管理器会自动调用run_succeed
-            # 如果发生异常，会自动调用run_failed
+            # If operation succeeds, context manager will automatically call run_succeed
+            # If exception occurs, will automatically call run_failed
     """
     from aworld.runners.state_manager import RuntimeStateManager
     
     state_manager = RuntimeStateManager.instance()
     
-    # 获取session_id和task_id，优先使用传入的参数，否则从context获取
+    # Get session_id and task_id, prioritize passed parameters, otherwise get from context
     current_session_id = session_id
     current_task_id = task_id
     
@@ -218,7 +218,7 @@ async def managed_runtime_node(
         if current_task_id is None and hasattr(context, 'task_id'):
             current_task_id = context.task_id
     
-    # 创建节点
+    # Create node
     node = state_manager.create_node(
         node_id=node_id or str(uuid.uuid4()),
         busi_type=busi_type,
@@ -233,17 +233,17 @@ async def managed_runtime_node(
         metadata=metadata
     )
     
-    # 如果节点创建成功，开始运行
+    # If node creation succeeds, start running
     if node and hasattr(node, 'node_id'):
         state_manager.run_node(node.node_id)
     
     try:
         yield node
-        # 如果执行成功，标记为成功
+        # If execution succeeds, mark as success
         if node and hasattr(node, 'node_id'):
             state_manager.run_succeed(node.node_id)
     except Exception:
-        # 如果发生异常，标记为失败
+        # If exception occurs, mark as failed
         if node and hasattr(node, 'node_id'):
             state_manager.run_failed(node.node_id)
         raise

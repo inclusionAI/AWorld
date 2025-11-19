@@ -342,7 +342,7 @@ def extract_xls_schema(file_path: str) -> Dict[str, Any]:
     }
 
     for sheet_name in xls.sheet_names:
-        df = xls.parse(sheet_name, nrows=3)  # 读取前3行
+        df = xls.parse(sheet_name, nrows=3)  # Read first 3 rows
 
         dtype_mapping = {
             'object': 'string',

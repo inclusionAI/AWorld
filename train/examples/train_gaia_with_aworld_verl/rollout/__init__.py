@@ -1,5 +1,6 @@
-# Import summary first (no dependencies)
-from .summary_prompts import (
+# Import prompts first (no dependencies)
+from .prompts import (
+    GAIA_SYSTEM_PROMPT,
     episode_memory_summary_rule,
     episode_memory_summary_schema,
     working_memory_summary_rule,
@@ -8,9 +9,8 @@ from .summary_prompts import (
     tool_memory_summary_schema,
 )
 
-# Import gaia next (depends on summary, but not on custom_agent_loop)
+# Import gaia next (depends on prompts, but not on custom_agent_loop)
 from .gaia import (
-    GAIA_SYSTEM_PROMPT,
     build_gaia_agent,
     build_gaia_task,
 )

@@ -7,7 +7,7 @@ class SimpleTokenizer:
     """Simple tokenizer implementation for basic token counting"""
     
     def __init__(self):
-        # 简单的分词规则，基于空格和标点符号
+        # Simple tokenization rules based on spaces and punctuation
         self.word_pattern = re.compile(r'\b\w+\b|[^\w\s]')
     
     def tokenize(self, text: str) -> List[str]:
@@ -21,7 +21,7 @@ class SimpleTokenizer:
         return ' '.join(tokens)
 
 
-# 创建全局tokenizer实例
+# Create global tokenizer instance
 tokenizer = SimpleTokenizer()
 
 

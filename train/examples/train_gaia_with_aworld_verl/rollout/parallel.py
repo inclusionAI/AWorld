@@ -3,13 +3,11 @@ import os
 import traceback
 from datetime import datetime
 
-from aworld.core.agent.swarm import Swarm
-from aworld.core.task import TaskResponse, Task
+from aworld.core.task import TaskResponse
 from aworld.evaluations.base import EvalTarget, EvalDataCase
 from aworld.runner import Runners
 from aworld.runners.state_manager import RuntimeStateManager
 from train.examples.train_gaia_with_aworld_verl.env import build_mcp_config
-from train.examples.train_gaia_with_aworld_verl.log_processor.pyspy_context import pyspy_profile
 from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent, build_gaia_task
 
 logging.basicConfig(level=logging.INFO, force=True, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -59,20 +57,7 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
         task_id = task.id
 
         try:
-            # ============= RUN TASK WITH PY-SPY PROFILING =============
-            # 使用 py-spy 进行性能分析，每个任务独立统计
-            # 可以通过环境变量 ENABLE_PYSPY=true 来启用，或者直接设置 enable=True
-            output_path = f"logs/flame_graphs/{batch_id}/flame_{task_id}"
-            
-            with pyspy_profile(
-                output=output_path,
-                rate=100,  # 采样频率
-                subprocesses=True,  # 包含子进程
-                native=False,  # 不包含原生代码（C扩展）
-                formats=['svg'],  # 输出格式：svg, raw, flamegraph, speedscope
-                enable=None  # None 表示从环境变量 ENABLE_PYSPY 读取
-            ):
-                result = await Runners.run_task(task=task)
+            result = await Runners.run_task(task=task)
             os.makedirs(f"logs/trajectory/{batch_id}", exist_ok=True)
             with open(f"logs/trajectory/{batch_id}/traj_{index+1}.json", "a") as f:
                 f.write(str(result[task_id].trajectory))

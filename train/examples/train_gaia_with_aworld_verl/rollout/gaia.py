@@ -14,9 +14,10 @@ from aworld.dataset.trajectory_strategy import MemoryTrajectoryStrategy
 from aworld.logs.util import logger
 # from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from aworld.memory.main import AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
-# Import from summary module directly to avoid circular import
+# Import from prompts module directly to avoid circular import
 # (rollout/__init__.py imports this file at the top)
-from train.examples.train_gaia_with_aworld_verl.rollout.summary_prompts import (
+from train.examples.train_gaia_with_aworld_verl.rollout.prompts import (
+    GAIA_SYSTEM_PROMPT,
     episode_memory_summary_rule,
     working_memory_summary_rule,
     working_memory_summary_schema,
@@ -24,9 +25,6 @@ from train.examples.train_gaia_with_aworld_verl.rollout.summary_prompts import (
     tool_memory_summary_schema,
     episode_memory_summary_schema,
 )
-
-GAIA_SYSTEM_PROMPT = os.getenv("GAIA_SYSTEM_PROMPT")
-logger.info("GAIA_SYSTEM_PROMPT", GAIA_SYSTEM_PROMPT)
 
 def is_summary():
     return os.getenv("GAIA_AGENT_CONTEXT", 'common') == 'amni'
