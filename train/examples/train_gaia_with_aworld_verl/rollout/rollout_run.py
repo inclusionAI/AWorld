@@ -46,10 +46,6 @@ async def batch_run():
             eval_target=eval_target,
             eval_dataset_query_column="prompt",
             eval_criterias=[
-                {
-                    "metric_name": "flight_judge",
-                    "threshold": 0.5,
-                }
             ] if os.getenv('ENABLE_SCORE', 'True') == 'True' else [],
             eval_dataset_id_or_file_path=os.getenv(
                 'EVAL_DATASET_PATH',

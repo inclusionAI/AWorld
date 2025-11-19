@@ -6,6 +6,7 @@ from datetime import datetime
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ConfigDict, TaskConfig, SummaryPromptConfig, AgentMemoryConfig
+from aworld.config.conf import HistoryWriteStrategy
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig
@@ -51,7 +52,9 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
                 "tool_parser": "hermes"
             }
         ),
-        memory_config=AgentMemoryConfig()
+        memory_config=AgentMemoryConfig(
+            history_write_strategy=HistoryWriteStrategy.DIRECT
+        )
     )
 
     # 2. init agent
@@ -61,8 +64,7 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
         system_prompt=GAIA_SYSTEM_PROMPT,
         # MCP tool configuration for the agent
         mcp_config=mcp_config,
-        mcp_servers=list(server_name for server_name in mcp_config.get("mcpServers", {}).keys()),
-        direct_memory_call=True
+        mcp_servers=list(server_name for server_name in mcp_config.get("mcpServers", {}).keys())
     )
 
 

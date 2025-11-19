@@ -81,6 +81,12 @@ class ClientType(Enum):
     HTTP = "http"
 
 
+class HistoryWriteStrategy(Enum):
+    """History write strategy for memory operations."""
+    EVENT_DRIVEN = "event_driven"  # Write through message system (default)
+    DIRECT = "direct"  # Direct call to memory handler
+
+
 class ConfigDict(dict):
     """Object mode operates dict, can read non-existent attributes through `get` method."""
     __setattr__ = dict.__setitem__
@@ -179,6 +185,9 @@ class AgentMemoryConfig(BaseConfig):
     # short-term config
     history_rounds: int = Field(default=100,
                                 description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
+    history_write_strategy: HistoryWriteStrategy = Field(default=HistoryWriteStrategy.EVENT_DRIVEN,
+                                                         description="History write strategy: event_driven (through message system) or direct (direct call to handler)")
+    
     enable_summary: bool = Field(default=False,
                                  description="enable_summary use llm to create summary short-term memory")
     summary_model: Optional[str] = Field(default=None, description="short-term summary model")

@@ -11,7 +11,7 @@ from typing import Optional, List, Union, Dict, Any
 from pydantic import BaseModel, Field
 
 from aworld.config import ModelConfig
-from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig
+from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy
 from aworld.core.memory import MemoryConfig, MemoryLLMConfig, EmbeddingsConfig
 from aworld.memory.db.sqlite import SQLiteMemoryStore
 # from aworld.memory.db import SQLiteMemoryStore  # Temporarily commented out to avoid import errors
@@ -93,6 +93,8 @@ class AgentContextConfig(BaseConfig):
     # Context Reduce - Purge
     history_rounds: int = Field(default=100,
                                 description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
+    history_write_strategy: HistoryWriteStrategy = Field(default=HistoryWriteStrategy.EVENT_DRIVEN,
+                                                         description="History write strategy: event_driven (through message system) or direct (direct call to handler)")
 
     # Context Reduce - Compress
     enable_summary: bool = Field(default=False,
@@ -120,6 +122,7 @@ class AgentContextConfig(BaseConfig):
     def to_memory_config(self) -> AgentMemoryConfig:
         return AgentMemoryConfig(
             history_rounds=self.history_rounds,
+            history_write_strategy=self.history_write_strategy,
             enable_summary=self.enable_summary,
             summary_rounds=self.summary_rounds,
             summary_context_length=self.summary_context_length,

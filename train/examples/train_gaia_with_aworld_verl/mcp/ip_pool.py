@@ -1,8 +1,7 @@
 import os
+import traceback
 
 import requests
-import logging
-import traceback
 
 from aworld.logs.util import logger
 
