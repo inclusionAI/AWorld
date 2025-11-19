@@ -88,7 +88,7 @@ class ContextManager(BaseModel):
         if not task_input.agent_id:
             return []
         # get cur session history
-        return self._memory.get_last_n(10, filters={
+        return self._memory.get_last_n(6, filters={
             "user_id": task_input.user_id,
             "session_id": task_input.session_id,
             "agent_id": task_input.agent_id
