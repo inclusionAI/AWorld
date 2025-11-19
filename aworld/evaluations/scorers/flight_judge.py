@@ -21,7 +21,7 @@ def encode_image(imag_dir):
         return base64.b64encode(imag_dir).decode("utf-8")
 
 def get_latest_file_os(directory='.'):
-    # glob.glob 获取所有路径，然后筛选出文件，再用 max 找到最新的
+    # Use glob.glob to get all paths, filter out files, then use max to find the latest one
     files = (p for p in glob.glob(os.path.join(directory, '*')) if os.path.isfile(p))
     return max(files, key=os.path.getmtime, default=None)
 
@@ -59,20 +59,20 @@ Please output in the following standard JSON format without any additional expla
 
 Here is the task: {task}
 """
-        task_prompt = """[任务描述]
-根据答案、执行流程、最终浏览器截图，判断机票查询的执行流程中是否遇到连接问题或反爬虫机制，包括网页无法打开、用户登录验证、滑块验证等。
-注意必须是影响机票查询流程的问题，使得无法获取最终的机票信息或者航班信息无法加载。如果出现弹窗提示，但不影响信息获取则不算。
-确保在执行流程的每一步中都没有遇到反爬虫机制，才能输出没有遇到上述问题。
+        task_prompt = """[Task Description]
+Based on the answer, execution flow, and final browser screenshot, determine whether the flight query execution process encountered connection issues or anti-scraping mechanisms, including web pages that cannot be opened, user login verification, slider verification, etc.
+Note: Only issues that affect the flight query process, making it impossible to obtain final flight information or preventing flight information from loading, should be considered. If pop-up prompts appear but do not affect information retrieval, they should not be counted.
+Only when no anti-scraping mechanisms are encountered at every step of the execution process can it be concluded that the above problems were not encountered.
 
-[输出格式]
-score：score为0代表没有遇到上述问题，score为1代表遇到上述问题。
-explanation：如果遇到上述问题，必须解释遇到的具体问题；如果没有遇到上述问题，则为空。
-以json格式输出
-示例：
-{{"score":1, "explanation":"用户登录验证"}}
+[Output Format]
+score: score of 0 means the above problems were not encountered, score of 1 means the above problems were encountered.
+explanation: If the above problems were encountered, the specific problem encountered must be explained; if the above problems were not encountered, leave it empty.
+Output in JSON format.
+Examples:
+{{"score":1, "explanation":"User login verification"}}
 {{"score":0, "explanation":""}}
 
-[开始任务]
+[Start Task]
 {task}
 """
 
@@ -132,9 +132,9 @@ explanation：如果遇到上述问题，必须解释遇到的具体问题；如
         # [Final Answer]: {output.get(response_column, '')}
         # """
         judge_data = f"""
-        [问题]: {input.case_data.get(question_column, '')}
-        [执行流程]: {new_trajectory_str}
-        [答案]: {output.get(response_column, '')}
+        [Question]: {input.case_data.get(question_column, '')}
+        [Execution Flow]: {new_trajectory_str}
+        [Answer]: {output.get(response_column, '')}
         """
         pic_data = self.build_pic_data(input)
         pic_data[0]['text'] = pic_data[0]['text'].format(task=judge_data)

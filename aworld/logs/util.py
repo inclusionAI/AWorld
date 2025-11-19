@@ -151,7 +151,7 @@ class AWorldLogger:
                             compression='zip')
             AWorldLogger._added_handlers.add(handler_key)
 
-        # 添加错误日志处理器，专门记录WARNING和ERROR级别的日志
+        # Add error log handler, specifically for logging WARNING and ERROR level logs
         if error_handler_key not in AWorldLogger._added_handlers:
             base_logger.add(error_log_file,
                             format=file_formatter,
@@ -174,7 +174,7 @@ class AWorldLogger:
         for handler in handlers:
             self._logger.remove(handler._id)
         self._logger.remove()
-        # 清除错误日志处理器的记录，确保重新初始化时能正确添加
+        # Clear error log handler record to ensure it can be added correctly when reinitializing
         error_handler_key = f'{self.name}_{self.tag}_error'
         AWorldLogger._added_handlers.discard(error_handler_key)
         self.__init__(tag=self.tag, name=self.name, console_level=level, file_level=level)
@@ -185,7 +185,7 @@ class AWorldLogger:
         handlers = _get_handlers(self._logger)
         for handler in handlers:
             self._logger.remove(handler._id)
-        # 清除错误日志处理器的记录，确保重新初始化时能正确添加
+        # Clear error log handler record to ensure it can be added correctly when reinitializing
         error_handler_key = f'{self.name}_{self.tag}_error'
         AWorldLogger._added_handlers.discard(error_handler_key)
         self.__init__(tag=self.tag, name=self.name,

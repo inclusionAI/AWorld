@@ -478,7 +478,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         from aworld.runners.state_manager import RunNodeStatus
 
         logger.info(f"send callback message: {message}")
-        # 默认通过消息系统发送
+        # Send via message system by default
         try:
             future = await send_message_with_future(message)
             results = await future.wait(timeout=300)
@@ -538,12 +538,12 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     headers={"context": context}
                 )
 
-                # 如果开启了直接调用模式，直接调用 handler 而不通过消息系统
+                # If direct call mode is enabled, call handler directly without going through message system
                 if hasattr(receive_agent, 'direct_memory_call') and receive_agent.direct_memory_call == True:
                     from aworld.runners.handler.memory import DefaultMemoryHandler
                     await DefaultMemoryHandler.handle_memory_message_directly(memory_msg, context)
                     return
-                # 默认通过消息系统发送
+                # Send via message system by default
                 try:
                     future = await send_message_with_future(memory_msg)
                     results = await future.wait()

@@ -58,7 +58,7 @@ def hook(hook_point: str, name: str = None):
     return decorator
 
 async def run_hooks(context: Context, hook_point: str, hook_from: str, payload: Any = None):
-    """Execute hooks asynchronously"""
+    """Execute hooks and break by exception"""
     from aworld.runners.hook.hook_factory import HookFactory
     from aworld.core.event.base import Message
 
@@ -85,3 +85,4 @@ async def run_hooks(context: Context, hook_point: str, hook_from: str, payload: 
                 yield msg
         except Exception as e:
             logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
+            raise e

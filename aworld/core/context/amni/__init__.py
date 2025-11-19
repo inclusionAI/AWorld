@@ -1196,7 +1196,7 @@ class ApplicationContext(AmniContext):
             topic=TopicType.SYSTEM_PROMPT,
             headers={"context": self}
         )
-        # 默认通过消息系统发送
+        # Send via message system by default
         try:
             future = await send_message_with_future(message)
             results = await future.wait(timeout=300)
@@ -1229,7 +1229,7 @@ class ApplicationContext(AmniContext):
             topic=TopicType.SYSTEM_PROMPT,
             headers={"context": self}
         )
-        # 默认通过消息系统发送
+        # Send via message system by default
         try:
             future = await send_message_with_future(message)
             results = await future.wait(timeout=300)

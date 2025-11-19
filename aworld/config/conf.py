@@ -153,10 +153,10 @@ class OptimizationConfig(BaseConfig):
 class SummaryPromptConfig(BaseConfig):
     """Configuration for summary prompt templates."""
     
-    template: str = Field(description="基础模板，如 AWORLD_MEMORY_EXTRACT_NEW_SUMMARY")
-    summary_rule: str = Field(description="摘要规则，用于指导如何生成摘要")
-    summary_schema: str = Field(description="摘要模式，定义输出格式和结构")
-    memory_type: str = Field(default="summary", description="记忆类型，用于区分不同类型的摘要")
+    template: str = Field(description="Base template, such as AWORLD_MEMORY_EXTRACT_NEW_SUMMARY")
+    summary_rule: str = Field(description="Summary rule, used to guide how to generate summaries")
+    summary_schema: str = Field(description="Summary schema, defines output format and structure")
+    memory_type: str = Field(default="summary", description="Memory type, used to distinguish different types of summaries")
 
 
 class ContextRuleConfig(BaseConfig):

@@ -510,13 +510,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         agent_result = None
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
-        # 记录 LLM 调用开始时间（用于设置 MemoryMessage 的 start_time）
+        # Record LLM call start time (used to set MemoryMessage's start_time)
         llm_call_start_time = datetime.now().isoformat()
         message.context.context_info["llm_call_start_time"] = llm_call_start_time
 
         try:
             events = []
-            async for event in self.run_hooks(message.context, HookPoint.PRE_LLM_CALL):
+            async for event in run_hooks(message.context, HookPoint.PRE_LLM_CALL, hook_from=self.id(), payload=observation):
                 events.append(event)
         except Exception as e:
             logger.error(f"{self.id()} failed to run PRE_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
@@ -563,7 +563,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
                     try:
                         events = []
-                        async for event in self.run_hooks(message.context, HookPoint.POST_LLM_CALL, payload=llm_response):
+                        async for event in run_hooks(message.context, HookPoint.POST_LLM_CALL, hook_from=self.id(), payload=llm_response):
                             events.append(event)
                     except Exception as e:
                         logger.error(
@@ -580,7 +580,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
         else:
-            # 记录所有工具调用的开始时间（用于设置 MemoryMessage 的 start_time）
+            # Record all tool call start times (used to set MemoryMessage's start_time)
             for act in agent_result.actions:
                 tool_call_start_time = datetime.now().isoformat()
                 message.context.context_info[f"tool_call_start_time_{act.tool_call_id}"] = tool_call_start_time
@@ -798,36 +798,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             message.context.context_info["llm_output"] = llm_response
         return llm_response
 
-    async def run_hooks(self, context: Context, hook_point: str, **kwargs):
-        """Execute hooks and break by exception"""
-        from aworld.runners.hook.hook_factory import HookFactory
-        from aworld.core.event.base import Message
-
-        # Get all hooks for the specified hook point
-        all_hooks = HookFactory.hooks(hook_point)
-        hooks = all_hooks.get(hook_point, [])
-
-        for hook in hooks:
-            try:
-                # Create a temporary Message object to pass to the hook
-                message = Message(
-                    category="agent_hook",
-                    payload=kwargs.get("payload", {}),
-                    sender=self.id(),
-                    session_id=context.session_id if hasattr(
-                        context, 'session_id') else None,
-                    headers={"context": context}
-                )
-
-                # Execute hook
-                msg = await hook.exec(message, context)
-                if msg:
-                    logger.debug(f"Hook {hook.point()} executed successfully")
-                    yield msg
-            except Exception as e:
-                logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
-                raise e
-
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
         from aworld.core.context.amni.prompt.prompt_ext import ContextPromptTemplate
@@ -848,13 +818,13 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             headers={"context": context, "skip_summary": skip_summary}
         )
 
-        # 如果开启了直接调用模式，直接调用 handler 而不通过消息系统
+        # If direct call mode is enabled, call handler directly without going through the message system
         if self.direct_memory_call:
             from aworld.runners.handler.memory import DefaultMemoryHandler
             await DefaultMemoryHandler.handle_memory_message_directly(memory_msg, context)
             return
 
-        # 默认通过消息系统发送
+        # Send through message system by default
         try:
             future = await send_message_with_future(memory_msg)
             results = await future.wait()
