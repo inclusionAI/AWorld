@@ -1,6 +1,7 @@
+import time
 from typing import List
 
-from ... import ApplicationContext
+from ... import ApplicationContext, logger
 from ..formatter.task_formatter import TaskFormatter
 from . import Neuron
 from .neuron_factory import neuron_factory
@@ -12,6 +13,8 @@ class TaskHistoryNeuron(Neuron):
 
     async def format_current_task_info(self, context: ApplicationContext) -> List[str]:
         """Format current task related information"""
+        start_time = time.perf_counter()
+        
         items = []
 
         # Task ID
@@ -39,19 +42,34 @@ class TaskHistoryNeuron(Neuron):
         if todo_info:
             items.append(" <todo_info description=\"Todo information Help You Tracking the Global Task\">\n" + todo_info + "\n</todo_info>\n")
 
+        # Log execution time if debug mode is enabled
+        if context.get_config() and context.get_config().debug_mode:
+            elapsed_time = time.perf_counter() - start_time
+            logger.info(f"⏱️  TaskHistoryNeuron.format_current_task_info() execution time: {elapsed_time:.4f}s")
+
         return items
 
     async def format_plan_info(self, context: ApplicationContext) -> List[str]:
         """Format plan information"""
+        start_time = time.perf_counter()
+        
         task_contents = []
         for index, sub_task in enumerate(context.sub_task_list, 1):
             task_content = sub_task.input.task_content.strip()
             if task_content:
                 task_contents.append(f"<step{index}>{task_content}</step{index}>")
+        
+        # Log execution time if debug mode is enabled
+        if context.get_config() and context.get_config().debug_mode:
+            elapsed_time = time.perf_counter() - start_time
+            logger.info(f"⏱️  TaskHistoryNeuron.format_plan_info() execution time: {elapsed_time:.4f}s")
+        
         return task_contents
 
     async def format_items(self, context: ApplicationContext, namespace: str = None, **kwargs) -> List[str]:
         """Format all task related information"""
+        start_time = time.perf_counter()
+        
         items = []
         
         # Add current task information
@@ -65,34 +83,34 @@ class TaskHistoryNeuron(Neuron):
             items.extend(plan_items)
         
         # Add task history information
+        history_start_time = time.perf_counter()
         history_items = await TaskFormatter.format_task_history(context)
+        if context.get_config() and context.get_config().debug_mode:
+            history_elapsed_time = time.perf_counter() - history_start_time
+            logger.info(f"⏱️  TaskFormatter.format_task_history() execution time: {history_elapsed_time:.4f}s")
+        
         if history_items:
             items.extend(history_items)
+        
+        # Log execution time if debug mode is enabled
+        if context.get_config() and context.get_config().debug_mode:
+            elapsed_time = time.perf_counter() - start_time
+            logger.info(f"⏱️  TaskHistoryNeuron.format_items() execution time: {elapsed_time:.4f}s")
         
         return items
 
     async def format(self, context: ApplicationContext, items: List[str] = None, namespace: str = None, **kwargs) -> str:
         """Combine all task related information"""
+        start_time = time.perf_counter()
+        
         if not items:
             items = await self.format_items(context, namespace, **kwargs)
 
-        # Format each part separately
-        current_task_info = await self.format_current_task_info(context)
-        plan_info = await self.format_plan_info(context)
-        task_history = await TaskFormatter.format_task_history(context)
+        result = "\n".join(items) + "\n"
         
-        result_parts = []
+        # Log execution time if debug mode is enabled
+        if context.get_config() and context.get_config().debug_mode:
+            elapsed_time = time.perf_counter() - start_time
+            logger.info(f"⏱️  TaskHistoryNeuron.format() execution time: {elapsed_time:.4f}s")
         
-        # Current task information
-        if current_task_info:
-            result_parts.append("<global_task_info description=\"Current task information Help You Understand the Current Task\">\n" + "\n".join(current_task_info) + "\n</global_task_info>")
-        
-        # Plan information
-        if plan_info:
-            result_parts.append("<plan_task_list>\n" + "\n".join(plan_info) + "\n</plan_task_list>")
-        
-        # Task history
-        if task_history:
-            result_parts.append(f"<task_history>Task Execution Steps:\n {task_history} \n\n</task_history>")
-        
-        return "\n".join(result_parts) + "\n"
+        return result
