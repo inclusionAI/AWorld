@@ -1,10 +1,10 @@
 import asyncio
 import logging
 import os
-import traceback
 from datetime import datetime
 
 from dotenv import load_dotenv
+
 load_dotenv('.env')
 
 from aworld.logs.util import logger
@@ -16,10 +16,6 @@ from train.examples.train_gaia_with_aworld_verl.rollout.parallel import Parallel
 from aworld.config import EvaluationConfig, DataLoaderConfig
 from aworld.evaluations.base import EvalResult, EvalTask
 from aworld.runners.evaluate_runner import EvaluateRunner
-
-from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent, build_gaia_task, build_mcp_config
-
-from aworld.runner import Runners
 
 logging.basicConfig(level=logging.INFO, force=True, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -38,28 +34,6 @@ eval_digest_logger = logging.getLogger("eval_digest")
 eval_digest_logger.setLevel(level=logging.INFO)
 
 eval_digest_logger.addHandler(file_handler)
-
-
-
-async def single_run(user_input: str):
-    # 1. build agent
-    agent = build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
-                             llm_base_url=os.getenv("LLM_BASE_URL"),
-                             llm_api_key=os.getenv("LLM_API_KEY"),
-                             mcp_config=await build_mcp_config(user_input))
-
-    # 2. build task
-    task = await build_gaia_task(user_input=user_input, target=agent, timeout=1200)
-
-    # 3. run task
-    try:
-        result = await Runners.run_task(task=task)
-        os.makedirs(f"logs/trajectory", exist_ok=True)
-        with open(f"logs/trajectory/traj.json", "a") as f:
-            f.write(str(result[task.id].trajectory[-1]))
-    except Exception as err:
-        print(f"err is {err}, trace is {traceback.format_exc()}")
-
 
 async def batch_run():
     logger.info(f"runner_log|pid={os.getpid()}|ppid={os.getppid()}")

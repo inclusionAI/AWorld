@@ -82,6 +82,7 @@ async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, sess
             enable_summary= True,
             summary_rounds= 30,
             summary_context_length= 40960,
+            summary_role= "assistant",
             summary_prompts=[
                 SummaryPromptConfig(template=AWORLD_MEMORY_EXTRACT_NEW_SUMMARY,
                                     summary_rule=episode_memory_summary_rule,

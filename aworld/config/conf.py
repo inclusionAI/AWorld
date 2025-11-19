@@ -188,6 +188,7 @@ class AgentMemoryConfig(BaseConfig):
                                                   description=" when the content length is greater than the summary_context_length, the summary will be created")
     summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
     summary_summaried: Optional[bool] = Field(default=True, description="to summary summary message when summary triggered")
+    summary_role: Optional[str] = Field(default="assistant", description="role for summary memory items")
 
     # Long-term memory config
     enable_long_term: bool = Field(default=False, description="enable_long_term use to store long-term memory")
