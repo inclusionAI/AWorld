@@ -501,12 +501,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if hasattr(observation, 'context') and observation.context:
             self.task_histories = observation.context
 
-        try:
-            events = []
-            async for event in run_hooks(context=message.context, hook_point=HookPoint.PRE_LLM_CALL, hook_from=self.id(), payload=observation):
-                events.append(event)
-        except Exception:
-            logger.debug(traceback.format_exc())
 
         messages = await self.build_llm_input(observation, info, message=message, **kwargs)
 
@@ -519,6 +513,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # 记录 LLM 调用开始时间（用于设置 MemoryMessage 的 start_time）
         llm_call_start_time = datetime.now().isoformat()
         message.context.context_info["llm_call_start_time"] = llm_call_start_time
+
+        try:
+            events = []
+            async for event in self.run_hooks(message.context, HookPoint.PRE_LLM_CALL):
+                events.append(event)
+        except Exception as e:
+            logger.error(f"{self.id()} failed to run PRE_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
+            raise e
+
         try:
             # time metrics
             from aworld.runners.state_manager import RunNodeBusiType
@@ -557,16 +560,20 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                       message_type=MemoryType.AI,
                                                       context=message.context,
                                                       skip_summary=self.is_agent_finished(llm_response, agent_result))
+
+                    try:
+                        events = []
+                        async for event in self.run_hooks(message.context, HookPoint.POST_LLM_CALL, payload=llm_response):
+                            events.append(event)
+                    except Exception as e:
+                        logger.error(
+                            f"{self.id()} failed to run POST_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
+                        raise e
             else:
                 logger.error(f"{self.id()} failed to get LLM response")
                 raise RuntimeError(f"{self.id()} failed to get LLM response")
 
-        try:
-            events = []
-            async for event in run_hooks(context=message.context, hook_point=HookPoint.POST_LLM_CALL, hook_from=self.id(), payload=llm_response):
-                events.append(event)
-        except Exception as e:
-            logger.debug(traceback.format_exc())
+
 
         logger.info(f"agent_result: {agent_result}")
 
@@ -709,6 +716,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         llm_response = None
         try:
             tools = await self._filter_tools(message.context)
+            if not tools:
+                # Some model must be clearly defined as None
+                tools = None
             self._log_messages(messages, tools=tools, context=message.context)
             stream_mode = kwargs.get("stream",
                                      False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
@@ -788,6 +798,36 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             message.context.context_info["llm_output"] = llm_response
         return llm_response
 
+    async def run_hooks(self, context: Context, hook_point: str, **kwargs):
+        """Execute hooks and break by exception"""
+        from aworld.runners.hook.hook_factory import HookFactory
+        from aworld.core.event.base import Message
+
+        # Get all hooks for the specified hook point
+        all_hooks = HookFactory.hooks(hook_point)
+        hooks = all_hooks.get(hook_point, [])
+
+        for hook in hooks:
+            try:
+                # Create a temporary Message object to pass to the hook
+                message = Message(
+                    category="agent_hook",
+                    payload=kwargs.get("payload", {}),
+                    sender=self.id(),
+                    session_id=context.session_id if hasattr(
+                        context, 'session_id') else None,
+                    headers={"context": context}
+                )
+
+                # Execute hook
+                msg = await hook.exec(message, context)
+                if msg:
+                    logger.debug(f"Hook {hook.point()} executed successfully")
+                    yield msg
+            except Exception as e:
+                logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
+                raise e
+
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
         from aworld.core.context.amni.prompt.prompt_ext import ContextPromptTemplate
@@ -817,7 +857,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         # 默认通过消息系统发送
         try:
             future = await send_message_with_future(memory_msg)
-            results = await future.wait(timeout=300)
+            results = await future.wait()
             if not results:
                 logger.warning(f"Memory write task failed: {memory_msg}")
         except Exception as e:

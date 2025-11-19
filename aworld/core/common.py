@@ -59,11 +59,6 @@ class Observation(BaseModel):
         return self.action_result is not None and len(self.action_result) > 0
 
 
-class StatefulObservation(Observation):
-    """Observations with contextual states."""
-    context: List[MemoryItem]
-
-
 class ParamInfo(BaseModel):
     name: str | None = None
     type: str = "str"

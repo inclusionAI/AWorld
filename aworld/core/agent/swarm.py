@@ -63,7 +63,7 @@ class Swarm(object):
         logger.debug(f"{type(self)}Swarm Agent List is : {[type(agent) for agent in self.topology]}")
 
         self.setting_build_type(build_type)
-        self.register_agents = register_agents
+        self.register_agents = register_agents or []
         self.max_steps = max_steps
         self._cur_step = 0
         self._event_driven = event_driven
@@ -157,9 +157,6 @@ class Swarm(object):
             self._communicate_agent = agent_graph.root_agent
         self.cur_agent = self.communicate_agent
         self.agent_graph = agent_graph
-
-        if context is None:
-            context = Context()
 
         for agent in agent_graph.agents.values():
             agent.event_driven = self.event_driven
@@ -361,6 +358,14 @@ class Swarm(object):
     @finished.setter
     def finished(self, finished):
         self._finished = finished
+
+    def add_agents(self, agents: List[BaseAgent]):
+        logger.info(f"add agents {agents} to swarm.agents: {self.agents}")
+        registered_agents = set([agent.id() for agent in self.register_agents])
+        for agent in agents:
+            if agent.id() not in registered_agents:
+                self.register_agents.append(agent)
+        Swarm.register_agent(agents)
 
 
 class WorkflowSwarm(Swarm):
@@ -1038,7 +1043,8 @@ class TeamBuilder(TopologyBuilder):
                 raise RuntimeError(f"agent in {agent} is not a agent or agent list, please check it.")
 
         if not valid_agents and not single_agents:
-            raise RuntimeError(f"no valid agent in swarm to build execution graph.")
+            return agent_graph
+            # raise RuntimeError(f"no valid agent in swarm to build execution graph.")
 
         for agent in single_agents:
             if isinstance(root_agent, Swarm):

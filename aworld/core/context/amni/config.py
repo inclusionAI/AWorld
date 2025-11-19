@@ -184,7 +184,6 @@ def init_middlewares(init_memory: bool = True, init_retriever: bool = True) -> N
         RetrieverFactory.init()
 
 def build_memory_config():
-    from aworld.core.memory import VectorDBConfig
     return MemoryConfig(
         provider="aworld",
         llm_config=ModelConfig(
@@ -193,19 +192,19 @@ def build_memory_config():
             api_key=os.getenv("LLM_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL")
         ),
-        embedding_config=EmbeddingsConfig(
-            base_url=os.getenv('EMBEDDING_BASE_URL'),
-            api_key=os.getenv('EMBEDDING_API_KEY'),
-            model_name=os.getenv('EMBEDDING_MODEL_NAME'),
-            dimensions=int(os.getenv('EMBEDDING_MODEL_DIMENSIONS', '1024'))
-        ),
-        vector_store_config=VectorDBConfig(
-            provider="chroma",
-            config={
-                "chroma_data_path": os.getenv('CHROMA_PATH', "./data/chroma_db"),
-                "collection_name": "aworld_memory",
-            }
-        )
+        # embedding_config=EmbeddingsConfig(
+        #     base_url=os.getenv('EMBEDDING_BASE_URL'),
+        #     api_key=os.getenv('EMBEDDING_API_KEY'),
+        #     model_name=os.getenv('EMBEDDING_MODEL_NAME'),
+        #     dimensions=int(os.getenv('EMBEDDING_MODEL_DIMENSIONS', '1024'))
+        # ),
+        # vector_store_config=VectorDBConfig(
+        #     provider="chroma",
+        #     config={
+        #         "chroma_data_path": os.getenv('CHROMA_PATH', "./data/chroma_db"),
+        #         "collection_name": "aworld_memory",
+        #     }
+        # )
     )
 
 
