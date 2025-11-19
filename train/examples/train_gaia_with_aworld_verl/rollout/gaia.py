@@ -79,6 +79,7 @@ async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, sess
     if is_summary():
         context_config.agent_config = AgentContextConfig(
             history_rounds= 100,
+            history_write_strategy= HistoryWriteStrategy.DIRECT,
             enable_summary= True,
             summary_rounds= 30,
             summary_context_length= 40960,

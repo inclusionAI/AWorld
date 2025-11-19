@@ -60,7 +60,8 @@ def parse_and_save_screenshots(
     # Determine save directory
     if save_dir is None:
         task_id = task_id or "unknown"
-        save_dir = os.path.join("logs", "screen_shot", task_id)
+        base_path = os.getenv("SCREEN_SHOT_PATH", "logs/screen_shot")
+        save_dir = os.path.join(base_path, task_id)
     
     os.makedirs(save_dir, exist_ok=True)
     logger.info(f"Created/verified save directory: {save_dir}")

@@ -60,7 +60,7 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
         raise NotImplementedError("build_judge_prompt must be implemented in subclasses")
 
     @abc.abstractmethod
-    def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+    def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> [str, dict]:
         """Builds the input for the judge agent task.
 
         Args:
@@ -72,7 +72,7 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
             str: The input string for the judge agent task.
 
         Example:
-            [Question]: {input.case_data.get('question', '')}
+            [疑问]: {input.case_data.get('question', '')}
             [Correct_Answer]: {input.case_data.get('answer', '')}
             [Response]: {output.get('answer', '')}
         """
@@ -106,6 +106,8 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
                             agent_prompt=self.build_judge_prompt(index=index, input=input, output=output))
 
         task_input = self.build_judge_data(index=index, input=input, output=output)
+        if not task_input:
+            return ScorerResult(scorer_name=self.name, metric_results={})
         response = await exec_agent(task_input, agent=score_agent, context=Context())
         metric_results = self.convert_judge_response_to_score(response.answer)
         if metric_results:
