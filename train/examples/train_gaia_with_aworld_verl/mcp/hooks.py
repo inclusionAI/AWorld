@@ -10,7 +10,7 @@ from aworld.logs.util import logger
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PostToolCallHook
 from aworld.utils.common import convert_to_snake
-from train.examples.train_gaia_with_aworld_verl.env.utils import mcp_screen_snapshot, parse_and_save_screenshots
+from train.examples.train_gaia_with_aworld_verl.mcp.utils import mcp_screen_snapshot, parse_and_save_screenshots
 
 
 @HookFactory.register(name="PostToolCallRolloutHook",

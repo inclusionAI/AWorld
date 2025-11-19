@@ -653,8 +653,8 @@ class AworldMemory(Memory):
                     created_at=summary_created_time,
                 )
                 # Set start_time and end_time
-                summary_memory.set_start_time(start_time)
-                summary_memory.set_end_time(datetime.now().isoformat())
+                summary_memory.start_time = start_time
+                summary_memory.end_time = datetime.now().isoformat()
 
                 # Add to memory store
                 self.memory_store.add(summary_memory)
@@ -686,8 +686,8 @@ class AworldMemory(Memory):
                 created_at=summary_created_time,
             )
             # Set start_time and end_time
-            summary_memory.set_start_time(start_time)
-            summary_memory.set_end_time(datetime.now().isoformat())
+            summary_memory.start_time = start_time
+            summary_memory.end_time = datetime.now().isoformat()
 
             # add summary to memory
             self.memory_store.add(summary_memory)

@@ -538,12 +538,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     headers={"context": context}
                 )
 
-                # If direct call mode is enabled, call handler directly without going through message system
-                if hasattr(receive_agent, 'direct_memory_call') and receive_agent.direct_memory_call == True:
-                    from aworld.runners.handler.memory import DefaultMemoryHandler
-                    await DefaultMemoryHandler.handle_memory_message_directly(memory_msg, context)
-                    return
-                # Send via message system by default
+                # Send via message system (DIRECT mode handling is now in send_message_with_future)
                 try:
                     future = await send_message_with_future(memory_msg)
                     results = await future.wait()

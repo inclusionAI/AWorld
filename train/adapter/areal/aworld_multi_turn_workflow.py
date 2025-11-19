@@ -15,10 +15,8 @@ from areal.api.cli_args import GenerationHyperparameters
 from areal.api.engine_api import InferenceEngine
 from areal.api.reward_api import AsyncRewardWrapper
 from areal.api.workflow_api import RolloutWorkflow
-from areal.utils import logging, stats_tracker
 from areal.utils import stats_tracker
 from areal.utils.data import concat_padded_tensors
-from areal.workflow.areal_rollout_provider import RolloutLLMProvider
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
@@ -27,8 +25,6 @@ from aworld.config.conf import AgentConfig, TaskConfig, TaskRunMode
 from aworld.core.context.base import Context
 from aworld.runner import Runners
 from aworld.logs.util import logger
-
-logger = logging.getLogger("Multi-Turn workflow")
 
 
 class AworldMultiTurnWorkflow(RolloutWorkflow):
@@ -92,7 +88,6 @@ class AworldMultiTurnWorkflow(RolloutWorkflow):
             resp = responses[task_id]
             context = resp.context
             step_token_ids = context.get_current_step_of_trajectory(agent.id())
-            print(f"step {t} resp: {resp}, step_token_ids:{step_token_ids}, task_id:{task_id}")
 
             try:
                 # compute reward: 1 for correct and 0 otherwise
@@ -109,7 +104,6 @@ class AworldMultiTurnWorkflow(RolloutWorkflow):
                 import traceback
                 logger.error(f"compute reward: {traceback.format_exc()}")
 
-            print(f"step {t} reward: {reward}, task_id:{task_id}")
             # Amend results
             input_len = len(step_token_ids.input_token_ids)
             seq += step_token_ids.input_token_ids + step_token_ids.output_token_ids
@@ -154,7 +148,6 @@ class AworldMultiTurnWorkflow(RolloutWorkflow):
         )
 
     async def arun_episode(self, engine: InferenceEngine, data):
-        print(f"gconfig: {self.gconfig}")
         tasks = [
             self._run_one_episode(engine, data, uuid.uuid4().hex)
             # for _ in range(self.gconfig.n_samples)

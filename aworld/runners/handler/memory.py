@@ -152,7 +152,7 @@ class DefaultMemoryHandler(DefaultHandler):
             )
         )
         # Record message end time
-        system_message.set_end_time()
+        system_message.end_time = None
         await self.memory.add(system_message, agent_memory_config=agent.memory_config)
 
     async def _update_last_message_usage(self, agent: Agent, llm_response, context: Context):
@@ -198,9 +198,9 @@ class DefaultMemoryHandler(DefaultHandler):
         
         # If start time exists in context, update it
         if start_time:
-            ai_message.metadata['start_time'] = start_time
+            ai_message.start_time = start_time
         # Record message end time
-        ai_message.set_end_time()
+        ai_message.end_time = None
         
         agent_memory_config = agent.memory_config
         if self._is_amni_context(context):
@@ -237,7 +237,7 @@ class DefaultMemoryHandler(DefaultHandler):
             memory_type=memory_type
         )
         # Record message end time
-        human_message.set_end_time()
+        human_message.end_time = None
         await self.memory.add(human_message, agent_memory_config=agent_memory_config)
 
     async def add_tool_result_to_memory(self, agent: 'Agent', tool_call_id: str, tool_result: ActionResult, context: Context):
@@ -300,10 +300,10 @@ class DefaultMemoryHandler(DefaultHandler):
         
         # If start time exists in context, update it
         if start_time:
-            tool_message.metadata['start_time'] = start_time
+            tool_message.start_time = start_time
         
         # Record message end time
-        tool_message.set_end_time()
+        tool_message.end_time = None
         
         await memory.add(tool_message, agent_memory_config=agent.memory_config)
 

@@ -100,17 +100,19 @@ class MemoryItem(BaseModel):
     def start_time(self) -> Optional[str]:
         return self.metadata.get('start_time')
 
-    @property
-    def end_time(self) -> Optional[str]:
-        return self.metadata.get('end_time')
-
-    def set_start_time(self, start_time: str = None):
+    @start_time.setter
+    def start_time(self, start_time: str = None):
         if not start_time:
             start_time = datetime.now().isoformat()
         self.metadata['start_time'] = start_time
         self.updated_at = datetime.now().isoformat()
 
-    def set_end_time(self, end_time: str = None):
+    @property
+    def end_time(self) -> Optional[str]:
+        return self.metadata.get('end_time')
+
+    @end_time.setter
+    def end_time(self, end_time: str = None):
         if not end_time:
             end_time = datetime.now().isoformat()
         self.metadata['end_time'] = end_time

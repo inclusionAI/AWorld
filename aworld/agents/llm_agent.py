@@ -158,7 +158,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                  event_handler_name: str = None,
                  event_driven: bool = True,
                  skill_configs: Dict[str, Any] = None,
-                 direct_memory_call: bool = False,
                  **kwargs):
         """A api class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 
@@ -200,7 +199,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
         self.event_handler_name = event_handler_name
         self.context = kwargs.get("context", None)
-        self.direct_memory_call = direct_memory_call
 
     @property
     def llm(self):
@@ -662,8 +660,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             info: Extended information to assist the agent in decision-making
         """
         await self.async_desc_transform(message.context)
-
-
         # observation secondary processing
         observation = await self.init_observation(observation)
         images = observation.images if self.conf.use_vision else None
@@ -801,13 +797,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             headers={"context": context, "skip_summary": skip_summary}
         )
 
-        # If direct call mode is enabled, call handler directly without going through the message system
-        if self.direct_memory_call:
-            from aworld.runners.handler.memory import DefaultMemoryHandler
-            await DefaultMemoryHandler.handle_memory_message_directly(memory_msg, context)
-            return
-
-        # Send through message system by default
+        # Send through message system (DIRECT mode handling is now in send_message_with_future)
         try:
             future = await send_message_with_future(memory_msg)
             results = await future.wait()

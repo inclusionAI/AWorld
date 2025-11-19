@@ -7,7 +7,7 @@ from aworld.core.task import TaskResponse
 from aworld.evaluations.base import EvalTarget, EvalDataCase
 from aworld.runner import Runners
 from aworld.runners.state_manager import RuntimeStateManager
-from train.examples.train_gaia_with_aworld_verl.env import build_mcp_config
+from train.examples.train_gaia_with_aworld_verl.mcp import build_mcp_config
 from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent, build_gaia_task
 
 logging.basicConfig(level=logging.INFO, force=True, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
