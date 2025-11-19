@@ -14,7 +14,7 @@ class ActionInfoNeuron(Neuron):
         """Format action information"""
         start_time = time.perf_counter()
         
-        context._workspace._load_workspace_data()
+        context._workspace._load_workspace_data(load_artifact_content=False)
         artifacts = await context._workspace.query_artifacts(search_filter={
             "context_type": "actions_info"
         })

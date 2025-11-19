@@ -1,4 +1,5 @@
 import os
+import time
 import traceback
 import uuid
 from datetime import datetime
@@ -43,6 +44,7 @@ class WorkSpace(BaseModel):
             use_default_observer: bool = True,
             clear_existing: bool = False,
             repository: Optional[ArtifactRepository] = None,
+            load_artifact_content: bool = True,
             **kwargs
     ):
         super().__init__(**kwargs)
@@ -64,7 +66,7 @@ class WorkSpace(BaseModel):
             self.metadata = {}
         else:
             # Try to load existing workspace data
-            self._load_workspace_data()
+            self._load_workspace_data(load_artifact_content)
 
         # Build artifact_id_index after loading artifacts
         self._rebuild_artifact_id_index()
@@ -79,7 +81,7 @@ class WorkSpace(BaseModel):
                 if observer not in self.observers:  # Avoid duplicates
                     self.add_observer(observer)
 
-    def _load_workspace_data(self) -> Optional[Dict[str, Any]]:
+    def _load_workspace_data(self, load_artifact_content: bool = True) -> Optional[Dict[str, Any]]:
         """
         Load workspace data from repository
         
@@ -88,6 +90,7 @@ class WorkSpace(BaseModel):
         """
         try:
             # Get workspace versions
+            start = time.time()
 
             workspace_data = self.repository.load_index()
 
@@ -101,8 +104,11 @@ class WorkSpace(BaseModel):
             for artifact_data in workspace_artifacts:
                 artifact_id = artifact_data.get("artifact_id")
                 if artifact_id:
-                    artifact_data = self.repository.retrieve_latest_artifact(artifact_id)
-                    if artifact_data:
+                    if load_artifact_content:
+                        artifact_data = self.repository.retrieve_latest_artifact(artifact_id)
+                        if artifact_data:
+                            artifacts.append(Artifact.from_dict(artifact_data))
+                    else:
                         artifacts.append(Artifact.from_dict(artifact_data))
 
             # Try to load existing workspace data
@@ -120,6 +126,7 @@ class WorkSpace(BaseModel):
             else:
                 self.artifacts = []
                 self.metadata = {}
+            logger.info(f"load_workspace_data finished, cost {time.time() - start}s")
         except Exception as e:
             logger.warning(f"Error loading workspace data: {traceback.print_exc()}")
             return None
@@ -480,12 +487,7 @@ class WorkSpace(BaseModel):
             "metadata": self.metadata,
             "artifact_ids": [a.artifact_id for a in self.artifacts],
             "artifacts": [
-                {
-                    "artifact_id": a.artifact_id,
-                    "type": str(a.artifact_type),
-                    "metadata": a.metadata,
-                    # "version": a.current_version
-                } for a in self.artifacts
+                a.to_dict(exclude_content=True) for a in self.artifacts
             ]
         }
 
@@ -504,19 +506,12 @@ class WorkSpace(BaseModel):
             Raw unescaped concatenated content of all matching artifacts
         """
         filename = artifact_id
-        for artifact in self.artifacts:
-            if artifact.artifact_id == artifact_id:
-                filename = artifact.metadata.get('filename')
-                break
-
-        result = ""
-        for artifact in self.artifacts:
-            if artifact.metadata.get('filename') == filename:
-                if artifact.content:
-                    result = result + artifact.content
+        artifact_data = self.repository.retrieve_latest_artifact(artifact_id)
+        if not artifact_data:
+            return ""
+        artifact = Artifact.from_dict(artifact_data)
+        result = artifact.content
         decoded_string = result.encode('utf-8').decode('unicode_escape')
-        print(result)
-
         return decoded_string
 
     def generate_tree_data(self) -> Dict[str, Any]:
