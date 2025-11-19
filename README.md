@@ -37,6 +37,7 @@
 
 **AWorld (Agent World)** builds intelligent agents and rich environments where they operate, pushing the frontiers of AI capabilities and enabling continuous evolution. This project provides the fundamental recipe for agentic learning: [Environment Access](#online-access-to-complex-environments), [Agent Construction](#efficient-agent-construction), [Experience Retrieval](#experience-to-samples), and [Model Training](#training). What makes AWorld powerful is that agents can use these same components to automatically improve themselves.
 
+![](./readme_assets/aworld_loop.png)
 
 > 💡 Visit our [homepage](https://www.aworldagents.com/) for more details, or try our online [environments](https://www.aworldagents.com/environments) and [agents](https://playground.aworldagents.com/). 
 
