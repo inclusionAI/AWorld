@@ -137,32 +137,44 @@ class Artifact(Output):
             return True
         return False
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert artifact to dictionary"""
-        return {
+    def to_dict(self, exclude_content: bool = False) -> Dict[str, Any]:
+        """
+        Convert artifact to dictionary
+        
+        Args:
+            exclude_content: If True, exclude content field from the returned dictionary
+            
+        Returns:
+            Dictionary representation of the artifact
+        """
+        result = {
             "artifact_id": self.artifact_id,
             "artifact_type": self.artifact_type.value,
-            "content": self.content,
             "metadata": self.metadata,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "status": self.status.name,
             "version_count": len(self.version_history)
         }
+        
+        if not exclude_content:
+            result["content"] = self.content
+            
+        return result
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "Artifact":
         """Create an artifact instance from a dictionary"""
-        artifact_type = ArtifactType(data["artifact_type"])
+        artifact_type = ArtifactType(data.get("artifact_type", data.get("type")))
         artifact = cls(
             artifact_type=artifact_type,
-            content=data["content"],
-            metadata=data["metadata"],
+            content=data.get("content"),
+            metadata=data.get("metadata"),
             artifact_id=data.get("artifact_id", str(uuid.uuid4()))
         )
-        artifact.created_at = data["created_at"]
-        artifact.updated_at = data["updated_at"]
-        artifact.status = ArtifactStatus[data["status"]]
+        artifact.created_at = data.get("created_at")
+        artifact.updated_at = data.get("updated_at")
+        artifact.status = ArtifactStatus[data.get("status")]
 
         # If version history exists, restore it as well
         if "version_history" in data:
