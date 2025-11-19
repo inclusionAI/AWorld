@@ -50,7 +50,6 @@ class DefaultAgentHandler(AgentHandler):
         return True
 
     async def _do_handle(self, message: Message) -> AsyncGenerator[Message, None]:
-        logger.info(f"agent handler _do_handle: {message.id}")
         headers = {"context": message.context}
         session_id = message.session_id
         data = message.payload
