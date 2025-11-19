@@ -1,10 +1,13 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
 import json
 import traceback
+from datetime import datetime
 from typing import Optional, Tuple
 
+from aworld.config import SummaryPromptConfig
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig, AgentMemoryConfig
 from aworld.logs.util import logger
 from aworld.memory.embeddings.base import EmbeddingsResult, EmbeddingsMetadata
@@ -34,8 +37,16 @@ Please read the conversation carefully and extract new information from the conv
        - step_result: the result of step and evidence information, such link of visited web page for slove task
 
 3. In your summary, aim to reduce unnecessary information, but make sure your summarized content still provides enough details for the task and does not lose any important information.
-<guide>
+</guide>
 
+
+<external_guides>
+{summary_rule}
+</external_guides>
+
+<output_schema>
+{summary_schema}
+</output_schema>
 
 <user_task> {user_task} </user_task>
 <existed_summary> {existed_summary} </existed_summary>
@@ -529,7 +540,7 @@ class AworldMemory(Memory):
         if len(message_items) < 2:
             return message_items
 
-        # Find the last AI message in the sequence
+        # Find the last not summary category AI message in the sequence
         last_ai_index = -1
         for i in range(len(message_items) - 1, -1, -1):
             if isinstance(message_items[i], MemoryAIMessage):
@@ -568,10 +579,28 @@ class AworldMemory(Memory):
             }
         )
         to_be_summary_items = [item for item in agent_task_total_message if
-                               item.memory_type == "message" and not item.has_summary]
+                               item.memory_type in ["message", "summary"] and not item.has_summary]
+        # filter summary items
+        if not agent_memory_config.summary_summaried:
+            to_be_summary_items = [item for item in to_be_summary_items if
+                                  item.memory_type != 'summary']
 
-        # 序列中删除最后一组完整的 [ai,tool] 组合
+        # Filter out incomplete message pairs
         to_be_summary_items = self._filter_incomplete_message_pairs(to_be_summary_items)
+
+        # Calculate summary_created_time
+        start_time = datetime.now().isoformat()
+        summary_created_time = datetime.now().isoformat()
+        if len(to_be_summary_items) > 0:
+            last_item_idx = next(i for i, item in enumerate(agent_task_total_message) if item.id == to_be_summary_items[-1].id)
+            if last_item_idx < len(agent_task_total_message) - 1:
+                try:
+                    created_at1 = agent_task_total_message[last_item_idx].created_at
+                    created_at2 = agent_task_total_message[last_item_idx + 1].created_at
+                    dt1, dt2 = datetime.fromisoformat(created_at1), datetime.fromisoformat(created_at2)
+                    summary_created_time = (dt1 + (dt2 - dt1) / 2).isoformat()
+                except (ValueError, AttributeError):
+                    pass
 
         check_need_summary, trigger_reason = self._check_need_summary(to_be_summary_items, agent_memory_config)
         logger.info(
@@ -582,34 +611,125 @@ class AworldMemory(Memory):
 
         existed_summary_items = [item for item in agent_task_total_message if item.memory_type == "summary"]
         user_task_items = [item for item in agent_task_total_message if item.memory_type == "init"]
-        # generate summary
-        summary_content = await self._gen_multi_rounds_summary(user_task_items, existed_summary_items,
-                                                               to_be_summary_items, agent_memory_config)
-        logger.debug(f"🧠 [MEMORY:short-term] [Summary] summary_content: {summary_content}")
 
-        summary_metadata = MessageMetadata(
-            agent_id=memory_item.agent_id,
-            agent_name=memory_item.agent_name,
-            session_id=memory_item.session_id,
-            task_id=memory_item.task_id,
-            user_id=memory_item.user_id
-        )
-        summary_memory = MemorySummary(
-            item_ids=[item.id for item in to_be_summary_items],
-            summary=summary_content,
-            metadata=summary_metadata,
-            created_at=to_be_summary_items[0].created_at
-        )
+        # Check if summary_prompts are configured
+        if agent_memory_config.summary_prompts and len(agent_memory_config.summary_prompts) > 0:
+            # Call summary_prompts array in parallel to generate summaries for each type
+            tasks = [
+                self._generate_typed_summary(
+                    user_task_items, 
+                    existed_summary_items, 
+                    to_be_summary_items, 
+                    agent_memory_config, 
+                    summary_prompt_config, 
+                    memory_item, 
+                    trigger_reason
+                )
+                for summary_prompt_config in agent_memory_config.summary_prompts
+            ]
+            summary_contents = await asyncio.gather(*tasks)
+            # Filter out None results
+            all_summary_contents = [content for content in summary_contents if content]
+            
+            # Concatenate all summary contents
+            if all_summary_contents:
+                combined_summary = "\n\n".join(all_summary_contents)
+                logger.debug(f"🧠 [MEMORY:short-term] [Summary:Combined] combined_summary: {combined_summary}")
 
-        # add summary to memory
-        self.memory_store.add(summary_memory)
+                summary_metadata = MessageMetadata(
+                    agent_id=memory_item.agent_id,
+                    agent_name=memory_item.agent_name,
+                    session_id=memory_item.session_id,
+                    task_id=memory_item.task_id,
+                    user_id=memory_item.user_id
+                )
+
+                # Create combined summary memory
+                summary_memory = MemorySummary(
+                    item_ids=[item.id for item in to_be_summary_items],
+                    summary=combined_summary,
+                    metadata=summary_metadata,
+                    role=getattr(agent_memory_config, 'summary_role', 'assistant'),
+                    created_at=summary_created_time,
+                )
+                # Set start_time and end_time
+                summary_memory.start_time = start_time
+                summary_memory.end_time = datetime.now().isoformat()
+
+                # Add to memory store
+                self.memory_store.add(summary_memory)
+
+                logger.info(f"🧠 [MEMORY:short-term] [Summary:Combined] [{trigger_reason}]Creating combined summary memory finished: "
+                           f"content is {combined_summary[:100]}")
+
+                # Log summary context length information
+                from aworld.logs.prompt_log import PromptLogger
+                PromptLogger.log_summary_memory(summary_memory, to_be_summary_items, f"{trigger_reason}:combined", agent_memory_config)
+        else:
+            # Use default summary generation logic
+            summary_content = await self._gen_multi_rounds_summary(user_task_items, existed_summary_items,
+                                                                   to_be_summary_items, agent_memory_config)
+            logger.debug(f"🧠 [MEMORY:short-term] [Summary] summary_content: {summary_content}")
+
+            summary_metadata = MessageMetadata(
+                agent_id=memory_item.agent_id,
+                agent_name=memory_item.agent_name,
+                session_id=memory_item.session_id,
+                task_id=memory_item.task_id,
+                user_id=memory_item.user_id
+            )
+            summary_memory = MemorySummary(
+                item_ids=[item.id for item in to_be_summary_items],
+                summary=summary_content,
+                metadata=summary_metadata,
+                role=getattr(agent_memory_config, 'summary_role', 'assistant'),
+                created_at=summary_created_time,
+            )
+            # Set start_time and end_time
+            summary_memory.start_time = start_time
+            summary_memory.end_time = datetime.now().isoformat()
+
+            # add summary to memory
+            self.memory_store.add(summary_memory)
+
+            # Log summary context length information
+            from aworld.logs.prompt_log import PromptLogger
+            PromptLogger.log_summary_memory(summary_memory, to_be_summary_items, trigger_reason, agent_memory_config)
 
         # mark memory item summary flag
         for summary_item in to_be_summary_items:
             summary_item.mark_has_summary()
             self.memory_store.update(summary_item)
-        logger.info(f"🧠 [MEMORY:short-term] [Summary] [{trigger_reason}]Creating summary memory finished: "
-                    f"content is {summary_content[:100]}")
+        logger.info(f"🧠 [MEMORY:short-term] [Summary] [{trigger_reason}]Creating summary memory finished")
+
+    async def _generate_typed_summary(self, user_task_items: list[MemoryItem],
+                                    existed_summary_items: list[MemorySummary],
+                                    to_be_summary_items: list[MemoryItem],
+                                    agent_memory_config: AgentMemoryConfig,
+                                    summary_prompt_config,
+                                    memory_item: MemoryItem,
+                                    trigger_reason: str):
+        """Generate summary for a specific type, return extracted content"""
+        try:
+            # Generate summary for specific type
+            summary_content = await self._gen_multi_rounds_summary(
+                user_task_items, 
+                existed_summary_items, 
+                to_be_summary_items, 
+                agent_memory_config,
+                prompt=summary_prompt_config,
+            )
+            
+            logger.debug(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] summary_content: {summary_content}")
+            logger.info(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] [{trigger_reason}]Generated typed summary: "
+                        f"content is {summary_content[:100]}")
+            
+            return summary_content
+                        
+        except Exception as e:
+            logger.error(f"🧠 [MEMORY:short-term] [Summary:{summary_prompt_config.memory_type}] Error generating typed summary: {str(e)}")
+            logger.error(traceback.format_exc())
+            return None
 
     def _check_need_summary(self,
                             to_be_summary_items: list[MemoryItem],
@@ -631,7 +751,8 @@ class AworldMemory(Memory):
     async def _gen_multi_rounds_summary(self, user_task_items: list[MemoryItem],
                                         existed_summary_items: list[MemorySummary],
                                         to_be_summary_items: list[MemoryItem],
-                                        agent_memory_config: AgentMemoryConfig) -> str:
+                                        agent_memory_config: AgentMemoryConfig,
+                                        prompt: SummaryPromptConfig = None) -> str:
 
         if len(to_be_summary_items) == 0:
             return ""
@@ -643,14 +764,21 @@ class AworldMemory(Memory):
         to_be_summary = [{"role": item.metadata['role'], "content": item.content} for item in to_be_summary_items]
 
         # generate summary
+        # Use custom template or default template
+        template_to_use = prompt.template if prompt else AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
+        summary_rule = prompt.summary_rule if prompt else ""
+        summary_schema = prompt.summary_schema if prompt else ""
+        content = template_to_use.format(
+            summary_rule=summary_rule,
+            summary_schema=summary_schema,
+            user_task=user_task,
+            existed_summary=existed_summary,
+            to_be_summary=to_be_summary
+        ).rstrip()  # Remove trailing whitespace as OpenAI API requires
         summary_messages = [
             {
-                "role": "user",
-                "content": AWORLD_MEMORY_EXTRACT_NEW_SUMMARY.format(
-                    user_task=user_task,
-                    existed_summary=existed_summary,
-                    to_be_summary=to_be_summary
-                )
+                "role": "assistant",
+                "content": content
             }
         ]
         llm_summary = await self._call_llm_summary(summary_messages, agent_memory_config)
@@ -748,9 +876,14 @@ class AworldMemory(Memory):
         if last_rounds == 0:
             return init_items
 
+        include_summaried = filters.get("include_summaried", False)
         # get unsummarized messages and summary messages
-        result_items = [item for item in agent_task_total_message if
-                        (item.memory_type == "message" and not item.has_summary) or (item.memory_type == 'summary')]
+        if include_summaried:
+            result_items = [item for item in agent_task_total_message if
+                            (item.memory_type == "message") or (item.memory_type == 'summary')]
+        else:
+            result_items = [item for item in agent_task_total_message if
+                        (item.memory_type == "message" and not item.has_summary) or (item.memory_type == 'summary' and not item.has_summary)]
 
         # if total messages <= requested rounds, return all messages
         if len(result_items) <= last_rounds:

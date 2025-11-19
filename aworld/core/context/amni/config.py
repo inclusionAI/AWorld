@@ -11,7 +11,7 @@ from typing import Optional, List, Union, Dict, Any
 from pydantic import BaseModel, Field
 
 from aworld.config import ModelConfig
-from aworld.config.conf import AgentMemoryConfig
+from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy
 from aworld.core.memory import MemoryConfig, MemoryLLMConfig, EmbeddingsConfig
 from aworld.memory.db.sqlite import SQLiteMemoryStore
 # from aworld.memory.db import SQLiteMemoryStore  # Temporarily commented out to avoid import errors
@@ -84,7 +84,7 @@ class HumanNeuronStrategyConfig(NeuronStrategyConfig):
 
 
 
-class AgentContextConfig(BaseModel):
+class AgentContextConfig(BaseConfig):
     # System Prompt Augment
     enable_system_prompt_augment: bool = Field(default=False, description="enable_system_prompt_augment")
     neuron_names: Optional[list[str]] = Field(default_factory=list)
@@ -93,6 +93,8 @@ class AgentContextConfig(BaseModel):
     # Context Reduce - Purge
     history_rounds: int = Field(default=100,
                                 description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
+    history_write_strategy: HistoryWriteStrategy = Field(default=HistoryWriteStrategy.EVENT_DRIVEN,
+                                                         description="History write strategy: event_driven (through message system) or direct (direct call to handler)")
 
     # Context Reduce - Compress
     enable_summary: bool = Field(default=False,
@@ -102,6 +104,9 @@ class AgentContextConfig(BaseModel):
                                           description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
     summary_context_length: Optional[int] = Field(default=40960,
                                                   description=" when the content length is greater than the summary_context_length, the summary will be created")
+    summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
+    summary_summaried: Optional[bool] = Field(default=True, description="summary_summaried use to store summary memory")
+    summary_role: Optional[str] = Field(default="assistant", description="role for summary memory items")
 
     # Context Offload
     tool_result_offload: bool = Field(default=False, description="tool result offload")
@@ -117,14 +122,17 @@ class AgentContextConfig(BaseModel):
     def to_memory_config(self) -> AgentMemoryConfig:
         return AgentMemoryConfig(
             history_rounds=self.history_rounds,
+            history_write_strategy=self.history_write_strategy,
             enable_summary=self.enable_summary,
             summary_rounds=self.summary_rounds,
-            summary_context_length=self.summary_context_length
+            summary_context_length=self.summary_context_length,
+            summary_prompts=self.summary_prompts,
+            summary_summaried=self.summary_summaried,
+            summary_role=self.summary_role
         )
 
 
 DEFAULT_AGENT_CONFIG = AgentContextConfig()
-
 
 class ContextEnvConfig(BaseModel):
     """Represents environment configuration for an agent team."""
@@ -133,7 +141,7 @@ class ContextEnvConfig(BaseModel):
     env_mount_path: str = Field(default="~/workspace", description="Env Working directory for share")
     env_config: dict = Field(default_factory=dict, description="Env Config")
 
-class AmniContextConfig(BaseModel):
+class AmniContextConfig(BaseConfig):
     """AmniContext configs"""
 
     # agent config
@@ -233,7 +241,7 @@ def get_default_config() -> AmniContextConfig:
                 ),
                 priority=0
             )
-        ]
+        ],
     )
 
 
@@ -268,7 +276,7 @@ class AmniConfigFactory:
         # Use default ContextEnvConfig if not provided
         if env_config is None:
             env_config = ContextEnvConfig()
-        
+
         if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
             config = get_default_config()
             config.agent_config = AgentContextConfig()

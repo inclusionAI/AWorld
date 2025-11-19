@@ -8,17 +8,16 @@ import uuid
 from typing import Optional, Any, Literal, List, Dict, Tuple
 
 from aworld import trace
-from aworld.config import AgentConfig, ContextRuleConfig, ModelConfig
+from aworld.config import AgentConfig, ContextRuleConfig
 # lazy import
 from aworld.core.context.base import Context
-from aworld.events.util import send_message
+from aworld.events.util import send_message_with_future
 from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace, StreamingOutputs, MessageOutput
 from aworld.output.artifact import ArtifactAttachment
-from examples.multi_agents.collaborative.debate.agent.debate_agent import truncate_content
-from aworld.runners.utils import long_wait_message_state
+from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory, ContextEnvConfig
 from .contexts import ContextManager
 from .prompt.prompts import AMNI_CONTEXT_PROMPT
@@ -30,9 +29,9 @@ from .state import ApplicationTaskContextState, ApplicationAgentState, TaskOutpu
 from .state.agent_state import AgentWorkingState
 from .state.common import WorkingState, TaskInput
 from .state.task_state import SubTask
-from .worksapces import ApplicationWorkspace, workspace_repo
+from .utils.text_cleaner import truncate_content
 from .worksapces import ApplicationWorkspace
-from ...agent.base import AgentFactory
+from .worksapces import ApplicationWorkspace, workspace_repo
 from ...event.base import ContextMessage, Constants, TopicType
 from ...task import TaskStatus
 
@@ -1200,10 +1199,14 @@ class ApplicationContext(AmniContext):
             topic=TopicType.SYSTEM_PROMPT,
             headers={"context": self}
         )
-        await send_message(message)
-        logger.debug(f"ApplicationContext|pub_and_wait_system_prompt_event|send_finished|{namespace}|{agent_id}")
-        await long_wait_message_state(message)
-        logger.debug(f"ApplicationContext|pub_and_wait_system_prompt_event|wait_finished|{namespace}|{agent_id}")
+        # Send via message system by default
+        try:
+            future = await send_message_with_future(message)
+            results = await future.wait(timeout=300)
+            if not results:
+                logger.warning(f"context write task failed: {message}")
+        except Exception as e:
+            logger.warn(f"context write task failed: {traceback.format_exc()}")
 
     async def pub_and_wait_tool_result_event(self,
                                              tool_result: Any,
@@ -1229,10 +1232,14 @@ class ApplicationContext(AmniContext):
             topic=TopicType.SYSTEM_PROMPT,
             headers={"context": self}
         )
-        await send_message(message)
-        logger.debug(f"ApplicationContext|pub_and_wait_tool_result_event|send_finished|{namespace}|{agent_id}")
-        await long_wait_message_state(message)
-        logger.debug(f"ApplicationContext|pub_and_wait_tool_result_event|wait_finished|{namespace}|{agent_id}")
+        # Send via message system by default
+        try:
+            future = await send_message_with_future(message)
+            results = await future.wait(timeout=300)
+            if not results:
+                logger.warning(f"context write task failed: {message}")
+        except Exception as e:
+            logger.warn(f"context write task failed: {traceback.format_exc()}")
 
     ####################### Context Write #######################
 

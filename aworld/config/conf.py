@@ -81,6 +81,12 @@ class ClientType(Enum):
     HTTP = "http"
 
 
+class HistoryWriteStrategy(Enum):
+    """History write strategy for memory operations."""
+    EVENT_DRIVEN = "event_driven"  # Write through message system (default)
+    DIRECT = "direct"  # Direct call to memory handler
+
+
 class ConfigDict(dict):
     """Object mode operates dict, can read non-existent attributes through `get` method."""
     __setattr__ = dict.__setitem__
@@ -150,6 +156,15 @@ class OptimizationConfig(BaseConfig):
     max_token_budget_ratio: float = 0.5  # Maximum context length ratio
 
 
+class SummaryPromptConfig(BaseConfig):
+    """Configuration for summary prompt templates."""
+    
+    template: str = Field(description="Base template, such as AWORLD_MEMORY_EXTRACT_NEW_SUMMARY")
+    summary_rule: str = Field(description="Summary rule, used to guide how to generate summaries")
+    summary_schema: str = Field(description="Summary schema, defines output format and structure")
+    memory_type: str = Field(default="summary", description="Memory type, used to distinguish different types of summaries")
+
+
 class ContextRuleConfig(BaseConfig):
     """Context interference rule configuration"""
 
@@ -170,6 +185,9 @@ class AgentMemoryConfig(BaseConfig):
     # short-term config
     history_rounds: int = Field(default=100,
                                 description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
+    history_write_strategy: HistoryWriteStrategy = Field(default=HistoryWriteStrategy.EVENT_DRIVEN,
+                                                         description="History write strategy: event_driven (through message system) or direct (direct call to handler)")
+    
     enable_summary: bool = Field(default=False,
                                  description="enable_summary use llm to create summary short-term memory")
     summary_model: Optional[str] = Field(default=None, description="short-term summary model")
@@ -177,7 +195,9 @@ class AgentMemoryConfig(BaseConfig):
                                           description="rounds of message msg; when the number of messages is greater than the summary_rounds, the summary will be created")
     summary_context_length: Optional[int] = Field(default=40960,
                                                   description=" when the content length is greater than the summary_context_length, the summary will be created")
-    # summary_prompt: str = Field(default=SUMMARY_PROMPT, description="summary prompt")
+    summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
+    summary_summaried: Optional[bool] = Field(default=True, description="to summary summary message when summary triggered")
+    summary_role: Optional[str] = Field(default="assistant", description="role for summary memory items")
 
     # Long-term memory config
     enable_long_term: bool = Field(default=False, description="enable_long_term use to store long-term memory")
@@ -240,10 +260,11 @@ class TaskRunMode(Enum):
 
 
 class TaskConfig(BaseConfig):
+    model_config = {"arbitrary_types_allowed": True}
     task_id: str = str(uuid.uuid4())
     task_name: str | None = None
     max_steps: int = 100
-    trajectory_strategy: ClassVar[Type['TrajectoryStrategy']] = None
+    trajectory_strategy: Optional[Type['TrajectoryStrategy']] = None
     stream: bool = False
     resp_carry_context: bool = True
     resp_carry_raw_llm_resp: bool = False

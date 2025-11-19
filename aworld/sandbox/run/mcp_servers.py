@@ -207,12 +207,16 @@ class McpServers:
                     content="",
                     keep=True
                 )
+                call_mcp_e = None
                 max_retry = 3
                 for i in range(max_retry):
                     try:
                         async def progress_callback(
                                 progress: float, total: float | None, message: str | None
                         ):
+                            # for debug vnc
+                            message_str = message.replace('\n', '\\n') if message else message
+                            logger.info(f"McpServers|progress_callback|{progress}|{total}|{message_str}")
                             try:
                                 output = Output()
                                 output.data = message
@@ -234,8 +238,10 @@ class McpServers:
                                            progress_callback=progress_callback),
                             timeout=120
                         )
+
                         break
                     except BaseException as e:
+                        call_mcp_e = e
                         logger.warning(
                             f"Error calling tool error: {e}. Extra info: session_id = {session_id}, tool_name = {tool_name}."
                             f"Traceback:\n{traceback.format_exc()}"
@@ -254,7 +260,7 @@ class McpServers:
                     )
                     results.append(action_result)
 
-                    self._update_metadata(result_key, {"error": str(e)}, operation_info)
+                    self._update_metadata(result_key, {"error": call_mcp_e}, operation_info)
 
                     # If using cached server instance fails, try to clean up and recreate
                     if server_name in self.server_instances:
@@ -270,7 +276,8 @@ class McpServers:
 
                         content_list: list[str] = []
                         for content in call_result_raw.content:
-                            if isinstance(call_result_raw.content[0], TextContent):
+                            logger.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {content}")
+                            if isinstance(content, TextContent):
                                 content_list.append(content.text)
                                 _metadata = content.model_extra.get("metadata", {})
                                 if "artifact_data" in _metadata and isinstance(_metadata["artifact_data"], dict):
@@ -278,7 +285,7 @@ class McpServers:
                                         "artifact_type": _metadata["artifact_type"],
                                         "artifact_data": _metadata["artifact_data"]
                                     })
-                            elif isinstance(call_result_raw.content[0], ImageContent):
+                            elif isinstance(content, ImageContent):
                                 content_list.append(f"data:image/jpeg;base64,{content.data}")
                                 _metadata = content.model_extra.get("metadata", {})
                                 if "artifact_data" in _metadata and isinstance(_metadata["artifact_data"], dict):
@@ -301,7 +308,7 @@ class McpServers:
                     self._update_metadata(result_key, action_result, operation_info)
 
         except Exception as e:
-            logger.warning(f"Failed to call_tool: {e}.Extra info: session_id = {session_id}, action_list = {action_list}")
+            logger.warning(f"Failed to call_tool: {e}.Extra info: session_id = {session_id}, action_list = {action_list}, traceback = {traceback.format_exc()}")
             return None
 
         return results

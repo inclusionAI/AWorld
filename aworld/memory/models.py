@@ -96,6 +96,28 @@ class MemoryItem(BaseModel):
     def status(self, value: Literal["DRAFT", "ACCEPTED", "DISCARD"]) -> None:
         self.metadata['status'] = value
 
+    @property
+    def start_time(self) -> Optional[str]:
+        return self.metadata.get('start_time')
+
+    @start_time.setter
+    def start_time(self, start_time: str = None):
+        if not start_time:
+            start_time = datetime.now().isoformat()
+        self.metadata['start_time'] = start_time
+        self.updated_at = datetime.now().isoformat()
+
+    @property
+    def end_time(self) -> Optional[str]:
+        return self.metadata.get('end_time')
+
+    @end_time.setter
+    def end_time(self, end_time: str = None):
+        if not end_time:
+            end_time = datetime.now().isoformat()
+        self.metadata['end_time'] = end_time
+        self.updated_at = datetime.now().isoformat()
+
     @abstractmethod
     def to_openai_message(self) -> dict:
         pass
@@ -116,9 +138,9 @@ class MessageMetadata(BaseModel):
     task_id: Optional[str] = Field(default=None,description="The ID of the task")
     user_id: Optional[str] = Field(default=None, description="The ID of the user")
     summary_content: Optional[str] = Field(default=None, description="The summary of the memory item")
+    ext_info: Optional[dict] = Field(default_factory=dict, description="The ext info of the memory item")
 
     model_config = ConfigDict(extra="allow")
-
     @property
     def to_dict(self) -> Dict[str, Any]:
         return self.model_dump()
@@ -163,7 +185,9 @@ class AgentExperience(MemoryItem):
     def to_openai_message(self) -> dict:
         return {
             "role": "system",
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 
@@ -210,7 +234,9 @@ class UserProfile(MemoryItem):
     def to_openai_message(self) -> dict:
         return {
             "role": "system",
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 class Fact(MemoryItem):
@@ -247,7 +273,9 @@ class Fact(MemoryItem):
     def to_openai_message(self) -> dict:
         return {
             "role": "user",
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 class MemorySummary(MemoryItem):
@@ -259,11 +287,11 @@ class MemorySummary(MemoryItem):
         summary (str): The summary text.
         metadata (Optional[Dict[str, Any]]): Additional metadata.
     """
-    def __init__(self, item_ids: list[str], summary: str, metadata: MessageMetadata, **kwargs) -> None:
+    def __init__(self, item_ids: list[str], summary: str, metadata: MessageMetadata, memory_type: str = "summary", role: str = "assistant", **kwargs) -> None:
         meta = metadata.to_dict
         meta['item_ids'] = item_ids
-        meta['role'] = "user"
-        super().__init__(content=summary, metadata=meta, memory_type="summary", **kwargs)
+        meta['role'] = role
+        super().__init__(content=summary, metadata=meta, memory_type=memory_type, **kwargs)
 
     @property
     def summary_item_ids(self):
@@ -271,8 +299,12 @@ class MemorySummary(MemoryItem):
 
     def to_openai_message(self) -> dict:
         return {
-            "role": "user",
-            "content": self.content
+            "id": self.id,
+            "metadata": self.metadata,
+            "role": self.metadata['role'],
+            "content": self.content,
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 
@@ -296,7 +328,9 @@ class ConversationSummary(MemoryItem):
     def to_openai_message(self) -> dict:
         return {
             "role": "assistant",
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 
@@ -311,6 +345,9 @@ class MemoryMessage(MemoryItem):
     def __init__(self, role: str, metadata: MessageMetadata, content: Optional[Any] = None, memory_type="message", **kwargs) -> None:
         meta = metadata.to_dict
         meta['role'] = role
+        # 记录开始时间
+        if 'start_time' not in meta:
+            meta['start_time'] = datetime.now().isoformat()
         super().__init__(content=content, metadata=meta, memory_type=memory_type, **kwargs)
 
     @property
@@ -335,7 +372,7 @@ class MemoryMessage(MemoryItem):
     @property
     def agent_id(self) -> str:
         return self.metadata['agent_id']
-    
+
     @abstractmethod
     def to_openai_message(self) -> dict:
         pass
@@ -352,8 +389,12 @@ class MemorySystemMessage(MemoryMessage):
 
     def to_openai_message(self) -> dict:
         return {
+            "id": self.id,
+            "metadata": self.metadata,
             "role": self.role,
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
     @property
@@ -370,11 +411,19 @@ class MemoryHumanMessage(MemoryMessage):
     """
     def __init__(self, metadata: MessageMetadata, content: Any, memory_type = "init", **kwargs) -> None:
         super().__init__(role="user", metadata=metadata, content=content, memory_type=memory_type, **kwargs)
-    
+
+    @property
+    def embedding_text(self) -> Optional[str]:
+        return None
+
     def to_openai_message(self) -> dict:
         return {
+            "id": self.id,
+            "metadata": self.metadata,
             "role": self.role,
-            "content": self.content
+            "content": self.content,
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 class MemoryAIMessage(MemoryMessage):
@@ -396,12 +445,20 @@ class MemoryAIMessage(MemoryMessage):
             return None
         tc = [ToolCall(**tool_call) for tool_call in self.metadata['tool_calls']]
         return tc if len(tc) > 0 else None
-      
+
+    @property
+    def embedding_text(self) -> Optional[str]:
+        return None
+
     def to_openai_message(self) -> dict:
         return {
+            "id": self.id,
+            "metadata": self.metadata,
             "role": self.role,
             "content": self.content,
-            "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls or []] or None
+            "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls or []] or None,
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 class MemoryToolMessage(MemoryMessage):
@@ -414,9 +471,10 @@ class MemoryToolMessage(MemoryMessage):
         content (str): The content of the message.
     """
     def __init__(self, tool_call_id: str, content: Any, status: Literal["success", "error"] = "success", metadata: MessageMetadata = None, **kwargs) -> None:
-        metadata.tool_call_id = tool_call_id
-        metadata.status = status
-        super().__init__(role="tool", metadata=metadata, content=content, **kwargs)
+        meta = metadata.to_dict if metadata else {}
+        meta['tool_call_id'] = tool_call_id
+        meta['status'] = status
+        super().__init__(role="tool", metadata=MessageMetadata(**meta), content=content, **kwargs)
 
     @property
     def tool_call_id(self) -> str:
@@ -432,9 +490,13 @@ class MemoryToolMessage(MemoryMessage):
 
     def to_openai_message(self) -> dict:
         return {
+            "id": self.id,
+            "metadata": self.metadata,
             "role": self.role,
             "content": self.content,
             "tool_call_id": self.tool_call_id,
+            "created_at": self.created_at,
+            "memory_type": self.memory_type
         }
 
 

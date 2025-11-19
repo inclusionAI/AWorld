@@ -172,6 +172,18 @@ class SQLiteMemoryStore(MemoryStore):
                 content=self._deserialize_content(content),
                 **base_data
             )
+        elif memory_type == 'summary':
+            content_data = self._deserialize_content(content)
+            if not content_data or not isinstance(content_data, str):
+                return None
+            item_ids = memory_meta.get('item_ids', [])
+            summary_metadata = MessageMetadata(**memory_meta)
+            return MemorySummary(
+                item_ids=item_ids,
+                summary=content_data,
+                metadata=summary_metadata,
+                **base_data
+            )
         elif role == 'assistant':
             tool_calls_jsons = memory_meta.get('tool_calls', [])
             tool_calls = []
@@ -222,24 +234,6 @@ class SQLiteMemoryStore(MemoryStore):
                 actions=content_data.get('actions'),
                 agent_id=memory_meta.get('agent_id'),
                 metadata=memory_meta,
-                **base_data
-            )
-        elif memory_type == 'summary':
-            content_data = self._deserialize_content(content)
-            if not content_data or not isinstance(content_data, str):
-                return None
-            item_ids = memory_meta.get('item_ids', [])
-            summary_metadata = MessageMetadata(
-                agent_id=memory_meta.get('agent_id'),
-                agent_name=memory_meta.get('agent_name'),
-                session_id=memory_meta.get('session_id'),
-                task_id=memory_meta.get('task_id'),
-                user_id=memory_meta.get('user_id')
-            )
-            return MemorySummary(
-                item_ids=item_ids,
-                summary=content_data,
-                metadata=summary_metadata,
                 **base_data
             )
         elif memory_type == 'conversation_summary':

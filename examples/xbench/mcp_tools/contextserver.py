@@ -8,7 +8,6 @@ from typing import Union
 from mcp.server import FastMCP
 from mcp.types import TextContent
 
-from aworld.core.context.amni.retrieval.graph.factory import graph_db_factory
 from aworld.core.context.amni.worksapces import workspace_repo
 from aworld.output import Artifact, ArtifactType
 

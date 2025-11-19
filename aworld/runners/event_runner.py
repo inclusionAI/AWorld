@@ -3,27 +3,24 @@
 import asyncio
 import time
 import traceback
+from functools import partial
+from typing import List, Callable, Any
 
 import aworld.trace as trace
-
-from functools import partial
-from typing import List, Callable, Any, Optional, Dict
-
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.base import BaseAgent
 from aworld.core.common import TaskItem, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
-from aworld.core.task import Task, TaskResponse, TaskStatus, TaskStatusValue
+from aworld.core.task import Task, TaskResponse, TaskStatusValue
 from aworld.dataset.trajectory_dataset import generate_trajectory_from_strategy
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
-from aworld.runners.task_runner import TaskRunner
 from aworld.runners.state_manager import EventRuntimeStateManager
-
+from aworld.runners.task_runner import TaskRunner
 from aworld.trace.base import get_trace_id
 from aworld.utils.common import override_in_subclass, new_instance
 
@@ -347,6 +344,7 @@ class TaskEventRunner(TaskRunner):
             trajectory_strategy = self.conf.get('trajectory_strategy', None)
             trajectory = await generate_trajectory_from_strategy(self.task.id, trajectory_strategy, self)
             self._task_response.trajectory = trajectory
+
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
 

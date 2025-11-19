@@ -4,8 +4,11 @@
 import importlib
 import inspect
 import os
+import traceback
 from typing import Callable, Any
 
+from aworld.core.context.base import Context
+from aworld.logs.util import logger
 from aworld.runners.hook.template import HOOK_TEMPLATE
 from aworld.utils.common import snake_to_camel
 
@@ -53,3 +56,33 @@ def hook(hook_point: str, name: str = None):
         return func
 
     return decorator
+
+async def run_hooks(context: Context, hook_point: str, hook_from: str, payload: Any = None):
+    """Execute hooks and break by exception"""
+    from aworld.runners.hook.hook_factory import HookFactory
+    from aworld.core.event.base import Message
+
+    # Get all hooks for the specified hook point
+    all_hooks = HookFactory.hooks(hook_point)
+    hooks = all_hooks.get(hook_point, [])
+
+    for hook in hooks:
+        try:
+            # Create a temporary Message object to pass to the hook
+            message = Message(
+                category="agent_hook",
+                payload=payload,
+                sender=hook_from,
+                session_id=context.session_id if hasattr(
+                    context, 'session_id') else None,
+                headers={"context": context}
+            )
+
+            # Execute hook
+            msg = await hook.exec(message, context)
+            if msg:
+                logger.debug(f"Hook {hook.point()} executed successfully")
+                yield msg
+        except Exception as e:
+            logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
+            raise e
