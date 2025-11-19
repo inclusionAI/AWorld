@@ -17,7 +17,6 @@ from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace
 from aworld.output.artifact import ArtifactAttachment
-from examples.multi_agents.collaborative.debate.agent.debate_agent import truncate_content
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory, ContextEnvConfig
 from .contexts import ContextManager
