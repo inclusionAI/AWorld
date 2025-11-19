@@ -3,6 +3,7 @@ from typing import Optional, Dict, Literal, OrderedDict
 from pydantic import BaseModel, Field
 from pydantic import field_validator
 
+from aworld.core.task import TaskStatus
 from .agent_state import ApplicationAgentState
 from .common import WorkingState, TaskInput, TaskOutput
 from ..utils.modelplus import from_dict_to_memory_message
@@ -60,7 +61,7 @@ Result: {self.result if self.result is not None else 'No result yet'}
 class TaskWorkingState(WorkingState):
 
     # task_status
-    status: Literal['INIT', 'PROCESSING', 'SUCCESS', 'FAILED'] = Field(default='INIT', description="task status")
+    status: TaskStatus = Field(default='init', description="task status")
 
     # sub tasks
     sub_task_list: Optional[list[SubTask]] = Field(default_factory=list, description="sub task list")
