@@ -1,4 +1,5 @@
 import os
+import time
 from typing import List, Optional
 from pydantic import BaseModel
 
@@ -38,12 +39,14 @@ async def get_workspace_artifacts(workspace_id: str, request: ArtifactRequest):
 
     workspace = await get_workspace(workspace_id)
     all_artifacts = workspace.list_artifacts()
+    start = time.perf_counter()
     filtered_artifacts = all_artifacts
     if request.artifact_ids:
         filtered_artifacts = [a for a in filtered_artifacts if a.artifact_id in request.artifact_ids]
     if artifact_types:
         filtered_artifacts = [a for a in filtered_artifacts if a.artifact_type.name in artifact_types]
 
+    logger.info(f"get_workspace_artifacts: {workspace_id}, {artifact_types}, {len(filtered_artifacts)} artifacts, {time.perf_counter() - start:.4f}s")
     return {
         "data": [workspace.get_artifact_data(a.artifact_id) for a in filtered_artifacts]
     }
@@ -61,4 +64,4 @@ async def get_workspace_file_content(workspace_id: str, artifact_id: str):
 async def get_workspace(workspace_id: str) -> WorkSpace:
     workspace_type = os.environ.get("WORKSPACE_TYPE", "local")
     workspace_path = os.environ.get("WORKSPACE_PATH", "./data/workspaces")
-    return await load_workspace(workspace_id, workspace_type, workspace_path)
+    return await load_workspace(workspace_id, workspace_type, workspace_path, load_artifact_content=False)

@@ -36,7 +36,7 @@ class AgentTrainer:
             test_dataset: Dataset module, test dataset or dataset file path that can build the test dataset.
             config: Train config module, custom training configuration of special train backend.
             run_path: The path to save the running code, logs and checkpoints, default is 'workspace/runs'.
-            train_backend: The training backend to use, default is 'verl'.
+            train_engine_name: The training framework to use, default is 'verl'.
         """
 
         self.agent = agent
@@ -60,12 +60,14 @@ class AgentTrainer:
         if not isinstance(train_engine, TrainerProcessor):
             raise ValueError(f"{train_engine_name} train backend is not a TrainerProcessor")
 
+        # process prerequisite modules
         train_engine.check_agent(agent=agent)
         train_engine.check_dataset(dataset=train_dataset, test_dataset=test_dataset)
         train_engine.check_reward(reward_func=reward_func)
-        self.config = train_engine.check_config(config=config)
-        logger.info(f"Train config: {self.config}")
+        real_config = train_engine.check_config(config=config)
         train_engine.mark_initialized()
+
+        logger.info(f"Train config: {real_config}")
         self.train_processor = train_engine
 
     @staticmethod

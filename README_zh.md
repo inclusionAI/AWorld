@@ -1,12 +1,12 @@
-from examples.for_test import topology<div align="center">
+<div align="center">
 
-# AWorld: 为智能体自我演进提供多样化的运行环境
+# AWorld：丰富的环境、高效的智能体、持续的进化
 
 </div>
 
 <h4 align="center">
 
-*"自我意识：最难的问题不是解决限制，而是发现自己的局限性"*
+*“自我意识：最难的问题不在于在局限内求解，而在于发现自身的局限”*
 
 [![Twitter Follow][twitter-image]][twitter-url]
 [![WeChat QR Code][wechat-image]][wechat-url]
@@ -15,405 +15,418 @@ from examples.for_test import topology<div align="center">
 [![DeepWiki][deepwiki-image]][deepwiki-url]
 [![arXiv][arxiv-image]][arxiv-url]
 [![Tutorial][tutorial-image]][tutorial-url]
-<!-- [![arXiv][arxiv-image]][arxiv-url] -->
+[![Playground][playground-image]][playground-url]
 
 </h4>
 
 <h4 align="center">
 
 [English](./README.md) |
-[快速开始](#快速开始) |
-[架构设计](#架构设计原则) |
-[应用场景](#应用场景) |
-[贡献指南](#贡献指南) |
-[附录](#附录)
+[安装](#安装) |
+[环境](#复杂环境在线访问) |
+[智能体](#高效的智能体构建) |
+[经验](#经验到样本) |
+[训练](#训练) |
+[架构](#架构设计原则) |
+[演进](#演进) |
+[贡献](#贡献) |
 
 </h4>
 
-![](./readme_assets/heading_banner.png)
+**AWorld (Agent World)** 构建智能体（Agent）及其运行的丰富环境，旨在拓展 AI 能力的前沿并实现持续进化。本项目提供了 Agentic Learning（智能体学习）的基础配方：[环境访问](#复杂环境在线访问)、[智能体构建](#高效的智能体构建)、[经验获取](#经验到样本) 和 [模型训练](#训练)。AWorld 的强大之处在于，智能体可以利用这些相同的组件来自动提升自己。
 
-**AWorld (Agent World)** 是一个为大规模智能体自我改进而设计的下一代框架。通过上述功能，我们使AI智能体能够通过从各种环境中的知识和经验中学习来持续进化。使用AWorld，您可以：
+> 💡 访问我们的 [主页](https://www.aworldagents.com/) 了解更多详情，或者尝试我们的在线 [环境](https://www.aworldagents.com/environments) 和 [智能体](https://playground.aworldagents.com/)。
 
-1. **构建工作流**：设计和实现自动化任务序列 [文档](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
 
-2. **构建智能体**：创建具有MCP工具的智能AI智能体 [文档](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
-
-3. **构建多智能体系统(MAS)**：编排协作智能体生态系统 [文档](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
-
-4. **高效训练智能体**：让MAS在各种环境中自我演进和优化 [文档](https://inclusionai.github.io/AWorld/Quickstart/agent_training/)
-
----
-**群体智能** 🚀
-
-展示群体智能在不同领域的SOTA效果。欢迎加入我们正在进行中的项目！
-
-| **类别** | **成就** | **性能表现** | **核心创新** | **日期** |
-|:-------------|:----------------|:----------------|:-------------------|:----------|
-| **🤖 智能体** | **GAIA基准测试卓越表现** [![][GAIA]](https://huggingface.co/spaces/gaia-benchmark/leaderboard) | Pass@1: **67.89**, Pass@3: **83.49** (109个任务) [![][Code]](./examples/gaia/README_GUARD.md)  | 多智能体系统稳定性与编排 [![][Paper]](https://arxiv.org/abs/2508.09889) | 2025/08/06 |
-| **🧠 推理能力** | **IMO 2025问题求解** [![][IMO]](https://www.imo-official.org/year_info.aspx?year=2025) | 6小时内解决5/6道题 [![][Code]](examples/imo/README.md) | 多智能体协作超越单一模型 | 2025/07/25 |
-| **🖼️ 多模态** | **OSWorld榜单第一** [![][OSWorld]](https://os-world.github.io/) | 成功率=58.0% [![][Code]](examples/osworld/README.md) | 工具越多越好？ | 2025/09/18 |
-| **🖼️ 多模态** | **VisualWebArena九月榜单第一** [![][VWA]](https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=2044883967#gid=2044883967) | 成功率=36.5% [![][Code]](examples/visualwebarena/README.md) | 工具自动化生成 [![][Paper]](https://arxiv.org/pdf/2509.21072) | 2025/09/25 |
-| **🔍 深度检索** | **Xbench榜单获卓越表现** [![][Xbench]](https://xbench.org/) |  Pass@1: 51 <br> Pass@3: 61 [![][Code]](examples/xbench/README.md) | aworld有了自己的上下文管理引擎 | 2025/10/23 |
-
-<details>
-<summary style="font-size: 1.2em;font-weight: bold;"> 🌏 查看进行中的项目 </summary>
-
-| **类别** | **成就** | **状态** | **预期影响** |
-|:-------------|:----------------|:-----------|:-------------------|
-| **🖼️ 多模态** | 领先的操作系统/网页交互 | 进行中 | 视觉推理与环境理解 |
-| **💻 编程** | 领先的安装、编码、测试、调试等能力 | 进行中 | 自动化软件工程能力 |
-| **🔧 工具使用** | 领先的多轮函数调用 | 即将推出 | 影响现实世界 |
-
-</details>
-
----
-
-**自我改进, 超越群体智能** 🌱
-
-`智能体`可以在各种`环境`中运行，收集正面和负面的`经验`，并通过`训练`进行学习。
-
-<table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
-  <thead>
-    <tr>
-      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">智能体</th>
-      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">环境</th>
-      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">经验</th>
-      <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">训练</th>
-      <th style="width: 15%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">代码</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td style="padding: 8px; vertical-align: top;">GAIA 智能体</td>
-      <td style="padding: 8px; vertical-align: top;">
-        终端、代码、搜索、playwright 和 4 个额外工具
-      </td>
-      <td style="padding: 8px; vertical-align: top;">
-        从 GAIA 验证数据集的 165 个样本中收集 <br>
-        <a href="https://huggingface.co/datasets/gaia-benchmark/GAIA/tree/main/2023/validation" target="_blank" style="text-decoration: none;">
-          <img src="https://img.shields.io/badge/Dataset-Training-8AB07D" alt="训练数据集">
-        </a>
-      </td>
-      <td style="padding: 8px; vertical-align: top;">
-        通过 GRPO 进行 rollout、奖励计算和梯度更新
-        <br>
-            <a href="https://huggingface.co/inclusionAI/Qwen3-32B-AWorld" target="_blank" style="text-decoration: none;">
-            <img src="https://img.shields.io/badge/Model-HuggingFace-green" alt="Model">
-        </a>
-      </td>
-      <td style="padding: 8px; vertical-align: top;">
-        3行代码即可
-         <br>
-            <a href="./train/README_zh.md" target="_blank" style="text-decoration: none;">
-            <img src="https://img.shields.io/badge/Code-README-green" alt="代码">
-        </a>
-      </td>
-    </tr>
-  </tbody>
-</table>
-
----
-
-# 快速开始
-## 前置要求
+# 安装
 > [!TIP]
 > Python>=3.11
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
-pip install .
+pip install -e .
 ```
-## Hello world 示例
-我们引入 `Agent` 和 `Runners` 的概念来帮助您快速上手。
 
-关于并行任务执行，请参考[并行运行示例](examples/parallel_task/README.md)。
+# 复杂环境在线访问
+配置丰富的环境并非易事——依赖包冲突、API 需要密钥、并发需要扩展、网路配置等。我们通过三种访问模式让这一切变得轻松无痛：
+1. 使用我们默认的托管设置（针对有使用成本的工具，我们提供有限免费额度）。
+2. 自带 API 密钥以获得无限制次数工具使用（即将推出）。
+3. 拉取我们的 Docker 镜像并在您自己的基础设施上部署运行（即将推出）。
 
 ```python
-from aworld.agents.llm_agent import Agent
-from aworld.runner import Runners
+import os
+import asyncio
+from aworld.sandbox import Sandbox
 
-summarizer = Agent(
-    name="Summary Agent", 
-    system_prompt="You specialize at summarizing.",
-)
-
-result = Runners.sync_run(
-    input="Tell me a succint history about the universe", 
-    agent=summarizer,
-)
-```
-
-同时，我们引入 `Swarm` 的概念来构建智能体团队。
-```python
-from aworld.agents.llm_agent import Agent
-from aworld.runner import Runners
-from aworld.core.agent.swarm import Swarm
-
-researcher = Agent(
-    name="Research Agent", 
-    system_prompt="You specialize at researching.",
-)
-summarizer = Agent(
-    name="Summary Agent", 
-    system_prompt="You specialize at summarizing.",
-)
-# 创建具有协作工作流的智能体组 (multi-agent)
-group = Swarm(topology=[(researcher, summarizer)])
-
-result = Runners.sync_run(
-    input="Tell me a complete history about the universe", 
-    swarm=group,
-)
-```
-
-最后，运行您自己的智能体或团队
-```bash
-# 设置LLM凭据
-export LLM_MODEL_NAME="gpt-4"
-export LLM_API_KEY="your-api-key-here"
-export LLM_BASE_URL="https://api.openai.com/v1"
-
-# 运行
-python /path/to/agents/or/teams
-```
-
-<details>
-<summary style="font-size: 1.2em;font-weight: bold;"> 🌏 点击查看高级用法 </summary>
-
-### 显式传递AgentConfig
-```python
-from aworld.agents.llm_agent import Agent
-from aworld.runner import Runners
-from aworld.config.conf import AgentConfig
-from aworld.core.agent.swarm import Swarm
-
-gpt_conf = AgentConfig(
-    llm_provider="openai",
-    llm_model_name="gpt-4o",
-    llm_api_key="<OPENAI_API_KEY>",
-    llm_temperature=0.1,
-)
-openrouter_conf = AgentConfig(
-    llm_provider="openai",
-    llm_model_name="google/gemini-2.5-pro",
-    llm_api_key="<OPENROUTER_API_KEY>",
-    llm_base_url="https://openrouter.ai/api/v1"
-    llm_temperature=0.1,
-)
-
-researcher = Agent(
-    name="Research Agent", 
-    conf=gpt_conf,
-    system_prompt="You specialize at researching.",
-)
-summarizer = Agent(
-    name="Summary Agent", 
-    conf=openrouter_conf,
-    system_prompt="You specialize at summarizing.",
-)
-# 创建具有协作工作流的智能体组 (multi-agent)
-group = Swarm(topology=[(researcher, summarizer)])
-
-result = Runners.sync_run(
-    input="Tell me a complete history about the universe", 
-    swarm=group,
-)
-```
-
-### 配备MCP工具的智能体
-```python
-from aworld.agents.llm_agent import Agent
-from aworld.runner import Runners
+INVITATION_CODE = os.environ.get("INVITATION_CODE", "")
 
 mcp_config = {
     "mcpServers": {
-        "GorillaFileSystem": {
-            "type": "stdio",
-            "command": "python",
-            "args": ["examples/BFCL/mcp_tools/gorilla_file_system.py"],
-        },
+        "gaia_server": {
+            "type": "streamable-http",
+            "url": "https://playground.aworldagents.com/environments/mcp",
+            "timeout": 600,
+            "sse_read_timeout": 600,
+            "headers": {
+                "ENV_CODE": "gaia",
+                "Authorization": f"Bearer {INVITATION_CODE}",
+            }
+        }
     }
 }
 
-file_sys = Agent(
-    name="file_sys_agent",
-    system_prompt=(
-        "You are a helpful agent to use "
-        "the standard file system to perform file operations."
-    ),
-    mcp_servers=mcp_config.get("mcpServers", []).keys(),
-    mcp_config=mcp_config,
-)
+async def _list_tools():
+    sand_box = Sandbox(mcp_config=mcp_config, mcp_servers=["gaia_server"])
+    return await sand_box.mcpservers.list_tools()
 
-result = Runners.sync_run(
-    input=(
-        "use mcp tools in the GorillaFileSystem server "
-        "to perform file operations: "
-        "write the content 'AWorld' into "
-        "the hello_world.py file with a new line "
-        "and keep the original content of the file. "
-        "Make sure the new and old "
-        "content are all in the file; "
-        "and display the content of the file"
-    ),
-    agent=file_sys,
-)
+if __name__ == "__main__":
+    tools = asyncio.run(_list_tools())
+    print(tools)
 ```
 
-### 集成记忆的智能体
-建议使用 `MemoryFactory` 来初始化和访问Memory实例。
+![](./readme_assets/how_to_access_env.gif)
+
+# 高效的智能体构建
+在 AWorld 中，智能体被简洁的定义成一个工具增强的模型。要启动一个智能体，您只需要：
+1. 一个模型服务（对于训练，vLLM/SGLang服务效果就很好）
+2. 一个可调用的在线环境（使用我们的托管选项或接入您自己的 MCP 工具链）
+就是这样——无需繁重的脚手架代码。
 
 ```python
-from aworld.memory.main import MemoryFactory
-from aworld.core.memory import MemoryConfig, MemoryLLMConfig
+from aworld.agents.llm_agent import Agent
+from aworld.runner import Runners
 
-# 简单初始化
-memory = MemoryFactory.instance()
+# 详情请参阅上一节
+mcp_config = {...}
 
-# 使用LLM配置进行初始化
-MemoryFactory.init(
-    config=MemoryConfig(
-        provider="aworld",
-        llm_config=MemoryLLMConfig(
-            provider="openai",
-            model_name=os.environ["LLM_MODEL_NAME"],
-            api_key=os.environ["LLM_API_KEY"],
-            base_url=os.environ["LLM_BASE_URL"]
-        )
-    )
+searcher = Agent(
+    name="Search Agent",
+    system_prompt="You specialize at searching.",
+    mcp_config=mcp_config
 )
-memory = MemoryFactory.instance()
+
+if __name__ == "__main__":
+    result = Runners.sync_run(
+        input="Use google search tool to answer the question: the news about AI today.",
+        agent=searcher
+    )
+    print(f"answer: {result.answer}")
 ```
 
-`MemoryConfig` 允许您集成不同的嵌入模型和向量数据库。
+记得先配置您的 LLM 凭证。
+```bash
+# 设置 LLM 凭证
+export LLM_MODEL_NAME="gpt-4"
+export LLM_API_KEY="your-api-key-here"
+export LLM_BASE_URL="https://api.openai.com/v1"
+```
+
+## 复杂智能体系统构建
+
+现实世界的问题通常需要构建复杂的智能体系统。AWorld 为您提供了灵活的构建模式：
+1. 设计端到端的自动化工作流 [文档](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
+2. 构建支持 MCP 的智能体 [文档](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
+3. 编排多智能体系统 (MAS) [文档](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
+
+想看实际效果？可在 AWorld [Playground](https://playground.aworldagents.com/) 中加载我们预构建的 DeepResearch 智能体系统，检查源代码，并端到端运行它。
+![](./readme_assets/playground_gaiateam.gif)
+
+
+# 经验到样本
+我们的运行时（Runtime）会捕获离线和在线运行中的每一个步骤。每个任务都会产生一条完整的轨迹——包含每一次 LLM 调用、动作和奖励——因此您可以用于样本合成、性能评估、并高置信地进行迭代。
+
+## 完整的任务轨迹
+任务是通过许多次 LLM 调用展开的。框架会捕获每一步，为您提供完整的轨迹。
+
+```python
+import asyncio
+from aworld.runner import Runners
+from aworld.core.task import Task
+from aworld.logs.util import logger
+import json
+
+# 智能体构建请参考上一节
+searcher = Agent(...)
+
+if __name__ == "__main__":
+    async def test_complete_trajectory():
+        task = Task(
+            input="Use google search tool to answer the question: the news about AI today.",
+            agent=searcher
+        )
+
+        responses = await Runners.run_task(task)
+        resp = responses[task.id]
+        logger.info(f"task answer: {resp.answer}")
+        logger.info(f"task trajectory: {json.dumps(resp.trajectory, ensure_ascii=False)}")
+    asyncio.run(test_complete_trajectory())
+```
+
+## 单步内省 (Single-Step Introspection)
+需要更精细的控制？调用 `step()` 来逐次检查动作/响应数据对。这允许您在训练期间注入中间奖励，从而实现更丰富、更灵活的学习信号。
+
 ```python
 import os
+import asyncio
+from aworld.runner import Runners
+from aworld.core.task import Task
+from aworld.logs.util import logger
+import json
+from aworld.config import TaskConfig, TaskRunMode
 
-from aworld.core.memory import MemoryConfig, MemoryLLMConfig, EmbeddingsConfig, VectorDBConfig
+# 智能体构建请参考上一节
+searcher = Agent(...)
 
-MemoryFactory.init(
-    config=MemoryConfig(
-        provider="aworld",
-        llm_config=MemoryLLMConfig(
-            provider="openai",
-            model_name=os.environ["LLM_MODEL_NAME"],
-            api_key=os.environ["LLM_API_KEY"],
-            base_url=os.environ["LLM_BASE_URL"]
-        ),
-        embedding_config=EmbeddingsConfig(
-            provider="ollama", # 或 huggingface, openai 等
-            base_url="http://localhost:11434",
-            model_name="nomic-embed-text"
-        ),
-        vector_store_config=VectorDBConfig(
-            provider="chroma",
-            config={
-                "chroma_data_path": "./chroma_db",
-                "collection_name": "aworld",
-            }
+if __name__ == "__main__":
+    async def test_single_step_introspection():
+        task = Task(
+            input="Use google search tool to answer the question: the news about AI today.",
+            agent=searcher,
+            conf=TaskConfig(
+                resp_carry_context=True,
+                run_mode=TaskRunMode.INTERACTIVE
+            )
         )
-    )
-)
+
+        trajectory_log = os.path.join(os.path.dirname(__file__), "trajectory_log.txt")
+        is_finished = False
+        step = 1
+        while not is_finished:
+            with open(trajectory_log, "a", encoding="utf-8") as traj_file:
+                is_finished, observation, response = await Runners.step(task)
+                traj_file.write(f"Step {step}\n")
+                traj_file.write(json.dumps(response.trajectory, ensure_ascii=False, indent=2))
+                traj_file.write("\n\n")
+                step += 1
+    asyncio.run(test_single_step_introspection())
 ```
 
-### 多智能体系统
-我们展示一个经典拓扑：`Leader-Executor`。
+
+# 训练
+一旦智能体能够在环境中探索，AWorld 能通过两种互补的训练模式形成进化的闭环，推动持续改进。
+
+## 模型训练
+将任何主流 LLM 训练框架——AReal、Swift、Verl、Slime 等——接入运行时，直接更新模型参数。适配器非常轻量，因此您可以在不同的训练器之间复用相同的环境和智能体代码。
+
 ```python
-"""
-Leader-Executor 拓扑：
- ┌───── plan ───┐     
-exec1         exec2
-
-每个智能体与单个监督智能体通信，
-被公认为Leader-Executor拓扑，
-在Aworld中也称为团队(Team)拓扑。
-我们可以使用该拓扑实现ReAct和Plan-Execute范式。
-"""
+from datasets import load_dataset
 from aworld.agents.llm_agent import Agent
-from aworld.core.agent.swarm import Swarm, GraphBuildType
+from aworld.config import AgentConfig
 
-plan = Agent(name="plan", conf=agent_conf)
-exec1 = Agent(name="exec1", conf=agent_conf)
-exec2 = Agent(name="exec2", conf=agent_conf)
-swarm = Swarm(topology=[(plan, exec1), (plan, exec2)], build_type=GraphBuildType.TEAM)
+from train.trainer.agent_trainer import AgentTrainer
+from train.examples.train_gaia_with_aworld_verl.metrics.gaia_reward_function import gaia_reward_func
+
+
+# 详情请参阅上一节
+mcp_config = {...}
+
+# 配置智能体使用 Verl 作为模型服务（自动适配推理格式）
+agent_config = AgentConfig(
+    llm_provider="verl"
+)
+searcher = Agent(
+    name="Search Agent",
+    system_prompt="You specialize at searching.",
+    mcp_config=mcp_config,
+    conf=agent_config
+)
+
+train_dataset = load_dataset("", split="train")
+test_dataset = load_dataset("", split="test")
+
+trainer = AgentTrainer(
+    agent=agent,
+    config=custom_train_config,
+    reward_func=gaia_reward_func,
+    train_dataset=train_dataset,
+    test_dataset=test_dataset
+)
+
+trainer.train()
 ```
+> 💡 查看 [真实案例](./train/examples/train_gaia_with_aworld_verl/main.py)，其中包含运行智能体训练所需的完整训练配置。
 
-</details>
+## 元学习 (Meta-Learning)
+除了更新模型权重之外，您还可以对整个智能体系统进行元学习。启动特定角色的智能体，让它们针对目标智能体进行更新、重写提示词、优化工作流或调整策略，然后迭代团队（如下图所示）。
+
+![](./readme_assets/mas_meta_learning.png)
 
 # 架构设计原则
-<!-- AWorld is a versatile multi-agent framework designed to facilitate collaborative interactions and self-improvement among agents.  -->
-
-AWorld 提供了一个全面的环境，支持多样化的应用，如 `产品原型验证`、`基础模型训练`，以及通过元学习设计 `多智能体系统 (MAS)`。
-
-该框架被设计为高度适应性，使研究人员和开发人员能够在多个领域探索和创新，从而推进多智能体系统的能力和应用。
+本框架旨在具有高度适应性，使研究人员和开发人员能够跨多个领域进行探索和创新，从而提升多智能体系统的能力和应用。
 
 ## 概念与框架
 | 概念 | 描述 |
 | :-------------------------------------- | ------------ |
-| [`agent`](./aworld/core/agent/base.py)  | 定义基础类、描述、输出解析和多智能体协作（群体）逻辑，用于在AWorld系统中定义、管理和编排智能体。 |
-| [`runner`](./aworld/runners)            | 包含管理环境中智能体执行循环的运行器类，处理情节回放和并行训练/评估工作流。   |
-| [`task`](./aworld/core/task.py)         | 定义封装环境目标、必要工具和智能体交互终止条件的基础Task类。  |
-| [`swarm`](./aworld/core/agent/swarm.py) | 实现管理多智能体协调和通过去中心化策略出现的群体行为的SwarmAgent类。 |
-| [`sandbox`](./aworld/sandbox)           | 提供具有可配置场景的受控运行时，用于智能体行为的快速原型设计和验证。 |
-| [`tools`](./aworld/tools)               | 为AWorld系统中智能体-环境交互的工具定义、适配和执行提供灵活框架。 |
-| [`context`](./aworld/core/context)      | 为AWorld智能体提供全面的上下文管理系统，支持完整的状态跟踪、配置管理、提示优化、多任务状态处理和整个智能体生命周期中的动态提示模板。  |
-| [`memory`](./aworld/memory)             | 为智能体实现可扩展的记忆系统，支持短期和长期记忆、总结、检索、嵌入和集成。|
-| [`trace`](./aworld/trace)               | 为AWorld提供可观察的跟踪框架，支持分布式跟踪、上下文传播、跨度管理，以及与流行框架和协议的集成，以监控和分析智能体、工具和任务执行。|
-
-> 💡 查看 [examples](./examples/) 目录以探索多样化的AWorld应用。
+| [`agent`](./aworld/core/agent/base.py)  | 定义基础类、描述、输出解析以及多智能体协作（swarm）逻辑，用于定义、管理和编排 AWorld 系统中的智能体。 |
+| [`runner`](./aworld/runners)            | 包含管理智能体在环境中的执行循环的运行器类，处理剧集回放（episode rollouts）和并行训练/评估工作流。   |
+| [`task`](./aworld/core/task.py)         | 定义基础任务类，封装了智能体交互所需的环境目标、必要工具和终止条件。  |
+| [`swarm`](./aworld/core/agent/swarm.py) | 实现 SwarmAgent 类，通过去中心化策略管理多智能体协调和涌现的群体行为。 |
+| [`sandbox`](./aworld/sandbox)           | 提供带有可配置场景的受控运行时，用于快速原型设计和验证智能体行为。 |
+| [`tools`](./aworld/tools)               | 提供灵活的框架，用于定义、适配和执行 AWorld 系统中的智能体-环境交互工具。 |
+| [`context`](./aworld/core/context)      | 为 AWorld 智能体提供全面的上下文管理系统，实现完整的状态跟踪、配置管理、提示词优化、多任务状态处理以及贯穿智能体生命周期的动态提示词模板。  |
+| [`memory`](./aworld/memory)             | 为智能体实现可扩展的记忆系统，支持短期和长期记忆、摘要、检索、嵌入（embeddings）和集成。|
+| [`trace`](./aworld/trace)               | 为 AWorld 提供可观测的追踪框架，支持分布式追踪、上下文传播、Span 管理，并与流行框架和协议集成，以监控和分析智能体、工具及任务的执行。|
 
 
 ## 特性
-| 智能体构建         | 拓扑编排      | 环境                    |
-|:---------------------------|:----------------------------|:-------------------------------|
-| ✅ 集成MCP服务 | ✅ 封装的运行时  | ✅ 运行时状态管理  |
-| ✅ 多模型提供商   | ✅ 灵活的MAS模式 | ✅ 高并发支持  |
-| ✅ 自定义选项   | ✅ 清晰的状态跟踪   | ✅ 分布式训练      |
+| 智能体构建                    | 拓扑编排                    | 环境                           |
+|:------------------------------|:----------------------------|:-------------------------------|
+| ✅ 集成 MCP 服务               | ✅ 封装的运行时              | ✅ 运行时状态管理               |
+| ✅ 支持多模型提供商              | ✅ 灵活的 MAS 模式           | ✅ 高并发支持                   |
+| ✅ 高度自定义构建                  | ✅ 清晰的状态追踪            | ✅ 分布式训练                   |
+| ✅ [支持智能体技能](https://github.com/inclusionAI/AWorld/tree/main/examples/skill_agent) 🚀 |  |       |
 
 
+# 演进
+我们的使命：把复杂繁琐的任务留给 AWorld，您来负责创新。本节展示了利用 AWorld 开发的几个创新项目，以证明框架本身的有效性。
 
-## 正向过程
-![](readme_assets/runtime.jpg)
+#### 智能体打榜
 
-这里是收集BFCL正向轨迹的正向说明：[`教程`](./examples/BFCL/README.md)。
+<table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
+  <thead>
+    <tr>
+      <th style="width: 30%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">类别</th>
+      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">成就</th>
+      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">表现</th>
+      <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">关键创新</th>
+      <th style="width: 5%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">日期</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🤖 智能体
+        <br>
+        <a href="https://playground.aworldagents.com/" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Try-Online-9B59B6?style=flat-square" alt="Try Online">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>GAIA Benchmark <br>卓越表现</strong>
+        <br>
+        <a href="https://huggingface.co/spaces/gaia-benchmark/leaderboard" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/GAIA-Leaderboard-blue" alt="GAIA">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        Pass@1: <strong>67.89</strong> <br>
+        Pass@3: <strong>83.49</strong>
+        <br> (109 任务)
+        <a href="./examples/gaia/README_GUARD.md" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        多智能体系统 <br>稳定性与编排
+        <br>
+        <a href="https://arxiv.org/abs/2508.09889" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Paper-arXiv-red" alt="Paper">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">2025/08/06</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🧠 推理</td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>IMO 2025 <br>解题</strong>
+        <br>
+        <a href="https://www.imo-official.org/year_info.aspx?year=2025" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/IMO-2025-blue" alt="IMO">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        6小时内解决 <br><strong>5/6</strong> 道题
+        <br>
+        <a href="examples/imo/README.md" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">多智能体协作 <br>优于单个模型</td>
+      <td style="padding: 8px; vertical-align: top;">2025/07/25</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🖼️ 多模态</td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>OSWorld <br>排名第一</strong>
+        <br>
+        <a href="https://os-world.github.io/" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/OSWorld-Leaderboard-green" alt="OSWorld">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>58.0%</strong> <br> 成功率
+        <br>
+        <a href="examples/osworld/README.md" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">工具越多越好吗？</td>
+      <td style="padding: 8px; vertical-align: top;">2025/09/18</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🖼️ 多模态</td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>VisualWebArena 九月排名第一</strong>
+        <br>
+        <a href="https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=2044883967#gid=2044883967" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/VWA-Leaderboard-green" alt="VWA">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>36.5%</strong> <br> 成功率
+        <br>
+        <a href="examples/visualwebarena/README.md" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">自动化工具生成 <br>
+        <a href="https://arxiv.org/pdf/2509.21072" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Paper-arXiv-red" alt="Paper"></td>
+      <td style="padding: 8px; vertical-align: top;">2025/09/25</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🔍 深度搜索</td>
+      <td style="padding: 8px; vertical-align: top;">
+        <strong>Xbench 卓越表现</strong>
+        <br>
+        <a href="https://xbench.org/" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/xbench-Leaderboard-green" alt="xbench">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+        Pass@1: 51 <br> Pass@3: 61
+        <br>
+        <a href="examples/xbench/README.md" target="_blank" style="text-decoration: none;">
+          <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
+        </a>
+      </td>
+      <td style="padding: 8px; vertical-align: top;">
+          AWorld 拥有自己的上下文引擎：Amni。
+      </td>
+      <td style="padding: 8px; vertical-align: top;">2025/10/23</td>
+    </tr>
+  </tbody>
+</table>
+
+#### 数据合成 (Data Synthesis)
+
+1. **FunReason-MT Technical Report: Overcoming the Complexity Barrier in Multi-Turn Function Calling** arxiv, 2025. [论文](https://arxiv.org/abs/2510.24645), [代码](https://github.com/inclusionAI/AWorld-RL), [模型](https://huggingface.co/Bingguang/FunReason-MT), [数据集](https://huggingface.co/datasets/Bingguang/FunReason-MT)
+
+    *Zengzhuang Xu, Bingguang Hao, Zechuan Wang, Yuntao Wen, Maolin Wang, 等*
 
 
-## 反向过程
-
-> 训练期间，使用 **AWorld的分布式环境** 进行动作-状态回放演示。
-
-![](readme_assets/agent_training2.jpg)
-
-这边有使用AWorld结合各种框架（如 AReal、Verl 和 Swift）进行训练的说明。[`教程`](./train/README.md)。
-
-# 🧩 技术报告
-本节展示了使用 AWorld 研发的研究论文，展示了其孵化前沿多智能体系统的能力，这些系统推动着向通用人工智能（AGI）的发展。
-
-#### 多智能体系统（MAS）元学习
-
-1. **Profile-Aware Maneuvering: A Dynamic Multi-Agent System for Robust GAIA Problem Solving by AWorld.** arxiv, 2025. [论文](https://arxiv.org/abs/2508.09889), [代码](https://github.com/inclusionAI/AWorld/blob/main/examples/gaia/README_GUARD.md)
-
-    *Zhitian Xie, Qintong Wu, Chengyue Yu, Chenyi Zhuang, Jinjie Gu*
-
-2. **Recon-Act: A Self-Evolving Multi-Agent Browser-Use System via Web Reconnaissance, Tool Generation, and Task Execution.** arxiv, 2025. [论文](https://arxiv.org/pdf/2509.21072), [代码](https://github.com/inclusionAI/AWorld/tree/main/examples/visualwebarena)
-
-    *Kaiwen He, Zhiwei Wang, Chenyi Zhuang, Jinjie Gu*
-
-
-
-#### 模型训练
+#### 模型训练 (Model Training)
 
 1. **AWorld: Orchestrating the Training Recipe for Agentic AI.** arxiv, 2025. [论文](https://arxiv.org/abs/2508.20404), [代码](https://github.com/inclusionAI/AWorld/tree/main/train), [模型](https://huggingface.co/inclusionAI/Qwen3-32B-AWorld)
 
-    *Chengyue Yu, Siyuan Lu, Chenyi Zhuang, Dong Wang, Qintong Wu, etc.*
+    *Chengyue Yu, Siyuan Lu, Chenyi Zhuang, Dong Wang, Qintong Wu, 等*
 
 2. **FunReason: Enhancing Large Language Models' Function Calling via Self-Refinement Multiscale Loss and Automated Data Refinement.** arxiv, 2025. [论文](https://arxiv.org/abs/2505.20192), [模型](https://huggingface.co/Bingguang/FunReason)
 
-    *Bingguang Hao, Maolin Wang, Zengzhuang Xu, Cunyin Peng, etc.*
+    *Bingguang Hao, Maolin Wang, Zengzhuang Xu, Cunyin Peng, 等*
 
 3. **Exploring Superior Function Calls via Reinforcement Learning.** arxiv, 2025. [论文](https://arxiv.org/abs/2508.05118), [代码](https://github.com/BingguangHao/RLFC)
 
-    *Bingguang Hao, Maolin Wang, Zengzhuang Xu, Yicheng Chen, etc.*
+    *Bingguang Hao, Maolin Wang, Zengzhuang Xu, Yicheng Chen, 等*
 
 4. **RAG-R1 : Incentivize the Search and Reasoning Capabilities of LLMs through Multi-query Parallelism.** arxiv, 2025. [论文](https://arxiv.org/abs/2507.02962), [代码](https://github.com/inclusionAI/AgenticLearning), [模型](https://huggingface.co/collections/endertzw/rag-r1-68481d7694b3fca8b809aa29)
 
@@ -425,13 +438,24 @@ AWorld 提供了一个全面的环境，支持多样化的应用，如 `产品�
 
 6. **Don’t Just Fine-tune the Agent, Tune the Environment** arxiv, 2025. [论文](https://arxiv.org/abs/2510.10197)
 
-    *Siyuan Lu, Zechuan Wang, Hongxuan Zhang, Qintong Wu, Leilei Gan, Chenyi Zhuang, etc.*
+    *Siyuan Lu, Zechuan Wang, Hongxuan Zhang, Qintong Wu, Leilei Gan, Chenyi Zhuang, 等*
 
 
-# 贡献指南
-我们热烈欢迎开发者加入我们构建和改进AWorld！无论您对增强框架、修复错误还是添加新功能感兴趣，您的贡献对我们都很宝贵。
+#### 元学习 (Meta Learning)
 
-对于学术引用或希望联系我们，请使用以下BibTeX条目：
+1. **Profile-Aware Maneuvering: A Dynamic Multi-Agent System for Robust GAIA Problem Solving by AWorld.** arxiv, 2025. [论文](https://arxiv.org/abs/2508.09889), [代码](https://github.com/inclusionAI/AWorld/blob/main/examples/gaia/README_GUARD.md)
+
+    *Zhitian Xie, Qintong Wu, Chengyue Yu, Chenyi Zhuang, Jinjie Gu*
+
+2. **Recon-Act: A Self-Evolving Multi-Agent Browser-Use System via Web Reconnaissance, Tool Generation, and Task Execution.** arxiv, 2025. [论文](https://arxiv.org/pdf/2509.21072), [代码](https://github.com/inclusionAI/AWorld/tree/main/examples/visualwebarena)
+
+    *Kaiwen He, Zhiwei Wang, Chenyi Zhuang, Jinjie Gu*
+
+
+# 贡献
+我们热烈欢迎开发者加入我们，共同构建和改进 AWorld！无论您是想增强框架功能、修复 Bug 还是添加新特性，您的贡献对我们都非常宝贵。
+
+如需学术引用或希望联系我们，请使用以下 BibTeX 条目：
 
 ```bibtex
 @misc{yu2025aworldorchestratingtrainingrecipe,
@@ -445,145 +469,9 @@ AWorld 提供了一个全面的环境，支持多样化的应用，如 `产品�
 }
 ```
 
-# Star历史
+# Star History
 ![](https://api.star-history.com/svg?repos=inclusionAI/AWorld&type=Date)
 
-# 附录
-Web客户端使用
-![GAIA智能体运行时演示](readme_assets/gaia_demo.gif)
-
-您的项目结构应该如下所示：
-```text
-agent-project-root-dir/
-    agent_deploy/
-      my_first_agent/
-        __init__.py
-        agent.py
-```
-
-创建项目文件夹。
-
-```shell
-mkdir my-aworld-project && cd my-aworld-project # project-root-dir
-mkdir -p agent_deploy/my_first_agent
-```
-
-#### 步骤1：定义您的智能体
-
-在 `agent_deploy/my_first_agent` 中创建您的第一个智能体：
-
-`__init__.py`：创建空的 `__init__.py` 文件。
-
-```shell
-cd agent_deploy/my_first_agent
-touch __init__.py
-```
-
-`agent.py`：定义您的智能体逻辑：
-
-```python
-import logging
-import os
-from aworld.cmd.data_model import BaseAWorldAgent, ChatCompletionRequest
-from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.agents.llm_agent import Agent
-from aworld.core.task import Task
-from aworld.runner import Runners
-
-logger = logging.getLogger(__name__)
-
-class AWorldAgent(BaseAWorldAgent):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-    def name(self):
-        return "My First Agent"
-
-    def description(self):
-        return "A helpful assistant that can answer questions and help with tasks"
-
-    async def run(self, prompt: str = None, request: ChatCompletionRequest = None):
-        # Load LLM configuration from environment variables
-        agent_config = AgentConfig(
-            llm_provider=os.getenv("LLM_PROVIDER", "openai"),
-            llm_model_name=os.getenv("LLM_MODEL_NAME", "gpt-4"),
-            llm_api_key=os.getenv("LLM_API_KEY"),
-            llm_base_url=os.getenv("LLM_BASE_URL"),
-            llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.7"))
-        )
-
-        # Validate required configuration
-        if not agent_config.llm_model_name or not agent_config.llm_api_key:
-            raise ValueError("LLM_MODEL_NAME and LLM_API_KEY must be set!")
-
-        # Optional: Configure MCP tools for enhanced capabilities
-        mcp_config = {
-            "mcpServers": {
-                "amap-mcp": {
-                    "type": "sse",
-                    "url": "https://mcp.example.com/sse?key=YOUR_API_KEY", # Replace Your API Key
-                    "timeout": 30,
-                    "sse_read_timeout": 300
-                }
-            }
-        }
-
-        # Create the agent instance
-        agent = Agent(
-            conf=agent_config,
-            name="My First Agent",
-            system_prompt="""You are a helpful AI assistant. Your goal is to:
-            - Answer questions accurately and helpfully
-            - Provide clear, step-by-step guidance when needed
-            - Be friendly and professional in your responses""",
-            mcp_servers=["amap-mcp"],
-            mcp_config=mcp_config
-        )
-
-        # Extract user input
-        user_input = prompt or (request.messages[-1].content if request else "")
-        
-        # Create and execute task
-        task = Task(
-            input=user_input,
-            agent=agent,
-            conf=TaskConfig(max_steps=5),
-            session_id=getattr(request, 'session_id', None)
-        )
-
-        # Stream the agent's response
-        async for output in Runners.streamed_run_task(task).stream_events():
-            yield output
-```
-
-#### 步骤2：运行智能体
-
-设置环境变量：
-
-```shell
-# 导航回项目根目录
-cd ${agent-project-root-dir}
-
-# 设置您的LLM凭据
-export LLM_MODEL_NAME="gpt-4"
-export LLM_API_KEY="your-api-key-here"
-export LLM_BASE_URL="https://api.openai.com/v1"  # Optional for OpenAI
-```
-
-启动您的智能体：
-```shell
-# 选项1：使用Web UI启动
-aworld web
-# 然后在浏览器中打开 http://localhost:8000
-
-# 选项2：启动REST API（用于集成）
-aworld api
-# 然后访问 http://localhost:8000/docs 查看API文档
-```
-
-成功！您的智能体现在正在运行并准备聊天！
-
----
 <!-- resource section start -->
 <!-- image links -->
 [arxiv-image]: https://img.shields.io/badge/Paper-arXiv-B31B1B?style=for-the-badge&logo=arxiv&logoColor=white
@@ -597,7 +485,7 @@ aworld api
 [twitter-image]: https://img.shields.io/badge/Twitter-Follow%20us-1DA1F2?style=for-the-badge&logo=twitter&logoColor=white
 [wechat-image]: https://img.shields.io/badge/WeChat-Add%20us-green?style=for-the-badge&logo=wechat&logoColor=white
 [tutorial-image]: https://img.shields.io/badge/Tutorial-Get%20Started-FF6B35?style=for-the-badge&logo=book&logoColor=white
-
+[playground-image]: https://img.shields.io/badge/Playground-Try%20Online-9B59B6?style=for-the-badge&logo=book&logoColor=white
 
 <!-- aworld links -->
 [deepwiki-url]: https://deepwiki.com/inclusionAI/AWorld
@@ -605,8 +493,9 @@ aworld api
 [license-url]: https://opensource.org/licenses/MIT
 [twitter-url]: https://x.com/InclusionAI666
 [wechat-url]: https://raw.githubusercontent.com/inclusionAI/AWorld/main/readme_assets/aworld_wechat.png
-[arxiv-url]: https://arxiv.org/abs/2508.20404
+[arxiv-url]: https://arxiv.org/abs/2508.
 [tutorial-url]: https://inclusionai.github.io/AWorld/
+[playground-url]: https://playground.aworldagents.com/
 
 <!-- funreason links -->
 [funreason-code-url]: https://github.com/BingguangHao/FunReason
@@ -630,13 +519,10 @@ aworld api
 [Leaderboard]: https://img.shields.io/badge/Leaderboard-FFE6B7
 [Benchmark]: https://img.shields.io/badge/Benchmark-FFE6B7
 [Cloud-Native]: https://img.shields.io/badge/Cloud--Native-B19CD7
+[Forward]: https://img.shields.io/badge/Forward-4A90E2
+[Backward]: https://img.shields.io/badge/Backward-7B68EE
 [Code]: https://img.shields.io/badge/Code-FF6B6B
 [Paper]: https://img.shields.io/badge/Paper-4ECDC4
-[OSWorld]: https://img.shields.io/badge/OSWorld-E66F51
-[VWA]: https://img.shields.io/badge/VWA-E66F51
-[Xbench]: https://img.shields.io/badge/Xbench-E66F51
-
-
 
 
 <!-- resource section end -->
