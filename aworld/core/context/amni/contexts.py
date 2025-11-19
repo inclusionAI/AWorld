@@ -84,11 +84,11 @@ class ContextManager(BaseModel):
             profile_items = [item for item in rela_user_profiles if item is not None]
         return profile_items
 
-    async def get_task_histories(self, task_input: TaskInput) -> Optional[list[MemoryMessage]]:
+    async def get_task_histories(self, task_input: TaskInput, last_rounds: int = 3) -> Optional[list[MemoryMessage]]:
         if not task_input.agent_id:
             return []
         # get cur session history
-        return self._memory.get_last_n(6, filters={
+        return self._memory.get_last_n(last_rounds, filters={
             "user_id": task_input.user_id,
             "session_id": task_input.session_id,
             "agent_id": task_input.agent_id
