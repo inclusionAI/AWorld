@@ -11,6 +11,8 @@ from aworld.core.agent.swarm import Swarm
 from aworld.logs.util import logger
 from {parser_module} import {parser_name}
 
+{agent_import_str}
+{tool_aggregate_func_import_str}
 from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 
 
@@ -28,20 +30,29 @@ class VerlAgentLoop(AworldAgentLoop):
                     "request_id": uuid.uuid4().hex,
                     "tool_parser": "hermes"
                 }},
-                {kv_parameters}
+                {model_kv_parameters}
             ),
         )
 
         logger.info(f"agent config: ", conf)
         mcp_config = {mcp_config}
-        return Agent(
+        return {real_agent}(
             conf=conf,
             name="{agent_name}",
             desc="{agent_desc}",
-            system_prompt="{system_prompt}",
+            system_prompt='''{system_prompt}''',
+            tool_names={tool_names},
+            agent_names={agent_names},
+            wait_tool_result={wait_tool_result},
+            feedback_tool_result={feedback_tool_result},
+            black_tool_actions={black_tool_actions},
+            skill_configs={skill_configs},
+            event_handler_name={event_handler_name},
+            tools_aggregate_func={tools_aggregate_func},
             mcp_config=mcp_config,
             mcp_servers=list(server_name for server_name in mcp_config.get("mcpServers", {{}}).keys()),
-            model_output_parser={parser_name}()
+            model_output_parser={parser_name}(),
+            {extend_params}
         )
 
 """

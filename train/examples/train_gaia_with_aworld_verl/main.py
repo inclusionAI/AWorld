@@ -38,19 +38,20 @@ def main():
         top_k=80
     )
     agent = Agent(
-        name="demo_agent",
-        desc="demo_agent",
-        system_prompt="Demo agent",
+        name="gaia_agent",
+        desc="gaia_agent",
+        system_prompt="Gaia agent",
         mcp_config=mcp_config,
         mcp_servers=["gaia_server"],
         conf=agent_config
     )
 
     # dataset module contains train and test dataset
-    # train_dataset = load_dataset("", split="train")
-    # test_dataset = load_dataset("", split="test")
-    train_dataset = '/AWorld/verl/data/simple_dataset.parquet'
-    test_dataset = '/AWorld/verl/data/simple_dataset.parquet'
+    train_dataset = f'train/examples/train_gaia_with_aworld_verl/gaia_data/sample_train.parquet'
+    test_dataset = f'train/examples/train_gaia_with_aworld_verl/gaia_data/sample_test.parquet'
+    abs_train_dataset = os.path.abspath(train_dataset)
+    abs_test_dataset = os.path.abspath(test_dataset)
+
 
     # reward module contains reward function or reward function code file path
     reward_func = gaia_reward_func
@@ -58,8 +59,8 @@ def main():
     trainer = AgentTrainer(agent=agent,
                            config=custom_train_config,
                            reward_func=reward_func,
-                           train_dataset=train_dataset,
-                           test_dataset=test_dataset)
+                           train_dataset=abs_train_dataset,
+                           test_dataset=abs_test_dataset)
     trainer.train()
 
 
