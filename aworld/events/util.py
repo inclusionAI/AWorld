@@ -127,6 +127,45 @@ async def send_message_with_future(msg: Message) -> MessageFuture:
             except Exception as e:
                 print(f"Error: {e}")
     """
+    # Check if this is a MemoryEventMessage and if DIRECT mode is enabled
+    from aworld.core.event.base import MemoryEventMessage
+    from aworld.config.conf import HistoryWriteStrategy
+    
+    if isinstance(msg, MemoryEventMessage) and hasattr(msg, 'agent') and msg.agent:
+        # Get history write strategy from agent's memory config
+        write_strategy = HistoryWriteStrategy.EVENT_DRIVEN
+        agent = msg.agent
+        
+        # Try to get from memory_config attribute first
+        if hasattr(agent, 'memory_config') and hasattr(agent.memory_config, 'history_write_strategy'):
+            write_strategy = agent.memory_config.history_write_strategy
+        # Fallback to conf.memory_config
+        elif hasattr(agent, 'conf') and hasattr(agent.conf, 'memory_config') and hasattr(agent.conf.memory_config, 'history_write_strategy'):
+            write_strategy = agent.conf.memory_config.history_write_strategy
+        
+        # If direct call mode is enabled, call handler directly without going through message system
+        if write_strategy == HistoryWriteStrategy.DIRECT:
+            from aworld.runners.handler.memory import DefaultMemoryHandler
+            from aworld.runners.state_manager import RunNode, RunNodeStatus
+            context = msg.context if hasattr(msg, 'context') and msg.context else None
+            if context:
+                await DefaultMemoryHandler.handle_memory_message_directly(msg, context)
+                # Return a completed future for DIRECT mode
+                from aworld.logs.util import logger
+                logger.debug(f"Handled memory message directly (DIRECT mode) for message {msg.id}")
+                # Create a dummy future that's already completed with a success RunNode
+                future = MessageFuture(msg.id)
+                # Create a simple RunNode to represent successful direct handling
+                success_node = RunNode(
+                    node_id=msg.id,
+                    status=RunNodeStatus.SUCCESS,
+                    results=[],
+                    msg_id=msg.id
+                )
+                # Mark as completed immediately
+                future.future.set_result(success_node)
+                return future
+    
     msg_id = await _send_message(msg)
     from aworld.logs.util import logger
     logger.debug(f"Created MessageFuture for message {msg_id}")

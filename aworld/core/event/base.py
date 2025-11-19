@@ -101,7 +101,7 @@ class Message(Generic[DataType]):
 
     def is_error(self):
         return self.topic == TopicType.ERROR
-    
+
     def debug_repr(self) -> str:
         """Return a full representation including payload for debugging."""
         return (

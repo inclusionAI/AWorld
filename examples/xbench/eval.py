@@ -3,9 +3,7 @@ load_dotenv()
 
 from examples.xbench.agents.swarm import build_xbench_swarm
 
-from aworld.core.agent.swarm import Swarm
 from aworld.core.context.base import Context
-from train.examples.train_gaia_with_aworld_verl.custom_agent_loop import build_agents
 
 # init env
 load_dotenv()
@@ -88,11 +86,6 @@ class AmniContextEvaluatable(EvalTarget):
             ),
             timeout=60 * 60
         )
-
-    async def build_common_gaia_task(self, user_input: str, session_id, task_id):
-        swarm = Swarm(await build_agents())
-        return Task(id=task_id, session_id=session_id, input=user_input, swarm=swarm, timeout=1200)
-
 
     async def predict(self, index: int, o_input: EvalDataCase[dict]) -> dict:
         batch_id = o_input.run_id

@@ -1,12 +1,16 @@
 import json
-import logging
 import time
+import traceback
 from datetime import datetime
 from typing import Any, Dict
 
+from aworld.config import AgentMemoryConfig
 from aworld.core.agent.base import BaseAgent
 from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC_VARIABLES
+# from ... import ApplicationContext
 from aworld.logs.util import digest_logger, prompt_logger
+from aworld.memory.models import MemorySummary, MemoryItem
+from aworld.models.utils import num_tokens_from_messages
 from aworld.models.utils import num_tokens_from_string, ModelUtils
 
 # Log display configuration constants
@@ -779,3 +783,80 @@ class PromptLogger:
             current_pos += 1
 
         return grid
+
+    @staticmethod
+    def log_summary_memory(summary_memory: MemorySummary, to_be_summary_items: list[MemoryItem],
+                           trigger_reason: str, agent_memory_config: AgentMemoryConfig):
+        """
+        Log context length information for summary memory
+
+        Args:
+            summary_memory: Generated summary memory object
+            to_be_summary_items: List of message items to be summarized
+            trigger_reason: Reason for triggering summary
+            agent_memory_config: Agent memory configuration
+        """
+        try:
+            # Calculate token count of messages to be summarized
+            summary_items_tokens = num_tokens_from_messages([item.to_openai_message() for item in to_be_summary_items])
+
+            # Calculate token count of summary content
+            summary_content_tokens = num_tokens_from_messages([{
+                "role": "assistant",
+                "content": summary_memory.content
+            }])
+
+            # Calculate compression ratio
+            compression_ratio = summary_items_tokens / summary_content_tokens if summary_content_tokens > 0 else 0
+
+            # Build log box content
+            log_lines = [
+                "╭────────────────────────────────────────────────────────────────────────────────────────────────────╮",
+                "│                                      🧠 MEMORY SUMMARY CONTEXT ANALYSIS                            │",
+                "├────────────────────────────────────────────────────────────────────────────────────────────────────┤",
+                f"│ 🎯 Trigger Reason: {trigger_reason:<70} │",
+                f"│ 📊 Original Messages Count: {len(to_be_summary_items):<65} │",
+                f"│ 🔢 Original Messages Tokens: {summary_items_tokens:<64} │",
+                f"│ 📝 Summary Content Tokens: {summary_content_tokens:<66} │",
+                f"│ 📈 Compression Ratio: {compression_ratio:.2f}x{' ' * (65 - len(f'{compression_ratio:.2f}x'))} │",
+                f"│ 🆔 Summary Memory ID: {str(summary_memory.id):<68} │",
+                f"│ 📋 Summary Item IDs: {str(summary_memory.summary_item_ids)[:60]:<60} │",
+                "├────────────────────────────────────────────────────────────────────────────────────────────────────┤",
+                "│ 📄 Summary Content Preview:                                                                        │"
+            ]
+
+            # Add summary content preview, maximum 70 characters per line
+            summary_preview = summary_memory.content[:200]
+            preview_lines = [summary_preview[i:i+70] for i in range(0, len(summary_preview), 70)]
+            for line in preview_lines:
+                log_lines.append(f"│ {line:<70} │")
+
+            # Add warning information (if any)
+            if compression_ratio < 2.0:
+                log_lines.append("├────────────────────────────────────────────────────────────────────────────────────────────────────┤")
+                log_lines.append(f"│ ⚠️  WARNING: Low compression ratio ({compression_ratio:.2f}x) - summary may not be effective enough{' ' * 20} │")
+
+            # Add threshold reminder (if any)
+            if summary_items_tokens >= agent_memory_config.summary_context_length * 0.8:
+                log_lines.append("├────────────────────────────────────────────────────────────────────────────────────────────────────┤")
+                log_lines.append(f"│ ℹ️  INFO: Original messages tokens ({summary_items_tokens}) approaching threshold ({agent_memory_config.summary_context_length}){' ' * 15} │")
+
+            # Add bottom border
+            log_lines.append("╰────────────────────────────────────────────────────────────────────────────────────────────────────╯")
+
+            # Output log
+            for line in log_lines:
+                prompt_logger.info(line)
+
+        except Exception as e:
+            # Error information also uses box style
+            error_lines = [
+                "╭────────────────────────────────────────────────────────────────────────────────────────────────────╮",
+                "│                                      ❌ MEMORY SUMMARY LOGGING ERROR                              │",
+                "├────────────────────────────────────────────────────────────────────────────────────────────────────┤",
+                f"│ Error: {str(e):<80} │",
+                f"│ Details: {traceback.format_exc()[:80]:<78} │",
+                "╰────────────────────────────────────────────────────────────────────────────────────────────────────╯"
+            ]
+            for line in error_lines:
+                prompt_logger.error(line)

@@ -4,21 +4,22 @@ import json
 import traceback
 import uuid
 from collections import OrderedDict
+from datetime import datetime
 from typing import Dict, Any, List, Callable, Optional
 
 import aworld.trace as trace
+from aworld.config.conf import TaskConfig, TaskRunMode
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
-from aworld.core.exceptions import AWorldRuntimeException
-from aworld.events import eventbus
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
     MemoryEventType as MemoryType, MemoryEventMessage, ChunkMessage
+from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.model_output_parser import ModelOutputParser
 from aworld.core.tool.tool_desc import get_tool_desc
-from aworld.config.conf import TaskConfig, TaskRunMode
+from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color
@@ -31,6 +32,7 @@ from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage
 from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
 from aworld.runners.hook.hooks import HookPoint
+from aworld.runners.hook.utils import run_hooks
 from aworld.sandbox.base import Sandbox
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
@@ -503,12 +505,16 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         serializable_messages = to_serializable(messages)
         message.context.context_info["llm_input"] = serializable_messages
         llm_response = None
+        agent_result = None
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
+        # Record LLM call start time (used to set MemoryMessage's start_time)
+        llm_call_start_time = datetime.now().isoformat()
+        message.context.context_info["llm_call_start_time"] = llm_call_start_time
 
         try:
             events = []
-            async for event in self.run_hooks(message.context, HookPoint.PRE_LLM_CALL):
+            async for event in run_hooks(message.context, HookPoint.PRE_LLM_CALL, hook_from=self.id(), payload=observation):
                 events.append(event)
         except Exception as e:
             logger.error(f"{self.id()} failed to run PRE_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
@@ -535,12 +541,18 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         )
                         await send_message(output_message)
                 else:
+                    agent_result = await self.model_output_parser.parse(llm_response,
+                                                                        agent_id=self.id(),
+                                                                        use_tools_in_prompt=self.use_tools_in_prompt)
+                    # skip summary on final round
                     await self._add_message_to_memory(payload=llm_response,
                                                       message_type=MemoryType.AI,
-                                                      context=message.context)
+                                                      context=message.context,
+                                                      skip_summary=self.is_agent_finished(llm_response, agent_result))
+
                     try:
                         events = []
-                        async for event in self.run_hooks(message.context, HookPoint.POST_LLM_CALL, payload=llm_response):
+                        async for event in run_hooks(message.context, HookPoint.POST_LLM_CALL, hook_from=self.id(), payload=llm_response):
                             events.append(event)
                     except Exception as e:
                         logger.error(
@@ -552,14 +564,16 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
 
 
-        agent_result = await self.model_output_parser.parse(llm_response,
-                                                            agent_id=self.id(),
-                                                            use_tools_in_prompt=self.use_tools_in_prompt)
         logger.info(f"agent_result: {agent_result}")
 
         if self.is_agent_finished(llm_response, agent_result):
             policy_result = agent_result.actions
         else:
+            # Record all tool call start times (used to set MemoryMessage's start_time)
+            for act in agent_result.actions:
+                tool_call_start_time = datetime.now().isoformat()
+                message.context.context_info[f"tool_call_start_time_{act.tool_call_id}"] = tool_call_start_time
+
             if not self.wait_tool_result:
                 policy_result = agent_result.actions
             else:
@@ -600,8 +614,18 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                              sub_task=True,
                                              outputs=message.context.outputs,
                                              task_group_id=message.context.get_task().group_id or uuid.uuid4().hex)
-            if not act_result.success:
-                logger.warning(f"Agent {self.id()} _execute_tool failed with exception: {act_result.msg}",
+
+            # tool hooks
+            try:
+                events = []
+                async for event in run_hooks(context=message.context, hook_point=HookPoint.POST_TOOL_CALL, hook_from=self.id(), payload=act_result):
+                    events.append(event)
+            except Exception:
+                logger.debug(traceback.format_exc())
+
+            if not act_result or not act_result.success:
+                error_msg = act_result.msg if act_result else "Unknown error"
+                logger.warning(f"Agent {self.id()} _execute_tool failed with exception: {error_msg}",
                                color=Color.red)
                 continue
             act_res = ActionResult(tool_call_id=act.tool_call_id, tool_name=act.tool_name, content=act_result.answer)
@@ -753,36 +777,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             message.context.context_info["llm_output"] = llm_response
         return llm_response
 
-    async def run_hooks(self, context: Context, hook_point: str, **kwargs):
-        """Execute hooks and break by exception"""
-        from aworld.runners.hook.hook_factory import HookFactory
-        from aworld.core.event.base import Message
-
-        # Get all hooks for the specified hook point
-        all_hooks = HookFactory.hooks(hook_point)
-        hooks = all_hooks.get(hook_point, [])
-
-        for hook in hooks:
-            try:
-                # Create a temporary Message object to pass to the hook
-                message = Message(
-                    category="agent_hook",
-                    payload=kwargs.get("payload", {}),
-                    sender=self.id(),
-                    session_id=context.session_id if hasattr(
-                        context, 'session_id') else None,
-                    headers={"context": context}
-                )
-
-                # Execute hook
-                msg = await hook.exec(message, context)
-                if msg:
-                    logger.debug(f"Hook {hook.point()} executed successfully")
-                    yield msg
-            except Exception as e:
-                logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
-                raise e
-
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
         from aworld.core.context.amni.prompt.prompt_ext import ContextPromptTemplate
@@ -795,13 +789,15 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             system_prompt_template = StringPromptTemplate.from_template(self.system_prompt)
             return system_prompt_template.format(context=context, task=content, tool_list=tool_list)
 
-    async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context):
+    async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context, skip_summary: bool = False):
         memory_msg = MemoryEventMessage(
             payload=payload,
             agent=self,
             memory_event_type=message_type,
-            headers={"context": context}
+            headers={"context": context, "skip_summary": skip_summary}
         )
+
+        # Send through message system (DIRECT mode handling is now in send_message_with_future)
         try:
             future = await send_message_with_future(memory_msg)
             results = await future.wait()

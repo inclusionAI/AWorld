@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import List, Dict
+from typing import List, Dict, Optional
+import uuid
 
 from aworld.config import RunConfig, EngineName, ConfigDict, TaskConfig
 from aworld.core.agent.swarm import GraphBuildType
@@ -145,10 +146,14 @@ async def long_wait_message_state(message: Message):
     res_node = await state_mng.wait_for_node_completion(node_id=msg_id)
     if res_node.status == RunNodeStatus.SUCCESS or res_node.results:
         # get result and status from node
+        if not res_node or not res_node.results:
+            return None
         handle_result: HandleResult = res_node.results[0]
-        logger.info(f"long_wait_message_state|origin result: {res_node.results}")
+        logger.info(f"long_wait_message_state|origin result: {handle_result}")
         return handle_result.result.payload
     else:
         logger.debug(f"long_wait_message_state|failed with node: {res_node}.")
         raise ValueError(f"long_wait_message_state|failed with node: {res_node}")
+
+
 

@@ -19,7 +19,7 @@ def build_xbench_swarm():
         system_prompt=orchestrator_agent_system_prompt,
         mcp_servers=orchestrator_mcp_servers,
         mcp_config=MCP_CONFIG
-    )   
+    )
 
     web_agent = WebAgent(
         name="web_agent",

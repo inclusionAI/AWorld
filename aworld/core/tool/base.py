@@ -2,25 +2,27 @@
 # Copyright (c) 2025 inclusionAI.
 
 import abc
+import time
 import traceback
 from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
-import asyncio
 
 from pydantic import BaseModel
 
 from aworld.config.conf import ToolConfig, load_config, ConfigDict
-from aworld.events import eventbus
-from aworld.core.tool.action import ToolAction
-from aworld.core.tool.action_factory import ActionFactory
 from aworld.core.common import Observation, ActionModel, ActionResult, CallbackItem, CallbackResult, CallbackActionType
 from aworld.core.context.base import Context
-from aworld.core.event.base import Message, ToolMessage, AgentMessage, Constants, MemoryEventMessage, MemoryEventType
+from aworld.core.event.base import Message, AgentMessage, Constants, MemoryEventMessage, MemoryEventType
 from aworld.core.factory import Factory
+from aworld.core.tool.action import ToolAction
+from aworld.core.tool.action_factory import ActionFactory
+from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.util import logger
 from aworld.models.model_response import ToolCall
 from aworld.output import ToolResultOutput
 from aworld.output.base import StepOutput
+from aworld.runners.hook.hooks import HookPoint
+from aworld.runners.hook.utils import run_hooks
 from aworld.utils.common import convert_to_snake, sync_exec
 
 AgentInput = TypeVar("AgentInput")
@@ -377,20 +379,23 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             session_id=context.session_id if context else "",
             headers={"context": context}
         ))
-        await self._exec_tool_callback(step_res, action,
-                                       Message(
-                                           category=Constants.TOOL_CALLBACK,
-                                           payload=CallbackItem(
-                                               data=step_res,
-                                               actions=action,
-                                               node_id=input_message.id
+        try:
+            await self._exec_tool_callback(step_res, action,
+                                           Message(
+                                               category=Constants.TOOL_CALLBACK,
+                                               payload=CallbackItem(
+                                                   data=step_res,
+                                                   actions=action,
+                                                   node_id=input_message.id
+                                               ),
+                                               sender=self.name(),
+                                               receiver=action[0].agent_name,
+                                               session_id=context.session_id,
+                                               headers={"context": context}
                                            ),
-                                           sender=self.name(),
-                                           receiver=action[0].agent_name,
-                                           session_id=context.session_id,
-                                           headers={"context": context}
-                                       ),
-                                       **kwargs)
+                                           **kwargs)
+        except Exception as e:
+            logger.warning(f"AsyncTool {self.name()} exec tool callback failed: {traceback.format_exc()}")
 
     async def step(self, message: Message, **kwargs) -> Message:
         final_res = None
@@ -445,66 +450,65 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         else:
             feedback_tool_result = True
         if feedback_tool_result:
-            return AgentMessage(payload=step_res,
+            result = AgentMessage(payload=step_res,
                                 caller=action[0].agent_name,
                                 sender=self.name(),
                                 receiver=action[0].agent_name,
                                 session_id=context.session_id,
                                 headers={"context": context})
         else:
-            return AgentMessage(payload=step_res,
+            result = AgentMessage(payload=step_res,
                                 sender=action[0].agent_name,
                                 session_id=context.session_id,
                                 headers={"context": context})
+
+        # tool hooks
+        try:
+            events = []
+            async for event in run_hooks(context=message.context, hook_point=HookPoint.POST_TOOL_CALL, hook_from=result.caller, payload=step_res):
+                events.append(event)
+        except Exception:
+            logger.debug(traceback.format_exc())
+        return result
 
     async def _exec_tool_callback(self, step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                                   action: List[ActionModel],
                                   message: Message,
                                   **kwargs):
+        from aworld.runners.state_manager import RunNodeStatus
+
         logger.info(f"send callback message: {message}")
-        await send_message(message)
+        # Send via message system by default
+        try:
+            future = await send_message_with_future(message)
+            results = await future.wait(timeout=300)
+            if not results:
+                logger.warning(f"context write task failed: {message}")
+        except Exception as e:
+            logger.warn(f"context write task failed: {traceback.format_exc()}")
 
-        from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
-        state_mng = RuntimeStateManager.instance()
-        msg_id = message.id
-        msg_node = state_mng.get_node(msg_id)
-        state_mng.create_node(
-            node_id=msg_id,
-            busi_type=RunNodeBusiType.from_message_category(
-                Constants.TOOL_CALLBACK),
-            busi_id=message.receiver or "",
-            session_id=message.session_id,
-            task_id=message.task_id,
-            msg_id=msg_id,
-            msg_from=message.sender)
-        res_node = await state_mng.wait_for_node_completion(msg_id)
-        if res_node.status == RunNodeStatus.SUCCESS or res_node.results:
-            tool_act_results = step_res[0].action_result
-            callback_act_results = res_node.results
-            if not callback_act_results:
-                logger.warn(
-                    f"tool {self.name()} callback finished with empty node result.")
-                return
-            if len(tool_act_results) != len(callback_act_results):
-                logger.warn(
-                    "tool action result and callback action result length not match.")
-                return
-            for idx, res in enumerate(callback_act_results):
-                if res.status == RunNodeStatus.SUCCESS:
-                    callback_res = res.result.payload
-                    if isinstance(callback_res, CallbackResult):
-                        if callback_res.callback_action_type == CallbackActionType.OVERRIDE:
-                            tool_act_results[idx].content = callback_res.result_data
-                else:
-                    logger.warn(
-                        f"tool {self.name()} callback finished with node result: {res}.")
-                    continue
-
-            return
-        else:
+        tool_act_results = step_res[0].action_result
+        callback_act_results = results.results
+        if not callback_act_results:
             logger.warn(
-                f"tool {self.name()} callback failed with node: {res_node}.")
+                f"tool {self.name()} callback finished with empty node result.")
             return
+        if len(tool_act_results) != len(callback_act_results):
+            logger.warn(
+                "tool action result and callback action result length not match.")
+            return
+        for idx, res in enumerate(callback_act_results):
+            if res.status == RunNodeStatus.SUCCESS:
+                callback_res = res.result.payload
+                if isinstance(callback_res, CallbackResult):
+                    if callback_res.callback_action_type == CallbackActionType.OVERRIDE:
+                        tool_act_results[idx].content = callback_res.result_data
+            else:
+                logger.warn(
+                    f"tool {self.name()} callback finished with node result: {res}.")
+                continue
+
+        return
 
     async def _add_tool_results_to_memory(self,
                                           step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
@@ -533,6 +537,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                     session_id=context.session_id if context else "",
                     headers={"context": context}
                 )
+
+                # Send via message system (DIRECT mode handling is now in send_message_with_future)
                 try:
                     future = await send_message_with_future(memory_msg)
                     results = await future.wait()

@@ -63,7 +63,7 @@ def extract_artifacts_from_toolresult(tool_result: ActionResult) -> Optional[lis
                                 })
             artifacts.append(artifact)
     except Exception as e:
-        logger.warning(f"extract_artifacts_from_toolresult, Exception is {e}\n,  toolresult is {tool_result}\n trace is {traceback.format_exc()}")
+        logger.error(f"extract_artifacts_from_toolresult, Exception is {e}\n,  toolresult is {tool_result}\n trace is {traceback.format_exc()}")
     return artifacts
 
 def extract_artifacts_from_toolresult_metadata(metadata: Dict[str, Any]) -> Optional[list[Artifact]]:
