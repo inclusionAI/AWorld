@@ -6,9 +6,9 @@ import traceback
 
 from aworld.logs.util import logger
 
-# 记录已使用的 IP 地址
+# Record used IP addresses
 _used_proxies = set()
-# 最大重试次数，避免无限循环
+# Maximum retry count to avoid infinite loop
 _MAX_RETRIES = 100
 
 async def get_proxy_server():
@@ -22,12 +22,12 @@ async def get_proxy_server():
             real_out_ip = p['real_out_ip']
             proxy = f"{p['proxy_public_ip']}:{p['proxy_port']}"
             
-            # 检查是否重复（按 real_out_ip 过滤）
+            # Check for duplicates (filter by real_out_ip)
             if real_out_ip in _used_proxies:
                 logger.warning(f"Duplicate real_out_ip detected: {real_out_ip} (proxy: {proxy}), retrying... (attempt {attempt + 1}/{_MAX_RETRIES})")
                 continue
             
-            # 记录新 IP（按 real_out_ip 记录）
+            # Record new IP (record by real_out_ip)
             _used_proxies.add(real_out_ip)
             logger.info(f"Got new proxy: {proxy} (real_out_ip: {real_out_ip})")
             return proxy
@@ -35,6 +35,6 @@ async def get_proxy_server():
             logger.error(f"Get proxy server error: {traceback.format_exc()}")
             return None
     
-    # 如果达到最大重试次数仍未获得新 IP
+    # If maximum retry count reached without getting a new IP
     logger.error(f"Failed to get a new proxy after {_MAX_RETRIES} attempts, all proxies seem to be duplicates")
     return None

@@ -82,7 +82,7 @@ class DefaultMemoryHandler(DefaultHandler):
                 if llm_response and hasattr(llm_response, 'usage') and llm_response.usage:
                     await self._update_last_message_usage(agent, llm_response, context)
 
-                # 从 headers 获取 skip_summary 参数
+                # Get skip_summary parameter from headers
                 skip_summary = message.headers.get("skip_summary", False)
                 await self._add_llm_response_to_memory(agent, llm_response, context, history_messages, skip_summary=skip_summary)
 
@@ -151,7 +151,7 @@ class DefaultMemoryHandler(DefaultHandler):
                 agent_name=agent.name(),
             )
         )
-        # 记录消息结束时间
+        # Record message end time
         system_message.set_end_time()
         await self.memory.add(system_message, agent_memory_config=agent.memory_config)
 
@@ -178,7 +178,7 @@ class DefaultMemoryHandler(DefaultHandler):
 
     async def _add_llm_response_to_memory(self, agent: Agent, llm_response, context: Context, history_messages: list, skip_summary: bool = False, **kwargs):
         """Add LLM response to memory"""
-        # 从 context 获取开始时间（如果存在）
+        # Get start time from context (if exists)
         start_time = context.context_info.get("llm_call_start_time")
         
         ai_message = MemoryAIMessage(
@@ -196,17 +196,17 @@ class DefaultMemoryHandler(DefaultHandler):
             )
         )
         
-        # 如果 context 中有开始时间，更新它
+        # If start time exists in context, update it
         if start_time:
             ai_message.metadata['start_time'] = start_time
-        # 记录消息结束时间
+        # Record message end time
         ai_message.set_end_time()
         
         agent_memory_config = agent.memory_config
         if self._is_amni_context(context):
             agent_memory_config = context.get_config().get_agent_context_config(agent.id())
 
-        # 如果 skip_summary 为 True，禁用 summary
+        # If skip_summary is True, disable summary
         if skip_summary and agent_memory_config:
             agent_memory_config.enable_summary = False
         await self.memory.add(ai_message, agent_memory_config=agent_memory_config)
@@ -236,7 +236,7 @@ class DefaultMemoryHandler(DefaultHandler):
             ),
             memory_type=memory_type
         )
-        # 记录消息结束时间
+        # Record message end time
         human_message.set_end_time()
         await self.memory.add(human_message, agent_memory_config=agent_memory_config)
 
@@ -280,7 +280,7 @@ class DefaultMemoryHandler(DefaultHandler):
         if isinstance(tool_result, ActionResult):
             tool_use_summary = tool_result.metadata.get("tool_use_summary")
         
-        # 从 context 获取开始时间（如果存在）
+        # Get start time from context (if exists)
         start_time = context.context_info.get(f"tool_call_start_time_{tool_call_id}")
         
         tool_message = MemoryToolMessage(
@@ -298,11 +298,11 @@ class DefaultMemoryHandler(DefaultHandler):
             )
         )
         
-        # 如果 context 中有开始时间，更新它
+        # If start time exists in context, update it
         if start_time:
             tool_message.metadata['start_time'] = start_time
         
-        # 记录消息结束时间
+        # Record message end time
         tool_message.set_end_time()
         
         await memory.add(tool_message, agent_memory_config=agent.memory_config)
@@ -313,17 +313,17 @@ class DefaultMemoryHandler(DefaultHandler):
 
     @staticmethod
     async def handle_memory_message_directly(memory_msg: MemoryEventMessage, context: Context):
-        """直接处理内存消息，不通过消息系统
+        """Handle memory message directly without going through message system
         
         Args:
-            memory_msg: 内存事件消息
-            context: 上下文对象
+            memory_msg: Memory event message
+            context: Context object
         """
         from aworld.runners.state_manager import RunNodeBusiType
         from aworld.runners.utils import managed_runtime_node
         
         try:
-            # 创建一个简单的 runner 对象，只需要有 task 属性
+            # Create a simple runner object, only needs task attribute
             class SimpleRunner:
                 def __init__(self, task):
                     self.task = task
@@ -333,15 +333,15 @@ class DefaultMemoryHandler(DefaultHandler):
             simple_runner = SimpleRunner(task)
             handler = DefaultMemoryHandler(simple_runner)
             start_time = time.time()
-            # 使用 managed_runtime_node 创建并管理 MEMORY 类型的 node
+            # Use managed_runtime_node to create and manage MEMORY type node
             async with managed_runtime_node(
                 context=context,
                 busi_type=RunNodeBusiType.MEMORY,
                 busi_id=memory_msg.receiver or ""
             ):
-                # 直接调用 _do_handle 方法
+                # Directly call _do_handle method
                 async for _ in handler._do_handle(memory_msg):
-                    pass  # _do_handle 是异步生成器，需要消费
+                    pass  # _do_handle is an async generator, needs to be consumed
             logger.info(f"Direct memory call completed in {1000*(time.time() - start_time):.2f}ms {memory_msg}")
         except Exception as e:
             logger.warn(f"Direct memory call failed: {traceback.format_exc()}")

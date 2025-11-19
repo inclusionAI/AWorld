@@ -98,12 +98,10 @@ class MemoryItem(BaseModel):
 
     @property
     def start_time(self) -> Optional[str]:
-        """获取消息开始时间"""
         return self.metadata.get('start_time')
 
     @property
     def end_time(self) -> Optional[str]:
-        """获取消息结束时间"""
         return self.metadata.get('end_time')
 
     def set_start_time(self, start_time: str = None):

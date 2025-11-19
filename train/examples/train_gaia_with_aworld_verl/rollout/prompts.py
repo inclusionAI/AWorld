@@ -1,3 +1,9 @@
+import os
+
+from aworld.logs.util import logger
+
+GAIA_SYSTEM_PROMPT = os.getenv("GAIA_SYSTEM_PROMPT")
+logger.info("GAIA_SYSTEM_PROMPT", GAIA_SYSTEM_PROMPT)
 
 episode_memory_summary_rule="""
 1. Identify major milestones, subgoal completions, and strategic decisions

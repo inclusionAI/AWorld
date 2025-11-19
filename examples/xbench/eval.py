@@ -1,12 +1,12 @@
 from dotenv import load_dotenv
 load_dotenv()
 
-from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent, build_mcp_config
-
 from examples.xbench.agents.swarm import build_xbench_swarm
 
-from aworld.core.agent.swarm import Swarm
 from aworld.core.context.base import Context
+
+# init env
+load_dotenv()
 
 import asyncio
 import logging
@@ -87,27 +87,18 @@ class AmniContextEvaluatable(EvalTarget):
             timeout=60 * 60
         )
 
-    async def build_common_gaia_task(self, user_input: str, session_id, task_id):
-        swarm = Swarm(build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
-                                       llm_base_url=os.getenv("LLM_BASE_URL"),
-                                       llm_api_key=os.getenv("LLM_API_KEY"),
-                                       mcp_config=await build_mcp_config()))
-        return Task(id=task_id, session_id=session_id, input=user_input, swarm=swarm, timeout=1200)
-
-
     async def predict(self, index: int, o_input: EvalDataCase[dict]) -> dict:
         batch_id = o_input.run_id
         input = o_input.case_data
         session_id = f"{batch_id}_session#{input['id']}"
         task_id = f"{batch_id}_task#{input['id']}"
 
-        # task = await self.build_task(input['prompt'], session_id=session_id, task_id=task_id)
-        task = await self.build_common_gaia_task(user_input=input['prompt'], session_id=session_id, task_id=task_id)
+        task = await self.build_task(input['prompt'], session_id=session_id, task_id=task_id)
         try:
             result = await Runners.run_task(task=task)
             os.makedirs(f"trajectory/{batch_id}", exist_ok=True)
             with open(f"trajectory/{batch_id}/traj_{index}.json", "a") as f:
-                f.write(str(result[task_id].trajectory))
+                f.write(str(result[task_id].trajectory[-1]))
             os.makedirs(f"results/{batch_id}", exist_ok=True)
             cur_time = datetime.now().strftime('%Y%m%d%H%M%S')
             with open(f"results/{batch_id}/{task_id}_{cur_time}_{o_input.eval_case_id}.txt", "w") as f:
@@ -170,14 +161,8 @@ async def evaluate():
             if not case_result.score_rows or not case_result.score_rows.get('AnswerAccuracyLLMScorer'):
                 continue
             answer_acc = case_result.score_rows.get('AnswerAccuracyLLMScorer').metric_results.get('answer_accuracy')
-            time_cost_scorer = case_result.score_rows.get('TimeCostScorer')
-            cost_time = time_cost_scorer.metric_results.get('predict_time_cost_ms') if time_cost_scorer and time_cost_scorer.metric_results else None
-            
-            # 处理可能为 None 的情况
-            answer_status = answer_acc.get('eval_status') if answer_acc else 'N/A'
-            cost_time_value = int(cost_time.get('value')/1000) if cost_time and cost_time.get('value') else 0
-            
-            f.write(f"{case_result.eval_case_id}|{case_result.input.case_data.get('id')}|{answer_status}|{cost_time_value}\n")
+            cost_time = case_result.score_rows.get('TimeCostScorer').metric_results.get('predict_time_cost_ms')
+            f.write(f"{case_result.eval_case_id}|{case_result.input.case_data.get('id')}|{answer_acc.get('eval_status')}|{int(cost_time.get('value')/1000)}\n")
 
 
 if __name__ == '__main__':

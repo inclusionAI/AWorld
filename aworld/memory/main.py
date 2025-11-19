@@ -612,9 +612,9 @@ class AworldMemory(Memory):
         existed_summary_items = [item for item in agent_task_total_message if item.memory_type == "summary"]
         user_task_items = [item for item in agent_task_total_message if item.memory_type == "init"]
 
-        # 检查是否有配置的 summary_prompts
+        # Check if summary_prompts are configured
         if agent_memory_config.summary_prompts and len(agent_memory_config.summary_prompts) > 0:
-            # 并行调用 summary_prompts 数组，为每种类型生成摘要
+            # Call summary_prompts array in parallel to generate summaries for each type
             tasks = [
                 self._generate_typed_summary(
                     user_task_items, 
@@ -628,10 +628,10 @@ class AworldMemory(Memory):
                 for summary_prompt_config in agent_memory_config.summary_prompts
             ]
             summary_contents = await asyncio.gather(*tasks)
-            # 过滤掉 None 的结果
+            # Filter out None results
             all_summary_contents = [content for content in summary_contents if content]
             
-            # 拼接所有摘要内容
+            # Concatenate all summary contents
             if all_summary_contents:
                 combined_summary = "\n\n".join(all_summary_contents)
                 logger.debug(f"🧠 [MEMORY:short-term] [Summary:Combined] combined_summary: {combined_summary}")
@@ -644,7 +644,7 @@ class AworldMemory(Memory):
                     user_id=memory_item.user_id
                 )
 
-                # 创建组合摘要记忆
+                # Create combined summary memory
                 summary_memory = MemorySummary(
                     item_ids=[item.id for item in to_be_summary_items],
                     summary=combined_summary,
@@ -652,21 +652,21 @@ class AworldMemory(Memory):
                     role=getattr(agent_memory_config, 'summary_role', 'assistant'),
                     created_at=summary_created_time,
                 )
-                # 设置 start_time 和 end_time
+                # Set start_time and end_time
                 summary_memory.set_start_time(start_time)
                 summary_memory.set_end_time(datetime.now().isoformat())
 
-                # 添加到记忆存储
+                # Add to memory store
                 self.memory_store.add(summary_memory)
 
                 logger.info(f"🧠 [MEMORY:short-term] [Summary:Combined] [{trigger_reason}]Creating combined summary memory finished: "
                            f"content is {combined_summary[:100]}")
 
-                # 记录summary的上下文长度信息
+                # Log summary context length information
                 from aworld.logs.prompt_log import PromptLogger
                 PromptLogger.log_summary_memory(summary_memory, to_be_summary_items, f"{trigger_reason}:combined", agent_memory_config)
         else:
-            # 使用默认的摘要生成逻辑
+            # Use default summary generation logic
             summary_content = await self._gen_multi_rounds_summary(user_task_items, existed_summary_items,
                                                                    to_be_summary_items, agent_memory_config)
             logger.debug(f"🧠 [MEMORY:short-term] [Summary] summary_content: {summary_content}")
@@ -685,14 +685,14 @@ class AworldMemory(Memory):
                 role=getattr(agent_memory_config, 'summary_role', 'assistant'),
                 created_at=summary_created_time,
             )
-            # 设置 start_time 和 end_time
+            # Set start_time and end_time
             summary_memory.set_start_time(start_time)
             summary_memory.set_end_time(datetime.now().isoformat())
 
             # add summary to memory
             self.memory_store.add(summary_memory)
 
-            # 记录summary的上下文长度信息
+            # Log summary context length information
             from aworld.logs.prompt_log import PromptLogger
             PromptLogger.log_summary_memory(summary_memory, to_be_summary_items, trigger_reason, agent_memory_config)
 
@@ -709,9 +709,9 @@ class AworldMemory(Memory):
                                     summary_prompt_config,
                                     memory_item: MemoryItem,
                                     trigger_reason: str):
-        """为特定类型生成摘要，返回抽取的内容"""
+        """Generate summary for a specific type, return extracted content"""
         try:
-            # 生成特定类型的摘要
+            # Generate summary for specific type
             summary_content = await self._gen_multi_rounds_summary(
                 user_task_items, 
                 existed_summary_items, 
@@ -764,7 +764,7 @@ class AworldMemory(Memory):
         to_be_summary = [{"role": item.metadata['role'], "content": item.content} for item in to_be_summary_items]
 
         # generate summary
-        # 使用自定义模板或默认模板
+        # Use custom template or default template
         template_to_use = prompt.template if prompt else AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
         summary_rule = prompt.summary_rule if prompt else ""
         summary_schema = prompt.summary_schema if prompt else ""

@@ -12,34 +12,13 @@ from aworld.logs.util import logger
 
 async def mcp_screen_snapshot(agent: Agent, context: Context):
     try:
-        # sand_box = Sandbox(mcp_servers=["virtualpc-mcp-server"],
-        #                    mcp_config={
-        #                        "mcpServers": {
-        #                            "virtualpc-mcp-server": {
-        #                                "type": "streamable-http",
-        #                                "url": "http://mcp.aworldagents.com/vpc/mcp",
-        #                                "headers": {
-        #                                    "Authorization": f"{os.getenv('MCP_AUTHORIZATION')}",
-        #                                    # "MCP_SERVERS": "readweb-server,browseruse-server,documents-csv-server,documents-docx-server,documents-pptx-server,documents-pdf-server,documents-txt-server,download-server,intelligence-code-server,intelligence-think-server,intelligence-guard-server,media-audio-server,media-image-server,media-video-server,parxiv-server,terminal-server,wayback-server,wiki-server,googlesearch-server",
-        #
-        #                                    # "MCP_SERVERS": "ms-playwright,google-search,e2b-code-server,image-server,audio-server",
-        #                                    "MCP_SERVERS": "ms-playwright",
-        #                                    # "MCP_SERVERS": "e2b-code-server",
-        #                                    "IMAGE_ENV": f"{{\"E2B_API_KEY\":\"{os.getenv('MCP_E2B_API_KEY', '')}\"}}",
-        #                                    # Specify environment variable values for tools on the client side, note JSON String structure
-        #                                    "IMAGE_VERSION": f"{os.getenv('IMAGE_VERSION', '')}",
-        #                                },
-        #                                "timeout": 600,
-        #                                "sse_read_timeout": 600,
-        #                                "client_session_timeout_seconds": 600
-        #                            },
-        #                        }
-        #                    })
         sand_box = agent.sandbox
+        tool_name = os.getenv("MCP_SERVER", "virtualpc-mcp-server")
+        action_name = os.getenv("MCP_NAME", "browser_take_screenshot")
         result = await sand_box.mcpservers.call_tool(action_list=[
             {
-                "tool_name": "virtualpc-mcp-server",
-                "action_name": "browser_take_screenshot",
+                "tool_name": tool_name,
+                "action_name": action_name,
                 "params": {
                 }
             }
@@ -58,15 +37,15 @@ def parse_and_save_screenshots(
     save_dir: Optional[str] = None
 ) -> tuple[List[str], bool]:
     """
-    解析 screen_shot_result 中的图片并保存到文件
+    Parse images from screen_shot_result and save to files
 
     Args:
-        screen_shot_result: ActionResult 列表，每个 ActionResult 的 content 字段可能包含图片数据
-        task_id: 任务 ID，用于创建保存目录
-        save_dir: 保存目录，如果不提供则使用默认目录
+        screen_shot_result: List of ActionResult, each ActionResult's content field may contain image data
+        task_id: Task ID, used to create save directory
+        save_dir: Save directory, if not provided, use default directory
 
     Returns:
-        (保存的图片文件路径列表, 是否所有内容都为空)
+        (List of saved image file paths, whether all content is empty)
     """
     saved_files = []
     
@@ -78,7 +57,7 @@ def parse_and_save_screenshots(
                      f"screen_shot_result: {screen_shot_result}")
         return saved_files, True
     
-    # 确定保存目录
+    # Determine save directory
     if save_dir is None:
         task_id = task_id or "unknown"
         save_dir = os.path.join("logs", "screen_shot", task_id)
@@ -105,14 +84,14 @@ def parse_and_save_screenshots(
         
         content = action_result.content
         
-        # 如果 content 是字符串，尝试解析为 JSON 数组
+        # If content is a string, try to parse as JSON array
         if isinstance(content, str):
             try:
-                # 尝试解析为 JSON 数组
+                # Try to parse as JSON array
                 content_list = json.loads(content)
                 logger.debug(f"Parsed content at index {idx} as JSON array with {len(content_list)} items")
             except (json.JSONDecodeError, TypeError):
-                # 如果不是 JSON，直接检查是否是 base64 图片
+                # If not JSON, directly check if it's base64 image
                 content_list = [content]
                 logger.debug(f"Content at index {idx} is not JSON, treating as single string")
         elif isinstance(content, list):
@@ -122,19 +101,19 @@ def parse_and_save_screenshots(
             content_list = [content]
             logger.debug(f"Content at index {idx} is of type {type(content)}, converting to list")
         
-        # 遍历 content 数组，查找图片数据
+        # Iterate through content array to find image data
         for item_idx, item in enumerate(content_list):
             if not isinstance(item, str):
                 logger.debug(f"Item at index {idx}.{item_idx} is not a string (type: {type(item)}), skipping")
                 invalid_item_count += 1
                 continue
             
-            # 检查是否是 base64 图片数据
+            # Check if it's base64 image data
             if item.startswith("data:image"):
-                # 提取 base64 部分
+                # Extract base64 part
                 base64_data = item.split(",", 1)[1] if "," in item else item
                 
-                # 确定图片格式
+                # Determine image format
                 if "jpeg" in item or "jpg" in item:
                     ext = "jpg"
                 elif "png" in item:
@@ -144,18 +123,18 @@ def parse_and_save_screenshots(
                 elif "webp" in item:
                     ext = "webp"
                 else:
-                    ext = "png"  # 默认使用 png
+                    ext = "png"  # Default to png
                 
-                # 解码 base64
+                # Decode base64
                 try:
                     image_data = base64.b64decode(base64_data)
                     
-                    # 生成文件名（使用时间戳）
+                    # Generate filename (using timestamp)
                     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
                     filename = f"screenshot_{timestamp}.{ext}"
                     filepath = os.path.join(save_dir, filename)
                     
-                    # 保存文件
+                    # Save file
                     with open(filepath, "wb") as f:
                         f.write(image_data)
                     
@@ -167,7 +146,7 @@ def parse_and_save_screenshots(
                 logger.debug(f"Item at index {idx}.{item_idx} is not a base64 image data (starts with: {item[:50] if len(item) > 50 else item}), skipping")
                 non_image_item_count += 1
     
-    # 判断是否所有内容都为空
+    # Determine if all content is empty
     total_items = len(screen_shot_result)
     all_empty = (empty_content_count == total_items and len(saved_files) == 0)
     
