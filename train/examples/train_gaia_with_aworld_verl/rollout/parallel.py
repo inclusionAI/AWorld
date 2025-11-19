@@ -40,7 +40,7 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
         if 'screen_shot' in os.getenv("ENV_PLUGINS", ""):
             from ..mcp.hooks import PostToolCallRolloutHook
 
-        if 'xiecheng' in os.getenv("ENV_PLUGINS", ""):
+        if 'xiecheng_ck' in os.getenv("ENV_PLUGINS", ""):
             from ..mcp.xiecheng_hook import PostLLMCallRolloutHook
 
         agent = build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
