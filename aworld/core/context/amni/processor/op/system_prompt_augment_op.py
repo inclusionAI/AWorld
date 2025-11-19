@@ -1,3 +1,4 @@
+import asyncio
 import os
 import time
 import traceback
@@ -91,29 +92,51 @@ class SystemPromptAugmentOp(BaseOp):
 
             # Context
 
-            for neuron in neurons:
+            async def process_neuron(neuron: Neuron) -> tuple[str, str, float]:
+                """
+                Process a single neuron and return (component_name, timing_info, duration)
+                
+                Args:
+                    neuron: The neuron to process
+                    
+                Returns:
+                    Tuple of (component_name, timing_info, duration)
+                """
                 component_start_time = time.time()
                 component_name = neuron.__class__.__name__
 
                 try:
                     # Context augment
                     st = time.time()
-                    augment_prompts[neuron.name] = (augment_prompts[neuron.name] + '\n\n'
-                                                    + await self.rerank_items(neuron=neuron,
-                                                                   context=context, namespace=namespace))
+                    rerank_result = await self.rerank_items(neuron=neuron, context=context, namespace=namespace)
+                    # Read current value first, then update atomically
+                    current_prompt = augment_prompts[neuron.name]
+                    augment_prompts[neuron.name] = current_prompt + '\n\n' + rerank_result
                     t1 = time.time() - st
                     logger.debug(
                         f"🧠 _process_prompt_components rerank strategy: {component_name} rerank time: start_time={st}s format_time={t1:.3f}s")
 
                     component_end_time = time.time()
                     component_duration = component_end_time - component_start_time
-                    component_timings.append(f"{component_name}:{component_duration:.3f}s")
+                    return (component_name, f"{component_name}:{component_duration:.3f}s", component_duration)
 
                 except Exception as e:
                     component_end_time = time.time()
                     component_duration = component_end_time - component_start_time
-                    component_timings.append(f"{component_name}:{component_duration:.3f}s(error)")
                     logger.error(f"Error processing rerank component {component_name}: {e} {traceback.format_exc()}")
+                    return (component_name, f"{component_name}:{component_duration:.3f}s(error)", component_duration)
+
+            # Execute all neurons in parallel
+            tasks = [process_neuron(neuron) for neuron in neurons]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results and collect timings
+            for result in results:
+                if isinstance(result, Exception):
+                    logger.error(f"Unexpected error in parallel processing: {result} {traceback.format_exc()}")
+                    continue
+                component_name, timing_info, _ = result
+                component_timings.append(timing_info)
 
         total_end_time = time.time()
         total_duration = total_end_time - total_start_time
@@ -123,6 +146,20 @@ class SystemPromptAugmentOp(BaseOp):
 
         logger.info(
             f"✅ Successfully processed {len(augment_prompts)} prompt components for agent {event.agent_id}, session {context.session_id}, timings: {timing_info}")
+
+        # Sort augment_prompts by neuron priority
+        if augment_prompts:
+            # Create sorted list of (priority, name, value) tuples
+            sorted_items = []
+            for name, value in augment_prompts.items():
+                priority = neuron_factory._prio.get(name, 0)
+                sorted_items.append((priority, name, value))
+            
+            # Sort by priority (lower number = higher priority)
+            sorted_items.sort(key=lambda x: x[0])
+            
+            # Rebuild dictionary in sorted order
+            augment_prompts = {name: value for _, name, value in sorted_items}
 
         return augment_prompts
 

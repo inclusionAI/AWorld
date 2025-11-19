@@ -279,21 +279,15 @@ class DirArtifact(Artifact):
         mime_type, _ = mimetypes.guess_type(filename)
         return mime_type or 'application/octet-stream'
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self, exclude_content: bool = False) -> Dict[str, Any]:
         """Convert DirArtifact to dictionary."""
 
         self.reload_working_files()
-        return {
-            "artifact_id": self.artifact_id,
-            "artifact_type": self.artifact_type.value,
-            "content": self.content,
-            "metadata": self.metadata,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "status": self.status.name,
-            "version_count": len(self.version_history),
-            "files": self.list_files()
-        }
+        result = super().to_dict(exclude_content=exclude_content)
+        if not exclude_content:
+            result["files"] = self.list_files()
+            result["version_count"] = len(self.version_history)
+        return result
 
     def need_save_attachment(self):
         return False
