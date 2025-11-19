@@ -1,6 +1,7 @@
 import asyncio
 import copy
 import datetime
+import time
 import traceback
 from typing import Optional
 
@@ -19,6 +20,7 @@ from .prompt.prompts import AMNI_CONTEXT_PROMPT
 from .state import TaskInput, Summary
 from .utils import jsonplus
 from .worksapces import workspace_repo
+from ...task import TaskStatusValue
 
 
 class ContextManager(BaseModel):
@@ -107,7 +109,7 @@ class ContextManager(BaseModel):
             None
         """
         # 1. Save conversations to memory
-        save_memory_task = self._save_conversations_to_memory(context)
+        save_memory_task = self._save_conversations_to_memory(context, **kwargs)
 
         # 2. Save checkpoint
         save_checkpoint_task = self._save_context_checkpoint_async(context, **kwargs)
@@ -130,15 +132,15 @@ class ContextManager(BaseModel):
         await context.refresh_working_dir()
 
 
-    async def _save_conversations_to_memory(self, context: "ApplicationContext") -> None:
+    async def _save_conversations_to_memory(self, context: "ApplicationContext", **kwargs) -> None:
         """Save user input and task result to memory."""
 
         metadata = self._build_memory_message_metadata(context.task_input_object)
 
         await self._memory.add(MemoryHumanMessage(content=context.task_input_object.task_content, metadata=metadata))
         # TODO: Optimize - only save core content
-        await self._memory.add(MemoryAIMessage(content=await TaskFormatter.format_task_history(
-            context) if not context.task_output else context.task_output, metadata=metadata))
+        content = context.task_output if context.task_output else await TaskFormatter.format_task_history(context)
+        await self._memory.add(MemoryAIMessage(content=content, metadata=metadata))
         logger.info(f"[ContextManager] add task result to memory, session {context.session_id}, task {context.task_id}")
 
         # Create async task for conversation summary with logging and callback
@@ -253,7 +255,7 @@ class ContextManager(BaseModel):
     async def _save_context_checkpoint_async(self, context: "ApplicationContext", **kwargs) -> None:
         """Save context checkpoint asynchronously."""
 
-        await self.save_context_checkpoint(context, **kwargs)
+        asyncio.create_task(self.save_context_checkpoint(context, **kwargs))
         logger.info(f"[ContextManager] save checkpoint finished, session {context.session_id}, task {context.task_id}")
 
     def _build_memory_message_metadata(self, input: TaskInput) -> MessageMetadata:
@@ -269,6 +271,7 @@ class ContextManager(BaseModel):
     ###########################  Checkpoint Backend ###########################
 
     async def save_context_checkpoint(self, context: "ApplicationContext", **kwargs) -> Checkpoint:
+        start = time.time()
         logger.info(f"[ContextManager] Saving checkpoint for session {context.session_id}, task {context.task_id}")
         session_id = context.session_id
         task_id = context.task_id
@@ -291,7 +294,7 @@ class ContextManager(BaseModel):
         await self.checkpoint_repo.aput(checkpoint)
 
         logger.info(
-            f"[ContextManager] Complete checkpoint saved for session {metadata.session_id}, task {metadata.task_id}")
+            f"[ContextManager] Complete checkpoint saved for session {metadata.session_id}, task {metadata.task_id}, use {int(time.time() - start)}s")
 
         return checkpoint
 
