@@ -82,7 +82,7 @@ class TaskEventRunner(TaskRunner):
             logger.debug(f"swarm: {self.swarm}")
             # register agent handler
             for _, agent in self.swarm.agents.items():
-                if override_in_subclass('async_policy', agent.__class__, Agent):
+                if override_in_subclass('async_policy', agent.__class__, BaseAgent):
                     await self.event_mng.register(Constants.AGENT, agent.id(), agent.async_run)
                 else:
                     await self.event_mng.register(Constants.AGENT, agent.id(), agent.run)
@@ -161,7 +161,6 @@ class TaskEventRunner(TaskRunner):
         async with trace.message_span(message=message):
             logger.debug(f"start_message_node message id: {message.id} of task {self.task.id}")
             self.state_manager.start_message_node(message)
-            logger.info(f"start_message_node end message id: {message.id} of task {self.task.id}")
             if handlers:
                 handler_list = handlers.get(message.topic) or handlers.get(message.receiver)
                 if not handler_list:

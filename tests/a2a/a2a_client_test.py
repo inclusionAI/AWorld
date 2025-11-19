@@ -7,6 +7,8 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.runner import Runners
 import aworld.trace as trace
+from aworld.trace.server import get_trace_server
+from examples.common.tools.apis.search_api import SearchTool
 
 trace.configure(trace.ObservabilityConfig(trace_server_enabled=True))
 
@@ -43,7 +45,8 @@ async def run_stream():
 
 
 async def run_swarm():
-    local = Agent(name="local_agent", system_prompt="You are a search assistant. You must search related content obout the question on baidu first, then handoff the question to the summary assistant.")
+    local = Agent(name="local_agent",
+                  system_prompt="You are a search assistant. You must perform exactly one search on Baidu related to the question, and once the search content is found, handoff the search result to the summary assistant.", tool_names=["search_api"])
     remote = A2ARemoteAgent(name="remote_agent", agent_card="http://localhost:7500")
 
     swarm = Swarm(local, remote)
@@ -56,9 +59,29 @@ async def run_swarm():
     )
 
     resp = await Runners.run_task(task)
-    logger.info(f"run_task resp: {resp[task.id]}")
+    logger.info(f"run_task resp: {resp[task.id].answer}")
 
-if __name__ == "__main__":
-    #     # asyncio.run(run())
-    #     asyncio.run(run_stream())
-    asyncio.run(run_swarm())
+
+async def run_agent_as_tool():
+    remote = A2ARemoteAgent(name="remote_agent", agent_card="http://localhost:7500")
+    local = Agent(name="local_agent",
+                  system_prompt="You are a search assistant. You must perform exactly one search on Baidu related to the question, and once the search content is found, handoff the search result to the summary assistant.", tool_names=["search_api"], agent_names=[remote.id()])
+
+    swarm = Swarm(local, register_agents=[remote])
+    task = Task(
+        id="test_task",
+        input="What is the mcp ?",
+        session_id="test_session",
+        swarm=swarm,
+    )
+
+    resp = await Runners.run_task(task)
+
+    logger.info(f"call_agent resp: {resp}")
+
+# if __name__ == "__main__":
+    # asyncio.run(run())
+    # asyncio.run(run_stream())
+    # asyncio.run(run_swarm())
+    # asyncio.run(run_agent_as_tool())
+    # get_trace_server().join()
