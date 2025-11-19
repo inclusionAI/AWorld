@@ -7,7 +7,7 @@ from typing import AsyncIterator, Any, Union, Iterator
 
 from aworld.logs.util import logger
 from aworld.output import Output
-from aworld.output.base import RUN_FINISHED_SIGNAL
+from aworld.output.base import RUN_FINISHED_SIGNAL, MessageOutput
 
 
 @dataclass
@@ -214,3 +214,12 @@ class StreamingOutputs(AsyncOutputs):
     async def mark_completed(self) -> None:
         """Mark the streaming process as completed by adding a RUN_FINISHED_SIGNAL to the queue."""
         await self._output_queue.put(RUN_FINISHED_SIGNAL)
+
+    def get_message_output_content(self) -> str:
+        content = ""
+        for output in self.get_message_outputs():
+            content += f"{output.metadata.get('agent_name')}:{output.source.content}\n"
+        return content
+
+    def get_message_outputs(self) -> list[MessageOutput]:
+        return [output for output in self._visited_outputs if isinstance(output, MessageOutput)]
