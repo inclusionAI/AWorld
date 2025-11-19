@@ -6,6 +6,7 @@ from typing import Union, Callable, Any
 from datasets import Dataset
 
 from aworld.agents.llm_agent import Agent
+from aworld.logs.util import logger
 
 
 class TrainerProcessor:
@@ -31,6 +32,7 @@ class TrainerProcessor:
     def check_dataset(self, dataset: Union[str, Dataset], test_dataset: Union[str, Dataset] = None):
         """Check if the dataset or configuration meets the requirements of the specified training backend.
 
+        TODO: supported torch dataset
         Args:
             dataset: The dataset to be checked.
             test_dataset: The test dataset to be checked.
@@ -73,4 +75,5 @@ class TrainerProcessor:
         self._initialized = value
 
     def mark_initialized(self):
+        logger.info("All check finished.")
         self._initialized = True

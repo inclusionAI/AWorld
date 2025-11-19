@@ -15,7 +15,7 @@ from aworld.events.util import send_message_with_future
 from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
-from aworld.output import Artifact, WorkSpace
+from aworld.output import Artifact, WorkSpace, StreamingOutputs, MessageOutput
 from aworld.output.artifact import ArtifactAttachment
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory, ContextEnvConfig
@@ -33,6 +33,7 @@ from .utils.text_cleaner import truncate_content
 from .worksapces import ApplicationWorkspace
 from .worksapces import ApplicationWorkspace, workspace_repo
 from ...event.base import ContextMessage, Constants, TopicType
+from ...task import TaskStatus
 
 DEFAULT_VALUE = None
 
@@ -775,13 +776,16 @@ class ApplicationContext(AmniContext):
 
     async def update_task_after_run(self, task_response: 'TaskResponse'):
         if task_response and task_response.success:
-            self.task_status = 'SUCCESS'
+            self.task_status = task_response.status
             self.task_output = task_response.answer
             self.task_output_object.actions_info = await self.get_actions_info()
             self.task_output_object.todo_info = await self.get_todo_info()
         else:
-            self.task_status = 'FAILED'
-            self.task_output = task_response.msg
+            self.task_status = task_response.status
+            if self._task.outputs and isinstance(self._task.outputs, StreamingOutputs):
+                self.task_output = self._task.outputs.get_message_output_content()
+            else:
+                self.task_output = task_response.msg
             self.task_output_object.actions_info = await self.get_actions_info()
             self.task_output_object.todo_info = await self.get_todo_info()
 
@@ -850,11 +854,11 @@ class ApplicationContext(AmniContext):
         self.task_state.task_output.result = result
 
     @property
-    def task_status(self) -> Literal['INIT', 'PROCESSING', 'SUCCESS', 'FAILED']:
+    def task_status(self) -> TaskStatus:
         return self.task_state.working_state.status
 
     @task_status.setter
-    def task_status(self, status: Literal['INIT', 'PROCESSING', 'SUCCESS', 'FAILED']):
+    def task_status(self, status: TaskStatus):
         self.task_state.working_state.status = status
 
     @property

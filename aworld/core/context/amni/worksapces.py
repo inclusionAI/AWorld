@@ -30,7 +30,7 @@ class ApplicationWorkspace(WorkSpace):
 
     async def add_artifact(self, artifact: Artifact, index: bool = False, **kwargs) -> None:
         try:
-            self._load_workspace_data()
+            self._load_workspace_data(load_artifact_content=False)
             await self.retriever.async_insert(self.workspace_id, artifact, index)
             await super().add_artifact(artifact)
             logging.debug(f"add_artifact#{artifact.artifact_id} finished")
