@@ -97,6 +97,10 @@ async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, sess
             ],
         )
 
+    # 设置 debug_mode
+    debug_mode = os.getenv("CONTEXT_DEBUG_MODE", "false").lower() in ("true", "1", "yes")
+    context_config.debug_mode = debug_mode
+
     # 3. build context
     if not session_id:
         session_id = f"session_{datetime.now().strftime('%Y%m%d%H%M%S')}"
