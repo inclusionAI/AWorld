@@ -86,12 +86,20 @@ class RolloutLLMProvider(LLMProviderBase):
         context.add_llm_resp_token_ids(input_token_ids=current_step_input_token_ids,
                                        prompt_token_ids=input_ids,
                                        response=token_id_response)
+
+        usage = {
+            "completion_tokens": len(token_id_response.output_token_ids),
+            "prompt_tokens": len(input_ids),
+            "total_tokens": len(input_ids) + len(token_id_response.output_token_ids)
+        }
+
         return ModelResponse(id=self.request_id,
                              content=content,
                              tool_calls=tool_calls,
+                             usage=usage,
                              model=self.model_name)
 
-    def _get_current_step_input_token_ids(self, messages: List[Dict[str, str]]) -> List[int]:
+    def _get_current_step_input_token_ids(self, messages: List[Dict[str, str]], **kwargs) -> List[int]:
         """
         Get the token ids of the current step input.
         Only use messages after the last assistant message.
@@ -105,6 +113,12 @@ class RolloutLLMProvider(LLMProviderBase):
         # Get messages after the last assistant message
         # If no assistant message found, use all messages
         filtered_messages = messages[last_assistant_index + 1:] if last_assistant_index >= 0 else messages
+
+        if last_assistant_index == -1:
+            llm_params = kwargs.get("params", {})
+            llm_params.update(kwargs)
+            tools = llm_params.get("tools")
+            return self.tokenizer.apply_chat_template(filtered_messages, tools=tools, tokenize=True, add_generation_prompt=True)
 
         return self.apply_chat_template(filtered_messages)
 
