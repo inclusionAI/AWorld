@@ -31,7 +31,6 @@ class ServingConfig(BaseConfig):
     endpoint: str = "/"
     streaming: bool = False
     serving_type: str = "a2a"  # options: a2a, mcp
-    serving_type: str = "a2a"  # options: a2a, mcp
     keep_running: bool = True
     skills: list[AgentSkill] = []
     input_modes: list[str] = ["text"]
