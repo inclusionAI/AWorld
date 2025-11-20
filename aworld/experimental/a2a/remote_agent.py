@@ -1,24 +1,20 @@
-import uuid
 import abc
-import asyncio
 
 from typing import Dict, Any, List, Union, Optional
 from a2a.types import (
     AgentCard,
 )
+
+from aworld.agents.llm_agent import Agent
 from aworld.core.agent.base import BaseAgent
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.event.base import Message, AgentMessage, Constants
 from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger
 from aworld.config.conf import ConfigDict, AgentConfig
-from aworld.utils.common import sync_exec, convert_to_snake
+from aworld.utils.common import sync_exec
 from aworld.experimental.a2a.client_proxy import A2AClientProxy
 from aworld.experimental.a2a.config import ClientConfig
-from aworld.output import Outputs, MessageOutput
-from aworld.events import eventbus
-from aworld.core.context.base import Context
-from aworld.events.util import send_message
 
 
 class RemoteAgent(BaseAgent):
@@ -30,7 +26,7 @@ class RemoteAgent(BaseAgent):
                  task: Any = None,
                  tool_names: List[str] = None,
                  event_driven: bool = True,
-                 **kwargs,):
+                 **kwargs, ):
         self._init_id_name(name, agent_id)
         self.conf = conf
         if not self.conf:
@@ -46,32 +42,16 @@ class RemoteAgent(BaseAgent):
             self._desc = sync_exec(self.remote_agent_desc)
         return self._desc
 
-    async def send_remote_response_output(self, remote_response: TaskResponse, context: Context,
-                                          outputs: Outputs = None):
-        """Send LLM response to output"""
-        if not remote_response:
-            return
-        remote_resp_output = MessageOutput(
-            source=remote_response,
-            metadata={"agent_id": self.id(), "agent_name": self.name(), "is_finished": self.finished}
-        )
-        if eventbus is not None and remote_resp_output:
-            await send_message(Message(
-                category=Constants.OUTPUT,
-                payload=remote_resp_output,
-                sender=self.id(),
-                session_id=context.session_id if context else "",
-                headers={"context": context}
-            ))
-        elif not self.event_driven and outputs:
-            await outputs.add_output(remote_resp_output)
-
     def policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[
-            ActionModel]:
+        ActionModel]:
         return sync_exec(self.async_policy, observation, info, message, **kwargs)
 
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None, **kwargs) -> List[
-            ActionModel]:
+    async def async_policy(self,
+                           observation: Observation,
+                           info: Dict[str, Any] = {},
+                           message: Message = None,
+                           **kwargs) -> List[
+        ActionModel]:
         logger.info(f"Agent{type(self)}#{self.id()}: async_policy start")
         # temporary state context
         self.context = message.context
@@ -81,7 +61,7 @@ class RemoteAgent(BaseAgent):
         logger.info(f"Agent{type(self)}#{self.id()}: async_policy end, response_task: {response_task}")
         result = ActionModel(agent_name=self.id(), policy_info=response_task.answer)
         self._finished = True
-        await self.send_remote_response_output(response_task, message.context)
+        await Agent.send_agent_response_output(self, response_task, message.context)
         return [result]
 
     async def async_post_run(self, policy_result: List[ActionModel], policy_input: Observation,
@@ -120,7 +100,7 @@ class A2ARemoteAgent(RemoteAgent):
                  agent_id: str = None,
                  *,
                  task: Any = None,
-                 **kwargs,):
+                 **kwargs, ):
         super().__init__(name, conf, agent_id, task=task, **kwargs)
         self.streaming = kwargs.get("stream",
                                     False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
