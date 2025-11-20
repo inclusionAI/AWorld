@@ -2,7 +2,7 @@ import uuid
 import abc
 import asyncio
 
-from typing import Dict, Any, List, Union
+from typing import Dict, Any, List, Union, Optional
 from a2a.types import (
     AgentCard,
 )
@@ -25,34 +25,26 @@ class RemoteAgent(BaseAgent):
 
     def __init__(self, name: str,
                  conf: ConfigDict | None = None,
-                 desc: str = None,
                  agent_id: str = None,
                  *,
                  task: Any = None,
                  tool_names: List[str] = None,
                  event_driven: bool = True,
                  **kwargs,):
-        self._name = name if name else convert_to_snake(self.__class__.__name__)
+        self._init_id_name(name, agent_id)
         self.conf = conf
         if not self.conf:
             self.conf = ConfigDict(AgentConfig().model_dump())
-        self._name = name if name else convert_to_snake(self.__class__.__name__)
-        self._desc = desc if desc else self._name
-        self._id = (
-            agent_id if agent_id else f"{self._name}---uuid{uuid.uuid1().hex[0:6]}uuid"
-        )
         self.task: Any = task
         self.context = kwargs.get("context", None)
         self.tool_names: List[str] = tool_names or []
         self.event_driven: bool = event_driven
+        self._desc: Optional[str] = None
 
-    def _update_headers(self, input_message: Message) -> Dict[str, Any]:
-        headers = input_message.headers.copy()
-        headers['context'] = input_message.context
-        headers['level'] = headers.get('level', 0) + 1
-        if input_message.group_id:
-            headers['parent_group_id'] = input_message.group_id
-        return headers
+    def desc(self) -> str:
+        if not self._desc:
+            self._desc = sync_exec(self.remote_agent_desc)
+        return self._desc
 
     async def send_remote_response_output(self, remote_response: TaskResponse, context: Context,
                                           outputs: Outputs = None):
@@ -110,31 +102,36 @@ class RemoteAgent(BaseAgent):
         """
         raise NotImplementedError
 
+    @abc.abstractmethod
+    async def remote_agent_desc(self):
+        """Get the description of the remote agent.
+
+        Returns:
+            The description of the remote agent.
+        """
+        raise NotImplementedError
+
 
 class A2ARemoteAgent(RemoteAgent):
 
     def __init__(self, name: str,
                  agent_card: Union[AgentCard, str],
                  conf: ConfigDict | None = None,
-                 desc: str = None,
                  agent_id: str = None,
                  *,
                  task: Any = None,
                  **kwargs,):
-        super().__init__(name, conf, desc, agent_id, task=task, **kwargs)
+        super().__init__(name, conf, agent_id, task=task, **kwargs)
         self.streaming = kwargs.get("stream",
                                     False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
         self.client_proxy = A2AClientProxy(agent_card, config=ClientConfig(streaming=self.streaming))
 
-    def desc(self) -> str:
-        async def remote_agent_desc(self):
-            agent_card = await self.client_proxy.get_or_init_agent_card()
-            if not agent_card:
-                logger.error(f"get agent card failed, agent_id: {self.agent_id}")
-                raise ValueError(f"get agent card failed, agent_id: {self.agent_id}")
-            return agent_card.description
-        desc = sync_exec(remote_agent_desc, self)
-        return desc
+    async def remote_agent_desc(self):
+        agent_card = await self.client_proxy.get_or_init_agent_card()
+        if not agent_card:
+            logger.error(f"get agent card failed, agent_id: {self.id()}")
+            raise ValueError(f"get agent card failed, agent_id: {self.id()}")
+        return agent_card.description
 
     async def call_agent(self, request_task: Task, info: Dict[str, Any] = {}, **kwargs) -> TaskResponse:
         """Call the remote agent to execute the task.

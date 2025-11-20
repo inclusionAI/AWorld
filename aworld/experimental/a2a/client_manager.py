@@ -128,7 +128,10 @@ class ThreadSafeManager(Generic[ClientType, ConfigType]):
                 logger.error(f"Error in thread monitor: {e}")
 
             # check and clean up resources for dead threads every 5 seconds
-            time.sleep(5)
+            if hasattr(self._config, 'client_monitor_interval'):
+                time.sleep(self._config.client_monitor_interval)
+            else:
+                time.sleep(5)
 
     def _check_and_cleanup_dead_threads(self):
         """
