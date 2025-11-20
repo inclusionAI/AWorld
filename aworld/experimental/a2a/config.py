@@ -8,13 +8,8 @@ from a2a.types import AgentSkill, TransportProtocol, PushNotificationConfig
 from a2a.client.optionals import Channel
 from a2a.client.client import Consumer
 from collections.abc import Callable
-from a2a.types import AgentSkill, TransportProtocol, PushNotificationConfig
-from a2a.client.optionals import Channel
-from a2a.client.client import Consumer
-from collections.abc import Callable
 
 from aworld.config import BaseConfig
-from aworld.core.common import StreamingMode
 from aworld.core.common import StreamingMode
 
 SERVER_APP_MAPPING = {"fastapi": A2AFastAPIApplication,
