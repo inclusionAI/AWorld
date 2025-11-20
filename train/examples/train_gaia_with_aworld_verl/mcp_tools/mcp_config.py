@@ -1,7 +1,7 @@
 import json
 import os
 
-from train.examples.train_gaia_with_aworld_verl.mcp.ip_pool import get_proxy_server
+from train.examples.train_gaia_with_aworld_verl.mcp_tools.ip_pool import get_proxy_server
 
 from aworld.logs.util import logger
 
