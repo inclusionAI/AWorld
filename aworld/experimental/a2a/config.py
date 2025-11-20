@@ -57,3 +57,4 @@ class ClientConfig(BaseConfig):
     accepted_output_modes: list[str] = []
     push_notification_configs: list[PushNotificationConfig] = []
     consumers: list[Consumer] = []
+    client_monitor_interval: int = 5

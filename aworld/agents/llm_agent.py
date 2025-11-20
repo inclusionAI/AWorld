@@ -836,14 +836,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             self._finished = True
         return self.finished
 
-    def _update_headers(self, input_message: Message) -> Dict[str, Any]:
-        headers = input_message.headers.copy()
-        headers['context'] = input_message.context
-        headers['level'] = headers.get('level', 0) + 1
-        if input_message.group_id:
-            headers['parent_group_id'] = input_message.group_id
-        return headers
-
     async def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
         from aworld.core.context.amni import AmniContext
         if not isinstance(context, AmniContext) or not self.skill_configs:
