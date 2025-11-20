@@ -8,6 +8,7 @@ from aworld.evaluations.base import EvalTarget, EvalDataCase
 from aworld.runner import Runners
 from aworld.runners.state_manager import RuntimeStateManager
 from train.examples.train_gaia_with_aworld_verl.mcp import build_mcp_config
+from train.examples.train_gaia_with_aworld_verl.mcp.ip_pool import release_proxy_by_task_id
 from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent, build_gaia_task
 
 logging.basicConfig(level=logging.INFO, force=True, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -95,3 +96,7 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
         except Exception as err:
             print(f"err is {err}, trace is {traceback.format_exc()}")
             return {"answer": str(err)}
+        finally:
+            # 任务执行结束后释放 IP 回 IP 池
+            if os.getenv("IP_POOL_ENABLE", "False") == "True":
+                release_proxy_by_task_id(task_id)

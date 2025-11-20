@@ -324,6 +324,19 @@ def plot_flame_graph(nodes: List[RunNode], task_id: str, output_path: Optional[s
             if width > total_duration * 0.02:  # Width must be at least 2% of total duration
                 display_label = busi_type_labels.get(node.busi_type, node.busi_type)
                 label = f"{display_label}:{duration:.3f}"
+                
+                # If it's an AGENT, add agent_name or agent_id on a new line
+                if node.busi_type == 'AGENT':
+                    agent_info = None
+                    if node.metadata and isinstance(node.metadata, dict):
+                        # Try to get agent_name from metadata
+                        agent_info = node.metadata.get('agent_name') or node.metadata.get('name')
+                    # If no agent_name in metadata, use busi_id as agent_id
+                    if not agent_info:
+                        agent_info = node.busi_id
+                    if agent_info:
+                        label = f"{label}<br>{agent_info}"
+                
                 # if len(label) > 20:
                 #     label = label[:17] + "..."
                 annotations.append(dict(
