@@ -100,7 +100,7 @@ async def build_local_mcp_config():
     }
 
 
-async def build_distributed_mcp_config():
+async def build_distributed_mcp_config(task_id: str = None):
     return {
         "mcpServers": {
             "virtualpc-mcp-server": {
@@ -115,7 +115,7 @@ async def build_distributed_mcp_config():
                     # "MCP_SERVERS": "e2b-code-server",
                     # "IMAGE_ENV": json.dumps({"E2B_API_KEY": os.getenv('MCP_E2B_API_KEY', '')}),
                     "IMAGE_ENV": json.dumps({"E2B_API_KEY": os.getenv('MCP_E2B_API_KEY', '')}) if os.getenv("IP_POOL_ENABLE", "False") == "False"
-                            else json.dumps({"E2B_API_KEY": os.getenv('MCP_E2B_API_KEY', ''), "PLAYWRIGHT_PROXY_SERVER": await get_proxy_server()}),
+                            else json.dumps({"E2B_API_KEY": os.getenv('MCP_E2B_API_KEY', ''), "PLAYWRIGHT_PROXY_SERVER": await get_proxy_server(task_id=task_id)}),
                     # Specify environment variable values for tools on the client side, note JSON String structure
                     "IMAGE_VERSION": f"{os.getenv('IMAGE_VERSION', '')}" if os.getenv("IP_POOL_ENABLE", "False") == "False"
                             else f"{os.getenv('IP_POOL_IMAGE_VERSION', '')}",
@@ -189,7 +189,7 @@ async def build_mcp_config(user_input: str = None, session_id: str = None, task_
         ensure_directories_exist()
         mcp_config = await build_local_mcp_config()
     else:
-        mcp_config = await build_distributed_mcp_config()
+        mcp_config = await build_distributed_mcp_config(task_id=task_id)
 
     logger.info(f"user_input={user_input}|session_id={session_id}|task_id={task_id}|mcp_config={mcp_config}")
     # If not enabled, remove related configuration
