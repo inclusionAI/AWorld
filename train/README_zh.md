@@ -2,7 +2,7 @@
 
 # AWorld Train
 
-*为 AWorld 智能体提供更简单进化能力*
+*为 AWorld 智能体提供更简单高效进化能力*
 
 [![License: MIT][license-image]][license-url]
 
@@ -182,11 +182,13 @@ agent = Agent(
   文件。具体方法请参考 [构建与运行Agent](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/#configuring-tools)。
 
 ## 启动训练
-代码模式一键启动。
-AWorld trainer一般需要**agent**，**数据集**，**奖励函数**，**自定义训练配置**4项内容。
+AWorld trainer是代码模式一键运行，一般需要**agent**，**数据集**，**奖励函数**，**自定义训练配置**4项内容。
 
-示例代码：[gaia_train.py](https://github.com/inclusionAI/AWorld/blob/main/train/examples/train_gaia_with_aworld_verl/main.py)
+注：环境设置是独立配置，建议写到.env文件中。
 
+[gaia训练启动代码](https://github.com/inclusionAI/AWorld/blob/main/train/examples/train_gaia_with_aworld_verl/main.py)
+
+示例：
 ```python
 from train.trainer.agent_trainer import AgentTrainer
 
@@ -198,7 +200,7 @@ agent = ...
 custom_train_config = "string or json"
 # 定义reward
 reward_func = "None or string or code reference"
-
+# 构建trainer实例并启动训练
 trainer = AgentTrainer(agent=agent,
                        config=custom_train_config,
                        reward_func=reward_func,
@@ -234,7 +236,7 @@ yaml格式配置文件，基于实际情况配置训练相关参数，用于定�
 
 <div align="center">
 
-**AWorld Train** — 让你的 AWorld 智能体更简单进化
+**AWorld Train** — 让你的 AWorld 智能体更简单高效进化
 
 [license-image]: https://img.shields.io/badge/License-MIT-yellow.svg
 [license-url]: https://opensource.org/licenses/MIT
