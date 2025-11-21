@@ -107,7 +107,7 @@ class DefaultToolHandler(ToolHandler):
                     )
                     try:
                         future = await send_message_with_future(memory_msg)
-                        results = await future.wait()
+                        results = await future.wait(context=message.context)
                         if not results:
                             logger.warning(f"Memory write task failed: {memory_msg}")
                     except Exception as e:

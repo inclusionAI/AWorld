@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from aworld.config import ModelConfig
 from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy
 from aworld.core.memory import MemoryConfig, MemoryLLMConfig, EmbeddingsConfig
+from aworld.memory.db import MySQLMemoryStore
 from aworld.memory.db.sqlite import SQLiteMemoryStore
 # from aworld.memory.db import SQLiteMemoryStore  # Temporarily commented out to avoid import errors
 from aworld.memory.main import MemoryFactory
