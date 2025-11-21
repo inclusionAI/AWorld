@@ -117,7 +117,7 @@ class AworldAgentLoop(AgentLoopBase):
         if isinstance(input, dict):
             input = input.get("content", "")
 
-        task = Task(id=str(uuid.uuid4()), input=input, timeout=1200, agent=agent, context=await self.build_context(),
+        task = Task(id=str(uuid.uuid4()), input=input, timeout=1200, agent=agent, context=await self.build_context(input),
                     conf=await self.build_task_config())
         resp = TaskResponse(id=task.id, trajectory=[{
             "exp_meta": {
