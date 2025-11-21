@@ -62,6 +62,9 @@ class DefaultHandler(Handler[Message, AsyncGenerator[Message, None]]):
     async def handle(self, message: Message) -> AsyncGenerator[Message, None]:
         if not self.is_valid_message(message):
             return
+        if await self.runner.should_stop_task(message):
+            await self.runner.stop()
+            return
         timeout = message.context.get_task().timeout
         time_cost = time.time() - self.runner.start_time
         if message.topic != TopicType.CANCEL and timeout > 0 and time_cost > timeout:
