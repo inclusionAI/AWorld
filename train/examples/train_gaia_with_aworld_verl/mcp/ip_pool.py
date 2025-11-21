@@ -12,13 +12,9 @@ _task_ip_mapping = {}
 # Maximum retry count to avoid infinite loop
 _MAX_RETRIES = 100
 
-async def get_proxy_server(task_id: str = None):
+async def get_proxy_server():
     """
     Get a proxy server IP address.
-    
-    Args:
-        task_id: Optional task ID to track which task is using this IP.
-                 If provided, the IP will be released when release_proxy_by_task_id is called.
     
     Returns:
         Proxy server string in format "ip:port", or None if failed.
@@ -41,13 +37,9 @@ async def get_proxy_server(task_id: str = None):
             # Record new IP (record by real_out_ip)
             _used_proxies.add(real_out_ip)
             
-            # If task_id is provided, track the mapping for later release
-            if task_id:
-                _task_ip_mapping[task_id] = real_out_ip
-                logger.info(f"Got new proxy: {proxy} (real_out_ip: {real_out_ip}) for task_id: {task_id}")
-            else:
-                logger.info(f"Got new proxy: {proxy} (real_out_ip: {real_out_ip})")
-            
+            # track the mapping for later release
+            logger.info(f"Got new proxy: {proxy} (real_out_ip: {real_out_ip})")
+
             return proxy
         except:
             logger.error(f"Get proxy server error: {traceback.format_exc()}")

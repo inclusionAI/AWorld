@@ -4,8 +4,11 @@ import os
 from typing import Callable, Union, Type, Dict
 
 from datasets import Dataset
+
 from aworld.agents.llm_agent import Agent
+from aworld.config import TaskConfig
 from aworld.core.common import Config
+from aworld.core.context.amni import AmniContextConfig
 from aworld.logs.util import logger
 from train.adapter.verl.verl_trainer import VerlTrainer
 from train.trainer.trainer_processor import TrainerProcessor
@@ -25,6 +28,8 @@ class AgentTrainer:
                  reward_func: Union[str, Callable[..., float]],
                  train_dataset: Union[str, Dataset],
                  test_dataset: Union[str, Dataset] = None,
+                 context_config: AmniContextConfig = None,
+                 task_config: TaskConfig = None,
                  run_path: str = None,
                  train_engine_name: str = 'verl') -> None:
         """AgentTrainer initialization, 4 modules are required (agent, dataset, reward, config).
@@ -61,7 +66,7 @@ class AgentTrainer:
             raise ValueError(f"{train_engine_name} train backend is not a TrainerProcessor")
 
         # process prerequisite modules
-        train_engine.check_agent(agent=agent)
+        train_engine.check_agent(agent=agent, context_config=context_config, task_config=task_config)
         train_engine.check_dataset(dataset=train_dataset, test_dataset=test_dataset)
         train_engine.check_reward(reward_func=reward_func)
         real_config = train_engine.check_config(config=config)

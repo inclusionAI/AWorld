@@ -1,9 +1,8 @@
 import json
 import os
 
-from train.examples.train_gaia_with_aworld_verl.mcp.ip_pool import get_proxy_server
-
 from aworld.logs.util import logger
+from train.examples.train_gaia_with_aworld_verl.mcp.ip_pool import get_proxy_server
 
 
 async def build_local_mcp_config():
@@ -100,7 +99,7 @@ async def build_local_mcp_config():
     }
 
 
-async def build_distributed_mcp_config(task_id: str = None):
+async def build_distributed_mcp_config():
     return {
         "mcpServers": {
             "virtualpc-mcp-server": {
@@ -108,14 +107,14 @@ async def build_distributed_mcp_config(task_id: str = None):
                 "url": "http://mcp.aworldagents.com/vpc/mcp",
                 "headers": {
                     "Authorization": f"{os.getenv('MCP_AUTHORIZATION')}",
-                    # "MCP_SERVERS": "readweb-server,browseruse-server,documents-csv-server,documents-docx-server,documents-pptx-server,documents-pdf-server,documents-txt-server,download-server,intelligence-code-server,intelligence-think-server,intelligence-guard-server,media-audio-server,media-image-server,media-video-server,parxiv-server,terminal-server,wayback-server,wiki-server,googlesearch-server",
+                    # MCP_SERVERS": "readweb-server,browseruse-server,documents-csv-server,documents-docx-server,documents-pptx-server,documents-pdf-server,documents-txt-server,download-server,intelligence-code-server,intelligence-think-server,intelligence-guard-server,media-audio-server,media-image-server,media-video-server,parxiv-server,terminal-server,wayback-server,wiki-server,googlesearch-server",
 
                     # "MCP_SERVERS": "ms-playwright,google-search,e2b-code-server,image-server,audio-server",
                     "MCP_SERVERS": "ms-playwright",
                     # "MCP_SERVERS": "e2b-code-server",
                     # "IMAGE_ENV": json.dumps({"E2B_API_KEY": os.getenv('MCP_E2B_API_KEY', '')}),
                     "IMAGE_ENV": json.dumps({"E2B_API_KEY": os.getenv('MCP_E2B_API_KEY', '')}) if os.getenv("IP_POOL_ENABLE", "False") == "False"
-                            else json.dumps({"E2B_API_KEY": os.getenv('MCP_E2B_API_KEY', ''), "PLAYWRIGHT_PROXY_SERVER": await get_proxy_server(task_id=task_id)}),
+                            else json.dumps({"E2B_API_KEY": os.getenv('MCP_E2B_API_KEY', ''), "PLAYWRIGHT_PROXY_SERVER": await get_proxy_server()}),
                     # Specify environment variable values for tools on the client side, note JSON String structure
                     "IMAGE_VERSION": f"{os.getenv('IMAGE_VERSION', '')}" if os.getenv("IP_POOL_ENABLE", "False") == "False"
                             else f"{os.getenv('IP_POOL_IMAGE_VERSION', '')}",
@@ -183,15 +182,15 @@ def ensure_directories_exist():
         os.makedirs(chroma_path, exist_ok=True)
 
 
-async def build_mcp_config(user_input: str = None, session_id: str = None, task_id: str = None):
+async def build_mcp_config():
     if os.getenv('MCP_ENV', 'local') == 'local':
         # Ensure necessary directories exist
         ensure_directories_exist()
         mcp_config = await build_local_mcp_config()
     else:
-        mcp_config = await build_distributed_mcp_config(task_id=task_id)
+        mcp_config = await build_distributed_mcp_config()
 
-    logger.info(f"user_input={user_input}|session_id={session_id}|task_id={task_id}|mcp_config={mcp_config}")
+    logger.info(f"mcp_config={mcp_config}")
     # If not enabled, remove related configuration
     if os.getenv('GAIA_AGENT_CONTEXT', 'common') == 'common' and 'amnicontext-server' in mcp_config['mcpServers']:
         del mcp_config['mcpServers']['amnicontext-server']

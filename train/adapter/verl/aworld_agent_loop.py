@@ -10,8 +10,11 @@ import uuid
 from typing import Any, List, Dict, Union, Sequence
 
 from aworld.agents.llm_agent import Agent
+from aworld.config import TaskConfig
 from aworld.config.agent_loader import _load_yaml
 from aworld.core.agent.swarm import Swarm
+from aworld.core.context.amni import ApplicationContext
+from aworld.core.context.base import Context
 from aworld.core.task import TaskResponse, Task
 from aworld.runner import Runners
 from aworld.logs.util import logger
@@ -91,6 +94,15 @@ class AworldAgentLoop(AgentLoopBase):
 
         return output
 
+    async def build_context(self, input: Any) -> Context:
+        return await ApplicationContext.from_input(task_input=input)
+
+    async def build_task_config(self) -> TaskConfig:
+        return TaskConfig(
+            stream=False,
+            exit_on_failure=True
+        )
+
     async def run_agents(self, input: Any, agent: Union[Agent, Swarm]):
 
         async def run(task: Task):
@@ -105,7 +117,8 @@ class AworldAgentLoop(AgentLoopBase):
         if isinstance(input, dict):
             input = input.get("content", "")
 
-        task = Task(id=str(uuid.uuid4()), input=input, timeout=1200, agent=agent)
+        task = Task(id=str(uuid.uuid4()), input=input, timeout=1200, agent=agent, context=await self.build_context(),
+                    conf=await self.build_task_config())
         resp = TaskResponse(id=task.id, trajectory=[{
             "exp_meta": {
                 "task_id": "timeout_default",
