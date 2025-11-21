@@ -1,4 +1,5 @@
 # aworld/runners/handler/output.py
+import copy
 import json
 import time
 import traceback
@@ -208,10 +209,9 @@ class DefaultMemoryHandler(DefaultHandler):
 
         # If skip_summary is True, disable summary
         if skip_summary and agent_memory_config:
+            agent_memory_config = copy.deepcopy(agent_memory_config)
             agent_memory_config.enable_summary = False
         await self.memory.add(ai_message, agent_memory_config=agent_memory_config)
-        if skip_summary and agent_memory_config:
-            agent_memory_config.enable_summary = True
 
     async def add_human_input_to_memory(self, agent: Agent, content: Any, context: Context, memory_type="init"):
         """Add user input to memory"""
