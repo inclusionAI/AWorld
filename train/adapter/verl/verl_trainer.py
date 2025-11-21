@@ -190,7 +190,7 @@ class VerlTrainer(TrainerProcessor):
         # VeRL agent config file
         module = module.replace(os.getcwd(), '').replace('/', '.')
         module = module[1:] if module[0] == '.' else module
-        con = f"""- name: {agent.name()}
+        con = f"""- name: gaia_agent
   _target_: train.examples.train_gaia_with_aworld_verl.rollout.verl_agent_loop.VerlAgentLoop
                """
 
