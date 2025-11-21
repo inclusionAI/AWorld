@@ -106,7 +106,7 @@ class VerlTrainer(TrainerProcessor):
         logger.info(f"View reward function in file: {reward_file_path}, name is: {self.reward_file_path}")
         return reward_file_path, reward_func.__name__
 
-    def check_agent(self, agent: Union[str, Agent]) -> str:
+    def check_agent(self, agent: Union[str, Agent], context_config, task_config) -> str:
         """Check single agent instance, and create agent loop dynamically.
 
         NOTE: Single-agent only now, Swarm to be added in the future.
@@ -173,6 +173,8 @@ class VerlTrainer(TrainerProcessor):
                                    black_tool_actions=agent.black_tool_actions,
                                    skill_configs=agent.skill_configs,
                                    event_handler_name=agent.event_handler_name,
+                                   context_config=context_config,
+                                   task_config=task_config,
                                    tool_aggregate_func_import_str=func_str,
                                    tools_aggregate_func=func_name,
                                    parser_module=type(agent.model_output_parser).__module__,

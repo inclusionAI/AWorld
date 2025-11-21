@@ -9,7 +9,7 @@ from aworld.config import AgentConfig, ConfigDict, TaskConfig, SummaryPromptConf
 from aworld.config.conf import HistoryWriteStrategy
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni import TaskInput, ApplicationContext
-from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig
+from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig, AmniContextConfig
 from aworld.core.task import Task
 from aworld.dataset.trajectory_strategy import MemoryTrajectoryStrategy
 from aworld.logs.util import logger
@@ -41,7 +41,7 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
             llm_model_name=llm_model_name,
             llm_base_url=llm_base_url,
             llm_api_key=llm_api_key,
-            llm_provider="openai",
+            llm_provider="verl",
             llm_temperature=1.0,
             top_k=20,
             timeout=7200,
@@ -51,9 +51,6 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
                 "request_id": uuid.uuid4().hex,
                 "tool_parser": "hermes"
             }
-        ),
-        memory_config=AgentMemoryConfig(
-            history_write_strategy=HistoryWriteStrategy.DIRECT
         )
     )
 
@@ -67,9 +64,7 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
         mcp_servers=list(server_name for server_name in mcp_config.get("mcpServers", {}).keys())
     )
 
-
-
-async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, session_id: str = None, task_id: str = None):
+def build_gaia_context_config() -> AmniContextConfig:
     # 1. init middlewares
     init_middlewares()
 
@@ -97,9 +92,14 @@ async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, sess
             ],
         )
 
-    # 设置 debug_mode
+    # debug_mode
     debug_mode = os.getenv("CONTEXT_DEBUG_MODE", "false").lower() in ("true", "1", "yes")
     context_config.debug_mode = debug_mode
+
+    return context_config
+
+async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, session_id: str = None, task_id: str = None):
+    context_config = build_gaia_context_config()
 
     # 3. build context
     if not session_id:

@@ -17,6 +17,12 @@ from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 
 
 class VerlAgentLoop(AworldAgentLoop):
+    async def build_context(self, input: Any) -> Context:
+        return await ApplicationContext.from_input(task_input=input, context_config={context_config})
+
+    async def build_task_config(self) -> TaskConfig:
+        return {task_config}
+
     async def build_agents(self) -> Union[Agent, Swarm]:
         conf = AgentConfig(
             llm_config=ConfigDict(
