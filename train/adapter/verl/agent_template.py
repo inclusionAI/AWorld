@@ -8,10 +8,11 @@ from typing import Union
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ConfigDict
 from aworld.core.agent.swarm import Swarm
+from aworld.core.context.base import Context
 from aworld.logs.util import logger
 from {parser_module} import {parser_name}
 from aworld.config import BaseConfig, ConfigDict, load_config, TaskConfig
-from aworld.core.context.amni import AmniContextConfig
+from aworld.core.context.amni import AmniContextConfig, AgentContextConfig, ApplicationContext
 
 {agent_import_str}
 {tool_aggregate_func_import_str}
@@ -20,8 +21,7 @@ from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 
 class VerlAgentLoop(AworldAgentLoop):
     async def build_context(self, input: Any) -> Context:
-        return await ApplicationContext.from_input(task_input=input,
-                context_config=AmniContextConfig({context_config}))
+        return await ApplicationContext.from_input(task_input=input, context_config=AmniContextConfig({context_config}))
 
     async def build_task_config(self) -> TaskConfig:
         return TaskConfig(
