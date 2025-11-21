@@ -242,8 +242,11 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                 tool_id = act.tool_call_id
                 tool_name = act.tool_name
                 tool_id_mapping[tool_id] = tool_name
+            self.run_hooks(message=message, hook_point=HookPoint.PRE_TOOL_CALL, hook_from=message.sender,
+                           payload=action)
             self.pre_step(action, **kwargs)
-            res = self.do_step(action, **kwargs)
+            res = self.do_step(action, message=message, **kwargs)
+            self.run_hooks(message=message, hook_point=HookPoint.POST_TOOL_CALL, hook_from=message.sender, payload=res)
             final_res = self.post_step(res, action,message=message, **kwargs)
             self._internal_process(
                 res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
@@ -323,6 +326,37 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
         except Exception:
             logger.warning(f"Tool {self.name()} write tool results to memory failed: {traceback.format_exc()}")
 
+    def run_hooks(self, message: Message, hook_point: str, hook_from: str, payload: Any = None) -> List[Message]:
+        """Execute hooks and break by exception"""
+        from aworld.runners.hook.hook_factory import HookFactory
+        from aworld.core.event.base import Message
+
+        # Get all hooks for the specified hook point
+        all_hooks = HookFactory.hooks(hook_point)
+        hooks = all_hooks.get(hook_point, [])
+        context = message.context
+        hook_events = []
+        for hook in hooks:
+            try:
+                # Create a temporary Message object to pass to the hook
+                message = Message(
+                    category="agent_hook",
+                    payload=payload,
+                    sender=hook_from,
+                    session_id=context.session_id if hasattr(
+                        context, 'session_id') else None,
+                    headers={"context": context}
+                )
+
+                # Execute hook
+                msg = sync_exec(hook.exec, message, context)
+                if msg:
+                    logger.debug(f"Hook {hook.point()} executed successfully")
+                    hook_events.append(msg)
+            except Exception as e:
+                logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
+                raise e
+        return hook_events
 
 
 class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
@@ -406,8 +440,12 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 tool_id = act.tool_call_id
                 tool_name = act.tool_name
                 tool_id_mapping[tool_id] = tool_name
+            await self.run_hooks(message=message, hook_point=HookPoint.PRE_TOOL_CALL, hook_from=message.sender,
+                                 payload=action)
             await self.pre_step(action, message=message,**kwargs)
             res = await self.do_step(action, message=message, **kwargs)
+            await self.run_hooks(message=message, hook_point=HookPoint.POST_TOOL_CALL, hook_from=message.sender,
+                                 payload=res)
             final_res = await self.post_step(res, action, message=message,**kwargs)
             await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             if isinstance(final_res, Message):
@@ -461,14 +499,6 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                 sender=action[0].agent_name,
                                 session_id=context.session_id,
                                 headers={"context": context})
-
-        # tool hooks
-        try:
-            events = []
-            async for event in run_hooks(context=message.context, hook_point=HookPoint.POST_TOOL_CALL, hook_from=result.caller, payload=step_res):
-                events.append(event)
-        except Exception:
-            logger.debug(traceback.format_exc())
         return result
 
     async def _exec_tool_callback(self, step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
@@ -541,7 +571,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 # Send via message system (DIRECT mode handling is now in send_message_with_future)
                 try:
                     future = await send_message_with_future(memory_msg)
-                    results = await future.wait()
+                    results = await future.wait(context=context)
                     if not results:
                         logger.warning(f"Memory write task failed: {memory_msg}")
                 except Exception as e:
@@ -555,6 +585,16 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         headers['context'] = message.context
         headers['level'] = headers.get('level', 0) + 1
         message.headers = headers
+
+    async def run_hooks(self, message: Message, hook_point: str, hook_from: str, payload: Any = None) -> List[Message]:
+        """Execute hooks and break by exception"""
+        hook_events = []
+        async for event in run_hooks(context=message.context,
+                                     hook_from=hook_from,
+                                     payload=payload,
+                                     hook_point=hook_point):
+            hook_events.append(event)
+        return hook_events
 
 
 class ToolsManager(Factory):
