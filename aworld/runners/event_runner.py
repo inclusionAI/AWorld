@@ -79,7 +79,7 @@ class TaskEventRunner(TaskRunner):
             logger.debug(f"swarm: {self.swarm}")
             # register agent handler
             for _, agent in self.swarm.agents.items():
-                if override_in_subclass('async_policy', agent.__class__, Agent):
+                if override_in_subclass('async_policy', agent.__class__, BaseAgent):
                     await self.event_mng.register(Constants.AGENT, agent.id(), agent.async_run)
                 else:
                     await self.event_mng.register(Constants.AGENT, agent.id(), agent.run)
@@ -158,7 +158,6 @@ class TaskEventRunner(TaskRunner):
         async with trace.message_span(message=message):
             logger.debug(f"start_message_node message id: {message.id} of task {self.task.id}")
             self.state_manager.start_message_node(message)
-            logger.debug(f"start_message_node end message id: {message.id} of task {self.task.id}")
             if handlers:
                 handler_list = handlers.get(message.topic) or handlers.get(message.receiver)
                 if not handler_list:
@@ -250,6 +249,9 @@ class TaskEventRunner(TaskRunner):
         # can use runtime backend to parallel
         for handler in handlers:
             for result in results:
+                if await self.should_stop_task(result):
+                    await self.stop()
+                    return
                 async for event in handler.handle(result):
                     yield event
 
@@ -266,6 +268,7 @@ class TaskEventRunner(TaskRunner):
                 # External control - Check task status before processing each message
                 should_stop_task = await self.should_stop_task(message)
                 if should_stop_task:
+                    logger.warn(f"Runner {message.context.get_task().id} task should stop.")
                     await self.stop()
                 if await self.is_stopped():
                     logger.info(f"{task_flag} task {self.task.id} stoped and will break snap")
@@ -304,6 +307,9 @@ class TaskEventRunner(TaskRunner):
                                                           result=error_msg)
             await self.event_mng.emit_message(error_msg)
         finally:
+            # Cancel all remaining background tasks to prevent them from running indefinitely
+            await self.clean_background_tasks()
+
             if await self.is_stopped():
                 try:
                     await self.context.update_task_after_run(self._task_response)
@@ -317,6 +323,23 @@ class TaskEventRunner(TaskRunner):
                                 await agent.sandbox.cleanup()
                         except Exception as e:
                             logger.warning(f"Failed to cleanup sandbox for agent {agent_name}: {e}")
+
+    async def clean_background_tasks(self):
+        if not self.background_tasks:
+            return
+        logger.info(f"Cancelling {len(self.background_tasks)} remaining background tasks for task {self.task.id}")
+        for task in self.background_tasks.copy():
+            if not task.done():
+                task.cancel()
+        # Wait for cancelled tasks to complete, but don't wait too long
+        try:
+            await asyncio.wait(self.background_tasks, timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"Some background tasks for task {self.task.id} didn't cancel within timeout")
+        except Exception as e:
+            logger.warning(f"Error waiting for background tasks cancellation: {e}")
+        # Clear the set as all tasks should be done now
+        self.background_tasks.clear()
 
     async def stop(self):
         self._stopped.set()

@@ -139,12 +139,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         else:
             logger.warning(f"Unknown conf type: {type(conf)}")
 
-        self._name = name if name else convert_to_snake(self.__class__.__name__)
+        self._init_id_name(name, agent_id)
         self._desc = desc if desc else self._name
-        # Unique flag based agent name
-        self._id = (
-            agent_id if agent_id else f"{self._name}---uuid{uuid.uuid1().hex[0:6]}uuid"
-        )
         self.task: Any = task
         # An agent can use the tool list
         self.tool_names: List[str] = tool_names or []
@@ -176,11 +172,17 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         if self.mcp_servers or self.tool_names:
             self.sandbox = sandbox or Sandbox(
                 mcp_servers=self.mcp_servers, mcp_config=self.mcp_config,
-                black_tool_actions = self.black_tool_actions,
-                skill_configs = self.skill_configs
+                black_tool_actions=self.black_tool_actions,
+                skill_configs=self.skill_configs
             )
         self.loop_step = 0
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
+
+    def _init_id_name(self, name: str, agent_id: str = None):
+        self._name = name if name else convert_to_snake(self.__class__.__name__)
+        self._id = (
+            agent_id if agent_id else f"{self._name}---uuid{uuid.uuid1().hex[0:6]}uuid"
+        )
 
     def id(self) -> str:
         return self._id
@@ -336,6 +338,14 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     def postprocess_terminate_loop(self, message: Message):
         self.loop_step = 0
+
+    def _update_headers(self, input_message: Message) -> Dict[str, Any]:
+        headers = input_message.headers.copy()
+        headers['context'] = input_message.context
+        headers['level'] = headers.get('level', 0) + 1
+        if input_message.group_id:
+            headers['parent_group_id'] = input_message.group_id
+        return headers
 
 
 class AgentManager(Factory):
