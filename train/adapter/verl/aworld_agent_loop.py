@@ -9,22 +9,20 @@ import traceback
 import uuid
 from typing import Any, List, Dict, Union, Sequence
 
+from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
+
 from aworld.agents.llm_agent import Agent
 from aworld.config import TaskConfig
 from aworld.config.agent_loader import _load_yaml
 from aworld.core.agent.swarm import Swarm
-from aworld.core.context.amni import ApplicationContext
+from aworld.core.context.amni import ApplicationContext, TaskInput
 from aworld.core.context.base import Context
 from aworld.core.task import TaskResponse, Task
-from aworld.runner import Runners
 from aworld.logs.util import logger
-
-from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput, AgentLoopMetrics
-
+from aworld.runner import Runners
 from aworld.trace.base import Span
 from aworld.trace.span_cosumer import register_span_consumer, SpanConsumer
 from train.adapter.common import encode_messages, turns_num
-from train.adapter.verl.verl_provider import VerlProvider
 
 
 @register_span_consumer()
@@ -94,8 +92,8 @@ class AworldAgentLoop(AgentLoopBase):
 
         return output
 
-    async def build_context(self, input: Any) -> Context:
-        return await ApplicationContext.from_input(task_input=input)
+    async def build_context(self, task_input: TaskInput) -> Context:
+        return await ApplicationContext.from_input(task_input=task_input)
 
     async def build_task_config(self) -> TaskConfig:
         return TaskConfig(
@@ -117,7 +115,21 @@ class AworldAgentLoop(AgentLoopBase):
         if isinstance(input, dict):
             input = input.get("content", "")
 
-        task = Task(id=str(uuid.uuid4()), input=input, timeout=1200, agent=agent, context=await self.build_context(input),
+        # 生成 task_id, user_id, session_id
+        task_id = str(uuid.uuid4())
+        user_id = "user"  # 默认用户ID
+        session_id = str(uuid.uuid4())  # 生成会话ID
+
+        # 将 input 封装为 TaskInput
+        task_input = TaskInput(
+            user_id=user_id,
+            session_id=session_id,
+            task_id=task_id,
+            task_content=input,
+            origin_user_input=input
+        )
+
+        task = Task(id=task_id, input=task_input, timeout=1200, agent=agent, context=await self.build_context(task_input),
                     conf=await self.build_task_config())
         resp = TaskResponse(id=task.id, trajectory=[{
             "exp_meta": {
