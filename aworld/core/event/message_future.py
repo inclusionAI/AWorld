@@ -57,7 +57,7 @@ class MessageFuture:
             self._task = asyncio.create_task(self._wait_internal(timeout))
             self._polling_started = True
 
-    async def wait(self, timeout: float = 30.0):
+    async def wait(self, timeout: float = 30.0, context: 'Context' = None):
         """Wait for message completion and return result.
 
         Args:
@@ -81,6 +81,16 @@ class MessageFuture:
             except TimeoutError:
                 print("Wait timeout")
         """
+        from aworld.logs.util import logger
+        logger.info(f"Waiting for message {self.msg_id}")
+        if context:
+            from aworld.core.task import TaskStatusValue
+            task_status = await context.get_task_status()
+            if (task_status == TaskStatusValue.CANCELLED
+                    or task_status == TaskStatusValue.INTERRUPTED):
+                self.set_empty_result(msg=f"Task {task_status.lower()}: message not sent")
+                logger.info(f"Task {task_status.lower()}: message not sent")
+                return self.result()
         # Start polling with the specified timeout
         self._start_polling(timeout)
         
@@ -114,6 +124,20 @@ class MessageFuture:
             asyncio.InvalidStateError: If message not yet completed
         """
         return self.future.result()
+
+    def set_empty_result(self, msg: str = ''):
+        # Task cancelled or interrupted, return a completed Future with empty result
+        from aworld.runners.state_manager import RunNode, RunNodeStatus
+
+        # Create an empty RunNode with SUCCESS status to indicate completion without actual execution
+        empty_node = RunNode(
+            status=RunNodeStatus.BREAKED,
+            result_msg=msg,
+            results=[]
+        )
+
+        # Set empty result to future
+        self.future.set_result(empty_node)
 
     async def _wait_internal(self, timeout: float = 60.0) -> None:
         """Background polling task.
