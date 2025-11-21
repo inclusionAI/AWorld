@@ -10,6 +10,7 @@ from aworld.config.conf import HistoryWriteStrategy
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig, AmniContextConfig
+from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig
 from aworld.core.task import Task
 from aworld.dataset.trajectory_strategy import MemoryTrajectoryStrategy
 from aworld.logs.util import logger
@@ -41,7 +42,7 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
             llm_model_name=llm_model_name,
             llm_base_url=llm_base_url,
             llm_api_key=llm_api_key,
-            llm_provider="verl",
+            llm_provider="openai",
             llm_temperature=1.0,
             top_k=20,
             timeout=7200,
@@ -51,6 +52,9 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
                 "request_id": uuid.uuid4().hex,
                 "tool_parser": "hermes"
             }
+        ),
+        memory_config=AgentMemoryConfig(
+            history_write_strategy=HistoryWriteStrategy.DIRECT
         )
     )
 
