@@ -578,7 +578,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                 policy_result = agent_result.actions
             else:
                 policy_result = await self.execution_tools(agent_result.actions, message)
-        await self.send_llm_response_output(llm_response, agent_result, message.context, kwargs.get("outputs"))
+        await self.send_agent_response_output(self, llm_response, message.context, kwargs.get("outputs"))
         return policy_result
 
     async def execution_tools(self, actions: List[ActionModel], message: Message = None, **kwargs) -> List[ActionModel]:
@@ -806,39 +806,29 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         except Exception as e:
             logger.warn(f"Memory write task failed: {traceback.format_exc()}")
 
-    async def send_llm_response_output(self, llm_response: ModelResponse, agent_result: AgentResult, context: Context,
-                                       outputs: Outputs = None):
-        """Send LLM response to output"""
-        if not llm_response or llm_response.error:
+    @staticmethod
+    async def send_agent_response_output(agent: BaseAgent, response: Any, context: Context, outputs: Outputs = None):
+        if not response:
             return
-
-        llm_resp_output = MessageOutput(
-            source=llm_response,
-            metadata={"agent_id": self.id(), "agent_name": self.name(), "is_finished": self.finished}
+        resp_output = MessageOutput(
+            source=response,
+            metadata={"agent_id": agent.id(), "agent_name": agent.name(), "is_finished": agent.finished}
         )
-        if eventbus is not None and llm_response:
+        if eventbus is not None:
             await send_message(Message(
                 category=Constants.OUTPUT,
-                payload=llm_resp_output,
-                sender=self.id(),
+                payload=resp_output,
+                sender=agent.id(),
                 session_id=context.session_id if context else "",
                 headers={"context": context}
             ))
-        elif not self.event_driven and outputs:
-            await outputs.add_output(llm_resp_output)
+        elif not agent.event_driven and outputs:
+            await outputs.add_output(resp_output)
 
     def is_agent_finished(self, llm_response: ModelResponse, agent_result: AgentResult) -> bool:
         if not agent_result.is_call_tool:
             self._finished = True
         return self.finished
-
-    def _update_headers(self, input_message: Message) -> Dict[str, Any]:
-        headers = input_message.headers.copy()
-        headers['context'] = input_message.context
-        headers['level'] = headers.get('level', 0) + 1
-        if input_message.group_id:
-            headers['parent_group_id'] = input_message.group_id
-        return headers
 
     async def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
         from aworld.core.context.amni import AmniContext
