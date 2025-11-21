@@ -66,13 +66,13 @@ class AgentTrainer:
             raise ValueError(f"{train_engine_name} train backend is not a TrainerProcessor")
 
         # process prerequisite modules
-        train_engine.check_agent(agent=agent, context_config=context_config, task_config=task_config)
+        agent_config = train_engine.check_agent(agent=agent, context_config=context_config, task_config=task_config)
         train_engine.check_dataset(dataset=train_dataset, test_dataset=test_dataset)
         train_engine.check_reward(reward_func=reward_func)
         real_config = train_engine.check_config(config=config)
         train_engine.mark_initialized()
 
-        logger.info(f"Train config: {real_config}")
+        logger.info(f"Agent Config: {agent_config} \n Train config: {real_config}")
         self.train_processor = train_engine
 
     @staticmethod
