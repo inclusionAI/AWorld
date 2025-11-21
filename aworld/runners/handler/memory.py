@@ -1,20 +1,20 @@
 # aworld/runners/handler/output.py
-import json
+import copy
 import time
 import traceback
 from datetime import datetime
-from typing import AsyncGenerator, Any
+from typing import Any
 
 from aworld.agents.llm_agent import Agent
+from aworld.core.common import ActionResult
 from aworld.core.context.base import Context
+from aworld.core.event.base import Message, Constants, MemoryEventMessage, MemoryEventType
+from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryToolMessage, MessageMetadata, MemoryHumanMessage, MemorySystemMessage, \
     MemoryAIMessage
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
-from aworld.core.common import TaskItem, ActionResult
-from aworld.core.event.base import Message, Constants, TopicType, MemoryEventMessage, MemoryEventType
-from aworld.logs.util import logger
 from aworld.runners.hook.hook_factory import HookFactory
 
 
@@ -180,7 +180,7 @@ class DefaultMemoryHandler(DefaultHandler):
         """Add LLM response to memory"""
         # Get start time from context (if exists)
         start_time = context.context_info.get("llm_call_start_time")
-        
+
         ai_message = MemoryAIMessage(
             content=llm_response.content,
             tool_calls=llm_response.tool_calls,
@@ -195,23 +195,22 @@ class DefaultMemoryHandler(DefaultHandler):
                 }
             )
         )
-        
+
         # If start time exists in context, update it
         if start_time:
             ai_message.start_time = start_time
         # Record message end time
         ai_message.end_time = None
-        
+
         agent_memory_config = agent.memory_config
         if self._is_amni_context(context):
             agent_memory_config = context.get_config().get_agent_context_config(agent.id())
 
         # If skip_summary is True, disable summary
         if skip_summary and agent_memory_config:
+            agent_memory_config = copy.deepcopy(agent_memory_config)
             agent_memory_config.enable_summary = False
         await self.memory.add(ai_message, agent_memory_config=agent_memory_config)
-        if skip_summary and agent_memory_config:
-            agent_memory_config.enable_summary = True
 
     async def add_human_input_to_memory(self, agent: Agent, content: Any, context: Context, memory_type="init"):
         """Add user input to memory"""
@@ -279,10 +278,10 @@ class DefaultMemoryHandler(DefaultHandler):
         tool_use_summary = None
         if isinstance(tool_result, ActionResult):
             tool_use_summary = tool_result.metadata.get("tool_use_summary")
-        
+
         # Get start time from context (if exists)
         start_time = context.context_info.get(f"tool_call_start_time_{tool_call_id}")
-        
+
         tool_message = MemoryToolMessage(
             content=tool_result.content if hasattr(tool_result, 'content') else tool_result,
             tool_call_id=tool_call_id,
@@ -297,14 +296,14 @@ class DefaultMemoryHandler(DefaultHandler):
                 ext_info={"tool_name": tool_result.tool_name, "action_name": tool_result.action_name}
             )
         )
-        
+
         # If start time exists in context, update it
         if start_time:
             tool_message.start_time = start_time
-        
+
         # Record message end time
         tool_message.end_time = None
-        
+
         await memory.add(tool_message, agent_memory_config=agent.memory_config)
 
     def _is_amni_context(self, context: Context):
@@ -314,7 +313,7 @@ class DefaultMemoryHandler(DefaultHandler):
     @staticmethod
     async def handle_memory_message_directly(memory_msg: MemoryEventMessage, context: Context):
         """Handle memory message directly without going through message system
-        
+
         Args:
             memory_msg: Memory event message
             context: Context object
@@ -325,7 +324,7 @@ class DefaultMemoryHandler(DefaultHandler):
                 def __init__(self, task):
                     self.task = task
                     self.start_time = 0
-            
+
             task = context.get_task()
             simple_runner = SimpleRunner(task)
             handler = DefaultMemoryHandler(simple_runner)

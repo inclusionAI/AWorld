@@ -1,7 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import json
-from typing import Union
+from typing import Union, Any
 
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
@@ -26,7 +26,7 @@ class AworldAgentExecutor(AgentExecutor):
         self.agent = agent
         self.streaming = streaming
 
-    def _get_message_meta_str(self, metadata, key: str) -> str:
+    def _get_message_meta_str(self, metadata, key: str) -> Any:
         if not metadata:
             return None
         return metadata.get(key, None)
@@ -47,9 +47,9 @@ class AworldAgentExecutor(AgentExecutor):
                            agent=self.agent,
                            user_id=self._get_message_meta_str(context.message.metadata, 'user_id'),
                            session_id=self._get_message_meta_str(context.message.metadata, 'session_id'),
-                           id=self._get_message_meta_str(context.message.metadata, 'task_id'),
-                           conf=self._get_message_meta_str(context.message.metadata, 'task_conf'),
-                           )
+                           conf=self._get_message_meta_str(context.message.metadata, 'task_conf'))
+        if self._get_message_meta_str(context.message.metadata, 'task_id'):
+            aworld_task.id = self._get_message_meta_str(context.message.metadata, 'task_id')
         run_conf = self._get_message_meta_str(context.message.metadata, 'run_conf')
         streaming_mode = self._get_message_meta_str(context.message.metadata, 'streaming_mode')
 
