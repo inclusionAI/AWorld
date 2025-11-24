@@ -2,7 +2,7 @@
 
 # AWorld Train
 
-*为 AWorld 智能体提供更简单高效进化能力*
+*为 AWorld 智能体提供更易用高效进化能力*
 
 [![License: MIT][license-image]][license-url]
 
@@ -15,7 +15,7 @@ AWorld Training 目标是简化Agent训练的工作流程和复杂度，不仅�
 在接口层，使用框架无关的设计，可以将 Agent 集成到您熟悉的 RL 训练框架中。
 ![架构图](../docs/imgs/train_env_agent_architecture.png)
 
-实现Agent进化需要考虑5个模块：
+AWorld train实现Agent进化需要考虑5个模块：
 
 1. **Agent 构建 (`agent`):** 构建 Agent 的核心逻辑、策略和决策能力。
 2. **工具环境设置 (`env`):** 搭建(可选)和配置 Agent 使用的工具环境，定义状态/动作空间以及与agent的交互机制。
@@ -112,6 +112,8 @@ export MCP_SERVER_URL=http://localhost:8080/mcp
 
 在构建 Agent 时，您可以使用 `get_agent_tool_env_and_servers` 函数来配置 MCP 请求参数并提供 MCP
 服务器列表。如果无参数调用此函数，它将自动使用默认值。
+<details>
+<summary>Click to view the code</summary>
 
 ```python
 gaia_env_config, gaia_env_servers = get_agent_tool_env_and_servers()
@@ -134,6 +136,7 @@ print(f"gaia_env_config: {gaia_env_config}\ngaia_env_servers: {gaia_env_servers}
 # }
 # gaia_env_servers: ['readweb-server', 'browser-server', ...]
 ```
+</details>
 
 ## 定义 Agent
 
@@ -223,12 +226,13 @@ trainer.train()
 yaml格式配置文件，基于实际情况配置训练相关参数，用于定义训练参数，如迭代次数、学习率、批次大小等。
 配置示例: [grpo_trainer.yaml](https://github.com/inclusionAI/AWorld/blob/main/train/examples/train_gaia_with_aworld_verl/grpo_trainer.yaml)
 
+### 补充说明
 请特别关注以下核心配置项，其值为空时AWorld会基于用户的 trainer **自动设置**：
 
 + `train_files`, `val_files`: 指定训练数据集和验证数据集的文件路径，位于data。
 + `agent_loop_config_path`: 指定自定义 AgentLoop 的配置文件，位于actor_rollout_ref.rollout.agent。
-+ `reward_fn_file_path` : 定义了奖励函数所在的文件路径，位于custom_reward_function。
-+ `reward_fn_name` (位于第 4.1 节): 指定了要使用的奖励函数名称，位于custom_reward_function。
++ `reward_fn_file_path`: 定义了奖励函数所在的文件路径，位于custom_reward_function。
++ `reward_fn_name`: 指定了要使用的奖励函数名称，位于custom_reward_function。
 
 详细参数请在 [VeRL 官方文档](https://verl.readthedocs.io/en/latest/examples/config.html)中查阅。
 
@@ -236,11 +240,9 @@ yaml格式配置文件，基于实际情况配置训练相关参数，用于定�
 
 <div align="center">
 
-**AWorld Train** — 让你的 AWorld 智能体更简单高效进化
+**AWorld Train** — 让你的 AWorld 智能体更易用高效进化
 
 [license-image]: https://img.shields.io/badge/License-MIT-yellow.svg
 [license-url]: https://opensource.org/licenses/MIT
 
 </div>
-
-

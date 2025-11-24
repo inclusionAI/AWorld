@@ -7,7 +7,6 @@ from typing import Dict, Any, Optional, Union, List
 from enum import Enum
 
 from aworld.config import ConfigDict
-from aworld.core.memory import MemoryItem
 
 Config = Union[Dict[str, Any], ConfigDict, BaseModel]
 
@@ -71,6 +70,7 @@ class ToolActionInfo(BaseModel):
     name: str
     input_params: Dict[str, ParamInfo] = {}
     desc: str = None
+    return_params: Optional[Dict[str, ParamInfo]] = {}
 
 
 class ActionModel(BaseModel):
