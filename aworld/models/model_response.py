@@ -64,11 +64,17 @@ class ToolCall(BaseModel):
         if not data:
             return None
 
-        tool_id = data.get('id', f"call_{hash(str(data)) & 0xffffffff:08x}")
-        tool_type = data.get('type', 'function')
+        tool_id = data.get('id')
+        if not tool_id:
+            tool_id = f"call_{hash(str(data)) & 0xffffffff:08x}"
+        tool_type = data.get('type')
+        if not tool_type:
+            tool_type = 'function'
 
         function_data = data.get('function', {})
         name = function_data.get('name')
+        if not name:
+            name = "unknown"
 
         arguments = function_data.get('arguments')
         # Ensure arguments is a string
@@ -267,9 +273,17 @@ class ModelResponse:
         if raw_tool_calls:
             for tool_call in raw_tool_calls:
                 if isinstance(tool_call, dict):
+                    if tool_call.get("id") is None and tool_call.get("function",{}).get("name") is None:
+                        logger.warning(f"Invalid tool call: {tool_call}")
+                        continue
                     processed_tool_calls.append(ToolCall.from_dict(tool_call))
                 else:
                     # Handle OpenAI object
+                    if (tool_call.id is None and hasattr(tool_call, 'function')
+                            and (tool_call.function is None
+                                 or (hasattr(tool_call.function, 'name') and tool_call.function.name is None))):
+                        logger.warning(f"Invalid tool call: {tool_call}")
+                        continue
                     tool_call_dict = {
                         "id": tool_call.id if hasattr(tool_call,
                                                       'id') else f"call_{hash(str(tool_call)) & 0xffffffff:08x}",
