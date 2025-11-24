@@ -149,9 +149,12 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.tool_names.append(tool)
         # An agent can delegate tasks to other agent
         self.handoffs: List[str] = agent_names or []
-        self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
-        # extract mcp_servers from mcp_config if mcp_servers is empty
-        self.mcp_servers: List[str] = extract_mcp_servers_from_config(self.mcp_config, mcp_servers or [])
+        if sandbox:
+            self.mcp_servers: List[str] = extract_mcp_servers_from_config(sandbox.mcp_config, sandbox.mcp_servers or [])
+            self.mcp_config: Dict[str, Any] = replace_env_variables(sandbox.mcp_config or {})
+        else:
+            self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
+            self.mcp_servers: List[str] = extract_mcp_servers_from_config(self.mcp_config, mcp_servers or [])
         self.skill_configs: Dict[str, Any] = self.conf.get("skill_configs", {})
         # derive mcp_servers from skill_configs if provided
         if self.skill_configs:
