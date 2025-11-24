@@ -499,7 +499,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if hasattr(observation, 'context') and observation.context:
             self.task_histories = observation.context
 
-
         messages = await self.build_llm_input(observation, info, message=message, **kwargs)
 
         serializable_messages = to_serializable(messages)
@@ -561,9 +560,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             else:
                 logger.error(f"{self.id()} failed to get LLM response")
                 raise RuntimeError(f"{self.id()} failed to get LLM response")
-
-
-
         logger.info(f"agent_result: {agent_result}")
 
         if self.is_agent_finished(llm_response, agent_result):

@@ -14,7 +14,7 @@ from .prompts import (
     tool_memory_summary_schema,
 )
 # Re-export build_mcp_config for convenience
-from ..mcp import build_mcp_config
+from ..mcp_tools import build_mcp_config
 
 # Import custom_agent_loop last (depends on gaia and agent_loop)
 
