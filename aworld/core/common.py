@@ -70,7 +70,7 @@ class ToolActionInfo(BaseModel):
     name: str
     input_params: Dict[str, ParamInfo] = {}
     desc: str = None
-    return_params: Optional[Dict[str, ParamInfo]] = {}
+    output_params: Optional[Dict[str, ParamInfo]] = {}
 
 
 class ActionModel(BaseModel):
