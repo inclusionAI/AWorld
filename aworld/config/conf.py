@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import copy
 import os
 import traceback
 import uuid
@@ -204,6 +205,25 @@ class AgentMemoryConfig(BaseConfig):
     long_term_model: Optional[str] = Field(default=None, description="long-term extract model")
     # LongTermConfig
     long_term_config: Optional[BaseModel] = Field(default=None, description="long_term_config")
+
+    def __deepcopy__(self, memo=None):
+        """Support copy.deepcopy for AgentMemoryConfig."""
+        if memo is None:
+            memo = {}
+        
+        # Check if already copied (avoid circular references)
+        if id(self) in memo:
+            return memo[id(self)]
+        
+        # Create a new instance using model_dump and model_validate to avoid recursion
+        # Use mode='python' to get plain Python objects
+        data = self.model_dump(mode='python')
+        # Deep copy the data dict to handle nested objects
+        copied_data = copy.deepcopy(data, memo)
+        # Create new instance from copied data
+        new_instance = self.__class__.model_validate(copied_data)
+        memo[id(self)] = new_instance
+        return new_instance
 
 
 class AgentConfig(BaseConfig):

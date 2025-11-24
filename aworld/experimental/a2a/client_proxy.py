@@ -1,4 +1,3 @@
-import httpx
 import json
 from uuid import uuid4
 from typing import Union, Any, Optional
@@ -6,7 +5,6 @@ from collections.abc import AsyncIterator
 from a2a.types import (
     AgentCard,
     Message as A2AMessage,
-    SendMessageResponse,
     Role,
     TextPart,
     TaskArtifactUpdateEvent,
@@ -14,12 +12,12 @@ from a2a.types import (
     TaskState,
 )
 from pathlib import Path
-from a2a.client.client_factory import ClientFactory as A2AClientFactory
-from a2a.client.client import ClientConfig as A2AClientConfig, Client as A2AClient, ClientEvent
+from a2a.client.client import ClientEvent
 from a2a.client.card_resolver import A2ACardResolver
 from a2a.client.middleware import ClientCallContext
 from urllib.parse import urlparse
 from aworld.experimental.a2a.config import ClientConfig
+from aworld.experimental.a2a.client_manager import A2AClientManager
 from aworld.logs.util import logger
 from aworld.core.task import Task, TaskResponse
 from aworld.config import RunConfig
@@ -47,30 +45,7 @@ class A2AClientProxy:
                 "agent_card must be AgentCard, URL string, or file path string, "
                 f"got {type(agent_card)}"
             )
-        self._httpx_client = httpx.AsyncClient(timeout=self._config.timeout)
-        self._a2a_client_factory = self._init_a2a_client_factory(self._httpx_client)
-        self._a2a_client: Optional[A2AClient] = None
-
-    def _init_a2a_client_factory(self, _httpx_client) -> A2AClientFactory:
-        a2a_client_config = A2AClientConfig(
-            streaming=self._config.streaming,
-            polling=self._config.polling,
-            httpx_client=_httpx_client,
-            supported_transports=self._config.supported_transports,
-            grpc_channel_factory=self._config.grpc_channel_factory,
-            use_client_preference=self._config.use_client_preference,
-            accepted_output_modes=self._config.accepted_output_modes,
-            push_notification_configs=self._config.push_notification_configs,
-        )
-        return A2AClientFactory(
-            config=a2a_client_config,
-            consumers=self._config.consumers,
-        )
-
-    async def _ensure_a2a_client(self):
-        if self._a2a_client is None:
-            await self.get_or_init_agent_card()
-            self._a2a_client = self._a2a_client_factory.create(self._agent_card)
+        self._client_manager = A2AClientManager.get_instance(self._config)
 
     async def _resolve_agent_card(self) -> AgentCard:
         if self._agent_card_source.startswith(("http://", "https://")):
@@ -82,7 +57,7 @@ class A2AClientProxy:
                 base_url = f"{parsed_url.scheme}://{parsed_url.netloc}"
                 relative_card_path = parsed_url.path
                 resolver = A2ACardResolver(
-                    httpx_client=self._httpx_client,
+                    httpx_client=self._client_manager.get_client().https_client,
                     base_url=base_url,
                 )
                 return await resolver.get_agent_card(
@@ -164,15 +139,19 @@ class A2AClientProxy:
         Returns:
             AsyncIterator[ClientEvent | A2AMessage]: An async iterator of events and messages from the server.
         '''
-        await self._ensure_a2a_client()
         a2a_message = self._build_a2a_message(message)
         logger.debug(f"send_message metadata: {a2a_message.metadata}")
         if context:
             call_context = ClientCallContext(state=context)
         else:
             call_context = None
-        async for event in self._a2a_client.send_message(a2a_message, context=call_context):
-            yield event
+        try:
+            client = self._client_manager.get_client().create(await self.get_or_init_agent_card())
+            async for event in client.send_message(a2a_message, context=call_context):
+                yield event
+        except Exception as e:
+            logger.error(f"Failed to send message: {e}")
+            raise e
 
     async def _handle_a2a_response(self, a2a_response: ClientEvent | A2AMessage, task: Task) -> ClientEvent | TaskResponse:
         logger.debug(f"send_task receive event: {a2a_response}")
