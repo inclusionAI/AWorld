@@ -16,14 +16,14 @@ TRAIN_PROCESSOR: Dict[str, Type[TrainerProcessor]] = {
 
 
 class AgentTrainer:
-    """Aworld's agent training unified API entrance, supporting different train backends behind the trainer."""
+    """Aworld's agent training unified API entrance, supporting different train frameworks behind the trainer."""
 
     def __init__(self,
                  # Unsupported swarm now
                  agent: Union[str, Agent],
-                 config: Union[str, Config],
-                 reward_func: Union[str, Callable[..., float]],
-                 train_dataset: Union[str, Dataset],
+                 config: Union[str, Config] = None,
+                 reward_func: Union[str, Callable[..., float]] = None,
+                 train_dataset: Union[str, Dataset] = None,
                  test_dataset: Union[str, Dataset] = None,
                  run_path: str = None,
                  train_engine_name: str = 'verl') -> None:
@@ -32,12 +32,18 @@ class AgentTrainer:
         Args:
             agent: Agent module, AWorld agent, or agent config file path that can build the AWorld agent.
             reward_func: Reward module, reward function or reward function code file path.
+                         Can set in `config`, so it can be None.
             train_dataset: Dataset module, train dataset or dataset file path that can build the training dataset.
+                           Can set in `config`, so it can be None.
             test_dataset: Dataset module, test dataset or dataset file path that can build the test dataset.
-            config: Train config module, custom training configuration of special train backend.
+                          Can set in `config`, so it can be None.
+            config: Train config module, custom training configuration of special train framework.
+                    Some frameworks may already have default configs, so it can be None.
             run_path: The path to save the running code, logs and checkpoints, default is 'workspace/runs'.
             train_engine_name: The training framework to use, default is 'verl'.
         """
+
+        assert agent, "trainer agent is required!"
 
         self.agent = agent
         self.train_dataset = train_dataset
@@ -58,7 +64,7 @@ class AgentTrainer:
 
         train_engine = engine_cls(self.run_path)
         if not isinstance(train_engine, TrainerProcessor):
-            raise ValueError(f"{train_engine_name} train backend is not a TrainerProcessor")
+            raise ValueError(f"{train_engine_name} train engine is not a TrainerProcessor")
 
         # process prerequisite modules
         train_engine.check_agent(agent=agent)
