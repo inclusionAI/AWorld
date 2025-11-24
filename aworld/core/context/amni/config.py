@@ -141,6 +141,15 @@ class ContextEnvConfig(BaseModel):
     env_type: str = Field(default="local", description="Env Type, local|remote")
     env_mount_path: str = Field(default="~/workspace", description="Env Working directory for share")
     env_config: dict = Field(default_factory=dict, description="Env Config")
+    working_dir_base_path: Optional[str] = Field(
+        default=None,
+        description="Base path for working directory. Can be overridden by WORKING_DIR_BASE_PATH environment variable."
+    )
+    working_dir_path_template: Optional[str] = Field(
+        default=None,
+        description="Template for working directory path. Supports placeholders: {base_path}, {session_id}. "
+                    "Example: '{base_path}/custom/{session_id}/workspace' or '{base_path}/{session_id}/files'"
+    )
 
 class AmniContextConfig(BaseConfig):
     """AmniContext configs"""
