@@ -1620,7 +1620,8 @@ class ApplicationContext(AmniContext):
         try:
             path = template.format(
                 base_path=base_path,
-                session_id=self.session_id
+                session_id=self.session_id,
+                task_id=self.task_id
             )
             return path
         except KeyError as e:
