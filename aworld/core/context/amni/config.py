@@ -135,12 +135,49 @@ class AgentContextConfig(BaseConfig):
 
 DEFAULT_AGENT_CONFIG = AgentContextConfig()
 
+class WorkingDirOssConfig(BaseModel):
+    """OSS configuration for working directory."""
+    access_key_id: Optional[str] = Field(
+        default=None,
+        description="OSS access key ID. Priority: config > WORKING_DIR_OSS_ACCESS_KEY_ID > OSS_ACCESS_KEY_ID"
+    )
+    access_key_secret: Optional[str] = Field(
+        default=None,
+        description="OSS access key secret. Priority: config > WORKING_DIR_OSS_ACCESS_KEY_SECRET > OSS_ACCESS_KEY_SECRET"
+    )
+    endpoint: Optional[str] = Field(
+        default=None,
+        description="OSS endpoint. Priority: config > WORKING_DIR_OSS_ENDPOINT > OSS_ENDPOINT"
+    )
+    bucket_name: Optional[str] = Field(
+        default=None,
+        description="OSS bucket name. Priority: config > WORKING_DIR_OSS_BUCKET_NAME > OSS_BUCKET_NAME"
+    )
+
 class ContextEnvConfig(BaseModel):
     """Represents environment configuration for an agent team."""
     isolate: bool = Field(default=False, description="One Task, One Isolate Env")
     env_type: str = Field(default="local", description="Env Type, local|remote")
     env_mount_path: str = Field(default="~/workspace", description="Env Working directory for share")
     env_config: dict = Field(default_factory=dict, description="Env Config")
+    
+    # Working directory path configuration
+    working_dir_base_path: Optional[str] = Field(
+        default=None,
+        description="Base path for working directory. Priority: config > WORKING_DIR_BASE_PATH > WORKING_DIR_OSS_BASE_PATH > WORKSPACE_PATH"
+    )
+    working_dir_path_template: Optional[str] = Field(
+        default=None,
+        description="Template for working directory path. Supports placeholders: {base_path}, {session_id}. "
+                    "Example: '{base_path}/custom/{session_id}/workspace' or '{base_path}/{session_id}/files'. "
+                    "Priority: config > WORKING_DIR_PATH_TEMPLATE > default"
+    )
+    
+    # OSS configuration for remote working directory
+    working_dir_oss_config: Optional[WorkingDirOssConfig] = Field(
+        default=None,
+        description="OSS configuration for working directory. Priority: config > WORKING_DIR_OSS_* > OSS_* environment variables"
+    )
 
 class AmniContextConfig(BaseConfig):
     """AmniContext configs"""
