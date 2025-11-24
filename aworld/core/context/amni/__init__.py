@@ -1518,16 +1518,76 @@ class ApplicationContext(AmniContext):
                                                  os.environ.get('OSS_ACCESS_KEY_SECRET')),
                 endpoint=os.environ.get('WORKING_DIR_OSS_ENDPOINT', os.environ.get('OSS_ENDPOINT')),
                 bucket_name=os.environ.get('WORKING_DIR_OSS_BUCKET_NAME', os.environ.get('OSS_BUCKET_NAME')),
-                base_path=os.environ.get('WORKING_DIR_OSS_BASE_PATH',
-                                         os.environ.get('WORKSPACE_PATH')) + "/" + self.session_id + "/files",
+                base_path=self.build_working_dir_base_path(),
                 mount_path=self.get_config().env_config.env_mount_path
             )
         else:
-            # default local
-            self._working_dir = DirArtifact.with_local_repository(base_path=os.environ.get('WORKSPACE_PATH')  + "/" + self.session_id + "/files")
+            # default local - use the same path building logic for consistency
+            self._working_dir = DirArtifact.with_local_repository(base_path=self.build_working_dir_base_path())
 
 
         return self._working_dir
+
+    def build_working_dir_base_path(self) -> str:
+        """
+        Build the working directory base path with support for custom templates.
+        
+        Base path priority order:
+        1. Config base_path (from context_config.env_config.working_dir_base_path)
+        2. Environment variable WORKING_DIR_BASE_PATH
+        3. Environment variable WORKING_DIR_OSS_BASE_PATH
+        4. Environment variable WORKSPACE_PATH
+        5. Empty string (if none of the above are set)
+        
+        Template priority order:
+        1. Config template (from context_config.env_config.working_dir_path_template)
+        2. Environment variable template (WORKING_DIR_PATH_TEMPLATE)
+        3. Default template: "{base_path}/{session_id}/files"
+        
+        Template placeholders:
+        - {base_path}: Base path resolved from above priority order
+        - {session_id}: Current session ID
+        
+        Examples:
+        - Template: "{base_path}/custom/{session_id}/workspace"
+        - Template: "{base_path}/{session_id}/files"
+        - Template: "/absolute/path/{session_id}/data"
+        
+        Returns:
+            str: The resolved working directory base path
+        """
+        # Get base path with priority order
+        base_path = None
+        if self._config and self._config.env_config and self._config.env_config.working_dir_base_path:
+            base_path = self._config.env_config.working_dir_base_path
+        elif os.environ.get('WORKING_DIR_BASE_PATH'):
+            base_path = os.environ.get('WORKING_DIR_BASE_PATH')
+        elif os.environ.get('WORKING_DIR_OSS_BASE_PATH'):
+            base_path = os.environ.get('WORKING_DIR_OSS_BASE_PATH')
+        elif os.environ.get('WORKSPACE_PATH'):
+            base_path = os.environ.get('WORKSPACE_PATH')
+        else:
+            base_path = ''
+        
+        # Get template with priority order
+        config_template = None
+        if self._config and self._config.env_config and self._config.env_config.working_dir_path_template:
+            config_template = self._config.env_config.working_dir_path_template
+        
+        env_template = os.environ.get('WORKING_DIR_PATH_TEMPLATE')
+        template = config_template or env_template or "{base_path}/{session_id}/files"
+        
+        # Replace placeholders
+        try:
+            path = template.format(
+                base_path=base_path,
+                session_id=self.session_id
+            )
+            return path
+        except KeyError as e:
+            # If template contains unsupported placeholders, fall back to default
+            logger.warning(f"Unsupported placeholder in working_dir_path_template: {e}, using default template")
+            return f"{base_path}/{self.session_id}/files"
 
     async def load_working_dir(self) -> DirArtifact:
         await self.init_working_dir()
