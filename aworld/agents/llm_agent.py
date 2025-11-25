@@ -125,7 +125,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         return tool_list
 
 
-class Agent(BaseAgent[Observation, List[ActionModel]]):
+class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     """Basic agent for unified protocol within the framework."""
 
     def __init__(self,
@@ -340,7 +340,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                     # Maintain the order of tool calls
                     for tool_call_id in last_tool_calls:
                         if tool_call_id not in tool_calls_map:
-                            raise AWorldRuntimeException(f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, messages: {messages}")
+                            raise AWorldRuntimeException(
+                                f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, messages: {messages}")
                         messages.append(tool_calls_map.get(tool_call_id))
                     tool_calls_map = {}
                     last_tool_calls = []
@@ -362,7 +363,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                         if not self.use_tools_in_prompt and history.metadata.get('tool_calls'):
                             messages.append({'role': history.metadata['role'], 'content': history.content,
                                              'tool_calls': [history.metadata['tool_calls']]})
-                            last_tool_calls.extend([tool_call.get('id') for tool_call in history.metadata['tool_calls']])
+                            last_tool_calls.extend(
+                                [tool_call.get('id') for tool_call in history.metadata['tool_calls']])
                         else:
                             messages.append({'role': history.metadata['role'], 'content': history.content,
                                              "tool_call_id": history.metadata.get("tool_call_id")})
@@ -493,7 +495,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if hasattr(observation, 'context') and observation.context:
             self.task_histories = observation.context
 
-
         messages = await self.build_llm_input(observation, info, message=message, **kwargs)
 
         serializable_messages = to_serializable(messages)
@@ -508,7 +509,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         try:
             events = []
-            async for event in run_hooks(message.context, HookPoint.PRE_LLM_CALL, hook_from=self.id(), payload=observation):
+            async for event in run_hooks(message.context, HookPoint.PRE_LLM_CALL, hook_from=self.id(),
+                                         payload=observation):
                 events.append(event)
         except Exception as e:
             logger.error(f"{self.id()} failed to run PRE_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
@@ -546,7 +548,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
                     try:
                         events = []
-                        async for event in run_hooks(message.context, HookPoint.POST_LLM_CALL, hook_from=self.id(), payload=llm_response):
+                        async for event in run_hooks(message.context, HookPoint.POST_LLM_CALL, hook_from=self.id(),
+                                                     payload=llm_response):
                             events.append(event)
                     except Exception as e:
                         logger.error(
@@ -555,8 +558,6 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             else:
                 logger.error(f"{self.id()} failed to get LLM response")
                 raise RuntimeError(f"{self.id()} failed to get LLM response")
-
-
 
         logger.info(f"agent_result: {agent_result}")
 
@@ -612,7 +613,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             # tool hooks
             try:
                 events = []
-                async for event in run_hooks(context=message.context, hook_point=HookPoint.POST_TOOL_CALL, hook_from=self.id(), payload=act_result):
+                async for event in run_hooks(context=message.context, hook_point=HookPoint.POST_TOOL_CALL,
+                                             hook_from=self.id(), payload=act_result):
                     events.append(event)
             except Exception:
                 logger.debug(traceback.format_exc())
@@ -783,7 +785,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
             system_prompt_template = StringPromptTemplate.from_template(self.system_prompt)
             return system_prompt_template.format(context=context, task=content, tool_list=tool_list)
 
-    async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context, skip_summary: bool = False):
+    async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context,
+                                     skip_summary: bool = False):
         memory_msg = MemoryEventMessage(
             payload=payload,
             agent=self,
@@ -895,3 +898,7 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     @staticmethod
     def from_dict(attr_dict: Dict[str, Any]) -> 'Agent':
         return Agent(**attr_dict)
+
+
+# Considering compatibility and current universality, we still use Agent to represent LLM Agent.
+Agent = LLMAgent
