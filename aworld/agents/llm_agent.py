@@ -18,7 +18,7 @@ from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
     MemoryEventType as MemoryType, MemoryEventMessage, ChunkMessage
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.model_output_parser import ModelOutputParser
-from aworld.core.model_output_parser.tool_parser import HermesToolParser
+from aworld.core.model_output_parser.hermes_tool_parser import HermesToolParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
@@ -57,6 +57,9 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         if kwargs.get("use_tools_in_prompt"):
             if not self.get_parser("tool"):
                 self.register_parser(HermesToolParser())
+        
+        # Iterate over all registered parsers to process the response.
+        # This allows for extensible parsing logic where multiple parsers can contribute to the final result.
         for content_parser in self.get_parsers().values():
             resp = await content_parser.parse(resp, **kwargs)
         content = '' if resp.content is None else resp.content
