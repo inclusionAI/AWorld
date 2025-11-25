@@ -22,15 +22,15 @@ class TrainerProcessor:
 
     @abc.abstractmethod
     def train(self):
-        """Training process implementation of the specified training backend.
+        """Training process implementation of the specified training framework.
 
         Before calling, it is necessary to correctly process the required dataset, agent, reward, and configuration.
         """
         raise NotImplementedError
 
     @abc.abstractmethod
-    def check_dataset(self, dataset: Union[str, Dataset], test_dataset: Union[str, Dataset] = None):
-        """Check if the dataset or configuration meets the requirements of the specified training backend.
+    def check_dataset(self, dataset: Union[str, Dataset] = None, test_dataset: Union[str, Dataset] = None):
+        """Check if the dataset or configuration meets the requirements of the specified training framework.
 
         TODO: supported torch dataset
         Args:
@@ -41,7 +41,7 @@ class TrainerProcessor:
 
     @abc.abstractmethod
     def check_agent(self, agent: Union[str, Agent]):
-        """Check AWorld's agent or configuration, and process it into a specific training backend supported form.
+        """Check AWorld's agent or configuration, and process it into a specific training framework supported form.
 
         Args:
             agent: The agent or configure to be the agent you want to train.
@@ -49,8 +49,8 @@ class TrainerProcessor:
         raise NotImplementedError
 
     @abc.abstractmethod
-    def check_reward(self, reward_func: Union[str, Callable[..., Any]]):
-        """Check if the reward function or configuration meets the requirements of the specified training backend.
+    def check_reward(self, reward_func: Union[str, Callable[..., Any]] = None):
+        """Check if the reward function or configuration meets the requirements of the specified training framework.
 
         Args:
             reward_func: The reward callable function or configuration to be checked.
@@ -58,8 +58,8 @@ class TrainerProcessor:
         raise NotImplementedError
 
     @abc.abstractmethod
-    def check_config(self, config: Union[str, Any]):
-        """Check if the train configuration meets the requirements of the specified training backend, and improve it.
+    def check_config(self, config: Union[str, Any] = None):
+        """Check if the train configuration meets the requirements of the specified training framework, and improve it.
 
         Args:
             config: The training configuration to be checked.

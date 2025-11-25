@@ -9,6 +9,7 @@ from aworld.runner import Runners
 from aworld.runners.state_manager import RuntimeStateManager
 from train.examples.train_gaia_with_aworld_verl.mcp import build_mcp_config
 from train.examples.train_gaia_with_aworld_verl.mcp.ip_pool import release_proxy_by_task_id
+from train.examples.train_gaia_with_aworld_verl.mcp_tools import build_mcp_config
 from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent, build_gaia_task
 
 logging.basicConfig(level=logging.INFO, force=True, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -39,10 +40,10 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
 
     async def build_gaia_task(self, user_input: str, session_id, task_id):
         if 'screen_shot' in os.getenv("ENV_PLUGINS", ""):
-            from ..mcp_tools.hooks import PostToolCallRolloutHook
+            pass
 
         if 'xiecheng_ck' in os.getenv("ENV_PLUGINS", ""):
-            from ..mcp_tools.xiecheng_hook import PostLLMCallRolloutHook
+            pass
 
         agent = build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
                                        llm_base_url=os.getenv("LLM_BASE_URL"),
