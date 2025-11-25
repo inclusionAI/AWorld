@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import AsyncGenerator, Any
 
 from aworld.agents.llm_agent import Agent
+from aworld.config import ConfigDict
 from aworld.core.context.base import Context
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryToolMessage, MessageMetadata, MemoryHumanMessage, MemorySystemMessage, \
@@ -209,7 +210,10 @@ class DefaultMemoryHandler(DefaultHandler):
 
         # If skip_summary is True, disable summary
         if skip_summary and agent_memory_config:
-            agent_memory_config = copy.deepcopy(agent_memory_config)
+            if not isinstance(agent_memory_config, ConfigDict):
+               agent_memory_config = copy.deepcopy(agent_memory_config)
+            else:
+               agent_memory_config = copy.copy(agent_memory_config)
             agent_memory_config.enable_summary = False
         await self.memory.add(ai_message, agent_memory_config=agent_memory_config)
 
