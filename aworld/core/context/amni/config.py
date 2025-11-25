@@ -317,7 +317,9 @@ class AmniConfigFactory:
 
         if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
             config = get_default_config()
-            config.agent_config = AgentContextConfig()
+            config.agent_config = AgentContextConfig(neuron_names=neuron_names)
+            if neuron_names:
+                config.agent_config.enable_system_prompt_augment = True
             config.debug_mode = debug_mode
             config.env_config = env_config
             return config
