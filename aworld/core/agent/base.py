@@ -168,9 +168,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.hooks: Dict[str, List[str]] = {}
         self.feedback_tool_result = feedback_tool_result
         self.wait_tool_result = wait_tool_result
-        self.sandbox = None
-        if self.mcp_servers or self.tool_names:
-            self.sandbox = sandbox or Sandbox(
+        self.sandbox = sandbox
+        if not self.sandbox and (self.mcp_servers or self.tool_names):
+            self.sandbox = Sandbox(
                 mcp_servers=self.mcp_servers, mcp_config=self.mcp_config,
                 black_tool_actions=self.black_tool_actions,
                 skill_configs=self.skill_configs
