@@ -5,24 +5,10 @@ import re
 import uuid
 
 from aworld.core.model_output_parser.base_content_parser import BaseContentParser
+from aworld.core.model_output_parser.default_parsers import ToolParser
 from aworld.logs.util import logger
 from aworld.models.model_response import ModelResponse, ToolCall, Function
 
-
-class ToolParser(BaseContentParser):
-
-    @property
-    def parser_type(self) -> str:
-        return "tool"
-
-    async def parse(self, resp: ModelResponse, **kwargs):
-        content, tool_calls = await self.extract_tool_calls(resp.content)
-        resp.content = content
-        resp.tool_calls = tool_calls
-        return resp
-
-    async def extract_tool_calls(self, content: str) -> tuple[str, list[ToolCall]]:
-        raise NotImplementedError
 
 
 class HermesToolParser(ToolParser):
