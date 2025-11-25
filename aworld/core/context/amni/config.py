@@ -1,24 +1,18 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import logging
 import os
-import queue
-import threading
 from enum import Enum
-from logging.handlers import TimedRotatingFileHandler
-from typing import Optional, List, Union, Dict, Any
+from typing import Optional, List, Union, Dict
 
 from pydantic import BaseModel, Field
 
 from aworld.config import ModelConfig
 from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy
-from aworld.core.memory import MemoryConfig, MemoryLLMConfig, EmbeddingsConfig
-from aworld.memory.db import MySQLMemoryStore
+from aworld.core.memory import MemoryConfig
 from aworld.memory.db.sqlite import SQLiteMemoryStore
 # from aworld.memory.db import SQLiteMemoryStore  # Temporarily commented out to avoid import errors
 from aworld.memory.main import MemoryFactory
 from .retrieval.base import RetrieverFactory
-from .retrieval.graph.base import GraphDBConfig
 from ...event.base import TopicType
 
 
