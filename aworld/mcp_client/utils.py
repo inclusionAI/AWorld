@@ -8,7 +8,6 @@ import requests
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult
-from aworld.core.context.amni import AmniContext
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
 from aworld.mcp_client.server import MCPServer, MCPServerSse, MCPServerStdio, MCPServerStreamableHttp
@@ -512,6 +511,7 @@ async def mcp_tool_desc_transform_v2(
                     headers = params.get("headers") or {}
                     if context and context.session_id:
                         env_name = headers.get("env_name")
+                        from aworld.core.context.amni import AmniContext
                         if isinstance(context, AmniContext) and context.get_config().env_config.isolate:
                             headers["SESSION_ID"] = f"{env_name}_{context.session_id}_{context.task_id}" if env_name else f"{context.session_id}_{context.task_id}"
                         else:
