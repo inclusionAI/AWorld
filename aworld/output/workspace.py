@@ -495,6 +495,23 @@ class WorkSpace(BaseModel):
         self.repository.save_index(workspace_data)
         self._rebuild_artifact_id_index()
 
+    def get_raw_file_content_by_artifact_id(self, artifact_id: str) -> str:
+        """
+        Get concatenated content of all artifacts with the same filename.
+
+        Args:
+            artifact_id: artifact_id
+
+        Returns:
+            Raw unescaped concatenated content of all matching artifacts
+        """
+        filename = artifact_id
+        artifact_data = self.repository.retrieve_latest_artifact(artifact_id)
+        if not artifact_data:
+            return ""
+        artifact = Artifact.from_dict(artifact_data)
+        return artifact.content
+
     def get_file_content_by_artifact_id(self, artifact_id: str) -> str:
         """
         Get concatenated content of all artifacts with the same filename.
