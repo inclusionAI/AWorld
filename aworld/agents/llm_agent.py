@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import json
+import os
 import traceback
 import uuid
 from collections import OrderedDict
@@ -8,7 +9,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Callable, Optional
 
 import aworld.trace as trace
-from aworld.config.conf import TaskConfig, TaskRunMode
+from aworld.config.conf import TaskConfig, TaskRunMode, AgentConfig
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
@@ -168,6 +169,27 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             tool_aggregate_func: Aggregation strategy for multiple tool results.
             event_handler_name: Custom handlers for certain types of events.
         """
+        if conf is None:
+            model_name = os.getenv("LLM_MODEL_NAME")
+            api_key = os.getenv("LLM_API_KEY")
+            base_url = os.getenv("LLM_BASE_URL")
+
+            assert api_key and model_name, (
+                "LLM_MODEL_NAME and LLM_API_KEY (environment variables) must be set, "
+                "or pass AgentConfig explicitly"
+            )
+            logger.info(f"AgentConfig is empty, using env variables:\n"
+                        f"LLM_API_KEY={'*' * min(len(api_key), 8) if api_key else 'Not set'}\n"
+                        f"LLM_BASE_URL={base_url}\n"
+                        f"LLM_MODEL_NAME={model_name}")
+
+            conf = AgentConfig(
+                llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+                llm_model_name=model_name,
+                llm_api_key=api_key,
+                llm_base_url=base_url,
+                llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
+            )
         super(Agent, self).__init__(name, conf, desc, agent_id,
                                     task=task,
                                     tool_names=tool_names,
