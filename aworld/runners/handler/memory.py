@@ -206,7 +206,7 @@ class DefaultMemoryHandler(DefaultHandler):
         
         agent_memory_config = agent.memory_config
         if self._is_amni_context(context):
-            agent_memory_config = context.get_config().get_agent_context_config(agent.id())
+            agent_memory_config = context.get_config().get_agent_memory_config(agent.id())
 
         # If skip_summary is True, disable summary
         if skip_summary and agent_memory_config:
