@@ -160,6 +160,7 @@ async def encode_messages(tokenizer: AutoTokenizer,
                         chat_template=chat_template
                     ),
                 )
+                # append tool_response
                 while i < len(messages) and messages[i].get("role") == "tool":
                     chat_list.append(messages[i])
                     i += 1
@@ -172,10 +173,48 @@ async def encode_messages(tokenizer: AutoTokenizer,
                         chat_template=chat_template
                     ),
                 )
+                # append last tool message's usage
+                if i < len(messages) and messages[i - 1].get("role") == "tool":
+                    tool_message = dict(messages[i - 1])
+                    # 将usage信息拼接到工具消息的content末尾
+                    if "usage" in tool_message:
+                        usage_chat_template = """
+{%- for message in messages -%}
+  {%- if message.role == "tool" -%}
+    {%- if message.usage is defined -%}
+      {%- if message.usage is mapping -%}
+        {{- '<context_usage>' ~ (message.usage | tojson | safe) ~ '</context_usage>\n' -}}
+      {%- else -%}
+        {{- '<context_usage>' ~ (message.usage | string) ~ '</context_usage>\n' -}}
+      {%- endif -%}
+    {%- endif -%}
+  {%- else -%}
+    {{- '<|im_start|>' + message.role + '\n' + message.content + '<|im_end|>\n' -}}
+  {%- endif -%}
+{%- endfor -%}
+{%- if add_generation_prompt -%}
+  {{- '<|im_start|>assistant\n' -}}
+{%- endif -%}
+                        """
+                        usage_token = await loop.run_in_executor(
+                            None,
+                            lambda: tokenizer.apply_chat_template(
+                                [tool_message],
+                                add_generation_prompt=False,
+                                tokenize=True,
+                                chat_template=usage_chat_template
+                            ),
+                        )
+
+                print("长度", len(response_ids), ' ', len(token_assistant), ' ', len(token_assistant_tool), ' ', len(usage_token))
+                print("response_ids ", tokenizer.decode(token_assistant_tool))
+                print('usage_ids ', tokenizer.decode(usage_token))
                 tool_response_ids = token_assistant_tool[len(token_assistant):]
                 chat_list = []
-                response_ids += tool_response_ids
-                response_mask += [0] * len(tool_response_ids)
+                response_ids += tool_response_ids + usage_token
+                # 如果有usage，则response_mask长度应当减去usage的长度
+                response_mask += [0] * (len(token_assistant_tool) - len(token_assistant))
+                response_mask += [1] * (len(usage_token))
     except Exception as e:
         raise Exception(f"Failed to convert messages to agentloop_output: {messages}. {traceback.format_exc()}")
 
