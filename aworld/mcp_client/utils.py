@@ -516,6 +516,8 @@ async def mcp_tool_desc_transform_v2(
                             headers["SESSION_ID"] = f"{env_name}_{context.session_id}_{context.task_id}" if env_name else f"{context.session_id}_{context.task_id}"
                         else:
                             headers["SESSION_ID"] = f"{env_name}_{context.session_id}" if env_name else f"{context.session_id}"
+                        logger.info(f"{server_config['type']}-HEADER is {headers['SESSION_ID']}")
+
                     if context and context.user:
                         headers["USER_ID"] = context.user
                     params["headers"] = headers
@@ -533,6 +535,7 @@ async def mcp_tool_desc_transform_v2(
                             headers["SESSION_ID"] = f"{env_name}_{context.session_id}_{context.task_id}" if env_name else f"{context.session_id}_{context.task_id}"
                         else:
                             headers["SESSION_ID"] = f"{env_name}_{context.session_id}" if env_name else f"{context.session_id}"
+                        logger.info(f"{server_config['type']}-HEADER is {headers['SESSION_ID']}")
                     if context and context.user:
                         headers["USER_ID"] = context.user
                     params["headers"] = headers
