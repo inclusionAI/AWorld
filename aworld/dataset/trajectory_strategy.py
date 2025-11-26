@@ -312,7 +312,7 @@ class MemoryTrajectoryStrategy(TrajectoryStrategy):
         }, agent_memory_config=swarm.cur_agent[0].memory_config)
 
         # Convert memory items to OpenAI message format
-        result = {}
+        result = []
         for i, item in enumerate(memory_items):
             # Check if item has to_openai_message method
             if hasattr(item, 'to_openai_message'):
@@ -320,10 +320,10 @@ class MemoryTrajectoryStrategy(TrajectoryStrategy):
                 # Add usage to the message if it exists in metadata
                 if hasattr(item, 'metadata') and item.metadata and 'usage' in item.metadata:
                     message['usage'] = item.metadata['usage']
-                result[i] = message
+                result.append(message)
             else:
                 # If item doesn't have to_openai_message, return the item as is
-                result[i] = item
+                result.append(item)
 
         return result
 

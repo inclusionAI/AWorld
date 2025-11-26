@@ -31,7 +31,7 @@ from train.examples.train_gaia_with_aworld_verl.rollout.prompts import (
 def is_summary():
     return os.getenv("GAIA_AGENT_CONTEXT", 'common') == 'amni'
 
-def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, server_manager = None, tokenizer = None):
+def build_context_aware_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, llm_provider = "openai", server_manager = None, tokenizer = None):
 
     # init middlewares
     init_middlewares()
@@ -42,7 +42,7 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
             llm_model_name=llm_model_name,
             llm_base_url=llm_base_url,
             llm_api_key=llm_api_key,
-            llm_provider="openai",
+            llm_provider=llm_provider,
             llm_temperature=1.0,
             top_k=20,
             timeout=7200,
@@ -68,7 +68,14 @@ def build_gaia_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, serv
         mcp_servers=list(server_name for server_name in mcp_config.get("mcpServers", {}).keys())
     )
 
-def build_gaia_context_config() -> AmniContextConfig:
+def build_memory_aware_task_config() -> TaskConfig:
+    return TaskConfig(
+        stream=False,
+        exit_on_failure=True,
+        trajectory_strategy=MemoryTrajectoryStrategy
+    )
+
+def build_context_config() -> AmniContextConfig:
     # 1. init middlewares
     init_middlewares()
 
@@ -103,7 +110,7 @@ def build_gaia_context_config() -> AmniContextConfig:
     return context_config
 
 async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, session_id: str = None, task_id: str = None):
-    context_config = build_gaia_context_config()
+    context_config = build_context_config()
 
     # 3. build context
     if not session_id:
