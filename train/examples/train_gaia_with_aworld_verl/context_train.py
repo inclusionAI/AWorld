@@ -6,8 +6,10 @@ import os
 from dotenv import load_dotenv
 
 from aworld.config import TaskConfig
-from train.examples.train_gaia_with_aworld_verl.mcp import build_mcp_config
+from train.examples.train_gaia_with_aworld_verl.mcp_tools import build_mcp_config
 from train.examples.train_gaia_with_aworld_verl.reward import gaia_reward_func
+from train.examples.train_gaia_with_aworld_verl.rollout import build_context_aware_agent
+from train.examples.train_gaia_with_aworld_verl.rollout.agent_config import build_context_aware_task_config
 
 
 async def main():
@@ -43,14 +45,12 @@ async def main():
     #     conf=agent_config
     # )
     from train.trainer.agent_trainer import AgentTrainer
-    from train.examples.train_gaia_with_aworld_verl.rollout import build_gaia_agent
-    from train.examples.train_gaia_with_aworld_verl.rollout.gaia import build_gaia_context_config
     from aworld.dataset.trajectory_strategy import MemoryTrajectoryStrategy
-    agent = build_gaia_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
+    agent = build_context_aware_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
                              llm_base_url=os.getenv("LLM_BASE_URL"),
                              llm_api_key=os.getenv("LLM_API_KEY"),
                              mcp_config=await build_mcp_config())
-    context_config = build_gaia_context_config()
+    context_config = build_context_aware_task_config()
     task_config = TaskConfig(
         stream=False,
         exit_on_failure=True,

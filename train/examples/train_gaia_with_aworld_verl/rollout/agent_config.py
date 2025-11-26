@@ -68,7 +68,7 @@ def build_context_aware_agent(llm_model_name, llm_base_url, llm_api_key, mcp_con
         mcp_servers=list(server_name for server_name in mcp_config.get("mcpServers", {}).keys())
     )
 
-def build_memory_aware_task_config() -> TaskConfig:
+def build_context_aware_task_config() -> TaskConfig:
     return TaskConfig(
         stream=False,
         exit_on_failure=True,

@@ -217,10 +217,10 @@ class AworldAgentLoop(AgentLoopBase):
     def get_num_turns(self, trajectory: List[Dict[str, Any]]):
         return len(trajectory)
 
-    async def convert_memory_trajectory_agent_output(self, trajectory: List[Any]) -> AgentLoopOutput:
+    async def convert_memory_trajectory_agent_output(self, trajectory: List[Any], chat_template) -> AgentLoopOutput:
         logger.warning(f"######## res: {trajectory} ########\n")
 
-        return self.to_agent_loop_output(trajectory)
+        return await self.to_agent_loop_output(trajectory, chat_template=chat_template)
 
     async def convert_agent_output(self, trajectory: List[Dict[str, Any]]) -> AgentLoopOutput:
         """Convert trajectory to AgentLoopOutput.
@@ -286,7 +286,7 @@ class AworldAgentLoop(AgentLoopBase):
         output = await self.to_agent_loop_output(messages=messages)
         return output
 
-    async def to_agent_loop_output(self, messages: List[Dict[str, Any]]) -> AgentLoopOutput:
+    async def to_agent_loop_output(self, messages: List[Dict[str, Any]], chat_template = None) -> AgentLoopOutput:
         """Convert messages to AgentLoopOutput.
 
         Args:
@@ -301,7 +301,8 @@ class AworldAgentLoop(AgentLoopBase):
         prompt_ids, response_ids, response_mask = await encode_messages(self.tokenizer,
                                                                         messages,
                                                                         response_length=response_length,
-                                                                        tools=self.agent.tools)
+                                                                        tools=self.agent.tools,
+                                                                        chat_template=chat_template)
         output = AgentLoopOutput(
             prompt_ids=prompt_ids,
             response_ids=response_ids,

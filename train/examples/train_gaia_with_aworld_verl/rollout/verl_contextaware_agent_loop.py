@@ -8,7 +8,7 @@ from aworld.core.context.base import Context
 from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from train.examples.train_gaia_with_aworld_verl.mcp_tools import build_mcp_config
 from train.examples.train_gaia_with_aworld_verl.rollout.agent_config import build_context_config, \
-    build_memory_aware_task_config, build_context_aware_agent
+    build_context_aware_task_config, build_context_aware_agent
 
 
 class VerlAgentLoop(AworldAgentLoop):
@@ -17,7 +17,7 @@ class VerlAgentLoop(AworldAgentLoop):
                                                    context_config=build_context_config())
 
     async def build_task_config(self) -> TaskConfig:
-        return build_memory_aware_task_config()
+        return build_context_aware_task_config()
 
     async def build_agents(self) -> Union[Agent, Swarm]:
         return build_context_aware_agent(llm_model_name=await self.get_llm_server_model_name(),
