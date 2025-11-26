@@ -682,9 +682,9 @@ class ToolsManager(Factory):
             supported_action: Tool abilities
             conf_file_name: Default tool config
         """
-        res = super(ToolsManager, self).register(name, desc, **kwargs)
         asyn = kwargs.pop("asyn", False)
         prefix = "async_" if asyn else ""
+        res = super(ToolsManager, self).register(prefix + name, desc, **kwargs)
         conf_file_name = conf_file_name if conf_file_name else f"{name}_tool.yaml"
         conf = load_config(conf_file_name, kwargs.get("dir"))
         if not conf:
