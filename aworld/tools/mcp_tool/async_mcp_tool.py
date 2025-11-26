@@ -107,7 +107,12 @@ class McpTool(AsyncTool):
         action_results = None
         try:
             if agent and agent.sandbox:
-                sand_box = agent.sandbox
+                from aworld.core.context.amni import AmniContext
+                context = message.context
+                if isinstance(context, AmniContext) and context.get_config().env_config.isolate and hasattr(agent, "get_sandbox"):
+                    sand_box = await agent.get_sandbox(context)
+                else:
+                    sand_box = agent.sandbox
                 action_results = await sand_box.mcpservers.call_tool(action_list=mcp_actions, task_id=task_id, session_id=session_id,context=message.context)
             else:
                 action_results, ignore = await self.action_executor.async_execute_action(mcp_actions)
