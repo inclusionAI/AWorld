@@ -24,6 +24,6 @@ class VerlAgentLoop(AworldAgentLoop):
                                          llm_base_url=await self.get_llm_server_address(),
                                          llm_api_key="123",
                                          llm_provider="verl",
-                                         mcp_config=build_mcp_config(),
+                                         mcp_config=await build_mcp_config(),
                                          server_manager=self.server_manager,
                                          tokenizer=self.tokenizer)
