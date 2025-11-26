@@ -197,7 +197,7 @@ class VerlTrainer(TrainerProcessor):
         module = module.replace(os.getcwd(), '').replace('/', '.')
         module = module[1:] if module[0] == '.' else module
         con = f"""- name: gaia_agent
-  _target_: train.examples.train_gaia_with_aworld_verl.rollout.verl_agent_loop.VerlAgentLoop
+  _target_: train.examples.train_gaia_with_aworld_verl.rollout.verl_contextaware_agent_loop.VerlAgentLoop
                """
 
         agent_yaml = f"{self.run_path}/agent.yaml"
