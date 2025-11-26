@@ -36,7 +36,7 @@ class ActionManager(Factory):
             act.name = name
         return act
 
-    def register(self, name: str, desc: str, **kwargs):
+    def register(self, name: str, desc: str = '', **kwargs):
         def func(cls):
             tool_name = kwargs.get("tool_name")
             if not tool_name:
@@ -53,6 +53,12 @@ class ActionManager(Factory):
             return cls
 
         return func
+
+    def unregister(self, name: str):
+        super().unregister(name)
+        if name in self._tool_action_mapping:
+            del self._tool_action_mapping[name]
+            del self._tool_action_cache[name]
 
     def get_actions_by_tool(self, tool_name: str):
         if tool_name in self._tool_action_cache:
