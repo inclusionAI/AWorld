@@ -1,14 +1,16 @@
 import asyncio
-import os
 from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
-from aworld.runner import Runners
-from aworld.config import RunConfig, EngineName
+from aworld.config import RunConfig, EngineName, HistoryWriteStrategy, AgentMemoryConfig
+from aworld.utils.run_util import exec_tasks
 from examples.aworld_quick_start.common import agent_config
 
 
-# TODO: need fix
 async def main():
+    # NOTE: need set direct write to memory
+    agent_config.memory_config = AgentMemoryConfig(
+        history_write_strategy=HistoryWriteStrategy.DIRECT
+    )
     # Create agent
     my_agent = Agent(name="my_agent", conf=agent_config)
 
@@ -21,11 +23,12 @@ async def main():
 
     # Run in parallel (default local run).
     # If you want to run in a distributed environment, you need to submit a job to the Ray cluster.
-    results = await Runners.run_task(
-        task=tasks,
+    results = await exec_tasks(
+        tasks=tasks,
         run_conf=RunConfig(
-            engine_name=EngineName.RAY,
-            worker_num=len(tasks)
+            engine_name=EngineName.LOCAL,
+            worker_num=len(tasks),
+            reuse_process=False
         )
     )
 
