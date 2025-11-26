@@ -217,7 +217,7 @@ class AworldAgentLoop(AgentLoopBase):
     def get_num_turns(self, trajectory: List[Dict[str, Any]]):
         return len(trajectory)
 
-    async def convert_memory_trajectory_agent_output(self, trajectory: List[Any], chat_template) -> AgentLoopOutput:
+    async def convert_memory_trajectory_agent_output(self, trajectory: List[Any], chat_template: str = None) -> AgentLoopOutput:
         logger.warning(f"######## res: {trajectory} ########\n")
 
         return await self.to_agent_loop_output(trajectory, chat_template=chat_template)
