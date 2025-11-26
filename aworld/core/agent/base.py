@@ -393,14 +393,13 @@ class AgentManager(Factory):
             return self._agent_instance[name]
         return None
 
-    def register(self, name: str, desc: str, conf_file_name: str = None, **kwargs):
+    def register(self, name: str, desc: str = '', conf_file_name: str = None, **kwargs):
         """Register a tool to tool factory.
 
         Args:
-            name: Tool name
-            desc: Tool description
-            supported_action: Tool abilities
-            conf_file_name: Default tool config
+            name: Agent name
+            desc: Agent description
+            conf_file_name: Default agent config
         """
         res = super(AgentManager, self).register(name, desc, **kwargs)
         conf_file_name = conf_file_name if conf_file_name else f"{name}.yaml"
@@ -411,6 +410,12 @@ class AgentManager(Factory):
             conf = AgentConfig().model_dump()
         self._agent_conf[name] = conf
         return res
+
+    def unregister(self, name: str):
+        super().unregister(name)
+        if name in self._agent_instance:
+            del self._agent_conf[name]
+            del self._agent_instance[name]
 
 
 AgentFactory = AgentManager("agent_type")
