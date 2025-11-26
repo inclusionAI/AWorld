@@ -13,6 +13,10 @@ async def main():
     )
     # Create agent
     my_agent = Agent(name="my_agent", conf=agent_config)
+    print("origin agent id: ", my_agent.id())
+    # copy an agent with different agent id
+    new_agent = Agent.from_dict(await Agent.to_dict(my_agent))
+    print("new agent id: ", new_agent.id())
 
     # Create tasks
     tasks = [

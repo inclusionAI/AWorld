@@ -24,7 +24,8 @@ async def exec_tool(tool_name: str,
                     context: Context,
                     sub_task: bool = False,
                     outputs: Outputs = None,
-                    task_group_id: str = None) -> TaskResponse:
+                    task_group_id: str = None,
+                    run_conf: RunConfig = RunConfig(reuse_process=True)) -> TaskResponse:
     """Utility method for executing a tool in a task-oriented manner.
 
     Args:
@@ -36,6 +37,7 @@ async def exec_tool(tool_name: str,
         sub_task: Is it a subtask with the main task set to False.
         outputs: The same outputs instance, required in subtask.
         task_group_id: ID of group of task.
+        run_conf: Task runtime config.
     """
     actions = [ActionModel(tool_name=tool_name, action_name=action_name, params=params, agent_name=agent_name)]
     task = Task(input=actions,
@@ -46,7 +48,7 @@ async def exec_tool(tool_name: str,
     if outputs:
         task.outputs = outputs
     runners = await choose_runners([task], agent_oriented=False)
-    res = await execute_runner(runners, RunConfig(reuse_process=True))
+    res = await execute_runner(runners, run_conf=run_conf)
     resp: TaskResponse = res.get(task.id)
     return resp
 
@@ -57,7 +59,8 @@ async def exec_agent(question: Any,
                      sub_task: bool = False,
                      outputs: Outputs = None,
                      task_group_id: str = None,
-                     task_conf: TaskConfig = None) -> TaskResponse:
+                     task_conf: TaskConfig = None,
+                     run_conf: RunConfig = RunConfig(reuse_process=True)) -> TaskResponse:
     """Utility method for executing an agent in a task-oriented manner.
 
     Args:
@@ -68,6 +71,7 @@ async def exec_agent(question: Any,
         outputs: The same outputs instance.
         task_group_id: ID of group of task.
         task_conf: Task config.
+        run_conf: Task runtime config.
     """
     task_id = uuid.uuid1().hex
     info_dict = context.agent_info.get(agent.id(), {})
@@ -99,7 +103,7 @@ async def exec_agent(question: Any,
     if outputs:
         task.outputs = outputs
     runners = await choose_runners([task])
-    res = await execute_runner(runners, RunConfig(reuse_process=True))
+    res = await execute_runner(runners, run_conf=run_conf)
     resp: TaskResponse = res.get(task.id)
     return resp
 
@@ -110,7 +114,8 @@ async def exec_agents(questions: List[Any],
                       sub_task: bool = False,
                       outputs: Outputs = None,
                       task_group_id: str = None,
-                      task_conf: TaskConfig = None) -> List[ActionModel]:
+                      task_conf: TaskConfig = None,
+                      run_conf: RunConfig = RunConfig(reuse_process=True)) -> List[ActionModel]:
     """Execute the agent list with the questions, using asyncio.
 
     Args:
@@ -121,13 +126,14 @@ async def exec_agents(questions: List[Any],
         outputs: The same outputs instance.
         task_group_id: ID of group of task.
         task_conf: Task config.
+        run_conf: Task runtime config.
     """
     tasks = []
     if agents:
         for idx, agent in enumerate(agents):
             tasks.append(asyncio.create_task(
                 exec_agent(questions[idx], agent, context, sub_task=sub_task, outputs=outputs,
-                           task_group_id=task_group_id, task_conf=task_conf)))
+                           task_group_id=task_group_id, task_conf=task_conf, run_conf=run_conf)))
 
     results = await asyncio.gather(*tasks)
     res = []
@@ -144,7 +150,8 @@ async def exec_process_agents(question: Any,
                               agents: List[Agent],
                               context: Context,
                               sub_task: bool = False,
-                              task_group_id: str = None):
+                              task_group_id: str = None,
+                              run_conf: RunConfig = RunConfig(reuse_process=True)):
     """Execute the agent list with the same question, using new process.
 
     NOTE: Mixing coroutines and processes may lead to unknown issues.
@@ -155,6 +162,7 @@ async def exec_process_agents(question: Any,
         context: Context in the runtime.
         sub_task: Is it a subtask with the main task set to False.
         task_group_id: ID of group of task.
+        run_conf: Task runtime config.
     """
     tasks = []
     agent_map = {}
@@ -168,7 +176,7 @@ async def exec_process_agents(question: Any,
         raise RuntimeError("no task need to run.")
 
     runners = await choose_runners(tasks)
-    results = await execute_runner(runners, RunConfig(reuse_process=True))
+    results = await execute_runner(runners, run_conf=run_conf)
 
     res = []
     for key, result in results.items():
