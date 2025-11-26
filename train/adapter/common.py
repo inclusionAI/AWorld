@@ -81,6 +81,25 @@ async def encode_messages(tokenizer: AutoTokenizer,
                 chat_list.append(messages[i])
                 i += 1
                 continue
+            
+            # summary message
+            if messages[i].get("memory_type") == "summary":
+                chat_list.append(messages[i])
+                cur_response_ids = await loop.run_in_executor(
+                    None,
+                    lambda: tokenizer.apply_chat_template(
+                        chat_list,
+                        add_generation_prompt=False,
+                        tokenize=True,
+                        chat_template=chat_template
+                    ),
+                )
+                chat_list = []
+                response_ids += cur_response_ids
+                response_mask += [1] * len(cur_response_ids)
+                i += 1
+                continue
+            
             # initial chat completion
             if messages[i].get("role") == "user":
                 if i == 0 or messages[i - 1].get("role") == "system":

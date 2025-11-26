@@ -1,7 +1,7 @@
 # Import prompts first (no dependencies)
 # Import gaia next (depends on prompts, but not on custom_agent_loop)
-from .gaia import (
-    build_gaia_agent,
+from .agent_config import (
+    build_context_aware_agent,
     build_gaia_task,
 )
 from .prompts import (
@@ -20,7 +20,7 @@ from ..mcp_tools import build_mcp_config
 
 __all__ = [
     "GAIA_SYSTEM_PROMPT",
-    "build_gaia_agent",
+    "build_context_aware_agent",
     "build_gaia_task",
     "build_mcp_config",
     "episode_memory_summary_rule",

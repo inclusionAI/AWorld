@@ -18,6 +18,7 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni import ApplicationContext, TaskInput
 from aworld.core.context.base import Context
 from aworld.core.task import TaskResponse, Task
+from aworld.dataset.trajectory_strategy import MemoryTrajectoryStrategy
 from aworld.logs.util import logger
 from aworld.runner import Runners
 from aworld.trace.base import Span
@@ -81,12 +82,12 @@ class AworldAgentLoop(AgentLoopBase):
         elapsed_time = end_time - start_time
         logger.warning(f"######## trajectory finish, time costs {elapsed_time:.2f} s ########\n")
 
-        logger.warning(f"######## res[-1]['exp_data']: {res[-1]['exp_data']} ########\n")
-        logger.warning(f"######## res[-1]['exp_data']['actions']: {res[-1]['exp_data']['actions']} ########\n")
-        logger.warning(f"######## res[-1]['exp_data']['messages']: {res[-1]['exp_data']['messages']} ########\n")
-
         # build agent loop output
-        output = await self.convert_agent_output(trajectory=res)
+        task_config = await self.build_task_config()
+        if task_config.trajectory_strategy == MemoryTrajectoryStrategy:
+            output = await self.convert_memory_trajectory_agent_output(trajectory=res)
+        else:
+            output = await self.convert_agent_output(trajectory=res)
         if hasattr(result, 'id'):
             output.extra_fields['task_id'] = result.id
 
@@ -216,6 +217,11 @@ class AworldAgentLoop(AgentLoopBase):
     def get_num_turns(self, trajectory: List[Dict[str, Any]]):
         return len(trajectory)
 
+    async def convert_memory_trajectory_agent_output(self, trajectory: List[Any]) -> AgentLoopOutput:
+        logger.warning(f"######## res: {trajectory} ########\n")
+
+        return self.to_agent_loop_output(trajectory)
+
     async def convert_agent_output(self, trajectory: List[Dict[str, Any]]) -> AgentLoopOutput:
         """Convert trajectory to AgentLoopOutput.
 
@@ -228,6 +234,10 @@ class AworldAgentLoop(AgentLoopBase):
         """
         if not trajectory:
             raise Exception("Trajectory is empty")
+
+        logger.warning(f"######## res[-1]['exp_data']: {trajectory[-1]['exp_data']} ########\n")
+        logger.warning(f"######## res[-1]['exp_data']['actions']: {trajectory[-1]['exp_data']['actions']} ########\n")
+        logger.warning(f"######## res[-1]['exp_data']['messages']: {trajectory[-1]['exp_data']['messages']} ########\n")
 
         num_turns = self.get_num_turns(trajectory)
         messages = trajectory[-1].get("exp_data", {}).get("messages", [])
