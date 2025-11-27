@@ -52,8 +52,8 @@ class McpServers:
         if not self.mcp_servers or not self.mcp_config:
             return []
         try:
-            #self.tool_list = await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config)
-            self.tool_list = await mcp_tool_desc_transform_v2(self.mcp_servers, self.mcp_config,context,self.server_instances,self.black_tool_actions)
+            sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
+            self.tool_list = await mcp_tool_desc_transform_v2(tools=self.mcp_servers, mcp_config=self.mcp_config,context=context,server_instances=self.server_instances,black_tool_actions=self.black_tool_actions,sandbox_id=sandbox_id)
             return self.tool_list
         except Exception as e:
             logger.warning(f"Failed to list tools: {traceback.print_exc()}")
@@ -189,7 +189,8 @@ class McpServers:
                 server = self.server_instances.get(server_name)
                 if server is None:
                     # If it doesn't exist, create a new instance and save it
-                    server = await get_server_instance(server_name, self.mcp_config,context)
+                    sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
+                    server = await get_server_instance(server_name=server_name, mcp_config=self.mcp_config,context=context,sandbox_id=sandbox_id)
                     if server:
                         self.server_instances[server_name] = server
                         logger.info(f"Created and cached new server instance for {server_name}")
