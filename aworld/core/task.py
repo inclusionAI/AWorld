@@ -71,6 +71,7 @@ class Task:
     task_status: TaskStatus = field(default=TaskStatusValue.INIT)
     # streaming support
     streaming_mode: StreamingMode = field(default=None)
+    sub_task_trajectories: Dict[str, List[Dict[str, Any]]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Task to dict while excluding parent_task to avoid recursion.
