@@ -17,22 +17,15 @@ from aworld.dataset.trajectory_strategy import MemoryTrajectoryStrategy
 from aworld.logs.util import logger
 # from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from aworld.memory.main import AWORLD_MEMORY_EXTRACT_NEW_SUMMARY
-# Import from prompts module directly to avoid circular import
+# Import from prompts module inside functions to avoid circular import
 # (rollout/__init__.py imports this file at the top)
-from train.examples.train_gaia_with_aworld_verl.rollout.prompts import (
-    GAIA_SYSTEM_PROMPT,
-    episode_memory_summary_rule,
-    working_memory_summary_rule,
-    working_memory_summary_schema,
-    tool_memory_summary_rule,
-    tool_memory_summary_schema,
-    episode_memory_summary_schema,
-)
 
 def is_summary():
     return os.getenv("GAIA_AGENT_CONTEXT", 'common') == 'amni'
 
 def build_context_aware_agent(llm_model_name, llm_base_url, llm_api_key, mcp_config, llm_provider = "openai", server_manager = None, tokenizer = None):
+    # Import here to avoid circular import
+    from train.examples.train_gaia_with_aworld_verl.rollout.prompts import GAIA_SYSTEM_PROMPT
 
     # init middlewares
     init_middlewares()
@@ -77,6 +70,16 @@ def build_context_aware_task_config() -> TaskConfig:
     )
 
 def build_context_config() -> AmniContextConfig:
+    # Import here to avoid circular import
+    from train.examples.train_gaia_with_aworld_verl.rollout.prompts import (
+        episode_memory_summary_rule,
+        working_memory_summary_rule,
+        working_memory_summary_schema,
+        tool_memory_summary_rule,
+        tool_memory_summary_schema,
+        episode_memory_summary_schema,
+    )
+    
     # 1. init middlewares
     init_middlewares()
 
