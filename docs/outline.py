@@ -62,7 +62,7 @@ if __name__ == '__main__':
         "edit_uri": "tree/main/docs/",
         "copyright": "\u00A9 Copyright 2025 inclusionAI AWorld Team.",
         "extra_javascript": ["js/hide-home-edit.js"],
-        "theme": "readthedocs",
+        "theme": "material", # readthedocs
         "nav": outline,
     }
 

@@ -134,7 +134,13 @@ class OpenAIProvider(LLMProviderBase):
                 response
             )
 
-        return ModelResponse.from_openai_response(response)
+        try:
+            resp = ModelResponse.from_openai_response(response)
+            return resp
+        except Exception as e:
+            logger.error(f"postprocess_response error: {e}, traceback is {traceback.format_exc()}")
+            raise LLMResponseError(f"postprocess_response error: {e}", self.model_name or "unknown", response)
+
 
     def postprocess_stream_response(self, chunk: Any) -> Tuple[ModelResponse, str]:
         """Process OpenAI streaming response chunk.
@@ -170,56 +176,60 @@ class OpenAIProvider(LLMProviderBase):
                 chunk
             )
 
-        # process tool calls
-        if (hasattr(chunk_choice, 'delta') and chunk_choice.delta and chunk_choice.delta.tool_calls) or (
-                isinstance(chunk_choice, dict) and chunk_choice.get("delta", {}).get("tool_calls")):
-            tool_calls = chunk_choice.delta.tool_calls if hasattr(chunk_choice, 'delta') else chunk_choice.get("delta", {}).get("tool_calls")
+        try:
+            # process tool calls
+            if (hasattr(chunk_choice, 'delta') and chunk_choice.delta and chunk_choice.delta.tool_calls) or (
+                    isinstance(chunk_choice, dict) and chunk_choice.get("delta", {}).get("tool_calls")):
+                tool_calls = chunk_choice.delta.tool_calls if hasattr(chunk_choice, 'delta') else chunk_choice.get("delta", {}).get("tool_calls")
 
-            for tool_call in tool_calls:
-                index = tool_call.index if hasattr(tool_call, 'index') else tool_call["index"]
-                func_name = tool_call.function.name if hasattr(tool_call, 'function') else tool_call.get("function", {}).get("name")
-                func_args = tool_call.function.arguments if hasattr(tool_call, 'function') else tool_call.get("function", {}).get("arguments")
-                if index >= len(self.stream_tool_buffer):
-                    self.stream_tool_buffer.append({
-                        "id": tool_call.id if hasattr(tool_call, 'id') else tool_call.get("id"),
-                        "type": "function",
-                        "function": {
-                            "name": func_name,
-                            "arguments": func_args
-                        }
-                    })
-                else:
-                    self.stream_tool_buffer[index]["function"]["arguments"] += func_args
-            processed_chunk = chunk
-            if hasattr(processed_chunk, 'choices'):
-                processed_chunk.choices[0].delta.tool_calls = None
-            else:
-                processed_chunk["choices"][0]["delta"]["tool_calls"] = None
-            resp = ModelResponse.from_openai_stream_chunk(processed_chunk)
-            if (not resp.content and not resp.usage.get("total_tokens", 0)):
-                return None, None
-        finish_reason = ModelResponse._get_item_from_openai_message(chunk_choice, "finish_reason")
-        if finish_reason:
-            if self.stream_tool_buffer:
-                tool_call_chunk = {
-                    "id": chunk.id if hasattr(chunk, 'id') else chunk.get("id"),
-                    "model": chunk.model if hasattr(chunk, 'model') else chunk.get("model"),
-                    "object": chunk.object if hasattr(chunk, 'object') else chunk.get("object"),
-                    "choices": [
-                        {
-                            "delta": {
-                                "role": "assistant",
-                                "content": "",
-                                "tool_calls": self.stream_tool_buffer
+                for tool_call in tool_calls:
+                    index = tool_call.index if hasattr(tool_call, 'index') else tool_call["index"]
+                    func_name = tool_call.function.name if hasattr(tool_call, 'function') else tool_call.get("function", {}).get("name")
+                    func_args = tool_call.function.arguments if hasattr(tool_call, 'function') else tool_call.get("function", {}).get("arguments")
+                    if index >= len(self.stream_tool_buffer):
+                        self.stream_tool_buffer.append({
+                            "id": tool_call.id if hasattr(tool_call, 'id') else tool_call.get("id"),
+                            "type": "function",
+                            "function": {
+                                "name": func_name,
+                                "arguments": func_args
                             }
-                        }
-                    ]
-                }
-                self.stream_tool_buffer = []
-                chunk_resp = ModelResponse.from_openai_stream_chunk(tool_call_chunk)
-                return chunk_resp, finish_reason
-
-        return ModelResponse.from_openai_stream_chunk(chunk), finish_reason
+                        })
+                    else:
+                        self.stream_tool_buffer[index]["function"]["arguments"] += func_args
+                processed_chunk = chunk
+                if hasattr(processed_chunk, 'choices'):
+                    processed_chunk.choices[0].delta.tool_calls = None
+                else:
+                    processed_chunk["choices"][0]["delta"]["tool_calls"] = None
+                resp = ModelResponse.from_openai_stream_chunk(processed_chunk)
+                if (not resp.content and not resp.usage.get("total_tokens", 0)):
+                    return None, None
+            finish_reason = ModelResponse._get_item_from_openai_message(chunk_choice, "finish_reason")
+            if finish_reason:
+                if self.stream_tool_buffer:
+                    tool_call_chunk = {
+                        "id": chunk.id if hasattr(chunk, 'id') else chunk.get("id"),
+                        "model": chunk.model if hasattr(chunk, 'model') else chunk.get("model"),
+                        "object": chunk.object if hasattr(chunk, 'object') else chunk.get("object"),
+                        "choices": [
+                            {
+                                "delta": {
+                                    "role": "assistant",
+                                    "content": "",
+                                    "tool_calls": self.stream_tool_buffer
+                                }
+                            }
+                        ]
+                    }
+                    self.stream_tool_buffer = []
+                    chunk_resp = ModelResponse.from_openai_stream_chunk(tool_call_chunk)
+                    return chunk_resp, finish_reason
+            resp = ModelResponse.from_openai_stream_chunk(chunk)
+            return resp, finish_reason
+        except Exception as e:
+            logger.error(f"postprocess_stream_response error: {e}, traceback is {traceback.format_exc()}")
+            raise LLMResponseError(f"postprocess_stream_response error: {e}", self.model_name or "unknown", chunk)
 
     def completion(self,
                    messages: List[Dict[str, str]],
@@ -254,6 +264,7 @@ class OpenAIProvider(LLMProviderBase):
                 response = self.http_provider.sync_call(openai_params)
             else:
                 response = self.provider.chat.completions.create(**openai_params)
+            logger.debug(f"LLM raw response: {response}")
 
             if (hasattr(response, 'code') and response.code != 0) or (
                     isinstance(response, dict) and response.get("code", 0) != 0):
@@ -313,6 +324,7 @@ class OpenAIProvider(LLMProviderBase):
                 response_stream = self.provider.chat.completions.create(**openai_params)
 
             for chunk in response_stream:
+                logger.debug(f"LLM raw stream chunk: {chunk}")
                 if not chunk:
                     continue
                 resp, finish_reason = self.postprocess_stream_response(chunk)
@@ -327,6 +339,8 @@ class OpenAIProvider(LLMProviderBase):
                             usage=usage)
 
         except Exception as e:
+            if isinstance(e, LLMResponseError):
+                raise e
             logger.warn(f"Error in stream_completion: {e}")
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
 
@@ -368,6 +382,7 @@ class OpenAIProvider(LLMProviderBase):
 
             if self.is_http_provider:
                 async for chunk in self.http_provider.async_stream_call(openai_params):
+                    logger.debug(f"LLM raw stream chunk: {chunk}")
                     if not chunk:
                         continue
                     resp, finish_reason = self.postprocess_stream_response(chunk)
@@ -398,6 +413,8 @@ class OpenAIProvider(LLMProviderBase):
                                 usage=usage)
 
         except Exception as e:
+            if isinstance(e, LLMResponseError):
+                raise e
             logger.warn(f"Error in astream_completion: {e}")
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
 
@@ -427,7 +444,6 @@ class OpenAIProvider(LLMProviderBase):
                 "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
         processed_messages = self.preprocess_messages(messages)
-
         try:
             openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
             logger.debug(f"openai_params: {json.dumps(openai_params)}")
@@ -435,6 +451,7 @@ class OpenAIProvider(LLMProviderBase):
                 response = await self.http_provider.async_call(openai_params)
             else:
                 response = await self.async_provider.chat.completions.create(**openai_params)
+            logger.debug(f"LLM raw response: {response}")
 
             if (hasattr(response, 'code') and response.code != 0) or (
                     isinstance(response, dict) and response.get("code", 0) != 0):

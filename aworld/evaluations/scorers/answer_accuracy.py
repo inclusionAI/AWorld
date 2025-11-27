@@ -1,7 +1,6 @@
-from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, MetricResult
 from typing import Optional
-from aworld.evaluations.scorers.metrics import MetricNames
-from aworld.evaluations.scorers.scorer_registry import scorer_register
+from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, MetricResult, MetricNames
+from aworld.evaluations.scorers import scorer_register
 from aworld.evaluations.scorers.llm_as_judge import LLMAsJudgeScorer
 
 
