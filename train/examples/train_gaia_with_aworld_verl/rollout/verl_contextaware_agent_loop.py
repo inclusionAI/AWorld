@@ -11,6 +11,7 @@ from train.examples.train_gaia_with_aworld_verl.mcp_tools import build_mcp_confi
 from train.examples.train_gaia_with_aworld_verl.rollout.agent_config import build_context_config, \
     build_context_aware_task_config, build_context_aware_agent
 
+from train.adapter.verl.verl_provider import *
 
 class VerlAgentLoop(AworldAgentLoop):
     async def build_context(self, input: Any) -> Context:
