@@ -11,6 +11,7 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig, AmniContextConfig
 from aworld.core.context.amni.config import get_default_config, init_middlewares, AgentContextConfig
+from aworld.core.context.base import Context
 from aworld.core.task import Task
 from aworld.dataset.trajectory_strategy import MemoryTrajectoryStrategy
 from aworld.logs.util import logger
@@ -109,8 +110,15 @@ def build_context_config() -> AmniContextConfig:
 
     return context_config
 
-async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, session_id: str = None, task_id: str = None):
-    context_config = build_context_config()
+async def build_task(user_input: str, target: [Agent, Swarm], timeout, context_config: Context = None, task_config: TaskConfig = None, session_id: str = None, task_id: str = None):
+    if not context_config:
+        context_config = await build_context_config()
+    if not task_config:
+        task_config = TaskConfig(
+            stream=False,
+            exit_on_failure=True,
+            trajectory_strategy=MemoryTrajectoryStrategy
+        )
 
     # 3. build context
     if not session_id:
@@ -140,11 +148,7 @@ async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, sess
             endless_threshold=5,
             swarm=swarm,
             context=context,
-            conf=TaskConfig(
-                stream=False,
-                exit_on_failure=True,
-                trajectory_strategy=MemoryTrajectoryStrategy
-            ),
+            conf=task_config,
             timeout=timeout
         )
     else:
@@ -157,11 +161,7 @@ async def build_gaia_task(user_input: str, target: [Agent, Swarm], timeout, sess
             endless_threshold=5,
             agent=target,
             context=context,
-            conf=TaskConfig(
-                stream=False,
-                exit_on_failure=True,
-                trajectory_strategy=MemoryTrajectoryStrategy
-            ),
+            conf=task_config,
             timeout=timeout
         )
 
