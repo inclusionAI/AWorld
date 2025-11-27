@@ -103,6 +103,17 @@ async def build_local_mcp_config():
 async def build_distributed_mcp_config():
     return {
         "mcpServers": {
+            "qwen_file_parser": {
+                "command": "python",
+                "args": [
+                    "-m",
+                    "train.examples.train_gaia_with_aworld_verl.mcp_tools.qwen.qwen_file_parser"
+                ],
+                "env": {
+                    "ALIBABA_CLOUD_ACCESS_KEY_ID": os.environ['ALIBABA_CLOUD_ACCESS_KEY_ID'],
+                    "ALIBABA_CLOUD_ACCESS_KEY_SECRET": os.environ['ALIBABA_CLOUD_ACCESS_KEY_SECRET'],
+                }
+            },
             "virtualpc-mcp-server": {
                 "type": "streamable-http",
                 "url": "http://mcp.aworldagents.com/vpc/mcp",
