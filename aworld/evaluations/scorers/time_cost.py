@@ -1,6 +1,5 @@
-from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, Scorer, ScorerResult
-from aworld.evaluations.scorers.metrics import MetricNames
-from aworld.evaluations.scorers.scorer_registry import scorer_register
+from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, Scorer, ScorerResult, MetricNames
+from aworld.evaluations.scorers import scorer_register
 
 
 @scorer_register(MetricNames.PREDICT_TIME_COST_MS)
