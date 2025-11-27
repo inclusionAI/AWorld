@@ -5,6 +5,7 @@ import traceback
 from datetime import datetime
 
 from dotenv import load_dotenv
+
 load_dotenv('.env')
 
 from train.examples.train_gaia_with_aworld_verl.mcp_tools.ip_pool import release_proxy_by_task_id
@@ -21,7 +22,6 @@ from aworld.evaluations.base import EvalResult, EvalTask
 from aworld.runners.evaluate_runner import EvaluateRunner
 
 # Import scorer to register it with the global scorer registry
-from train.examples.train_gaia_with_aworld_verl.rollout.scorer import FlightJudgeLLMScorer
 
 class ParallelGaiaEvalTarget(EvalTarget[dict]):
 
@@ -35,11 +35,11 @@ class ParallelGaiaEvalTarget(EvalTarget[dict]):
             from train.examples.train_gaia_with_aworld_verl.mcp_tools.hooks import PostToolCallRolloutHook
 
         agent = build_context_aware_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
-                                 llm_base_url=os.getenv("LLM_BASE_URL"),
-                                 llm_api_key=os.getenv("LLM_API_KEY"),
-                                 mcp_config=await build_mcp_config())
-        return await build_gaia_task(user_input=user_input, target=agent, timeout=1200,
-                                     session_id=session_id, task_id=task_id)
+                                          llm_base_url=os.getenv("LLM_BASE_URL"),
+                                          llm_api_key=os.getenv("LLM_API_KEY"),
+                                          mcp_config=await build_mcp_config())
+        return await build_task(user_input=user_input, target=agent, timeout=1200,
+                                session_id=session_id, task_id=task_id)
 
 
     async def predict(self, index: int, o_input: EvalDataCase[dict]) -> dict:
@@ -116,7 +116,7 @@ async def batch_run():
             # eval_dataset_load_config=DataLoaderConfig(sampler=RangeSampler(start_index=50, end_index=100)),
             # eval_dataset_load_config=DataLoaderConfig(sampler=FixedSampler(ids = [12,14,16,24,25,26])),
             repeat_times=1,
-            parallel_num=1,
+            parallel_num=10,
             skip_passed_cases=True,
         )).run()
 

@@ -4,19 +4,15 @@ from typing import Union, Any
 from aworld.agents.llm_agent import Agent
 from aworld.config import TaskConfig
 from aworld.core.agent.swarm import Swarm
-from aworld.core.context.amni import ApplicationContext
-from aworld.core.context.base import Context
 from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
 from train.examples.train_gaia_with_aworld_verl.mcp_tools import build_mcp_config
-from train.examples.train_gaia_with_aworld_verl.rollout.agent_config import build_context_config, \
+from train.adapter.verl.utils import build_context_config, \
     build_context_aware_task_config, build_context_aware_agent
-
 from train.adapter.verl.verl_provider import *
 
 class VerlAgentLoop(AworldAgentLoop):
-    async def build_context(self, input: Any) -> Context:
-        return await ApplicationContext.from_input(task_input=input,
-                                                   context_config=build_context_config())
+    async def build_context_config(self):
+        return build_context_config()
 
     async def build_task_config(self) -> TaskConfig:
         return build_context_aware_task_config()

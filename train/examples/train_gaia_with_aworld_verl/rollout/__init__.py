@@ -1,8 +1,8 @@
 # Import prompts first (no dependencies)
 # Import gaia next (depends on prompts, but not on custom_agent_loop)
-from .agent_config import (
+from train.adapter.verl.utils import (
     build_context_aware_agent,
-    build_gaia_task,
+    build_task,
 )
 from .prompts import (
     GAIA_SYSTEM_PROMPT,
@@ -21,7 +21,7 @@ from ..mcp_tools import build_mcp_config
 __all__ = [
     "GAIA_SYSTEM_PROMPT",
     "build_context_aware_agent",
-    "build_gaia_task",
+    "build_task",
     "build_mcp_config",
     "episode_memory_summary_rule",
     "episode_memory_summary_schema",

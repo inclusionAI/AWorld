@@ -9,14 +9,13 @@ import traceback
 import uuid
 from typing import Any, List, Dict, Union, Sequence
 
+from train.adapter.verl.utils import build_task
 from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutput
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import TaskConfig
 from aworld.config.agent_loader import _load_yaml
 from aworld.core.agent.swarm import Swarm
-from aworld.core.context.amni import ApplicationContext, TaskInput
-from aworld.core.context.base import Context
 from aworld.core.task import TaskResponse, Task
 from aworld.dataset.trajectory_strategy import MemoryTrajectoryStrategy
 from aworld.logs.util import logger
@@ -93,8 +92,8 @@ class AworldAgentLoop(AgentLoopBase):
 
         return output
 
-    async def build_context(self, task_input: TaskInput) -> Context:
-        return await ApplicationContext.from_input(task_input=task_input)
+    async def build_context_config(self):
+        return None
 
     async def build_task_config(self) -> TaskConfig:
         return TaskConfig(
@@ -116,22 +115,9 @@ class AworldAgentLoop(AgentLoopBase):
         if isinstance(input, dict):
             input = input.get("content", "")
 
-        # 生成 task_id, user_id, session_id
-        task_id = str(uuid.uuid4())
-        user_id = "user"  # 默认用户ID
-        session_id = str(uuid.uuid4())  # 生成会话ID
-
-        # 将 input 封装为 TaskInput
-        task_input = TaskInput(
-            user_id=user_id,
-            session_id=session_id,
-            task_id=task_id,
-            task_content=input,
-            origin_user_input=input
-        )
-
-        task = Task(id=task_id, input=task_input.task_content, timeout=1200, agent=agent, context=await self.build_context(task_input),
-                    conf=await self.build_task_config())
+        task = await build_task(user_input=input, target=agent, timeout=1200,
+                          context=await self.build_context_config(),
+                          task_config=await self.build_task_config())
         resp = TaskResponse(id=task.id, trajectory=[{
             "exp_meta": {
                 "task_id": "timeout_default",
