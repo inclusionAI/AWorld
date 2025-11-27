@@ -6,10 +6,10 @@ import os
 from dotenv import load_dotenv
 
 from aworld.config import TaskConfig
+from train.adapter.verl.utils import build_context_aware_task_config
 from train.examples.train_gaia_with_aworld_verl.mcp_tools import build_mcp_config
 from train.examples.train_gaia_with_aworld_verl.reward import gaia_reward_func
 from train.examples.train_gaia_with_aworld_verl.rollout import build_context_aware_agent
-from train.examples.train_gaia_with_aworld_verl.rollout.agent_config import build_context_aware_task_config
 
 
 async def main():
