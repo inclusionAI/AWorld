@@ -30,11 +30,16 @@ class EvalStatus(Enum):
 MetricValueType = Union[int, float, bool]
 
 
+class MetricNames:
+    """Supported metrics name in AWorld."""
+    LABEL_DISTRIBUTION = 'label_distribution'
+    SUMMARIZE_QUALITY = 'summarize_quality'
+    ANSWER_ACCURACY = 'answer_accuracy'
+    PREDICT_TIME_COST_MS = 'predict_time_cost_ms'
+
+
 @dataclass
 class EvalCriteria:
-    '''
-    Evaluation criteria.
-    '''
     metric_name: str = field(default_factory=str)
     # full class name of scorer class, e.g. aworld.evaluations.scorers.label_distribution.LabelDistributionScorer
     # if not specified, will use the first scorer class in the registry for the metric name
@@ -53,9 +58,7 @@ class EvalCriteria:
         return cls(**filtered_data)
 
     def judge(self, value: float) -> EvalStatus:
-        '''
-        Judge the value against the threshold.
-        '''
+        """Judge the value against the threshold."""
         if value > self.max_value or value < self.min_value:
             return EvalStatus.FAILED
         if value >= self.threshold:
@@ -143,9 +146,7 @@ class EvalResult:
 
 
 class EvalTarget(abc.ABC, Generic[EvalCaseDataType]):
-    '''
-    The base class of evaluated object.
-    '''
+    """The base class of evaluated object what you want to evaluate."""
 
     def __init__(self, eval_config: EvaluationConfig = None):
         self.eval_config = eval_config or EvaluationConfig()
@@ -166,10 +167,6 @@ class NoActionEvalTarget(EvalTarget[EvalCaseDataType]):
 
 
 class Scorer(abc.ABC, Generic[EvalCaseDataType]):
-    '''
-    The base class of scorer.
-    '''
-
     def __init__(self, name: str = None, eval_config: EvaluationConfig = None):
         self.name = name or self.__class__.__name__
         self.eval_config = eval_config or EvaluationConfig()
@@ -179,21 +176,15 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
         return self.name
 
     def add_eval_criteria(self, eval_criteria: EvalCriteria) -> None:
-        '''
-            Add eval criteria.
-        '''
+        """Add eval criteria."""
         self.eval_criterias[eval_criteria.metric_name] = eval_criteria
 
     def list_eval_metrics(self) -> list[str]:
-        '''
-            List eval metric names.
-        '''
+        """List eval metric names."""
         return list(self.eval_criterias.keys())
 
     async def scorer_and_judge(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> ScorerResult:
-        '''
-            Judge the status.
-        '''
+        """Judge the status."""
         scorer_result = await self.score(index, input, output)
         for metric_name, metric_result in scorer_result.metric_results.items():
             if metric_name in self.eval_criterias:
@@ -238,11 +229,10 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
         return score_dict
 
     def summarize(self, eval_case_results: list[EvalCaseResult], repeat_times: int) -> Optional[dict]:
-        '''
-        Summarize the scores for all metrics.
-        '''
+        """Summarize the scores for all metrics."""
         logger.info(f"eval_case_results: {eval_case_results}")
-        if not eval_case_results or not eval_case_results[0].score_rows or self.name not in eval_case_results[0].score_rows:
+        if not eval_case_results or not eval_case_results[0].score_rows or self.name not in eval_case_results[
+            0].score_rows:
             return {}
 
         # my all metric score results of all cases
@@ -304,10 +294,6 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
 
 
 class Evaluator(Generic[EvalCaseDataType]):
-    '''
-    The base class of evaluator.
-    '''
-
     def __init__(self,
                  scorers: list[Scorer] = None,
                  prepare_dataset: Optional[Callable[[EvalDataset], List[dict]]] = None,
@@ -317,7 +303,7 @@ class Evaluator(Generic[EvalCaseDataType]):
                  skip_passed_on_metrics: list[str] = None):
         self.scorers = scorers or []
         # preprocess the dataset
-        self.prepare_dataset = prepare_dataset
+        self.prepare_dataset = prepare_dataset or self._default_prepare_dataset
         # repeat run example times
         self.repeat_times = repeat_times
         # evaluate parallelism
@@ -334,14 +320,18 @@ class Evaluator(Generic[EvalCaseDataType]):
     def _default_prepare_dataset(self, dataset: EvalDataset) -> List[EvalDataCase[EvalCaseDataType]]:
         return dataset.eval_cases
 
-    async def _evaluate_in_task(self, eval_target: EvalTarget[EvalCaseDataType], dataset: Iterable[EvalDataCase[EvalCaseDataType]], evaluate_fun: Callable[[int, EvalTarget[EvalCaseDataType], EvalDataCase[EvalCaseDataType]], Awaitable[dict]]):
+    async def _evaluate_in_task(self,
+                                eval_target: EvalTarget[EvalCaseDataType],
+                                dataset: Iterable[EvalDataCase[EvalCaseDataType]],
+                                evaluate_fun: Callable[[int, EvalTarget[EvalCaseDataType], EvalDataCase[EvalCaseDataType]], Awaitable[dict]]):
         # create a semaphore to limit the parallelism
         semaphore: asyncio.Semaphore = asyncio.Semaphore(self.parallel_num)
         dataset_iter = iter(dataset)
         running_tasks: Set[asyncio.Task] = set()
         index = 0
 
-        async def __evaluate_fun(index: int, eval_target: EvalTarget[EvalCaseDataType], input: EvalDataCase[EvalCaseDataType]) -> dict:
+        async def __evaluate_fun(index: int, eval_target: EvalTarget[EvalCaseDataType],
+                                 input: EvalDataCase[EvalCaseDataType]) -> dict:
             async with semaphore:
                 return await evaluate_fun(index, eval_target, input)
 
@@ -388,17 +378,20 @@ class Evaluator(Generic[EvalCaseDataType]):
             if not metrics_to_check:
                 for scorer in self.scorers:
                     metrics_to_check.extend(scorer.list_eval_metrics())
-            print(f"metrics_to_check: {metrics_to_check}, passed_cases:{self._passed_cases}, id={input.eval_case_id}")
+            logger.info(f"metrics check: {metrics_to_check}, passed:{self._passed_cases}, id={input.eval_case_id}")
             async with self._passed_cases_lock:
                 # If there are metrics to check, verify if all of them have passed for this case
                 if metrics_to_check:
                     # Check if all metrics_to_check have passed
-                    if all(input.eval_case_id in self._passed_cases.get(metric_name, set()) for metric_name in metrics_to_check):
+                    if all(input.eval_case_id in self._passed_cases.get(metric_name, set()) for metric_name in
+                           metrics_to_check):
                         should_skip = True
-                        logger.warning(f"Skipping case {input.eval_case_id} which has already passed all required metrics")
+                        logger.warning(
+                            f"Skipping case {input.eval_case_id} which has already passed all required metrics")
         return should_skip
 
-    async def run_single_case(self, index: int, eval_target: EvalTarget[EvalCaseDataType], input: EvalDataCase[EvalCaseDataType]) -> EvalCaseResult:
+    async def run_single_case(self, index: int, eval_target: EvalTarget[EvalCaseDataType],
+                              input: EvalDataCase[EvalCaseDataType]) -> EvalCaseResult:
         """Run a single case.
 
         Args:
@@ -446,16 +439,15 @@ class Evaluator(Generic[EvalCaseDataType]):
                               output=output,
                               score_rows=score_rows)
 
-    async def evaluate(self, dataset: EvalDataset, eval_target: EvalTarget[EvalCaseDataType] = NoActionEvalTarget()) -> EvalResult:
+    async def evaluate(self,
+                       dataset: EvalDataset,
+                       eval_target: EvalTarget[EvalCaseDataType] = NoActionEvalTarget()) -> EvalResult:
         """Evaluate the dataset/llm/agent.
 
         Returns:
             EvaluationResult
         """
-        if self.prepare_dataset:
-            input_dataset = self.prepare_dataset(dataset)
-        else:
-            input_dataset = self._default_prepare_dataset(dataset)
+        input_dataset = self.prepare_dataset(dataset)
 
         input_dataset_chain = chain.from_iterable(repeat(input_dataset, self.repeat_times))
         details = []

@@ -58,7 +58,7 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         if kwargs.get("use_tools_in_prompt"):
             if not self.get_parser("tool"):
                 self.register_parser(HermesToolParser())
-        
+
         # Iterate over all registered parsers to process the response.
         # This allows for extensible parsing logic where multiple parsers can contribute to the final result.
         for content_parser in self.get_parsers().values():
@@ -205,7 +205,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         conf = self.conf
         self.model_name = conf.llm_config.llm_model_name
         self._llm = None
-        self.memory = MemoryFactory.instance()
         self.memory_config = conf.memory_config
         self.system_prompt: str = system_prompt if system_prompt else conf.system_prompt
         self.event_driven = event_driven
@@ -277,7 +276,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 his = histories[i]
                 if his.metadata and "tool_calls" in his.metadata and his.metadata['tool_calls']:
                     logger.info(f"Agent {self.id()} deleted tool call messages from memory: {his}")
-                    self.memory.delete(his.id)
+                    MemoryFactory.instance().delete(his.id)
                 else:
                     break
         except Exception:
@@ -290,7 +289,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         try:
             session_id = message.context.get_task().session_id
             task_id = message.context.get_task().id
-            histories = self.memory.get_all(filters={
+            histories = MemoryFactory.instance().get_all(filters={
                 "agent_id": self.id(),
                 "session_id": session_id,
                 "task_id": task_id,
@@ -325,7 +324,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         session_id = message.context.get_task().session_id
         task_id = message.context.get_task().id
-        histories = self.memory.get_all(filters={
+        histories = MemoryFactory.instance().get_all(filters={
             "agent_id": self.id(),
             "session_id": session_id,
             "task_id": task_id,
@@ -351,8 +350,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                               message_type=MemoryType.HUMAN,
                                               context=message.context)
 
+        memory = MemoryFactory.instance()
         # from memory get last n messages
-        histories = self.memory.get_last_n(self.memory_config.history_rounds, filters={
+        histories = memory.get_last_n(self.memory_config.history_rounds, filters={
             "agent_id": self.id(),
             "session_id": session_id,
             "task_id": task_id
@@ -867,7 +867,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """Add tool result token ids to context"""
         if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVE:
             return
-        histories = self.memory.get_all(filters={
+        memory = MemoryFactory.instance()
+        histories = memory.get_all(filters={
             "agent_id": self.id(),
             "session_id": context.get_task().session_id,
             "task_id": context.get_task().id,
