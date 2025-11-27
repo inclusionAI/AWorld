@@ -86,7 +86,7 @@ actor_rollout_ref:
       temperature: 1.0
       n: 1
     trace:
-      backend: mlflow
+      backend: # mlflow may error
 
 # config for the algorithm
 algorithm:
