@@ -130,7 +130,7 @@ class AworldAgentLoop(AgentLoopBase):
             origin_user_input=input
         )
 
-        task = Task(id=task_id, input=task_input, timeout=1200, agent=agent, context=await self.build_context(task_input),
+        task = Task(id=task_id, input=task_input.task_content, timeout=1200, agent=agent, context=await self.build_context(task_input),
                     conf=await self.build_task_config())
         resp = TaskResponse(id=task.id, trajectory=[{
             "exp_meta": {
