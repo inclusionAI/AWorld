@@ -736,3 +736,17 @@ class Context:
 
     async def update_task_status(self, task_id: str, status: 'TaskStatus'):
         pass
+
+    """
+        Sub Task Trajectory Support
+    """
+
+    async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]]):
+        if not self._task.sub_task_trajectories:
+            self._task.sub_task_trajectories = {}
+        self._task.sub_task_trajectories[task_id] = task_trajectory
+
+    async def get_task_trajectory(self, task_id: str) -> List[Dict[str, Any]]:
+        if not self._task.sub_task_trajectories:
+            return []
+        return self._task.sub_task_trajectories.get(task_id, [])
