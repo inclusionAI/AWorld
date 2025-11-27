@@ -392,7 +392,7 @@ class MemorySystemMessage(MemoryMessage):
             "id": self.id,
             "metadata": self.metadata,
             "role": self.role,
-            "content": self.content,
+            "content": str(self.content),
             "created_at": self.created_at,
             "memory_type": self.memory_type
         }
@@ -421,7 +421,7 @@ class MemoryHumanMessage(MemoryMessage):
             "id": self.id,
             "metadata": self.metadata,
             "role": self.role,
-            "content": self.content,
+            "content": str(self.content),
             "created_at": self.created_at,
             "memory_type": self.memory_type
         }
@@ -455,7 +455,7 @@ class MemoryAIMessage(MemoryMessage):
             "id": self.id,
             "metadata": self.metadata,
             "role": self.role,
-            "content": self.content,
+            "content": str(self.content),
             "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls or []] or None,
             "created_at": self.created_at,
             "memory_type": self.memory_type
@@ -493,7 +493,7 @@ class MemoryToolMessage(MemoryMessage):
             "id": self.id,
             "metadata": self.metadata,
             "role": self.role,
-            "content": self.content,
+            "content": str(self.content),
             "tool_call_id": self.tool_call_id,
             "created_at": self.created_at,
             "memory_type": self.memory_type
