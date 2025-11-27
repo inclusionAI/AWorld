@@ -17,38 +17,12 @@ async def main():
     success = load_dotenv()
     custom_train_config = 'train/examples/train_gaia_with_aworld_verl/grpo_trainer.yaml'
 
-    # # agent module contains agent and mcp tools in environment
-    # mcp_config = {
-    #     "mcpServers": {
-    #         "gaia_server": {
-    #             "type": "streamable-http",
-    #             "url": "https://playground.aworldagents.com/environments/mcp",
-    #             "timeout": 600,
-    #             "sse_read_timeout": 600,
-    #             "headers": {
-    #                 "ENV_CODE": "gaia",
-    #                 "Authorization": f'Bearer {os.environ.get("INVITATION_CODE", "")}',
-    #             }
-    #         }
-    #     }
-    # }
-    # agent_config = AgentConfig(
-    #     llm_provider="verl",
-    #     top_k=80
-    # )
-    # agent = Agent(
-    #     name="gaia_agent",
-    #     desc="gaia_agent",
-    #     system_prompt="Gaia agent",
-    #     mcp_config=mcp_config,
-    #     mcp_servers=["gaia_server"],
-    #     conf=agent_config
-    # )
     from train.trainer.agent_trainer import AgentTrainer
     from aworld.dataset.trajectory_strategy import MemoryTrajectoryStrategy
     agent = build_context_aware_agent(llm_model_name=os.getenv("LLM_MODEL_NAME"),
                              llm_base_url=os.getenv("LLM_BASE_URL"),
                              llm_api_key=os.getenv("LLM_API_KEY"),
+                             llm_provider="verl",
                              mcp_config=await build_mcp_config())
     context_config = build_context_aware_task_config()
     task_config = TaskConfig(
