@@ -14,7 +14,7 @@ from train.examples.train_gaia_with_aworld_verl.rollout import build_context_awa
 
 async def main():
     # config module divided into environmental variables and training configurations
-    success = load_dotenv()
+    success = load_dotenv('.env')
     custom_train_config = 'train/examples/train_gaia_with_aworld_verl/grpo_trainer.yaml'
 
     from train.trainer.agent_trainer import AgentTrainer

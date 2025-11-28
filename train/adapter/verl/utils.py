@@ -115,7 +115,7 @@ def build_context_config() -> AmniContextConfig:
 
 async def build_task(user_input: str, target: [Agent, Swarm], timeout, context_config: Context = None, task_config: TaskConfig = None, session_id: str = None, task_id: str = None):
     if not context_config:
-        context_config = await build_context_config()
+        context_config = build_context_config()
     if not task_config:
         task_config = TaskConfig(
             stream=False,
