@@ -11,7 +11,8 @@ BASIC_SKILLS = {
         "desc": "Bash automation and manipulation capability",
         "usage": "Automate bash tasks, manipulate files, and execute bash commands",
         "tool_list": {
-            "terminal-server": ["execute_command"]
+            "terminal-server": ["execute_command"],
+            "filesystem-server": []
         },
         "active": True
     }

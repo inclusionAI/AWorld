@@ -50,7 +50,7 @@ MCP_CONFIG = {
             "args": [
                 "-y",
                 "@modelcontextprotocol/server-filesystem",
-                "~/workspace"
+                "/Users/wuhulala/PycharmProjects/AWorld/examples/skill_agent/workspace/"
             ]
         },
         "amnicontext-server": {
