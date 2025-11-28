@@ -1,18 +1,23 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import logging
 import os
+import queue
+import threading
 from enum import Enum
-from typing import Optional, List, Union, Dict
+from logging.handlers import TimedRotatingFileHandler
+from typing import Optional, List, Union, Dict, Any
 
 from pydantic import BaseModel, Field
 
 from aworld.config import ModelConfig
-from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy
-from aworld.core.memory import MemoryConfig
+from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig
+from aworld.core.memory import MemoryConfig, MemoryLLMConfig, EmbeddingsConfig
 from aworld.memory.db.sqlite import SQLiteMemoryStore
 # from aworld.memory.db import SQLiteMemoryStore  # Temporarily commented out to avoid import errors
 from aworld.memory.main import MemoryFactory
 from .retrieval.base import RetrieverFactory
+from .retrieval.graph.base import GraphDBConfig
 from ...event.base import TopicType
 
 
@@ -88,8 +93,6 @@ class AgentContextConfig(BaseConfig):
     # Context Reduce - Purge
     history_rounds: int = Field(default=100,
                                 description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
-    history_write_strategy: HistoryWriteStrategy = Field(default=HistoryWriteStrategy.EVENT_DRIVEN,
-                                                         description="History write strategy: event_driven (through message system) or direct (direct call to handler)")
 
     # Context Reduce - Compress
     enable_summary: bool = Field(default=False,
@@ -100,8 +103,7 @@ class AgentContextConfig(BaseConfig):
     summary_context_length: Optional[int] = Field(default=40960,
                                                   description=" when the content length is greater than the summary_context_length, the summary will be created")
     summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
-    summary_summaried: Optional[bool] = Field(default=True, description="summary_summaried use to store summary memory")
-    summary_role: Optional[str] = Field(default="user", description="role for summary memory items")
+    summary_summaried: Optional[bool] = Field(default=True, description="whether to summarize historical summary messages when summary is triggered")
 
     # Context Offload
     tool_result_offload: bool = Field(default=False, description="tool result offload")
@@ -117,36 +119,15 @@ class AgentContextConfig(BaseConfig):
     def to_memory_config(self) -> AgentMemoryConfig:
         return AgentMemoryConfig(
             history_rounds=self.history_rounds,
-            history_write_strategy=self.history_write_strategy,
             enable_summary=self.enable_summary,
             summary_rounds=self.summary_rounds,
             summary_context_length=self.summary_context_length,
             summary_prompts=self.summary_prompts,
-            summary_summaried=self.summary_summaried,
-            summary_role=self.summary_role
+            summary_summaried=self.summary_summaried
         )
 
 
 DEFAULT_AGENT_CONFIG = AgentContextConfig()
-
-class WorkingDirOssConfig(BaseModel):
-    """OSS configuration for working directory."""
-    access_key_id: Optional[str] = Field(
-        default=None,
-        description="OSS access key ID. Priority: config > WORKING_DIR_OSS_ACCESS_KEY_ID > OSS_ACCESS_KEY_ID"
-    )
-    access_key_secret: Optional[str] = Field(
-        default=None,
-        description="OSS access key secret. Priority: config > WORKING_DIR_OSS_ACCESS_KEY_SECRET > OSS_ACCESS_KEY_SECRET"
-    )
-    endpoint: Optional[str] = Field(
-        default=None,
-        description="OSS endpoint. Priority: config > WORKING_DIR_OSS_ENDPOINT > OSS_ENDPOINT"
-    )
-    bucket_name: Optional[str] = Field(
-        default=None,
-        description="OSS bucket name. Priority: config > WORKING_DIR_OSS_BUCKET_NAME > OSS_BUCKET_NAME"
-    )
 
 class ContextEnvConfig(BaseModel):
     """Represents environment configuration for an agent team."""
@@ -154,24 +135,6 @@ class ContextEnvConfig(BaseModel):
     env_type: str = Field(default="local", description="Env Type, local|remote")
     env_mount_path: str = Field(default="~/workspace", description="Env Working directory for share")
     env_config: dict = Field(default_factory=dict, description="Env Config")
-    
-    # Working directory path configuration
-    working_dir_base_path: Optional[str] = Field(
-        default=None,
-        description="Base path for working directory. Priority: config > WORKING_DIR_BASE_PATH > WORKING_DIR_OSS_BASE_PATH > WORKSPACE_PATH"
-    )
-    working_dir_path_template: Optional[str] = Field(
-        default=None,
-        description="Template for working directory path. Supports placeholders: {base_path}, {session_id}. "
-                    "Example: '{base_path}/custom/{session_id}/workspace' or '{base_path}/{session_id}/files'. "
-                    "Priority: config > WORKING_DIR_PATH_TEMPLATE > default"
-    )
-    
-    # OSS configuration for remote working directory
-    working_dir_oss_config: Optional[WorkingDirOssConfig] = Field(
-        default=None,
-        description="OSS configuration for working directory. Priority: config > WORKING_DIR_OSS_* > OSS_* environment variables"
-    )
 
 class AmniContextConfig(BaseConfig):
     """AmniContext configs"""
@@ -219,6 +182,7 @@ def init_middlewares(init_memory: bool = True, init_retriever: bool = True) -> N
         RetrieverFactory.init()
 
 def build_memory_config():
+    from aworld.core.memory import VectorDBConfig
     return MemoryConfig(
         provider="aworld",
         llm_config=ModelConfig(
@@ -227,19 +191,19 @@ def build_memory_config():
             api_key=os.getenv("LLM_API_KEY"),
             base_url=os.getenv("LLM_BASE_URL")
         ),
-        # embedding_config=EmbeddingsConfig(
-        #     base_url=os.getenv('EMBEDDING_BASE_URL'),
-        #     api_key=os.getenv('EMBEDDING_API_KEY'),
-        #     model_name=os.getenv('EMBEDDING_MODEL_NAME'),
-        #     dimensions=int(os.getenv('EMBEDDING_MODEL_DIMENSIONS', '1024'))
-        # ),
-        # vector_store_config=VectorDBConfig(
-        #     provider="chroma",
-        #     config={
-        #         "chroma_data_path": os.getenv('CHROMA_PATH', "./data/chroma_db"),
-        #         "collection_name": "aworld_memory",
-        #     }
-        # )
+        embedding_config=EmbeddingsConfig(
+            base_url=os.getenv('EMBEDDING_BASE_URL'),
+            api_key=os.getenv('EMBEDDING_API_KEY'),
+            model_name=os.getenv('EMBEDDING_MODEL_NAME'),
+            dimensions=int(os.getenv('EMBEDDING_MODEL_DIMENSIONS', '1024'))
+        ),
+        vector_store_config=VectorDBConfig(
+            provider="chroma",
+            config={
+                "chroma_data_path": os.getenv('CHROMA_PATH', "./data/chroma_db"),
+                "collection_name": "aworld_memory",
+            }
+        )
     )
 
 
@@ -274,6 +238,7 @@ def get_default_config() -> AmniContextConfig:
                 priority=0
             )
         ],
+        debug_mode=True
     )
 
 
@@ -311,9 +276,7 @@ class AmniConfigFactory:
 
         if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
             config = get_default_config()
-            config.agent_config = AgentContextConfig(neuron_names=neuron_names)
-            if neuron_names:
-                config.agent_config.enable_system_prompt_augment = True
+            config.agent_config = AgentContextConfig()
             config.debug_mode = debug_mode
             config.env_config = env_config
             return config
