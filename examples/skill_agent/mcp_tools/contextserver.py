@@ -509,7 +509,7 @@ add_knowledge(
 )
 
 After adding, use get_knowledge(knowledge_id) to retrieve the content later.""")
-async def add_knowledge(knowledge_content: str, content_summary: str, knowledge_name: str, session_id: str = None, task_id: str = None) -> Union[str, TextContent]:
+async def add_knowledge(knowledge_content: str, content_summary: str = None, knowledge_name: str = None, session_id: str = None, task_id: str = None) -> Union[str, TextContent]:
     """
     Add a knowledge artifact to the current session workspace.
 
@@ -538,8 +538,8 @@ async def add_knowledge(knowledge_content: str, content_summary: str, knowledge_
         artifact = Artifact(artifact_id=f"actions_info_task_id{str(uuid.uuid4())}", artifact_type=ArtifactType.TEXT, content=knowledge_content, metadata={
             "context_type": "actions_info",
             "task_id": task_id,
-            "summary": content_summary,
-            "name": knowledge_name
+            "summary": content_summary if content_summary else knowledge_content[:50],
+            "name": knowledge_name if knowledge_name else knowledge_content[:10]
         })
         await workspace.add_artifact(artifact, index=False)
         search_output_dict = {
