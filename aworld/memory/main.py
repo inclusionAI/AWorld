@@ -37,6 +37,8 @@ Please read the conversation carefully and extract new information from the conv
        - step_result: the result of step and evidence information, such link of visited web page for solve task, created knowledge id list, etc.
 
 3. In your summary, aim to reduce unnecessary information, but make sure your summarized content still provides enough details for the task and does not lose any important information.
+4. If there is a previous summary (existed_summary is not empty), you should preserve and merge necessary information from it (such as the KnowledgeID list, key findings, and progress) into your new summary.
+5. You must always generate a non-empty summary based on the conversation content, even if the previous summary is empty.
 </guide>
 
 
@@ -52,7 +54,7 @@ Please read the conversation carefully and extract new information from the conv
 <existed_summary> {existed_summary} </existed_summary>
 <conversation> {to_be_summary} </conversation>
 
-## output new summary: 
+Now, generate the summary directly (no instructions, no XML tags, just the summary content):
 """
 AWORLD_MEMORY_UPDATE_SUMMARY = """
 You are presented with a user task, a conversion that may contain the answer, and a previous conversation summary. 
@@ -274,7 +276,7 @@ class Memory(MemoryBase):
         Args:
             summary_messages: List of messages to send to LLM.
         Returns:
-            Summary content string.
+            Summary content string, guaranteed to be non-None.
         """
         llm_response = await acall_llm_model(
             self.default_llm_instance,
@@ -283,7 +285,9 @@ class Memory(MemoryBase):
             stream=False,
         )
         logger.debug(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages: {summary_messages}")
-        return llm_response.content
+        # Ensure we return a string, not None
+        content = llm_response.content if llm_response and llm_response.content else ""
+        return content
 
     def _get_parsed_history_messages(self, history_items: list[MemoryItem]) -> list[dict]:
         """Get and format history messages for summary.
@@ -671,6 +675,9 @@ class AworldMemory(Memory):
                                                                    to_be_summary_items, agent_memory_config)
             logger.debug(f"🧠 [MEMORY:short-term] [Summary] summary_content: {summary_content}")
 
+            if not summary_content:
+                logger.warning("🧠 [MEMORY:short-term] [Summary] LLM returned empty summary, skipping this round")
+                return
             summary_metadata = MessageMetadata(
                 agent_id=memory_item.agent_id,
                 agent_name=memory_item.agent_name,
@@ -761,6 +768,9 @@ class AworldMemory(Memory):
         user_task = [{"role": item.metadata['role'], "content": item.content} for item in user_task_items]
         existed_summary = [{"summary_item_ids": item.summary_item_ids, "content": item.content} for item in
                            existed_summary_items]
+        # Handle empty existed_summary with explicit message
+        if not existed_summary:
+            existed_summary = "(No previous summary exists. This is the first summary.)"
         to_be_summary = [{"role": item.metadata['role'], "content": item.content} for item in to_be_summary_items]
 
         # generate summary
@@ -782,6 +792,10 @@ class AworldMemory(Memory):
             }
         ]
         llm_summary = await self._call_llm_summary(summary_messages, agent_memory_config)
+        # If LLM returns empty/None/invalid response, skip this summary
+        if not llm_summary or llm_summary.strip() in ["None", "", "null"]:
+            logger.warning("🧠 [MEMORY:short-term] [Summary] LLM returned empty summary, skipping this round")
+            return ""
         return f"<history_step_summary>\n {llm_summary} \n</history_step_summary>\n"
 
     def _save_to_vector_db(self, memory_item: MemoryItem):

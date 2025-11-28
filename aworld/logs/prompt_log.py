@@ -826,7 +826,7 @@ class PromptLogger:
             ]
 
             # Add summary content preview, maximum 70 characters per line
-            summary_preview = summary_memory.content[:200]
+            summary_preview = summary_memory.content[:500]
             preview_lines = [summary_preview[i:i+70] for i in range(0, len(summary_preview), 70)]
             for line in preview_lines:
                 log_lines.append(f"│ {line:<70} │")

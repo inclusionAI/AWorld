@@ -11,7 +11,8 @@ load_dotenv()
 
 from aworld.config import TaskConfig
 from aworld.core.context.amni import TaskInput, ApplicationContext
-from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel, init_middlewares
+from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel, init_middlewares, AgentContextConfig, \
+    CONTEXT_OFFLOAD_TOOL_NAME_WHITE
 from aworld.core.task import Task
 from aworld.runner import Runners
 from examples.skill_agent.agents.swarm import build_swarm
@@ -70,6 +71,18 @@ async def run(user_input: str):
     context_config = AmniConfigFactory.create(
         AmniConfigLevel.NAVIGATOR,
         debug_mode=True
+    )
+    context_config.agent_config = AgentContextConfig(
+        enable_system_prompt_augment=True,
+        neuron_names=["task", "working_dir", "todo", "action_info", "skills", "basic"],
+        history_rounds=100,
+        enable_summary=True,
+        summary_rounds=30,
+        summary_summaried=False,
+        summary_context_length=128000,
+        tool_result_offload=True,
+        tool_action_white_list=CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
+        tool_result_length_threshold=30000
     )
 
     # 3. build task
