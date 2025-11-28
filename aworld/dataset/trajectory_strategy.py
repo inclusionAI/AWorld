@@ -314,15 +314,15 @@ class MemoryTrajectoryStrategy(TrajectoryStrategy):
         # Convert memory items to OpenAI message format
         result = {}
         for i, item in enumerate(memory_items):
-            # Check if item has to_openai_message method
-            if hasattr(item, 'to_openai_message'):
-                message = item.to_openai_message()
+            # Check if item has to_dict method
+            if hasattr(item, 'to_dict'):
+                message = item.to_dict()
                 # Add usage to the message if it exists in metadata
                 if hasattr(item, 'metadata') and item.metadata and 'usage' in item.metadata:
                     message['usage'] = item.metadata['usage']
                 result[i] = message
             else:
-                # If item doesn't have to_openai_message, return the item as is
+                # If item doesn't have to_dict, return the item as is
                 result[i] = item
 
         return result
