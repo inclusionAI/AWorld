@@ -142,7 +142,7 @@ async def execute_command(
             )
             return TextContent(
                 type="text",
-                text=json.dumps(action_response.model_dump()),  # Empty string instead of None
+                text=json.dumps(action_response.model_dump(), ensure_ascii=False),  # Empty string instead of None
                 **{"metadata": {}}  # Pass as additional fields
             )
 
@@ -187,7 +187,7 @@ async def execute_command(
                                          metadata=metadata.model_dump())
         return TextContent(
             type="text",
-            text=json.dumps(action_response.model_dump()),  # Empty string instead of None
+            text=json.dumps(action_response.model_dump(), ensure_ascii=False),  # Empty string instead of None
             **{"metadata": {}}  # Pass as additional fields
         )
 
@@ -209,7 +209,7 @@ async def execute_command(
         )
         return TextContent(
             type="text",
-            text=json.dumps(action_response.model_dump()),  # Empty string instead of None
+            text=json.dumps(action_response.model_dump(), ensure_ascii=False),  # Empty string instead of None
             **{"metadata": {}}  # Pass as additional fields
         )
 
@@ -234,7 +234,7 @@ async def get_command_history(
             message = "No command history available."
         else:
             if output_format == "json":
-                message = json.dumps(recent_history, indent=2)
+                message = json.dumps(recent_history, indent=2, ensure_ascii=False)
             elif output_format == "text":
                 history_lines = []
                 for i, entry in enumerate(recent_history, 1):
@@ -271,7 +271,7 @@ async def get_command_history(
         action_response = ActionResponse(success=True, message=message, metadata=metadata.model_dump())
         return TextContent(
             type="text",
-            text=json.dumps(action_response.model_dump()),  # Empty string instead of None
+            text=json.dumps(action_response.model_dump(), ensure_ascii=False),  # Empty string instead of None
             **{"metadata": {}}  # Pass as additional fields
         )
 
@@ -292,7 +292,7 @@ async def get_command_history(
         )
         return TextContent(
             type="text",
-            text=json.dumps(action_response.model_dump()),  # Empty string instead of None
+            text=json.dumps(action_response.model_dump(), ensure_ascii=False),  # Empty string instead of None
             **{"metadata": {}}  # Pass as additional fields
         )
 
@@ -354,7 +354,7 @@ async def get_terminal_capabilities(
     action_response = ActionResponse(success=True, message=formatted_info, metadata=capabilities)
     return TextContent(
         type="text",
-        text=json.dumps(action_response.model_dump()),  # Empty string instead of None
+        text=json.dumps(action_response.model_dump(), ensure_ascii=False),  # Empty string instead of None
         **{"metadata": {}}  # Pass as additional fields
     )
 
@@ -388,7 +388,7 @@ def _format_command_output(result: CommandResult, output_format: str = "markdown
         Formatted string suitable for LLM consumption
     """
     if output_format == "json":
-        return json.dumps(result.model_dump(), indent=2)
+        return json.dumps(result.model_dump(), indent=2, ensure_ascii=False)
 
     elif output_format == "text":
         output_parts = [
