@@ -367,7 +367,8 @@ class DefaultAgentHandler(AgentHandler):
                 if pre_finished:
                     yield Message(
                         category=Constants.AGENT,
-                        payload=Observation(content=all_input if len(all_input) > 1 else all_input.get(agent_name)),
+                        # default use string as content
+                        payload=Observation(content=str(all_input) if len(all_input) > 1 else all_input.get(agent_name)),
                         sender=agent.id(),
                         session_id=session_id,
                         receiver=k,
