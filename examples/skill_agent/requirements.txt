@@ -50,4 +50,4 @@ scipy>=1.11.0
 
 # Optional Vector Database
 # elasticsearch==version match you elasticsearch version
-
+mcp_ui_server==1.0.0
