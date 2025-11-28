@@ -116,7 +116,7 @@ class AworldAgentLoop(AgentLoopBase):
             input = input.get("content", "")
 
         task = await build_task(user_input=input, target=agent, timeout=1200,
-                          context=await self.build_context_config(),
+                          context_config=await self.build_context_config(),
                           task_config=await self.build_task_config())
         resp = TaskResponse(id=task.id, trajectory=[{
             "exp_meta": {
