@@ -34,7 +34,7 @@ Please read the conversation carefully and extract new information from the conv
          - tool_input: {{
             "query": "python"
           }}
-       - step_result: the result of step and evidence information, such link of visited web page for slove task
+       - step_result: the result of step and evidence information, such link of visited web page for solve task, created knowledge id list, etc.
 
 3. In your summary, aim to reduce unnecessary information, but make sure your summarized content still provides enough details for the task and does not lose any important information.
 </guide>

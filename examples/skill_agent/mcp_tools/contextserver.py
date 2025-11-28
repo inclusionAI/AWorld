@@ -488,21 +488,49 @@ async def list_knowledge_info(
         return f"Error listing knowledge info: {str(e)}"
 
 
-@mcp.tool(description="add important information to the current workspace, you can use tool get_knowledge to got content ")
-async def add_knowledge(knowledge_content: str, content_summary:str, session_id: str = None, task_id: str = None) -> Union[str, TextContent]:
-    """
-    Add an knowledge artifact to the current session workspace.
+@mcp.tool(description="""Add important information to the current workspace.
 
-    This tool adds an knowledge artifact to the current session workspace.
+⚠️ CRITICAL: You MUST provide the full knowledge_content - this is the actual content to store, NOT just a summary!
+
+REQUIRED parameters (ALL THREE ARE MANDATORY):
+1. knowledge_content (str): ⚠️ THE FULL CONTENT TEXT - This is the most important parameter! Must contain the complete knowledge/report/document text that you want to store. DO NOT skip this or leave it empty!
+2. knowledge_name (str): A short name/title for this knowledge
+3. content_summary (str): A brief one-line summary (this is NOT the content, just a description)
+
+Optional parameters:
+- session_id (str): The session ID to identify the workspace
+- task_id (str): The task ID associated with this knowledge
+
+Example usage:
+add_knowledge(
+    knowledge_content="<THE FULL TEXT CONTENT YOU WANT TO STORE - can be very long>",
+    knowledge_name="Report Title",
+    content_summary="Brief description of what this knowledge contains"
+)
+
+After adding, use get_knowledge(knowledge_id) to retrieve the content later.""")
+async def add_knowledge(knowledge_content: str, content_summary: str, knowledge_name: str, session_id: str = None, task_id: str = None) -> Union[str, TextContent]:
+    """
+    Add a knowledge artifact to the current session workspace.
+
+    This tool adds a knowledge artifact to the current session workspace.
     Useful for adding new knowledge to the workspace.
 
     Args:
-        knowledge_content (str): The content of the knowledge artifact
-        content_summary (str): The summary of the knowledge artifact
+        knowledge_content (str): The full content of the knowledge artifact to store (REQUIRED)
+        content_summary (str): A brief summary describing the knowledge content (REQUIRED)
+        knowledge_name (str, optional): The name of the knowledge. (REQUIRED)
         session_id (str, optional): The session ID to identify the workspace. Defaults to None.
+        task_id (str, optional): The task ID associated with this knowledge. Defaults to None.
 
     Returns:
-        str: A message indicating the success and knownledge artifact ID or failure of the operation
+        str: A message indicating the success and knowledge artifact ID or failure of the operation
+        
+    Example:
+        add_knowledge(
+            knowledge_content="The capital of France is Paris. It is the largest city in France.",
+            content_summary="Information about France's capital city"
+        )
     """
     logger.info(f"🔍 Adding artifact: artifact_content={knowledge_content},session_id={session_id}")
     try:
@@ -510,7 +538,8 @@ async def add_knowledge(knowledge_content: str, content_summary:str, session_id:
         artifact = Artifact(artifact_id=f"actions_info_task_id{str(uuid.uuid4())}", artifact_type=ArtifactType.TEXT, content=knowledge_content, metadata={
             "context_type": "actions_info",
             "task_id": task_id,
-            "summary": content_summary
+            "summary": content_summary,
+            "name": knowledge_name
         })
         await workspace.add_artifact(artifact, index=False)
         search_output_dict = {
@@ -529,22 +558,39 @@ async def add_knowledge(knowledge_content: str, content_summary:str, session_id:
         return f"Error adding artifact: {str(e)}"
 
 
-@mcp.tool(description="update existing knowledge if the knowledge is not comprehensive, you can use the tool to update the knowledge")
-async def update_knowledge(knowledge_id: str, knowledge_content: str, content_summary:str, session_id: str = None, task_id: str = None) -> Union[str, TextContent]:
-    """
-    Update an existing knowledge artifact to the current session workspace.
+@mcp.tool(description="""Update existing knowledge if the knowledge is not comprehensive.
+REQUIRED parameters:
+- knowledge_id (str): The ID of the existing knowledge artifact to update (REQUIRED)
+- knowledge_content (str): The new full content to replace the existing content (REQUIRED)
+- content_summary (str): A brief summary describing the updated knowledge content (REQUIRED)
+Optional parameters:
+- session_id (str): The session ID to identify the workspace
+- task_id (str): The task ID associated with this knowledge
 
-    This tool updates an existing knowledge artifact to the current session workspace.
-    Useful for updating existing knowledge to the workspace.
+Use list_knowledge_info() to find existing knowledge IDs, then use this tool to update them.""")
+async def update_knowledge(knowledge_id: str, knowledge_content: str, content_summary: str, session_id: str = None, task_id: str = None) -> Union[str, TextContent]:
+    """
+    Update an existing knowledge artifact in the current session workspace.
+
+    This tool updates an existing knowledge artifact in the current session workspace.
+    Useful for updating existing knowledge when you have new or corrected information.
 
     Args:
-        knowledge_id (str): The id of the knowledge artifact
-        knowledge_content (str): The content of the knowledge artifact
-        content_summary (str): The summary of the knowledge artifact
+        knowledge_id (str): The ID of the existing knowledge artifact to update (REQUIRED)
+        knowledge_content (str): The new full content to replace the existing content (REQUIRED)
+        content_summary (str): A brief summary describing the updated knowledge content (REQUIRED)
         session_id (str, optional): The session ID to identify the workspace. Defaults to None.
+        task_id (str, optional): The task ID associated with this knowledge. Defaults to None.
 
     Returns:
-        str: A message indicating the success and knownledge artifact ID or failure of the operation
+        str: A message indicating the success and knowledge artifact ID or failure of the operation
+        
+    Example:
+        update_knowledge(
+            knowledge_id="actions_info_task_id123",
+            knowledge_content="Updated content about France. Paris is the capital.",
+            content_summary="Updated information about France"
+        )
     """
     logger.info(f"🔍 Updating artifact: knowledge_id={knowledge_id}, artifact_content={knowledge_content},session_id={session_id}")
     try:

@@ -513,7 +513,7 @@ class PromptLogger:
                     message_length += num_tokens_from_string(str(tool_calls))
 
                 # Format message content with length information
-                prompt_logger.info(f"│ 📨 Message #{i:<2} {role_emoji} {role.upper():<10} 📏 Length: {message_length:<6}")
+                prompt_logger.info(f"│ 📨 Message#{i:<2} ({message.get('id')}) {role_emoji} {role.upper():<10} 📏 Length: {message_length:<6}")
 
                 # Process message content, support multiple formats
                 if content:

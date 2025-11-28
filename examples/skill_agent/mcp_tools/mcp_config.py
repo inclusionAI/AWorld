@@ -36,6 +36,14 @@ MCP_CONFIG = {
             "env": {
             }
         },
+        "tavily-mcp": {
+            "command": "npx",
+            "args": [
+                "-y",
+                "mcp-remote",
+                f"https://mcp.tavily.com/mcp/?tavilyApiKey={os.environ.get('TAVILY_API_KEY')}"
+            ]
+        },
         "filesystem-server": {
             "type": "stdio",
             "command": "npx",

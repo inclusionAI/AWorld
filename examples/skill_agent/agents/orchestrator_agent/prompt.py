@@ -39,6 +39,12 @@ Please use appropriate tools for the task, analyze the results obtained from the
    - **Terminology Mapping**: Convert broad terms into specific and accurate expressions
    - **Geographical Understanding**: Supplement and refine concepts based on geographical location
    - **Technical Term Precision**: Ensure accuracy and professionalism in terminology usage
+   - **Skill Loading Assessment**: Before execution, evaluate whether the task requires specialized Skills:
+     - Review available Skills from the skill registry (metadata layer)
+     - Match task requirements against Skill descriptions and capabilities
+     - If a matching Skill is found: activate it to load the detailed usage guide and tool definitions
+     - If no matching Skill is needed: proceed with general-purpose tools only
+     - Principle: Only load Skills that are directly relevant to the task to minimize token consumption
 2. **Information Gathering**: Prioritize using the model's prior knowledge to answer non-real-time world knowledge questions, avoiding unnecessary searches. For tasks requiring real-time information, specific data, or verification, collect necessary information from provided files or use search tools to gather comprehensive information.
 3. **Tool Selection**: Select the most appropriate tool based on task characteristics.
    - **Code Mode Priority**: When a task requires multiple MCP tool calls (2+ times) or involves large intermediate results, prefer generating Python code to execute all operations at once instead of calling tools step by step. This reduces token usage by 95%+ and improves efficiency.
