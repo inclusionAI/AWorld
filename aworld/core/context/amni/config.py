@@ -100,7 +100,7 @@ class AgentContextConfig(BaseConfig):
     summary_context_length: Optional[int] = Field(default=40960,
                                                   description=" when the content length is greater than the summary_context_length, the summary will be created")
     summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
-    summary_summaried: Optional[bool] = Field(default=True, description="summary_summaried use to store summary memory")
+    summary_summaried: Optional[bool] = Field(default=True, description="whether to summarize historical summary messages when summary is triggered")
     summary_role: Optional[str] = Field(default="user", description="role for summary memory items")
 
     # Context Offload
