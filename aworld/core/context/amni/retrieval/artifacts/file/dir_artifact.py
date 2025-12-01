@@ -193,7 +193,7 @@ class DirArtifact(Artifact):
         return [
             {
                 'filename': att.filename,
-                'path': f"{self.base_path}/{att.filename}"
+                'path': f"{self.base_path}/{att.filename}" if not att.path else att.path
             }
             for att in self.attachments
         ]
