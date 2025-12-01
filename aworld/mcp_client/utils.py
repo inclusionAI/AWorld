@@ -408,7 +408,7 @@ async def mcp_tool_desc_transform_v2(
         if server_config.get("disabled", False):
             continue
 
-        if tools is None or server_name in tools:
+        if tools and server_name in tools:
             # Handle SSE server
             if "function_tool" == server_config.get("type", ""):
                 try:
