@@ -95,5 +95,5 @@ orchestrator_agent_config = AgentConfig(
     ),
     use_vision=False,
     # skill_configs= PLANNING_SKILLS | BROWSER_SKILLS| CUSTOM_SKILLS
-    skill_configs= PLANNING_SKILLS | BASIC_SKILLS | CUSTOM_SKILLS
+    skill_configs= PLANNING_SKILLS | BASIC_SKILLS| CUSTOM_SKILLS
 )
