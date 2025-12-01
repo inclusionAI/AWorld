@@ -55,6 +55,9 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         self._env_type = SandboxEnvType.LOCAL
         self._mcp_servers = mcp_servers
         self._mcp_config = mcp_config
+        if mcp_config and not mcp_servers:
+            mcp_servers = list(mcp_config.get("mcpServers", {}).keys())
+            self._mcp_servers = mcp_servers
         self._skill_configs= skill_configs
         self._black_tool_actions = black_tool_actions or {}
 
