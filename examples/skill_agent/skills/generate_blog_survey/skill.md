@@ -2,7 +2,8 @@
 name: generate_blog_survey
 desc: "博客综述报告生成器(Blog Survey Generator)：从多篇技术博客/文章生成综述报告，分析技术演进过程、梳理挑战与解决方案、提炼核心观点，适用于学习笔记、面试准备或团队分享"
 tool_list: {"tavily-mcp": [], "filesystem": ["write_file", "edit_file", "read_file", "create_directory", "list_directory"],"ms-playwright": [], "document_server": ["mcpreadpdf"]}
-active: True
+type: "agent"
+active: true
 ---
 # 技术博客综述生成器 Prompt
 
