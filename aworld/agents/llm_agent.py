@@ -252,6 +252,45 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         return sync_exec(self.async_messages_transform, image_urls=image_urls, observation=observation,
                          message=message, **kwargs)
 
+    def _is_amni_context(self, context: Context):
+        from aworld.core.context.amni import AmniContext
+        return isinstance(context, AmniContext)
+
+    def _build_memory_filters(self, context: Context, additional_filters: Dict[str, Any] = None) -> Dict[str, Any]:
+        filters = {
+            "agent_id": self.id()
+        }
+        
+        # Decide which filter to add based on history_scope
+        agent_memory_config = self.memory_config
+        if self._is_amni_context(context):
+            agent_context_config = context.get_config().get_agent_context_config(self.id())
+            agent_memory_config = agent_context_config.to_memory_config()
+        
+        query_scope = agent_memory_config.history_scope if agent_memory_config and agent_memory_config.history_scope else "task"
+        task = context.get_task()
+        
+        if query_scope == "user":
+            # Pass user_id when query_scope is user
+            if hasattr(context, 'user_id') and context.user_id:
+                filters["user_id"] = context.user_id
+            elif hasattr(task, 'user_id') and task.user_id:
+                filters["user_id"] = task.user_id
+        elif query_scope == "session":
+            # Pass session_id when query_scope is session
+            if task and task.session_id:
+                filters["session_id"] = task.session_id
+        else:  # query_scope == "task" or default
+            # Pass task_id when query_scope is task
+            if task and task.id:
+                filters["task_id"] = task.id
+        
+        # Add additional filter conditions
+        if additional_filters:
+            filters.update(additional_filters)
+        
+        return filters
+
     def _clean_redundant_tool_call_messages(self, histories: List[MemoryItem]) -> None:
         try:
             for i in range(len(histories) - 1, -1, -1):
@@ -269,14 +308,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         logger.info(f"Agent {self.id()} postprocess_terminate_loop: {self.loop_step}")
         super().postprocess_terminate_loop(message)
         try:
-            session_id = message.context.get_task().session_id
-            task_id = message.context.get_task().id
-            histories = self.memory.get_all(filters={
-                "agent_id": self.id(),
-                "session_id": session_id,
-                "task_id": task_id,
-                "memory_type": "message"
-            })
+            filters = self._build_memory_filters(message.context, additional_filters={"memory_type": "message"})
+            histories = self.memory.get_all(filters=filters)
             self._clean_redundant_tool_call_messages(histories)
         except Exception:
             logger.error(f"Agent {self.id()} postprocess_terminate_loop error: {traceback.format_exc()}")
@@ -304,14 +337,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if self.system_prompt:
             await self._add_message_to_memory(context=message.context, payload=content, message_type=MemoryType.SYSTEM)
 
-        session_id = message.context.get_task().session_id
-        task_id = message.context.get_task().id
-        histories = self.memory.get_all(filters={
-            "agent_id": self.id(),
-            "session_id": session_id,
-            "task_id": task_id,
-            "memory_type": "message"
-        })
+        filters = self._build_memory_filters(message.context, additional_filters={"memory_type": "message"})
+        histories = self.memory.get_all(filters=filters)
 
         # append observation to memory
         tool_result_added = False
@@ -333,11 +360,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                               context=message.context)
 
         # from memory get last n messages
-        histories = self.memory.get_last_n(self.memory_config.history_rounds, filters={
-            "agent_id": self.id(),
-            "session_id": session_id,
-            "task_id": task_id
-        }, agent_memory_config=self.memory_config)
+        filters = self._build_memory_filters(message.context)
+        agent_memory_config = self.memory_config
+        if self._is_amni_context(message.context):
+            agent_context_config = message.context.get_config().get_agent_context_config(self.id())
+            agent_memory_config = agent_context_config.to_memory_config()
+        histories = self.memory.get_last_n(agent_memory_config.history_rounds, filters=filters, agent_memory_config=agent_memory_config)
         if histories:
             tool_calls_map = {}
             last_tool_calls = []
@@ -841,12 +869,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """Add tool result token ids to context"""
         if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVE:
             return
-        histories = self.memory.get_all(filters={
-            "agent_id": self.id(),
-            "session_id": context.get_task().session_id,
-            "task_id": context.get_task().id,
-            "memory_type": "message"
-        })
+        filters = self._build_memory_filters(context, additional_filters={"memory_type": "message"})
+        histories = self.memory.get_all(filters=filters)
         tool_openai_messages_after_last_assistant = []
         found_assistant = False
         tool_call_ids = []
