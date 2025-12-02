@@ -246,6 +246,7 @@ class AgentConfig(BaseConfig):
     exit_on_failure: bool = False
     human_tools: List[str] = []
     skill_configs: Dict[str, Any] = None
+    ptc_tools: List[str] = []
     ext: dict = {}
 
     def __init__(self, **kwargs):
