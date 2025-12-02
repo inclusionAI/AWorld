@@ -90,6 +90,7 @@ class AgentContextConfig(BaseConfig):
                                 description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
     history_write_strategy: HistoryWriteStrategy = Field(default=HistoryWriteStrategy.EVENT_DRIVEN,
                                                          description="History write strategy: event_driven (through message system) or direct (direct call to handler)")
+    history_scope: Optional[str] = Field(default="task", description="History initialization scope: user, session, or task")
 
     # Context Reduce - Compress
     enable_summary: bool = Field(default=False,
@@ -118,6 +119,7 @@ class AgentContextConfig(BaseConfig):
         return AgentMemoryConfig(
             history_rounds=self.history_rounds,
             history_write_strategy=self.history_write_strategy,
+            history_scope=self.history_scope,
             enable_summary=self.enable_summary,
             summary_rounds=self.summary_rounds,
             summary_context_length=self.summary_context_length,
