@@ -90,6 +90,7 @@ class AgentContextConfig(BaseConfig):
                                 description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
     history_write_strategy: HistoryWriteStrategy = Field(default=HistoryWriteStrategy.EVENT_DRIVEN,
                                                          description="History write strategy: event_driven (through message system) or direct (direct call to handler)")
+    history_scope: Optional[str] = Field(default="task", description="History initialization scope: user, session, or task")
 
     # Context Reduce - Compress
     enable_summary: bool = Field(default=False,
@@ -100,8 +101,8 @@ class AgentContextConfig(BaseConfig):
     summary_context_length: Optional[int] = Field(default=40960,
                                                   description=" when the content length is greater than the summary_context_length, the summary will be created")
     summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
-    summary_summaried: Optional[bool] = Field(default=True, description="summary_summaried use to store summary memory")
-    summary_role: Optional[str] = Field(default="assistant", description="role for summary memory items")
+    summary_summaried: Optional[bool] = Field(default=True, description="whether to summarize historical summary messages when summary is triggered")
+    summary_role: Optional[str] = Field(default="user", description="role for summary memory items")
 
     # Context Offload
     tool_result_offload: bool = Field(default=False, description="tool result offload")
@@ -118,6 +119,7 @@ class AgentContextConfig(BaseConfig):
         return AgentMemoryConfig(
             history_rounds=self.history_rounds,
             history_write_strategy=self.history_write_strategy,
+            history_scope=self.history_scope,
             enable_summary=self.enable_summary,
             summary_rounds=self.summary_rounds,
             summary_context_length=self.summary_context_length,

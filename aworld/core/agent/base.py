@@ -125,15 +125,26 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.tool_names.append(tool)
         # An agent can delegate tasks to other agent
         self.handoffs: List[str] = agent_names or []
-        self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
-        # extract mcp_servers from mcp_config if mcp_servers is empty
-        self.mcp_servers: List[str] = extract_mcp_servers_from_config(self.mcp_config, mcp_servers or [])
+        if sandbox:
+            self.mcp_servers: List[str] = extract_mcp_servers_from_config(sandbox.mcp_config, sandbox.mcp_servers or [])
+            self.mcp_config: Dict[str, Any] = replace_env_variables(sandbox.mcp_config or {})
+        else:
+            self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
+            self.mcp_servers: List[str] = extract_mcp_servers_from_config(self.mcp_config, mcp_servers or [])
         self.skill_configs: Dict[str, Any] = self.conf.get("skill_configs", {})
         # derive mcp_servers from skill_configs if provided
         if self.skill_configs:
             self.mcp_servers = replace_mcp_servers_variables(self.skill_configs, self.mcp_servers, [])
-            from aworld.core.context.amni.tool.context_skill_tool import ContextSkillTool
-            self.tool_names.extend(["SKILL"])
+            from aworld.core.context.amni.tool.context_skill_tool import CONTEXT_SKILL
+            self.tool_names.extend([CONTEXT_SKILL])
+        ptc_tools = self.conf.get("ptc_tools", []) or kwargs.get("ptc_tools", [])
+        if ptc_tools:
+            self.ptc_tools = ptc_tools
+            from aworld.experimental.ptc.ptc_tool import PTC_TOOL
+            self.tool_names.extend([PTC_TOOL])
+        else:
+            self.ptc_tools = []
+
         # tool_name: [tool_action1, tool_action2, ...]
         self.black_tool_actions: Dict[str, List[str]] = black_tool_actions or {}
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
