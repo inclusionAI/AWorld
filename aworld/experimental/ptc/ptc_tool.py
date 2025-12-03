@@ -232,9 +232,11 @@ class PtcTool(AsyncTool):
                 }
                 exec(module_code, module_globals)
                 
-                # Set sandbox in the module
+                # Set sandbox and context in the generated module, same pattern for both
                 if 'set_sandbox' in module_globals:
                     module_globals['set_sandbox'](sandbox)
+                if 'set_context' in module_globals:
+                    module_globals['set_context'](context)
                 
                 # Import all tool functions into exec_globals
                 for name, value in module_globals.items():
