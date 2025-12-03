@@ -188,7 +188,8 @@ class AgentMemoryConfig(BaseConfig):
                                 description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
     history_write_strategy: HistoryWriteStrategy = Field(default=HistoryWriteStrategy.EVENT_DRIVEN,
                                                          description="History write strategy: event_driven (through message system) or direct (direct call to handler)")
-    
+    history_scope: Optional[str] = Field(default="task", description="History initialization scope: user, session, or task")
+
     enable_summary: bool = Field(default=False,
                                  description="enable_summary use llm to create summary short-term memory")
     summary_model: Optional[str] = Field(default=None, description="short-term summary model")
@@ -197,7 +198,7 @@ class AgentMemoryConfig(BaseConfig):
     summary_context_length: Optional[int] = Field(default=40960,
                                                   description=" when the content length is greater than the summary_context_length, the summary will be created")
     summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
-    summary_summaried: Optional[bool] = Field(default=True, description="to summary summary message when summary triggered")
+    summary_summaried: Optional[bool] = Field(default=True, description="whether to summarize historical summary messages when summary is triggered")
     summary_role: Optional[str] = Field(default="assistant", description="role for summary memory items")
 
     # Long-term memory config
@@ -246,6 +247,7 @@ class AgentConfig(BaseConfig):
     exit_on_failure: bool = False
     human_tools: List[str] = []
     skill_configs: Dict[str, Any] = None
+    ptc_tools: List[str] = []
     ext: dict = {}
 
     def __init__(self, **kwargs):

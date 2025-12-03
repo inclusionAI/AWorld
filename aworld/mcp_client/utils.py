@@ -389,6 +389,7 @@ async def mcp_tool_desc_transform_v2(
         tools: List[str] = None, mcp_config: Dict[str, Any] = None, context: Context = None,
         server_instances: Dict[str, Any] = None,
         black_tool_actions: Dict[str, List[str]] = None,
+        sandbox_id: Optional[str] = None
 ) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
@@ -407,7 +408,7 @@ async def mcp_tool_desc_transform_v2(
         if server_config.get("disabled", False):
             continue
 
-        if tools is None or server_name in tools:
+        if tools and server_name in tools:
             # Handle SSE server
             if "function_tool" == server_config.get("type", ""):
                 try:
@@ -509,32 +510,26 @@ async def mcp_tool_desc_transform_v2(
                 if server_config["type"] == "sse":
                     params = server_config["params"].copy()
                     headers = params.get("headers") or {}
-                    if context and context.session_id:
-                        env_name = headers.get("env_name")
+                    env_name = headers.get("env_name")
+                    if sandbox_id:
+                        headers["SESSION_ID"] = f"{env_name}_{sandbox_id}"
                         from aworld.core.context.amni import AmniContext
                         if isinstance(context, AmniContext) and context.get_config().env_config.isolate:
-                            headers["SESSION_ID"] = f"{env_name}_{context.session_id}_{context.task_id}" if env_name else f"{context.session_id}_{context.task_id}"
-                        else:
-                            headers["SESSION_ID"] = f"{env_name}_{context.session_id}" if env_name else f"{context.session_id}"
-                    if context and context.user:
-                        headers["USER_ID"] = context.user
+                            headers["SESSION_ID"] = f"{env_name}_{sandbox_id}_{context.task_id}"
                     params["headers"] = headers
-
                     server = MCPServerSse(
                         name=server_config["name"], params=params
                     )
                 elif server_config["type"] == "streamable-http":
                     params = server_config["params"].copy()
                     headers = params.get("headers") or {}
-                    if context and context.session_id:
-                        env_name = headers.get("env_name")
+                    env_name = headers.get("env_name")
+                    if sandbox_id:
+                        headers["SESSION_ID"] = f"{env_name}_{sandbox_id}"
                         from aworld.core.context.amni import AmniContext
                         if isinstance(context, AmniContext) and context.get_config().env_config.isolate:
-                            headers["SESSION_ID"] = f"{env_name}_{context.session_id}_{context.task_id}" if env_name else f"{context.session_id}_{context.task_id}"
-                        else:
-                            headers["SESSION_ID"] = f"{env_name}_{context.session_id}" if env_name else f"{context.session_id}"
-                    if context and context.user:
-                        headers["USER_ID"] = context.user
+                            headers["SESSION_ID"] = f"{env_name}_{sandbox_id}_{context.task_id}"
+
                     params["headers"] = headers
                     if "timeout" in params and not isinstance(params["timeout"], timedelta):
                         params["timeout"] = timedelta(seconds=float(params["timeout"]))
@@ -881,7 +876,8 @@ async def call_api(
 
 async def get_server_instance(
         server_name: str, mcp_config: Dict[str, Any] = None,
-        context: Context = None
+        context: Context = None,
+        sandbox_id: Optional[str] = None
 ) -> Any:
     """Get server instance, create a new one if it doesn't exist
 
@@ -909,11 +905,12 @@ async def get_server_instance(
             return None
         elif "sse" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
-            if context and context.session_id:
-                env_name = headers.get("env_name")
-                headers["SESSION_ID"] = f"{env_name}_{context.session_id}" if env_name else f"{context.session_id}"
-            if context and context.user:
-                headers["USER_ID"] = context.user
+            env_name = headers.get("env_name")
+            if sandbox_id:
+                headers["SESSION_ID"] = f"{env_name}_{sandbox_id}"
+                from aworld.core.context.amni import AmniContext
+                if isinstance(context, AmniContext) and context.get_config().env_config.isolate:
+                    headers["SESSION_ID"] = f"{env_name}_{sandbox_id}_{context.task_id}"
             server = MCPServerSse(
                 name=server_name,
                 params={
@@ -929,11 +926,12 @@ async def get_server_instance(
             return server
         elif "streamable-http" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
-            if context and context.session_id:
-                env_name = headers.get("env_name")
-                headers["SESSION_ID"] = f"{env_name}_{context.session_id}" if env_name else f"{context.session_id}"
-            if context and context.user:
-                headers["USER_ID"] = context.user
+            env_name = headers.get("env_name")
+            if sandbox_id:
+                headers["SESSION_ID"] = f"{env_name}_{sandbox_id}"
+                from aworld.core.context.amni import AmniContext
+                if isinstance(context, AmniContext) and context.get_config().env_config.isolate:
+                    headers["SESSION_ID"] = f"{env_name}_{sandbox_id}_{context.task_id}"
             server = MCPServerStreamableHttp(
                 name=server_name,
                 params={

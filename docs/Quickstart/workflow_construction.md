@@ -13,7 +13,7 @@ Executes agents in sequence where each agent's output becomes
 the next agent's input, enabling multi-step collaborative processing.
 """
 
-swarm = Swarm([(agent1, agent2), (agent2, agent3)], root_agent=[agent1])
+swarm = Swarm(topology=[(agent1, agent2), (agent2, agent3)], root_agent=[agent1])
 result: TaskResponse = Runners.run(input=question, swarm=swarm)
 ```
 
@@ -31,7 +31,7 @@ Parallel Agent Execution with Barrier Synchronization
 - agent3 processes combined outputs from agent1 and agent2
 """
 
-swarm = Swarm([(agent1, agent3), (agent2, agent3)], root_agent=[agent1, agent2])
+swarm = Swarm(topology=[(agent1, agent3), (agent2, agent3)], root_agent=[agent1, agent2])
 result: TaskResponse = Runners.run(input=question, swarm=swarm)
 ```
 
@@ -51,7 +51,7 @@ Parallel Multi-Path Agent Execution
 - agent3 synthesizes outputs from both agent1 and agent2
 """
 
-swarm = Swarm([(agent1, agent2), (agent1, agent3), (agent2, agent3)], root_agent=[agent1])
+swarm = Swarm(topology=[(agent1, agent2), (agent1, agent3), (agent2, agent3)], root_agent=[agent1])
 result: TaskResponse = Runners.run(input=question, swarm=swarm)
 ```
 

@@ -7,6 +7,7 @@ This module provides a persistent SQLite-based storage solution for chunks.
 import asyncio
 import json
 import logging
+import os.path
 import sqlite3
 import time
 from typing import Optional, List, Dict, Any
@@ -33,6 +34,8 @@ class SQLiteChunkStore(ChunkStore):
             table_name: Name of the table to store chunks
         """
         self.db_path = config.get("db_path", "./data/amni_context.db")
+        if not os.path.exists("./data"):
+            os.makedirs("./data")
         self.table_name = config.get("table_name", "chunks")
         self._lock = asyncio.Lock()
         self._init_database()
