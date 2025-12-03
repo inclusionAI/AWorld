@@ -166,6 +166,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.ptc_tools = ptc_tools
             from aworld.experimental.ptc.ptc_tool import PTC_TOOL
             self.tool_names.extend([PTC_TOOL])
+        else:
+            self.ptc_tools = []
 
         # tool_name: [tool_action1, tool_action2, ...]
         self.black_tool_actions: Dict[str, List[str]] = black_tool_actions or {}
