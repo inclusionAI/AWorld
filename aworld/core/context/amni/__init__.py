@@ -272,6 +272,9 @@ class AmniContext(Context):
     def get_config(self) -> AmniContextConfig:
         pass
 
+    def get_agent_context_config(self, namespace: str) -> AgentContextConfig:
+        pass
+
     ####################### Context Write #######################
 
     @abc.abstractmethod
@@ -525,6 +528,10 @@ class ApplicationContext(AmniContext):
 
     def get_config(self) -> AmniContextConfig:
         return self._config
+
+    def get_agent_context_config(self, namespace: str) -> AgentContextConfig:
+        return self.get_config().get_agent_context_config(namespace=namespace)
+
 
     ####################### Context Build/Copy/Merge/Restore #######################
 
@@ -1606,7 +1613,9 @@ class ApplicationContext(AmniContext):
         elif os.environ.get('WORKSPACE_PATH'):
             base_path = os.environ.get('WORKSPACE_PATH')
         else:
-            base_path = ''
+            base_path = './data/workspaces'
+            if not os.path.exists(base_path):
+                os.makedirs(base_path)
         
         # Get template with priority order
         config_template = None
