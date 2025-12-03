@@ -17,13 +17,13 @@ class EventManager:
     def __init__(self, context: Context, streaming_mode: StreamingMode = None, **kwargs):
         # use conf to build event bus instance
         self.event_bus = eventbus
-        
+
         # Initialize global streaming_eventbus if enable_stream is True
         self.streaming_mode = streaming_mode
         if self.streaming_mode and aworld.events.streaming_eventbus is None:
             aworld.events.streaming_eventbus = InMemoryEventbus()
         self.streaming_eventbus = aworld.events.streaming_eventbus
-        
+
         self.context = context
         # Record events in memory for re-consume.
         self.max_len = kwargs.get('max_len', 1000)
@@ -166,3 +166,18 @@ class EventManager:
 
         await self.streaming_eventbus.publish(msg, type='stream')
         return
+
+    async def register_streaming_handler(self, topic: str, handler: Callable[..., Any], **kwargs):
+        await self.streaming_eventbus.subscribe(self.context._task_id, 'bidi', topic, handler, **kwargs)
+
+    async def unregister_streaming_handler(self, topic: str, handler: Callable[..., Any], **kwargs):
+        await self.streaming_eventbus.unsubscribe(self.context._task_id, 'bidi', topic, handler, **kwargs)
+
+    async def publish_to_streaming(self, message: Message):
+        if self.streaming_eventbus:
+            await self.streaming_eventbus.publish(message)
+            return True
+        return False
+
+    async def stop_streaming(self):
+        await self.streaming_eventbus.done(self.context._task_id)
