@@ -143,9 +143,10 @@ import json
 
 # Global sandbox instance - must be set before calling any tool functions
 _sandbox = None
+_context = None
 
 
-def set_sandbox(sandbox_instance):
+def set_sandbox(sandbox_instance: Any) -> None:
     """Set the sandbox instance for tool calls.
     
     Args:
@@ -155,7 +156,21 @@ def set_sandbox(sandbox_instance):
     _sandbox = sandbox_instance
 
 
-async def _call_mcp_tool(server_name: str, tool_name: str, arguments: dict[str, Any]) -> Any:
+def set_context(context_instance: Any) -> None:
+    """Set the default context instance for tool calls.
+    
+    Args:
+        context_instance: Context instance that will be passed to mcpservers.call_tool
+    """
+    global _context
+    _context = context_instance
+
+
+async def _call_mcp_tool(
+    server_name: str,
+    tool_name: str,
+    arguments: dict[str, Any],
+) -> Any:
     """Call an MCP tool via sandbox.mcpservers.call_tool.
     
     Args:
@@ -169,7 +184,7 @@ async def _call_mcp_tool(server_name: str, tool_name: str, arguments: dict[str, 
     Raises:
         RuntimeError: If sandbox is not set or tool call fails
     """
-    global _sandbox
+    global _sandbox, _context
     
     if _sandbox is None:
         raise RuntimeError(
@@ -179,13 +194,16 @@ async def _call_mcp_tool(server_name: str, tool_name: str, arguments: dict[str, 
     
     try:
         # Call tool through sandbox
-        results = await _sandbox.mcpservers.call_tool([
-            {{
-                "tool_name": server_name,
-                "action_name": tool_name,
-                "params": arguments
-            }}
-        ])
+        results = await _sandbox.mcpservers.call_tool(
+            [
+                {{
+                    "tool_name": server_name,
+                    "action_name": tool_name,
+                    "params": arguments
+                }}
+            ],
+            context=_context,
+        )
         
         # Extract content from first ActionResult
         if results and len(results) > 0:
