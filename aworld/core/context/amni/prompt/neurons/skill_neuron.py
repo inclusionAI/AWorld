@@ -30,7 +30,7 @@ SKILLS_PROMPT = """
 """
 
 
-@neuron_factory.register(name="skills", desc="skills neuron", prio=2)
+@neuron_factory.register(name="skills", desc="skills neuron", prio=8)
 class SkillsNeuron(Neuron):
     """Neuron for handling plan related properties"""
 
@@ -40,7 +40,7 @@ class SkillsNeuron(Neuron):
             return []
         items = []
         for skill_id, skill in total_skills.items():
-            skill_usage = f"    <skill_usage>{skill.get('usage', '')}</skill_usage>\n"  if skill.get("active", False) else ""
+            skill_usage = f"    <skill_usage>{skill.get('usage', '')}</skill_usage>\n"  if skill.get("active", False) and skill.get("type") != "agent" else ""
             items.append(
                 f"  <skill id=\"{skill_id}\" status=\"{skill.get('active', False)}\">\n"
                 f"    <skill_name>{skill.get('name')}</skill_name>\n"

@@ -242,6 +242,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         except:
             logger.warning(f"{self.id()} get MCP desc fail, no MCP to use. error: {traceback.format_exc()}")
 
+        await self.process_by_ptc(self.tools, context)
+
     def messages_transform(self,
                            content: str,
                            image_urls: List[str] = None,
@@ -783,7 +785,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                              agent_id=self.id())
         else:
             system_prompt_template = StringPromptTemplate.from_template(self.system_prompt)
-            return system_prompt_template.format(context=context, task=content, tool_list=tool_list)
+            system_prompt = system_prompt_template.format(context=context, task=content, tool_list=tool_list)
+            if self.ptc_tools:
+                from aworld.experimental.ptc.ptc_neuron import PTC_NEURON_PROMPT
+                system_prompt += PTC_NEURON_PROMPT
+            return system_prompt
 
     async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context, skip_summary: bool = False):
         memory_msg = MemoryEventMessage(
@@ -898,3 +904,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     @staticmethod
     def from_dict(attr_dict: Dict[str, Any]) -> 'Agent':
         return Agent(**attr_dict)
+
+    async def process_by_ptc(self, tools, context: Context):
+        if not hasattr(self, "ptc_tools") or not self.ptc_tools:
+            return
+        ptc_tools = self.ptc_tools
+
+        for tool in tools:
+            if tool["function"]["name"] in ptc_tools:
+                tool["function"]["description"] = "[allow_code_execution]" +  tool["function"]["description"]
+                logger.debug(f"ptc augmented tool: {tool['function']['description']}")
+
