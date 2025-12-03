@@ -188,7 +188,8 @@ class AgentMemoryConfig(BaseConfig):
                                 description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
     history_write_strategy: HistoryWriteStrategy = Field(default=HistoryWriteStrategy.EVENT_DRIVEN,
                                                          description="History write strategy: event_driven (through message system) or direct (direct call to handler)")
-    
+    history_scope: Optional[str] = Field(default="task", description="History initialization scope: user, session, or task")
+
     enable_summary: bool = Field(default=False,
                                  description="enable_summary use llm to create summary short-term memory")
     summary_model: Optional[str] = Field(default=None, description="short-term summary model")
