@@ -1518,7 +1518,7 @@ class ApplicationContext(AmniContext):
             return self._working_dir
 
         # Initialize working directory
-        if self._config.env_config.env_type == 'remote':
+        if self._config.env_config.env_type == 'remote' and self._config.env_config.enabled_file_share:
             # Get OSS configuration with priority: config > environment variables
             oss_config = self._get_oss_config()
             self._working_dir = DirArtifact.with_oss_repository(
