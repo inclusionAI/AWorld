@@ -272,6 +272,9 @@ class AmniContext(Context):
     def get_config(self) -> AmniContextConfig:
         pass
 
+    def get_agent_context_config(self, namespace: str) -> AgentContextConfig:
+        pass
+
     ####################### Context Write #######################
 
     @abc.abstractmethod
@@ -525,6 +528,10 @@ class ApplicationContext(AmniContext):
 
     def get_config(self) -> AmniContextConfig:
         return self._config
+
+    def get_agent_context_config(self, namespace: str) -> AgentContextConfig:
+        return self.get_config().get_agent_context_config(namespace=namespace)
+
 
     ####################### Context Build/Copy/Merge/Restore #######################
 
@@ -1521,7 +1528,7 @@ class ApplicationContext(AmniContext):
             return self._working_dir
 
         # Initialize working directory
-        if self._config.env_config.env_type == 'remote':
+        if self._config.env_config.env_type == 'remote' and self._config.env_config.enabled_file_share:
             # Get OSS configuration with priority: config > environment variables
             oss_config = self._get_oss_config()
             self._working_dir = DirArtifact.with_oss_repository(
@@ -1616,7 +1623,9 @@ class ApplicationContext(AmniContext):
         elif os.environ.get('WORKSPACE_PATH'):
             base_path = os.environ.get('WORKSPACE_PATH')
         else:
-            base_path = ''
+            base_path = './data/workspaces'
+            if not os.path.exists(base_path):
+                os.makedirs(base_path)
         
         # Get template with priority order
         config_template = None

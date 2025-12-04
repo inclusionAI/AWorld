@@ -4,6 +4,7 @@ import time
 import traceback
 from typing import Any, Dict, List, Optional
 
+from aworld.core.agent.base import AgentFactory
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemorySystemMessage, MessageMetadata
 from ... import ApplicationContext
@@ -66,8 +67,10 @@ class SystemPromptAugmentOp(BaseOp):
         Supports filtering components configured in component_neuron based on namespace
         """
         agent_id = getattr(event, 'agent_id', None)
-
-        if not context.get_config().get_agent_context_config(agent_id).enable_system_prompt_augment:
+        agent = AgentFactory.agent_instance(agent_id)
+        if not agent:
+            return None
+        if not context.get_agent_context_config(agent_id).enable_system_prompt_augment and not agent.ptc_tools:
             logger.info(f"[SYSTEM_PROMPT_AUGMENT_OP] switch is disabled")
             return None
 
@@ -82,7 +85,18 @@ class SystemPromptAugmentOp(BaseOp):
         namespace = getattr(event, 'namespace', None)
 
         # Process components
-        neurons = neuron_factory.get_neurons_by_names(names=context.get_config().get_agent_context_config(agent_id).neuron_names)
+        neuron_names = context.get_agent_context_config(agent_id).neuron_names
+
+        # Enable PTC Feature
+        if agent.ptc_tools:
+            if not neuron_names:
+                neuron_names = []
+            from aworld.experimental.ptc.ptc_neuron import PTC_NEURON_NAME
+            if PTC_NEURON_NAME not in neuron_names:
+               neuron_names.append(PTC_NEURON_NAME)
+
+        neurons = neuron_factory.get_neurons_by_names(names=neuron_names)
+
 
         # Process components with rerank strategy
         if neurons:
