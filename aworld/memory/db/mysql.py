@@ -302,7 +302,6 @@ class MySQLMemoryStore(MemoryStore):
             future=True,
             **pool_args
         )
-        Base.metadata.create_all(self.engine)
         self.Session = sessionmaker(bind=self.engine, expire_on_commit=False)
 
     def _build_filters(self, query, filters: dict = None):
