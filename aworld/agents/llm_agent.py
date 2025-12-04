@@ -242,6 +242,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         except:
             logger.warning(f"{self.id()} get MCP desc fail, no MCP to use. error: {traceback.format_exc()}")
 
+        await self.process_by_ptc(self.tools, context)
+
     def messages_transform(self,
                            content: str,
                            image_urls: List[str] = None,
@@ -250,6 +252,45 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                            **kwargs) -> List[Dict[str, Any]]:
         return sync_exec(self.async_messages_transform, image_urls=image_urls, observation=observation,
                          message=message, **kwargs)
+
+    def _is_amni_context(self, context: Context):
+        from aworld.core.context.amni import AmniContext
+        return isinstance(context, AmniContext)
+
+    def _build_memory_filters(self, context: Context, additional_filters: Dict[str, Any] = None) -> Dict[str, Any]:
+        filters = {
+            "agent_id": self.id()
+        }
+
+        # Decide which filter to add based on history_scope
+        agent_memory_config = self.memory_config
+        if self._is_amni_context(context):
+            agent_context_config = context.get_config().get_agent_context_config(self.id())
+            agent_memory_config = agent_context_config.to_memory_config()
+
+        query_scope = agent_memory_config.history_scope if agent_memory_config and agent_memory_config.history_scope else "task"
+        task = context.get_task()
+
+        if query_scope == "user":
+            # Pass user_id when query_scope is user
+            if hasattr(context, 'user_id') and context.user_id:
+                filters["user_id"] = context.user_id
+            elif hasattr(task, 'user_id') and task.user_id:
+                filters["user_id"] = task.user_id
+        elif query_scope == "session":
+            # Pass session_id when query_scope is session
+            if task and task.session_id:
+                filters["session_id"] = task.session_id
+        else:  # query_scope == "task" or default
+            # Pass task_id when query_scope is task
+            if task and task.id:
+                filters["task_id"] = task.id
+
+        # Add additional filter conditions
+        if additional_filters:
+            filters.update(additional_filters)
+
+        return filters
 
     def _clean_redundant_tool_call_messages(self, histories: List[MemoryItem]) -> None:
         try:
@@ -268,14 +309,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         logger.info(f"Agent {self.id()} postprocess_terminate_loop: {self.loop_step}")
         super().postprocess_terminate_loop(message)
         try:
-            session_id = message.context.get_task().session_id
-            task_id = message.context.get_task().id
-            histories = MemoryFactory.instance().get_all(filters={
-                "agent_id": self.id(),
-                "session_id": session_id,
-                "task_id": task_id,
-                "memory_type": "message"
-            })
+            filters = self._build_memory_filters(message.context, additional_filters={"memory_type": "message"})
+            histories = MemoryFactory.instance().get_all(filters=filters)
             self._clean_redundant_tool_call_messages(histories)
         except Exception:
             logger.error(f"Agent {self.id()} postprocess_terminate_loop error: {traceback.format_exc()}")
@@ -303,14 +338,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         if self.system_prompt:
             await self._add_message_to_memory(context=message.context, payload=content, message_type=MemoryType.SYSTEM)
 
-        session_id = message.context.get_task().session_id
-        task_id = message.context.get_task().id
-        histories = MemoryFactory.instance().get_all(filters={
-            "agent_id": self.id(),
-            "session_id": session_id,
-            "task_id": task_id,
-            "memory_type": "message"
-        })
+        filters = self._build_memory_filters(message.context, additional_filters={"memory_type": "message"})
+        histories = MemoryFactory.instance().get_all(filters=filters)
 
         # append observation to memory
         tool_result_added = False
@@ -333,11 +362,12 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
         memory = MemoryFactory.instance()
         # from memory get last n messages
-        histories = memory.get_last_n(self.memory_config.history_rounds, filters={
-            "agent_id": self.id(),
-            "session_id": session_id,
-            "task_id": task_id
-        }, agent_memory_config=self.memory_config)
+        filters = self._build_memory_filters(message.context)
+        agent_memory_config = self.memory_config
+        if self._is_amni_context(message.context):
+            agent_context_config = message.context.get_config().get_agent_context_config(self.id())
+            agent_memory_config = agent_context_config.to_memory_config()
+        histories = memory.get_last_n(agent_memory_config.history_rounds, filters=filters, agent_memory_config=agent_memory_config)
         if histories:
             tool_calls_map = {}
             last_tool_calls = []
@@ -783,7 +813,11 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
                                                              agent_id=self.id())
         else:
             system_prompt_template = StringPromptTemplate.from_template(self.system_prompt)
-            return system_prompt_template.format(context=context, task=content, tool_list=tool_list)
+            system_prompt = system_prompt_template.format(context=context, task=content, tool_list=tool_list)
+            if self.ptc_tools:
+                from aworld.experimental.ptc.ptc_neuron import PTC_NEURON_PROMPT
+                system_prompt += PTC_NEURON_PROMPT
+            return system_prompt
 
     async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context, skip_summary: bool = False):
         memory_msg = MemoryEventMessage(
@@ -841,13 +875,9 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
         """Add tool result token ids to context"""
         if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVE:
             return
+        filters = self._build_memory_filters(context, additional_filters={"memory_type": "message"})
         memory = MemoryFactory.instance()
-        histories = memory.get_all(filters={
-            "agent_id": self.id(),
-            "session_id": context.get_task().session_id,
-            "task_id": context.get_task().id,
-            "memory_type": "message"
-        })
+        histories = memory.get_all(filters=filters)
         tool_openai_messages_after_last_assistant = []
         found_assistant = False
         tool_call_ids = []
@@ -898,3 +928,14 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
     @staticmethod
     def from_dict(attr_dict: Dict[str, Any]) -> 'Agent':
         return Agent(**attr_dict)
+
+    async def process_by_ptc(self, tools, context: Context):
+        if not hasattr(self, "ptc_tools") or not self.ptc_tools:
+            return
+        ptc_tools = self.ptc_tools
+
+        for tool in tools:
+            if tool["function"]["name"] in ptc_tools:
+                tool["function"]["description"] = "[allow_code_execution]" +  tool["function"]["description"]
+                logger.debug(f"ptc augmented tool: {tool['function']['description']}")
+

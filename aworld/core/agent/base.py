@@ -159,8 +159,16 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         # derive mcp_servers from skill_configs if provided
         if self.skill_configs:
             self.mcp_servers = replace_mcp_servers_variables(self.skill_configs, self.mcp_servers, [])
-            from aworld.core.context.amni.tool.context_skill_tool import ContextSkillTool
-            self.tool_names.extend(["SKILL"])
+            from aworld.core.context.amni.tool.context_skill_tool import CONTEXT_SKILL
+            self.tool_names.extend([CONTEXT_SKILL])
+        ptc_tools = self.conf.get("ptc_tools", []) or kwargs.get("ptc_tools", [])
+        if ptc_tools:
+            self.ptc_tools = ptc_tools
+            from aworld.experimental.ptc.ptc_tool import PTC_TOOL
+            self.tool_names.extend([PTC_TOOL])
+        else:
+            self.ptc_tools = []
+
         # tool_name: [tool_action1, tool_action2, ...]
         self.black_tool_actions: Dict[str, List[str]] = black_tool_actions or {}
         self.trajectory: List[Tuple[INPUT, Dict[str, Any], AgentResult]] = []
