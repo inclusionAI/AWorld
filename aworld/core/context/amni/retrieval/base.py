@@ -111,12 +111,12 @@ class RetrieverFactory:
                 }
             ),
             index_plugin_configs=[
-                RetrievalPluginConfig(type="semantic", config={
-                    "wait_insert": False
-                }),
-                RetrievalPluginConfig(type="full_text", config={
-                    "wait_insert": True
-                })
+                # RetrievalPluginConfig(type="semantic", config={
+                #     "wait_insert": False
+                # }),
+                # RetrievalPluginConfig(type="full_text", config={
+                #     "wait_insert": True
+                # })
             ],
             reranker_config=RerankConfig(
                 provider=os.getenv("RERANKER_PROVIDER", "http"),

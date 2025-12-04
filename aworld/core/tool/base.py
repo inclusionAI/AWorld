@@ -207,7 +207,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                         act.tool_call_id) or self.name(),
                     tool_name=act.tool_name,
                     action_name=act.action_name,
-                    data=step_res[0].content,
+                    data=step_res[0].action_result[idx].content,
                     origin_tool_call=ToolCall.from_dict({
                         "function": {
                             "name": act.action_name,
@@ -376,7 +376,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                         act.tool_call_id) or self.name(),
                     tool_name=act.tool_name,
                     action_name=act.action_name,
-                    data=step_res[0].content,
+                    data=step_res[0].action_result[idx].content,
                     origin_tool_call=ToolCall.from_dict({
                         "function": {
                             "name": act.action_name,
@@ -603,6 +603,7 @@ class ToolsManager(Factory):
         self._tool_with_action = {}
         self._tool_conf = {}
         self._tool_instance = {}
+        self._asyn = {}
 
     def __iter__(self):
         for name in self._cls:
@@ -619,6 +620,7 @@ class ToolsManager(Factory):
             return self
 
         asyn = kwargs.pop("asyn", False)
+        self._asyn[name] = asyn
         name = "async_" + name if asyn else name
 
         conf = self._tool_conf.get(name)
@@ -656,6 +658,16 @@ class ToolsManager(Factory):
         action_executor.register(name, tool)
         return tool
 
+    def desc(self, name: str) -> str:
+        """Obtain the description by name."""
+        name = "async_" + name if self._asyn.get(name) else name
+        return self._desc.get(name, "")
+
+    def get_ext_info(self, name: str) -> Dict[Any, Any]:
+        """Obtain the extent info by name."""
+        name = "async_" + name if self._asyn.get(name) else name
+        return self._ext_info.get(name, {})
+
     def get_tool_action(self, tool: str, asyn: bool = False):
         if asyn:
             tool = "async_" + tool
@@ -670,9 +682,9 @@ class ToolsManager(Factory):
             supported_action: Tool abilities
             conf_file_name: Default tool config
         """
-        res = super(ToolsManager, self).register(name, desc, **kwargs)
         asyn = kwargs.pop("asyn", False)
         prefix = "async_" if asyn else ""
+        res = super(ToolsManager, self).register(prefix + name, desc, **kwargs)
         conf_file_name = conf_file_name if conf_file_name else f"{name}_tool.yaml"
         conf = load_config(conf_file_name, kwargs.get("dir"))
         if not conf:
@@ -685,6 +697,13 @@ class ToolsManager(Factory):
         logger.debug(f"{name} register to the tool factory.")
         return res
 
+    def unregister(self, name: str):
+        super().unregister(name)
+        if name in self._asyn:
+            del self._asyn[name]
+            del self._tool_conf[name]
+            del self._tool_instance[name]
+            del self._tool_with_action[name]
 
 ToolFactory = ToolsManager("env_tool_type")
 

@@ -19,6 +19,7 @@ class LocalSandboxApi(BaseSandboxApi):
             mcp_config: Optional[Any] = None,
             black_tool_actions: Optional[Dict[str, List[str]]] = None,
             skill_configs: Optional[Any] = None,
+            sandbox_id: Optional[str] = None,
     ) -> SandboxLocalResponse:
         """
         Create a local sandbox based on the reference implementation.
@@ -29,6 +30,7 @@ class LocalSandboxApi(BaseSandboxApi):
                 return None
 
             return SandboxLocalResponse(
+                sandbox_id=sandbox_id,  # Use provided sandbox_id or default to new UUID
                 status=SandboxStatus.RUNNING,
                 mcp_config=mcp_config,
                 env_type=SandboxEnvType.LOCAL,

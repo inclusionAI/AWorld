@@ -1,8 +1,8 @@
 from collections import Counter
-from aworld.evaluations.base import Scorer, ScorerResult, EvalDataCase, EvalCaseResult
 from typing import Optional
-from aworld.evaluations.scorers.scorer_registry import scorer_register
-from aworld.evaluations.scorers.metrics import MetricNames
+
+from aworld.evaluations.base import Scorer, ScorerResult, EvalDataCase, EvalCaseResult, MetricNames
+from aworld.evaluations.scorers import scorer_register
 
 from aworld.utils.import_package import import_package
 
