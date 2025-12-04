@@ -154,6 +154,7 @@ class ContextEnvConfig(BaseModel):
     """Represents environment configuration for an agent team."""
     isolate: bool = Field(default=False, description="One Task, One Isolate Env")
     env_type: str = Field(default="local", description="Env Type, local|remote")
+    enabled_file_share: bool = Field(default=True, description="Enable file share")
     env_mount_path: str = Field(default="~/workspace", description="Env Working directory for share")
     env_config: dict = Field(default_factory=dict, description="Env Config")
     
