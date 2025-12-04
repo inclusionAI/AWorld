@@ -203,12 +203,12 @@ class TaskEventRunner(TaskRunner):
         self.background_tasks.discard(task)
         if not group:
             self.state_manager.end_message_node(message)
-            self._update_trajectory(message)
+            asyncio.create_task(self._update_trajectory(message))
         else:
             group[task] = True
             if all([v for _, v in group.items()]):
                 self.state_manager.end_message_node(message)
-                self._update_trajectory(message)
+                asyncio.create_task(self._update_trajectory(message))
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
         con = message
@@ -267,7 +267,7 @@ class TaskEventRunner(TaskRunner):
                 async for event in handler.handle(result):
                     yield event
 
-    def _update_trajectory(self, message: Message):
+    async def _update_trajectory(self, message: Message):
         try:
             # valid_agent_messages = await TrajectoryDataset._filter_replay_messages([message], self.task.id)
 
@@ -283,9 +283,13 @@ class TaskEventRunner(TaskRunner):
 
             data_row = self.trajectory_dataset.message_to_datarow(message)
             if data_row:
-                traj = self.context.trajectories.get(self.task.id, [])
-                traj.append(to_serializable(data_row))
-                self.trajectory_dataset.data.append(to_serializable(data_row))
+                # traj = self.context.trajectories.get(self.task.id, [])
+                # traj.append(to_serializable(data_row))
+                # self.trajectory_dataset.data.append(to_serializable(data_row))
+                
+                row_data = to_serializable(data_row)
+                await self.context.update_task_trajectory(self.task.id, [row_data])
+
         except Exception as e:
             logger.warning(f"Failed to update trajectory for message {message.id}: {e}")
 
@@ -400,7 +404,13 @@ class TaskEventRunner(TaskRunner):
         try:
             # trajectory_strategy = self.conf.get('trajectory_strategy', None)
             # trajectory = await generate_trajectory_from_strategy(self.task.id, trajectory_strategy, self)
-            self._task_response.trajectory = self.trajectory_dataset.data
+            # self._task_response.trajectory = self.trajectory_dataset.data
+            
+            traj = await self.context.get_task_trajectory(self.task.id)
+            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {json.dumps(traj, ensure_ascii=False)}")
+            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
+            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_grapf data from context: {self.context.get_task_graph()}")
+            self._task_response.trajectory = traj
 
             # self._task_response.trajectory = list(self.context.trajectories.values())
             # logger.warn(f"new trajectory: {json.dumps(self.trajectory_dataset.data, ensure_ascii=False)}")
