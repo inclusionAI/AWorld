@@ -11,6 +11,8 @@ from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
 from aworld.config import ConfigDict
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
+from aworld.core.context.trajectory_storage import TrajectoryStorage, InMemoryTrajectoryStorage
+from aworld.core.storage.data import Data
 from aworld.logs.util import logger
 from aworld.utils.common import nest_dict_counter
 
@@ -164,6 +166,9 @@ class Context:
         self._start = time.time()
         # agent_id -> token_id trajectory
         self._agent_token_id_traj: Dict[str, List[AgentTokenIdTrajectory]] = {}
+        
+        self._task_graph: Dict[str, Dict[str, Any]] = {}
+        self._trajectory_storage: TrajectoryStorage = kwargs.get('trajectory_storage', InMemoryTrajectoryStorage())
 
     @property
     def start_time(self) -> float:
@@ -293,6 +298,7 @@ class Context:
         self._deep_copy(new_context)
         new_context.task_id = sub_task_id
         new_context.task_input = sub_task_content
+        self.add_task_node(sub_task_id, self.task_id, **kwargs)
         return new_context
 
     def merge_sub_context(self, sub_task_context: 'ApplicationContext', **kwargs):
@@ -322,6 +328,9 @@ class Context:
 
         # Task - set to None to avoid circular references
         new_context._task = None
+
+        new_context._trajectory_storage = self._trajectory_storage
+        new_context._task_graph = self._task_graph
 
         # Deep copy complex state objects
         try:
@@ -742,11 +751,132 @@ class Context:
     """
 
     async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]]):
+        """Add trajectory data for a task.
+        
+        Args:
+            task_id: The task id.
+            task_trajectory: The list of trajectory steps.
+        """
         if not self._task.sub_task_trajectories:
             self._task.sub_task_trajectories = {}
         self._task.sub_task_trajectories[task_id] = task_trajectory
+        
+        if self._trajectory_storage:
+            for step in task_trajectory:
+                # Create Data item for each step
+                data_id = step.get("id")
+                kwargs = {
+                    "block_id": task_id,
+                    "value": step
+                }
+                if data_id:
+                    kwargs["id"] = data_id
+                data_item = Data(**kwargs)
+                
+                await self._trajectory_storage.create_data(data_item, block_id=task_id, overwrite=True)
+
+    async def update_task_trajectory(self, task_id: str, trajectory: List[Dict[str, Any]]):
+        """Update trajectory data for a task by appending new steps.
+        
+        Args:
+            task_id: The task id.
+            trajectory: The list of trajectory steps to append.
+        """
+        current_trajectory = await self.get_task_trajectory(task_id)
+        full_trajectory = current_trajectory + trajectory
+
+        if not self._task.sub_task_trajectories:
+            self._task.sub_task_trajectories = {}
+        self._task.sub_task_trajectories[task_id] = full_trajectory
+
+        if self._trajectory_storage:
+            for step in trajectory:
+                # Create Data item for each step
+                data_id = step.get("id")
+                kwargs = {
+                    "block_id": task_id,
+                    "value": step
+                }
+                if data_id:
+                    kwargs["id"] = data_id
+                data_item = Data(**kwargs)
+                
+                await self._trajectory_storage.create_data(data_item, block_id=task_id, overwrite=True)
 
     async def get_task_trajectory(self, task_id: str) -> List[Dict[str, Any]]:
+        """Get trajectory data for a task.
+        
+        Args:
+            task_id: The task id.
+            
+        Returns:
+            List[Dict[str, Any]]: The list of trajectory steps.
+        """
+        # Try to get from storage first
+        if self._trajectory_storage:
+            data_items = await self._trajectory_storage.get_data_items(block_id=task_id)
+            if data_items:
+                trajectory = [item.value for item in data_items]
+                # Update in-memory cache
+                if not self._task.sub_task_trajectories:
+                    self._task.sub_task_trajectories = {}
+                self._task.sub_task_trajectories[task_id] = trajectory
+                return trajectory
+
+        # Fallback to in-memory cache
         if not self._task.sub_task_trajectories:
             return []
         return self._task.sub_task_trajectories.get(task_id, [])
+
+    def add_task_node(self, child_task_id: str, parent_task_id: str, **kwargs):
+        """Add a task node and its relationship to the task graph.
+        
+        Args:
+            child_task_id: Child task id.
+            parent_task_id: Parent task id.
+        """
+        self._task_graph[child_task_id] = {
+            "parent_task": parent_task_id,
+            "caller_id": self.agent_info.current_agent_id if self.agent_info and hasattr(self.agent_info,
+                                                                                         'current_agent_id') else None,
+            **kwargs
+        }
+
+    def get_task_graph(self) -> Dict[str, Any]:
+        """Get the task execution graph structure.
+        
+        Returns:
+            Dict containing nodes and edges representing the task execution flow.
+            Format:
+            {
+                "nodes": [{"id": "task_id", "data": {...}}],
+                "edges": [{"source": "parent_id", "target": "child_id", "relation": "..."}]
+            }
+        """
+        nodes = []
+        edges = []
+        
+        # Collect all unique task IDs
+        task_ids = set(self._task_graph.keys())
+        for child_data in self._task_graph.values():
+            if "parent_task" in child_data:
+                task_ids.add(child_data["parent_task"])
+                
+        # Build nodes
+        for tid in task_ids:
+            nodes.append({"id": tid})
+            
+        # Build edges
+        for child_id, data in self._task_graph.items():
+            parent_id = data.get("parent_task")
+            if parent_id:
+                edges.append({
+                    "source": parent_id,
+                    "target": child_id,
+                    "metadata": data
+                })
+                
+        return {
+            "nodes": nodes,
+            "edges": edges
+        }

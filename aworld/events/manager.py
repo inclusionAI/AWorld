@@ -67,8 +67,8 @@ class EventManager:
         return True
 
     async def consume(self, nowait: bool = False):
-        msg = Message(session_id=self.context.session_id, sender="", category="", payload="")
-        msg.context = self.context
+        msg = Message(session_id=self.context.session_id, sender="", category="", payload="", headers={"context": self.context})
+        # msg.context = self.context
         if nowait:
             return await self.event_bus.consume_nowait(msg)
         return await self.event_bus.consume(msg)

@@ -633,7 +633,17 @@ class ApplicationContext(AmniContext):
         agent_list = []
         if agents:
             agent_list = [agent for agent_id, agent in agents.items()]
-        return await self.build_sub_task_context(sub_task_input, agents=agent_list)
+        
+        sub_context = await self.build_sub_task_context(sub_task_input, agents=agent_list)
+        
+        # Record task relationship
+        self.add_task_node(
+            child_task_id=sub_context.task_id,
+            parent_task_id=self.task_id,
+            caller_id=self.agent_info.current_agent_id if self.agent_info and hasattr(self.agent_info, 'current_agent_id') else None
+        )
+        
+        return sub_context
 
     def add_sub_tasks(self, sub_task_inputs: list[TaskInput]):
         for sub_task_input in sub_task_inputs:
@@ -1973,3 +1983,39 @@ class ApplicationContext(AmniContext):
     async def update_task_status(self, task_id: str, status: 'TaskStatus'):
         if task_id == self.task_id:
             self._task.task_status = status
+
+    async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]]):
+        """Add trajectory data for a task.
+        Delegate to root context to centralize storage.
+        """
+        if self.root != self:
+            await self.root.add_task_trajectory(task_id, task_trajectory)
+        else:
+            await super().add_task_trajectory(task_id, task_trajectory)
+
+    async def update_task_trajectory(self, task_id: str, trajectory: List[Dict[str, Any]]):
+        """Update trajectory data for a task.
+        Delegate to root context.
+        """
+        if self.root != self:
+            await self.root.update_task_trajectory(task_id, trajectory)
+        else:
+            await super().update_task_trajectory(task_id, trajectory)
+
+    async def get_task_trajectory(self, task_id: str) -> List[Dict[str, Any]]:
+        """Get trajectory data for a task.
+        Delegate to root context.
+        """
+        if self.root != self:
+            return await self.root.get_task_trajectory(task_id)
+        else:
+            return await super().get_task_trajectory(task_id)
+
+    def add_task_node(self, child_task_id: str, parent_task_id: str, **kwargs):
+        """Record the relationship between child task and parent task.
+        Delegate to root context.
+        """
+        if self.root != self:
+            self.root.add_task_node(child_task_id, parent_task_id, **kwargs)
+        else:
+            super().add_task_node(child_task_id, parent_task_id, **kwargs)
