@@ -495,6 +495,8 @@ class OpenAIProvider(LLMProviderBase):
 
         llm_params = self.kwargs.get("params", {})
         llm_params.update(kwargs)
+        llm_params.pop("response_parse_args", None)
+        llm_params.pop("context", None)
 
         for param in llm_params:
             if param not in supported_params:
