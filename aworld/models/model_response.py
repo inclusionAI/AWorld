@@ -35,7 +35,7 @@ class Function(BaseModel):
     Represents a function call made by a model
     """
     name: str
-    arguments: str = None
+    arguments: Optional[str] = None
 
 
 class ToolCall(BaseModel):
@@ -46,6 +46,7 @@ class ToolCall(BaseModel):
     id: str
     type: str = "function"
     function: Function = None
+    extra_content: Optional[dict] = None
 
     # name: str = None
     # arguments: str = None
@@ -82,11 +83,18 @@ class ToolCall(BaseModel):
             arguments = json.dumps(arguments, ensure_ascii=False)
 
         function = Function(name=name, arguments=arguments)
+        if 'model_extra' in data and 'extra_content' in data['model_extra']:
+            extra_content = data['model_extra']['extra_content']
+        else:
+            extra_content = None
+        if 'extra_content' in data:
+            extra_content = data['extra_content']
 
         return cls(
             id=tool_id,
             type=tool_type,
             function=function,
+            extra_content=extra_content
             # name=name,
             # arguments=arguments,
         )
@@ -104,7 +112,8 @@ class ToolCall(BaseModel):
             "function": {
                 "name": self.function.name,
                 "arguments": self.function.arguments
-            }
+            },
+            "extra_content": self.extra_content
         }
 
     def __repr__(self):
@@ -296,6 +305,10 @@ class ModelResponse:
                             "name": function.name if hasattr(function, 'name') else None,
                             "arguments": function.arguments if hasattr(function, 'arguments') else None
                         }
+                    if hasattr(tool_call, 'model_extra'):
+                        model_extra = tool_call.model_extra
+                        if model_extra:
+                            tool_call_dict["model_extra"] = model_extra
                     processed_tool_calls.append(ToolCall.from_dict(tool_call_dict))
 
         if message_dict and processed_tool_calls:
