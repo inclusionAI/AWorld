@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Callable, Type, TYPE_CHECKING
 
 from pydantic import Field
 
-from aworld import import_package
+from aworld.utils import import_package
 from aworld.core.agent.base import is_agent_by_name
 from aworld.core.common import ActionModel
 from aworld.core.event.base import Message, Constants
