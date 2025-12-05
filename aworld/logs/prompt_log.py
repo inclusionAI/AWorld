@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import traceback
 from datetime import datetime
@@ -144,7 +145,7 @@ class PromptLogger:
 
         try:
             # Log context length information
-            PromptLogger._log_context_length(messages, agent.conf.llm_config['llm_model_name'], context, agent)
+            PromptLogger._log_context_length(messages, os.getenv("CONTEXT_TOKEN_MODEL", agent.conf.llm_config['llm_model_name']), context, agent)
         except Exception as e:
             prompt_logger.warning(f"❌ Error logging context length: {str(e)}")
 
