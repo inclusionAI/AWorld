@@ -1,0 +1,1362 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://github.com/inclusionAI/AWorld/Quickstart/agent_construction/">
+      
+      
+        <link rel="prev" href="../install/">
+      
+      
+        <link rel="next" href="../workflow_construction/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.0">
+    
+    
+      
+        <title>Agent Construction - AWorld Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.618322db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    <body dir="ltr">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#building-and-running-agents" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="AWorld Docs" class="md-header__button md-logo" aria-label="AWorld Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AWorld Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Agent Construction
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/inclusionAI/AWorld" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="AWorld Docs" class="md-nav__button md-logo" aria-label="AWorld Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    AWorld Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/inclusionAI/AWorld" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quickstart
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Quickstart
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../install/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Install
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Construction
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Construction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#part-1-quick-agent-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 1: Quick Agent Setup
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 1: Quick Agent Setup">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#declaring-an-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Declaring an Agent
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuring-llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuring LLM
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuring LLM">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#method-1-using-environment-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Method 1: Using Environment Variables
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#method-2-using-agentconfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Method 2: Using AgentConfig
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#method-3-using-shared-modelconfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Method 3: Using Shared ModelConfig
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuring-prompts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuring Prompts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuring-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuring Tools
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuring Tools">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#local-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local Tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mcp-model-context-protocol-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MCP (Model Context Protocol) Tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#agent-as-tool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent as Tool
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-2-customizing-agents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 2: Customizing Agents
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 2: Customizing Agents">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#customizing-agent-input" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Customizing Agent Input
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#customizing-model-input" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Customizing Model Input
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#customizing-model-logic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Customizing Model Logic
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#customizing-model-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Customizing Model Output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#customizing-agent-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Customizing Agent Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom-response-parsing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom Response Parsing
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../workflow_construction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflow Construction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../multi-agent_system_construction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-agent System Construction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../agent_training/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agent Training
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#part-1-quick-agent-setup" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 1: Quick Agent Setup
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 1: Quick Agent Setup">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#declaring-an-agent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Declaring an Agent
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuring-llm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuring LLM
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuring LLM">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#method-1-using-environment-variables" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Method 1: Using Environment Variables
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#method-2-using-agentconfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Method 2: Using AgentConfig
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#method-3-using-shared-modelconfig" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Method 3: Using Shared ModelConfig
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuring-prompts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuring Prompts
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#configuring-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Configuring Tools
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Configuring Tools">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#local-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Local Tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#mcp-model-context-protocol-tools" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        MCP (Model Context Protocol) Tools
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#agent-as-tool" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Agent as Tool
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#part-2-customizing-agents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Part 2: Customizing Agents
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Part 2: Customizing Agents">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#customizing-agent-input" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Customizing Agent Input
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#customizing-model-input" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Customizing Model Input
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#customizing-model-logic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Customizing Model Logic
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#customizing-model-output" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Customizing Model Output
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#customizing-agent-response" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Customizing Agent Response
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#custom-response-parsing" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Custom Response Parsing
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="building-and-running-agents">Building and Running Agents</h1>
+<p>In AWorld's design, both Workflows and Multi-Agent Systems (MAS) are complex systems built around Agents as the core
+component. Using the most common llm_agent as an example, this tutorial provides detailed guidance on:</p>
+<ol>
+<li>How to quickly build an Agent</li>
+<li>How to customize an Agent
+   This document is divided into two parts to explain AWorld's design philosophy.</li>
+</ol>
+<h2 id="part-1-quick-agent-setup">Part 1: Quick Agent Setup</h2>
+<h3 id="declaring-an-agent">Declaring an Agent</h3>
+<pre><code class="language-python">from aworld.agents.llm_agent import Agent
+
+# Assign a name to your agent
+agent = Agent(name=&quot;my_agent&quot;)
+</code></pre>
+<h3 id="configuring-llm">Configuring LLM</h3>
+<h4 id="method-1-using-environment-variables">Method 1: Using Environment Variables</h4>
+<pre><code class="language-python">import os
+
+## Set up LLM service using environment variables
+os.environ[&quot;LLM_PROVIDER&quot;] = &quot;openai&quot;  # Choose from: openai, anthropic, azure_openai
+os.environ[&quot;LLM_MODEL_NAME&quot;] = &quot;gpt-4&quot;
+os.environ[&quot;LLM_API_KEY&quot;] = &quot;your-api-key&quot;
+os.environ[&quot;LLM_BASE_URL&quot;] = &quot;https://api.openai.com/v1&quot;  # Optional for OpenAI
+</code></pre>
+<h4 id="method-2-using-agentconfig">Method 2: Using AgentConfig</h4>
+<pre><code class="language-python">import os
+from aworld.agents.llm_agent import Agent
+from aworld.config.conf import AgentConfig
+
+agent_config = AgentConfig(
+    llm_provider=os.getenv(&quot;LLM_PROVIDER&quot;, &quot;openai&quot;),
+    llm_model_name=os.getenv(&quot;LLM_MODEL_NAME&quot;),
+    llm_base_url=os.getenv(&quot;LLM_BASE_URL&quot;),
+    llm_api_key=os.getenv(&quot;LLM_API_KEY&quot;),
+)
+
+agent = Agent(name=&quot;my_agent&quot;, conf=agent_config)
+</code></pre>
+<h4 id="method-3-using-shared-modelconfig">Method 3: Using Shared ModelConfig</h4>
+<p>When multiple agents use the same LLM service, you can specify a shared ModelConfig:</p>
+<pre><code class="language-python">import os
+from aworld.agents.llm_agent import Agent
+from aworld.config.conf import AgentConfig, ModelConfig
+
+# Create a shared model configuration
+model_config = ModelConfig(
+    llm_provider=os.getenv(&quot;LLM_PROVIDER&quot;, &quot;openai&quot;),
+    llm_model_name=os.getenv(&quot;LLM_MODEL_NAME&quot;),
+    llm_base_url=os.getenv(&quot;LLM_BASE_URL&quot;),
+    llm_api_key=os.getenv(&quot;LLM_API_KEY&quot;),
+)
+
+# Use the shared model config in agent configuration
+agent_config = AgentConfig(
+    llm_config=model_config,
+)
+
+agent = Agent(name=&quot;my_agent&quot;, conf=agent_config)
+</code></pre>
+<h3 id="configuring-prompts">Configuring Prompts</h3>
+<pre><code class="language-python">from aworld.agents.llm_agent import Agent
+import os
+from aworld.config.conf import AgentConfig, ModelConfig
+
+model_config = ModelConfig(
+    llm_provider=os.getenv(&quot;LLM_PROVIDER&quot;, &quot;openai&quot;),
+    llm_model_name=os.getenv(&quot;LLM_MODEL_NAME&quot;),
+    llm_base_url=os.getenv(&quot;LLM_BASE_URL&quot;),
+    llm_api_key=os.getenv(&quot;LLM_API_KEY&quot;),
+)
+
+agent_config = AgentConfig(
+    llm_config=model_config,
+)
+
+# Define your system prompt
+system_prompt = &quot;&quot;&quot;You are a helpful AI assistant that can assist users with various tasks.
+You should be polite, accurate, and provide clear explanations.&quot;&quot;&quot;
+
+agent = Agent(
+    name=&quot;my_agent&quot;,
+    conf=agent_config,
+    system_prompt=system_prompt
+)
+</code></pre>
+<h3 id="configuring-tools">Configuring Tools</h3>
+<h4 id="local-tools">Local Tools</h4>
+<pre><code class="language-python">from aworld.agents.llm_agent import Agent
+import os
+from aworld.config.conf import AgentConfig, ModelConfig
+from aworld.core.tool.func_to_tool import be_tool
+
+model_config = ModelConfig(
+    llm_provider=os.getenv(&quot;LLM_PROVIDER&quot;, &quot;openai&quot;),
+    llm_model_name=os.getenv(&quot;LLM_MODEL_NAME&quot;),
+    llm_base_url=os.getenv(&quot;LLM_BASE_URL&quot;),
+    llm_api_key=os.getenv(&quot;LLM_API_KEY&quot;),
+)
+
+agent_config = AgentConfig(
+    llm_config=model_config,
+)
+
+system_prompt = &quot;&quot;&quot;You are a helpful agent with access to various tools.&quot;&quot;&quot;
+
+
+# Define a local tool using the @be_tool decorator
+
+@be_tool(tool_name='greeting_tool', tool_desc=&quot;A simple greeting tool that returns a hello message&quot;)
+def greeting_tool() -&gt; str:
+    return &quot;Hello, world!&quot;
+
+
+agent = Agent(
+    name=&quot;my_agent&quot;,
+    conf=agent_config,
+    system_prompt=system_prompt,
+    tool_names=['greeting_tool']
+)
+</code></pre>
+<h4 id="mcp-model-context-protocol-tools">MCP (Model Context Protocol) Tools</h4>
+<pre><code class="language-python">from aworld.agents.llm_agent import Agent
+import os
+from aworld.config.conf import AgentConfig, ModelConfig
+
+model_config = ModelConfig(
+    llm_provider=os.getenv(&quot;LLM_PROVIDER&quot;, &quot;openai&quot;),
+    llm_model_name=os.getenv(&quot;LLM_MODEL_NAME&quot;),
+    llm_base_url=os.getenv(&quot;LLM_BASE_URL&quot;),
+    llm_api_key=os.getenv(&quot;LLM_API_KEY&quot;),
+)
+
+agent_config = AgentConfig(
+    llm_config=model_config,
+)
+
+system_prompt = &quot;&quot;&quot;You are a helpful agent with access to file system operations.&quot;&quot;&quot;
+
+# Configure MCP servers
+
+mcp_config = {
+    &quot;mcpServers&quot;: {
+        &quot;GorillaFileSystem&quot;: {
+            &quot;type&quot;: &quot;stdio&quot;,
+            &quot;command&quot;: &quot;python&quot;,
+            &quot;args&quot;: [&quot;examples/BFCL/mcp_tools/gorilla_file_system.py&quot;],
+        },
+    }
+}
+
+agent = Agent(
+    name=&quot;my_agent&quot;,
+    conf=agent_config,
+    system_prompt=system_prompt,
+    mcp_servers=list(mcp_config.get(&quot;mcpServers&quot;, {}).keys()),
+    mcp_config=mcp_config
+)
+</code></pre>
+<h4 id="agent-as-tool">Agent as Tool</h4>
+<pre><code class="language-python">from aworld.agents.llm_agent import Agent
+import os
+from aworld.config.conf import AgentConfig, ModelConfig
+
+model_config = ModelConfig(
+    llm_provider=os.getenv(&quot;LLM_PROVIDER&quot;, &quot;openai&quot;),
+    llm_model_name=os.getenv(&quot;LLM_MODEL_NAME&quot;),
+    llm_base_url=os.getenv(&quot;LLM_BASE_URL&quot;),
+    llm_api_key=os.getenv(&quot;LLM_API_KEY&quot;),
+)
+
+agent_config = AgentConfig(
+    llm_config=model_config,
+)
+
+system_prompt = &quot;&quot;&quot;You are a helpful agent that can delegate tasks to other specialized agents.&quot;&quot;&quot;
+
+# Create a specialized tool agent
+tool_agent = Agent(name=&quot;tool_agent&quot;, conf=agent_config)
+
+# Create the main agent that can use the tool agent
+agent = Agent(
+    name=&quot;my_agent&quot;,
+    conf=agent_config,
+    system_prompt=system_prompt,
+    agent_names=['tool_agent']
+)
+</code></pre>
+<h2 id="part-2-customizing-agents">Part 2: Customizing Agents</h2>
+<h3 id="customizing-agent-input">Customizing Agent Input</h3>
+<p>Override the <code>init_observation()</code> function to customize how your agent processes initial observations:</p>
+<pre><code class="language-python">async def init_observation(self, observation: Observation) -&gt; Observation:
+    # You can add extended information from other agents or third-party storage
+    # For example, enrich the observation with additional context
+    observation.metadata = {&quot;timestamp&quot;: time.time(), &quot;source&quot;: &quot;custom&quot;}
+    return observation
+</code></pre>
+<h3 id="customizing-model-input">Customizing Model Input</h3>
+<p>Override the <code>async_messages_transform()</code> function to customize how messages are transformed before being sent to the
+model:</p>
+<pre><code class="language-python">async def async_messages_transform(self,
+                                   image_urls: List[str] = None,
+                                   observation: Observation = None,
+                                   message: Message = None,
+                                   **kwargs) -&gt; List[Dict[str, Any]]:
+    &quot;&quot;&quot;
+    Transform input data into the format expected by the LLM.
+
+    Args:
+         image_urls: List of images encoded using base64
+         observation: Observation from the environment
+         message: Event received by the Agent
+    &quot;&quot;&quot;
+    messages = []
+
+    # Add system context
+    if hasattr(self, 'system_prompt'):
+        messages.append({&quot;role&quot;: &quot;system&quot;, &quot;content&quot;: self.system_prompt})
+
+    # Add user message
+    if message and message.content:
+        messages.append({&quot;role&quot;: &quot;user&quot;, &quot;content&quot;: message.content})
+
+    # Add images if present
+    if image_urls:
+        for img_url in image_urls:
+            messages.append({
+                &quot;role&quot;: &quot;user&quot;,
+                &quot;content&quot;: [{&quot;type&quot;: &quot;image_url&quot;, &quot;image_url&quot;: {&quot;url&quot;: img_url}}]
+            })
+
+    return messages
+</code></pre>
+<h3 id="customizing-model-logic">Customizing Model Logic</h3>
+<p>Override the <code>invoke_model()</code> function to implement custom model logic:</p>
+<pre><code class="language-python">async def invoke_model(self,
+                       messages: List[Dict[str, str]] = [],
+                       message: Message = None,
+                       **kwargs) -&gt; ModelResponse:
+    &quot;&quot;&quot;Custom model invocation logic.
+       You can use neural networks, rule-based systems, or any other business logic.
+    &quot;&quot;&quot;
+
+      # Example: Use a custom model or business logic
+      if self.use_custom_logic:
+          # Your custom logic here
+          response_content = self.custom_model.predict(messages)
+      else:
+          # Use the default LLM
+          response_content = await self.llm_client.chat_completion(messages)
+
+      return ModelResponse(
+          id=f&quot;response_{int(time.time())}&quot;,
+          model=self.model_name,
+          content=response_content,
+          tool_calls=None  # Set if tool calls are present
+      )
+</code></pre>
+<h3 id="customizing-model-output">Customizing Model Output</h3>
+<p>Create a custom <code>ModelOutputParser</code> class and specify it using the <code>model_output_parser</code> parameter:</p>
+<pre><code class="language-python">from aworld.models.model_output_parser import ModelOutputParser
+
+
+class CustomOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
+    async def parse(self, resp: ModelResponse, **kwargs) -&gt; AgentResult:
+        &quot;&quot;&quot;Custom parsing logic based on your model's API response format.&quot;&quot;&quot;
+
+         # Extract relevant information from the model response
+         content = resp.content
+         tool_calls = resp.tool_calls
+
+         # Create your custom AgentResult
+         result = AgentResult(
+             content=content,
+             tool_calls=tool_calls,
+             metadata={&quot;parsed_at&quot;: time.time()}
+         )
+
+         return result
+
+# Use the custom parser
+
+agent = Agent(
+    name=&quot;my_agent&quot;,
+    conf=agent_config,
+    model_output_parser=CustomOutputParser()
+)
+</code></pre>
+<h3 id="customizing-agent-response">Customizing Agent Response</h3>
+<p>Override the <code>async_post_run()</code> function to customize how your agent responds:</p>
+<pre><code class="language-python">from aworld.core.message import Message
+
+class CustomMessage(Message):
+      def __init__(self, content: str, custom_field: str = None):
+            super().__init__(content=content)
+            self.custom_field = custom_field
+
+async def async_post_run(self,
+                        policy_result: List[ActionModel],
+                        policy_input: Observation,
+                        message: Message = None) -&gt; Message:
+      &quot;&quot;&quot;
+      Customize the agent's response after processing.
+      &quot;&quot;&quot;
+
+      # Process the policy result and create a custom response
+      response_content = f&quot;Processed {len(policy_result)} actions&quot;
+      custom_field = &quot;custom_value&quot;
+
+       return CustomMessage(
+           content=response_content,
+           custom_field=custom_field
+       )
+</code></pre>
+<h3 id="custom-response-parsing">Custom Response Parsing</h3>
+<p>If the framework doesn't support your response structure, you can create a custom response parser:</p>
+<pre><code class="language-python">from aworld.runners import HandlerFactory
+from aworld.runners.default_handler import DefaultHandler
+
+# Define a custom handler name
+custom_name = &quot;custom_handler&quot;
+
+
+@HandlerFactory.register(name=custom_name)
+class CustomHandler(DefaultHandler):
+    def is_valid_message(self, message: Message):
+        &quot;&quot;&quot;Check if this handler should process the message.&quot;&quot;&quot;
+        return message.category == custom_name
+
+
+async def _do_handle(self, message: Message) -&gt; AsyncGenerator[Message, None]:
+    &quot;&quot;&quot;Custom message processing logic.&quot;&quot;&quot;
+    if not self.is_valid_message(message):
+        return
+
+    # Implement your custom message processing logic here
+    processed_message = self.process_custom_message(message)
+    yield processed_message
+
+
+# Use the custom handler
+agent = Agent(
+    name=&quot;my_agent&quot;,
+    conf=agent_config,
+    event_handler_name=custom_name
+)
+</code></pre>
+<p><strong>Important Note:</strong> The <code>custom_name</code> variable value must remain consistent across your handler registration and agent
+configuration.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © Copyright 2025 inclusionAI AWorld Team.
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": [], "search": "../../assets/javascripts/workers/search.7a47a382.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.e71a0d61.min.js"></script>
+      
+        <script src="../../js/hide-home-edit.js"></script>
+      
+    
+  </body>
+</html>
