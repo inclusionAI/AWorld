@@ -285,14 +285,39 @@ class SystemPromptAugmentOp(BaseOp):
         )
 
     async def check_system_prompt_existed(self, context, event):
-        session_id = context.get_task().session_id
-        task_id = context.get_task().id
+        agent_id = event.agent_id
+        filters = {
+            "agent_id": agent_id
+        }
+
+        agent_context_config = context.get_agent_context_config(agent_id)
+        agent_memory_config = agent_context_config.to_memory_config() if agent_context_config else None
+
+        if not agent_memory_config:
+            agent = AgentFactory.agent_instance(agent_id)
+            if agent:
+                agent_memory_config = agent.conf.memory_config
+
+        query_scope = agent_memory_config.history_scope if agent_memory_config and agent_memory_config.history_scope else "task"
+        task = context.get_task()
+
+        if query_scope == "user":
+            # Pass user_id when query_scope is user
+            if hasattr(context, 'user_id') and context.user_id:
+                filters["user_id"] = context.user_id
+            elif hasattr(task, 'user_id') and task.user_id:
+                filters["user_id"] = task.user_id
+        elif query_scope == "session":
+            # Pass session_id when query_scope is session
+            if task and task.session_id:
+                filters["session_id"] = task.session_id
+        else:  # query_scope == "task" or default
+            # Pass task_id when query_scope is task
+            if task and task.id:
+                filters["task_id"] = task.id
+
         # Check history
-        histories = self._memory.get_last_n(0, filters={
-            "agent_id": event.agent_id,
-            "session_id": session_id,
-            "task_id": task_id
-        })
+        histories = self._memory.get_last_n(0, filters=filters)
         return histories and len(histories) > 0
 
     async def _build_system_message(self,
