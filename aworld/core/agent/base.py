@@ -105,30 +105,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             wait_tool_result: Whether wait on the results of the tool.
             sandbox: Sandbox instance for tool execution, advanced usage.
         """
-        if conf is None:
-            model_name = os.getenv("LLM_MODEL_NAME")
-            api_key = os.getenv("LLM_API_KEY")
-            base_url = os.getenv("LLM_BASE_URL")
-
-            assert api_key and model_name, (
-                "LLM_MODEL_NAME and LLM_API_KEY (environment variables) must be set, "
-                "or pass AgentConfig explicitly"
-            )
-            logger.info(f"AgentConfig is empty, using env variables:\n"
-                        f"LLM_API_KEY={'*' * min(len(api_key), 8) if api_key else 'Not set'}\n"
-                        f"LLM_BASE_URL={base_url}\n"
-                        f"LLM_MODEL_NAME={model_name}")
-
-            conf = AgentConfig(
-                llm_provider=os.getenv("LLM_PROVIDER", "openai"),
-                llm_model_name=model_name,
-                llm_api_key=api_key,
-                llm_base_url=base_url,
-                llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
-            )
-        else:
-            self.conf = conf
-
         if isinstance(conf, ConfigDict):
             pass
         elif isinstance(conf, Dict):
