@@ -1,3 +1,4 @@
+import copy
 import json
 import os
 import traceback
@@ -16,6 +17,9 @@ from aworld.core.storage.inmemory_store import InmemoryStorage, InmemoryConfig
 from aworld.dataset.dataset import Dataset
 from aworld.dataset.types import DataRow, Experience, ExpMeta
 from aworld.logs.util import logger
+from aworld.memory.main import MemoryFactory
+from aworld.memory.models import MemoryMessage
+from aworld.models.model_response import ModelResponse
 from aworld.runners.state_manager import RuntimeStateManager, EventRuntimeStateManager
 from aworld.utils.common import get_local_ip
 from aworld.utils.serialized_util import to_serializable
@@ -59,7 +63,8 @@ class TrajectoryDataset(Dataset[DataRow]):
         if task_agent_id not in self.task_agent_map:
             self.task_agent_map[task_agent_id] = 0
         self.task_agent_map[task_agent_id] += 1
-        id = f"{task_agent_id}_{self.task_agent_map[task_agent_id]}"
+        # id = f"{task_agent_id}_{self.task_agent_map[task_agent_id]}_{message.id}_{self.id}"
+        id = message.id
 
         # Build ExpMeta
         exp_meta = ExpMeta(
@@ -71,52 +76,57 @@ class TrajectoryDataset(Dataset[DataRow]):
             pre_agent=pre_agent
         )
 
-        observation = message.payload
-        node = self.state_manager._find_node(message.id)
-        if node is None or not node.results:
-            logger.error(f"Node result not found for message id: {message.id}, node: {node}")
-            return None
-        agent_results = []
-        ext_info = {}
-        for handle_result in node.results:
-            result = handle_result.result
-            if isinstance(result, Message) and isinstance(result.payload, list):
-                agent_results.extend(result.payload)
-            else:
-                if not ext_info.get("agent_results"):
-                    ext_info["agent_results"] = []
-                ext_info["agent_results"].append(to_serializable(handle_result))
         messages = self._get_llm_messages_from_memory(message)
 
-        def _get_attr_from_action(obj, attr, default=None):
-            if isinstance(obj, ActionModel):
-                return getattr(obj, attr)
-            elif isinstance(obj, dict) and attr in obj:
-                return obj[attr]
-            return default
+        observation = message.payload
+        node = self.state_manager._find_node(message.id)
+        # if node is None or not node.results:
+        #     logger.warning(f"Node result not found for message id: {message.id}, node: {node}")
+        #     return None
+        agent_results = []
+        ext_info = {}
+        if node and node.results:
+            for handle_result in node.results:
+                result = handle_result.result
+                if isinstance(result, Message) and isinstance(result.payload, list):
+                    agent_results.extend(result.payload)
+                else:
+                    if not ext_info.get("agent_results"):
+                        ext_info["agent_results"] = []
+                    ext_info["agent_results"].append(to_serializable(handle_result))
 
-        # append assistant message to messages
-        if agent_results:
-            agent_result = agent_results[0]
-            content = _get_attr_from_action(agent_result, "policy_info", "")
-            last_assistant_message = {
-                "role": "assistant",
-                "content": content
-            }
-            tool_calls = []
-            for action in agent_results:
-                tool_call_id = _get_attr_from_action(action, "tool_call_id")
-                if tool_call_id:
-                    tool_calls.append({
-                        "id": tool_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": _get_attr_from_action(action, "tool_name"),
-                            "arguments": json.dumps(_get_attr_from_action(action, "params"), ensure_ascii=False),
-                        }
-                    })
-            last_assistant_message["tool_calls"] = tool_calls
-            messages.append(last_assistant_message)
+
+            def _get_attr_from_action(obj, attr, default=None):
+                if isinstance(obj, ActionModel):
+                    return getattr(obj, attr)
+                elif isinstance(obj, dict) and attr in obj:
+                    return obj[attr]
+                return default
+
+            # # append assistant message to messages
+            # if agent_results:
+            #     agent_result = agent_results[0]
+            #     content = _get_attr_from_action(agent_result, "policy_info", "")
+            #     last_assistant_message = {
+            #         "role": "assistant",
+            #         "content": content
+            #     }
+            #     tool_calls = []
+            #     for action in agent_results:
+            #         tool_call_id = _get_attr_from_action(action, "tool_call_id")
+            #         if tool_call_id:
+            #             tool_calls.append({
+            #                 "id": tool_call_id,
+            #                 "type": "function",
+            #                 "function": {
+            #                     "name": _get_attr_from_action(action, "tool_name"),
+            #                     "arguments": json.dumps(_get_attr_from_action(action, "params"), ensure_ascii=False),
+            #                 }
+            #             })
+            #     last_assistant_message["tool_calls"] = tool_calls
+            #     messages.append(last_assistant_message)
+        else:
+            logger.warning(f"Node result not found for message id: {message.id}, node: {node} not finished yet.")
 
         # Build Experience
         exp_data = Experience(
@@ -217,9 +227,46 @@ class TrajectoryDataset(Dataset[DataRow]):
             results.append(message)
         return results
 
-    def _get_llm_messages_from_memory(self, message: Message):
+    def _deprecated_get_llm_messages_from_memory(self, message: Message):
+        return self._retrieve_agent_histories(message)
         context = message.context
-        return context.context_info.get("llm_input", [])
+        messages = []
+        for msg in context.context_info.get("llm_input", []):
+            messages.append(msg)
+        llm_response: ModelResponse = context.context_info.get("llm_output", None)
+        if llm_response:
+            last_assistant_message = {
+                "role": "assistant",
+                "content": llm_response.content
+            }
+            tool_calls = llm_response.tool_calls
+            if tool_calls:
+                last_assistant_message["tool_calls"] = [tool_call.to_dict() for tool_call in tool_calls]
+            messages.append(last_assistant_message)
+        return messages
+
+    def _get_llm_messages_from_memory(self, message: Message):
+        memory = MemoryFactory.instance()
+        histories = memory.get_all(
+            filters={
+                "agent_id": message.receiver,
+                # "session_id": message.session_id,
+                "task_id": message.task_id,
+                "memory_type": ["init", "message", "summary"]
+            })
+        messages = []
+        if histories:
+            for history in histories:
+                if isinstance(history, MemoryMessage):
+                    messages.append(history.to_openai_message())
+                else:
+                    if not self.use_tools_in_prompt and history.metadata.get('tool_calls'):
+                        messages.append({'role': history.metadata['role'], 'content': history.content,
+                                         'tool_calls': [history.metadata['tool_calls']]})
+                    else:
+                        messages.append({'role': history.metadata['role'], 'content': history.content,
+                                         "tool_call_id": history.metadata.get("tool_call_id")})
+        return messages
 
     async def _store_datarow(self, data_row: DataRow, block_id: str) -> bool:
         """

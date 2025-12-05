@@ -36,6 +36,7 @@ from aworld.runners.hook.utils import run_hooks
 from aworld.sandbox.base import Sandbox
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
+import aworld.runners.hook.agent_hooks
 
 
 class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
@@ -581,7 +582,8 @@ class Agent(BaseAgent[Observation, List[ActionModel]]):
 
                     try:
                         events = []
-                        async for event in run_hooks(message.context, HookPoint.POST_LLM_CALL, hook_from=self.id(), payload=llm_response):
+                        async for event in run_hooks(message.context, HookPoint.POST_LLM_CALL, hook_from=self.id(),
+                                                     payload=llm_response, agent_message=message):
                             events.append(event)
                     except Exception as e:
                         logger.error(

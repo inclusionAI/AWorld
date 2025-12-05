@@ -69,13 +69,17 @@ class TaskEventRunner(TaskRunner):
         self.event_mng.context = self.context
         self.context.event_manager = self.event_mng
 
-        self.trajectory_dataset = TrajectoryDataset(
-            name=f"{self.task.id}_trajectory_dataset",
-            state_manager=self.state_manager,
-            storage=None,
-            enable_storage=False,
-            data=[]
-        )
+        if not self.context.trajectory_dataset:
+            traj_dataset = TrajectoryDataset(
+                name=f"{self.task.id}_trajectory_dataset",
+                state_manager=self.state_manager,
+                storage=None,
+                enable_storage=False,
+                data=[]
+            )
+            self.context.init_trajectory_dataset(traj_dataset)
+        if not self.context.task_graph and not self.task.is_sub_task:
+            self.context.task_graph = {self.task.id: {'parent_task': None}}
 
         if self.swarm and not self.swarm.max_steps:
             self.swarm.max_steps = self.task.conf.get('max_steps', 10)
@@ -281,7 +285,7 @@ class TaskEventRunner(TaskRunner):
             if agent_as_tool:
                 return
 
-            data_row = self.trajectory_dataset.message_to_datarow(message)
+            data_row = self.context.trajectory_dataset.message_to_datarow(message)
             if data_row:
                 # traj = self.context.trajectories.get(self.task.id, [])
                 # traj.append(to_serializable(data_row))
@@ -407,9 +411,9 @@ class TaskEventRunner(TaskRunner):
             # self._task_response.trajectory = self.trajectory_dataset.data
             
             traj = await self.context.get_task_trajectory(self.task.id)
-            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {json.dumps(traj, ensure_ascii=False)}")
-            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
-            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_grapf data from context: {self.context.get_task_graph()}")
+            logger.warn(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {json.dumps(traj, ensure_ascii=False)}")
+            logger.warn(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
+            logger.warn(f"{self.task.id}|{self.task.is_sub_task}#task_grapf data from context: {self.context.get_task_graph()}")
             self._task_response.trajectory = traj
 
             # self._task_response.trajectory = list(self.context.trajectories.values())

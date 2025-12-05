@@ -169,6 +169,9 @@ class Context:
         
         self._task_graph: Dict[str, Dict[str, Any]] = {}
         self._trajectory_storage: TrajectoryStorage = kwargs.get('trajectory_storage', InMemoryTrajectoryStorage())
+        from aworld.dataset import TrajectoryDataset
+        from aworld.runners.state_manager import RuntimeStateManager
+        self.trajectory_dataset = None
 
     @property
     def start_time(self) -> float:
@@ -286,6 +289,17 @@ class Context:
     def outputs(self):
         return self._task.outputs
 
+    @property
+    def task_graph(self):
+        return self._task_graph
+
+    @task_graph.setter
+    def task_graph(self, task_graph):
+        self._task_graph = task_graph
+
+    def init_trajectory_dataset(self, trajectory_dataset: 'TrajectoryDataset'):
+        self.trajectory_dataset = trajectory_dataset
+
     def get_state(self, key: str, default: Any = None) -> Any:
         return self.context_info.get(key, default)
 
@@ -331,6 +345,7 @@ class Context:
 
         new_context._trajectory_storage = self._trajectory_storage
         new_context._task_graph = self._task_graph
+        new_context.trajectory_dataset = self.trajectory_dataset
 
         # Deep copy complex state objects
         try:
