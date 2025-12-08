@@ -35,6 +35,7 @@ class McpServers:
             sandbox=None,
             black_tool_actions: Dict[str, List[str]] = None,
             skill_configs: Dict[str, Any] = None,
+            tool_actions: Optional[List[str]] = None,
     ) -> None:
         self.mcp_servers = mcp_servers
         self.mcp_config = mcp_config
@@ -45,6 +46,7 @@ class McpServers:
         self.tool_list = None
         self.black_tool_actions = black_tool_actions or {}
         self.map_tool_list = {}
+        self.tool_actions = tool_actions or []
 
     async def list_tools(self, context: Context = None) -> List[Dict[str, Any]]:
         if self.tool_list:
@@ -53,7 +55,15 @@ class McpServers:
             return []
         try:
             sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
-            self.tool_list = await mcp_tool_desc_transform_v2(tools=self.mcp_servers, mcp_config=self.mcp_config,context=context,server_instances=self.server_instances,black_tool_actions=self.black_tool_actions,sandbox_id=sandbox_id)
+            self.tool_list = await mcp_tool_desc_transform_v2(
+                tools=self.mcp_servers,
+                mcp_config=self.mcp_config,
+                context=context,
+                server_instances=self.server_instances,
+                black_tool_actions=self.black_tool_actions,
+                sandbox_id=sandbox_id,
+                tool_actions=self.tool_actions
+            )
             return self.tool_list
         except Exception as e:
             logger.warning(f"Failed to list tools: {traceback.print_exc()}")

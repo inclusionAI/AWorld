@@ -1,6 +1,7 @@
 import abc
 import asyncio
 import logging
+import os
 import uuid
 from typing import Dict, List, Any, Optional
 
@@ -74,6 +75,16 @@ class Sandbox(SandboxSetup):
         return self._black_tool_actions
 
     @property
+    def tools(self) -> List[str]:
+        """Returns the list of tools."""
+        return self._tools
+
+    @property
+    def registry_url(self) -> str:
+        """Returns the environment registry URL."""
+        return self._registry_url
+
+    @property
     @abc.abstractmethod
     def mcpservers(self) -> McpServers:
         """Module for running MCP in the sandbox.
@@ -93,6 +104,8 @@ class Sandbox(SandboxSetup):
             mcp_config: Optional[Any] = None,
             black_tool_actions: Optional[Dict[str, List[str]]] = None,
             skill_configs: Optional[Any] = None,
+            tools: Optional[List[str]] = None,
+            registry_url: Optional[str] = None,
     ):
         """Initialize a new Sandbox instance.
         
@@ -103,6 +116,10 @@ class Sandbox(SandboxSetup):
             timeout: Timeout for sandbox operations.
             mcp_servers: List of MCP servers to use.
             mcp_config: Configuration for MCP servers.
+            black_tool_actions: Black list of tool actions.
+            skill_configs: Skill configurations.
+            tools: List of tools. Optional parameter.
+            registry_url: Environment registry URL. Optional parameter, reads from environment variable "ENV_REGISTRY_URL" if not provided, defaults to empty string.
         """
         # Initialize basic attributes
         self._sandbox_id = sandbox_id or str(uuid.uuid4())
@@ -114,6 +131,9 @@ class Sandbox(SandboxSetup):
         self._mcp_config = mcp_config or {}
         self._skill_configs = skill_configs or {}
         self._black_tool_actions = black_tool_actions or {}
+        self._tools = tools or []
+        # Read registry_url from environment variable if not provided
+        self._registry_url = registry_url or os.getenv("ENV_REGISTRY_URL", "")
 
     @abc.abstractmethod
     def get_info(self) -> SandboxInfo:
