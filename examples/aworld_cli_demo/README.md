@@ -18,27 +18,8 @@ cp env.template .env
 ```bash
 # Interactive mode (default)
 aworld-cli
-
-# List all available agents
-aworld-cli list
 ```
-
-### 3. Debug Mode
-
-If you want to debug `aworld-cli`'s main function in an IDE, you can use `debug_main.py`:
-
-```bash
-# Debug interactive mode
-python debug_main.py
-
-# Debug list command
-python debug_main.py list
-```
-
-In an IDE (e.g., PyCharm):
-1. Right-click on `debug_main.py`
-2. Select "Debug 'debug_main'"
-3. You can set breakpoints in `main.py` for debugging
+![/](../../readme_assets/aworld_cli_01.jpg)
 
 ## Project Structure
 
@@ -166,7 +147,7 @@ Configure the following variables in the `.env` file:
 ### Using aworld-cli
 
 1. **Interactive Mode**: Run `aworld-cli` to display available agents, select one, and start a conversation
-2. **List Mode**: Run `aworld-cli list` to view all available agents
+![/](../../readme_assets/aworld_cli_02.jpg)
 
 ## More Examples
 
