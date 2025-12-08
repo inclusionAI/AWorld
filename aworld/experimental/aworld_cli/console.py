@@ -1,4 +1,5 @@
 import asyncio
+import sys
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
@@ -126,8 +127,16 @@ class AWorldCLI:
 
         self.console.print(table)
 
+        # Check if we're in a real terminal
+        is_terminal = sys.stdin.isatty()
+        
         while True:
-            choice = Prompt.ask("Select an agent number", default="1")
+            if is_terminal:
+                choice = Prompt.ask("Select an agent number", default="1")
+            else:
+                # Fallback for non-terminal environments
+                self.console.print("Select an agent number [default: 1]: ", end="")
+                choice = input().strip() or "1"
             try:
                 idx = int(choice) - 1
                 if 0 <= idx < len(agents):
@@ -160,24 +169,34 @@ class AWorldCLI:
         """
         self.console.print(Panel(f"Starting chat session with [bold]{agent_name}[/bold].\nType 'exit' to quit.\nType '/switch [agent_name]' to switch agent.", style="blue"))
         
-        # Setup completer
+        # Check if we're in a real terminal (not IDE debugger or redirected input)
+        is_terminal = sys.stdin.isatty()
+        
+        # Setup completer and session only if in terminal
         agent_names = [a.name for a in available_agents] if available_agents else []
+        session = None
         
-        completer = NestedCompleter.from_nested_dict({
-            '/switch': {name: None for name in agent_names},
-            '/exit': None,
-            '/quit': None,
-            'exit': None,
-            'quit': None
-        })
-        
-        session = PromptSession(completer=completer)
+        if is_terminal:
+            completer = NestedCompleter.from_nested_dict({
+                '/switch': {name: None for name in agent_names},
+                '/exit': None,
+                '/quit': None,
+                'exit': None,
+                'quit': None
+            })
+            session = PromptSession(completer=completer)
 
         while True:
             try:
-                # Use prompt_toolkit for input with completion
-                # We use HTML for basic coloring of the prompt
-                user_input = await asyncio.to_thread(session.prompt, HTML("<b><cyan>You</cyan></b>: "))
+                # Use prompt_toolkit in terminal, plain input() in non-terminal (e.g., IDE debugger)
+                if is_terminal and session:
+                    # Use prompt_toolkit for input with completion
+                    # We use HTML for basic coloring of the prompt
+                    user_input = await asyncio.to_thread(session.prompt, HTML("<b><cyan>You</cyan></b>: "))
+                else:
+                    # Fallback to plain input() for non-terminal environments
+                    self.console.print("[cyan]You[/cyan]: ", end="")
+                    user_input = await asyncio.to_thread(input)
                 
                 user_input = user_input.strip()
                 
@@ -187,8 +206,12 @@ class AWorldCLI:
                 
                 # Handle explicit exit commands
                 if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
-                    if Confirm.ask("Are you sure you want to exit?"):
-                        return False # Return False to stop the loop (Exit App)
+                    if is_terminal:
+                        if Confirm.ask("Are you sure you want to exit?"):
+                            return False # Return False to stop the loop (Exit App)
+                    else:
+                        # In non-terminal, just exit without confirmation
+                        return False
                     continue
 
                 # Handle switch command
