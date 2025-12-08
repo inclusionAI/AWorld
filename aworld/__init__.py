@@ -3,17 +3,17 @@
 import atexit
 import os
 
+# Try to load .env file if python-dotenv is available
+# This is optional and should not fail if the package is not installed yet (e.g., during pip install)
 try:
-    from aworld.utils.import_package import import_package
-
-    import_package("dotenv", install_name="python-dotenv")
     from dotenv import load_dotenv
 
-    sucess = load_dotenv()
-    if not sucess:
+    success = load_dotenv()
+    if not success:
         load_dotenv(os.path.join(os.getcwd(), ".env"))
 except Exception as e:
-    print(e)
+    # Log other errors but don't fail initialization
+    print(f"Warning: Failed to load .env file: {e}")
 
 
 def cleanup():
