@@ -58,6 +58,7 @@ class ToolCallOutput(Output):
     @model_validator(mode='after')
     def set_meta(self):
         self.metadata["type"] = "tool_call"
+        return self
 
 
 class ToolResultOutput(Output):
@@ -76,6 +77,7 @@ class ToolResultOutput(Output):
     @model_validator(mode='after')
     def set_meta(self):
         self.metadata["type"] = "tool_call_result"
+        return self
 
 
 class RunFinishedSignal(Output):
@@ -83,6 +85,7 @@ class RunFinishedSignal(Output):
     @model_validator(mode='after')
     def set_meta(self):
         self.metadata["type"] = "finished_signal"
+        return self
 
 
 RUN_FINISHED_SIGNAL = RunFinishedSignal()
@@ -355,6 +358,7 @@ class StepOutput(Output):
     @model_validator(mode='after')
     def set_meta(self):
         self.metadata["type"] = "step"
+        return self
 
     @classmethod
     def build_start_output(cls, name, step_num, alias_name=None, data=None, task_id: str = None):
