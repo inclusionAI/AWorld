@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from typing import List, Optional, Dict
 from aworld.core.context.amni import ApplicationContext, TaskInput
-from aworld.core.context.amni.config import AmniConfigFactory
+from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
 import httpx
 from .base import BaseAgentRuntime
 from ..models import AgentInfo
@@ -173,8 +173,13 @@ class MixedRuntime(BaseAgentRuntime):
             is_local_agent = isinstance(source, LocalAgent)
             
             # Get context config from source if available
-            context_config = source.context_config if hasattr(source, 'context_config') else AmniConfigFactory.create()
-            
+            # env_config from env TODO
+            context_config = AmniConfigFactory.create(
+                AmniConfigLevel.NAVIGATOR,
+                debug_mode=True
+            )
+            context_config.agent_config.history_scope = "session"
+
             # Try to get swarm without context first (for swarm instances or functions that don't need context)
             try:
                 swarm = await source.get_swarm(None)
