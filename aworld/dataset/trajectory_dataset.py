@@ -6,7 +6,6 @@ from typing import Any, Dict, List, Optional, Callable, Type, TYPE_CHECKING
 
 from pydantic import Field
 
-from aworld import import_package
 from aworld.core.agent.base import is_agent_by_name
 from aworld.core.common import ActionModel
 from aworld.core.event.base import Message, Constants
@@ -17,6 +16,7 @@ from aworld.dataset.dataset import Dataset
 from aworld.dataset.types import DataRow, Experience, ExpMeta
 from aworld.logs.util import logger
 from aworld.runners.state_manager import RuntimeStateManager, EventRuntimeStateManager
+from aworld.utils import import_package
 from aworld.utils.common import get_local_ip
 from aworld.utils.serialized_util import to_serializable
 
