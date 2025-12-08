@@ -134,8 +134,9 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
         return openai_tools
 
 
-async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[str]] = None) -> List[Dict[str, Any]]:
+async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[str]] = None, tool_actions: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     openai_tools = []
+    tool_actions_set = set(tool_actions) if tool_actions else None
     for i, server in enumerate(mcp_servers):
         try:
             tools = await server.list_tools()
@@ -151,6 +152,11 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
                         f"server #{i + 1} ({balck_server}) black_tool_actions: {tool.name}"
                     )
                     continue
+                
+                # Filter by tool_actions (whitelist)
+                if tool_actions_set is not None:
+                    if tool.name not in tool_actions_set:
+                        continue
                 required = []
                 properties = {}
                 if tool.inputSchema and tool.inputSchema.get("properties"):
@@ -389,7 +395,8 @@ async def mcp_tool_desc_transform_v2(
         tools: List[str] = None, mcp_config: Dict[str, Any] = None, context: Context = None,
         server_instances: Dict[str, Any] = None,
         black_tool_actions: Dict[str, List[str]] = None,
-        sandbox_id: Optional[str] = None
+        sandbox_id: Optional[str] = None,
+        tool_actions: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
@@ -550,7 +557,11 @@ async def mcp_tool_desc_transform_v2(
 
                 server = await stack.enter_async_context(server)
                 # servers.append(server)
-                _mcp_openai_tools = await run([server], black_tool_actions)
+                _mcp_openai_tools = await run(
+                    mcp_servers=[server],
+                    black_tool_actions=black_tool_actions,
+                    tool_actions=tool_actions
+                )
             if _mcp_openai_tools:
                 mcp_openai_tools.extend(_mcp_openai_tools)
         except BaseException as err:

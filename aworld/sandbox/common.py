@@ -22,7 +22,9 @@ class BaseSandbox(Sandbox):
             mcp_servers: Optional[List[str]] = None,
             mcp_config: Optional[Any] = None,
             black_tool_actions: Optional[Dict[str, List[str]]] = None,
-            skill_configs: Optional[Any] = None
+            skill_configs: Optional[Any] = None,
+            tools: Optional[List[str]] = None,
+            registry_url: Optional[str] = None,
     ):
         """
         Initialize a new BaseSandbox instance.
@@ -36,6 +38,8 @@ class BaseSandbox(Sandbox):
             mcp_config: Configuration for MCP servers.
             black_tool_actions: Black list of tool actions.
             skill_configs: Skill configurations.
+            tools: List of tools. Optional parameter.
+            registry_url: Environment registry URL. Optional parameter, reads from environment variable "ENV_REGISTRY_URL" if not provided, defaults to empty string.
         """
         super().__init__(
             sandbox_id=sandbox_id,
@@ -45,7 +49,9 @@ class BaseSandbox(Sandbox):
             mcp_servers=mcp_servers,
             mcp_config=mcp_config,
             black_tool_actions=black_tool_actions,
-            skill_configs=skill_configs
+            skill_configs=skill_configs,
+            tools=tools,
+            registry_url=registry_url
         )
         self._logger = self._setup_logger()
         
