@@ -12,13 +12,14 @@ from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, T
 import yaml
 from pydantic import BaseModel, Field
 
-from aworld.logs.util import logger
 
 if TYPE_CHECKING:
     from aworld.dataset.trajectory_strategy import TrajectoryStrategy
 
 
 def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
+    from aworld.logs.util import logger
+
     """Dynamically load config file form current path.
 
     Args:
