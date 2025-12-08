@@ -97,7 +97,7 @@ def build_skill_agent():
         }
     }
 
-    SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
+    SKILLS_DIR = Path(__file__).resolve().parents[1] / "skills"
 
     CUSTOM_SKILLS = collect_skill_docs(SKILLS_DIR)
 
