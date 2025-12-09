@@ -20,7 +20,6 @@ from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage
     MemoryEventType as MemoryType, MemoryEventMessage, ChunkMessage
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.model_output_parser import ModelOutputParser
-from aworld.core.model_output_parser.hermes_tool_parser import HermesToolParser
 from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
