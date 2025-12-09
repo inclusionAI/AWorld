@@ -105,6 +105,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             wait_tool_result: Whether wait on the results of the tool.
             sandbox: Sandbox instance for tool execution, advanced usage.
         """
+        if conf is None:
+            conf = AgentConfig()
         if isinstance(conf, ConfigDict):
             pass
         elif isinstance(conf, Dict):
