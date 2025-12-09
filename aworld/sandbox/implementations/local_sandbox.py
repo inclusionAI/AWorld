@@ -422,6 +422,10 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         token = os.getenv("CUSTOM_ENV_TOKEN", "")
         image_version = os.getenv("CUSTOM_ENV_IMAGE_VERSION", "")
         
+        # Check if any environment variable is empty
+        if not url or not token or not image_version:
+            return None
+        
         result_config = {
             "mcpServers": {}
         }
@@ -434,20 +438,12 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             # Convert server_config to JSON string for MCP_CONFIG header (include key)
             server_config_str = json.dumps({server_name: server_config}, ensure_ascii=False)
             
-            # Extract MCP_SERVERS from server_config if exists, otherwise use empty string
-            mcp_servers_value = server_config.get("MCP_SERVERS", "")
-            if isinstance(mcp_servers_value, list):
-                mcp_servers_value = ",".join(mcp_servers_value)
-            elif not isinstance(mcp_servers_value, str):
-                mcp_servers_value = ""
-            
             # Build streamable-http configuration
             streamable_config = {
                 "type": "streamable-http",
                 "url": url,
                 "headers": {
                     "Authorization": f"Bearer {token}",
-                    "MCP_SERVERS": mcp_servers_value,
                     "IMAGE_VERSION": image_version,
                     "MCP_CONFIG": server_config_str
                 },
