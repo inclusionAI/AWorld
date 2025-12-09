@@ -7,17 +7,17 @@ from typing import Dict, List, Optional, Any
 
 from aworld.logs.util import logger
 from aworld.models.llm import get_llm_model, call_llm_model
-from train.data_gen.schema import TreeNode, ToolBuildConfig
+from train.data_gen.schema import TreeNode, ToolGenerateConfig
 
 
 class ToolsTree:
-    """Tool hierarchy structure, root (virtual node) -> category -> capability -> sub capability -> tool."""
+    """Tool hierarchy structure, root (virtual node) -> category -> main capability (tool) -> sub capability (action, optional) -> tool spec."""
 
-    def __init__(self, tool_gen_config: ToolBuildConfig = None):
+    def __init__(self, tool_gen_config: ToolGenerateConfig = None):
         self.root = TreeNode(name="root", description="tool root node", children={})
         # category -> nodes
         self.cate_nodes: Dict[str, TreeNode] = {}
-        self.tool_gen_config = tool_gen_config or ToolBuildConfig()
+        self.tool_gen_config = tool_gen_config or ToolGenerateConfig()
 
     async def build(self):
         meta_datas = await self.load_sources()
@@ -35,17 +35,17 @@ class ToolsTree:
             logger.error("no source paths provide, will use default data.")
             return [
                 {
-                    "category": "Financia Services",
+                    "category": "Financial Services",
                     "capabilities": [
-                        "Stock price inquiry", "exchange rate conversion", "account balance inquiry",
-                        "Transaction records", "portfolio analysis", "risk assessment"
+                        "Stock price inquiry", "Exchange rate conversion", "Account balance inquiry",
+                        "Transaction records", "Portfolio analysis", "Risk assessment"
                     ]
                 },
                 {
                     "category": "Transportation and Travel",
                     "capabilities": [
-                        "Route planning", "real - time traffic", "public transportation inquiry",
-                        "Taxi service", "parking information", "flight inquiry"
+                        "Route planning", "Realtime traffic", "Public transportation inquiry",
+                        "Taxi service", "Parking information", "Flight inquiry"
                     ]
                 },
             ]
@@ -202,19 +202,46 @@ Please analyze the following document content and extract tool information, and 
 
         return new_node
 
+    def get_category(self, tree_node: TreeNode) -> str:
+        """Get category from the tree node."""
+        if tree_node.level == 1:
+            return tree_node.name
+        else:
+            return self.get_category(tree_node.parent)
+
     def get_capabilities(self, tree_node: TreeNode) -> List[str]:
         """Get capabilities from the tree node."""
         capabilities = []
 
         def collect_capabilities(node: TreeNode):
             # level 0 is root, level 1 is category,
-            if node.level >= 2:
+            if node.level == 2:
                 capabilities.append(node.name)
+            elif node.level > 2:
+                return
+
             for child in node.children.values():
                 collect_capabilities(child)
 
         collect_capabilities(tree_node)
         return capabilities
+
+    def get_sub_capabilities(self, tree_node: TreeNode) -> Dict[str, List[str]]:
+        """Get sub-capabilities from the tree node."""
+        sub_capabilities = {}
+
+        def collect_sub_capabilities(node: TreeNode):
+            if node.level >= 3:
+                sub_capabilities[node.parent.name].append(node.name)
+            for child in node.children.values():
+                collect_sub_capabilities(child)
+
+        for child in tree_node.children.values():
+            collect_sub_capabilities(child)
+            sub_capabilities[child.parent.name] = list(set(sub_capabilities[child.parent.name]))
+            logger.debug(f"{child.parent.name}: {sub_capabilities[child.parent.name]}")
+
+        return sub_capabilities
 
     def save_tools_categories(self, file_path: str):
         """Save the tools tree to a JSON file"""
