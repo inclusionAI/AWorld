@@ -7,7 +7,7 @@ import traceback
 import uuid
 from collections import OrderedDict
 from datetime import datetime
-from typing import Dict, Any, List, Callable, Optional
+from typing import Dict, Any, List, Callable, Optional, Union
 
 import aworld.trace as trace
 from aworld.config.conf import AgentConfig, TaskConfig, TaskRunMode
@@ -41,7 +41,7 @@ from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
 
 
-class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
+class AgentResultParser(ModelOutputParser[ModelResponse, AgentResult]):
     async def parse(self, resp: ModelResponse, **kwargs) -> AgentResult:
         """Standard parse based Openai API."""
 
@@ -102,24 +102,9 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                                                params=params,
                                                policy_info=content))
         else:
-            content = content.replace("```json", "").replace("```", "")
             results.append(ActionModel(agent_name=agent_id, policy_info=content))
 
         return AgentResult(actions=results, current_state=None, is_call_tool=is_call_tool)
-
-    def use_tool_list(self, content: str) -> List[Dict[str, Any]]:
-        tool_list = []
-        try:
-            content = content.replace('\n', '').replace('\r', '')
-            response_json = json.loads(content)
-            use_tool_list = response_json.get("use_tool_list", [])
-            for use_tool in use_tool_list:
-                tool_name = use_tool.get("tool", None)
-                if tool_name:
-                    tool_list.append(use_tool)
-        except Exception:
-            logger.debug(f"tool_parse error, content: {content}, \n{traceback.format_exc()}")
-        return tool_list
 
 
 class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
@@ -144,8 +129,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                  step_reset: bool = True,
                  use_tools_in_prompt: bool = False,
                  black_tool_actions: Dict[str, List[str]] = None,
-                 model_output_parser: ModelOutputParser[..., AgentResult] = LlmOutputParser(),
-                 output_converter: Callable[[ModelResponse, Any], AgentResult] = None,
+                 model_output_parser: Union[ModelOutputParser[..., AgentResult], Callable[
+                     [ModelResponse, Any], AgentResult]] = AgentResultParser(),
                  tool_aggregate_func: Callable[..., Any] = None,
                  event_handler_name: str = None,
                  event_driven: bool = True,
@@ -207,27 +192,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self.need_reset = need_reset if need_reset else conf.need_reset
         # whether to keep contextual information, False means keep, True means reset in every step by the agent call
         self.step_reset = step_reset
-        
+
         # Initialize output parser and converter
         # Agent layer parsing (conversion to AgentResult) happens here
-        self.output_converter = None
-        if model_output_parser:
-            if isinstance(model_output_parser, ModelOutputParser):
-                self.model_output_parser = model_output_parser
-            elif isinstance(model_output_parser, Callable):
-                self.output_converter = model_output_parser
-            else:
-                logger.warn(f"model_output_parser must be ModelOutputParser or Callable")
-        else:
-            self.model_output_parser = LlmOutputParser()
+        self.output_converter = model_output_parser
         if not self.output_converter:
-            self.output_converter = output_converter
+            self.output_converter = AgentResultParser()
 
         # To maintain compatibility, we use a new parser class for the Model layer
         # if the user hasn't explicitly set one in llm_config.
         # LLM layer parsing (e.g. tool extraction) happens there,
         if self.conf.llm_config and not self.conf.llm_config.llm_response_parser:
-             self.conf.llm_config.llm_response_parser = ModelResponseParser()
+            self.conf.llm_config.llm_response_parser = ModelResponseParser()
 
         self.use_tools_in_prompt = use_tools_in_prompt if use_tools_in_prompt else conf.use_tools_in_prompt
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
@@ -402,7 +378,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if self._is_amni_context(message.context):
             agent_context_config = message.context.get_config().get_agent_context_config(self.id())
             agent_memory_config = agent_context_config.to_memory_config()
-        histories = memory.get_last_n(agent_memory_config.history_rounds, filters=filters, agent_memory_config=agent_memory_config)
+        histories = memory.get_last_n(agent_memory_config.history_rounds, filters=filters,
+                                      agent_memory_config=agent_memory_config)
         if histories:
             tool_calls_map = {}
             last_tool_calls = []
@@ -615,17 +592,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 else:
                     if self.output_converter and isinstance(self.output_converter, Callable):
                         if asyncio.iscoroutinefunction(self.output_converter):
-                            agent_result= await self.output_converter(llm_response,
-                                                                      agent_id=self.id(),
-                                                                      use_tools_in_prompt=self.use_tools_in_prompt)
+                            agent_result = await self.output_converter(llm_response,
+                                                                       agent_id=self.id(),
+                                                                       use_tools_in_prompt=self.use_tools_in_prompt)
                         else:
                             agent_result = self.output_converter(llm_response,
                                                                  agent_id=self.id(),
                                                                  use_tools_in_prompt=self.use_tools_in_prompt)
                     else:
-                        agent_result = await self.model_output_parser.parse(llm_response,
-                                                                            agent_id=self.id(),
-                                                                            use_tools_in_prompt=self.use_tools_in_prompt)
+                        agent_result = await self.output_converter.parse(llm_response,
+                                                                         agent_id=self.id(),
+                                                                         use_tools_in_prompt=self.use_tools_in_prompt)
                     # skip summary on final round
                     await self._add_message_to_memory(payload=llm_response,
                                                       message_type=MemoryType.AI,
@@ -993,9 +970,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         for tool in tools:
             if tool["function"]["name"] in ptc_tools:
-                tool["function"]["description"] = "[allow_code_execution]" +  tool["function"]["description"]
+                tool["function"]["description"] = "[allow_code_execution]" + tool["function"]["description"]
                 logger.debug(f"ptc augmented tool: {tool['function']['description']}")
-
 
 
 # Considering compatibility and current universality, we still use Agent to represent LLM Agent.
