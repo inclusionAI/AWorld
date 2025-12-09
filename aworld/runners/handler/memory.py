@@ -1,4 +1,5 @@
 # aworld/runners/handler/output.py
+import copy
 import json
 import time
 import traceback
@@ -6,6 +7,7 @@ from datetime import datetime
 from typing import AsyncGenerator, Any
 
 from aworld.agents.llm_agent import Agent
+from aworld.config import ConfigDict
 from aworld.core.context.base import Context
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryToolMessage, MessageMetadata, MemoryHumanMessage, MemorySystemMessage, \
@@ -24,7 +26,6 @@ class DefaultMemoryHandler(DefaultHandler):
         super().__init__(runner)
         self.runner = runner
         self.hooks = {}
-        self.memory = MemoryFactory.instance()
         if runner.task.hooks:
             for k, vals in runner.task.hooks.items():
                 self.hooks[k] = []
@@ -132,7 +133,8 @@ class DefaultMemoryHandler(DefaultHandler):
         task_id = context.get_task().id
         user_id = context.get_task().user_id
 
-        histories = self.memory.get_last_n(0, filters={
+        memory = MemoryFactory.instance()
+        histories = memory.get_last_n(0, filters={
             "agent_id": agent.id(),
             "session_id": session_id,
             "task_id": task_id
@@ -153,7 +155,7 @@ class DefaultMemoryHandler(DefaultHandler):
         )
         # Record message end time
         system_message.end_time = None
-        await self.memory.add(system_message, agent_memory_config=agent.memory_config)
+        await memory.add(system_message, agent_memory_config=agent.memory_config)
 
     async def _update_last_message_usage(self, agent: Agent, llm_response, context: Context):
         """Update the usage information of the last message"""
@@ -166,15 +168,16 @@ class DefaultMemoryHandler(DefaultHandler):
             "session_id": context.get_task().session_id,
             "task_id": context.get_task().id,
         }
+        memory = MemoryFactory.instance()
         # Get the last message
-        last_messages = self.memory.get_last_n(1, filters=filters, agent_memory_config=agent_memory_config)
+        last_messages = memory.get_last_n(1, filters=filters, agent_memory_config=agent_memory_config)
         if last_messages and len(last_messages) > 0:
             last_message = last_messages[-1]
             # Update usage in metadata
             last_message.metadata['usage'] = llm_response.usage
             last_message.updated_at = datetime.now().isoformat()
             # Update memory
-            self.memory.update(last_message)
+            memory.update(last_message)
 
     async def _add_llm_response_to_memory(self, agent: Agent, llm_response, context: Context, history_messages: list, skip_summary: bool = False, **kwargs):
         """Add LLM response to memory"""
@@ -204,14 +207,16 @@ class DefaultMemoryHandler(DefaultHandler):
         
         agent_memory_config = agent.memory_config
         if self._is_amni_context(context):
-            agent_memory_config = context.get_config().get_agent_context_config(agent.id())
+            agent_memory_config = context.get_config().get_agent_memory_config(agent.id())
 
         # If skip_summary is True, disable summary
         if skip_summary and agent_memory_config:
+            if not isinstance(agent_memory_config, ConfigDict):
+               agent_memory_config = copy.deepcopy(agent_memory_config)
+            else:
+               agent_memory_config = copy.copy(agent_memory_config)
             agent_memory_config.enable_summary = False
-        await self.memory.add(ai_message, agent_memory_config=agent_memory_config)
-        if skip_summary and agent_memory_config:
-            agent_memory_config.enable_summary = True
+        await MemoryFactory.instance().add(ai_message, agent_memory_config=agent_memory_config)
 
     async def add_human_input_to_memory(self, agent: Agent, content: Any, context: Context, memory_type="init"):
         """Add user input to memory"""
@@ -238,7 +243,7 @@ class DefaultMemoryHandler(DefaultHandler):
         )
         # Record message end time
         human_message.end_time = None
-        await self.memory.add(human_message, agent_memory_config=agent_memory_config)
+        await MemoryFactory.instance().add(human_message, agent_memory_config=agent_memory_config)
 
     async def add_tool_result_to_memory(self, agent: 'Agent', tool_call_id: str, tool_result: ActionResult, context: Context):
         """Add tool result to memory"""

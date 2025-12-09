@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import asyncio
 import json
 import os
 import traceback
@@ -9,7 +10,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Callable, Optional
 
 import aworld.trace as trace
-from aworld.config.conf import TaskConfig, TaskRunMode, AgentConfig
+from aworld.config.conf import AgentConfig, TaskConfig, TaskRunMode
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
@@ -28,8 +29,9 @@ from aworld.logs.util import logger, Color
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
-from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template
-from aworld.models.model_response import ModelResponse, ToolCall
+from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template, \
+    ModelResponseParser
+from aworld.models.model_response import ModelResponse
 from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process
 from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
@@ -55,14 +57,6 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
 
         results = []
         is_call_tool = False
-        if kwargs.get("use_tools_in_prompt"):
-            if not self.get_parser("tool"):
-                self.register_parser(HermesToolParser())
-        
-        # Iterate over all registered parsers to process the response.
-        # This allows for extensible parsing logic where multiple parsers can contribute to the final result.
-        for content_parser in self.get_parsers().values():
-            resp = await content_parser.parse(resp, **kwargs)
         content = '' if resp.content is None else resp.content
 
         if resp.tool_calls:
@@ -152,6 +146,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                  use_tools_in_prompt: bool = False,
                  black_tool_actions: Dict[str, List[str]] = None,
                  model_output_parser: ModelOutputParser[..., AgentResult] = LlmOutputParser(),
+                 output_converter: Callable[[ModelResponse, Any], AgentResult] = None,
                  tool_aggregate_func: Callable[..., Any] = None,
                  event_handler_name: str = None,
                  event_driven: bool = True,
@@ -166,6 +161,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             use_tools_in_prompt: Whether the tool description in prompt.
             black_tool_actions: Black list of actions of the tool.
             model_output_parser: Llm response parse function for the agent standard output, transform llm response.
+            output_converter: Function to convert ModelResponse to AgentResult.
             tool_aggregate_func: Aggregation strategy for multiple tool results.
             event_handler_name: Custom handlers for certain types of events.
         """
@@ -205,7 +201,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         conf = self.conf
         self.model_name = conf.llm_config.llm_model_name
         self._llm = None
-        self.memory = MemoryFactory.instance()
         self.memory_config = conf.memory_config
         self.system_prompt: str = system_prompt if system_prompt else conf.system_prompt
         self.event_driven = event_driven
@@ -213,7 +208,28 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self.need_reset = need_reset if need_reset else conf.need_reset
         # whether to keep contextual information, False means keep, True means reset in every step by the agent call
         self.step_reset = step_reset
-        self.model_output_parser = model_output_parser
+        
+        # Initialize output parser and converter
+        # Agent layer parsing (conversion to AgentResult) happens here
+        self.output_converter = None
+        if model_output_parser:
+            if isinstance(model_output_parser, ModelOutputParser):
+                self.model_output_parser = model_output_parser
+            elif isinstance(model_output_parser, Callable):
+                self.output_converter = model_output_parser
+            else:
+                logger.warn(f"model_output_parser must be ModelOutputParser or Callable")
+        else:
+            self.model_output_parser = LlmOutputParser()
+        if not self.output_converter:
+            self.output_converter = output_converter
+
+        # To maintain compatibility, we use a new parser class for the Model layer
+        # if the user hasn't explicitly set one in llm_config.
+        # LLM layer parsing (e.g. tool extraction) happens there,
+        if self.conf.llm_config and not self.conf.llm_config.llm_response_parser:
+             self.conf.llm_config.llm_response_parser = ModelResponseParser()
+
         self.use_tools_in_prompt = use_tools_in_prompt if use_tools_in_prompt else conf.use_tools_in_prompt
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
         self.event_handler_name = event_handler_name
@@ -262,6 +278,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         except:
             logger.warning(f"{self.id()} get MCP desc fail, no MCP to use. error: {traceback.format_exc()}")
 
+        await self.process_by_ptc(self.tools, context)
+
     def messages_transform(self,
                            content: str,
                            image_urls: List[str] = None,
@@ -271,13 +289,52 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return sync_exec(self.async_messages_transform, image_urls=image_urls, observation=observation,
                          message=message, **kwargs)
 
+    def _is_amni_context(self, context: Context):
+        from aworld.core.context.amni import AmniContext
+        return isinstance(context, AmniContext)
+
+    def _build_memory_filters(self, context: Context, additional_filters: Dict[str, Any] = None) -> Dict[str, Any]:
+        filters = {
+            "agent_id": self.id()
+        }
+
+        # Decide which filter to add based on history_scope
+        agent_memory_config = self.memory_config
+        if self._is_amni_context(context):
+            agent_context_config = context.get_config().get_agent_context_config(self.id())
+            agent_memory_config = agent_context_config.to_memory_config()
+
+        query_scope = agent_memory_config.history_scope if agent_memory_config and agent_memory_config.history_scope else "task"
+        task = context.get_task()
+
+        if query_scope == "user":
+            # Pass user_id when query_scope is user
+            if hasattr(context, 'user_id') and context.user_id:
+                filters["user_id"] = context.user_id
+            elif hasattr(task, 'user_id') and task.user_id:
+                filters["user_id"] = task.user_id
+        elif query_scope == "session":
+            # Pass session_id when query_scope is session
+            if task and task.session_id:
+                filters["session_id"] = task.session_id
+        else:  # query_scope == "task" or default
+            # Pass task_id when query_scope is task
+            if task and task.id:
+                filters["task_id"] = task.id
+
+        # Add additional filter conditions
+        if additional_filters:
+            filters.update(additional_filters)
+
+        return filters
+
     def _clean_redundant_tool_call_messages(self, histories: List[MemoryItem]) -> None:
         try:
             for i in range(len(histories) - 1, -1, -1):
                 his = histories[i]
                 if his.metadata and "tool_calls" in his.metadata and his.metadata['tool_calls']:
                     logger.info(f"Agent {self.id()} deleted tool call messages from memory: {his}")
-                    self.memory.delete(his.id)
+                    MemoryFactory.instance().delete(his.id)
                 else:
                     break
         except Exception:
@@ -288,14 +345,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         logger.info(f"Agent {self.id()} postprocess_terminate_loop: {self.loop_step}")
         super().postprocess_terminate_loop(message)
         try:
-            session_id = message.context.get_task().session_id
-            task_id = message.context.get_task().id
-            histories = self.memory.get_all(filters={
-                "agent_id": self.id(),
-                "session_id": session_id,
-                "task_id": task_id,
-                "memory_type": "message"
-            })
+            filters = self._build_memory_filters(message.context, additional_filters={"memory_type": "message"})
+            histories = MemoryFactory.instance().get_all(filters=filters)
             self._clean_redundant_tool_call_messages(histories)
         except Exception:
             logger.error(f"Agent {self.id()} postprocess_terminate_loop error: {traceback.format_exc()}")
@@ -323,14 +374,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if self.system_prompt:
             await self._add_message_to_memory(context=message.context, payload=content, message_type=MemoryType.SYSTEM)
 
-        session_id = message.context.get_task().session_id
-        task_id = message.context.get_task().id
-        histories = self.memory.get_all(filters={
-            "agent_id": self.id(),
-            "session_id": session_id,
-            "task_id": task_id,
-            "memory_type": "message"
-        })
+        filters = self._build_memory_filters(message.context, additional_filters={"memory_type": "message"})
+        histories = MemoryFactory.instance().get_all(filters=filters)
 
         # append observation to memory
         tool_result_added = False
@@ -351,12 +396,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                               message_type=MemoryType.HUMAN,
                                               context=message.context)
 
+        memory = MemoryFactory.instance()
         # from memory get last n messages
-        histories = self.memory.get_last_n(self.memory_config.history_rounds, filters={
-            "agent_id": self.id(),
-            "session_id": session_id,
-            "task_id": task_id
-        }, agent_memory_config=self.memory_config)
+        filters = self._build_memory_filters(message.context)
+        agent_memory_config = self.memory_config
+        if self._is_amni_context(message.context):
+            agent_context_config = message.context.get_config().get_agent_context_config(self.id())
+            agent_memory_config = agent_context_config.to_memory_config()
+        histories = memory.get_last_n(agent_memory_config.history_rounds, filters=filters, agent_memory_config=agent_memory_config)
         if histories:
             tool_calls_map = {}
             last_tool_calls = []
@@ -542,6 +589,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             raise e
 
         try:
+            response_parse_args = {
+                "use_tools_in_prompt": self.use_tools_in_prompt,
+                "agent_id": self.id()
+            }
+            kwargs["response_parse_args"] = response_parse_args
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
             logger.warn(traceback.format_exc())
@@ -562,9 +614,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
                         await send_message(output_message)
                 else:
-                    agent_result = await self.model_output_parser.parse(llm_response,
-                                                                        agent_id=self.id(),
-                                                                        use_tools_in_prompt=self.use_tools_in_prompt)
+                    if self.output_converter and isinstance(self.output_converter, Callable):
+                        if asyncio.iscoroutinefunction(self.output_converter):
+                            agent_result= await self.output_converter(llm_response,
+                                                                      agent_id=self.id(),
+                                                                      use_tools_in_prompt=self.use_tools_in_prompt)
+                        else:
+                            agent_result = self.output_converter(llm_response,
+                                                                 agent_id=self.id(),
+                                                                 use_tools_in_prompt=self.use_tools_in_prompt)
+                    else:
+                        agent_result = await self.model_output_parser.parse(llm_response,
+                                                                            agent_id=self.id(),
+                                                                            use_tools_in_prompt=self.use_tools_in_prompt)
                     # skip summary on final round
                     await self._add_message_to_memory(payload=llm_response,
                                                       message_type=MemoryType.AI,
@@ -808,7 +870,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                                              agent_id=self.id())
         else:
             system_prompt_template = StringPromptTemplate.from_template(self.system_prompt)
-            return system_prompt_template.format(context=context, task=content, tool_list=tool_list)
+            system_prompt = system_prompt_template.format(context=context, task=content, tool_list=tool_list)
+            if self.ptc_tools:
+                from aworld.experimental.ptc.ptc_neuron import PTC_NEURON_PROMPT
+                system_prompt += PTC_NEURON_PROMPT
+            return system_prompt
 
     async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context,
                                      skip_summary: bool = False):
@@ -867,12 +933,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """Add tool result token ids to context"""
         if context.get_task().conf.get("run_mode") != TaskRunMode.INTERACTIVE:
             return
-        histories = self.memory.get_all(filters={
-            "agent_id": self.id(),
-            "session_id": context.get_task().session_id,
-            "task_id": context.get_task().id,
-            "memory_type": "message"
-        })
+        filters = self._build_memory_filters(context, additional_filters={"memory_type": "message"})
+        memory = MemoryFactory.instance()
+        histories = memory.get_all(filters=filters)
         tool_openai_messages_after_last_assistant = []
         found_assistant = False
         tool_call_ids = []
@@ -923,6 +986,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     @staticmethod
     def from_dict(attr_dict: Dict[str, Any]) -> 'Agent':
         return Agent(**attr_dict)
+
+    async def process_by_ptc(self, tools, context: Context):
+        if not hasattr(self, "ptc_tools") or not self.ptc_tools:
+            return
+        ptc_tools = self.ptc_tools
+
+        for tool in tools:
+            if tool["function"]["name"] in ptc_tools:
+                tool["function"]["description"] = "[allow_code_execution]" +  tool["function"]["description"]
+                logger.debug(f"ptc augmented tool: {tool['function']['description']}")
+
 
 
 # Considering compatibility and current universality, we still use Agent to represent LLM Agent.

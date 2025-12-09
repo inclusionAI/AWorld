@@ -10,6 +10,13 @@ from aworld.sandbox.implementations import LocalSandbox, KubernetesSandbox, Supe
 DefaultSandbox = LocalSandbox
 
 
+# Mapping of environment types to sandbox classes
+SANDBOX_CLASS_MAP = {
+    SandboxEnvType.LOCAL: LocalSandbox,
+    SandboxEnvType.K8S: KubernetesSandbox,
+    SandboxEnvType.SUPERCOMPUTER: SuperSandbox,
+}
+
 # Override Sandbox class constructor to create the appropriate sandbox based on env_type
 def create_sandbox(
     env_type: Optional[int] = None,
@@ -98,8 +105,15 @@ original_new = object.__new__
 # Create a new __new__ method that intercepts Sandbox instantiation
 def _sandbox_new(cls, *args, **kwargs):
     if cls is Sandbox:
-        # If trying to instantiate Sandbox directly, use our factory instead
-        return create_sandbox(**kwargs)
+        # If trying to instantiate Sandbox directly, determine target class and 
+        # return an uninitialized instance. Python will then call __init__ on it ONCE.
+        env_type = kwargs.get('env_type') or SandboxEnvType.LOCAL
+        target_cls = SANDBOX_CLASS_MAP.get(env_type)
+        
+        if not target_cls:
+            raise ValueError(f"Invalid environment type: {env_type}")
+            
+        return original_new(target_cls)
     else:
         # For subclasses, use the original __new__
         return original_new(cls)

@@ -30,8 +30,11 @@ class VerlTrainer(TrainerProcessor):
 
         main(self.config)
 
-    def check_dataset(self, dataset: Union[str, Dataset], test_dataset: Union[str, Dataset] = None) -> Tuple[str, str]:
+    def check_dataset(self, dataset: Union[str, Dataset] = None, test_dataset: Union[str, Dataset] = None) -> Tuple[str, str]:
         logger.info("Check dataset...")
+
+        if dataset is None:
+            return None, None
 
         if isinstance(dataset, str):
             # means dataset path
@@ -60,8 +63,11 @@ class VerlTrainer(TrainerProcessor):
         logger.info(f"View datasets in file: {self.train_dataset_path} and {self.test_dataset_path}")
         return self.train_dataset_path, self.test_dataset_path
 
-    def check_reward(self, reward_func: Union[str, Callable[..., float]]) -> Tuple[str, str]:
+    def check_reward(self, reward_func: Union[str, Callable[..., float]] = None) -> Tuple[str, str]:
         logger.info("Check reward...")
+
+        if reward_func is None:
+            return None, None
 
         if isinstance(reward_func, str):
             # means reward func file path
@@ -199,7 +205,7 @@ class VerlTrainer(TrainerProcessor):
         logger.info(f"View agent config in file: {agent_yaml}")
         return self.agent_yaml
 
-    def check_config(self, config: Union[str, Config]) -> DictConfig:
+    def check_config(self, config: Union[str, Config] = None) -> DictConfig:
         import verl.trainer.config
 
         logger.info("Check config...")
@@ -214,6 +220,8 @@ class VerlTrainer(TrainerProcessor):
                 raise ValueError(f"Can not find the file: {config}")
             except Exception:
                 raise RuntimeError(f"{config} read fail.\n", traceback.format_exc())
+        elif config is None:
+            pass
         elif isinstance(config, Config):
             if isinstance(config, BaseConfig):
                 custom_configs = ConfigDict(config.model_dump())
@@ -245,18 +253,18 @@ class VerlTrainer(TrainerProcessor):
 
         if not self.config.custom_reward_function.name:
             if not hasattr(self, 'reward_func_name'):
-                raise RuntimeError("Please check reward function first before check config")
+                raise RuntimeError("Please check reward function first, may None or error setting")
             self.config.custom_reward_function.name = self.reward_func_name
         if not self.config.custom_reward_function.path:
             self.config.custom_reward_function.path = self.reward_file_path
 
         if not self.config.data.train_files:
             if not hasattr(self, 'train_dataset_path'):
-                raise RuntimeError("Please check train dataset first before check config")
+                raise RuntimeError("Please check train dataset first, may None or error setting")
             self.config.data.train_files = [self.train_dataset_path]
         if not self.config.data.val_files:
             if not hasattr(self, 'test_dataset_path'):
-                raise RuntimeError("Please check test dataset first before check config")
+                raise RuntimeError("Please check test dataset first, may None or error setting")
             self.config.data.val_files = [self.test_dataset_path]
 
         if not self.config.trainer.default_local_dir:

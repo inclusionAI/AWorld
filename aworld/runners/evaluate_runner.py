@@ -7,15 +7,13 @@ from typing import Dict, Any, List, Optional, Callable
 from aworld.config.conf import EvaluationConfig
 from aworld.core.task import Runner
 from aworld.evaluations.base import (
-    EvalDataCase, EvalDataset, Scorer, EvalCriteria, EvalTarget, EvalTask, Evaluator
+    EvalDataCase, EvalDataset, Scorer, EvalCriteria, EvalTarget, EvalTask, Evaluator, MetricNames
 )
-from aworld.evaluations.recoder.eval_task_recorder import EvalTaskRecorder, DefaultEvalTaskRecorder
-from aworld.evaluations.recoder.eval_dataset_recorder import EvalDatasetManager, DefaultEvalDatasetManager
-from aworld.evaluations.recoder.eval_result_recorder import EvalResultRecorder, DefaultEvalResultRecorder
+from aworld.evaluations.recoder.base import EvalRecorder
+from aworld.evaluations.recoder.eval_recorder import EvalResultRecorder, EvalDatasetRecorder, EvalTaskRecorder
 from aworld.dataset.dataset import Dataset
 from aworld.logs.util import logger
-from aworld.evaluations.scorers.scorer_registry import get_scorer_instances_for_criterias
-from aworld.evaluations.scorers.metrics import MetricNames
+from aworld.evaluations.scorers import scorer_factory
 
 
 class EvaluateRunner(Runner):
@@ -23,10 +21,9 @@ class EvaluateRunner(Runner):
     def __init__(self,
                  config: EvaluationConfig = None,
                  task: EvalTask = None,
-                 task_recorder: EvalTaskRecorder = DefaultEvalTaskRecorder(),
-                 dataset_recorder: EvalDatasetManager = DefaultEvalDatasetManager(),
-                 result_recorder: EvalResultRecorder = DefaultEvalResultRecorder(),
-                 ):
+                 task_recorder: EvalRecorder = EvalTaskRecorder(),
+                 dataset_recorder: EvalRecorder = EvalDatasetRecorder(),
+                 result_recorder: EvalRecorder = EvalResultRecorder(),):
         self.config = config
         self.task = task
         self.dataset_recorder = dataset_recorder
@@ -36,8 +33,9 @@ class EvaluateRunner(Runner):
     async def do_run(self):
         eval_config = self.config
         if not self.task:
+            self.task_recorder.eval_config = eval_config
             try:
-                eval_task: EvalTask = await self.task_recorder.create_eval_task(eval_config)
+                eval_task: EvalTask = await self.task_recorder.record(eval_input=None)
             except Exception as e:
                 logger.error(f"eval runner create task failed: {str(e)}")
                 raise e
@@ -46,9 +44,8 @@ class EvaluateRunner(Runner):
 
         try:
             loaded_dataset: EvalDataset = await self.load_dataset(eval_config)
-            eval_dataset: EvalDataset = await self.dataset_recorder.create_eval_dataset(run_id=eval_task.task_id,
-                                                                                        dataset_name=f"Dataset_{eval_task.task_id}",
-                                                                                        data_cases=loaded_dataset.eval_cases)
+            loaded_dataset.run_id = eval_task.task_id
+            eval_dataset: EvalDataset = await self.dataset_recorder.record(eval_input=loaded_dataset)
             scorers = self.get_scorers(eval_config)
             eval_target = self.get_target_for_eval(eval_config)
             evaluator = Evaluator(
@@ -59,7 +56,7 @@ class EvaluateRunner(Runner):
                 skip_passed_on_metrics=eval_config.skip_passed_on_metrics,
             )
             result = await evaluator.evaluate(eval_dataset, eval_target)
-            await self.result_recorder.save_eval_result(result)
+            await self.result_recorder.record(eval_input=result)
             return result
         except Exception as e:
             logger.error(f"eval run {eval_task.task_id} failed: {str(e)}")
@@ -89,7 +86,7 @@ class EvaluateRunner(Runner):
             )
             converted_criterias.append(time_cost_criteria)
 
-        scorers = get_scorer_instances_for_criterias(converted_criterias)
+        scorers = scorer_factory(criterias=converted_criterias)
         for scorer in scorers:
             scorer.eval_config = eval_config
         return scorers
@@ -146,11 +143,12 @@ class EvaluateRunner(Runner):
 
             return EvalDataset(eval_dataset_id=eval_dataset_id, eval_cases=eval_cases)
         else:
-            eval_dataset = await self.dataset_recorder.get_eval_dataset(eval_config.eval_dataset_id_or_file_path)
+            eval_dataset = await self.dataset_recorder.get_by_key(eval_config.eval_dataset_id_or_file_path)
 
-        if not eval_dataset:
-            logger.error(f"eval dataset {eval_config.eval_dataset_id_or_file_path} not exists.")
-            raise FileNotFoundError(f"eval dataset {eval_config.eval_dataset_id_or_file_path} not exists.")
+            if not eval_dataset:
+                logger.error(f"eval dataset {eval_config.eval_dataset_id_or_file_path} not exists.")
+                raise FileNotFoundError(f"eval dataset {eval_config.eval_dataset_id_or_file_path} not exists.")
+            return eval_dataset
 
     def _is_file_path(self, eval_dataset_id_or_file_path: str) -> bool:
         if not eval_dataset_id_or_file_path:
