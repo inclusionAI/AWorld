@@ -85,6 +85,11 @@ class Sandbox(SandboxSetup):
         return self._registry_url
 
     @property
+    def custom_env_tools(self) -> Optional[Any]:
+        """Returns the custom environment tools."""
+        return self._custom_env_tools
+
+    @property
     @abc.abstractmethod
     def mcpservers(self) -> McpServers:
         """Module for running MCP in the sandbox.
@@ -106,6 +111,7 @@ class Sandbox(SandboxSetup):
             skill_configs: Optional[Any] = None,
             tools: Optional[List[str]] = None,
             registry_url: Optional[str] = None,
+            custom_env_tools: Optional[Any] = None,
     ):
         """Initialize a new Sandbox instance.
         
@@ -120,6 +126,7 @@ class Sandbox(SandboxSetup):
             skill_configs: Skill configurations.
             tools: List of tools. Optional parameter.
             registry_url: Environment registry URL. Optional parameter, reads from environment variable "ENV_REGISTRY_URL" if not provided, defaults to empty string.
+            custom_env_tools: Custom environment tools. Optional parameter.
         """
         # Initialize basic attributes
         self._sandbox_id = sandbox_id or str(uuid.uuid4())
@@ -134,6 +141,7 @@ class Sandbox(SandboxSetup):
         self._tools = tools or []
         # Read registry_url from environment variable if not provided
         self._registry_url = registry_url or os.getenv("ENV_REGISTRY_URL", "")
+        self._custom_env_tools = custom_env_tools
 
     @abc.abstractmethod
     def get_info(self) -> SandboxInfo:
