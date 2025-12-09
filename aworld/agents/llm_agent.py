@@ -41,7 +41,7 @@ from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
 
 
-class AgentResultParser(ModelOutputParser[ModelResponse, AgentResult]):
+class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
     async def parse(self, resp: ModelResponse, **kwargs) -> AgentResult:
         """Parse agent result based ModelResponse."""
 
@@ -129,7 +129,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                  use_tools_in_prompt: bool = False,
                  black_tool_actions: Dict[str, List[str]] = None,
                  model_output_parser: Union[ModelOutputParser[..., AgentResult], Callable[
-                     [ModelResponse, Any], AgentResult]] = AgentResultParser(),
+                     [ModelResponse, Any], AgentResult]] = LlmOutputParser(),
                  tool_aggregate_func: Callable[..., Any] = None,
                  event_handler_name: str = None,
                  event_driven: bool = True,
@@ -154,12 +154,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             base_url = os.getenv("LLM_BASE_URL")
 
             assert api_key and model_name, (
-                "LLM_MODEL_NAME and LLM_API_KEY (environment variables) must be set, "
-                "or pass AgentConfig explicitly"
+                "LLM_MODEL_NAME and LLM_API_KEY (environment variables) must be set, or pass AgentConfig explicitly"
             )
-            logger.info(f"AgentConfig is empty, using env variables:\n"
-                        f"LLM_API_KEY={'*' * min(len(api_key), 8) if api_key else 'Not set'}\n"
-                        f"LLM_BASE_URL={base_url}\n"
+            logger.info(f"AgentConfig is empty, using env variables:\n LLM_BASE_URL={base_url}\n"
                         f"LLM_MODEL_NAME={model_name}")
 
             conf = AgentConfig(
@@ -194,9 +191,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         # Initialize output parser and converter
         # Agent layer parsing (conversion to AgentResult) happens here
-        self.output_converter = model_output_parser
-        if not self.output_converter:
-            self.output_converter = AgentResultParser()
+        self.output_converter = model_output_parser or LlmOutputParser()
 
         # To maintain compatibility, we use a new parser class for the Model layer
         # if the user hasn't explicitly set one in llm_config.
@@ -268,9 +263,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return isinstance(context, AmniContext)
 
     def _build_memory_filters(self, context: Context, additional_filters: Dict[str, Any] = None) -> Dict[str, Any]:
-        filters = {
-            "agent_id": self.id()
-        }
+        filters = {"agent_id": self.id()}
 
         # Decide which filter to add based on history_scope
         agent_memory_config = self.memory_config
@@ -313,7 +306,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     break
         except Exception:
             logger.error(f"Agent {self.id()} clean redundant tool_call_messages error: {traceback.format_exc()}")
-            pass
 
     def postprocess_terminate_loop(self, message: Message):
         logger.info(f"Agent {self.id()} postprocess_terminate_loop: {self.loop_step}")
@@ -324,7 +316,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             self._clean_redundant_tool_call_messages(histories)
         except Exception:
             logger.error(f"Agent {self.id()} postprocess_terminate_loop error: {traceback.format_exc()}")
-            pass
 
     async def async_messages_transform(self,
                                        image_urls: List[str] = None,
@@ -656,7 +647,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     content = act.params['content']
                 task_conf = TaskConfig(run_mode=message.context.get_task().conf.run_mode)
                 act_result = await exec_agent(question=content,
-                                              agent=act.agent_name,
+                                              agent=AgentFactory.agent_instance(act.tool_name),
                                               context=context,
                                               sub_task=True,
                                               outputs=message.context.outputs,
@@ -806,6 +797,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             logger.info(f"LLM Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
             if llm_response:
                 usage_process(llm_response.usage, message.context)
+            return llm_response
         except Exception as e:
             logger.warn(traceback.format_exc())
             await send_message(Message(
@@ -833,7 +825,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             raise e
         finally:
             message.context.context_info["llm_output"] = llm_response
-        return llm_response
 
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
@@ -885,7 +876,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 session_id=context.session_id if context else "",
                 headers={"context": context}
             ))
-        elif not agent.event_driven and outputs:
+        elif outputs:
             await outputs.add_output(resp_output)
 
     def is_agent_finished(self, llm_response: ModelResponse, agent_result: AgentResult) -> bool:
