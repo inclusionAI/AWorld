@@ -131,7 +131,8 @@ class RemoteAgentExecutor(AgentExecutor):
                         if "choices" in data and len(data["choices"]) > 0:
                             content = data["choices"][0]["message"]["content"]
                             # Print non-streaming response
-                            self.console.print(Markdown(content))
+                            # Set code_theme to None to disable code block background color
+                            self.console.print(Markdown(content, code_theme="default", inline_code_theme="default"))
                             return content
                         else:
                             error_msg = f"Error: Unexpected response format: {data}"
