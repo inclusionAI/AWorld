@@ -5,12 +5,28 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, Any, List, Optional, Union
 
-from aworld.config import BaseConfig, ModelConfig
+from aworld.config import BaseConfig, ModelConfig, RunConfig
 from aworld.core.common import ActionResult
 from aworld.core.tool.base import BaseTool, AsyncBaseTool
 
 
 # ------------------------------------------ Generation ----------------------------------------------- #
+
+class DataGenConfig(BaseConfig):
+    gen_tools: bool = False
+    gen_queries: bool = False
+    gen_tasks: bool = False
+    eval_tasks: bool = False
+    tool_gen_config: Optional['ToolGenerateConfig'] = None
+    query_gen_config: Optional = None
+    run_conf: Optional[RunConfig] = None
+
+    def model_post_init(self, __context: any):
+        """Check params after model initialization and validation."""
+
+        if self.gen_queries and self.gen_tasks:
+            raise ValueError("Cannot set generate queries and tasks at the same time, gen_queries include gen tasks.")
+
 
 class GenerationStrategy:
     """Generation strategy."""
@@ -68,6 +84,7 @@ class TreeNode:
     children: Dict[str, 'TreeNode'] = field(default_factory=dict)
     parent: Optional['TreeNode'] = field(default=None)
     level: int = field(default=0)
+    is_leaf: bool = field(default=False)
 
     def add_child(self, child: 'TreeNode'):
         """Add a child node"""
@@ -91,9 +108,13 @@ class TreeNode:
 
 # ------------------------------------------ Tool Generation ----------------------------------------------- #
 
-class ToolBuildConfig(BaseConfig):
+class ToolGenerateConfig(BaseConfig):
     llm_config: Optional[ModelConfig] = None
     source_paths: List[str] = None
+    strategy: str = GenerationStrategy.LLM
+    gen_number: int = field(default=10)
+    max_workers: int = field(default=1)
+    rule_cls: str = field(default=None)
 
 
 @dataclass
@@ -126,14 +147,16 @@ class GeneratedTool:
     success_rate: float = field(default=1.0)
     timeout_rate: float = field(default=1e-5)
     error_rate: float = field(default=1e-6)
+    is_mcp: bool = field(default=False)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "name": self.spec.name,
             "description": self.spec.description,
-            "input_params": self.spec.input_params,
-            "output_params": self.spec.output_params,
+            "parameters": self.spec.parameters,
+            # more info
+            "output_params": self.spec.output_parameters,
             "metadata": {
                 "category": self.spec.category,
                 "functionalities": self.spec.capabilities,
