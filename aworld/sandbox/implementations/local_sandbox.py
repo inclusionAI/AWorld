@@ -1,5 +1,7 @@
 import asyncio
 import copy
+import json
+import os
 import uuid
 from typing import Dict, List, Any, Optional, Tuple
 from collections import defaultdict
@@ -29,6 +31,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             skill_configs: Optional[Any] = None,
             tools: Optional[List[str]] = None,
             registry_url: Optional[str] = None,
+            custom_env_tools: Optional[Any] = None,
             **kwargs
     ):
         """Initialize a new LocalSandbox instance.
@@ -43,6 +46,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             skill_configs: Skill configurations.
             tools: List of tools. Optional parameter.
             registry_url: Environment registry URL. Optional parameter, reads from environment variable "ENV_REGISTRY_URL" if not provided, defaults to empty string.
+            custom_env_tools: Custom environment tools. Optional parameter.
             **kwargs: Additional parameters for specific sandbox types.
         """
         super().__init__(
@@ -55,7 +59,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             black_tool_actions=black_tool_actions,
             skill_configs=skill_configs,
             tools=tools,
-            registry_url=registry_url
+            registry_url=registry_url,
+            custom_env_tools=custom_env_tools
         )
 
         # Initialize properties
@@ -82,13 +87,30 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             local_mcp_config["mcpServers"] = {}
 
         # Step 2: Extract local mcp_servers from mcp_config
-        local_mcp_servers = [s for s in mcp_servers if s in local_mcp_config.get("mcpServers", {})] if mcp_config else []
+        local_mcp_servers = [s for s in (mcp_servers or []) if s in local_mcp_config.get("mcpServers", {})] if mcp_config else []
 
         # Step 3: Resolve configuration from registry (without merging)
         # Use sync_exec to handle both sync and async contexts
-        final_mcp_servers, final_mcp_config = sync_exec(
-            self._resolve_mcp_configuration, tools, mcp_servers, local_mcp_config, local_mcp_servers, registry_url
+        result = sync_exec(
+            self._resolve_mcp_configuration, tools, mcp_servers or [], local_mcp_config, local_mcp_servers, registry_url
         )
+        if result is None:
+            final_mcp_servers = local_mcp_servers
+            final_mcp_config = local_mcp_config
+        else:
+            final_mcp_servers, final_mcp_config = result
+
+        # Step 4: Convert custom_env_tools to MCP config and merge
+        if custom_env_tools:
+            custom_mcp_config = self._convert_custom_env_tools_to_mcp_config(custom_env_tools)
+            if custom_mcp_config:
+                # Merge custom_env_tools config into final_mcp_config
+                for server_name, server_config in custom_mcp_config.get("mcpServers", {}).items():
+                    if server_name not in final_mcp_config.get("mcpServers", {}):
+                        final_mcp_servers.append(server_name)
+                    if "mcpServers" not in final_mcp_config:
+                        final_mcp_config["mcpServers"] = {}
+                    final_mcp_config["mcpServers"][server_name] = server_config
 
         self._mcp_servers = final_mcp_servers
         self._mcp_config = final_mcp_config
@@ -351,7 +373,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         if not tools:  # Only process if tools is empty (priority check)
             # Collect all servers that are not in local config
             servers_to_fetch = [
-                server for server in mcp_servers 
+                server for server in (mcp_servers or [])
                 if server not in final_mcp_config.get("mcpServers", {})
             ]
             if servers_to_fetch:
@@ -385,6 +407,58 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                         final_mcp_config["mcpServers"][server] = registry_configs[server]
 
         return final_mcp_servers, final_mcp_config
+
+    def _convert_custom_env_tools_to_mcp_config(
+        self,
+        custom_env_tools: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        if not custom_env_tools or not isinstance(custom_env_tools, dict):
+            return None
+        
+        import os
+        
+        # Get environment variables
+        url = os.getenv("CUSTOM_ENV_URL", "")
+        token = os.getenv("CUSTOM_ENV_TOKEN", "")
+        image_version = os.getenv("CUSTOM_ENV_IMAGE_VERSION", "")
+        
+        result_config = {
+            "mcpServers": {}
+        }
+        
+        # Convert each server in custom_env_tools
+        for server_name, server_config in custom_env_tools.items():
+            if not isinstance(server_config, dict):
+                continue
+            
+            # Convert server_config to JSON string for MCP_CONFIG header (include key)
+            server_config_str = json.dumps({server_name: server_config}, ensure_ascii=False)
+            
+            # Extract MCP_SERVERS from server_config if exists, otherwise use empty string
+            mcp_servers_value = server_config.get("MCP_SERVERS", "")
+            if isinstance(mcp_servers_value, list):
+                mcp_servers_value = ",".join(mcp_servers_value)
+            elif not isinstance(mcp_servers_value, str):
+                mcp_servers_value = ""
+            
+            # Build streamable-http configuration
+            streamable_config = {
+                "type": "streamable-http",
+                "url": url,
+                "headers": {
+                    "Authorization": f"Bearer {token}",
+                    "MCP_SERVERS": mcp_servers_value,
+                    "IMAGE_VERSION": image_version,
+                    "MCP_CONFIG": server_config_str
+                },
+                "timeout": 6000,
+                "sse_read_timeout": 6000,
+                "client_session_timeout_seconds": 6000
+            }
+            
+            result_config["mcpServers"][server_name] = streamable_config
+        
+        return result_config if result_config["mcpServers"] else None
 
     async def remove(self) -> None:
         """Remove sandbox."""
