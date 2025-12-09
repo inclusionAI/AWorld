@@ -43,7 +43,7 @@ from aworld.utils.serialized_util import to_serializable
 
 class AgentResultParser(ModelOutputParser[ModelResponse, AgentResult]):
     async def parse(self, resp: ModelResponse, **kwargs) -> AgentResult:
-        """Standard parse based Openai API."""
+        """Parse agent result based ModelResponse."""
 
         if not resp:
             logger.warning("no valid content to parse!")
@@ -72,9 +72,8 @@ class AgentResultParser(ModelOutputParser[ModelResponse, AgentResult]):
                     params = {}
                 # format in framework
                 agent_info = AgentFactory.agent_instance(agent_id)
-                if full_name and not full_name.startswith(
-                        "mcp__") and agent_info and agent_info.sandbox and agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers and len(
-                    agent_info.sandbox.mcpservers.mcp_servers) > 0:
+                if (not full_name.startswith("mcp__") and agent_info and agent_info.sandbox and
+                        agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers):
                     if agent_info.sandbox.mcpservers.map_tool_list:
                         _server_name = agent_info.sandbox.mcpservers.map_tool_list.get(full_name)
                         if _server_name:
@@ -144,7 +143,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             step_reset: Reset the status at each step
             use_tools_in_prompt: Whether the tool description in prompt.
             black_tool_actions: Black list of actions of the tool.
-            model_output_parser: Llm response parse function for the agent standard output, transform llm response.
+            model_output_parser: Llm response parse function for the agent result, transform llm response.
             output_converter: Function to convert ModelResponse to AgentResult.
             tool_aggregate_func: Aggregation strategy for multiple tool results.
             event_handler_name: Custom handlers for certain types of events.
