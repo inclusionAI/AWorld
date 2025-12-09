@@ -31,7 +31,7 @@ if TYPE_CHECKING:
 class TrajectoryDataset(Dataset[DataRow]):
     # Allow arbitrary (non-pydantic) types like RuntimeStateManager in fields
     model_config = {"arbitrary_types_allowed": True}
-    state_manager: RuntimeStateManager
+    state_manager: RuntimeStateManager = Field(exclude=True)
     task_agent_map: Dict[str, int] = Field(default={}, description="task agent map")
     storage: Optional[Storage[DataRow]] = Field(default=None, description="Storage for trajectory data")
     enable_storage: bool = Field(default=False, description="Whether to enable storage")
