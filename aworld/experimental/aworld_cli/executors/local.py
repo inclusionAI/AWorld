@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict
 from dotenv import load_dotenv
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.text import Text
 from rich.markdown import Markdown
@@ -20,6 +20,7 @@ from rich.tree import Tree
 from rich.status import Status
 from rich.status import Status
 from rich.live import Live
+from rich.syntax import Syntax
 
 from aworld.config import TaskConfig
 from aworld.core.agent.swarm import Swarm
@@ -383,27 +384,66 @@ class LocalAgentExecutor(AgentExecutor):
                     """Consume stream events and collect outputs with beautiful formatting."""
                     nonlocal answer, last_message_output
                     loading_status = None
+                    status_start_time = None
+                    status_update_task = None
+                    base_message = ""
+                    
+                    async def _update_elapsed_time():
+                        """Update elapsed time in status message."""
+                        nonlocal loading_status, status_start_time, base_message
+                        while loading_status and status_start_time:
+                            elapsed = (datetime.now() - status_start_time).total_seconds()
+                            if elapsed < 60:
+                                elapsed_str = f"{elapsed:.1f}s"
+                            elif elapsed < 3600:
+                                elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
+                            else:
+                                hours = int(elapsed // 3600)
+                                minutes = int((elapsed % 3600) // 60)
+                                elapsed_str = f"{hours}h {minutes}m"
+                            
+                            if loading_status:
+                                loading_status.update(f"[dim]{base_message} [{elapsed_str}][/dim]")
+                            await asyncio.sleep(0.5)  # Update every 0.5 seconds
                     
                     def _start_loading_status(message: str):
                         """Start or update loading status."""
-                        nonlocal loading_status
+                        nonlocal loading_status, status_start_time, status_update_task, base_message
                         if not self.console:
                             return
-                        if loading_status:
-                            loading_status.update(f"[dim]{message}[/dim]")
+                        
+                        base_message = message
+                        status_start_time = datetime.now()
+                        
+                        # Add elapsed time for Thinking and Calling tool messages
+                        if "Thinking" in message or "Calling tool" in message:
+                            message_with_time = f"{message} [0.0s]"
                         else:
-                            loading_status = Status(f"[dim]{message}[/dim]", console=self.console)
+                            message_with_time = message
+                        
+                        if loading_status:
+                            loading_status.update(f"[dim]{message_with_time}[/dim]")
+                        else:
+                            loading_status = Status(f"[dim]{message_with_time}[/dim]", console=self.console)
                             loading_status.start()
+                        
+                        # Start async task to update elapsed time
+                        if ("Thinking" in message or "Calling tool" in message) and status_update_task is None:
+                            status_update_task = asyncio.create_task(_update_elapsed_time())
                     
                     def _stop_loading_status():
                         """Stop loading status."""
-                        nonlocal loading_status
+                        nonlocal loading_status, status_start_time, status_update_task
+                        if status_update_task:
+                            status_update_task.cancel()
+                            status_update_task = None
                         if loading_status:
                             loading_status.stop()
                             loading_status = None
+                        status_start_time = None
                     
                     try:
-                        from aworld.output.base import MessageOutput, ToolResultOutput
+                        from aworld.output.base import MessageOutput, ToolResultOutput, StepOutput
                         
                         # Show loading status while waiting for first output
                         _start_loading_status("💭 Thinking...")
@@ -441,6 +481,13 @@ class LocalAgentExecutor(AgentExecutor):
                                     # Agent will process the tool result and think about next steps
                                     _start_loading_status("💭 Thinking...")
                                 
+                                # Handle StepOutput - don't interrupt Thinking status
+                                elif isinstance(output, StepOutput):
+                                    # StepOutput should not interrupt Thinking status
+                                    # Just silently continue, keeping the Thinking status active
+                                    # Optionally, we can log or render step info without stopping status
+                                    pass
+                                
                                 # Handle other output types
                                 else:
                                     # Stop any loading status
@@ -469,8 +516,7 @@ class LocalAgentExecutor(AgentExecutor):
                     
                     except Exception as e:
                         # Stop loading status on error
-                        if loading_status:
-                            loading_status.stop()
+                        _stop_loading_status()
                         if self.console:
                             error_panel = Panel(
                                 f"Error in stream consumption: {str(e)}",
@@ -621,16 +667,16 @@ class LocalAgentExecutor(AgentExecutor):
             logging.getLogger().setLevel(logging.ERROR)
             logging.getLogger("aworld").setLevel(logging.ERROR)
     
-    def _format_tool_call(self, tool_call, idx: int) -> str:
+    def _format_tool_call(self, tool_call, idx: int):
         """
-        Format a single tool call into a readable string.
+        Format a single tool call into a readable string or Rich object.
         
         Args:
             tool_call: ToolCall object
             idx: Index of the tool call
             
         Returns:
-            Formatted string representation of the tool call
+            Formatted string representation or Rich object for PTC tools
         """
         from aworld.models.model_response import ToolCall
         import json
@@ -650,6 +696,107 @@ class LocalAgentExecutor(AgentExecutor):
             function_name = getattr(tool_call.function, 'name', 'Unknown')
             function_args = getattr(tool_call.function, 'arguments', '')
         
+        # Special handling for PTC tool calls
+        if function_name == "execute_ptc_code" or function_name.endswith("__execute_ptc_code"):
+            # Parse arguments to extract code
+            try:
+
+                # Build Rich components for PTC
+                # ⚠️ 重要：Text.append() 时不要使用 [style] 标记，直接使用 style 参数
+                header = Text()
+                header.append("🔧 Tool #", style="bold cyan")
+                header.append(f"{idx + 1}: ", style="bold cyan")
+                header.append(f"{function_name}\n", style="bold")
+                header.append("  ID: ", style="dim")
+                header.append(f"{tool_id}\n", style="dim")
+                header.append("  Type: ", style="dim")
+                header.append(f"{tool_type}\n", style="dim")
+                
+                code = ""
+                if function_args:
+                    # Try to parse as JSON first
+                    if isinstance(function_args, str):
+                        try:
+                            args_dict = json.loads(function_args)
+                        except json.JSONDecodeError:
+                            # If not valid JSON, treat as raw code string
+                            code = function_args
+                            args_dict = None
+                    else:
+                        args_dict = function_args
+                    
+                    # Extract code from dict if available
+                    if isinstance(args_dict, dict):
+                        code = args_dict.get('code', '') or args_dict.get('ptc_code', '') or ''
+                    elif not code and isinstance(function_args, str):
+                        # If function_args is a string but not JSON, use it as code
+                        code = function_args
+                
+                # Format code with syntax highlighting
+                if code and code.strip():
+                    # Remove leading/trailing whitespace and normalize
+                    code = code.strip()
+                    # Create syntax-highlighted code block
+                    try:
+                        syntax = Syntax(
+                            code,
+                            "python",
+                            theme="default",  # Use default theme to avoid background issues
+                            line_numbers=True,
+                            word_wrap=True,
+                            padding=(1, 2)
+                        )
+                        # Wrap code in a panel for better visibility
+                        code_panel = Panel(
+                            syntax,
+                            title="[bold yellow]🐍 Python Code[/bold yellow]",
+                            title_align="left",
+                            border_style="yellow",
+                            padding=(0, 1)
+                        )
+                        
+                        # Combine header and code panel
+                        return Group(header, code_panel)
+                    except Exception as syntax_error:
+                        # If syntax highlighting fails, show code as plain text
+                        header.append("  Code:\n", style="bold")
+                        code_text = Text(code, style="dim")
+                        code_panel = Panel(
+                            code_text,
+                            title="[bold yellow]🐍 Python Code[/bold yellow]",
+                            title_align="left",
+                            border_style="yellow",
+                            padding=(0, 1)
+                        )
+                        return Group(header, code_panel)
+                else:
+                    # No code found
+                    header.append("  Code: ", style="bold")
+                    header.append("No code provided or code extraction failed\n", style="dim")
+                    # Show raw arguments for debugging
+                    if function_args:
+                        header.append("  Raw arguments: ", style="dim")
+                        header.append(f"{str(function_args)[:200]}...\n", style="dim")
+                    return header
+            except Exception as e:
+                # Fallback to regular formatting if parsing fails
+                # Log the error but continue with regular formatting
+                header = Text()
+                header.append("🔧 Tool #", style="bold cyan")
+                header.append(f"{idx + 1}: ", style="bold cyan")
+                header.append(f"{function_name}\n", style="bold")
+                header.append("  ID: ", style="dim")
+                header.append(f"{tool_id}\n", style="dim")
+                header.append("  Type: ", style="dim")
+                header.append(f"{tool_type}\n", style="dim")
+                header.append("  Code: ", style="bold")
+                header.append(f"Error parsing code: {str(e)}\n", style="red")
+                if function_args:
+                    header.append("  Raw arguments: ", style="dim")
+                    header.append(f"{str(function_args)[:200]}...\n", style="dim")
+                return header
+        
+        # Regular formatting for non-PTC tools
         # Format arguments
         try:
             if function_args:
@@ -669,22 +816,24 @@ class LocalAgentExecutor(AgentExecutor):
         
         return formatted
     
-    def _format_tool_calls(self, tool_calls: list) -> str:
+    def _format_tool_calls(self, tool_calls: list):
         """
-        Format multiple tool calls into a readable string.
+        Format multiple tool calls into a readable string or Rich object.
         
         Args:
             tool_calls: List of ToolCallOutput or ToolCall objects
             
         Returns:
-            Formatted string representation of all tool calls
+            Formatted string representation or Rich Group object of all tool calls
         """
         from aworld.models.model_response import ToolCall
         
         if not tool_calls:
             return ""
         
-        formatted_content = "[bold magenta]🔧 Tool Calls:[/bold magenta]\n"
+        # Build tool calls content (without title, title will be in Panel)
+        tool_calls_content = []
+        has_rich_objects = False
         
         for idx, tool_call_output in enumerate(tool_calls):
             tool_call = None
@@ -695,9 +844,39 @@ class LocalAgentExecutor(AgentExecutor):
                 tool_call = tool_call_output
             
             if tool_call:
-                formatted_content += self._format_tool_call(tool_call, idx)
+                formatted_part = self._format_tool_call(tool_call, idx)
+                # Check if it's a Rich object (Group, Text, Panel, etc.)
+                if isinstance(formatted_part, (Group, Text, Panel, Syntax)):
+                    tool_calls_content.append(formatted_part)
+                    has_rich_objects = True
+                else:
+                    # It's a string, convert to Text
+                    tool_calls_content.append(Text(str(formatted_part)))
         
-        return formatted_content
+        # Wrap all tool calls in a red Panel (as shown in the image)
+        if has_rich_objects:
+            # Create a Group of all tool calls
+            tool_calls_group = Group(*tool_calls_content)
+            # Wrap in a red Panel with "Tool Calls:" title
+            tool_calls_panel = Panel(
+                tool_calls_group,
+                title="[bold magenta]🔧 Tool Calls:[/bold magenta]",
+                title_align="left",
+                border_style="red",  # Red border as shown in image
+                padding=(1, 2)
+            )
+            return tool_calls_panel
+        else:
+            # For string-based formatting, wrap in Panel too
+            tool_calls_text = "\n".join(str(part) for part in tool_calls_content)
+            tool_calls_panel = Panel(
+                tool_calls_text,
+                title="[bold magenta]🔧 Tool Calls:[/bold magenta]",
+                title_align="left",
+                border_style="red",
+                padding=(1, 2)
+            )
+            return tool_calls_panel
     
     def _render_message_output(self, output, answer: str) -> tuple[str, str]:
         """
@@ -732,16 +911,27 @@ class LocalAgentExecutor(AgentExecutor):
         if not tool_calls and response_text.strip():
             # Use Markdown for rendering when there are no tool calls
             from rich.markdown import Markdown
-            from rich.console import Group
             from rich.align import Align
             
             # Build content with reasoning if available
             content_parts = []
             if reasoning_text.strip():
-                content_parts.append(f"[dim]💭 Reasoning:[/dim]\n{reasoning_text}\n")
+                # Use Markdown for reasoning_text to maintain consistent formatting
+                reasoning_markdown = Markdown(
+                    f"💭 **Reasoning:**\n\n{reasoning_text}",
+                    code_theme="default",
+                    inline_code_theme="default"
+                )
+                content_parts.append(reasoning_markdown)
             
             # Use Markdown for response_text
-            markdown_content = Markdown(response_text)
+            # Use "default" theme instead of None to avoid AttributeError
+            # The default theme should have a transparent/terminal background
+            markdown_content = Markdown(
+                response_text,
+                code_theme="default",  # Use default theme to avoid None error
+                inline_code_theme="default"  # Use default theme to avoid None error
+            )
             content_parts.append(markdown_content)
             
             # Combine content using Group
@@ -767,26 +957,49 @@ class LocalAgentExecutor(AgentExecutor):
                 response_text
             ]).strip()
         else:
-            # Build message content (original logic for tool calls)
-            message_parts = []
-            if reasoning_text.strip():
-                message_parts.append(f"[dim]💭 Reasoning:[/dim]\n{reasoning_text}")
+            # Build message content with tool calls
+            content_parts = []
             
+            # Add reasoning if available
+            if reasoning_text.strip():
+                content_parts.append(Text(f"[dim]💭 Reasoning:[/dim]\n{reasoning_text}\n", style="dim"))
+            
+            # Add response if available
             if response_text.strip():
-                message_parts.append(response_text)
+                content_parts.append(Text(response_text))
             
             # Add tool calls
+            tool_calls_formatted = None
             if tool_calls:
                 tool_calls_formatted = self._format_tool_calls(tool_calls)
                 if tool_calls_formatted:
-                    message_parts.append(tool_calls_formatted)
+                    # Check if tool_calls_formatted is a Rich object
+                    if isinstance(tool_calls_formatted, (Group, Text, Panel, Syntax)):
+                        content_parts.append(tool_calls_formatted)
+                    else:
+                        # Convert string to Text
+                        content_parts.append(Text(str(tool_calls_formatted)))
             
-            message_content = "\n\n".join(message_parts)
+            # Build message_content for return value (string representation)
+            message_parts = []
+            if reasoning_text.strip():
+                message_parts.append(reasoning_text)
+            if response_text.strip():
+                message_parts.append(response_text)
+            if tool_calls_formatted:
+                message_parts.append(str(tool_calls_formatted))
+            message_content = "\n\n".join(message_parts).strip()
             
-            # Render to console
-            if message_content.strip():
+            # Render to console using Rich objects
+            if content_parts:
+                # Create Group if multiple parts, otherwise use single part
+                if len(content_parts) > 1:
+                    panel_content = Group(*content_parts)
+                else:
+                    panel_content = content_parts[0]
+                
                 message_panel = Panel(
-                    message_content.strip(),
+                    panel_content,
                     title="[bold cyan]💬 Agent Message[/bold cyan]",
                     title_align="left",
                     border_style="cyan",

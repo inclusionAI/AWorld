@@ -173,8 +173,33 @@ class AWorldCLI:
         if executor_instance and hasattr(executor_instance, 'session_id'):
             session_id_info = f"\nCurrent session: [dim]{executor_instance.session_id}[/dim]"
         
+        # Get agent configuration info (PTC and MCP servers)
+        config_info = ""
+        if available_agents:
+            # Find current agent
+            current_agent = next((a for a in available_agents if a.name == agent_name), None)
+            if current_agent and current_agent.metadata:
+                metadata = current_agent.metadata
+                
+                # Check PTC status
+                ptc_tools = metadata.get("ptc_tools", [])
+                ptc_status = "✅ Enabled" if ptc_tools else "❌ Disabled"
+                ptc_count = len(ptc_tools) if isinstance(ptc_tools, list) else 0
+                ptc_status_text = ptc_status + (f" ({ptc_count} tools)" if ptc_count > 0 else "")
+                ptc_info = f"PTC: [dim]{ptc_status_text}[/dim]"
+                
+                # Get MCP servers list
+                mcp_servers = metadata.get("mcp_servers", [])
+                if isinstance(mcp_servers, list) and mcp_servers:
+                    mcp_list = ", ".join(mcp_servers)
+                    mcp_info = f"MCP Servers: [dim]{mcp_list}[/dim]"
+                else:
+                    mcp_info = f"MCP Servers: [dim]None[/dim]"
+                
+                config_info = f"\n{ptc_info}\n{mcp_info}"
+        
         help_text = (
-            f"Starting chat session with [bold]{agent_name}[/bold].{session_id_info}\n"
+            f"Starting chat session with [bold]{agent_name}[/bold].{session_id_info}{config_info}\n"
             f"Type 'exit' to quit.\n"
             f"Type '/switch [agent_name]' to switch agent.\n"
             f"Type '/new' to create a new session.\n"

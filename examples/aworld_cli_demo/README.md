@@ -30,13 +30,65 @@ aworld_cli_demo/
 ├── debug_main.py       # Debug script (for debugging main.py)
 ├── agents/             # Agent definitions directory
 │   ├── __init__.py     # Python package initialization file
-│   ├── simple_agent.py # Basic Agent definition (BasicAgent)
-│   ├── skill_agent.py  # Skill-enabled Agent definition (SkillAgent)
-│   └── pe_team_agent.py # PE Pattern Multi-Agent System (PE Team Agent)
+│   ├── simple_agent.py # Basic Agent definition (Python, BasicAgent)
+│   ├── skill_agent.py  # Skill-enabled Agent definition (Python, SkillAgent)
+│   ├── pe_team_agent.py # PE Pattern Multi-Agent System (Python, PE Team Agent)
+│   └── document_agent.md # Document Management Agent (Markdown, DocumentAgent)
+├── skills/             # Custom skills directory
+│   └── ...             # Skill definitions
 └── .env                # Environment variable configuration (needs to be created)
 ```
 
 ## Agent Definitions
+
+AWorld CLI supports two ways to define agents:
+
+1. **Python Agents** (`.py` files): Define agents programmatically using Python code
+2. **Markdown Agents** (`.md` files): Define agents using Markdown with YAML front matter
+
+### Markdown Agent Format
+
+Markdown agents are defined using a simple YAML front matter + Markdown content format. This makes it easy to create and modify agents without writing Python code.
+
+**Example: `agents/document_agent.md`**
+
+```markdown
+---
+name: DocumentAgent
+description: A specialized AI agent focused on document management and generation
+mcp_servers: ["filesystem-server"]
+mcp_config: {
+    "mcpServers": {
+        "filesystem-server": {
+            "type": "stdio",
+            "command": "npx",
+            "args": [
+                "-y",
+                "@modelcontextprotocol/server-filesystem",
+                "~/workspace"
+            ]
+        }
+    }
+}
+---
+### 🎯 Mission
+A friendly and helpful AI assistant...
+
+### 💪 Core Capabilities
+- File Operations: Read, write, and manage files
+- ...
+```
+
+**Key Features:**
+- ✅ **Simple YAML front matter**: Define agent metadata, MCP servers, and configuration
+- ✅ **Rich Markdown content**: Describe agent capabilities, usage examples, and guidelines
+- ✅ **MCP Integration**: Easily configure MCP servers and tools
+- ✅ **No Python required**: Perfect for non-developers or quick prototyping
+
+**Available Markdown Agents:**
+- `document_agent.md` - DocumentAgent: A specialized agent focused on document management and generation
+
+### Python Agent Format
 
 ### Basic Agent
 
@@ -130,6 +182,28 @@ def build_swarm():
 - ✅ Supports single `Agent`: Automatically wrapped as `Swarm(agent)`
 - ✅ Supports lazy initialization: Can use callable functions that return Swarm
 
+## Markdown Agent Examples
+
+### DocumentAgent (document_agent.md)
+
+A versatile agent with filesystem-server capabilities focused on **Document Management & Generation**:
+
+- **Document Reading & Analysis**: Read and analyze existing documents
+- **Report Generation**: Generate reports from data files
+- **Document Organization**: Organize documents into folders by category/date
+- **Document Creation**: Create markdown documentation, summaries, and reports
+- **Document Merging**: Merge multiple documents into one
+- **Information Extraction**: Extract and summarize information from files
+
+**Use Cases:**
+- "Read all markdown files in the docs folder and create a summary document"
+- "Generate a report from the data in this CSV file"
+- "Organize my documents by date into separate folders"
+- "Merge all the meeting notes into one document"
+- "Extract key information from these PDF files and create a summary"
+
+See `agents/document_agent.md` for detailed capabilities and usage examples.
+
 ## Configuration
 
 ### Environment Variables
@@ -149,9 +223,25 @@ Configure the following variables in the `.env` file:
 1. **Interactive Mode**: Run `aworld-cli` to display available agents, select one, and start a conversation
 ![/](../../readme_assets/aworld_cli_02.jpg)
 
+## Agent Types Comparison
+
+| Feature | Python Agents | Markdown Agents |
+|---------|--------------|-----------------|
+| **Definition Format** | Python code with `@agent` decorator | YAML front matter + Markdown |
+| **Complexity** | More flexible, requires Python knowledge | Simpler, no coding required |
+| **MCP Integration** | ✅ Full support | ✅ Full support |
+| **Multi-Agent** | ✅ Full support (Swarm, TeamSwarm) | ✅ Supported via configuration |
+| **Skills** | ✅ Full support | ✅ Can reference skills |
+| **Best For** | Complex logic, custom behavior | Quick prototyping, documentation-focused agents |
+
 ## More Examples
 
+### In This Directory
+- **Python Agents**: `simple_agent.py`, `skill_agent.py`, `pe_team_agent.py`
+- **Markdown Agents**: `document_agent.md`
+
+### Other Examples
 Refer to `examples/skill_agent` for more complex Agent definitions, including:
 - Multi-agent collaboration (Swarm)
 - Skill system
-- MCP tool integration
+- Advanced MCP tool integration
