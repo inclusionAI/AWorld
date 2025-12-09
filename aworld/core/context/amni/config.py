@@ -1,24 +1,18 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import logging
 import os
-import queue
-import threading
 from enum import Enum
-from logging.handlers import TimedRotatingFileHandler
-from typing import Optional, List, Union, Dict, Any
+from typing import Optional, List, Union, Dict
 
 from pydantic import BaseModel, Field
 
 from aworld.config import ModelConfig
 from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy
-from aworld.core.memory import MemoryConfig, MemoryLLMConfig, EmbeddingsConfig
-from aworld.memory.db import MySQLMemoryStore
+from aworld.core.memory import MemoryConfig
 from aworld.memory.db.sqlite import SQLiteMemoryStore
 # from aworld.memory.db import SQLiteMemoryStore  # Temporarily commented out to avoid import errors
 from aworld.memory.main import MemoryFactory
 from .retrieval.base import RetrieverFactory
-from .retrieval.graph.base import GraphDBConfig
 from ...event.base import TopicType
 
 
@@ -96,6 +90,7 @@ class AgentContextConfig(BaseConfig):
                                 description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
     history_write_strategy: HistoryWriteStrategy = Field(default=HistoryWriteStrategy.EVENT_DRIVEN,
                                                          description="History write strategy: event_driven (through message system) or direct (direct call to handler)")
+    history_scope: Optional[str] = Field(default="task", description="History initialization scope: user, session, or task")
 
     # Context Reduce - Compress
     enable_summary: bool = Field(default=False,
@@ -106,8 +101,8 @@ class AgentContextConfig(BaseConfig):
     summary_context_length: Optional[int] = Field(default=40960,
                                                   description=" when the content length is greater than the summary_context_length, the summary will be created")
     summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
-    summary_summaried: Optional[bool] = Field(default=True, description="summary_summaried use to store summary memory")
-    summary_role: Optional[str] = Field(default="assistant", description="role for summary memory items")
+    summary_summaried: Optional[bool] = Field(default=True, description="whether to summarize historical summary messages when summary is triggered")
+    summary_role: Optional[str] = Field(default="user", description="role for summary memory items")
 
     # Context Offload
     tool_result_offload: bool = Field(default=False, description="tool result offload")
@@ -124,6 +119,7 @@ class AgentContextConfig(BaseConfig):
         return AgentMemoryConfig(
             history_rounds=self.history_rounds,
             history_write_strategy=self.history_write_strategy,
+            history_scope=self.history_scope,
             enable_summary=self.enable_summary,
             summary_rounds=self.summary_rounds,
             summary_context_length=self.summary_context_length,
@@ -135,12 +131,49 @@ class AgentContextConfig(BaseConfig):
 
 DEFAULT_AGENT_CONFIG = AgentContextConfig()
 
+class WorkingDirOssConfig(BaseModel):
+    """OSS configuration for working directory."""
+    access_key_id: Optional[str] = Field(
+        default=None,
+        description="OSS access key ID. Priority: config > WORKING_DIR_OSS_ACCESS_KEY_ID > OSS_ACCESS_KEY_ID"
+    )
+    access_key_secret: Optional[str] = Field(
+        default=None,
+        description="OSS access key secret. Priority: config > WORKING_DIR_OSS_ACCESS_KEY_SECRET > OSS_ACCESS_KEY_SECRET"
+    )
+    endpoint: Optional[str] = Field(
+        default=None,
+        description="OSS endpoint. Priority: config > WORKING_DIR_OSS_ENDPOINT > OSS_ENDPOINT"
+    )
+    bucket_name: Optional[str] = Field(
+        default=None,
+        description="OSS bucket name. Priority: config > WORKING_DIR_OSS_BUCKET_NAME > OSS_BUCKET_NAME"
+    )
+
 class ContextEnvConfig(BaseModel):
     """Represents environment configuration for an agent team."""
     isolate: bool = Field(default=False, description="One Task, One Isolate Env")
     env_type: str = Field(default="local", description="Env Type, local|remote")
     env_mount_path: str = Field(default="~/workspace", description="Env Working directory for share")
     env_config: dict = Field(default_factory=dict, description="Env Config")
+    
+    # Working directory path configuration
+    working_dir_base_path: Optional[str] = Field(
+        default=None,
+        description="Base path for working directory. Priority: config > WORKING_DIR_BASE_PATH > WORKING_DIR_OSS_BASE_PATH > WORKSPACE_PATH"
+    )
+    working_dir_path_template: Optional[str] = Field(
+        default=None,
+        description="Template for working directory path. Supports placeholders: {base_path}, {session_id}. "
+                    "Example: '{base_path}/custom/{session_id}/workspace' or '{base_path}/{session_id}/files'. "
+                    "Priority: config > WORKING_DIR_PATH_TEMPLATE > default"
+    )
+    
+    # OSS configuration for remote working directory
+    working_dir_oss_config: Optional[WorkingDirOssConfig] = Field(
+        default=None,
+        description="OSS configuration for working directory. Priority: config > WORKING_DIR_OSS_* > OSS_* environment variables"
+    )
 
 class AmniContextConfig(BaseConfig):
     """AmniContext configs"""
@@ -280,7 +313,9 @@ class AmniConfigFactory:
 
         if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
             config = get_default_config()
-            config.agent_config = AgentContextConfig()
+            config.agent_config = AgentContextConfig(neuron_names=neuron_names)
+            if neuron_names:
+                config.agent_config.enable_system_prompt_augment = True
             config.debug_mode = debug_mode
             config.env_config = env_config
             return config

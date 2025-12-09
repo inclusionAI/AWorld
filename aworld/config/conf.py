@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import copy
 import os
 import traceback
 import uuid
@@ -131,6 +132,7 @@ class ModelConfig(BaseConfig):
     model_type: Optional[str] = 'qwen'  # Model type determines tokenizer and maximum length
     params: Optional[Dict[str, Any]] = {}
     ext_config: Optional[Dict[str, Any]] = {}
+    llm_response_parser: Optional[Any] = None
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -187,7 +189,8 @@ class AgentMemoryConfig(BaseConfig):
                                 description="rounds of message msg; when the number of messages is greater than the history_rounds, the memory will be trimmed")
     history_write_strategy: HistoryWriteStrategy = Field(default=HistoryWriteStrategy.EVENT_DRIVEN,
                                                          description="History write strategy: event_driven (through message system) or direct (direct call to handler)")
-    
+    history_scope: Optional[str] = Field(default="task", description="History initialization scope: user, session, or task")
+
     enable_summary: bool = Field(default=False,
                                  description="enable_summary use llm to create summary short-term memory")
     summary_model: Optional[str] = Field(default=None, description="short-term summary model")
@@ -196,7 +199,7 @@ class AgentMemoryConfig(BaseConfig):
     summary_context_length: Optional[int] = Field(default=40960,
                                                   description=" when the content length is greater than the summary_context_length, the summary will be created")
     summary_prompts: Optional[List[SummaryPromptConfig]] = Field(default=[])
-    summary_summaried: Optional[bool] = Field(default=True, description="to summary summary message when summary triggered")
+    summary_summaried: Optional[bool] = Field(default=True, description="whether to summarize historical summary messages when summary is triggered")
     summary_role: Optional[str] = Field(default="assistant", description="role for summary memory items")
 
     # Long-term memory config
@@ -204,6 +207,25 @@ class AgentMemoryConfig(BaseConfig):
     long_term_model: Optional[str] = Field(default=None, description="long-term extract model")
     # LongTermConfig
     long_term_config: Optional[BaseModel] = Field(default=None, description="long_term_config")
+
+    def __deepcopy__(self, memo=None):
+        """Support copy.deepcopy for AgentMemoryConfig."""
+        if memo is None:
+            memo = {}
+        
+        # Check if already copied (avoid circular references)
+        if id(self) in memo:
+            return memo[id(self)]
+        
+        # Create a new instance using model_dump and model_validate to avoid recursion
+        # Use mode='python' to get plain Python objects
+        data = self.model_dump(mode='python')
+        # Deep copy the data dict to handle nested objects
+        copied_data = copy.deepcopy(data, memo)
+        # Create new instance from copied data
+        new_instance = self.__class__.model_validate(copied_data)
+        memo[id(self)] = new_instance
+        return new_instance
 
 
 class AgentConfig(BaseConfig):
@@ -226,6 +248,7 @@ class AgentConfig(BaseConfig):
     exit_on_failure: bool = False
     human_tools: List[str] = []
     skill_configs: Dict[str, Any] = None
+    ptc_tools: List[str] = []
     ext: dict = {}
 
     def __init__(self, **kwargs):
