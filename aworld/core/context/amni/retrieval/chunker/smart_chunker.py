@@ -1,10 +1,19 @@
 import re
 import traceback
+import warnings
 from typing import List, Optional, Dict, Union
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter, MarkdownTextSplitter, \
     HTMLSemanticPreservingSplitter
 from langchain_text_splitters.base import TextSplitter
+
+# Suppress LangChain beta warnings
+try:
+    from langchain_core._api.beta_decorator import LangChainBetaWarning
+    warnings.filterwarnings("ignore", category=LangChainBetaWarning)
+except ImportError:
+    # If LangChainBetaWarning is not available, use generic approach
+    pass
 
 from aworld.output import Artifact
 from .ant_search import AntSearchChunker
@@ -56,6 +65,7 @@ class SmartChunker(ChunkerBase):
 
         
         # HTML splitter for HTML content
+        # LangChainBetaWarning is already filtered at module level
         html_splitter = HTMLSemanticPreservingSplitter(
             max_chunk_size=self.config.chunk_size,
             chunk_overlap=self.config.chunk_overlap,
