@@ -12,6 +12,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.agent.base import BaseAgent, is_agent_by_name
 from aworld.core.common import TaskItem, ActionModel
 from aworld.core.context.base import Context
+from aworld.core.context.trajectory_storage import InMemoryTrajectoryStorage
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse, TaskStatusValue
@@ -69,13 +70,14 @@ class TaskEventRunner(TaskRunner):
         self.event_mng.context = self.context
         self.context.event_manager = self.event_mng
 
-        if not self.context.trajectory_dataset:
+        if self.context.trajectory_dataset is None:
             traj_dataset = TrajectoryDataset(
                 name=f"{self.task.id}_trajectory_dataset",
                 state_manager=self.state_manager,
-                storage=None,
+                storage=self.conf.get('trajectory_storage', InMemoryTrajectoryStorage()),
                 enable_storage=False,
-                data=[]
+                data=[],
+                strategy=self.conf.get('trajectory_strategy', None)
             )
             self.context.init_trajectory_dataset(traj_dataset)
         if not self.context.task_graph and not self.task.is_sub_task:
@@ -284,15 +286,16 @@ class TaskEventRunner(TaskRunner):
             agent_as_tool = message.headers.get("agent_as_tool", False)
             if agent_as_tool:
                 return
+            await self.context.append_trajectory_from_message(message)
 
-            data_row = self.context.trajectory_dataset.message_to_datarow(message)
-            if data_row:
-                # traj = self.context.trajectories.get(self.task.id, [])
-                # traj.append(to_serializable(data_row))
-                # self.trajectory_dataset.data.append(to_serializable(data_row))
-                
-                row_data = to_serializable(data_row)
-                await self.context.update_task_trajectory(self.task.id, [row_data])
+            # data_row = self.context.trajectory_dataset.message_to_datarow(message)
+            # if data_row:
+            #     # traj = self.context.trajectories.get(self.task.id, [])
+            #     # traj.append(to_serializable(data_row))
+            #     # self.trajectory_dataset.data.append(to_serializable(data_row))
+            #
+            #     row_data = to_serializable(data_row)
+            #     await self.context.update_task_trajectory(self.task.id, [row_data])
 
         except Exception as e:
             logger.warning(f"Failed to update trajectory for message {message.id}: {e}")
@@ -411,9 +414,9 @@ class TaskEventRunner(TaskRunner):
             # self._task_response.trajectory = self.trajectory_dataset.data
             
             traj = await self.context.get_task_trajectory(self.task.id)
-            logger.warn(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {json.dumps(traj, ensure_ascii=False)}")
-            logger.warn(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
-            logger.warn(f"{self.task.id}|{self.task.is_sub_task}#task_grapf data from context: {self.context.get_task_graph()}")
+            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {json.dumps(traj, ensure_ascii=False)}")
+            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
+            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_grapf data from context: {self.context.get_task_graph()}")
             self._task_response.trajectory = traj
 
             # self._task_response.trajectory = list(self.context.trajectories.values())

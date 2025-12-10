@@ -50,8 +50,9 @@ class PostLLMTrajectoryHook(PostLLMCallHook):
         agent_message = message.headers.get("agent_message")
         if not agent_message:
             return None
-        data_row = context.trajectory_dataset.message_to_datarow(agent_message)
-        if data_row:
-            row_data = to_serializable(data_row)
-            await context.update_task_trajectory(context.task_id, [row_data])
-        pass
+        await context.append_trajectory_from_message(agent_message)
+        # data_row = context.trajectory_dataset.message_to_datarow(agent_message)
+        # if data_row:
+        #     row_data = to_serializable(data_row)
+        #     await context.update_task_trajectory(context.task_id, [row_data])
+        # pass

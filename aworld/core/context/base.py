@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from aworld.core.agent.swarm import Swarm
     from aworld.events.manager import EventManager
     from aworld.core.agent import BaseAgent
+    from aworld.dataset.trajectory_dataset import TrajectoryDataset
 
 
 @dataclass
@@ -168,10 +169,23 @@ class Context:
         self._agent_token_id_traj: Dict[str, List[AgentTokenIdTrajectory]] = {}
         
         self._task_graph: Dict[str, Dict[str, Any]] = {}
-        self._trajectory_storage: TrajectoryStorage = kwargs.get('trajectory_storage', InMemoryTrajectoryStorage())
-        from aworld.dataset import TrajectoryDataset
-        from aworld.runners.state_manager import RuntimeStateManager
         self.trajectory_dataset = None
+
+        # self.trajectory_dataset = kwargs.get('trajectory_dataset')
+        # storage = kwargs.get('trajectory_storage', InMemoryTrajectoryStorage())
+        #
+        # if self.trajectory_dataset is None:
+        #     from aworld.dataset.trajectory_dataset import TrajectoryDataset
+        #     from aworld.runners.state_manager import EventRuntimeStateManager
+        #
+        #     self.trajectory_dataset = TrajectoryDataset(
+        #         name=f"ctx_traj_{self._task_id}" if self._task_id else "default_traj",
+        #         data=[],
+        #         storage=storage,
+        #         enable_storage=True,
+        #         state_manager=EventRuntimeStateManager.instance(),
+        #         strategy=kwargs.get('trajectory_strategy')
+        #     )
 
     @property
     def start_time(self) -> float:
@@ -185,6 +199,10 @@ class Context:
 
     def set_task(self, task: 'Task'):
         self._task = task
+        # if task and task.conf:
+        #      strategy_conf = task.conf.get("trajectory_strategy")
+        #      if strategy_conf and self.trajectory_dataset:
+        #          self.trajectory_dataset.set_strategy(strategy_conf)
 
     def get_task(self) -> 'Task':
         return self._task
@@ -298,6 +316,8 @@ class Context:
         self._task_graph = task_graph
 
     def init_trajectory_dataset(self, trajectory_dataset: 'TrajectoryDataset'):
+        if not trajectory_dataset.storage:
+            trajectory_dataset.storage = InMemoryTrajectoryStorage()
         self.trajectory_dataset = trajectory_dataset
 
     def get_state(self, key: str, default: Any = None) -> Any:
@@ -343,7 +363,6 @@ class Context:
         # Task - set to None to avoid circular references
         new_context._task = None
 
-        new_context._trajectory_storage = self._trajectory_storage
         new_context._task_graph = self._task_graph
         new_context.trajectory_dataset = self.trajectory_dataset
 
@@ -502,6 +521,22 @@ class Context:
 
     async def update_task_after_run(self, task_response: 'TaskResponse'):
         pass
+
+    def update_agent_step(self, agent_id: str):
+        self.agent_info.current_agent_id = agent_id
+        if agent_id not in self.agent_info:
+            self.agent_info[agent_id] = {}
+        if self.task_id not in self.agent_info[agent_id]:
+            self.agent_info[agent_id][self.task_id] = {}
+        agent_task_info = self.agent_info[agent_id][self.task_id]
+        agent_task_info['step'] = agent_task_info.get('step', 0) + 1
+
+    def get_agent_step(self, agent_id: str, task_id: str = None):
+        if not task_id:
+            task_id = self.task_id
+        if not agent_id or not self.agent_info.get(agent_id, {}).get(task_id):
+            return 0
+        return self.agent_info[agent_id][task_id].get('step', 0)
 
     """
     Agent Skills Support
@@ -776,19 +811,8 @@ class Context:
             self._task.sub_task_trajectories = {}
         self._task.sub_task_trajectories[task_id] = task_trajectory
         
-        if self._trajectory_storage:
-            for step in task_trajectory:
-                # Create Data item for each step
-                data_id = step.get("id")
-                kwargs = {
-                    "block_id": task_id,
-                    "value": step
-                }
-                if data_id:
-                    kwargs["id"] = data_id
-                data_item = Data(**kwargs)
-                
-                await self._trajectory_storage.create_data(data_item, block_id=task_id, overwrite=True)
+        if self.trajectory_dataset is not None:
+            await self.trajectory_dataset.save_task_trajectory(task_id, task_trajectory)
 
     async def update_task_trajectory(self, task_id: str, trajectory: List[Dict[str, Any]]):
         """Update trajectory data for a task by appending new steps.
@@ -804,19 +828,36 @@ class Context:
             self._task.sub_task_trajectories = {}
         self._task.sub_task_trajectories[task_id] = full_trajectory
 
-        if self._trajectory_storage:
-            for step in trajectory:
-                # Create Data item for each step
-                data_id = step.get("id")
-                kwargs = {
-                    "block_id": task_id,
-                    "value": step
-                }
-                if data_id:
-                    kwargs["id"] = data_id
-                data_item = Data(**kwargs)
+        if self.trajectory_dataset is not None:
+            await self.trajectory_dataset.save_task_trajectory(task_id, trajectory)
+
+    async def append_trajectory_from_message(self, message: Any, task_id: str = None):
+        """
+        Generate trajectory item from message (or other source) and append to dataset.
+        
+        Args:
+            message: Source message or data
+            task_id: Optional task id
+        """
+        if not task_id:
+            task_id = self._task_id
+            
+        if self.trajectory_dataset is not None:
+            item = await self.trajectory_dataset.append_message(message, task_id=task_id)
+            
+            # Update local cache if successful
+            if item:
+                if not self._task.sub_task_trajectories:
+                    self._task.sub_task_trajectories = {}
                 
-                await self._trajectory_storage.create_data(data_item, block_id=task_id, overwrite=True)
+                if task_id not in self._task.sub_task_trajectories:
+                    # If not in cache, fetch full trajectory first to be safe, or just start new list
+                    # To be consistent with get_task_trajectory behavior:
+                    current = self._task.sub_task_trajectories.get(task_id, [])
+                    current.append(item)
+                    self._task.sub_task_trajectories[task_id] = current
+                else:
+                    self._task.sub_task_trajectories[task_id].append(item)
 
     async def get_task_trajectory(self, task_id: str) -> List[Dict[str, Any]]:
         """Get trajectory data for a task.
@@ -828,10 +869,9 @@ class Context:
             List[Dict[str, Any]]: The list of trajectory steps.
         """
         # Try to get from storage first
-        if self._trajectory_storage:
-            data_items = await self._trajectory_storage.get_data_items(block_id=task_id)
-            if data_items:
-                trajectory = [item.value for item in data_items]
+        if self.trajectory_dataset is not None:
+            trajectory = await self.trajectory_dataset.get_task_trajectory(task_id)
+            if trajectory:
                 # Update in-memory cache
                 if not self._task.sub_task_trajectories:
                     self._task.sub_task_trajectories = {}
@@ -850,12 +890,23 @@ class Context:
             child_task_id: Child task id.
             parent_task_id: Parent task id.
         """
-        self._task_graph[child_task_id] = {
+        if child_task_id not in self._task_graph:
+            self._task_graph[child_task_id] = {}
+        child_task_node = self._task_graph[child_task_id]
+        caller_id = self.agent_info.current_agent_id if self.agent_info and hasattr(self.agent_info,
+                                                                                    'current_agent_id') else None
+        caller_info = child_task_node.get("caller_info", {})
+        caller_info.update({
+            "agent_id": caller_id,
+            "agent_step": self.get_agent_step(caller_id, parent_task_id)
+        })
+
+        self._task_graph[child_task_id].update({
             "parent_task": parent_task_id,
-            "caller_id": self.agent_info.current_agent_id if self.agent_info and hasattr(self.agent_info,
-                                                                                         'current_agent_id') else None,
+            "caller_info": caller_info,
             **kwargs
-        }
+        })
+        logger.info(f"{self.task_id}#Task graph: {self._task_graph}")
 
     def get_task_graph(self) -> Dict[str, Any]:
         """Get the task execution graph structure.

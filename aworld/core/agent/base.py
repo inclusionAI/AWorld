@@ -205,7 +205,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return self._desc
 
     def run(self, message: Message, **kwargs) -> Message:
-        message.context.agent_info.current_agent_id = self.id()
+        message.context.update_agent_step(self.id())
         task = message.context.get_task()
         if task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
             agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
@@ -244,7 +244,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
-        message.context.agent_info.current_agent_id = self.id()
+        message.context.update_agent_step(self.id())
         task = message.context.get_task()
         if task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
             agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
