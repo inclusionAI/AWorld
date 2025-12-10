@@ -179,6 +179,54 @@ class Sandbox(SandboxSetup):
         """
         pass
 
+    async def list_tools(self, context: Any = None) -> List[Dict[str, Any]]:
+        """
+        List all available tools from MCP servers.
+        This is a convenience method that delegates to mcpservers.list_tools().
+        
+        Args:
+            context: Optional context object.
+        
+        Returns:
+            List of tool descriptions.
+        """
+        # This method is implemented in BaseSandbox
+        # Defined here for type hints and IDE autocomplete
+        if hasattr(self, 'mcpservers') and self.mcpservers is not None:
+            return await self.mcpservers.list_tools(context=context)
+        return []
+
+    async def call_tool(
+        self,
+        action_list: List[Dict[str, Any]] = None,
+        task_id: str = None,
+        session_id: str = None,
+        context: Any = None
+    ) -> List[Any]:
+        """
+        Call a tool on MCP servers.
+        This is a convenience method that delegates to mcpservers.call_tool().
+        
+        Args:
+            action_list: List of actions to execute.
+            task_id: Optional task ID.
+            session_id: Optional session ID.
+            context: Optional context object.
+        
+        Returns:
+            List of action results.
+        """
+        # This method is implemented in BaseSandbox
+        # Defined here for type hints and IDE autocomplete
+        if hasattr(self, 'mcpservers') and self.mcpservers is not None:
+            return await self.mcpservers.call_tool(
+                action_list=action_list,
+                task_id=task_id,
+                session_id=session_id,
+                context=context
+            )
+        return []
+
     def __del__(self):
         """Ensure resources are cleaned up when the object is garbage collected."""
         # NOTE: use logging in __del__ for log
