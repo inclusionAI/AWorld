@@ -67,7 +67,8 @@ class Runners:
     async def streaming_run_task(
             task: Task,
             streaming_mode: StreamingMode = StreamingMode.CORE,
-            run_conf: RunConfig = None
+            run_conf: RunConfig = None,
+            message_handler: callable = None
     ) -> AsyncGenerator[Message, None]:
         """Run task with streaming native message.
 

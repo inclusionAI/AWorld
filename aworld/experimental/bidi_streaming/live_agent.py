@@ -3,6 +3,7 @@ import traceback
 from typing import List, Optional, Set, Any, Dict
 
 from aworld.core.agent.base import BaseAgent, AgentResult
+from aworld.agents.llm_agent import Agent
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
 from aworld.core.context.base import Context
 from aworld.events.manager import EventManager
@@ -12,7 +13,7 @@ from aworld.logs.util import logger
 from aworld.experimental.bidi_streaming.transport import BidiEvent, BidiMessage, BidiEventType
 
 
-class LiveAgent(BaseAgent[Observation, List[ActionModel]]):
+class LiveAgent(Agent[Observation, List[ActionModel]]):
 
     def __init__(self,
                  name: str,

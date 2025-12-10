@@ -213,11 +213,13 @@ async def serial_exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()
     return res
 
 
-async def streaming_exec_task(task: Task, run_conf: RunConfig = RunConfig()):
+async def streaming_exec_task(task: Task, run_conf: RunConfig = RunConfig(), message_handler: callable = None):
     task_id = task.id
     runners = await choose_runners([task])
     runner = runners[0]
     streaming_queue = runner.event_mng.streaming_eventbus
+    handler = message_handler(task)
+    receiver_task = asyncio.create_task(handler(streaming_queue))
     stream_task = asyncio.create_task(execute_runner(runners, run_conf))
     stream_task.add_done_callback(lambda _: sync_exec(streaming_queue.done, task_id))
 

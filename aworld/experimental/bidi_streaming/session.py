@@ -6,26 +6,19 @@ from aworld.cmd.data_model import SessionModel, ChatCompletionMessage
 from aworld.session.base_session_service import BaseSessionService
 from aworld.experimental.bidi_streaming.transport import Transport
 
-
-class BidiSession(SessionModel):
-    """Session for bidirectional streaming."""
-    is_running: bool = False
-    transport: Transport = None
-
-
 class InMemoryBidiSessionService(BaseSessionService):
     """Session service for bidirectional streaming."""
 
     def __init__(self):
-        self._sessions: Dict[str, BidiSession] = {}
+        self._sessions: Dict[str, SessionModel] = {}
 
     async def get_session(
         self, user_id: str, session_id: str
-    ) -> Optional[BidiSession]:
+    ) -> Optional[SessionModel]:
         session_key = f"{user_id}:{session_id}"
         return self._sessions.get(session_key)
 
-    async def list_sessions(self, user_id: str) -> List[BidiSession]:
+    async def list_sessions(self, user_id: str) -> List[SessionModel]:
         return [
             session
             for key, session in self._sessions.items()
@@ -47,11 +40,10 @@ class InMemoryBidiSessionService(BaseSessionService):
 
     async def create_session(self,
                              user_id: str,
-                             transport: Transport,
                              session_id: Optional[str] = None,
                              name: Optional[str] = None,
                              description: Optional[str] = None,
-                             ) -> BidiSession:
+                             ) -> SessionModel:
         if session_id:
             session_key = f"{user_id}:{session_id}"
             if session_key in self._sessions:
@@ -59,8 +51,7 @@ class InMemoryBidiSessionService(BaseSessionService):
         else:
             session_key = f"{user_id}:{uuid.uuid4().hex}"
 
-        await transport.connect()
-        session = BidiSession(
+        session = SessionModel(
             user_id=user_id,
             session_id=session_id,
             name=name,
@@ -68,8 +59,6 @@ class InMemoryBidiSessionService(BaseSessionService):
             created_at=datetime.now(),
             updated_at=datetime.now(),
             messages=[],
-            transport=transport,
-            is_running=True,
         )
         self._sessions[session_key] = session
         return session
