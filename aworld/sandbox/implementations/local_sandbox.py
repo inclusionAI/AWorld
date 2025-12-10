@@ -5,6 +5,7 @@ import os
 import uuid
 from typing import Dict, List, Any, Optional, Tuple
 from collections import defaultdict
+from pathlib import Path
 
 from aworld.logs.util import logger
 from aworld.sandbox.api.local.sandbox_api import LocalSandboxApi
@@ -12,6 +13,7 @@ from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxInfo
 from aworld.sandbox.run.mcp_servers import McpServers
 from aworld.sandbox.common import BaseSandbox
 from aworld.utils.common import sync_exec
+from aworld.sandbox.utils.util import is_url
 
 
 class LocalSandbox(BaseSandbox, LocalSandboxApi):
@@ -164,7 +166,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         This method can be overridden by external implementations to use custom registry centers.
         
         Args:
-            registry_url: Registry center URL
+            registry_url: Registry center URL or local file path
             tools: List of tool names to find corresponding servers (when tools is provided)
             servers: List of server names to fetch configurations (when servers is provided)
         
@@ -176,6 +178,11 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         if not registry_url:
             return {"entities": []}
 
+        # Check if registry_url is a local file path
+        if not is_url(registry_url):
+            return self._fetch_from_local_file(registry_url, tools=tools, servers=servers)
+
+        # Remote registry
         try:
             import httpx
             
@@ -216,6 +223,98 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             return {"entities": []}
         except Exception as e:
             logger.warning(f"Failed to fetch config from registry: {e}")
+            return {"entities": []}
+
+    def _fetch_from_local_file(
+        self,
+        file_path: str,
+        tools: Optional[List[str]] = None,
+        servers: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """
+        Fetch entities from local JSON file.
+        
+        The local registry file uses dict format with entity_type:name as key:
+        {
+            "tool:server_name": {
+                "entity_type": "tool",
+                "name": "server_name",
+                "description": "...",
+                "tools": [...],
+                "data": {...}
+            },
+            ...
+        }
+        
+        Args:
+            file_path: Path to local registry file
+            tools: List of tool names to filter
+            servers: List of server names to filter
+        
+        Returns:
+            Dict with structure: {"entities": [...]}
+        """
+        try:
+            path = Path(file_path)
+            
+            # If file doesn't exist, return empty entities
+            if not path.exists():
+                return {"entities": []}
+            
+            # Read and parse JSON file
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            # Validate that data is a dict
+            if not isinstance(data, dict):
+                logger.warning(f"Registry file {file_path} is not a valid dict format")
+                return {"entities": []}
+            
+            # Convert dict format to entities list
+            entities = []
+            for entity_key, entity in data.items():
+                # Skip if entity is not a dict
+                if not isinstance(entity, dict):
+                    continue
+                
+                # Extract entity_type and name from key (format: "entity_type:name")
+                if ":" in entity_key:
+                    entity_type, name = entity_key.split(":", 1)
+                    # Ensure entity has correct type and name
+                    if entity.get("entity_type") == entity_type and entity.get("name") == name:
+                        entities.append(entity)
+                else:
+                    # Fallback: use entity as is if key format is unexpected
+                    entities.append(entity)
+            
+            # Filter by servers if provided
+            if servers:
+                entities = [e for e in entities if e.get("name") in servers]
+            
+            # Filter by tools if provided
+            if tools:
+                filtered_entities = []
+                for entity in entities:
+                    entity_tools = entity.get("tools", [])
+                    # Check if any tool name matches
+                    tool_names = [t.get("name", "") for t in entity_tools if isinstance(t, dict)]
+                    # Match tool names
+                    matches = False
+                    for tool in tools:
+                        if tool in tool_names:
+                            matches = True
+                            break
+                    if matches:
+                        filtered_entities.append(entity)
+                entities = filtered_entities
+            
+            return {"entities": entities}
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Failed to parse registry file {file_path}: {e}")
+            return {"entities": []}
+        except Exception as e:
+            logger.warning(f"Failed to fetch from local file {file_path}: {e}")
             return {"entities": []}
 
     def merge_registry_configs(
@@ -386,17 +485,45 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 except Exception as e:
                     logger.warning(f"Failed to fetch config from registry for servers {servers_to_fetch}: {e}")
 
-        # Stage 3: Merge registry data into configurations
-        # According to priority: tools > mcp_servers
-        use_tools_priority = bool(tools)
-        registry_result = self.merge_registry_configs(
-            pending_tools_data, 
-            pending_servers_data,
-            local_mcp_config,
-            use_tools_priority=use_tools_priority
-        )
-        registry_servers = registry_result.get("servers", [])
-        registry_configs = registry_result.get("configs", {})
+        # Stage 3: Process registry data based on registry type (remote vs local)
+        # Check if registry_url is a local file path
+        is_local_registry = not is_url(registry_url)
+        
+        if is_local_registry:
+            # For local registry: directly use entities as server configs
+            # According to priority: tools > mcp_servers
+            use_tools_priority = bool(tools)
+            entities = pending_tools_data.get("entities", []) if use_tools_priority else pending_servers_data.get("entities", [])
+            
+            # Filter out entities that already exist in local_mcp_config
+            local_server_names = set(local_mcp_config.get("mcpServers", {}).keys())
+            filtered_entities = [
+                entity for entity in entities
+                if entity.get("name", "") not in local_server_names
+            ]
+            
+            # Directly convert entities to configs (no version grouping for local registry)
+            registry_servers = []
+            registry_configs = {}
+            for entity in filtered_entities:
+                entity_name = entity.get("name", "")
+                entity_data = entity.get("data", {})
+                
+                if entity_name and entity_data:
+                    registry_servers.append(entity_name)
+                    registry_configs[entity_name] = entity_data
+        else:
+            # For remote registry: use merge_registry_configs (with version grouping)
+            # According to priority: tools > mcp_servers
+            use_tools_priority = bool(tools)
+            registry_result = self.merge_registry_configs(
+                pending_tools_data, 
+                pending_servers_data,
+                local_mcp_config,
+                use_tools_priority=use_tools_priority
+            )
+            registry_servers = registry_result.get("servers", [])
+            registry_configs = registry_result.get("configs", {})
 
         # Stage 4: Merge configurations into final config
         if registry_configs:
