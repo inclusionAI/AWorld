@@ -925,7 +925,7 @@ class Context:
         # Collect all unique task IDs
         task_ids = set(self._task_graph.keys())
         for child_data in self._task_graph.values():
-            if "parent_task" in child_data:
+            if "parent_task" in child_data and child_data["parent_task"] is not None:
                 task_ids.add(child_data["parent_task"])
                 
         # Build nodes
