@@ -60,7 +60,8 @@ async def exec_agent(question: Any,
                      outputs: Outputs = None,
                      task_group_id: str = None,
                      task_conf: TaskConfig = None,
-                     run_conf: RunConfig = RunConfig(reuse_process=True)) -> TaskResponse:
+                     run_conf: RunConfig = RunConfig(reuse_process=True),
+                     **kwargs) -> TaskResponse:
     """Utility method for executing an agent in a task-oriented manner.
 
     Args:
@@ -102,6 +103,8 @@ async def exec_agent(question: Any,
                 conf=task_conf)
     if outputs:
         task.outputs = outputs
+    if sub_task and kwargs.get("tool_call_id"):
+        context.add_task_node(task.id, context.task_id, tool_call_id=kwargs.get("tool_call_id"))
     runners = await choose_runners([task])
     res = await execute_runner(runners, run_conf=run_conf)
     resp: TaskResponse = res.get(task.id)

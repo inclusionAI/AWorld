@@ -2011,6 +2011,15 @@ class ApplicationContext(AmniContext):
         else:
             await super().update_task_trajectory(task_id, trajectory)
 
+    async def append_trajectory_from_message(self, message: Any, task_id: str = None):
+        """Generate trajectory item from message and append to dataset.
+        Delegate to root context.
+        """
+        if self.root != self:
+            await self.root.append_trajectory_from_message(message, task_id)
+        else:
+            await super().append_trajectory_from_message(message, task_id)
+
     async def get_task_trajectory(self, task_id: str) -> List[Dict[str, Any]]:
         """Get trajectory data for a task.
         Delegate to root context.

@@ -304,7 +304,8 @@ class DefaultGroupHandler(GroupHandler):
                 agent_message = act[2]
                 messages_ids.append(agent_message.id)
                 tasks[agent_message.id] = exec_agent(act[0], act[1], self.context, sub_task=True,
-                                                     outputs=self.context.outputs)
+                                                     outputs=self.context.outputs,
+                                                     tool_call_id=agent_message.headers.get('root_tool_call_id'))
         return messages_ids, tasks
 
     async def process_agent_tasks(self, agent_tasks, input_message):
