@@ -840,8 +840,9 @@ class Context:
             task_id: Optional task id
         """
         if not task_id:
-            task_id = self._task_id
-            
+            logger.error("append_trajectory_from_message#task_id is required")
+            raise Exception("append_trajectory_from_message#task_id is required")
+
         if self.trajectory_dataset is not None:
             item = await self.trajectory_dataset.append_message(message, task_id=task_id)
             

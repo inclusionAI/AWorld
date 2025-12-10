@@ -286,7 +286,7 @@ class TaskEventRunner(TaskRunner):
             agent_as_tool = message.headers.get("agent_as_tool", False)
             if agent_as_tool:
                 return
-            await self.context.append_trajectory_from_message(message)
+            await self.context.append_trajectory_from_message(message, self.task.id)
 
             # data_row = self.context.trajectory_dataset.message_to_datarow(message)
             # if data_row:
