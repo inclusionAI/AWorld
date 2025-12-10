@@ -13,9 +13,8 @@ from aworld.core.context.base import Context
 
 class StreamingRunner(TaskEventRunner):
 
-    def __init__(self, task, transport: Transport, *args, **kwargs):
+    def __init__(self, task,  *args, **kwargs):
         super().__init__(task, *args, **kwargs)
-        self.transport = transport
         self.streaming_task: Optional[asyncio.Task] = None
         self.is_streaming = True
 
@@ -75,66 +74,11 @@ class StreamingRunner(TaskEventRunner):
         '''
         try:
             while self.is_streaming:
-                bidi_msg = await self.transport.receive()
-                if bidi_msg:
-                    if self.event_mng.streaming_eventbus:
-                        await self.event_mng.streaming_eventbus.publish(bidi_msg)
-                    else:
-                        logger.error("streaming_eventbus not available")
-
-                    # await self.event_mng.emit_message(bidi_msg)
-
-                # sleep for a while to avoid high CPU usage
-                await asyncio.sleep(0.01)
+                
         except asyncio.CancelledError:
             logger.info("Streaming receive loop cancelled")
         except Exception as e:
             logger.error(f"Streaming receive loop error: {e}")
-
-    async def _do_run(self):
-        start = time.time()
-        message = None
-
-        try:
-            while True:
-                should_stop_task = await self.should_stop_task(message)
-                if should_stop_task:
-                    logger.warn(f"Runner {message.context.get_task().id if message else 'unknown'} task should stop.")
-                    await self.stop()
-                if await self.is_stopped():
-                    logger.info(f"task {self.task.id} stopped and will break")
-                    await self.event_mng.done()
-                    if self._task_response is None:
-                        self._task_response = self._create_default_response(message)
-                    break
-
-                #
-                try:
-                    message = await self.event_mng.consume(nowait=False)
-                    if message:
-                        logger.debug(f"consume message {message} of task: {self.task.id}")
-                        await self._common_process(message)
-                except Exception as e:
-                    logger.error(f"Error consuming message: {e}")
-
-                await asyncio.sleep(0.01)
-        except Exception as e:
-            logger.error(f"Streaming runner error: {e}")
-        finally:
-            await self.clean_background_tasks()
-
-    def _create_default_response(self, message):
-        from aworld.core.task import TaskResponse, TaskStatusValue
-        return TaskResponse(
-            msg="Streaming completed",
-            answer='',
-            success=True,
-            context=message.context if message else self.context,
-            id=self.task.id,
-            time_cost=time.time() - self.start_time,
-            usage=self.context.token_usage,
-            status=TaskStatusValue.SUCCESS
-        )
 
     async def stop(self):
         """Stop the streaming runner."""
