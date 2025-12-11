@@ -814,24 +814,8 @@ class Context:
         if self.trajectory_dataset is not None:
             await self.trajectory_dataset.save_task_trajectory(task_id, task_trajectory)
 
-    async def update_task_trajectory(self, task_id: str, trajectory: List[Dict[str, Any]]):
-        """Update trajectory data for a task by appending new steps.
-        
-        Args:
-            task_id: The task id.
-            trajectory: The list of trajectory steps to append.
-        """
-        current_trajectory = await self.get_task_trajectory(task_id)
-        full_trajectory = current_trajectory + trajectory
 
-        if not self._task.sub_task_trajectories:
-            self._task.sub_task_trajectories = {}
-        self._task.sub_task_trajectories[task_id] = full_trajectory
-
-        if self.trajectory_dataset is not None:
-            await self.trajectory_dataset.save_task_trajectory(task_id, trajectory)
-
-    async def append_trajectory_from_message(self, message: Any, task_id: str = None):
+    async def update_task_trajectory(self, message: Any, task_id: str = None, **kwargs):
         """
         Generate trajectory item from message (or other source) and append to dataset.
         
@@ -840,25 +824,25 @@ class Context:
             task_id: Optional task id
         """
         if not task_id:
-            logger.error("append_trajectory_from_message#task_id is required")
-            raise Exception("append_trajectory_from_message#task_id is required")
+            logger.error("update_task_trajectory#task_id is required")
+            raise Exception("update_task_trajectory#task_id is required")
 
         if self.trajectory_dataset is not None:
-            item = await self.trajectory_dataset.append_message(message, task_id=task_id)
-            
-            # Update local cache if successful
-            if item:
-                if not self._task.sub_task_trajectories:
-                    self._task.sub_task_trajectories = {}
-                
-                if task_id not in self._task.sub_task_trajectories:
-                    # If not in cache, fetch full trajectory first to be safe, or just start new list
-                    # To be consistent with get_task_trajectory behavior:
-                    current = self._task.sub_task_trajectories.get(task_id, [])
-                    current.append(item)
-                    self._task.sub_task_trajectories[task_id] = current
-                else:
-                    self._task.sub_task_trajectories[task_id].append(item)
+            item = await self.trajectory_dataset.append_trajectory(message, task_id=task_id)
+
+            # # Update local cache if successful
+            # if item:
+            #     if not self._task.sub_task_trajectories:
+            #         self._task.sub_task_trajectories = {}
+            #
+            #     if task_id not in self._task.sub_task_trajectories:
+            #         # If not in cache, fetch full trajectory first to be safe, or just start new list
+            #         # To be consistent with get_task_trajectory behavior:
+            #         current = self._task.sub_task_trajectories.get(task_id, [])
+            #         current.append(item)
+            #         self._task.sub_task_trajectories[task_id] = current
+            #     else:
+            #         self._task.sub_task_trajectories[task_id].append(item)
 
     async def get_task_trajectory(self, task_id: str) -> List[Dict[str, Any]]:
         """Get trajectory data for a task.
