@@ -631,7 +631,7 @@ class ApplicationContext(AmniContext):
             task_output=TaskOutput()
         )
 
-    async def build_sub_context(self, sub_task_content: str, sub_task_id: str = None, **kwargs):
+    async def build_sub_context(self, sub_task_content: str, sub_task_id: str = None, task_type: str = 'normal', **kwargs):
         logger.info(f"build_sub_context: {self.task_id} -> {sub_task_id}: {sub_task_content}")
         # force cast to string to avoid type error
         sub_task_content = str(sub_task_content)
@@ -640,21 +640,29 @@ class ApplicationContext(AmniContext):
         agent_list = []
         if agents:
             agent_list = [agent for agent_id, agent in agents.items()]
-        return await self.build_sub_task_context(sub_task_input, agents=agent_list)
+        return await self.build_sub_task_context(sub_task_input, agents=agent_list, task_type=task_type)
 
-    def add_sub_tasks(self, sub_task_inputs: list[TaskInput]):
+    def add_sub_tasks(self, sub_task_inputs: list[TaskInput], task_type: str = 'normal'):
+        """Add sub tasks to the task list.
+        
+        Args:
+            sub_task_inputs: List of task inputs.
+            task_type: Task type, 'normal' or 'background'. Defaults to 'normal'.
+        """
         for sub_task_input in sub_task_inputs:
             sub_task = SubTask(
                 task_id=sub_task_input.task_id,
                 input=sub_task_input,
-                status='INIT'
+                status='init',
+                task_type=task_type
             )
             self.task_state.working_state.sub_task_list.append(sub_task)
 
     async def build_sub_task_context(self, sub_task_input: TaskInput,
                                      sub_task_history: list[MemoryMessage] = None,
                                      workspace: WorkSpace = None,
-                                     agents = None) -> "ApplicationContext":
+                                     agents = None,
+                                     task_type: str = 'normal') -> "ApplicationContext":
         task_state = await self.build_sub_task_state(sub_task_input, sub_task_history)
         if not workspace:
             workspace = self.workspace
@@ -662,7 +670,7 @@ class ApplicationContext(AmniContext):
         sub_context = ApplicationContext(task_state, workspace, parent=self, context_config=self.get_config())
         # Initialize sub-context event bus (global event bus already started, no need to restart here)
         # Upsert sub task to task state
-        self.task_state.working_state.upsert_subtask_by_input(sub_task_input)
+        self.task_state.working_state.upsert_subtask_by_input(sub_task_input, task_type=task_type)
 
         if agents:
             await sub_context.build_agents_state(agents)
@@ -774,6 +782,14 @@ class ApplicationContext(AmniContext):
             if sub_task.task_id == sub_task_id:
                 sub_task.status = sub_task_context.task_status
                 sub_task.result = sub_task_context.task_output_object
+                
+                # For background tasks, use the latest task state
+                if sub_task.task_type == 'background' and sub_task_context._task:
+                    sub_task.status = sub_task_context._task.task_status
+                    # Update result from task response if available
+                    if hasattr(sub_task_context._task, 'outputs') and sub_task_context._task.outputs:
+                        # Get the latest output from task
+                        pass  # Task output is already merged via task_output_object
                 break
 
         # merge token
