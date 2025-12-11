@@ -17,14 +17,32 @@ class LoopableAgent(Agent):
     >>> def find(agent: LoopableAgent):
     >>>     ...
     """
-    max_run_times: int = 1
-    cur_run_times: int = 0
-    # The loop agent special the loop point (agent name)
-    loop_point: str = None
-    # Used to determine the loop point for multiple loops
-    loop_point_finder: Callable[..., Any] = None
-    # def stop(agent: LoopableAgent): ...
-    stop_func: Callable[..., Any] = None
+
+    def __init__(self,
+                 name: str,
+                 max_run_times: int = 1,
+                 loop_point: str = None,
+                 loop_point_finder: Callable[..., Any] = None,
+                 stop_func: Callable[..., Any] = None,
+                 *args,
+                 **kwargs):
+        """Initialize LoopableAgent.
+
+        Args:
+            name: Agent name.
+            max_run_times: Maximum number of loop runs.
+            loop_point: The loop point (agent name) for the loop agent.
+            loop_point_finder: Function to determine the loop point for multiple loops.
+            stop_func: Function to determine if the loop should stop.
+            *args: Additional positional arguments passed to parent Agent.
+            **kwargs: Additional keyword arguments passed to parent Agent.
+        """
+        super().__init__(name, *args, **kwargs)
+        self.max_run_times = max_run_times
+        self.cur_run_times = 0
+        self.loop_point = loop_point
+        self.loop_point_finder = loop_point_finder
+        self.stop_func = stop_func
 
     @property
     def goto(self):
