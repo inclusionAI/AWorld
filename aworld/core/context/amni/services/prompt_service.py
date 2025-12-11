@@ -116,9 +116,9 @@ class PromptService(IPromptService):
         import traceback
         from aworld.logs.util import logger
         from ..payload import SystemPromptMessagePayload
-        from ...event.base import ContextMessage, Constants, TopicType
         from aworld.events.util import send_message_with_future
-        
+        from aworld.core.event.base import TopicType, ContextMessage, Constants
+
         logger.info(f"ApplicationContext|pub_and_wait_system_prompt_event|start|{namespace}|{agent_id}")
         payload = SystemPromptMessagePayload(
             context=self._context,
@@ -129,6 +129,7 @@ class PromptService(IPromptService):
             event_type=TopicType.SYSTEM_PROMPT,
             namespace=namespace
         )
+
         message = ContextMessage(
             category=Constants.CONTEXT,
             payload=payload,
@@ -154,7 +155,7 @@ class PromptService(IPromptService):
         import traceback
         from aworld.logs.util import logger
         from ..payload import ToolResultMessagePayload
-        from ...event.base import ContextMessage, Constants, TopicType
+        from aworld.core.event.base import TopicType, ContextMessage, Constants
         from aworld.events.util import send_message_with_future
         
         logger.info(f"ApplicationContext|pub_and_wait_tool_result_event|start|{namespace}|{agent_id}")
