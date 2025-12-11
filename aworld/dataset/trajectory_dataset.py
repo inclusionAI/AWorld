@@ -82,7 +82,7 @@ class TrajectoryDataset(Dataset[Union[DataRow, TrajectoryItem]]):
             logger.error(f"Failed to generate and save trajectory: {e}")
         return []
 
-    async def append_message(self, message: Message, task_id: str = None) -> Optional[Dict[str, Any]]:
+    async def append_trajectory(self, message: Message, task_id: str = None) -> Optional[TrajectoryItem]:
         """
         Generate trajectory item from message using strategy and append to dataset.
         
@@ -103,7 +103,8 @@ class TrajectoryDataset(Dataset[Union[DataRow, TrajectoryItem]]):
                 'state_manager': self.state_manager,
                 'use_tools_in_prompt': getattr(self, 'use_tools_in_prompt', True),
             }
-            item = await self.strategy.generate_item(message, **kwargs)
+            item = await self.strategy.generate_item(message, state_manager=self.state_manager,
+                                                     use_tools_in_prompt=getattr(self, 'use_tools_in_prompt', True))
             
             if item:
                 item_dict = item.to_dict() if hasattr(item, "to_dict") else item

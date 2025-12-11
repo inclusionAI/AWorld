@@ -174,6 +174,7 @@ class TaskEventRunner(TaskRunner):
         async with trace.message_span(message=message):
             logger.debug(f"start_message_node message id: {message.id} of task {self.task.id}")
             self.state_manager.start_message_node(message)
+            asyncio.create_task(self._update_trajectory(message))
             if handlers:
                 handler_list = handlers.get(message.topic) or handlers.get(message.receiver)
                 if not handler_list:
@@ -286,7 +287,7 @@ class TaskEventRunner(TaskRunner):
             agent_as_tool = message.headers.get("agent_as_tool", False)
             if agent_as_tool:
                 return
-            await self.context.append_trajectory_from_message(message, self.task.id)
+            await self.context.update_task_trajectory(message, self.task.id)
 
             # data_row = self.context.trajectory_dataset.message_to_datarow(message)
             # if data_row:
@@ -416,7 +417,6 @@ class TaskEventRunner(TaskRunner):
             traj = await self.context.get_task_trajectory(self.task.id)
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {json.dumps(traj, ensure_ascii=False)}")
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
-            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_grapf data from context: {self.context.get_task_graph()}")
             self._task_response.trajectory = traj
 
             # self._task_response.trajectory = list(self.context.trajectories.values())
