@@ -563,7 +563,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 continue
             
             # Convert server_config to JSON string for MCP_CONFIG header (include key)
-            server_config_str = json.dumps({server_name: server_config}, ensure_ascii=False)
+            # Format: {"mcpServers": {server_name: server_config}}
+            server_config_str = json.dumps({"mcpServers": {server_name: server_config}}, ensure_ascii=False)
             
             # Build streamable-http configuration
             streamable_config = {
