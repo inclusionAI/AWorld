@@ -154,7 +154,6 @@ class Sandbox(SandboxSetup):
         # Read registry_url from environment variable if not provided
         default_registry_url = os.getenv("ENV_REGISTRY_URL", "~/workspace/registry.json")
         self._registry_url = registry_url or default_registry_url
-        self._registry_url = ensure_registry_file_exists(self._registry_url)
         self._custom_env_tools = custom_env_tools
 
     @abc.abstractmethod
@@ -356,7 +355,8 @@ class Sandbox(SandboxSetup):
     ) -> Dict[str, Any]:
         """Register tools from MCP servers to local file."""
         try:
-            path = Path(file_path).resolve()
+            # Expand user path (~/workspace -> /Users/username/workspace) before resolving
+            path = Path(file_path).expanduser().resolve()
             
             # Create directory if it doesn't exist
             if path.parent != path:  # Not root directory

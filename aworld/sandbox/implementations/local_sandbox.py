@@ -255,7 +255,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             Dict with structure: {"entities": [...]}
         """
         try:
-            path = Path(file_path)
+            # Expand user path (~/workspace -> /Users/username/workspace)
+            path = Path(file_path).expanduser()
             
             # If file doesn't exist, return empty entities
             if not path.exists():
