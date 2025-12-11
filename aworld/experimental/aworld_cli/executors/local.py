@@ -10,7 +10,7 @@ import uuid
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from dotenv import load_dotenv
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -1139,6 +1139,98 @@ class LocalAgentExecutor(AgentExecutor):
         )
         
         return workspace
+    
+    def get_skill_status(self) -> Dict[str, Any]:
+        """
+        Get skill status from swarm agents.
+        
+        Returns:
+            Dictionary with 'total', 'active', 'inactive' counts, and 'active_names' list
+            
+        Example:
+            >>> executor = LocalAgentExecutor(swarm)
+            >>> status = executor.get_skill_status()
+            >>> print(f"Total: {status['total']}, Active: {status['active']}, Inactive: {status['inactive']}")
+            >>> print(f"Active skills: {status['active_names']}")
+        """
+        total = 0
+        active = 0
+        inactive = 0
+        active_names = []
+        
+        try:
+            # Collect all skills from all agents in swarm
+            all_skills = {}
+            
+            # Try multiple ways to get agents from swarm
+            agents_to_check = []
+            
+            # Method 1: Try agent_graph.agents (most reliable after initialization)
+            if hasattr(self.swarm, 'agent_graph') and self.swarm.agent_graph:
+                if hasattr(self.swarm.agent_graph, 'agents') and self.swarm.agent_graph.agents:
+                    if isinstance(self.swarm.agent_graph.agents, dict):
+                        agents_to_check.extend(self.swarm.agent_graph.agents.values())
+                    elif isinstance(self.swarm.agent_graph.agents, (list, tuple)):
+                        agents_to_check.extend(self.swarm.agent_graph.agents)
+            
+            # Method 2: Try swarm.agents (direct access)
+            if not agents_to_check and hasattr(self.swarm, 'agents') and self.swarm.agents:
+                if isinstance(self.swarm.agents, dict):
+                    agents_to_check.extend(self.swarm.agents.values())
+                elif isinstance(self.swarm.agents, (list, tuple)):
+                    agents_to_check.extend(self.swarm.agents)
+                else:
+                    agents_to_check.append(self.swarm.agents)
+            
+            # Method 3: Try _communicate_agent (root agent)
+            if not agents_to_check and hasattr(self.swarm, '_communicate_agent'):
+                communicate_agent = self.swarm._communicate_agent
+                if communicate_agent:
+                    if isinstance(communicate_agent, list):
+                        agents_to_check.extend(communicate_agent)
+                    else:
+                        agents_to_check.append(communicate_agent)
+            
+            # Method 4: Try topology (initial agents)
+            if not agents_to_check and hasattr(self.swarm, 'topology') and self.swarm.topology:
+                for item in self.swarm.topology:
+                    if hasattr(item, 'skill_configs'):
+                        agents_to_check.append(item)
+                    elif isinstance(item, (list, tuple)):
+                        agents_to_check.extend([a for a in item if hasattr(a, 'skill_configs')])
+            
+            # Collect skills from all found agents
+            for agent in agents_to_check:
+                if hasattr(agent, 'skill_configs') and agent.skill_configs:
+                    if isinstance(agent.skill_configs, dict):
+                        all_skills.update(agent.skill_configs)
+            
+            total = len(all_skills)
+            
+            # Count active and inactive skills, collect active names
+            for skill_name, skill_config in all_skills.items():
+                if isinstance(skill_config, dict):
+                    # Check if skill is marked as active in config
+                    if skill_config.get('active', False):
+                        active += 1
+                        active_names.append(skill_name)
+                    else:
+                        inactive += 1
+                else:
+                    # If skill_config is not a dict, count as inactive
+                    inactive += 1
+                    
+        except Exception:
+            # If any error occurs, return zeros
+            # Don't print error to avoid cluttering startup message
+            pass
+        
+        return {
+            'total': total,
+            'active': active,
+            'inactive': inactive,
+            'active_names': active_names
+        }
 
 __all__ = ["LocalAgentExecutor"]
 

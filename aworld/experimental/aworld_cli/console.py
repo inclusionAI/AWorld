@@ -173,7 +173,7 @@ class AWorldCLI:
         if executor_instance and hasattr(executor_instance, 'session_id'):
             session_id_info = f"\nCurrent session: [dim]{executor_instance.session_id}[/dim]"
         
-        # Get agent configuration info (PTC and MCP servers)
+        # Get agent configuration info (PTC, MCP servers, and Skills)
         config_info = ""
         if available_agents:
             # Find current agent
@@ -198,8 +198,31 @@ class AWorldCLI:
                 
                 config_info = f"\n{ptc_info}\n{mcp_info}"
         
+        # Get skill status from executor if available
+        skill_info = ""
+        if executor_instance and hasattr(executor_instance, 'get_skill_status'):
+            try:
+                skill_status = executor_instance.get_skill_status()
+                total = skill_status.get('total', 0)
+                active = skill_status.get('active', 0)
+                inactive = skill_status.get('inactive', 0)
+                active_names = skill_status.get('active_names', [])
+                
+                if total > 0:
+                    if active > 0 and active_names:
+                        # Show active skill names
+                        active_names_str = ", ".join(active_names)
+                        skill_info = f"\nSkills: [dim]Total: {total}, Active: {active} ({active_names_str}), Inactive: {inactive}[/dim]"
+                    else:
+                        skill_info = f"\nSkills: [dim]Total: {total}, Active: {active}, Inactive: {inactive}[/dim]"
+                else:
+                    skill_info = f"\nSkills: [dim]None[/dim]"
+            except Exception:
+                # If getting skill status fails, don't show skill info
+                pass
+        
         help_text = (
-            f"Starting chat session with [bold]{agent_name}[/bold].{session_id_info}{config_info}\n"
+            f"Starting chat session with [bold]{agent_name}[/bold].{session_id_info}{config_info}{skill_info}\n"
             f"Type 'exit' to quit.\n"
             f"Type '/switch [agent_name]' to switch agent.\n"
             f"Type '/new' to create a new session.\n"
