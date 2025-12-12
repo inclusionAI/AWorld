@@ -133,6 +133,7 @@ class ModelConfig(BaseConfig):
     model_type: Optional[str] = 'qwen'  # Model type determines tokenizer and maximum length
     params: Optional[Dict[str, Any]] = {}
     ext_config: Optional[Dict[str, Any]] = {}
+    llm_response_parser: Optional[Any] = None
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)

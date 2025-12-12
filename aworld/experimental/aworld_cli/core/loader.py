@@ -32,11 +32,11 @@ def _has_agent_decorator(file_path: Path) -> bool:
 
 
 def init_agents(agents_dir: Union[str, Path] = None) -> None:
-    """Initialize and register all agents decorated with @agent.
+    """Initialize and register all agents decorated with @agent and from markdown files.
     
-    This function automatically discovers and imports all Python files
-    in the agents directory structure, which will trigger the @agent
-    decorator to register agents.
+    This function automatically discovers and imports:
+    1. Python files with @agent decorator
+    2. Markdown files with YAML front matter containing agent definitions
     
     Args:
         agents_dir: Path to the agents directory (can be str or Path object)
@@ -50,6 +50,7 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
         agents_dir = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or os.getcwd()
 
     from .registry import LocalAgentRegistry
+    from .markdown_agent_loader import load_markdown_agents
 
     # Convert to Path object if it's a string
     agents_dir = Path(agents_dir) if isinstance(agents_dir, str) else agents_dir
@@ -58,23 +59,36 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
         print(f"⚠️ Agents directory not found: {agents_dir}")
         return
     
+    # Load markdown agents first
+    markdown_agents = load_markdown_agents(agents_dir)
+    markdown_loaded_count = 0
+    markdown_failed_count = 0
+    
+    for agent in markdown_agents:
+        try:
+            LocalAgentRegistry.register(agent)
+            markdown_loaded_count += 1
+            print(f"✅ Loaded markdown agent: {agent.name}")
+        except Exception as e:
+            markdown_failed_count += 1
+            print(f"❌ Failed to register markdown agent {agent.name}: {e}")
+    
     # Find all Python files recursively, excluding __init__.py and private modules
     all_python_files = [
         f for f in agents_dir.rglob("*.py")
         if f.name != "__init__.py" and not f.name.startswith("_")
     ]
     
-    if not all_python_files:
-        print("ℹ️ No Python files found in agents directory")
-        return
-    
     # Filter files that contain @agent decorator
-    python_files = [f for f in all_python_files if _has_agent_decorator(f)]
+    python_files = [f for f in all_python_files if _has_agent_decorator(f)] if all_python_files else []
     
-    print(f"🔍 Found {len(all_python_files)} Python file(s), {len(python_files)} with @agent decorator")
+    if all_python_files:
+        print(f"🔍 Found {len(all_python_files)} Python file(s), {len(python_files)} with @agent decorator")
+    elif markdown_agents:
+        print(f"🔍 Found {len(markdown_agents)} markdown agent file(s)")
     
-    if not python_files:
-        print("ℹ️ No Python files with @agent decorator found")
+    if not python_files and not markdown_agents:
+        print("ℹ️ No agents found (no Python files with @agent decorator or markdown files)")
         return
     
     # Import each Python module to trigger decorator registration
@@ -155,7 +169,9 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
     
     # Summary
     total_registered = len(LocalAgentRegistry.list_agents())
-    print(f"\n📊 Summary: Loaded {loaded_count} file(s), {failed_count} failed, {total_registered} agent(s) registered")
+    total_loaded = loaded_count + markdown_loaded_count
+    total_failed = failed_count + markdown_failed_count
+    print(f"\n📊 Summary: Loaded {total_loaded} file(s) ({loaded_count} Python, {markdown_loaded_count} markdown), {total_failed} failed, {total_registered} agent(s) registered")
     
     if failed_files:
         print("\n⚠️ Failed files:")

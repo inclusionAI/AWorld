@@ -31,6 +31,59 @@ class RemoteAgentExecutor(AgentExecutor):
         self.user_id = "cli-user"  # Could be configurable
         self.console = console or Console()
     
+    def new_session(self) -> str:
+        """
+        Create a new session and return the new session ID.
+        
+        Returns:
+            The new session ID
+            
+        Example:
+            >>> executor = RemoteAgentExecutor("http://localhost:8000", "MyAgent")
+            >>> old_id = executor.session_id
+            >>> new_id = executor.new_session()
+            >>> assert old_id != new_id
+        """
+        self.session_id = str(uuid.uuid4())
+        if self.console:
+            self.console.print(f"[green]✨ New session created: {self.session_id}[/green]")
+        return self.session_id
+    
+    def restore_session(self, session_id: Optional[str] = None) -> str:
+        """
+        Restore to a specific session. For remote executor, this just sets the session_id.
+        Note: Remote executor doesn't maintain session history, so restoring to latest is not supported.
+        
+        Args:
+            session_id: Session ID to restore. If None, creates a new session.
+            
+        Returns:
+            The restored session ID
+            
+        Example:
+            >>> executor = RemoteAgentExecutor("http://localhost:8000", "MyAgent")
+            >>> restored_id = executor.restore_session("session_abc123")
+        """
+        if session_id is None:
+            if self.console:
+                self.console.print("[yellow]⚠️ Remote executor doesn't maintain session history. Creating a new session.[/yellow]")
+            return self.new_session()
+        
+        self.session_id = session_id
+        if self.console:
+            self.console.print(f"[green]✨ Restored to session: {self.session_id}[/green]")
+        return self.session_id
+    
+    def get_latest_session_id(self) -> Optional[str]:
+        """
+        Get the latest session ID. For remote executor, returns current session_id.
+        Note: Remote executor doesn't maintain session history.
+        
+        Returns:
+            Current session ID or None
+        """
+        return self.session_id
+    
     async def chat(self, message: str) -> str:
         """
         Send chat message and handle streaming response.
@@ -78,7 +131,8 @@ class RemoteAgentExecutor(AgentExecutor):
                         if "choices" in data and len(data["choices"]) > 0:
                             content = data["choices"][0]["message"]["content"]
                             # Print non-streaming response
-                            self.console.print(Markdown(content))
+                            # Set code_theme to None to disable code block background color
+                            self.console.print(Markdown(content, code_theme="default", inline_code_theme="default"))
                             return content
                         else:
                             error_msg = f"Error: Unexpected response format: {data}"
