@@ -54,7 +54,7 @@ def build_context_tree(context: "ApplicationContext") -> str:
             task_content = task_content[0]['text']
 
         # Build description
-        swarm_desc = ':'.join([agent.name() for agent in context_node.swarm.topology])
+        swarm_desc = ':'.join([agent.name() for agent in context_node.swarm.ordered_agents])
         context_desc = f"[T]{context_id}: [R]{task_content} : [O]{context_node.task_input_object.origin_user_input}" if task_content else str(context_id)
 
         # Check if current context and not yet marked
