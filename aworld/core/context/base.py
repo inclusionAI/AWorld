@@ -11,8 +11,7 @@ from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
 from aworld.config import ConfigDict
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
-from aworld.core.context.trajectory_storage import TrajectoryStorage, InMemoryTrajectoryStorage
-from aworld.core.storage.data import Data
+from aworld.core.context.trajectory_storage import InMemoryTrajectoryStorage
 from aworld.logs.util import logger
 from aworld.utils.common import nest_dict_counter
 
@@ -20,7 +19,6 @@ if TYPE_CHECKING:
     from aworld.core.task import Task, TaskResponse, TaskStatus, TaskStatusValue
     from aworld.core.agent.swarm import Swarm
     from aworld.events.manager import EventManager
-    from aworld.core.agent import BaseAgent
     from aworld.dataset.trajectory_dataset import TrajectoryDataset
 
 
@@ -332,7 +330,7 @@ class Context:
         self._deep_copy(new_context)
         new_context.task_id = sub_task_id
         new_context.task_input = sub_task_content
-        self.add_task_node(sub_task_id, self.task_id, **kwargs)
+        self.add_task_node(self.agent_info, sub_task_id, self.task_id, **kwargs)
         return new_context
 
     def merge_sub_context(self, sub_task_context: 'ApplicationContext', **kwargs):
@@ -531,12 +529,14 @@ class Context:
         agent_task_info = self.agent_info[agent_id][self.task_id]
         agent_task_info['step'] = agent_task_info.get('step', 0) + 1
 
-    def get_agent_step(self, agent_id: str, task_id: str = None):
+    def get_agent_step(self, agent_info: dict, agent_id: str, task_id: str = None):
+        if not agent_info:
+            agent_info = self.agent_info
         if not task_id:
             task_id = self.task_id
-        if not agent_id or not self.agent_info.get(agent_id, {}).get(task_id):
+        if not agent_id or not agent_info.get(agent_id, {}).get(task_id):
             return 0
-        return self.agent_info[agent_id][task_id].get('step', 0)
+        return agent_info[agent_id][task_id].get('step', 0)
 
     """
     Agent Skills Support
@@ -868,7 +868,7 @@ class Context:
             return []
         return self._task.sub_task_trajectories.get(task_id, [])
 
-    def add_task_node(self, child_task_id: str, parent_task_id: str, **kwargs):
+    def add_task_node(self, caller_agent_info: dict, child_task_id: str, parent_task_id: str, **kwargs):
         """Add a task node and its relationship to the task graph.
         
         Args:
@@ -878,12 +878,15 @@ class Context:
         if child_task_id not in self._task_graph:
             self._task_graph[child_task_id] = {}
         child_task_node = self._task_graph[child_task_id]
-        caller_id = self.agent_info.current_agent_id if self.agent_info and hasattr(self.agent_info,
-                                                                                    'current_agent_id') else None
+
+        agent_info = caller_agent_info
+        if not agent_info:
+            agent_info = self.agent_info
+        caller_id = agent_info.current_agent_id if agent_info and hasattr(agent_info, 'current_agent_id') else None
         caller_info = child_task_node.get("caller_info", {})
         caller_info.update({
             "agent_id": caller_id,
-            "agent_step": self.get_agent_step(caller_id, parent_task_id)
+            "agent_step": self.get_agent_step(agent_info, caller_id, parent_task_id)
         })
 
         self._task_graph[child_task_id].update({

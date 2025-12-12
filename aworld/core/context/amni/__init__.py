@@ -5,7 +5,7 @@ import os
 import time
 import traceback
 import uuid
-from typing import Optional, Any, Literal, List, Dict, Tuple
+from typing import Optional, Any, List, Dict, Tuple
 
 from aworld import trace
 from aworld.config import AgentConfig, ContextRuleConfig
@@ -15,7 +15,7 @@ from aworld.events.util import send_message_with_future
 from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
-from aworld.output import Artifact, WorkSpace, StreamingOutputs, MessageOutput
+from aworld.output import Artifact, WorkSpace, StreamingOutputs
 from aworld.output.artifact import ArtifactAttachment
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory, ContextEnvConfig
@@ -645,6 +645,7 @@ class ApplicationContext(AmniContext):
         
         # Record task relationship
         self.add_task_node(
+            caller_agent_info=self.agent_info,
             child_task_id=sub_context.task_id,
             parent_task_id=self.task_id,
             caller_id=self.agent_info.current_agent_id if self.agent_info and hasattr(self.agent_info, 'current_agent_id') else None
@@ -2021,11 +2022,14 @@ class ApplicationContext(AmniContext):
         else:
             return await super().get_task_trajectory(task_id)
 
-    def add_task_node(self, child_task_id: str, parent_task_id: str, **kwargs):
+    def add_task_node(self, caller_agent_info, child_task_id: str, parent_task_id: str, **kwargs):
         """Record the relationship between child task and parent task.
         Delegate to root context.
         """
+        agent_info = caller_agent_info
+        if not agent_info:
+            agent_info = self.agent_info
         if self.root != self:
-            self.root.add_task_node(child_task_id, parent_task_id, **kwargs)
+            self.root.add_task_node(agent_info, child_task_id, parent_task_id, **kwargs)
         else:
-            super().add_task_node(child_task_id, parent_task_id, **kwargs)
+            super().add_task_node(agent_info, child_task_id, parent_task_id, **kwargs)
