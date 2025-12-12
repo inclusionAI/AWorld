@@ -67,7 +67,9 @@ class Task:
     hooks: Dict[str, List[str]] = field(default_factory=dict)
     # task specified context
     context: 'Context' = field(default=None)
+    context_config: Optional['AmniContextConfig'] = None
     is_sub_task: bool = field(default=False)
+    is_background: bool = field(default=False)
     group_id: str = field(default=None)
     # parent task reference
     parent_task: Optional['Task'] = field(default=None, repr=False)

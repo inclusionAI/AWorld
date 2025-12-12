@@ -8,7 +8,7 @@ import uuid
 from typing import Optional, Any, Literal, List, Dict, Tuple
 
 from aworld import trace
-from aworld.config import AgentConfig, ContextRuleConfig
+from aworld.config import AgentConfig, ContextRuleConfig, AgentMemoryConfig
 # lazy import
 from aworld.core.context.base import Context
 from aworld.events.util import send_message_with_future
@@ -275,6 +275,9 @@ class AmniContext(Context):
     def get_agent_context_config(self, namespace: str) -> AgentContextConfig:
         pass
 
+    def get_agent_memory_config(self, namespace: str) -> AgentMemoryConfig:
+        pass
+
     ####################### Context Write #######################
 
     @abc.abstractmethod
@@ -500,6 +503,9 @@ class ApplicationContext(AmniContext):
 
     def get_agent_context_config(self, namespace: str) -> AgentContextConfig:
         return self.get_config().get_agent_context_config(namespace=namespace)
+
+    def get_agent_memory_config(self, namespace: str) -> AgentMemoryConfig:
+        return self.get_config().get_agent_memory_config(namespace=namespace)
 
     @property
     def knowledge_service(self):

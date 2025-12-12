@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, Any, TYPE_CHECKING, List, Literal, Optional
 
 from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
-from aworld.config import ConfigDict
+from aworld.config import ConfigDict, AgentMemoryConfig
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
 from aworld.logs.util import logger
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from aworld.core.agent.swarm import Swarm
     from aworld.events.manager import EventManager
     from aworld.core.agent import BaseAgent
+    from aworld.core.context.amni import AgentContextConfig
 
 
 @dataclass
@@ -720,3 +721,10 @@ class Context:
 
     async def post_init(self):
         pass
+
+    def get_agent_context_config(self, namespace: str) -> 'AgentContextConfig':
+        pass
+
+    def get_agent_memory_config(self, namespace: str) -> 'AgentMemoryConfig':
+        pass
+
