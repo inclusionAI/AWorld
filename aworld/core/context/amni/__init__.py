@@ -1704,7 +1704,7 @@ class ApplicationContext(AmniContext):
             return
 
         if self._task.swarm:
-            await self.build_agents_state(self._task.swarm.topology)
+            await self.build_agents_state(self._task.swarm.ordered_agents)
         elif self._task.agent:
             await self.build_agent_state(self._task.agent)
 

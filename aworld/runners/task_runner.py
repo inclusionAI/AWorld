@@ -118,7 +118,6 @@ class TaskRunner(Runner):
         self.context.task_id = self.task.id
         self.context.trace_id = trace_id
         self.context.session = session
-        await self.context.post_init()
 
         # init tool state by reset(), and ignore them observation
         observation = task.observation
@@ -151,6 +150,7 @@ class TaskRunner(Runner):
 
         self._load_tool_module()
         logger.info(f'{"sub task: " if self.task.is_sub_task else "main task: "}{self.task.id} started...')
+        await self.context.post_init()
 
     def _load_tool_module(self):
         # used to distributed running local tools
