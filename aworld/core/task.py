@@ -103,7 +103,6 @@ class Task:
             "runner_cls": self.runner_cls,
             "hooks": to_serializable(self.hooks),
             "context": to_serializable(self.context),
-            "context_config": to_serializable(self.context_config),
             "is_sub_task": self.is_sub_task,
             "group_id": self.group_id,
             "max_retry_count": self.max_retry_count,
