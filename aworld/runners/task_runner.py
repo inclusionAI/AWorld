@@ -79,20 +79,6 @@ class TaskRunner(Runner):
 
     async def pre_run(self):
         task = self.task
-        # copy context from parent_task(if exists)
-        if task.is_sub_task:
-            task.context = await task.context.build_sub_context(
-                task.input, task.id,
-                agents=task.swarm.agents if task.swarm and task.swarm.agents else None
-            )
-            self.context = task.context
-            self.context.set_task(task)
-        else:
-            self.context = task.context if task.context else await self.build_context(task)
-            self.context.set_task(task)
-        await self.context.post_init()
-
-
         self.swarm = task.swarm
         self.input = task.input
         self.outputs = task.outputs
@@ -117,9 +103,22 @@ class TaskRunner(Runner):
             session = Session(session_id=uuid.uuid4().hex)
         trace_id = uuid.uuid1().hex if trace.get_current_span(
         ) is None else trace.get_current_span().get_trace_id()
+
+        # copy context from parent_task(if exists)
+        if task.is_sub_task:
+            task.context = await task.context.build_sub_context(
+                task.input, task.id,
+                agents=task.swarm.agents if task.swarm and task.swarm.agents else None
+            )
+            self.context = task.context
+            self.context.set_task(task)
+        else:
+            self.context = task.context if task.context else await self.build_context(task)
+            self.context.set_task(task)
         self.context.task_id = self.task.id
         self.context.trace_id = trace_id
         self.context.session = session
+        await self.context.post_init()
 
         # init tool state by reset(), and ignore them observation
         observation = task.observation
@@ -171,10 +170,10 @@ class TaskRunner(Runner):
         from aworld.core.context.amni import ApplicationContext
 
         # Use provided context_config, fallback to Task's context_config, then None (will use default)
-        if not task.conf or task.conf.get("context_config") is None:
+        if not task.context_config:
             context_config = AmniConfigFactory.create()
         else:
-            context_config = task.conf.get("context_config")
+            context_config = task.context_config
 
         # Extract task content from input
         task_content = ""
