@@ -173,7 +173,7 @@ class SkillService(ISkillService):
             agent_type = skill.get('agent_type', 'aworld.agents.llm_agent.Agent')
             if agent_type == "aworld.agents.llm_agent.Agent":
                 from aworld.agents.llm_agent import Agent
-                orchestrator_agent = self._context._swarm.agents.get(namespace)
+                orchestrator_agent = self._context.swarm.agents.get(namespace)
                 agent_config = AgentConfig(
                     llm_config=orchestrator_agent.conf.llm_config,
                     use_vision=False
@@ -186,7 +186,7 @@ class SkillService(ISkillService):
                     mcp_servers=list(skill.get('tool_list').keys()),
                     mcp_config=orchestrator_agent.mcp_config
                 )
-                self._context._swarm.add_agents([skill_agent])
+                self._context.swarm.add_agents([skill_agent])
                 orchestrator_agent.handoffs.append(skill_agent.id())
             else:
                 raise Exception(f"agent type {agent_type} not supported")

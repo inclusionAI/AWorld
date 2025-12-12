@@ -155,7 +155,6 @@ class Context:
             "total_tokens": 0,
         }
         # TODO workspace
-        self._swarm = None
         self._event_manager = None
         # checkpoint repository for saving/restoring context state
         self._checkpoint_repository = kwargs.get('checkpoint_repository', InMemoryCheckpointRepository())
@@ -226,11 +225,7 @@ class Context:
 
     @property
     def swarm(self):
-        return self._swarm
-
-    @swarm.setter
-    def swarm(self, swarm: 'Swarm'):
-        self._swarm = swarm
+        return self._task.swarm
 
     @property
     def event_manager(self):
@@ -350,8 +345,6 @@ class Context:
             new_context._token_usage = copy.copy(self._token_usage)
 
         # Copy other attributes if they exist
-        if hasattr(self, '_swarm'):
-            new_context._swarm = self._swarm  # Shallow copy for complex objects
         if hasattr(self, '_event_manager'):
             new_context._event_manager = self._event_manager  # Shallow copy for complex objects
 
