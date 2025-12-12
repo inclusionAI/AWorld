@@ -82,8 +82,7 @@ BROWSER_SKILLS = {
 
 SKILLS_DIR = Path(__file__).resolve().parents[2] / "skills"
 
-# CUSTOM_SKILLS = collect_skill_docs(SKILLS_DIR)
-CUSTOM_SKILLS = collect_skill_docs("/Users/wuhulala/Documents/agiwork/skills")
+CUSTOM_SKILLS = collect_skill_docs(SKILLS_DIR)
 
 orchestrator_agent_config = AgentConfig(
     llm_config=ModelConfig(
