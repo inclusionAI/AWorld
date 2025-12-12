@@ -11,6 +11,7 @@ from aworld import trace
 from aworld.config import AgentConfig, ContextRuleConfig
 # lazy import
 from aworld.core.context.base import Context
+from aworld.dataset.types import TrajectoryItem
 from aworld.events.util import send_message_with_future
 from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
@@ -2012,7 +2013,7 @@ class ApplicationContext(AmniContext):
         else:
             await super().update_task_trajectory(message, task_id, **kwargs)
 
-    async def get_task_trajectory(self, task_id: str) -> List[Dict[str, Any]]:
+    async def get_task_trajectory(self, task_id: str) -> List[TrajectoryItem]:
         """Get trajectory data for a task.
         Delegate to root context.
         """

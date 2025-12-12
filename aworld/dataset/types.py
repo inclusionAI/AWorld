@@ -39,6 +39,7 @@ class TrajectoryAction(BaseModel):
     """
     content: Optional[str] = Field(default=None, description="Assistant message content")
     tool_calls: List[Dict[str, Any]] = Field(default_factory=list, description="Tool calls")
+    ext_info: Dict[str, Any] = Field(default_factory=dict, description="Extra information")
 
 class TrajectoryReward(BaseModel):
     """

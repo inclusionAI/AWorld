@@ -62,8 +62,24 @@ class TrajectoryStrategy(abc.ABC):
                 or None if generation fails.
         """
         pass
-    
-    async def generate_item(self, source: Any, **kwargs) -> Optional[Dict[str, Any]]:
+
+    @abc.abstractmethod
+    async def build_trajectory_state(self, source: Any, **kwargs) -> Optional[TrajectoryState]:
+        """Build TrajectoryState (SAR) from a source."""
+        pass
+
+    @abc.abstractmethod
+    async def build_trajectory_action(self, source: Any, **kwargs) -> Optional[TrajectoryAction]:
+        """Build TrajectoryAction (A) from a source."""
+        pass
+
+    @abc.abstractmethod
+    async def build_trajectory_reward(self, source: Any, **kwargs) -> Optional[TrajectoryReward]:
+        """Build TrajectoryReward (R) from a source."""
+        pass
+
+    @abc.abstractmethod
+    async def generate_item(self, source: Any, **kwargs) -> Optional[TrajectoryItem]:
         """Generate a single trajectory item from source.
         
         Args:
@@ -108,7 +124,7 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
 
             trajectories: List[Dict[str, Any]] = []
             for msg in messages:
-                item = self.message_to_trajectory_item(
+                item = await self.message_to_trajectory_item(
                     msg,
                     state_manager=event_runner.state_manager,
                     use_tools_in_prompt=getattr(event_runner, "use_tools_in_prompt", True)
@@ -126,7 +142,7 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
             logger.error(f"Failed to generate trajectory for task {task_id}: {str(e)}")
             return None
 
-    async def generate_item(self, source: Any, **kwargs) -> Optional[Dict[str, Any]]:
+    async def generate_item(self, source: Any, **kwargs) -> Optional[TrajectoryItem]:
         """Generate a single trajectory item from source using default SAR logic."""
         from aworld.core.event.base import Message
 
@@ -135,54 +151,23 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
 
         if isinstance(source, Message):
             try:
-                item = self.message_to_trajectory_item(
+                item = await self.message_to_trajectory_item(
                     source,
                     state_manager=state_manager,
                     use_tools_in_prompt=use_tools_in_prompt
                 )
-                return item.to_dict() if item else None
+                return item
+                # return item.to_dict() if item else None
             except Exception as e:
                 logger.warning(f"Failed to convert message to trajectory item: {e}")
                 return None
         return None
 
-    def message_to_trajectory_item(
-        self,
-        message: Any,
-        state_manager: Any = None,
-        use_tools_in_prompt: bool = True
-    ) -> Optional[TrajectoryItem]:
-        """Build TrajectoryItem (SAR) from a message."""
-        from aworld.core.common import ActionModel
-        from aworld.core.event.base import Message
-        from aworld.utils.serialized_util import to_serializable
-
-        if not message:
-            raise ValueError("Message cannot be empty")
-
-        agent_id = message.receiver
-        task_id = message.context.task_id
-        task_name = message.context.get_task().name
-        pre_agent = message.sender
-        task_agent_id = f"{task_id}_{agent_id}"
-
-        if task_agent_id not in self.task_agent_map:
-            self.task_agent_map[task_agent_id] = 0
-        self.task_agent_map[task_agent_id] += 1
-
-        step = self.task_agent_map[task_agent_id]
-        meta = ExpMeta(
-            task_id=task_id,
-            task_name=task_name,
-            agent_id=agent_id,
-            step=step,
-            execute_time=message.timestamp,
-            pre_agent=pre_agent
-        )
-
+    async def build_trajectory_state(self, source: Any, **kwargs) -> Optional[TrajectoryState]:
+        """Build TrajectoryItem (SAR) from a source."""
         # State (S)
-        history_messages = self._get_llm_messages_from_memory(message, use_tools_in_prompt)
-        ctx_obj = getattr(message, "context", None)
+        history_messages = self._get_llm_messages_from_memory(source, kwargs.get("use_tools_in_prompt", False))
+        ctx_obj = getattr(source, "context", None)
         ctx_dict = {}
         if ctx_obj and hasattr(ctx_obj, "context_info"):
             info = ctx_obj.context_info
@@ -194,13 +179,18 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
             elif isinstance(info, dict):
                 ctx_dict = info
         state = TrajectoryState(
-            input=message.payload,
+            input=source.payload,
             messages=history_messages,
             # context=ctx_dict
         )
+        return state
 
-        # Action (A) & Reward (R)
-        node = state_manager._find_node(message.id) if state_manager else None
+    async def build_trajectory_action(self, source: Any, **kwargs) -> Optional[TrajectoryAction]:
+        from aworld.core.common import ActionModel
+        from aworld.core.event.base import Message
+        from aworld.utils.serialized_util import to_serializable
+        state_manager = kwargs.get('state_manager')
+        node = state_manager._find_node(source.id) if state_manager else None
         agent_results = []
         ext_info = {}
         if node and node.results:
@@ -237,12 +227,56 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
                         }
                     })
         action = TrajectoryAction(content=action_content, tool_calls=tool_calls)
+        return action
 
-        reward = TrajectoryReward(
-            tool_outputs=ext_info.get("agent_results", []),
-            status=None,
-            score=None
+    async def build_trajectory_reward(self, source: Any, **kwargs) -> Optional[TrajectoryReward]:
+        """Build TrajectoryItem (SAR) from a source."""
+        return TrajectoryReward(tool_outputs=[], status=None, score=None)
+
+    async def message_to_trajectory_item(
+        self,
+        message: Any,
+        state_manager: Any = None,
+        use_tools_in_prompt: bool = False
+    ) -> Optional[TrajectoryItem]:
+        """Build TrajectoryItem (SAR) from a message."""
+        from aworld.core.common import ActionModel
+        from aworld.core.event.base import Message
+        from aworld.utils.serialized_util import to_serializable
+
+        if not message:
+            raise ValueError("Message cannot be empty")
+
+        agent_id = message.receiver
+        task_id = message.context.task_id
+        task_name = message.context.get_task().name
+        pre_agent = message.sender
+        task_agent_id = f"{task_id}_{agent_id}"
+
+        if task_agent_id not in self.task_agent_map:
+            self.task_agent_map[task_agent_id] = 0
+        self.task_agent_map[task_agent_id] += 1
+
+        step = self.task_agent_map[task_agent_id]
+        meta = ExpMeta(
+            task_id=task_id,
+            task_name=task_name,
+            agent_id=agent_id,
+            step=step,
+            execute_time=message.timestamp,
+            pre_agent=pre_agent
         )
+        # State (S)
+        state = await self.build_trajectory_state(message, state_manager=state_manager,
+                                                  use_tools_in_prompt=use_tools_in_prompt)
+
+        # Action (A)
+        action = await self.build_trajectory_action(message, state_manager=state_manager,
+                                                    use_tools_in_prompt=use_tools_in_prompt)
+
+        # Reward(R)
+        reward = await self.build_trajectory_reward(message, state_manager=state_manager,
+                                                    use_tools_in_prompt=use_tools_in_prompt)
 
         return TrajectoryItem(
             id=str(message.id),

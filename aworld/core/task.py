@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Union, List, Dict, Callable, Optional, Literal
 
+from aworld.dataset.types import TrajectoryItem
 from aworld.utils.serialized_util import to_serializable
 
 from aworld.agents.llm_agent import Agent
@@ -120,7 +121,7 @@ class TaskResponse:
     time_cost: float | None = field(default=0.0)
     success: bool = field(default=False)
     msg: str | None = field(default=None)
-    trajectory: List[Dict[str, Any]] = field(default_factory=list)
+    trajectory: List[TrajectoryItem] = field(default_factory=list)
     # task final status, e.g. success/failed/cancelled
     status: TaskStatus | None = field(default=TaskStatusValue.SUCCESS)
 
