@@ -485,6 +485,7 @@ class ApplicationContext(AmniContext):
         self._parent = parent
         self._config = context_config
         self._working_dir = working_dir
+        self._initialized = False
         
         # Initialize services (lazy initialization)
         self._knowledge_service = None
@@ -804,8 +805,8 @@ class ApplicationContext(AmniContext):
             swarm: Swarm
         Returns:
         """
-        self._swarm = swarm
-        await self.build_agents_state(swarm.topology)
+        pass
+
 
     async def build_agents_state(self, agents):
         """Build Multi Agent's Private State
@@ -824,6 +825,17 @@ class ApplicationContext(AmniContext):
             else:
                 await self.build_agent_state(agent)
 
+    async def init_agent_state(self, agent):
+        """Build Single Agent Private State.
+
+        Args:
+            agent: Agent
+
+        Returns:
+
+        """
+        await self.build_agent_state(agent)
+
     async def build_agent_state(self, agent):
         """Build Single Agent Private State.
 
@@ -835,7 +847,7 @@ class ApplicationContext(AmniContext):
         """
         if not self.has_agent_state(agent.id()):
             logger.info(f"build_agent_state agent#{agent.id()}")
-            application_agent_state = await self._build_agent_state(agent_id=agent.id(), agent_config=agent.conf)
+            application_agent_state = self._build_agent_state(agent_id=agent.id(), agent_config=agent.conf)
 
             # check agent has init_working_state method, if has, call it to set working_state
             if hasattr(agent, 'init_working_state') and callable(getattr(agent, 'init_working_state')):
@@ -853,16 +865,12 @@ class ApplicationContext(AmniContext):
                 logger.debug(f"init_skill_list: {agent.id()}")
                 await self.init_skill_list(namespace=agent.id(), skill_list=agent.conf.skill_configs)
 
-    async def _build_agent_state(self, agent_id: str, agent_config: AgentConfig) -> ApplicationAgentState:
+    def _build_agent_state(self, agent_id: str, agent_config: AgentConfig) -> ApplicationAgentState:
         agent_state = ApplicationAgentState()
 
         # agent config
         agent_state.agent_id = agent_id
         agent_state.agent_config = agent_config
-
-        # restore context
-        agent_state.memory_config = await get_context_manager()._get_memory_config(agent_id)
-        agent_state.context_rule = ContextRuleConfig()
 
         self.set_agent_state(agent_id, agent_state)
         return agent_state
@@ -1315,8 +1323,8 @@ class ApplicationContext(AmniContext):
         Delegates to KnowledgeService.load_context_by_workspace().
         """
         return await self.knowledge_service.load_context_by_workspace(
-                    search_filter=search_filter,
-                                                                                        namespace=namespace,
+            search_filter=search_filter,
+            namespace=namespace,
             top_k=top_k,
             load_content=load_content,
             load_index=load_index,
@@ -1358,23 +1366,18 @@ class ApplicationContext(AmniContext):
         """
         return await self.knowledge_service.update_knowledge(knowledge, namespace)
 
-    ####################### Freedom Space (自由空间) #######################
+    ####################### Freedom Space #######################
     """
     Freedom Space Management Operations
-    
-    自由空间管理操作
-    
+        
     Note: These methods delegate to FreedomSpaceService. For direct service access, use context.freedom_space_service.
-    注意：这些方法委托给自由空间服务。直接使用服务，请使用 context.freedom_space_service。
     """
 
     @property
     def working_dir_env_mounted_path(self) -> str:
         """
         Get environment mounted path for freedom space.
-        
-        获取自由空间在环境中的挂载路径。
-        
+
         Delegates to FreedomSpaceService.get_env_mounted_path().
         """
         return self.freedom_space_service.get_env_mounted_path()
@@ -1382,9 +1385,7 @@ class ApplicationContext(AmniContext):
     def get_working_dir_path(self) -> str:
         """
         Get freedom space base path.
-        
-        获取自由空间基础路径。
-        
+
         Delegates to FreedomSpaceService.get_freedom_space_path().
         """
         return self.freedom_space_service.get_freedom_space_path()
@@ -1392,9 +1393,7 @@ class ApplicationContext(AmniContext):
     def abs_file_path(self, filename: str):
         """
         Get absolute file path in the environment.
-        
-        获取文件在环境中的绝对路径。
-        
+
         Delegates to FreedomSpaceService.get_abs_file_path().
         """
         return self.freedom_space_service.get_abs_file_path(filename)
@@ -1403,9 +1402,7 @@ class ApplicationContext(AmniContext):
                        namespace: str = "default", origin_type: str = None, origin_path : str = None) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Add a file to freedom space.
-        
-        在自由空间中添加文件。
-        
+
         Delegates to FreedomSpaceService.add_file().
         """
         return await self.freedom_space_service.add_file(filename, content, mime_type, namespace, origin_type, origin_path)
@@ -1413,9 +1410,7 @@ class ApplicationContext(AmniContext):
     async def init_working_dir(self) -> DirArtifact:
         """
         Initialize freedom space (working directory).
-        
-        初始化自由空间（工作目录）。
-        
+
         Delegates to FreedomSpaceService.init_freedom_space().
         """
         return await self.freedom_space_service.init_freedom_space()
@@ -1423,9 +1418,7 @@ class ApplicationContext(AmniContext):
     async def load_working_dir(self) -> DirArtifact:
         """
         Load freedom space and reload files.
-        
-        加载自由空间并重新加载文件。
-        
+
         Delegates to FreedomSpaceService.load_freedom_space().
         """
         return await self.freedom_space_service.load_freedom_space()
@@ -1699,3 +1692,14 @@ class ApplicationContext(AmniContext):
     async def update_task_status(self, task_id: str, status: 'TaskStatus'):
         if task_id == self.task_id:
             self._task.task_status = status
+
+    async def post_init(self):
+        if self._initialized:
+            return
+
+        if self._task.swarm:
+            await self.build_agents_state(self._task.swarm.topology)
+        elif self._task.agent:
+            await self.build_agent_state(self._task.agent)
+
+        self._initialized = True
