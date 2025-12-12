@@ -13,6 +13,7 @@ from aworld.config import ConfigDict
 from aworld.config.conf import ToolConfig, TaskRunMode
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation
+from aworld.core.context.amni import AmniConfigFactory
 from aworld.core.context.base import Context
 from aworld.core.context.session import Session
 from aworld.core.tool.base import Tool, AsyncTool
@@ -58,9 +59,6 @@ class TaskRunner(Runner):
         if check_input and not task.input:
             raise ValueError("task no input")
 
-        if not task.is_sub_task:
-            self.context = task.context if task.context else Context()
-            self.context.set_task(task)
         self.task = task
         self.agent_oriented = agent_oriented
         self.daemon_target = daemon_target
@@ -81,14 +79,6 @@ class TaskRunner(Runner):
 
     async def pre_run(self):
         task = self.task
-        # copy context from parent_task(if exists)
-        if task.is_sub_task:
-            task.context = await task.context.build_sub_context(
-                task.input, task.id,
-                agents=task.swarm.agents if task.swarm and task.swarm.agents else None
-            )
-            self.context = task.context
-            self.context.set_task(task)
         self.swarm = task.swarm
         self.input = task.input
         self.outputs = task.outputs
@@ -113,10 +103,21 @@ class TaskRunner(Runner):
             session = Session(session_id=uuid.uuid4().hex)
         trace_id = uuid.uuid1().hex if trace.get_current_span(
         ) is None else trace.get_current_span().get_trace_id()
+
+        # copy context from parent_task(if exists)
+        if task.is_sub_task:
+            task.context = await task.context.build_sub_context(
+                task.input, task.id,
+                agents=task.swarm.agents if task.swarm and task.swarm.agents else None
+            )
+            self.context = task.context
+            self.context.set_task(task)
+        else:
+            self.context = task.context if task.context else await self.build_context(task)
+            self.context.set_task(task)
         self.context.task_id = self.task.id
         self.context.trace_id = trace_id
         self.context.session = session
-        self.context.swarm = self.swarm
 
         # init tool state by reset(), and ignore them observation
         observation = task.observation
@@ -149,6 +150,7 @@ class TaskRunner(Runner):
 
         self._load_tool_module()
         logger.info(f'{"sub task: " if self.task.is_sub_task else "main task: "}{self.task.id} started...')
+        await self.context.post_init()
 
     def _load_tool_module(self):
         # used to distributed running local tools
@@ -161,6 +163,44 @@ class TaskRunner(Runner):
                     load_module_by_path(os.path.basename(val), val)
         except:
             logger.warning(f"{os.environ.get(aworld.tools.LOCAL_TOOLS_ENV_VAR, '')} tools load fail, can't use them!!")
+
+
+    async def build_context(self, task: Task, **kwargs) -> 'ApplicationContext':
+
+        from aworld.core.context.amni import ApplicationContext
+
+        # Use provided context_config, fallback to Task's context_config, then None (will use default)
+        if not task.context_config:
+            context_config = AmniConfigFactory.create()
+        else:
+            context_config = task.context_config
+
+        # Extract task content from input
+        task_content = ""
+        if self.input is not None:
+            if isinstance(self.input, str):
+                task_content = self.input
+            else:
+                task_content = str(self.input)
+
+        # Get parent context if available and is ApplicationContext
+        parent_context = None
+        if task.parent_task and task.parent_task.context:
+            # Check if parent context is ApplicationContext
+            if isinstance(task.parent_task.context, ApplicationContext):
+                parent_context = task.parent_task.context
+
+        # Build ApplicationContext using Task's information
+        context = ApplicationContext.create(
+            user_id=task.user_id or "user",
+            session_id=task.session_id,
+            task_id=task.id,
+            task_content=task_content,
+            context_config=context_config,
+            parent=parent_context,
+            **kwargs
+        )
+        return context
 
     async def post_run(self):
         pass

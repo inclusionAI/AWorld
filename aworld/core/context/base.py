@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, Any, TYPE_CHECKING, List, Literal, Optional
 
 from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
-from aworld.config import ConfigDict
+from aworld.config import ConfigDict, AgentMemoryConfig
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
 from aworld.logs.util import logger
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from aworld.core.agent.swarm import Swarm
     from aworld.events.manager import EventManager
     from aworld.core.agent import BaseAgent
+    from aworld.core.context.amni import AgentContextConfig
 
 
 @dataclass
@@ -136,16 +137,14 @@ class Context:
                  task_id: str = None,
                  trace_id: str = None,
                  session: Session = None,
-                 engine: str = None,
                  **kwargs):
         self._user = user
         self._init(task_id=task_id, trace_id=trace_id,
-                   session=session, engine=engine, **kwargs)
+                   session=session, **kwargs)
 
-    def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, engine: str = None, **kwargs):
+    def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, **kwargs):
         self._task_id = task_id
         self._task = None
-        self._engine = engine
         self._trace_id = trace_id
         self._session: Session = session
         self.context_info = ContextState()
@@ -157,7 +156,6 @@ class Context:
             "total_tokens": 0,
         }
         # TODO workspace
-        self._swarm = None
         self._event_manager = None
         # checkpoint repository for saving/restoring context state
         self._checkpoint_repository = kwargs.get('checkpoint_repository', InMemoryCheckpointRepository())
@@ -194,14 +192,6 @@ class Context:
         return self._token_usage
 
     @property
-    def engine(self):
-        return self._engine
-
-    @engine.setter
-    def engine(self, engine: str):
-        self._engine = engine
-
-    @property
     def user(self):
         return self._user
 
@@ -236,11 +226,7 @@ class Context:
 
     @property
     def swarm(self):
-        return self._swarm
-
-    @swarm.setter
-    def swarm(self, swarm: 'Swarm'):
-        self._swarm = swarm
+        return self._task.swarm
 
     @property
     def event_manager(self):
@@ -314,7 +300,6 @@ class Context:
         # Basic attributes
         new_context._user = self._user
         new_context._task_id = self._task_id
-        new_context._engine = self._engine
         new_context._trace_id = self._trace_id
         new_context._start = self._start
         # Session - shallow copy to maintain reference
@@ -361,8 +346,6 @@ class Context:
             new_context._token_usage = copy.copy(self._token_usage)
 
         # Copy other attributes if they exist
-        if hasattr(self, '_swarm'):
-            new_context._swarm = self._swarm  # Shallow copy for complex objects
         if hasattr(self, '_event_manager'):
             new_context._event_manager = self._event_manager  # Shallow copy for complex objects
 
@@ -654,7 +637,6 @@ class Context:
             'user': self._user,
             'task_id': self._task_id,
             'trace_id': self._trace_id,
-            'engine': self._engine,
 
             # Timestamp for checkpoint creation
             'checkpoint_created_at': datetime.now().isoformat(),
@@ -736,3 +718,13 @@ class Context:
 
     async def update_task_status(self, task_id: str, status: 'TaskStatus'):
         pass
+
+    async def post_init(self):
+        pass
+
+    def get_agent_context_config(self, namespace: str) -> 'AgentContextConfig':
+        pass
+
+    def get_agent_memory_config(self, namespace: str) -> 'AgentMemoryConfig':
+        pass
+

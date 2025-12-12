@@ -16,16 +16,18 @@ class SubTask(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     task_id: str
-    status: Literal['INIT', 'PROCESSING', 'SUCCESS', 'FAILED']
+    status: TaskStatus = Field(default='init', description="Task status")
     input: TaskInput
     result: Optional[TaskOutput] = Field(default=None)
+    task_type: Literal['normal', 'background'] = Field(default='normal', description="Task type: normal or background")
 
     @classmethod
-    def from_task_input(cls, input: TaskInput):
+    def from_task_input(cls, input: TaskInput, task_type: str = 'normal'):
         return cls(
             task_id=input.task_id,
-            status='INIT',
-            input=input
+            status='init',
+            input=input,
+            task_type=task_type
         )
 
     @property
@@ -82,7 +84,7 @@ class TaskWorkingState(WorkingState):
     def get_agent_state(self, agent_id: str) -> Optional[ApplicationAgentState]:
         return self.agent_states.get(agent_id)
         
-    def upsert_subtask_by_input(self, sub_task_input: TaskInput) -> None:
+    def upsert_subtask_by_input(self, sub_task_input: TaskInput, task_type: str = 'normal') -> None:
         """
         Update or insert a subtask into the sub_task_list.
 
@@ -91,15 +93,20 @@ class TaskWorkingState(WorkingState):
 
         Args:
             sub_task_input (TaskInput): The input information of the subtask
+            task_type (str): Task type, 'normal' or 'background'. Defaults to 'normal'.
         """
         has_existed = False
         for i, sub_task in enumerate(self.sub_task_list):
             if sub_task.task_id == sub_task_input.task_id:
                 has_existed = True
-                self.sub_task_list[i] = SubTask.from_task_input(sub_task_input)
+                updated_subtask = SubTask.from_task_input(sub_task_input)
+                updated_subtask.task_type = task_type
+                self.sub_task_list[i] = updated_subtask
                 break
         if not has_existed:
-            self.sub_task_list.append(SubTask.from_task_input(sub_task_input))
+            new_subtask = SubTask.from_task_input(sub_task_input)
+            new_subtask.task_type = task_type
+            self.sub_task_list.append(new_subtask)
 
 
 class BaseTaskContextState(BaseModel):

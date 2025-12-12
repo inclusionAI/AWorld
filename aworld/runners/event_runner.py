@@ -31,7 +31,6 @@ class TaskEventRunner(TaskRunner):
     def __init__(self, task: Task, *args, **kwargs):
         super().__init__(task, *args, **kwargs)
         self._task_response = None
-        self.event_mng = EventManager(self.context, streaming_mode=task.streaming_mode)
         self.hooks = {}
         self.handlers = []
         self.init_messages = []
@@ -64,7 +63,7 @@ class TaskEventRunner(TaskRunner):
     async def pre_run(self):
         logger.debug(f"task {self.task.id} pre run start...")
         await super().pre_run()
-        self.event_mng.context = self.context
+        self.event_mng = EventManager(self.context, streaming_mode=self.task.streaming_mode)
         self.context.event_manager = self.event_mng
 
         if self.swarm and not self.swarm.max_steps:

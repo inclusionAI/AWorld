@@ -16,6 +16,12 @@ from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
 
+# TYPE_CHECKING to avoid circular imports
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from aworld.core.context.amni import ApplicationContext
+    from aworld.core.context.amni.config import AmniContextConfig
+
 
 
 class TaskStatusValue:
@@ -61,6 +67,7 @@ class Task:
     hooks: Dict[str, List[str]] = field(default_factory=dict)
     # task specified context
     context: 'Context' = field(default=None)
+    context_config: Optional['AmniContextConfig'] = None
     is_sub_task: bool = field(default=False)
     group_id: str = field(default=None)
     # parent task reference

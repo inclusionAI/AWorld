@@ -175,7 +175,7 @@ class PromptLogger:
             # Log context tree information
             PromptLogger._log_context_tree(context)
         except Exception as e:
-            prompt_logger.warning(f"❌ Error logging context tree: {str(e)}")
+            prompt_logger.warning(f"❌ Error logging context tree: {str(e)}, traceback is {traceback.format_exc()}")
 
         try:
             if not hasattr(context, "get_config") or context.get_config().debug_mode:
