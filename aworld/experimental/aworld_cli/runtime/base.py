@@ -74,7 +74,8 @@ class BaseAgentRuntime:
             result = await self.cli.run_chat_session(
                 selected_agent.name, 
                 executor.chat, 
-                available_agents=agents
+                available_agents=agents,
+                executor_instance=executor
             )
             
             # Handle session result

@@ -155,7 +155,7 @@ class AWorldCLI:
         """
         return self.select_agent(teams, source_type, source_location)
 
-    async def run_chat_session(self, agent_name: str, executor: Callable[[str], Any], available_agents: List[AgentInfo] = None) -> Union[bool, str]:
+    async def run_chat_session(self, agent_name: str, executor: Callable[[str], Any], available_agents: List[AgentInfo] = None, executor_instance: Any = None) -> Union[bool, str]:
         """
         Run an interactive chat session with an agent.
         
@@ -163,11 +163,49 @@ class AWorldCLI:
             agent_name: Name of the agent to chat with
             executor: Async function that executes chat messages
             available_agents: List of available agents for switching
+            executor_instance: Optional executor instance (for session management)
             
         Returns:
             False if user wants to exit, True if wants to switch (show list), or agent name string to switch to
         """
-        self.console.print(Panel(f"Starting chat session with [bold]{agent_name}[/bold].\nType 'exit' to quit.\nType '/switch [agent_name]' to switch agent.", style="blue"))
+        # Get current session_id if available
+        session_id_info = ""
+        if executor_instance and hasattr(executor_instance, 'session_id'):
+            session_id_info = f"\nCurrent session: [dim]{executor_instance.session_id}[/dim]"
+        
+        # Get agent configuration info (PTC and MCP servers)
+        config_info = ""
+        if available_agents:
+            # Find current agent
+            current_agent = next((a for a in available_agents if a.name == agent_name), None)
+            if current_agent and current_agent.metadata:
+                metadata = current_agent.metadata
+                
+                # Check PTC status
+                ptc_tools = metadata.get("ptc_tools", [])
+                ptc_status = "✅ Enabled" if ptc_tools else "❌ Disabled"
+                ptc_count = len(ptc_tools) if isinstance(ptc_tools, list) else 0
+                ptc_status_text = ptc_status + (f" ({ptc_count} tools)" if ptc_count > 0 else "")
+                ptc_info = f"PTC: [dim]{ptc_status_text}[/dim]"
+                
+                # Get MCP servers list
+                mcp_servers = metadata.get("mcp_servers", [])
+                if isinstance(mcp_servers, list) and mcp_servers:
+                    mcp_list = ", ".join(mcp_servers)
+                    mcp_info = f"MCP Servers: [dim]{mcp_list}[/dim]"
+                else:
+                    mcp_info = f"MCP Servers: [dim]None[/dim]"
+                
+                config_info = f"\n{ptc_info}\n{mcp_info}"
+        
+        help_text = (
+            f"Starting chat session with [bold]{agent_name}[/bold].{session_id_info}{config_info}\n"
+            f"Type 'exit' to quit.\n"
+            f"Type '/switch [agent_name]' to switch agent.\n"
+            f"Type '/new' to create a new session.\n"
+            f"Type '/restore' or '/latest' to restore to the latest session."
+        )
+        self.console.print(Panel(help_text, style="blue"))
         
         # Check if we're in a real terminal (not IDE debugger or redirected input)
         is_terminal = sys.stdin.isatty()
@@ -179,6 +217,9 @@ class AWorldCLI:
         if is_terminal:
             completer = NestedCompleter.from_nested_dict({
                 '/switch': {name: None for name in agent_names},
+                '/new': None,
+                '/restore': None,
+                '/latest': None,
                 '/exit': None,
                 '/quit': None,
                 'exit': None,
@@ -207,13 +248,33 @@ class AWorldCLI:
                 # Handle explicit exit commands
                 if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
                     if is_terminal:
-                        if Confirm.ask("Are you sure you want to exit?"):
-                            return False # Return False to stop the loop (Exit App)
+                        return False
                     else:
                         # In non-terminal, just exit without confirmation
                         return False
                     continue
 
+                # Handle new session command
+                if user_input.lower() in ("/new", "new"):
+                    if executor_instance and hasattr(executor_instance, 'new_session'):
+                        executor_instance.new_session()
+                        # Update session_id_info display
+                        if hasattr(executor_instance, 'session_id'):
+                            self.console.print(f"[dim]Current session: {executor_instance.session_id}[/dim]")
+                    else:
+                        self.console.print("[yellow]⚠️ Session management not available for this executor.[/yellow]")
+                    continue
+                
+                # Handle restore session command
+                if user_input.lower() in ("/restore", "restore", "/latest", "latest"):
+                    if executor_instance and hasattr(executor_instance, 'restore_session'):
+                        restored_id = executor_instance.restore_session()
+                        # Update session_id_info display
+                        self.console.print(f"[dim]Current session: {restored_id}[/dim]")
+                    else:
+                        self.console.print("[yellow]⚠️ Session restore not available for this executor.[/yellow]")
+                    continue
+                
                 # Handle switch command
                 if user_input.lower().startswith(("/switch", "switch")):
                     parts = user_input.split(maxsplit=1)
