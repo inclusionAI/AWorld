@@ -90,6 +90,8 @@ class TaskRunner(Runner):
         else:
             self.context = task.context if task.context else await self.build_context(task)
             self.context.set_task(task)
+        await self.context.post_init()
+
 
         self.swarm = task.swarm
         self.input = task.input
@@ -118,7 +120,6 @@ class TaskRunner(Runner):
         self.context.task_id = self.task.id
         self.context.trace_id = trace_id
         self.context.session = session
-        self.context.swarm = self.swarm
 
         # init tool state by reset(), and ignore them observation
         observation = task.observation
@@ -200,9 +201,6 @@ class TaskRunner(Runner):
             parent=parent_context,
             **kwargs
         )
-
-        await context.post_init()
-
         return context
 
     async def post_run(self):
