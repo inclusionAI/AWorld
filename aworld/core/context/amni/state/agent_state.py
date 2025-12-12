@@ -17,9 +17,6 @@ class BaseAgentState(BaseModel):
 
     agent_id: str = Field(default=str(uuid.uuid4()))
 
-    # context rule
-    context_rule: ContextRuleConfig = Field(default=None)
-
     # cur agent call llm tokens
     context_usage: ContextUsage = Field(default=ContextUsage(), description="ContextUsage")
 
@@ -32,6 +29,3 @@ class ApplicationAgentState(BaseAgentState):
 
     # automatic few short long-term
     experiences: Optional[list[AgentExperience]] = Field(default=None)
-
-    # should be in  context rule
-    memory_config: AgentMemoryConfig = Field(default=None)

@@ -16,6 +16,12 @@ from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
 
+# TYPE_CHECKING to avoid circular imports
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from aworld.core.context.amni import ApplicationContext
+    from aworld.core.context.amni.config import AmniContextConfig
+
 
 
 class TaskStatusValue:
@@ -97,6 +103,7 @@ class Task:
             "runner_cls": self.runner_cls,
             "hooks": to_serializable(self.hooks),
             "context": to_serializable(self.context),
+            "context_config": to_serializable(self.context_config),
             "is_sub_task": self.is_sub_task,
             "group_id": self.group_id,
             "max_retry_count": self.max_retry_count,

@@ -136,16 +136,14 @@ class Context:
                  task_id: str = None,
                  trace_id: str = None,
                  session: Session = None,
-                 engine: str = None,
                  **kwargs):
         self._user = user
         self._init(task_id=task_id, trace_id=trace_id,
-                   session=session, engine=engine, **kwargs)
+                   session=session, **kwargs)
 
-    def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, engine: str = None, **kwargs):
+    def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, **kwargs):
         self._task_id = task_id
         self._task = None
-        self._engine = engine
         self._trace_id = trace_id
         self._session: Session = session
         self.context_info = ContextState()
@@ -192,14 +190,6 @@ class Context:
     @property
     def token_usage(self):
         return self._token_usage
-
-    @property
-    def engine(self):
-        return self._engine
-
-    @engine.setter
-    def engine(self, engine: str):
-        self._engine = engine
 
     @property
     def user(self):
@@ -314,7 +304,6 @@ class Context:
         # Basic attributes
         new_context._user = self._user
         new_context._task_id = self._task_id
-        new_context._engine = self._engine
         new_context._trace_id = self._trace_id
         new_context._start = self._start
         # Session - shallow copy to maintain reference
@@ -654,7 +643,6 @@ class Context:
             'user': self._user,
             'task_id': self._task_id,
             'trace_id': self._trace_id,
-            'engine': self._engine,
 
             # Timestamp for checkpoint creation
             'checkpoint_created_at': datetime.now().isoformat(),
@@ -735,4 +723,7 @@ class Context:
         return TaskStatusValue.SUCCESS
 
     async def update_task_status(self, task_id: str, status: 'TaskStatus'):
+        pass
+
+    async def post_init(self):
         pass
