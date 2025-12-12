@@ -844,7 +844,7 @@ class Context:
             #     else:
             #         self._task.sub_task_trajectories[task_id].append(item)
 
-    async def get_task_trajectory(self, task_id: str) -> List[Dict[str, Any]]:
+    async def get_task_trajectory(self, task_id: str) -> List['TrajectoryItem']:
         """Get trajectory data for a task.
         
         Args:
@@ -856,17 +856,18 @@ class Context:
         # Try to get from storage first
         if self.trajectory_dataset is not None:
             trajectory = await self.trajectory_dataset.get_task_trajectory(task_id)
-            if trajectory:
-                # Update in-memory cache
-                if not self._task.sub_task_trajectories:
-                    self._task.sub_task_trajectories = {}
-                self._task.sub_task_trajectories[task_id] = trajectory
-                return trajectory
-
-        # Fallback to in-memory cache
-        if not self._task.sub_task_trajectories:
-            return []
-        return self._task.sub_task_trajectories.get(task_id, [])
+            return trajectory
+        #     if trajectory:
+        #         # Update in-memory cache
+        #         if not self._task.sub_task_trajectories:
+        #             self._task.sub_task_trajectories = {}
+        #         self._task.sub_task_trajectories[task_id] = trajectory
+        #         return trajectory
+        #
+        # # Fallback to in-memory cache
+        # if not self._task.sub_task_trajectories:
+        #     return []
+        # return self._task.sub_task_trajectories.get(task_id, [])
 
     def add_task_node(self, child_task_id: str, parent_task_id: str, **kwargs):
         """Add a task node and its relationship to the task graph.

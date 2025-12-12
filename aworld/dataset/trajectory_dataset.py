@@ -107,13 +107,18 @@ class TrajectoryDataset(Dataset[Union[DataRow, TrajectoryItem]]):
                                                      use_tools_in_prompt=getattr(self, 'use_tools_in_prompt', True))
             
             if item:
-                item_dict = item.to_dict() if hasattr(item, "to_dict") else item
                 # Save to storage
                 target_task_id = task_id or (message.task_id if hasattr(message, 'task_id') else None)
                 if target_task_id:
-                    await self.save_task_trajectory(target_task_id, [item_dict])
-                
-                return item_dict
+                    await self.save_task_trajectory(target_task_id, [item])
+                return item
+                # item_dict = item.to_dict() if hasattr(item, "to_dict") else item
+                # # Save to storage
+                # target_task_id = task_id or (message.task_id if hasattr(message, 'task_id') else None)
+                # if target_task_id:
+                #     await self.save_task_trajectory(target_task_id, [item_dict])
+                #
+                # return item_dict
         except Exception as e:
             logger.error(f"Failed to append message to trajectory: {e}")
         return None
@@ -419,7 +424,7 @@ class TrajectoryDataset(Dataset[Union[DataRow, TrajectoryItem]]):
                 return []
         return []
 
-    async def save_task_trajectory(self, task_id: str, trajectory_steps: List[Dict[str, Any]]):
+    async def save_task_trajectory(self, task_id: str, trajectory_steps: List[TrajectoryItem]):
         """Save task trajectory data (list of steps) to storage.
 
         Args:
@@ -431,7 +436,7 @@ class TrajectoryDataset(Dataset[Union[DataRow, TrajectoryItem]]):
 
         data_items = []
         for step in trajectory_steps:
-            data_id = step.get("id")
+            data_id = step.id
             kwargs = {
                 "block_id": task_id,
                 "value": step
@@ -446,7 +451,7 @@ class TrajectoryDataset(Dataset[Union[DataRow, TrajectoryItem]]):
             except Exception as e:
                 logger.error(f"Failed to save task trajectory: {str(e)}")
 
-    async def get_task_trajectory(self, task_id: str) -> List[Dict[str, Any]]:
+    async def get_task_trajectory(self, task_id: str) -> List[TrajectoryItem]:
         """Get task trajectory data from storage.
 
         Args:
