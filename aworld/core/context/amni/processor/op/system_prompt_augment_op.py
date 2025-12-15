@@ -290,8 +290,7 @@ class SystemPromptAugmentOp(BaseOp):
             "agent_id": agent_id
         }
 
-        agent_context_config = context.get_agent_context_config(agent_id)
-        agent_memory_config = agent_context_config.to_memory_config() if agent_context_config else None
+        agent_memory_config = context.get_agent_memory_config(agent_id)
 
         if not agent_memory_config:
             agent = AgentFactory.agent_instance(agent_id)

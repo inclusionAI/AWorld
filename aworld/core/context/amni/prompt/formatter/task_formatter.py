@@ -27,7 +27,7 @@ class TaskFormatter:
             return ""
 
         # Filter out tasks with INIT status
-        active_tasks = {sub_task.task_id: sub_task for sub_task in sub_tasks if sub_task.status != 'INIT'}
+        active_tasks = {sub_task.task_id: sub_task for sub_task in sub_tasks if sub_task.status != 'init'}
 
         if not active_tasks:
             return ""

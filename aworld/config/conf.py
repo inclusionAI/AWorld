@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from aworld.dataset.trajectory_strategy import TrajectoryStrategy
-
+    from aworld.core.context.amni import AmniContextConfig
 
 def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
     from aworld.logs.util import logger
@@ -232,7 +232,6 @@ class AgentMemoryConfig(BaseConfig):
 class AgentConfig(BaseConfig):
     llm_config: ModelConfig = ModelConfig()
     memory_config: AgentMemoryConfig = AgentMemoryConfig()
-    context_rule: ContextRuleConfig = ContextRuleConfig()
 
     # default reset init in first
     need_reset: bool = True

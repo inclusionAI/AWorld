@@ -6,11 +6,11 @@ MCP_CONFIG = {
             "command": "npx",
             "args": [
                 "@playwright/mcp@0.0.37",
-                "--no-sandbox",
+                # "--no-sandbox",
                 # "--isolated",
                 "--output-dir=/tmp/playwright",
                 "--timeout-action=10000",
-                "--cdp-endpoint=http://localhost:9222"
+                # "--cdp-endpoint=http://localhost:9222"
             ],
             "env": {
                 "PLAYWRIGHT_TIMEOUT": "120000",
