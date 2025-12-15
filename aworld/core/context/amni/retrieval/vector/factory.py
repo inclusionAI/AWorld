@@ -15,5 +15,8 @@ class VectorDBFactory:
         if vector_db_config.provider == "elasticsearch":
             from .elasticsearch import ElasticsearchVectorDB
             return ElasticsearchVectorDB(vector_db_config.config)
+        if vector_db_config.provider == "qdrant":
+            from .qdrant import QdrantVectorDB
+            return QdrantVectorDB(vector_db_config.config)
         else:
             raise ValueError(f"Vector database {vector_db_config.provider} is not supported")
