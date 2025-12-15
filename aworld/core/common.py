@@ -73,6 +73,11 @@ class ToolActionInfo(BaseModel):
     output_params: Optional[Dict[str, ParamInfo]] = {}
 
 
+class ActionType:
+    AGENT = "agent"
+    FUNCTION = "function"
+
+
 class ActionModel(BaseModel):
     tool_name: Optional[str] = None
     tool_call_id: Optional[str] = None
@@ -82,6 +87,7 @@ class ActionModel(BaseModel):
     action_name: Optional[str] = None
     params: Optional[Dict[str, Any]] = {}
     policy_info: Optional[Any] = None
+    action_type: Optional[str] = ActionType.FUNCTION
 
 
 class TaskItem(BaseModel):
