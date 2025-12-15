@@ -13,7 +13,7 @@ import aworld.trace as trace
 from aworld.config.conf import AgentConfig, TaskConfig, TaskRunMode
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
-from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
+from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem, ActionType
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
@@ -436,6 +436,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         agents = []
         for action in actions:
             if is_agent(action):
+                action.action_type = ActionType.AGENT
                 agents.append(action)
             else:
                 if action.tool_name not in tools:
@@ -622,7 +623,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 policy_result = agent_result.actions
             else:
                 policy_result = await self.execution_tools(agent_result.actions, message)
-        await self.send_agent_response_output(self, llm_response, message.context, kwargs.get("outputs"))
+        # If we already sent a streaming MessageOutput during the LLM call, avoid sending
+        # the aggregated response again (it would duplicate UI content).
+        stream_output_sent = False
+        if message and message.context:
+            stream_output_sent = bool(message.context.context_info.pop("llm_stream_output_sent", False))
+        if not stream_output_sent:
+            await self.send_agent_response_output(self, llm_response, message.context, kwargs.get("outputs"))
         return policy_result
 
     async def execution_tools(self, actions: List[ActionModel], message: Message = None, **kwargs) -> List[ActionModel]:
@@ -750,6 +757,48 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             if stream_mode:
                 llm_response = ModelResponse(
                     id="", model="", content="", tool_calls=[])
+
+                # Build a stream for UI: push each ModelResponse chunk into an asyncio.Queue and expose it
+                # as an AsyncGenerator. This allows incremental rendering while we still aggregate a final
+                # llm_response for downstream tool calling / parsing logic.
+                _STREAM_SENTINEL = object()
+                stream_queue: asyncio.Queue[Any] = asyncio.Queue()
+
+                async def ui_stream():
+                    while True:
+                        item = await stream_queue.get()
+                        if item is _STREAM_SENTINEL:
+                            break
+                        yield item
+
+                # Send the stream output early so consumers can start rendering immediately.
+                try:
+                    stream_output = MessageOutput(
+                        source=ui_stream(),
+                        metadata={
+                            "agent_id": self.id(),
+                            "agent_name": self.name(),
+                            "is_finished": False,
+                            "streaming": True,
+                        }
+                    )
+                    if eventbus is not None and message and message.context:
+                        await send_message(Message(
+                            category=Constants.OUTPUT,
+                            payload=stream_output,
+                            sender=self.id(),
+                            session_id=message.context.session_id if message.context else "",
+                            headers={"context": message.context}
+                        ))
+                        message.context.context_info["llm_stream_output_sent"] = True
+                    else:
+                        # Fallback: direct add to outputs if running without eventbus.
+                        if message and message.context and message.context.outputs:
+                            await message.context.outputs.add_output(stream_output)
+                            message.context.context_info["llm_stream_output_sent"] = True
+                except Exception as e:
+                    logger.warning(f"Failed to send streaming MessageOutput: {e}")
+
                 resp_stream = acall_llm_model_stream(
                     self.llm,
                     messages=messages,
@@ -761,22 +810,36 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     **kwargs
                 )
 
-                async for chunk in resp_stream:
-                    if chunk.content:
-                        llm_response.content += chunk.content
-                    if chunk.tool_calls:
-                        llm_response.tool_calls.extend(chunk.tool_calls)
-                    if chunk.error:
-                        llm_response.error = chunk.error
-                    llm_response.id = chunk.id
-                    llm_response.model = chunk.model
-                    llm_response.usage = nest_dict_counter(
-                        llm_response.usage, chunk.usage, ignore_zero=False)
-                    llm_response.message.update(chunk.message)
-                    await send_message(ChunkMessage(payload=chunk,
-                                                    source_type="llm",
-                                                    session_id=message.context.session_id,
-                                                    headers=message.headers))
+                try:
+                    async for chunk in resp_stream:
+                        # Feed UI stream first (unbounded queue; should not block LLM consumption).
+                        try:
+                            await stream_queue.put(chunk)
+                        except Exception as e:
+                            logger.warning(f"Failed to enqueue LLM chunk for UI stream: {e}")
+
+                        # Aggregate full response for internal logic.
+                        if chunk.content:
+                            llm_response.content += chunk.content
+                        if chunk.tool_calls:
+                            llm_response.tool_calls.extend(chunk.tool_calls)
+                        if chunk.error:
+                            llm_response.error = chunk.error
+                        llm_response.id = chunk.id
+                        llm_response.model = chunk.model
+                        llm_response.usage = nest_dict_counter(
+                            llm_response.usage, chunk.usage, ignore_zero=False)
+                        llm_response.message.update(chunk.message)
+                        await send_message(ChunkMessage(payload=chunk,
+                                                        source_type="llm",
+                                                        session_id=message.context.session_id,
+                                                        headers=message.headers))
+                finally:
+                    # Always close the UI stream.
+                    try:
+                        await stream_queue.put(_STREAM_SENTINEL)
+                    except Exception:
+                        pass
 
             else:
                 llm_response = await acall_llm_model(
