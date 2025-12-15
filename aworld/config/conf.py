@@ -15,7 +15,6 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from aworld.dataset.trajectory_strategy import TrajectoryStrategy
-    from aworld.core.context.amni import AmniContextConfig
 
 def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
     from aworld.logs.util import logger
