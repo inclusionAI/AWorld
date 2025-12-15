@@ -180,6 +180,18 @@ class IKnowledgeService(abc.ABC):
             Formatted actions information string
         """
         pass
+    
+    @abc.abstractmethod
+    async def add_task_output(self, output_artifact: Artifact, namespace: str = "default", index: bool = True) -> None:
+        """
+        Add a task output artifact to task state and workspace.
+        
+        Args:
+            output_artifact: The artifact to add as task output
+            namespace: Namespace for storage
+            index: Whether to build index for the artifact
+        """
+        pass
 
 
 class KnowledgeService(IKnowledgeService):
@@ -257,7 +269,8 @@ class KnowledgeService(IKnowledgeService):
     
     async def get_knowledge_by_id(self, knowledge_id: str, namespace: str = "default") -> Optional[Artifact]:
         """Get a knowledge artifact by ID."""
-        return self._context._get_knowledge(knowledge_id)
+        workspace = await self._context._ensure_workspace()
+        return workspace.get_artifact(knowledge_id)
     
     async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Chunk]:
         """Get a specific chunk from a knowledge artifact."""
@@ -617,4 +630,13 @@ class KnowledgeService(IKnowledgeService):
         actions_info += f"you can use get_knowledge(knowledge_id_xxx) to got detail content\n"
         actions_info += f"</tips>\n"
         return actions_info
+    
+    async def add_task_output(self, output_artifact: Artifact, namespace: str = "default", index: bool = True) -> None:
+        """Add a task output artifact to task state and workspace."""
+        # Add to task output file index
+        self._context.task_state.task_output.add_file(output_artifact.artifact_id, output_artifact.summary)
+        
+        # Add to workspace if initialized
+        if self._context._workspace:
+            await self._context._workspace.add_artifact(output_artifact, index=index)
 
