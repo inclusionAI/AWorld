@@ -27,6 +27,7 @@ def create_sandbox(
     mcp_config: Optional[Any] = None,
     black_tool_actions: Optional[Dict[str, List[str]]] = None,
     skill_configs: Optional[Any] = None,
+    custom_env_tools: Optional[Any] = None,
     **kwargs
 ) -> Sandbox:
     """
@@ -41,6 +42,7 @@ def create_sandbox(
         mcp_config: Configuration for MCP servers.
         black_tool_actions: Black list of tool actions.
         skill_configs: Skill configurations.
+        custom_env_tools: Custom environment tools. Optional parameter.
         **kwargs: Additional parameters for specific sandbox types.
         
     Returns:
@@ -60,6 +62,7 @@ def create_sandbox(
             mcp_config=mcp_config,
             black_tool_actions=black_tool_actions,
             skill_configs=skill_configs,
+            custom_env_tools=custom_env_tools,
             **kwargs
         )
     elif env_type == SandboxEnvType.K8S:
@@ -71,6 +74,7 @@ def create_sandbox(
             mcp_config=mcp_config,
             black_tool_actions=black_tool_actions,
             skill_configs=skill_configs,
+            custom_env_tools=custom_env_tools,
             **kwargs
         )
     elif env_type == SandboxEnvType.SUPERCOMPUTER:
@@ -82,6 +86,7 @@ def create_sandbox(
             mcp_config=mcp_config,
             black_tool_actions=black_tool_actions,
             skill_configs=skill_configs,
+            custom_env_tools=custom_env_tools,
             **kwargs
         )
     else:
