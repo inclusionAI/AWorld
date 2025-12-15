@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from aworld.dataset.trajectory_strategy import TrajectoryStrategy
-
+    from aworld.core.storage.base import Storage
 
 def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
     from aworld.logs.util import logger
@@ -289,6 +289,7 @@ class TaskConfig(BaseConfig):
     task_name: str | None = None
     max_steps: int = 100
     trajectory_strategy: Optional[Type['TrajectoryStrategy']] = None
+    trajectory_storage: Optional[Type['Storage']] = None
     stream: bool = False
     resp_carry_context: bool = True
     resp_carry_raw_llm_resp: bool = False
