@@ -63,6 +63,11 @@ def get_agent_desc() -> Dict[str, dict]:
             "type": "str",
             "required": False
         }
+        ability_dict["params"]["background"] = {
+            "desc": "A boolean flag indicating whether the task should run in the background. When set to True, the task executes asynchronously without blocking. Defaults to False.",
+            "type": "str",
+            "required": False
+        }
         abilities.append(ability_dict)
         agent_val_dict["abilities"] = abilities
     return descs
