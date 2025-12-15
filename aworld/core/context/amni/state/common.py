@@ -1,7 +1,7 @@
 import uuid
 from typing import Dict, Any, Optional, List, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from aworld.config import ConfigDict
 from aworld.memory.models import Fact, MemoryMessage, MemorySummary, UserProfile
