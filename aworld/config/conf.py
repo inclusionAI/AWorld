@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, T
 import yaml
 from pydantic import BaseModel, Field
 
-
 if TYPE_CHECKING:
     from aworld.dataset.trajectory_strategy import TrajectoryStrategy
     from aworld.core.context.trajectory_storage import TrajectoryStorage

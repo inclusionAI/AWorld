@@ -1,10 +1,11 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 from abc import abstractmethod
-from typing import List, Dict, Any, Union
+from typing import List, Union, Optional, Type
 
 from aworld.core.storage.base import Storage, DataItem
 from aworld.core.storage.inmemory_store import InmemoryStorage
+from aworld.logs.util import logger
 
 
 class TrajectoryStorage(Storage[DataItem]):
@@ -48,4 +49,45 @@ class InMemoryTrajectoryStorage(InmemoryStorage):
         Get trajectory data from memory.
         """
         return await super().get_data_items(block_id)
+
+
+def get_storage_instance(storage: Optional[Union[Type[TrajectoryStorage], TrajectoryStorage, str]]) -> TrajectoryStorage:
+    """
+    Get a TrajectoryStorage instance from various input types.
+    
+    Args:
+        storage: Can be a class, instance, string (module path), or None
+        
+    Returns:
+        TrajectoryStorage instance
+    """
+    if storage is None:
+        return InMemoryTrajectoryStorage()
+    
+    # Already an instance
+    if isinstance(storage, TrajectoryStorage):
+        return storage
+    
+    # String path to class
+    if isinstance(storage, str):
+        from aworld.utils.common import new_instance
+        try:
+            return new_instance(storage)
+        except Exception as e:
+            logger.warning(f"Failed to instantiate storage from string {storage}: {e}, using default")
+            return InMemoryTrajectoryStorage()
+    
+    # Class type
+    if isinstance(storage, type):
+        try:
+            if issubclass(storage, TrajectoryStorage):
+                return storage()
+        except (TypeError, ValueError):
+            pass
+        logger.warning(f"Storage class {storage} is not a valid TrajectoryStorage subclass, using default")
+        return InMemoryTrajectoryStorage()
+    
+    # Unknown type
+    logger.warning(f"Storage has unexpected type {type(storage)}, using default")
+    return InMemoryTrajectoryStorage()
 

@@ -7,7 +7,6 @@ from aworld.core.event.base import Message
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PostLLMCallHook, PreLLMCallHook
 from aworld.utils.common import convert_to_snake
-from aworld.utils.serialized_util import to_serializable
 
 
 @HookFactory.register(name="PreLLMCallContextProcessHook",
