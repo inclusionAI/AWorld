@@ -8,6 +8,7 @@ from aworld.utils.serialized_util import to_serializable
 
 
 class ExpMeta(BaseModel):
+    session_id: str
     task_id: str
     task_name: Optional[str] = None
     agent_id: Optional[str] = None
@@ -17,6 +18,7 @@ class ExpMeta(BaseModel):
 
     def to_dict(self):
         return {
+            "session_id": self.session_id,
             "task_id": self.task_id,
             "task_name": self.task_name,
             "agent_id": self.agent_id,

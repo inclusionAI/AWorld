@@ -248,6 +248,7 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
             raise ValueError("Message cannot be empty")
 
         agent_id = message.receiver
+        session_id = message.context.session_id
         task_id = message.context.task_id
         task_name = message.context.get_task().name
         pre_agent = message.sender
@@ -259,6 +260,7 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
 
         step = self.task_agent_map[task_agent_id]
         meta = ExpMeta(
+            session_id=session_id,
             task_id=task_id,
             task_name=task_name,
             agent_id=agent_id,
