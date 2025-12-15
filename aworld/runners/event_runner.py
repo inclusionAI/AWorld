@@ -12,7 +12,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.agent.base import BaseAgent, is_agent_by_name
 from aworld.core.common import TaskItem, ActionModel
 from aworld.core.context.base import Context
-from aworld.core.context.trajectory_storage import InMemoryTrajectoryStorage
+from aworld.core.context.trajectory_storage import InMemoryTrajectoryStorage, get_storage_instance
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse, TaskStatusValue
@@ -71,10 +71,13 @@ class TaskEventRunner(TaskRunner):
         self.context.event_manager = self.event_mng
 
         if self.context.trajectory_dataset is None:
+            trajectory_storage = self.conf.get('trajectory_storage', None)
+            storage_instance = get_storage_instance(trajectory_storage)
+            
             traj_dataset = TrajectoryDataset(
                 name=f"{self.task.id}_trajectory_dataset",
                 state_manager=self.state_manager,
-                storage=self.conf.get('trajectory_storage', InMemoryTrajectoryStorage()),
+                storage=storage_instance,
                 enable_storage=False,
                 data=[],
                 strategy=self.conf.get('trajectory_strategy', None)
