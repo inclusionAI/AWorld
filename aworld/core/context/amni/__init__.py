@@ -1435,10 +1435,12 @@ class ApplicationContext(AmniContext):
     #####################################################################
 
     async def add_task_output(self, output_artifact: Artifact, namespace: str = "default", index=True) -> None:
-        self.task_state.task_output.add_file(output_artifact.artifact_id, output_artifact.summary)
-        # Workspace is optional, only add if initialized
-        if self._workspace:
-            await self._workspace.add_artifact(output_artifact, index=index)
+        """
+        Add a task output artifact to task state and workspace.
+        
+        Delegates to KnowledgeService.add_task_output().
+        """
+        return await self.knowledge_service.add_task_output(output_artifact, namespace, index)
 
 
     ################################ Memory Management #####################################
@@ -1552,13 +1554,6 @@ class ApplicationContext(AmniContext):
         Delegates to KnowledgeService.get_knowledge_by_id().
         """
         return await self.knowledge_service.get_knowledge_by_id(knowledge_id, namespace)
-
-    def _get_knowledge(self, knowledge_id: str) -> Optional[Artifact]:
-        """Get knowledge artifact. Workspace must be initialized before calling this method."""
-        if self._workspace is None:
-            raise RuntimeError("Workspace not initialized. Call await context.init_workspace() first, "
-                             "or use async methods that automatically initialize workspace.")
-        return self._workspace.get_artifact(knowledge_id)
 
     async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Chunk]:
         """
