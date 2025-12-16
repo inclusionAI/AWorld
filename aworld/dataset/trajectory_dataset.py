@@ -426,22 +426,41 @@ class TrajectoryDataset(Dataset[Union[DataRow, TrajectoryItem]]):
                 return []
         return []
 
-    async def save_task_trajectory(self, task_id: str, trajectory_steps: List[TrajectoryItem]):
+    async def save_task_trajectory(self, task_id: str, trajectory_steps: Union[List[TrajectoryItem], List[Dict[str, Any]]]):
         """Save task trajectory data (list of steps) to storage.
 
         Args:
             task_id: The task id.
-            trajectory_steps: The list of trajectory steps.
+            trajectory_steps: The list of trajectory steps, which can be either List[TrajectoryItem] 
+                             or List[Dict[str, Any]] (e.g., from TaskResponse.trajectory which is to_dict() result).
         """
         if not self.storage:
             return
 
         data_items = []
         for step in trajectory_steps:
-            data_id = step.id
+            # Handle both TrajectoryItem objects and dictionaries
+            if isinstance(step, dict):
+                # Try to convert dict to TrajectoryItem, fallback to dict if conversion fails
+                try:
+                    step_obj = TrajectoryItem.model_validate(step)
+                    data_id = step_obj.id
+                    value = step_obj
+                except Exception as e:
+                    # If conversion fails, use dict directly and extract id from dict
+                    logger.debug(f"Failed to convert dict to TrajectoryItem, using dict directly: {e}")
+                    data_id = step.get("id")
+                    value = step
+            elif isinstance(step, TrajectoryItem):
+                data_id = step.id
+                value = step
+            else:
+                logger.warning(f"Unexpected trajectory step type: {type(step)}, skipping")
+                continue
+            
             kwargs = {
                 "block_id": task_id,
-                "value": step
+                "value": value
             }
             if data_id:
                 kwargs["id"] = data_id

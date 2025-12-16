@@ -418,9 +418,11 @@ class TaskEventRunner(TaskRunner):
             # self._task_response.trajectory = self.trajectory_dataset.data
             
             traj = await self.context.get_task_trajectory(self.task.id)
-            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {json.dumps(traj, ensure_ascii=False)}")
+            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {traj}")
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
-            self._task_response.trajectory = traj
+            if traj:
+                self._task_response.trajectory = [step.to_dict() for step in traj]
+                logger.debug(f"{self.task.id}|{self.task.is_sub_task}#_task_response.trajectory: {json.dumps(self._task_response.trajectory, ensure_ascii=False)}")
 
             # self._task_response.trajectory = list(self.context.trajectories.values())
             # logger.warn(f"new trajectory: {json.dumps(self.trajectory_dataset.data, ensure_ascii=False)}")
