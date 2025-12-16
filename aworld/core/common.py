@@ -3,7 +3,7 @@
 import enum
 
 from pydantic import BaseModel
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, Optional, Union, List, Literal
 from enum import Enum
 
 from aworld.config import ConfigDict
@@ -82,6 +82,7 @@ class ActionModel(BaseModel):
     action_name: Optional[str] = None
     params: Optional[Dict[str, Any]] = {}
     policy_info: Optional[Any] = None
+    action_type: Literal["normal", "background"] = 'normal'
 
 
 class TaskItem(BaseModel):

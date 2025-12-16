@@ -106,7 +106,6 @@ async def exec_agent(question: Any,
     async def _exec_agent(task: Task):
         return await execute_runner(runners, run_conf=run_conf)
 
-    asyncio.create_task
     res = await execute_runner(runners, run_conf=run_conf)
     resp: TaskResponse = res.get(task.id)
     return resp
