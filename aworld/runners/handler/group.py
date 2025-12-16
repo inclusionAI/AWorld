@@ -162,7 +162,7 @@ class DefaultGroupHandler(GroupHandler):
                 if not group_sender_node_id:
                     group_sender_node_id = node.metadata.get('group_sender_node_id')
                 node_results = []
-                sub_task_trajectories = {}
+                sub_task_id = None
                 for handle_res in handle_res_list:
                     res_msg = handle_res.result
                     res_status = handle_res.status
@@ -193,7 +193,6 @@ class DefaultGroupHandler(GroupHandler):
                             self._merge_context(agent_context, res_msg.context)
                     if res_msg.headers and res_msg.headers.get('sub_task_id'):
                         sub_task_id = res_msg.headers.get('sub_task_id')
-                        sub_task_trajectories[sub_task_id] = await agent_context.get_task_trajectory(sub_task_id)
 
                 if node_results:
                     act_res = ActionResult(
@@ -201,7 +200,7 @@ class DefaultGroupHandler(GroupHandler):
                         tool_call_id=tool_call_id or "",
                         tool_name=node.metadata.get('root_agent_id'),
                         metadata={
-                            "sub_task_trajectory": sub_task_trajectories
+                            "sub_task_id": sub_task_id
                         }
                     )
                     action_results.append(act_res)

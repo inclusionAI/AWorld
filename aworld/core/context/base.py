@@ -807,10 +807,6 @@ class Context:
             task_id: The task id.
             task_trajectory: The list of trajectory steps.
         """
-        if not self._task.sub_task_trajectories:
-            self._task.sub_task_trajectories = {}
-        self._task.sub_task_trajectories[task_id] = task_trajectory
-        
         if self.trajectory_dataset is not None:
             await self.trajectory_dataset.save_task_trajectory(task_id, task_trajectory)
 
@@ -830,20 +826,6 @@ class Context:
         if self.trajectory_dataset is not None:
             item = await self.trajectory_dataset.append_trajectory(message, task_id=task_id)
 
-            # # Update local cache if successful
-            # if item:
-            #     if not self._task.sub_task_trajectories:
-            #         self._task.sub_task_trajectories = {}
-            #
-            #     if task_id not in self._task.sub_task_trajectories:
-            #         # If not in cache, fetch full trajectory first to be safe, or just start new list
-            #         # To be consistent with get_task_trajectory behavior:
-            #         current = self._task.sub_task_trajectories.get(task_id, [])
-            #         current.append(item)
-            #         self._task.sub_task_trajectories[task_id] = current
-            #     else:
-            #         self._task.sub_task_trajectories[task_id].append(item)
-
     async def get_task_trajectory(self, task_id: str) -> List['TrajectoryItem']:
         """Get trajectory data for a task.
         
@@ -857,17 +839,6 @@ class Context:
         if self.trajectory_dataset is not None:
             trajectory = await self.trajectory_dataset.get_task_trajectory(task_id)
             return trajectory
-        #     if trajectory:
-        #         # Update in-memory cache
-        #         if not self._task.sub_task_trajectories:
-        #             self._task.sub_task_trajectories = {}
-        #         self._task.sub_task_trajectories[task_id] = trajectory
-        #         return trajectory
-        #
-        # # Fallback to in-memory cache
-        # if not self._task.sub_task_trajectories:
-        #     return []
-        # return self._task.sub_task_trajectories.get(task_id, [])
 
     def add_task_node(self, caller_agent_info: dict, child_task_id: str, parent_task_id: str, **kwargs):
         """Add a task node and its relationship to the task graph.
