@@ -266,11 +266,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _build_memory_filters(self, context: Context, additional_filters: Dict[str, Any] = None) -> Dict[str, Any]:
         filters = {"agent_id": self.id()}
 
-        # Decide which filter to add based on history_scope
-        agent_memory_config = self.memory_config
-        if self._is_amni_context(context):
-            agent_context_config = context.get_config().get_agent_context_config(self.id())
-            agent_memory_config = agent_context_config.to_memory_config()
+        agent_memory_config = context.get_agent_memory_config(self.id())
 
         query_scope = agent_memory_config.history_scope if agent_memory_config and agent_memory_config.history_scope else "task"
         task = context.get_task()

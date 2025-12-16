@@ -106,6 +106,10 @@ async def exec_agent(question: Any,
     if sub_task and kwargs.get("tool_call_id"):
         context.add_task_node(context.agent_info, task.id, context.task_id, tool_call_id=kwargs.get("tool_call_id"))
     runners = await choose_runners([task])
+    async def _exec_agent(task: Task):
+        return await execute_runner(runners, run_conf=run_conf)
+
+    asyncio.create_task
     res = await execute_runner(runners, run_conf=run_conf)
     resp: TaskResponse = res.get(task.id)
     return resp

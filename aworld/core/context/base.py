@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, Any, TYPE_CHECKING, List, Literal, Optional
 
 from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
-from aworld.config import ConfigDict
+from aworld.config import ConfigDict, AgentMemoryConfig
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
 from aworld.core.context.trajectory_storage import InMemoryTrajectoryStorage
@@ -19,6 +19,8 @@ if TYPE_CHECKING:
     from aworld.core.task import Task, TaskResponse, TaskStatus, TaskStatusValue
     from aworld.core.agent.swarm import Swarm
     from aworld.events.manager import EventManager
+    from aworld.core.agent import BaseAgent
+    from aworld.core.context.amni import AgentContextConfig
     from aworld.dataset.trajectory_dataset import TrajectoryDataset
 
 
@@ -137,16 +139,14 @@ class Context:
                  task_id: str = None,
                  trace_id: str = None,
                  session: Session = None,
-                 engine: str = None,
                  **kwargs):
         self._user = user
         self._init(task_id=task_id, trace_id=trace_id,
-                   session=session, engine=engine, **kwargs)
+                   session=session, **kwargs)
 
-    def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, engine: str = None, **kwargs):
+    def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, **kwargs):
         self._task_id = task_id
         self._task = None
-        self._engine = engine
         self._trace_id = trace_id
         self._session: Session = session
         self.context_info = ContextState()
@@ -158,32 +158,15 @@ class Context:
             "total_tokens": 0,
         }
         # TODO workspace
-        self._swarm = None
         self._event_manager = None
         # checkpoint repository for saving/restoring context state
         self._checkpoint_repository = kwargs.get('checkpoint_repository', InMemoryCheckpointRepository())
         self._start = time.time()
         # agent_id -> token_id trajectory
         self._agent_token_id_traj: Dict[str, List[AgentTokenIdTrajectory]] = {}
-        
+
         self._task_graph: Dict[str, Dict[str, Any]] = {}
         self.trajectory_dataset = None
-
-        # self.trajectory_dataset = kwargs.get('trajectory_dataset')
-        # storage = kwargs.get('trajectory_storage', InMemoryTrajectoryStorage())
-        #
-        # if self.trajectory_dataset is None:
-        #     from aworld.dataset.trajectory_dataset import TrajectoryDataset
-        #     from aworld.runners.state_manager import EventRuntimeStateManager
-        #
-        #     self.trajectory_dataset = TrajectoryDataset(
-        #         name=f"ctx_traj_{self._task_id}" if self._task_id else "default_traj",
-        #         data=[],
-        #         storage=storage,
-        #         enable_storage=True,
-        #         state_manager=EventRuntimeStateManager.instance(),
-        #         strategy=kwargs.get('trajectory_strategy')
-        #     )
 
     @property
     def start_time(self) -> float:
@@ -197,10 +180,6 @@ class Context:
 
     def set_task(self, task: 'Task'):
         self._task = task
-        # if task and task.conf:
-        #      strategy_conf = task.conf.get("trajectory_strategy")
-        #      if strategy_conf and self.trajectory_dataset:
-        #          self.trajectory_dataset.set_strategy(strategy_conf)
 
     def get_task(self) -> 'Task':
         return self._task
@@ -216,14 +195,6 @@ class Context:
     @property
     def token_usage(self):
         return self._token_usage
-
-    @property
-    def engine(self):
-        return self._engine
-
-    @engine.setter
-    def engine(self, engine: str):
-        self._engine = engine
 
     @property
     def user(self):
@@ -260,11 +231,7 @@ class Context:
 
     @property
     def swarm(self):
-        return self._swarm
-
-    @swarm.setter
-    def swarm(self, swarm: 'Swarm'):
-        self._swarm = swarm
+        return self._task.swarm
 
     @property
     def event_manager(self):
@@ -352,7 +319,6 @@ class Context:
         # Basic attributes
         new_context._user = self._user
         new_context._task_id = self._task_id
-        new_context._engine = self._engine
         new_context._trace_id = self._trace_id
         new_context._start = self._start
         # Session - shallow copy to maintain reference
@@ -402,8 +368,6 @@ class Context:
             new_context._token_usage = copy.copy(self._token_usage)
 
         # Copy other attributes if they exist
-        if hasattr(self, '_swarm'):
-            new_context._swarm = self._swarm  # Shallow copy for complex objects
         if hasattr(self, '_event_manager'):
             new_context._event_manager = self._event_manager  # Shallow copy for complex objects
 
@@ -713,7 +677,6 @@ class Context:
             'user': self._user,
             'task_id': self._task_id,
             'trace_id': self._trace_id,
-            'engine': self._engine,
 
             # Timestamp for checkpoint creation
             'checkpoint_created_at': datetime.now().isoformat(),
@@ -796,13 +759,24 @@ class Context:
     async def update_task_status(self, task_id: str, status: 'TaskStatus'):
         pass
 
+    async def post_init(self):
+        pass
+
+    def get_agent_context_config(self, namespace: str) -> 'AgentContextConfig':
+        pass
+
+    def get_agent_memory_config(self, namespace: str) -> 'AgentMemoryConfig':
+        pass
+
+
+
     """
         Sub Task Trajectory Support
     """
 
     async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]]):
         """Add trajectory data for a task.
-        
+
         Args:
             task_id: The task id.
             task_trajectory: The list of trajectory steps.
@@ -814,7 +788,7 @@ class Context:
     async def update_task_trajectory(self, message: Any, task_id: str = None, **kwargs):
         """
         Generate trajectory item from message (or other source) and append to dataset.
-        
+
         Args:
             message: Source message or data
             task_id: Optional task id
@@ -828,10 +802,10 @@ class Context:
 
     async def get_task_trajectory(self, task_id: str) -> List['TrajectoryItem']:
         """Get trajectory data for a task.
-        
+
         Args:
             task_id: The task id.
-            
+
         Returns:
             List[Dict[str, Any]]: The list of trajectory steps.
         """
@@ -842,7 +816,7 @@ class Context:
 
     def add_task_node(self, caller_agent_info: dict, child_task_id: str, parent_task_id: str, **kwargs):
         """Add a task node and its relationship to the task graph.
-        
+
         Args:
             child_task_id: Child task id.
             parent_task_id: Parent task id.
@@ -870,7 +844,7 @@ class Context:
 
     def get_task_graph(self) -> Dict[str, Any]:
         """Get the task execution graph structure.
-        
+
         Returns:
             Dict containing nodes and edges representing the task execution flow.
             Format:
@@ -881,17 +855,17 @@ class Context:
         """
         nodes = []
         edges = []
-        
+
         # Collect all unique task IDs
         task_ids = set(self._task_graph.keys())
         for child_data in self._task_graph.values():
             if "parent_task" in child_data and child_data["parent_task"] is not None:
                 task_ids.add(child_data["parent_task"])
-                
+
         # Build nodes
         for tid in task_ids:
             nodes.append({"id": tid})
-            
+
         # Build edges
         for child_id, data in self._task_graph.items():
             parent_id = data.get("parent_task")
@@ -901,7 +875,7 @@ class Context:
                     "target": child_id,
                     "metadata": data
                 })
-                
+
         return {
             "nodes": nodes,
             "edges": edges

@@ -231,7 +231,6 @@ class AgentMemoryConfig(BaseConfig):
 class AgentConfig(BaseConfig):
     llm_config: ModelConfig = ModelConfig()
     memory_config: AgentMemoryConfig = AgentMemoryConfig()
-    context_rule: ContextRuleConfig = ContextRuleConfig()
 
     # default reset init in first
     need_reset: bool = True
