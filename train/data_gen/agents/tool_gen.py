@@ -2,19 +2,18 @@
 # Copyright (c) 2025 inclusionAI.
 import json
 import random
-import traceback
 from typing import Dict, Any, List
 
-from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message
 from aworld.core.tool_call_data_generation_framework import GeneratedTool, ToolSpec
 from aworld.logs.util import logger
 from aworld.utils.common import new_instance
+from train.data_gen.agents.onetime_use_agent import OnetimeUseAgent
 from train.data_gen.schema import TreeNode
 
 
-class ToolModelGeneratorAgent(Agent):
+class ToolModelGeneratorAgent(OnetimeUseAgent):
     """Generate independent and unrelated tools."""
 
     def __init__(self, category: str = None, rule_gen_cls: str = None, **kwargs):
@@ -69,25 +68,16 @@ Please return the complete JSON format tool definition.
                            info: Dict[str, Any] = {},
                            message: Message = None,
                            **kwargs) -> List[ActionModel]:
-        self._finished = False
-        messages = await self.build_llm_input(observation, info, message)
-        try:
-            llm_response = await self.invoke_model(messages, message=message, **kwargs)
-        except Exception as e:
-            logger.warn(traceback.format_exc())
-            raise e
-        agent_result = await self.model_output_parser.parse(llm_response,
-                                                            agent_id=self.id(),
-                                                            use_tools_in_prompt=self.use_tools_in_prompt)
+        actions = await super().async_policy(observation, info, message, **kwargs)
 
-        if agent_result.actions:
+        if actions:
             # if it has policy info, parse and use the first one
-            if agent_result.actions[0].policy_info:
-                agent_result.actions[0].policy_info = self._parse(agent_result.actions[0].policy_info)
-                agent_result.actions = [agent_result.actions[0]]
+            if actions[0].policy_info:
+                actions[0].policy_info = self._parse(actions[0].policy_info)
+                actions = [actions[0]]
             # wait tool result...
 
-            resp = agent_result.actions
+            resp = actions
         elif self.rule_gen_cls:
             # use rule generator
             agent = new_instance(self.rule_gen_cls, category=self.category)
@@ -96,10 +86,9 @@ Please return the complete JSON format tool definition.
             resp = []
             logger.warning(f"{self.id()} no action to the next node.")
 
-        self._finished = True
         return resp
 
-    async def _parse(self, info: str):
+    async def _parse(self, info: str) -> GeneratedTool:
         info_json = json.loads(info)
         spec = ToolSpec(**info_json)
 
@@ -128,28 +117,18 @@ Please return the complete JSON format tool definition.
         self.category = category
 
         capabilities = [child.name for child in tool_node.children.values()]
-
-        messages = [
-            {
-                "role": "system",
-                "content": self.system_prompt
-            },
-            {
-                "role": "user",
-                "content": """Please based on the following information:
+        observation.content = """Please based on the following information:
 Category: {category}
 Capability list:
 {capability_list}
 
 Sub capability:
 {sub_capability}""".format(
-                    category=category,
-                    capability_list=capabilities,
-                    sub_capability=self._sub(tool_node)
-                )
-            }
-        ]
-        return messages
+            category=category,
+            capability_list=capabilities,
+            sub_capability=self._sub(tool_node)
+        )
+        return await super().build_llm_input(observation, info, message, **kwargs)
 
     def _sub(self, capability: TreeNode) -> str:
         """Format tool sub capability information for LLM prompt"""

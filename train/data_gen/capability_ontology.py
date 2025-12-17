@@ -7,31 +7,39 @@ from typing import Dict, List, Optional, Any
 
 from aworld.logs.util import logger
 from aworld.models.llm import get_llm_model, call_llm_model
-from train.data_gen.schema import TreeNode, ToolGenerateConfig
+from train.data_gen.schema import TreeNode, OntologyConfig
 
 
-class ToolsTree:
-    """Tool hierarchy structure, root (virtual node) -> category -> main capability (tool) -> sub capability (action, optional) -> tool spec."""
+class CapabilityOntology:
+    """Capability ontology formally models what tools or agents can do, defining functions, properties, and relationships to enable automation and flexible integration.
 
-    def __init__(self, tool_gen_config: ToolGenerateConfig = None):
-        self.root = TreeNode(name="root", description="tool root node", children={})
+    Capability hierarchy structure:
+    - root (virtual node) ->
+        - category (domain) ->
+            - main capability (swarm or agent or tool) ->
+                - sub capability (agent or action, optional)
+                    - sub ...
+    """
+
+    def __init__(self, config: OntologyConfig = None):
+        self.root = TreeNode(name="root", description="root node", children={})
         # category -> nodes
         self.cate_nodes: Dict[str, TreeNode] = {}
-        self.tool_gen_config = tool_gen_config or ToolGenerateConfig()
+        self.config = config or OntologyConfig()
 
     async def build(self):
         meta_datas = await self.load_sources()
         for meta_data in meta_datas:
-            cate_capable = await self._tool_category(meta_data)
+            cate_capable = await self._category(meta_data)
             if cate_capable:
                 self._add_cate_capable(meta_data)
             else:
                 logger.warn(f"{meta_data} not category info.")
-        logger.info("tools tree build finished.")
+        logger.info("capability ontology build finished.")
 
     async def load_sources(self) -> List[Dict]:
-        """Load seed tool data from source paths."""
-        if not self.tool_gen_config.source_paths:
+        """Load capability data from source paths."""
+        if not self.config.source_paths:
             logger.error("no source paths provide, will use default data.")
             return [
                 {
@@ -51,15 +59,15 @@ class ToolsTree:
             ]
 
         meta_datas = []
-        for path in self.tool_gen_config.source_paths:
+        for path in self.config.source_paths:
             with open(path, "r+") as reader:
                 line = reader.readline()
                 line_json = json.loads(line)
                 meta_datas.extend(line_json)
         return meta_datas
 
-    async def _tool_category(self, meta_data: Dict[str, Any]) -> Optional[Dict]:
-        """Obtain category and capabilities information of tool from a metadata json or using LLM"""
+    async def _category(self, meta_data: Dict[str, Any]) -> Optional[Dict]:
+        """Obtain category and capabilities information from a metadata json or using LLM"""
         if "category" in meta_data and "capabilities" in meta_data:
             return {
                 "category": meta_data["category"],
@@ -67,31 +75,31 @@ class ToolsTree:
             }
 
         if "content" in meta_data:
-            return await self._tool_category_from_llm(meta_data["content"])
+            return await self._category_from_llm(meta_data["content"])
         return None
 
-    async def _tool_category_from_llm(self, document_content: str) -> Optional[Dict]:
-        if not self.tool_gen_config.llm_config:
+    async def _category_from_llm(self, content: str) -> Optional[Dict]:
+        if not self.config.llm_config:
             return None
 
-        system_prompt = """You are an expert in tool category analysis. Please extract tool related domain information and feature list from the given document content.
+        system_prompt = """You are an expert in category analysis. Please extract related domain information and feature list from the given document content.
 
 Please return JSON in the following format:
 {
     "category": "",
-    "capabilities": ["Function1", "Function2", "Function3"]
+    "capabilities": ["ability1", "ability2", "ability3"]
 }
 
 Requirements:
-- Identify the main tool service domain involved in the document
-- Extract specific tool capability points, and describe each capability in concise Chinese
-- If the document is not related to the tool, return null
+- Identify the main capability service domain involved in the document
+- Extract specific capability points, and describe each capability in concise manner
+- If the content is not related to the category or main ability, return null
 - The capability list should include 3-8 specific capability points
 
-Please analyze the following document content and extract tool information, and return the result in JSON format.
+Please analyze the following document content and extract capability information, and return the result in JSON format.
 """
 
-        user_prompt = document_content[:100000]
+        user_prompt = content[:100000]
 
         messages = [
             {
@@ -103,7 +111,7 @@ Please analyze the following document content and extract tool information, and 
         ]
 
         try:
-            llm_model = get_llm_model(self.tool_gen_config.llm_config)
+            llm_model = get_llm_model(self.config.llm_config)
             resp = call_llm_model(llm_model, messages=messages)
 
             import json
@@ -123,7 +131,7 @@ Please analyze the following document content and extract tool information, and 
 
         cate_node = TreeNode(
             name=category,
-            description=f"{category} tool category",
+            description=f"{category} category",
             children={}
         )
 
@@ -204,6 +212,9 @@ Please analyze the following document content and extract tool information, and 
 
     def get_category(self, tree_node: TreeNode) -> str:
         """Get category from the tree node."""
+        if tree_node.name == 'root':
+            return ''
+
         if tree_node.level == 1:
             return tree_node.name
         else:
@@ -243,18 +254,14 @@ Please analyze the following document content and extract tool information, and 
 
         return sub_capabilities
 
-    def save_tools_categories(self, file_path: str):
-        """Save the tools tree to a JSON file"""
+    def save_categories(self, file_path: str):
+        """Save the capability ontology tree to a JSON file"""
         tree_data = self._encode_node(self.root)
         with open(file_path, 'w+', encoding='utf-8') as f:
             json.dump(tree_data, f, ensure_ascii=False, indent=2)
 
-    def load_tools_categories(self, file_path: str):
-        """Load the tools tree from a json file.
-
-        Args:
-            file_path: Tools tree file.
-        """
+    def load_categories(self, file_path: str):
+        """Load the capability ontology tree from a json file."""
         with open(file_path, 'r+', encoding='utf-8') as reader:
             tree_data = json.load(reader)
         self.root = self._decode_node(tree_data)
@@ -293,7 +300,7 @@ Please analyze the following document content and extract tool information, and 
         return node
 
     def tree_info(self) -> Dict:
-        """The tools tree statistics info."""
+        """The capability ontology tree statistics info."""
         total_nodes = len(self.root.get_all_descendants()) + 1
         category_count = len(self.cate_nodes)
         capability_total_count = sum(len(cate_node.children) for cate_node in self.cate_nodes.values())
