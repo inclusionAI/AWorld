@@ -11,10 +11,8 @@ import abc
 import json
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from aworld.core.agent.swarm import Swarm
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
-from aworld.memory.main import MemoryFactory
 from aworld.dataset.types import (
     TrajectoryItem,
     TrajectoryState,
@@ -24,6 +22,7 @@ from aworld.dataset.types import (
 )
 
 if TYPE_CHECKING:
+    from aworld.core.agent.swarm import Swarm
     from aworld.runners.task_runner import TaskRunner
 
 
@@ -419,15 +418,15 @@ class FilteredTrajectoryStrategy(TrajectoryStrategy):
             # Apply filters using the overridable methods
             filtered_trajectory = []
             for item in trajectory:
-                exp_meta = item.get('exp_meta', {})
+                meta = item.get('meta', {})
                 
                 # Filter by agent (if agent_id exists)
-                agent_id = exp_meta.get('agent_id')
+                agent_id = meta.get('agent_id')
                 if agent_id and not self.filter_by_agent(agent_id):
                     continue
                 
                 # Filter by step (if step exists)
-                step = exp_meta.get('step')
+                step = meta.get('step')
                 if step is not None and not self.filter_by_step(step):
                     continue
                 
@@ -486,9 +485,10 @@ class MemoryTrajectoryStrategy(TrajectoryStrategy):
         """
         return True  # Default: keep all items
 
-    async def generate_trajectory_for_memory(self, swarm: Swarm, context: Context):
+    async def generate_trajectory_for_memory(self, swarm: 'Swarm', context: Context):
         if not swarm or not swarm.cur_agent:
             return {}
+        from aworld.memory.main import MemoryFactory
         memory_items = MemoryFactory.instance().get_last_n(100, filters={
             "agent_id": swarm.cur_agent[0].id(),
             "session_id": context.session_id,

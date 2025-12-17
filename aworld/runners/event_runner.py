@@ -289,14 +289,9 @@ class TaskEventRunner(TaskRunner):
                 return
             await self.context.update_task_trajectory(message, self.task.id)
 
-            # data_row = self.context.trajectory_dataset.message_to_datarow(message)
-            # if data_row:
-            #     # traj = self.context.trajectories.get(self.task.id, [])
-            #     # traj.append(to_serializable(data_row))
-            #     # self.trajectory_dataset.data.append(to_serializable(data_row))
-            #
-            #     row_data = to_serializable(data_row)
-            #     await self.context.update_task_trajectory(self.task.id, [row_data])
+            # Legacy note:
+            # Trajectory is now standardized as `TrajectoryItem (SAR)` and stored via
+            # `context.update_task_trajectory(...)` / `TrajectoryDataset.save_task_trajectory(...)`.
 
         except Exception as e:
             logger.warning(f"Failed to update trajectory for message {message.id}: {e}")
@@ -410,19 +405,12 @@ class TaskEventRunner(TaskRunner):
 
     async def _save_trajectories(self):
         try:
-            # trajectory_strategy = self.conf.get('trajectory_strategy', None)
-            # trajectory = await generate_trajectory_from_strategy(self.task.id, trajectory_strategy, self)
-            # self._task_response.trajectory = self.trajectory_dataset.data
-            
             traj = await self.context.get_task_trajectory(self.task.id)
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {traj}")
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
             if traj:
                 self._task_response.trajectory = [step.to_dict() for step in traj]
                 logger.debug(f"{self.task.id}|{self.task.is_sub_task}#_task_response.trajectory: {json.dumps(self._task_response.trajectory, ensure_ascii=False)}")
-
-            # self._task_response.trajectory = list(self.context.trajectories.values())
-            # logger.warn(f"new trajectory: {json.dumps(self.trajectory_dataset.data, ensure_ascii=False)}")
 
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
