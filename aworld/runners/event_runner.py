@@ -1,20 +1,21 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import json
 import time
 import traceback
 from functools import partial
 from typing import List, Callable, Any
 
 import aworld.trace as trace
-from aworld.agents.llm_agent import Agent
-from aworld.core.agent.base import BaseAgent
+from aworld.core.agent.base import BaseAgent, is_agent_by_name
 from aworld.core.common import TaskItem, ActionModel
 from aworld.core.context.base import Context
+from aworld.dataset.trajectory_storage import get_storage_instance
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse, TaskStatusValue
-from aworld.dataset.trajectory_dataset import generate_trajectory_from_strategy
+from aworld.dataset.trajectory_dataset import TrajectoryDataset
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
@@ -65,6 +66,22 @@ class TaskEventRunner(TaskRunner):
         await super().pre_run()
         self.event_mng = EventManager(self.context, streaming_mode=self.task.streaming_mode)
         self.context.event_manager = self.event_mng
+
+        if self.context.trajectory_dataset is None:
+            trajectory_storage = self.conf.get('trajectory_storage', None)
+            storage_instance = get_storage_instance(trajectory_storage)
+            
+            traj_dataset = TrajectoryDataset(
+                name=f"{self.task.id}_trajectory_dataset",
+                state_manager=self.state_manager,
+                storage=storage_instance,
+                enable_storage=False,
+                data=[],
+                strategy=self.conf.get('trajectory_strategy', None)
+            )
+            self.context.trajectory_dataset = traj_dataset
+        if not self.context.task_graph and not self.task.is_sub_task:
+            self.context.task_graph = {self.task.id: {'parent_task': None}}
 
         if self.swarm and not self.swarm.max_steps:
             self.swarm.max_steps = self.task.conf.get('max_steps', 10)
@@ -157,6 +174,7 @@ class TaskEventRunner(TaskRunner):
         async with trace.message_span(message=message):
             logger.debug(f"start_message_node message id: {message.id} of task {self.task.id}")
             self.state_manager.start_message_node(message)
+            asyncio.create_task(self._update_trajectory(message))
             if handlers:
                 handler_list = handlers.get(message.topic) or handlers.get(message.receiver)
                 if not handler_list:
@@ -192,10 +210,12 @@ class TaskEventRunner(TaskRunner):
         self.background_tasks.discard(task)
         if not group:
             self.state_manager.end_message_node(message)
+            asyncio.create_task(self._update_trajectory(message))
         else:
             group[task] = True
             if all([v for _, v in group.items()]):
                 self.state_manager.end_message_node(message)
+                asyncio.create_task(self._update_trajectory(message))
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
         con = message
@@ -253,6 +273,33 @@ class TaskEventRunner(TaskRunner):
                     return
                 async for event in handler.handle(result):
                     yield event
+
+    async def _update_trajectory(self, message: Message):
+        try:
+            # valid_agent_messages = await TrajectoryDataset._filter_replay_messages([message], self.task.id)
+
+            if message.context.task_id != self.task.id or message.category != Constants.AGENT:
+                return
+            sender = message.sender
+            receiver = message.receiver
+            if not sender or not receiver or not is_agent_by_name(receiver):
+                return
+            agent_as_tool = message.headers.get("agent_as_tool", False)
+            if agent_as_tool:
+                return
+            await self.context.update_task_trajectory(message, self.task.id)
+
+            # data_row = self.context.trajectory_dataset.message_to_datarow(message)
+            # if data_row:
+            #     # traj = self.context.trajectories.get(self.task.id, [])
+            #     # traj.append(to_serializable(data_row))
+            #     # self.trajectory_dataset.data.append(to_serializable(data_row))
+            #
+            #     row_data = to_serializable(data_row)
+            #     await self.context.update_task_trajectory(self.task.id, [row_data])
+
+        except Exception as e:
+            logger.warning(f"Failed to update trajectory for message {message.id}: {e}")
 
     async def _do_run(self):
         """Task execution process in real."""
@@ -363,9 +410,19 @@ class TaskEventRunner(TaskRunner):
 
     async def _save_trajectories(self):
         try:
-            trajectory_strategy = self.conf.get('trajectory_strategy', None)
-            trajectory = await generate_trajectory_from_strategy(self.task.id, trajectory_strategy, self)
-            self._task_response.trajectory = trajectory
+            # trajectory_strategy = self.conf.get('trajectory_strategy', None)
+            # trajectory = await generate_trajectory_from_strategy(self.task.id, trajectory_strategy, self)
+            # self._task_response.trajectory = self.trajectory_dataset.data
+            
+            traj = await self.context.get_task_trajectory(self.task.id)
+            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {traj}")
+            logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
+            if traj:
+                self._task_response.trajectory = [step.to_dict() for step in traj]
+                logger.debug(f"{self.task.id}|{self.task.is_sub_task}#_task_response.trajectory: {json.dumps(self._task_response.trajectory, ensure_ascii=False)}")
+
+            # self._task_response.trajectory = list(self.context.trajectories.values())
+            # logger.warn(f"new trajectory: {json.dumps(self.trajectory_dataset.data, ensure_ascii=False)}")
 
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
