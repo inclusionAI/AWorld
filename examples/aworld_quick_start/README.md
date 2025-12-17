@@ -31,6 +31,9 @@ The prerequisite for running is to copy the .env_template file to a .env file an
 - [Use MCP](mcp_tool) \
   Example of using the MCP tool for single-agent tasks. Intended for scenarios where the MCP tool is required.
 
+- [Use PTC](ptc) \
+  Example of using the PTC (Programmatic Tool Calling) tool for agent tasks. Intended for scenarios where the PTC tool is required.
+
 
 - [Human-in-the-loop](HITL) \
   The example mainly demonstrates how to use the AWorld framework for human-machine collaboration.
@@ -58,7 +61,15 @@ The prerequisite for running is to copy the .env_template file to a .env file an
 - [Run by configuration](run_by_config) \
   Demo. Load the configuration file, generate an agent or swarm, and run it.
 
+
+- [CLI运行](cli)\
+  Example of CLI. Used for scenarios where the AWorld framework is used through the command line interface.
+
 ### Examples of using independent modules
+
+- [Use Sandbox](env)\
+  Example of using the Sandbox module. Used for connecting and operating on remote tool services.
+
 
 - [Use memory](use_memory)
   Read-Write Memory example. Used for customizing the operation of Memory.
