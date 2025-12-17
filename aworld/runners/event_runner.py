@@ -289,14 +289,9 @@ class TaskEventRunner(TaskRunner):
                 return
             await self.context.update_task_trajectory(message, self.task.id)
 
-            # data_row = self.context.trajectory_dataset.message_to_datarow(message)
-            # if data_row:
-            #     # traj = self.context.trajectories.get(self.task.id, [])
-            #     # traj.append(to_serializable(data_row))
-            #     # self.trajectory_dataset.data.append(to_serializable(data_row))
-            #
-            #     row_data = to_serializable(data_row)
-            #     await self.context.update_task_trajectory(self.task.id, [row_data])
+            # Legacy note:
+            # Trajectory is now standardized as `TrajectoryItem (SAR)` and stored via
+            # `context.update_task_trajectory(...)` / `TrajectoryDataset.save_task_trajectory(...)`.
 
         except Exception as e:
             logger.warning(f"Failed to update trajectory for message {message.id}: {e}")
