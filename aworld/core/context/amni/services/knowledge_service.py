@@ -597,11 +597,10 @@ class KnowledgeService(IKnowledgeService):
         from aworld.logs.util import logger
         
         workspace = await self._context._ensure_workspace()
-        workspace._load_workspace_data()
         todo_info = (
             "Below is the global task execute todo information, explaining the current progress:\n"
         )
-        artifact = workspace.get_artifact(f"session_{self._context.session_id}_todo")
+        artifact = workspace.get_latest_artifact(artifact_id=f"session_{self._context.session_id}_todo")
         if not artifact:
             return "Todo is Empty"
         todo_info += f"{artifact.content}"
@@ -612,7 +611,7 @@ class KnowledgeService(IKnowledgeService):
         from aworld.logs.util import logger
         
         workspace = await self._context._ensure_workspace()
-        workspace._load_workspace_data()
+        workspace._load_workspace_data(load_artifact_content=False)
         artifacts = await workspace.query_artifacts(search_filter={
             "context_type": "actions_info",
             "task_id": self._context.task_id

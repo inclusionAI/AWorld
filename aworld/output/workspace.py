@@ -66,7 +66,7 @@ class WorkSpace(BaseModel):
             self.metadata = {}
         else:
             # Try to load existing workspace data
-            self._load_workspace_data(load_artifact_content)
+            self._load_workspace_data(load_artifact_content=False)
 
         # Build artifact_id_index after loading artifacts
         self._rebuild_artifact_id_index()
@@ -310,6 +310,13 @@ class WorkSpace(BaseModel):
     def get_artifact_data(self, artifact_id: str) -> Optional[Dict]:
         """Get artifact data with the specified ID"""
         return self.repository.retrieve_latest_artifact(artifact_id)
+
+    def get_latest_artifact(self, artifact_id: str) -> Optional[Artifact]:
+        """Get artifact data with the specified ID"""
+        artifact_data = self.get_artifact_data(artifact_id)
+        if not artifact_data:
+            return None
+        return Artifact.from_dict(artifact_data)
 
 
     def get_terminal(self) -> str:
