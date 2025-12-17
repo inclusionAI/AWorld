@@ -2,7 +2,7 @@ import abc
 import asyncio
 import copy
 import traceback
-from typing import Optional, Any, List, Dict, Tuple
+from typing import Optional, Any, List, Dict, Tuple, TYPE_CHECKING
 
 from aworld import trace
 from aworld.config import AgentConfig, AgentMemoryConfig
@@ -25,7 +25,7 @@ from .state.task_state import SubTask
 from .utils.text_cleaner import truncate_content
 from .worksapces import ApplicationWorkspace
 from .worksapces import ApplicationWorkspace, workspace_repo
-from ...task import TaskStatus
+from aworld.core.common import TaskStatus
 
 DEFAULT_VALUE = None
 
@@ -911,16 +911,15 @@ class ApplicationContext(AmniContext):
         if task_response and task_response.success:
             self.task_status = task_response.status
             self.task_output = task_response.answer
-            self.task_output_object.actions_info = await self.get_actions_info()
-            self.task_output_object.todo_info = await self.get_todo_info()
         else:
             self.task_status = task_response.status
             if self._task.outputs and isinstance(self._task.outputs, StreamingOutputs):
                 self.task_output = self._task.outputs.get_message_output_content()
             else:
                 self.task_output = task_response.msg
-            self.task_output_object.actions_info = await self.get_actions_info()
-            self.task_output_object.todo_info = await self.get_todo_info()
+
+        self.task_output_object.actions_info = await self.get_actions_info()
+        self.task_output_object.todo_info = await self.get_todo_info()
 
         if self.parent:
             self.parent.merge_sub_context(self)
@@ -1007,12 +1006,12 @@ class ApplicationContext(AmniContext):
         self.task_state.task_output.result = result
 
     @property
-    def task_status(self) -> TaskStatus:
+    def task_status(self) -> 'TaskStatus':
         """Get current task status."""
         return self.task_state_service.get_task_status()
 
     @task_status.setter
-    def task_status(self, status: TaskStatus):
+    def task_status(self, status: 'TaskStatus'):
         """Set task status."""
         self.task_state_service.set_task_status(status)
 
@@ -1510,7 +1509,7 @@ class ApplicationContext(AmniContext):
         
         Delegates to KnowledgeService.get_todo_info().
         """
-        return await self.knowledge_service.get_todo_info()
+        return await self.knowledge_service.get_todo()
 
     async def get_actions_info(self, namespace = "default"):
         """
