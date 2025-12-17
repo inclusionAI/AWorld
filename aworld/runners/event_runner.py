@@ -412,9 +412,6 @@ class TaskEventRunner(TaskRunner):
                 self._task_response.trajectory = [step.to_dict() for step in traj]
                 logger.debug(f"{self.task.id}|{self.task.is_sub_task}#_task_response.trajectory: {json.dumps(self._task_response.trajectory, ensure_ascii=False)}")
 
-            # self._task_response.trajectory = list(self.context.trajectories.values())
-            # logger.warn(f"new trajectory: {json.dumps(self.trajectory_dataset.data, ensure_ascii=False)}")
-
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
 
