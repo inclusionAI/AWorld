@@ -14,6 +14,7 @@ from aworld.dataset.trajectory_dataset import (
 
 # Rebuild TaskConfig to resolve forward references after TrajectoryStrategy is imported
 from aworld.config.conf import TaskConfig
+from aworld.dataset.trajectory_storage import TrajectoryStorage  # Import for model_rebuild
 TaskConfig.model_rebuild()
 
 __all__ = [
