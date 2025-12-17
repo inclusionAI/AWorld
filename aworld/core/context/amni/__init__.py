@@ -755,9 +755,9 @@ class ApplicationContext(AmniContext):
 
         # Record task relationship
         self.add_task_node(
-            caller_agent_info=self.agent_info,
             child_task_id=sub_context.task_id,
             parent_task_id=self.task_id,
+            caller_agent_info=self.agent_info,
             caller_id=self.agent_info.current_agent_id if self.agent_info and hasattr(self.agent_info, 'current_agent_id') else None
         )
 
@@ -1740,7 +1740,7 @@ class ApplicationContext(AmniContext):
         else:
             return await super().get_task_trajectory(task_id)
 
-    def add_task_node(self, caller_agent_info, child_task_id: str, parent_task_id: str, **kwargs):
+    def add_task_node(self, child_task_id: str, parent_task_id: str, caller_agent_info=None, **kwargs):
         """Record the relationship between child task and parent task.
         Delegate to root context.
         """
@@ -1748,6 +1748,6 @@ class ApplicationContext(AmniContext):
         if not agent_info:
             agent_info = self.agent_info
         if self.root != self:
-            self.root.add_task_node(agent_info, child_task_id, parent_task_id, **kwargs)
+            self.root.add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)
         else:
-            super().add_task_node(agent_info, child_task_id, parent_task_id, **kwargs)
+            super().add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)

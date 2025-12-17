@@ -257,7 +257,7 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
             self.task_agent_map[task_agent_id] = 0
         self.task_agent_map[task_agent_id] += 1
 
-        step = self.task_agent_map[task_agent_id]
+        step = message.context.get_agent_step(agent_id=agent_id, task_id=task_id, agent_info=message.context.agent_info)
         meta = ExpMeta(
             session_id=session_id,
             task_id=task_id,

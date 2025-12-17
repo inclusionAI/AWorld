@@ -289,7 +289,7 @@ class Context:
         self._deep_copy(new_context)
         new_context.task_id = sub_task_id
         new_context.task_input = sub_task_content
-        self.add_task_node(self.agent_info, sub_task_id, self.task_id, **kwargs)
+        self.add_task_node(sub_task_id, self.task_id, caller_agent_info=self.agent_info, **kwargs)
         return new_context
 
     def merge_sub_context(self, sub_task_context: 'ApplicationContext', **kwargs):
@@ -485,7 +485,7 @@ class Context:
         agent_task_info = self.agent_info[agent_id][self.task_id]
         agent_task_info['step'] = agent_task_info.get('step', 0) + 1
 
-    def get_agent_step(self, agent_info: dict, agent_id: str, task_id: str = None):
+    def get_agent_step(self, agent_id: str, task_id: str = None, agent_info: dict = None):
         if not agent_info:
             agent_info = self.agent_info
         if not task_id:
@@ -806,7 +806,7 @@ class Context:
             trajectory = await self.trajectory_dataset.get_task_trajectory(task_id)
             return trajectory
 
-    def add_task_node(self, caller_agent_info: dict, child_task_id: str, parent_task_id: str, **kwargs):
+    def add_task_node(self, child_task_id: str, parent_task_id: str, caller_agent_info: dict = None, **kwargs):
         """Add a task node and its relationship to the task graph.
 
         Args:
@@ -824,7 +824,7 @@ class Context:
         caller_info = child_task_node.get("caller_info", {})
         caller_info.update({
             "agent_id": caller_id,
-            "agent_step": self.get_agent_step(agent_info, caller_id, parent_task_id)
+            "agent_step": self.get_agent_step(caller_id, task_id=parent_task_id, agent_info=agent_info)
         })
 
         self._task_graph[child_task_id].update({
