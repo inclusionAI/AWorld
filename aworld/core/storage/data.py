@@ -2,12 +2,12 @@
 # Copyright (c) 2025 inclusionAI.
 import time
 import uuid
-
 from dataclasses import dataclass, field
-from dataclasses_json import dataclass_json
 from typing import Any
 
 from pydantic import BaseModel
+
+from aworld.utils.serialized_util import to_serializable
 
 
 @dataclass
@@ -38,7 +38,7 @@ class Data(BaseModel):
         return {
             "block_id": self.block_id,
             "id": self.id,
-            "value": self.value.to_dict() if hasattr(self.value, "to_dict") else self.value,
+            "value": to_serializable(self.value) if self.value is not None else None,
             "create_at": self.create_at,
             "update_at": self.update_at,
             "expires_at": self.expires_at,
