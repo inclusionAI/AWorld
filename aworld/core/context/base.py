@@ -713,7 +713,7 @@ class Context:
         return checkpoint
 
     async def get_task_status(self):
-        from aworld.core.task import TaskStatusValue
+        from aworld.core.task_status import TaskStatusValue
         return TaskStatusValue.SUCCESS
 
     async def update_task_status(self, task_id: str, status: 'TaskStatus'):

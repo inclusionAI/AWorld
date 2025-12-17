@@ -93,6 +93,6 @@ orchestrator_agent_config = AgentConfig(
         llm_base_url=os.environ.get("LLM_BASE_URL")
     ),
     use_vision=False,
-    skill_configs= PLANNING_SKILLS | BROWSER_SKILLS| CUSTOM_SKILLS
+    skill_configs= BROWSER_SKILLS| CUSTOM_SKILLS
     # skill_configs= PLANNING_SKILLS | BASIC_SKILLS | BROWSER_SKILLS
 )
