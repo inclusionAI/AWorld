@@ -13,7 +13,7 @@ from aworld.output import Artifact, ArtifactType
 from aworld.core.context.amni.retrieval.chunker import Chunk
 from aworld.core.context.amni.retrieval.embeddings import SearchResults
 from aworld.core.context.amni.state.common import WorkingState
-
+from aworld.logs.util import logger
 
 class IKnowledgeService(abc.ABC):
     """Interface for knowledge management operations."""
@@ -293,7 +293,7 @@ class KnowledgeService(IKnowledgeService):
     
     async def add_knowledge(self, knowledge: Artifact, namespace: str = "default", index: bool = True) -> None:
         """Add a single knowledge artifact."""
-        from aworld.logs.util import logger
+        
         
         logger.debug(f"add knowledge #{knowledge.artifact_id} start")
         self._get_working_state(namespace).save_knowledge(knowledge)
@@ -308,7 +308,7 @@ class KnowledgeService(IKnowledgeService):
         """Add multiple knowledge artifacts in batch."""
         import asyncio
         import time
-        from aworld.logs.util import logger
+        
         
         logger.debug(f"add_knowledge_list start")
         
@@ -346,7 +346,7 @@ class KnowledgeService(IKnowledgeService):
     async def get_knowledge_by_id(self, knowledge_id: str, namespace: str = "default") -> Optional[Artifact]:
         """Get a knowledge artifact by ID."""
         workspace = await self._context._ensure_workspace()
-        return workspace.get_artifact(knowledge_id)
+        return workspace.get_latest_artifact(knowledge_id)
     
     async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Chunk]:
         """Get a specific chunk from a knowledge artifact."""
@@ -366,11 +366,11 @@ class KnowledgeService(IKnowledgeService):
         Returns:
             Content string of the specified line range, or None if not found
         """
-        from aworld.logs.util import logger
+        
         
         try:
             workspace = await self._context._ensure_workspace()
-            artifact = workspace.get_artifact(knowledge_id)
+            artifact = workspace.get_latest_artifact(knowledge_id)
             
             if not artifact:
                 logger.warning(f"⚠️ Knowledge artifact not found: knowledge_id={knowledge_id}")
@@ -427,11 +427,11 @@ class KnowledgeService(IKnowledgeService):
             Search results string with matching lines and context, or None if not found
         """
         import re
-        from aworld.logs.util import logger
+        
         
         try:
             workspace = await self._context._ensure_workspace()
-            artifact = workspace.get_artifact(knowledge_id)
+            artifact = workspace.get_latest_artifact(knowledge_id)
             
             if not artifact:
                 logger.warning(f"⚠️ Knowledge artifact not found: knowledge_id={knowledge_id}")
@@ -533,7 +533,7 @@ class KnowledgeService(IKnowledgeService):
         Returns:
             List of knowledge artifacts with their IDs and summaries, or None if error
         """
-        from aworld.logs.util import logger
+        
         
         try:
             workspace = await self._context._ensure_workspace()
@@ -791,7 +791,7 @@ class KnowledgeService(IKnowledgeService):
         """Offload artifacts to workspace (context offloading)."""
         import uuid
         import asyncio
-        from aworld.logs.util import logger
+        
         
         if not artifacts:
             return ""
@@ -827,7 +827,7 @@ class KnowledgeService(IKnowledgeService):
                                         search_by_index: bool = True) -> str:
         """Load knowledge context from workspace."""
         import time
-        from aworld.logs.util import logger
+        
         from aworld.core.context.amni.prompt.prompts import AMNI_CONTEXT_PROMPT
         
         # Ensure workspace is initialized
@@ -894,7 +894,7 @@ class KnowledgeService(IKnowledgeService):
     
     async def get_todo_info(self) -> str:
         """Get todo information from workspace."""
-        from aworld.logs.util import logger
+        
         
         workspace = await self._context._ensure_workspace()
         todo_info = (
@@ -917,7 +917,7 @@ class KnowledgeService(IKnowledgeService):
             todo_content: The todo content to add or update
             namespace: Namespace for storage
         """
-        from aworld.logs.util import logger
+        
         
         # Check if planning is enabled
         agent_config = self._context.get_agent_context_config(namespace)
@@ -963,7 +963,7 @@ class KnowledgeService(IKnowledgeService):
         Returns:
             Todo content string if found and planning is enabled, None otherwise
         """
-        from aworld.logs.util import logger
+        
         
         # Check if planning is enabled
         agent_config = self._context.get_agent_context_config(namespace)
@@ -972,10 +972,9 @@ class KnowledgeService(IKnowledgeService):
             return None
         
         workspace = await self._context._ensure_workspace()
-        workspace._load_workspace_data()
         
         todo_artifact_id = f"session_{self._context.session_id}_todo"
-        artifact = workspace.get_artifact(todo_artifact_id)
+        artifact = workspace.get_latest_artifact(todo_artifact_id)
         
         if not artifact:
             return None
@@ -984,8 +983,6 @@ class KnowledgeService(IKnowledgeService):
     
     async def get_actions_info(self, namespace: str = "default") -> str:
         """Get actions information from workspace."""
-        from aworld.logs.util import logger
-        
         workspace = await self._context._ensure_workspace()
         workspace._load_workspace_data(load_artifact_content=False)
         artifacts = await workspace.query_artifacts(search_filter={
