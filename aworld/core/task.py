@@ -11,24 +11,11 @@ from aworld.utils.serialized_util import to_serializable
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
-from aworld.core.common import Config, Observation, StreamingMode
+from aworld.core.common import Config, Observation, StreamingMode, TaskStatus, TaskStatusValue
 from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
 from aworld.core.context.amni.config import AmniContextConfig
-
-
-class TaskStatusValue:
-    """Task status constants."""
-    INIT = 'init'
-    RUNNING = 'running'
-    SUCCESS = 'success'
-    FAILED = 'failed'
-    CANCELLED = 'cancelled'
-    INTERRUPTED = 'interrupted'
-    TIMEOUT = 'timeout'
-
-TaskStatus = Literal['init', 'running', 'success', 'failed', 'cancelled', 'interrupted', 'timeout']
 
 
 @dataclass
