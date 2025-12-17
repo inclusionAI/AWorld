@@ -1509,7 +1509,7 @@ class ApplicationContext(AmniContext):
         
         Delegates to KnowledgeService.get_todo_info().
         """
-        return await self.knowledge_service.get_todo_info()
+        return await self.knowledge_service.get_todo()
 
     async def get_actions_info(self, namespace = "default"):
         """
