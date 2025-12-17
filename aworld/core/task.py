@@ -5,8 +5,9 @@ import asyncio
 import enum
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Union, List, Dict, Callable, Optional, Literal
+from typing import Any, Union, List, Dict, Callable, Optional, Literal, TYPE_CHECKING
 
+from aworld.dataset.types import TrajectoryItem
 from aworld.utils.serialized_util import to_serializable
 
 from aworld.agents.llm_agent import Agent
@@ -15,7 +16,10 @@ from aworld.core.common import Config, Observation, StreamingMode
 from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
-from aworld.core.context.amni.config import AmniContextConfig
+
+
+if TYPE_CHECKING:
+    from aworld.core.context.amni.config import AmniContextConfig
 
 
 class TaskStatusValue:
@@ -61,7 +65,7 @@ class Task:
     hooks: Dict[str, List[str]] = field(default_factory=dict)
     # task specified context
     context: 'Context' = field(default=None)
-    context_config: Optional[AmniContextConfig] = None
+    context_config: Optional['AmniContextConfig'] = None
     is_sub_task: bool = field(default=False)
     group_id: str = field(default=None)
     # parent task reference
@@ -120,7 +124,7 @@ class TaskResponse:
     time_cost: float | None = field(default=0.0)
     success: bool = field(default=False)
     msg: str | None = field(default=None)
-    trajectory: List[Dict[str, Any]] = field(default_factory=list)
+    trajectory: List[Dict[str, Any]]= field(default_factory=list)
     # task final status, e.g. success/failed/cancelled
     status: TaskStatus | None = field(default=TaskStatusValue.SUCCESS)
 

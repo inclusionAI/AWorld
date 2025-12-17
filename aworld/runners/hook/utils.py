@@ -57,7 +57,7 @@ def hook(hook_point: str, name: str = None):
 
     return decorator
 
-async def run_hooks(context: Context, hook_point: str, hook_from: str, payload: Any = None):
+async def run_hooks(context: Context, hook_point: str, hook_from: str, payload: Any = None, **kwargs):
     """Execute hooks and break by exception"""
     from aworld.runners.hook.hook_factory import HookFactory
     from aworld.core.event.base import Message
@@ -75,7 +75,7 @@ async def run_hooks(context: Context, hook_point: str, hook_from: str, payload: 
                 sender=hook_from,
                 session_id=context.session_id if hasattr(
                     context, 'session_id') else None,
-                headers={"context": context}
+                headers={"context": context, **kwargs}
             )
 
             # Execute hook

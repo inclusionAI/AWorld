@@ -11,6 +11,7 @@ from aworld.core.agent.base import is_agent, is_agent_by_name
 from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, GroupMessage, MemoryEventMessage, MemoryEventType
+from aworld.core.task import TaskResponse
 from aworld.events.util import send_message_with_future
 from aworld.logs.util import logger
 from aworld.output.base import StepOutput
@@ -161,6 +162,7 @@ class DefaultGroupHandler(GroupHandler):
                 if not group_sender_node_id:
                     group_sender_node_id = node.metadata.get('group_sender_node_id')
                 node_results = []
+                sub_task_id = None
                 for handle_res in handle_res_list:
                     res_msg = handle_res.result
                     res_status = handle_res.status
@@ -189,12 +191,17 @@ class DefaultGroupHandler(GroupHandler):
                         else:
                             node_results.append(res_msg.payload)
                             self._merge_context(agent_context, res_msg.context)
+                    if res_msg.headers and res_msg.headers.get('sub_task_id'):
+                        sub_task_id = res_msg.headers.get('sub_task_id')
 
                 if node_results:
                     act_res = ActionResult(
                         content=json.dumps(to_serializable(node_results), ensure_ascii=False),
                         tool_call_id=tool_call_id or "",
-                        tool_name=node.metadata.get('root_agent_id')
+                        tool_name=node.metadata.get('root_agent_id'),
+                        metadata={
+                            "sub_task_id": sub_task_id
+                        }
                     )
                     action_results.append(act_res)
             if action_results:
@@ -296,7 +303,8 @@ class DefaultGroupHandler(GroupHandler):
                 agent_message = act[2]
                 messages_ids.append(agent_message.id)
                 tasks[agent_message.id] = exec_agent(act[0], act[1], self.context, sub_task=True,
-                                                     outputs=self.context.outputs)
+                                                     outputs=self.context.outputs,
+                                                     tool_call_id=agent_message.headers.get('root_tool_call_id'))
         return messages_ids, tasks
 
     async def process_agent_tasks(self, agent_tasks, input_message):
@@ -334,6 +342,8 @@ class DefaultGroupHandler(GroupHandler):
                 # Only AGENT and TASK messages
                 if isinstance(event, Message) and (
                         event.category == Constants.AGENT or event.category == Constants.TASK):
+                    event.headers["sub_task_id"] = res.id
+                    await self.context.add_task_trajectory(res.id, res.trajectory)
                     finish_group_messages.append(event)
                     logger.debug(f"event context: {event.context},context.task: {event.context.get_task()}")
             await state_manager.finish_sub_group(node.metadata.get('group_id'), node_id, finish_group_messages)
@@ -386,12 +396,18 @@ class DefaultGroupHandler(GroupHandler):
                 if isinstance(event, Message) and (
                         event.category == Constants.AGENT or event.category == Constants.TASK):
                     finish_group_messages.append(event)
+                    event.headers["sub_task_id"] = res.id
+                    await input_message.context.add_task_trajectory(res.id, res.trajectory)
             await state_manager.finish_sub_group(node.metadata.get('group_id'), node_id, finish_group_messages)
 
         for agent_id in root_agent_set:
             agent = self.swarm.agents.get(agent_id)
             if agent:
                 agent._finished = True
+
+    async def update_trajectory_to_context(self, task_responses: List[TaskResponse]):
+
+        pass
 
     def _merge_result_messages(self, res_msgs: List[Message], input_message: Message, group_sender_node_id: str):
         """Merge multiple result messages
