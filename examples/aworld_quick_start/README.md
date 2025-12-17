@@ -62,7 +62,7 @@ The prerequisite for running is to copy the .env_template file to a .env file an
   Demo. Load the configuration file, generate an agent or swarm, and run it.
 
 
-- [CLI运行](cli)\
+- [Run by CLI](cli)\
   Example of CLI. Used for scenarios where the AWorld framework is used through the command line interface.
 
 ### Examples of using independent modules
