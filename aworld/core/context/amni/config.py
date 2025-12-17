@@ -332,7 +332,9 @@ class AmniConfigFactory:
                 summary_context_length= 40960,
                 tool_result_offload= True,
                 tool_action_white_list= CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
-                tool_result_length_threshold= 30000
+                tool_result_length_threshold= 30000,
+                enable_planing=kwargs.get("enable_planing", False),
+                enable_knowledge=kwargs.get("enable_knowledge", False),
             )
             config.env_config = env_config
             return config

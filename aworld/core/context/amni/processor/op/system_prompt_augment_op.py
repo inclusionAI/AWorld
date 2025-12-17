@@ -95,6 +95,22 @@ class SystemPromptAugmentOp(BaseOp):
             if PTC_NEURON_NAME not in neuron_names:
                neuron_names.append(PTC_NEURON_NAME)
 
+        # Enable Planing Feature
+        if agent.enable_planing:
+            if not neuron_names:
+                neuron_names = []
+            from aworld.core.context.amni.prompt.neurons.todo_neuron import TODO_NEURON_NAME
+            if TODO_NEURON_NAME not in neuron_names:
+               neuron_names.append(TODO_NEURON_NAME)
+
+        # Enable Knowledge Feature
+        if agent.enable_knowledge:
+            if not neuron_names:
+                neuron_names = []
+            from aworld.core.context.amni.prompt.neurons.action_info_neuron import ACTION_INFO_NEURON_NAME
+            if ACTION_INFO_NEURON_NAME not in neuron_names:
+               neuron_names.append(ACTION_INFO_NEURON_NAME)
+
         neurons = neuron_factory.get_neurons_by_names(names=neuron_names)
 
 

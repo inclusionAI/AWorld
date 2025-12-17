@@ -911,16 +911,15 @@ class ApplicationContext(AmniContext):
         if task_response and task_response.success:
             self.task_status = task_response.status
             self.task_output = task_response.answer
-            self.task_output_object.actions_info = await self.get_actions_info()
-            self.task_output_object.todo_info = await self.get_todo_info()
         else:
             self.task_status = task_response.status
             if self._task.outputs and isinstance(self._task.outputs, StreamingOutputs):
                 self.task_output = self._task.outputs.get_message_output_content()
             else:
                 self.task_output = task_response.msg
-            self.task_output_object.actions_info = await self.get_actions_info()
-            self.task_output_object.todo_info = await self.get_todo_info()
+
+        self.task_output_object.actions_info = await self.get_actions_info()
+        self.task_output_object.todo_info = await self.get_todo_info()
 
         if self.parent:
             self.parent.merge_sub_context(self)
