@@ -6,11 +6,15 @@ from enum import Enum
 from typing import Dict, Any, List, Optional, Union
 
 from aworld.config import BaseConfig, ModelConfig, RunConfig
-from aworld.core.common import ActionResult
 from aworld.core.tool.base import BaseTool, AsyncBaseTool
 
 
 # ------------------------------------------ Generation ----------------------------------------------- #
+
+class OntologyConfig(BaseConfig):
+    llm_config: Optional[ModelConfig] = None
+    source_paths: List[str] = None
+
 
 class DataGenConfig(BaseConfig):
     gen_tools: bool = False
@@ -106,20 +110,9 @@ class TreeNode:
         return descendants
 
 
-# ------------------------------------------ Tool Generation ----------------------------------------------- #
-
-class ToolGenerateConfig(BaseConfig):
-    llm_config: Optional[ModelConfig] = None
-    source_paths: List[str] = None
-    strategy: str = GenerationStrategy.LLM
-    gen_number: int = field(default=10)
-    max_workers: int = field(default=1)
-    rule_cls: str = field(default=None)
-
-
 @dataclass
-class ToolSpec:
-    """Tool specification structure."""
+class Specification:
+    """Specification structure."""
     name: str = field()
     description: str = field()
     category: str = field(default="")
@@ -134,10 +127,22 @@ class ToolSpec:
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
+# ------------------------------------------ Tool Generation ----------------------------------------------- #
+
+class ToolGenerateConfig(BaseConfig):
+    llm_config: Optional[ModelConfig] = None
+    ontology_config: Optional[OntologyConfig] = None
+    strategy: str = GenerationStrategy.LLM
+    gen_number: int = field(default=10)
+    batch_size: int = field(default=100)
+    max_workers: int = field(default=1)
+    rule_cls: str = field(default=None)
+
+
 @dataclass
 class GeneratedTool:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    spec: ToolSpec = field(default=None)
+    spec: Specification = field(default=None)
     tool_cls: Optional[type] = field(default=None)
     tool_instance: Optional[Union[BaseTool, AsyncBaseTool]] = field(default=None)
     examples: List[Dict[str, Any]] = field(default_factory=list)
@@ -167,18 +172,6 @@ class GeneratedTool:
             },
             "examples": self.examples
         }
-
-
-@dataclass
-class ToolCallResult:
-    step: int = field(default=0)
-    tool_name: str = field(default="")
-    tool_call_id: str = field(default=None)
-    parameters: Dict[str, Any] = field(default_factory=dict)
-    result: Optional[ActionResult] = None
-    execution_time: float = field(default=0.)
-    success: bool = field(default=True)
-    error: Optional[str] = field(default=None)
 
 
 # ------------------------------------------ Task Generation ----------------------------------------------- #

@@ -13,6 +13,17 @@ from aworld.runners.task_runner import TaskRunner
 from aworld.utils.common import new_instance, snake_to_camel
 
 
+async def runtime_engine(run_conf: RunConfig):
+    run_conf = run_conf or RunConfig()
+    name = run_conf.engine_name
+    if run_conf.cls:
+        runtime_backend = new_instance(run_conf.cls, run_conf)
+    else:
+        runtime_backend = new_instance(
+            f"aworld.runners.runtime_engine.{snake_to_camel(name)}Runtime", run_conf)
+    return runtime_backend.build_engine()
+
+
 async def choose_runners(tasks: List[Task], agent_oriented: bool = True) -> List[Runner]:
     """Choose the correct runner to run the task.
 
@@ -57,16 +68,7 @@ async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str
         runners: The task processing flow.
         run_conf: Runtime config, can choose the special computing engine to execute the runner.
     """
-    if not run_conf:
-        run_conf = RunConfig()
-
-    name = run_conf.engine_name
-    if run_conf.cls:
-        runtime_backend = new_instance(run_conf.cls, run_conf)
-    else:
-        runtime_backend = new_instance(
-            f"aworld.runners.runtime_engine.{snake_to_camel(name)}Runtime", run_conf)
-    runtime_engine = runtime_backend.build_engine()
+    engine = await runtime_engine(run_conf)
 
     if run_conf.engine_name != EngineName.LOCAL or run_conf.reuse_process == False:
         # distributed in AWorld, the `context` can't carry by response
@@ -78,7 +80,7 @@ async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str
                 runner.task.conf.resp_carry_context = False
             else:
                 runner.task.conf = ConfigDict(TaskConfig(resp_carry_context=False).model_dump())
-    return await runtime_engine.execute([runner.run for runner in runners])
+    return await engine.execute([runner.run for runner in runners])
 
 
 def endless_detect(records: List[str], endless_threshold: int, root_agent_name: str):
@@ -154,6 +156,3 @@ async def long_wait_message_state(message: Message):
     else:
         logger.debug(f"long_wait_message_state|failed with node: {res_node}.")
         raise ValueError(f"long_wait_message_state|failed with node: {res_node}")
-
-
-
