@@ -11,17 +11,14 @@ from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
 from aworld.config import ConfigDict, AgentMemoryConfig
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
-from aworld.core.context.trajectory_storage import InMemoryTrajectoryStorage
 from aworld.logs.util import logger
 from aworld.utils.common import nest_dict_counter
 
 if TYPE_CHECKING:
     from aworld.core.task import Task, TaskResponse, TaskStatus, TaskStatusValue
-    from aworld.core.agent.swarm import Swarm
     from aworld.events.manager import EventManager
     from aworld.core.agent import BaseAgent
     from aworld.core.context.amni import AgentContextConfig
-    from aworld.dataset.trajectory_dataset import TrajectoryDataset
 
 
 @dataclass
@@ -279,11 +276,6 @@ class Context:
     @task_graph.setter
     def task_graph(self, task_graph):
         self._task_graph = task_graph
-
-    def init_trajectory_dataset(self, trajectory_dataset: 'TrajectoryDataset'):
-        if not trajectory_dataset.storage:
-            trajectory_dataset.storage = InMemoryTrajectoryStorage()
-        self.trajectory_dataset = trajectory_dataset
 
     def get_state(self, key: str, default: Any = None) -> Any:
         return self.context_info.get(key, default)

@@ -8,15 +8,14 @@ from functools import partial
 from typing import List, Callable, Any
 
 import aworld.trace as trace
-from aworld.agents.llm_agent import Agent
 from aworld.core.agent.base import BaseAgent, is_agent_by_name
 from aworld.core.common import TaskItem, ActionModel
 from aworld.core.context.base import Context
-from aworld.core.context.trajectory_storage import InMemoryTrajectoryStorage, get_storage_instance
+from aworld.dataset.trajectory_storage import get_storage_instance
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse, TaskStatusValue
-from aworld.dataset.trajectory_dataset import generate_trajectory_from_strategy, TrajectoryDataset
+from aworld.dataset.trajectory_dataset import TrajectoryDataset
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
@@ -25,7 +24,6 @@ from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.runners.task_runner import TaskRunner
 from aworld.trace.base import get_trace_id
 from aworld.utils.common import override_in_subclass, new_instance
-from aworld.utils.serialized_util import to_serializable
 
 
 class TaskEventRunner(TaskRunner):
@@ -81,7 +79,7 @@ class TaskEventRunner(TaskRunner):
                 data=[],
                 strategy=self.conf.get('trajectory_strategy', None)
             )
-            self.context.init_trajectory_dataset(traj_dataset)
+            self.context.trajectory_dataset = traj_dataset
         if not self.context.task_graph and not self.task.is_sub_task:
             self.context.task_graph = {self.task.id: {'parent_task': None}}
 
