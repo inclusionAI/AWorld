@@ -405,10 +405,6 @@ class TaskEventRunner(TaskRunner):
 
     async def _save_trajectories(self):
         try:
-            # trajectory_strategy = self.conf.get('trajectory_strategy', None)
-            # trajectory = await generate_trajectory_from_strategy(self.task.id, trajectory_strategy, self)
-            # self._task_response.trajectory = self.trajectory_dataset.data
-            
             traj = await self.context.get_task_trajectory(self.task.id)
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#trajectory from context: {traj}")
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")

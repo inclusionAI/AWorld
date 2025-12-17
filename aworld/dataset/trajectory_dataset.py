@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional, Callable, Type, TYPE_CHECKING, Uni
 from pydantic import Field
 
 from aworld.utils import import_package
+from aworld.core.agent.base import is_agent_by_name
+from aworld.core.common import ActionModel
 from aworld.core.event.base import Message, Constants
 from aworld.core.storage.base import Storage
 from aworld.core.storage.condition import Condition
@@ -84,17 +86,17 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
     async def append_trajectory(self, message: Message, task_id: str = None) -> Optional[TrajectoryItem]:
         """
         Generate trajectory item from message using strategy and append to dataset.
-        
+
         Args:
             message: The source message
             task_id: Optional task id, if not provided, try to get from message
-            
+
         Returns:
             The generated trajectory item dictionary or None
         """
         if not self.strategy:
             self.set_strategy(None)
-            
+
         try:
             # Generate item using strategy
             # Pass state_manager and use_tools_in_prompt if available
@@ -103,7 +105,7 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
                 state_manager=self.state_manager,
                 use_tools_in_prompt=getattr(self, 'use_tools_in_prompt', True),
             )
-            
+
             if item:
                 # Save to storage
                 target_task_id = task_id or (message.task_id if hasattr(message, 'task_id') else None)
@@ -226,26 +228,6 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
             results.append(message)
         return results
 
-    def _deprecated_get_llm_messages_from_memory(self, message: Message):
-        # Local imports to avoid pulling heavy optional dependencies at module import time.
-        from aworld.models.model_response import ModelResponse
-        return self._retrieve_agent_histories(message)
-        context = message.context
-        messages = []
-        for msg in context.context_info.get("llm_input", []):
-            messages.append(msg)
-        llm_response: ModelResponse = context.context_info.get("llm_output", None)
-        if llm_response:
-            last_assistant_message = {
-                "role": "assistant",
-                "content": llm_response.content
-            }
-            tool_calls = llm_response.tool_calls
-            if tool_calls:
-                last_assistant_message["tool_calls"] = [tool_call.to_dict() for tool_call in tool_calls]
-            messages.append(last_assistant_message)
-        return messages
-
     def _get_llm_messages_from_memory(self, message: Message):
         # Local imports to avoid pulling heavy optional dependencies at module import time.
         from aworld.memory.main import MemoryFactory
@@ -272,7 +254,7 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
                                          "tool_call_id": history.metadata.get("tool_call_id")})
         return messages
 
-    async def save_task_trajectory(self, task_id: str, trajectory_steps: Union[List[TrajectoryItem], List[Dict[str, Any]]]):        
+    async def save_task_trajectory(self, task_id: str, trajectory_steps: Union[List[TrajectoryItem], List[Dict[str, Any]]]):
         """Save task trajectory data (list of steps) to storage.
 
         Args:
@@ -304,7 +286,7 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
             else:
                 logger.warning(f"Unexpected trajectory step type: {type(step)}, skipping")
                 continue
-            
+
             kwargs = {
                 "block_id": block_id,
                 "value": value
