@@ -41,7 +41,6 @@ class PostLLMCallContextProcessHook(PostLLMCallHook):
                       desc="PostLLMTrajectoryHook")
 class PostLLMTrajectoryHook(PostLLMCallHook):
     """Update trajectory after llm call."""
-    __metaclass__ = abc.ABCMeta
     def name(self):
         return convert_to_snake("PostLLMTrajectoryHook")
     async def exec(self, message: Message, context: Context = None) -> Message:
@@ -50,8 +49,3 @@ class PostLLMTrajectoryHook(PostLLMCallHook):
         if not agent_message:
             return None
         await context.update_task_trajectory(message=agent_message, task_id=context.task_id)
-        # data_row = context.trajectory_dataset.message_to_datarow(agent_message)
-        # if data_row:
-        #     row_data = to_serializable(data_row)
-        #     await context.update_task_trajectory(context.task_id, [row_data])
-        # pass
