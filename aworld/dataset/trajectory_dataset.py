@@ -1,21 +1,28 @@
+import copy
 import json
 import os
 import traceback
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Callable, Type, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Callable, Type, TYPE_CHECKING, Union
 
 from pydantic import Field
 
+from aworld.utils import import_package
 from aworld.core.agent.base import is_agent_by_name
 from aworld.core.common import ActionModel
 from aworld.core.event.base import Message, Constants
 from aworld.core.storage.base import Storage
 from aworld.core.storage.condition import Condition
+from aworld.core.storage.data import Data
 from aworld.core.storage.inmemory_store import InmemoryStorage, InmemoryConfig
 from aworld.dataset.dataset import Dataset
-from aworld.dataset.types import DataRow, Experience, ExpMeta
+from aworld.dataset.types import DataRow, Experience, ExpMeta, TrajectoryItem
 from aworld.logs.util import logger
+from aworld.memory.main import MemoryFactory
+from aworld.memory.models import MemoryMessage
+from aworld.models.model_response import ModelResponse
 from aworld.runners.state_manager import RuntimeStateManager, EventRuntimeStateManager
+from aworld.utils.common import get_local_ip, new_instance
 from aworld.utils import import_package
 from aworld.utils.common import get_local_ip
 from aworld.utils.serialized_util import to_serializable
@@ -24,34 +31,119 @@ if TYPE_CHECKING:
     from aworld.runners.task_runner import TaskRunner
     from aworld.dataset.trajectory_strategy import TrajectoryStrategy
 
-class TrajectoryDataset(Dataset[DataRow]):
+class TrajectoryDataset(Dataset[Union[DataRow, TrajectoryItem]]):
     # Allow arbitrary (non-pydantic) types like RuntimeStateManager in fields
     model_config = {"arbitrary_types_allowed": True}
-    state_manager: RuntimeStateManager
+    state_manager: RuntimeStateManager = Field(exclude=True)
     task_agent_map: Dict[str, int] = Field(default={}, description="task agent map")
-    storage: Optional[Storage[DataRow]] = Field(default=None, description="Storage for trajectory data")
+    storage: Optional[Storage[Any]] = Field(default=None, description="Storage for trajectory data")
     enable_storage: bool = Field(default=False, description="Whether to enable storage")
+    strategy: Optional[Any] = Field(default=None, description="Trajectory generation strategy")
 
-    def default_transform(self) -> Callable[[Message], DataRow]:
+    def __init__(self, strategy: Optional[Any] = None, **data):
+        super().__init__(**data)
+        self.set_strategy(strategy)
+
+    def set_strategy(self, strategy: Any):
+        """Set the trajectory generation strategy."""
+        from aworld.dataset.trajectory_strategy import TrajectoryStrategy, DefaultTrajectoryStrategy
+
+        if strategy is None:
+             self.strategy = DefaultTrajectoryStrategy()
+        elif isinstance(strategy, str):
+            try:
+                self.strategy = new_instance(strategy)
+            except Exception as e:
+                logger.error(f"Failed to load strategy from string {strategy}: {e}")
+                self.strategy = DefaultTrajectoryStrategy()
+        elif isinstance(strategy, TrajectoryStrategy):
+            self.strategy = strategy
+        elif isinstance(strategy, type) and issubclass(strategy, TrajectoryStrategy):
+            self.strategy = strategy()
+        else:
+             logger.warning(f"Invalid strategy type: {type(strategy)}, using default.")
+             self.strategy = DefaultTrajectoryStrategy()
+
+    async def generate_and_save(self, task_id: str, runner: 'TaskRunner') -> List[Dict[str, Any]]:
+        """Generate trajectory using strategy and save to storage."""
+        if not self.strategy:
+             self.set_strategy(None)
+
+        try:
+            trajectory_data = await self.strategy.generate(task_id, runner)
+            if trajectory_data:
+                 normalized = [
+                     item.to_dict() if hasattr(item, "to_dict") else item
+                     for item in trajectory_data
+                 ]
+                 await self.save_task_trajectory(task_id, normalized)
+                 return normalized
+        except Exception as e:
+            logger.error(f"Failed to generate and save trajectory: {e}")
+        return []
+
+    async def append_trajectory(self, message: Message, task_id: str = None) -> Optional[TrajectoryItem]:
+        """
+        Generate trajectory item from message using strategy and append to dataset.
+        
+        Args:
+            message: The source message
+            task_id: Optional task id, if not provided, try to get from message
+            
+        Returns:
+            The generated trajectory item dictionary or None
+        """
+        if not self.strategy:
+            self.set_strategy(None)
+            
+        try:
+            # Generate item using strategy
+            # Pass state_manager and use_tools_in_prompt if available
+            kwargs = {
+                'state_manager': self.state_manager,
+                'use_tools_in_prompt': getattr(self, 'use_tools_in_prompt', True),
+            }
+            item = await self.strategy.generate_item(message, state_manager=self.state_manager,
+                                                     use_tools_in_prompt=getattr(self, 'use_tools_in_prompt', True))
+            
+            if item:
+                # Save to storage
+                target_task_id = task_id or (message.task_id if hasattr(message, 'task_id') else None)
+                if target_task_id:
+                    await self.save_task_trajectory(target_task_id, [item])
+                return item
+                # item_dict = item.to_dict() if hasattr(item, "to_dict") else item
+                # # Save to storage
+                # target_task_id = task_id or (message.task_id if hasattr(message, 'task_id') else None)
+                # if target_task_id:
+                #     await self.save_task_trajectory(target_task_id, [item_dict])
+                #
+                # return item_dict
+        except Exception as e:
+            logger.error(f"Failed to append message to trajectory: {e}")
+        return None
+
+    def default_transform(self) -> Callable[[Message], Union[DataRow, TrajectoryItem]]:
         return self.message_to_datarow
 
-    def message_to_datarow(self, message: Message) -> DataRow:
+    def message_to_datarow(self, message: Message) -> Union[DataRow, TrajectoryItem]:
         '''
-        Build DataRow from a message.
-
-        Args:
-            message (Dict): Message data containing necessary metadata and experience data
-
-        Returns:
-            DataRow: The constructed data row
-
-        Raises:
-            ValueError: When the message is missing required fields
+        Build DataRow or TrajectoryItem from a message.
         '''
+        # If strategy provides DataRow conversion, use it (legacy path)
+        if hasattr(self.strategy, 'message_to_datarow'):
+            return self.strategy.message_to_datarow(
+                message, 
+                self.state_manager, 
+                getattr(self, 'use_tools_in_prompt', True)
+            )
+
+        # Fallback implementation (will be deprecated)
         if not message:
             raise ValueError("Message cannot be empty")
 
         agent_id = message.receiver
+        session_id = message.context.session_id
         task_id = message.context.task_id
         task_name = message.context.get_task().name
         pre_agent = message.sender
@@ -59,10 +151,12 @@ class TrajectoryDataset(Dataset[DataRow]):
         if task_agent_id not in self.task_agent_map:
             self.task_agent_map[task_agent_id] = 0
         self.task_agent_map[task_agent_id] += 1
-        id = f"{task_agent_id}_{self.task_agent_map[task_agent_id]}"
+        # id = f"{task_agent_id}_{self.task_agent_map[task_agent_id]}_{message.id}_{self.id}"
+        id = message.id
 
         # Build ExpMeta
         exp_meta = ExpMeta(
+            session_id=session_id,
             task_id=task_id,
             task_name=task_name,
             agent_id=agent_id,
@@ -71,52 +165,57 @@ class TrajectoryDataset(Dataset[DataRow]):
             pre_agent=pre_agent
         )
 
-        observation = message.payload
-        node = self.state_manager._find_node(message.id)
-        if node is None or not node.results:
-            logger.error(f"Node result not found for message id: {message.id}, node: {node}")
-            return None
-        agent_results = []
-        ext_info = {}
-        for handle_result in node.results:
-            result = handle_result.result
-            if isinstance(result, Message) and isinstance(result.payload, list):
-                agent_results.extend(result.payload)
-            else:
-                if not ext_info.get("agent_results"):
-                    ext_info["agent_results"] = []
-                ext_info["agent_results"].append(to_serializable(handle_result))
         messages = self._get_llm_messages_from_memory(message)
 
-        def _get_attr_from_action(obj, attr, default=None):
-            if isinstance(obj, ActionModel):
-                return getattr(obj, attr)
-            elif isinstance(obj, dict) and attr in obj:
-                return obj[attr]
-            return default
+        observation = message.payload
+        node = self.state_manager._find_node(message.id)
+        # if node is None or not node.results:
+        #     logger.warning(f"Node result not found for message id: {message.id}, node: {node}")
+        #     return None
+        agent_results = []
+        ext_info = {}
+        if node and node.results:
+            for handle_result in node.results:
+                result = handle_result.result
+                if isinstance(result, Message) and isinstance(result.payload, list):
+                    agent_results.extend(result.payload)
+                else:
+                    if not ext_info.get("agent_results"):
+                        ext_info["agent_results"] = []
+                    ext_info["agent_results"].append(to_serializable(handle_result))
 
-        # append assistant message to messages
-        if agent_results:
-            agent_result = agent_results[0]
-            content = _get_attr_from_action(agent_result, "policy_info", "")
-            last_assistant_message = {
-                "role": "assistant",
-                "content": content
-            }
-            tool_calls = []
-            for action in agent_results:
-                tool_call_id = _get_attr_from_action(action, "tool_call_id")
-                if tool_call_id:
-                    tool_calls.append({
-                        "id": tool_call_id,
-                        "type": "function",
-                        "function": {
-                            "name": _get_attr_from_action(action, "tool_name"),
-                            "arguments": json.dumps(_get_attr_from_action(action, "params"), ensure_ascii=False),
-                        }
-                    })
-            last_assistant_message["tool_calls"] = tool_calls
-            messages.append(last_assistant_message)
+
+            def _get_attr_from_action(obj, attr, default=None):
+                if isinstance(obj, ActionModel):
+                    return getattr(obj, attr)
+                elif isinstance(obj, dict) and attr in obj:
+                    return obj[attr]
+                return default
+
+            # # append assistant message to messages
+            # if agent_results:
+            #     agent_result = agent_results[0]
+            #     content = _get_attr_from_action(agent_result, "policy_info", "")
+            #     last_assistant_message = {
+            #         "role": "assistant",
+            #         "content": content
+            #     }
+            #     tool_calls = []
+            #     for action in agent_results:
+            #         tool_call_id = _get_attr_from_action(action, "tool_call_id")
+            #         if tool_call_id:
+            #             tool_calls.append({
+            #                 "id": tool_call_id,
+            #                 "type": "function",
+            #                 "function": {
+            #                     "name": _get_attr_from_action(action, "tool_name"),
+            #                     "arguments": json.dumps(_get_attr_from_action(action, "params"), ensure_ascii=False),
+            #                 }
+            #             })
+            #     last_assistant_message["tool_calls"] = tool_calls
+            #     messages.append(last_assistant_message)
+        else:
+            logger.warning(f"Node result not found for message id: {message.id}, node: {node} not finished yet.")
 
         # Build Experience
         exp_data = Experience(
@@ -217,9 +316,46 @@ class TrajectoryDataset(Dataset[DataRow]):
             results.append(message)
         return results
 
-    def _get_llm_messages_from_memory(self, message: Message):
+    def _deprecated_get_llm_messages_from_memory(self, message: Message):
+        return self._retrieve_agent_histories(message)
         context = message.context
-        return context.context_info.get("llm_input", [])
+        messages = []
+        for msg in context.context_info.get("llm_input", []):
+            messages.append(msg)
+        llm_response: ModelResponse = context.context_info.get("llm_output", None)
+        if llm_response:
+            last_assistant_message = {
+                "role": "assistant",
+                "content": llm_response.content
+            }
+            tool_calls = llm_response.tool_calls
+            if tool_calls:
+                last_assistant_message["tool_calls"] = [tool_call.to_dict() for tool_call in tool_calls]
+            messages.append(last_assistant_message)
+        return messages
+
+    def _get_llm_messages_from_memory(self, message: Message):
+        memory = MemoryFactory.instance()
+        histories = memory.get_all(
+            filters={
+                "agent_id": message.receiver,
+                # "session_id": message.session_id,
+                "task_id": message.task_id,
+                "memory_type": ["init", "message", "summary"]
+            })
+        messages = []
+        if histories:
+            for history in histories:
+                if isinstance(history, MemoryMessage):
+                    messages.append(history.to_openai_message())
+                else:
+                    if not self.use_tools_in_prompt and history.metadata.get('tool_calls'):
+                        messages.append({'role': history.metadata['role'], 'content': history.content,
+                                         'tool_calls': [history.metadata['tool_calls']]})
+                    else:
+                        messages.append({'role': history.metadata['role'], 'content': history.content,
+                                         "tool_call_id": history.metadata.get("tool_call_id")})
+        return messages
 
     async def _store_datarow(self, data_row: DataRow, block_id: str) -> bool:
         """
@@ -281,6 +417,7 @@ class TrajectoryDataset(Dataset[DataRow]):
         if self.storage:
             try:
                 if block_id:
+                    # TODO: Ensure the returned data is DataRow
                     return await self.storage.get_data_items(block_id=block_id)
                 else:
                     return await self.storage.select_data(condition)
@@ -288,6 +425,73 @@ class TrajectoryDataset(Dataset[DataRow]):
                 logger.error(f"Failed to retrieve stored data: {str(e)}")
                 return []
         return []
+
+    async def save_task_trajectory(self, task_id: str, trajectory_steps: Union[List[TrajectoryItem], List[Dict[str, Any]]]):
+        """Save task trajectory data (list of steps) to storage.
+
+        Args:
+            task_id: The task id.
+            trajectory_steps: The list of trajectory steps, which can be either List[TrajectoryItem] 
+                             or List[Dict[str, Any]] (e.g., from TaskResponse.trajectory which is to_dict() result).
+        """
+        if not self.storage:
+            return
+
+        data_items = []
+        for step in trajectory_steps:
+            # Handle both TrajectoryItem objects and dictionaries
+            if isinstance(step, dict):
+                # Try to convert dict to TrajectoryItem, fallback to dict if conversion fails
+                try:
+                    step_obj = TrajectoryItem.model_validate(step)
+                    data_id = step_obj.id
+                    value = step_obj
+                except Exception as e:
+                    # If conversion fails, use dict directly and extract id from dict
+                    logger.debug(f"Failed to convert dict to TrajectoryItem, using dict directly: {e}")
+                    data_id = step.get("id")
+                    value = step
+            elif isinstance(step, TrajectoryItem):
+                data_id = step.id
+                value = step
+            else:
+                logger.warning(f"Unexpected trajectory step type: {type(step)}, skipping")
+                continue
+            
+            kwargs = {
+                "block_id": task_id,
+                "value": value
+            }
+            if data_id:
+                kwargs["id"] = data_id
+            data_items.append(Data(**kwargs))
+
+        if data_items:
+            try:
+                await self.storage.create_datas(data_items, block_id=task_id, overwrite=True)
+            except Exception as e:
+                logger.error(f"Failed to save task trajectory: {str(e)}")
+
+    async def get_task_trajectory(self, task_id: str) -> List[TrajectoryItem]:
+        """Get task trajectory data from storage.
+
+        Args:
+            task_id: The task id.
+
+        Returns:
+            List[Dict[str, Any]]: The list of trajectory steps.
+        """
+        if not self.storage:
+            return []
+
+        try:
+            data_items = await self.storage.get_data_items(block_id=task_id)
+            if data_items:
+                return [item.value for item in data_items if hasattr(item, "value")]
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get task trajectory: {str(e)}")
+            return []
 
     def to_json(self) -> List[Dict[str, Any]]:
         return [to_serializable(data_row) for data_row in self.data]

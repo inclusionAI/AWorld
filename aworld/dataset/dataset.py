@@ -8,6 +8,7 @@ from typing import TypeVar, Generic, Dict, List, Any, Iterator, Optional, Iterab
 
 from pydantic import BaseModel, Field
 
+from aworld.utils import import_package
 from aworld.dataset.sampler import Sampler
 from aworld.dataset.dataloader import DataLoader
 from aworld.logs.util import logger
