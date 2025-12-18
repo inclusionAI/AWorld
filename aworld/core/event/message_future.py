@@ -84,7 +84,7 @@ class MessageFuture:
         from aworld.logs.util import logger
         logger.info(f"Waiting for message {self.msg_id}")
         if context:
-            from aworld.core.task import TaskStatusValue
+            from aworld.core.common import TaskStatusValue
             task_status = await context.get_task_status()
             if (task_status == TaskStatusValue.CANCELLED
                     or task_status == TaskStatusValue.INTERRUPTED):

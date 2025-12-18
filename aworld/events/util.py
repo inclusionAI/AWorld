@@ -55,7 +55,7 @@ async def send_message(msg: Message):
     """
     context = msg.context
     if context:
-        from aworld.core.task import TaskStatusValue
+        from aworld.core.common import TaskStatusValue
         task_status = await context.get_task_status()
         if task_status == TaskStatusValue.CANCELLED or task_status == TaskStatusValue.INTERRUPTED:
             return
@@ -76,7 +76,7 @@ async def send_and_wait_message(msg: Message) -> List['HandleResult'] | None:
     """
     context = msg.context
     if context:
-        from aworld.core.task_status import TaskStatusValue
+        from aworld.core.common import TaskStatusValue
         task_status = await context.get_task_status()
         if task_status == TaskStatusValue.CANCELLED or task_status == TaskStatusValue.INTERRUPTED:
             return None
@@ -181,7 +181,7 @@ async def send_message_with_future(msg: Message) -> MessageFuture:
 
 
     if context:
-        from aworld.core.task_status import TaskStatusValue
+        from aworld.core.common import TaskStatusValue
         task_status = await context.get_task_status()
         if task_status == TaskStatusValue.CANCELLED or task_status == TaskStatusValue.INTERRUPTED:
             # Task cancelled or interrupted, return a completed Future with empty result

@@ -3,7 +3,7 @@ import asyncio
 import copy
 import traceback
 import uuid
-from typing import Optional, Any, List, Dict, Tuple
+from typing import Optional, Any, List, Dict, Tuple, TYPE_CHECKING
 
 from aworld import trace
 from aworld.config import AgentConfig, AgentMemoryConfig
@@ -30,7 +30,7 @@ from .state.task_state import SubTask
 from .utils.text_cleaner import truncate_content
 from .worksapces import ApplicationWorkspace
 from .worksapces import ApplicationWorkspace, workspace_repo
-from ...task import TaskStatus
+from aworld.core.common import TaskStatus
 
 DEFAULT_VALUE = None
 
@@ -755,9 +755,9 @@ class ApplicationContext(AmniContext):
 
         # Record task relationship
         self.add_task_node(
-            caller_agent_info=self.agent_info,
             child_task_id=sub_context.task_id,
             parent_task_id=self.task_id,
+            caller_agent_info=self.agent_info,
             caller_id=self.agent_info.current_agent_id if self.agent_info and hasattr(self.agent_info, 'current_agent_id') else None
         )
 
@@ -1022,12 +1022,12 @@ class ApplicationContext(AmniContext):
         self.task_state.task_output.result = result
 
     @property
-    def task_status(self) -> TaskStatus:
+    def task_status(self) -> 'TaskStatus':
         """Get current task status."""
         return self.task_state_service.get_task_status()
 
     @task_status.setter
-    def task_status(self, status: TaskStatus):
+    def task_status(self, status: 'TaskStatus'):
         """Set task status."""
         self.task_state_service.set_task_status(status)
 
@@ -1740,7 +1740,7 @@ class ApplicationContext(AmniContext):
         else:
             return await super().get_task_trajectory(task_id)
 
-    def add_task_node(self, caller_agent_info, child_task_id: str, parent_task_id: str, **kwargs):
+    def add_task_node(self, child_task_id: str, parent_task_id: str, caller_agent_info=None, **kwargs):
         """Record the relationship between child task and parent task.
         Delegate to root context.
         """
@@ -1748,6 +1748,6 @@ class ApplicationContext(AmniContext):
         if not agent_info:
             agent_info = self.agent_info
         if self.root != self:
-            self.root.add_task_node(agent_info, child_task_id, parent_task_id, **kwargs)
+            self.root.add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)
         else:
-            super().add_task_node(agent_info, child_task_id, parent_task_id, **kwargs)
+            super().add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)
