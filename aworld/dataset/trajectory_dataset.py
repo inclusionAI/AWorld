@@ -29,10 +29,8 @@ if TYPE_CHECKING:
     from aworld.dataset.trajectory_strategy import TrajectoryStrategy
     from aworld.runners.state_manager import RuntimeStateManager
 
-
 def _trajectory_block_id(task_id: str) -> str:
     return f"trajectory_{task_id}"
-
 
 class TrajectoryDataset(Dataset[TrajectoryItem]):
     # Allow arbitrary (non-pydantic) types like RuntimeStateManager in fields
@@ -52,7 +50,7 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
         from aworld.dataset.trajectory_strategy import TrajectoryStrategy, DefaultTrajectoryStrategy
 
         if strategy is None:
-            self.strategy = DefaultTrajectoryStrategy()
+             self.strategy = DefaultTrajectoryStrategy()
         elif isinstance(strategy, str):
             try:
                 self.strategy = new_instance(strategy)
@@ -64,23 +62,23 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
         elif isinstance(strategy, type) and issubclass(strategy, TrajectoryStrategy):
             self.strategy = strategy()
         else:
-            logger.warning(f"Invalid strategy type: {type(strategy)}, using default.")
-            self.strategy = DefaultTrajectoryStrategy()
+             logger.warning(f"Invalid strategy type: {type(strategy)}, using default.")
+             self.strategy = DefaultTrajectoryStrategy()
 
     async def generate_and_save(self, task_id: str, runner: 'TaskRunner') -> List[Dict[str, Any]]:
         """Generate trajectory using strategy and save to storage."""
         if not self.strategy:
-            self.set_strategy(None)
+             self.set_strategy(None)
 
         try:
             trajectory_data = await self.strategy.generate(task_id, runner)
             if trajectory_data:
-                normalized = [
-                    item.to_dict() if hasattr(item, "to_dict") else item
-                    for item in trajectory_data
-                ]
-                await self.save_task_trajectory(task_id, normalized)
-                return normalized
+                 normalized = [
+                     item.to_dict() if hasattr(item, "to_dict") else item
+                     for item in trajectory_data
+                 ]
+                 await self.save_task_trajectory(task_id, normalized)
+                 return normalized
         except Exception as e:
             logger.error(f"Failed to generate and save trajectory: {e}")
         return []
@@ -134,15 +132,15 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
 
     @classmethod
     async def from_messages(
-            cls,
-            *,
-            name: str,
-            event_messages: List[Message],
-            task_id: str,
-            state_manager: RuntimeStateManager = None,
-            storage: Optional[Storage[Any]] = None,
-            enable_storage: bool = True,
-            extra_transform: Optional[Callable[[TrajectoryItem], TrajectoryItem]] = None,
+        cls,
+        *,
+        name: str,
+        event_messages: List[Message],
+        task_id: str,
+        state_manager: RuntimeStateManager = None,
+        storage: Optional[Storage[Any]] = None,
+        enable_storage: bool = True,
+        extra_transform: Optional[Callable[[TrajectoryItem], TrajectoryItem]] = None,
     ) -> "TrajectoryDataset":
         """
         Create TrajectoryDataset from event messages.
@@ -249,8 +247,7 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
                                          "tool_call_id": history.metadata.get("tool_call_id")})
         return messages
 
-    async def save_task_trajectory(self, task_id: str,
-                                   trajectory_steps: Union[List[TrajectoryItem], List[Dict[str, Any]]]):
+    async def save_task_trajectory(self, task_id: str, trajectory_steps: Union[List[TrajectoryItem], List[Dict[str, Any]]]):
         """Save task trajectory data (list of steps) to storage.
 
         Args:
@@ -422,7 +419,6 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
         except Exception as e:
             logger.warn(f"Failed to upload {filepath} to OSS: {str(e)}")
 
-
 async def generate_trajectory_from_strategy(
         task_id: str,
         trajectory_strategy: Type['TrajectoryStrategy'] | None,
@@ -462,13 +458,12 @@ async def generate_trajectory_from_strategy(
         logger.error(f"Failed to generate trajectory: {str(e)}.{traceback.format_exc()}")
         return None
 
-
 async def generate_trajectory(
-        messages: List[Message],
-        task_id: str,
-        state_mng: RuntimeStateManager = None,
-        storage: Optional[Storage[Any]] = None,
-        enable_storage: bool = True
+    messages: List[Message],
+    task_id: str,
+    state_mng: RuntimeStateManager = None,
+    storage: Optional[Storage[Any]] = None,
+    enable_storage: bool = True
 ) -> List[Dict[str, Any]] | None:
     """
     Generate trajectory from messages and optionally store to storage.
@@ -497,7 +492,7 @@ async def generate_trajectory(
 
         if enable_storage and traj_dataset.storage:
             logger.info(f"Trajectory data for task {task_id} stored successfully. "
-                        f"Total {len(traj_dataset.data)} data rows")
+                       f"Total {len(traj_dataset.data)} data rows")
 
         return trajectory_data
     except Exception as e:
