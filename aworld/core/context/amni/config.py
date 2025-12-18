@@ -328,7 +328,7 @@ class AmniConfigFactory:
         if env_config is None:
             env_config = ContextEnvConfig()
 
-        if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
+        if not level or level == AmniConfigLevel.PILOT:
             config = get_default_config()
             config.agent_config = AgentContextConfig(neuron_names=neuron_names)
             if neuron_names:
@@ -341,8 +341,8 @@ class AmniConfigFactory:
             config.debug_mode = debug_mode
             config.agent_config = AgentContextConfig(
                 enable_system_prompt_augment=True,
-                neuron_names=neuron_names,
-                history_rounds=20,
+                neuron_names=neuron_names or ["working_dir", "basic"],
+                history_rounds=kwargs.get("history_rounds", 20),
                 enable_summary=kwargs.get("enable_summary", True),
                 summary_rounds=kwargs.get("summary_rounds", 30),
                 summary_context_length=kwargs.get("summary_context_length", 40960),

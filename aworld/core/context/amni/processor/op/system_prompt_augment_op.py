@@ -86,28 +86,28 @@ class SystemPromptAugmentOp(BaseOp):
         namespace = getattr(event, 'namespace', None)
 
         # Process components
-        neuron_names = agent_context_config.neuron_names
+        neuron_names = agent_context_config.neuron_names or []
 
         # Enable PTC Feature
         if agent.ptc_tools:
-            if not neuron_names:
-                neuron_names = []
             from aworld.experimental.ptc.ptc_neuron import PTC_NEURON_NAME
             if PTC_NEURON_NAME not in neuron_names:
                neuron_names.append(PTC_NEURON_NAME)
 
+        # Enable Skill Feature
+        if agent.skill_configs:
+            from aworld.core.context.amni.prompt.neurons.skill_neuron import SKILL_NEURON_NAME
+            if SKILL_NEURON_NAME not in neuron_names:
+                neuron_names.append(SKILL_NEURON_NAME)
+
         # Enable Planing Feature
         if agent_context_config.automated_cognitive_ingestion:
-            if not neuron_names:
-                neuron_names = []
             from aworld.core.context.amni.prompt.neurons.todo_neuron import TODO_NEURON_NAME
             if TODO_NEURON_NAME not in neuron_names:
                neuron_names.append(TODO_NEURON_NAME)
 
         # Enable Knowledge Feature
         if agent_context_config.automated_cognitive_ingestion:
-            if not neuron_names:
-                neuron_names = []
             from aworld.core.context.amni.prompt.neurons.action_info_neuron import ACTION_INFO_NEURON_NAME
             if ACTION_INFO_NEURON_NAME not in neuron_names:
                neuron_names.append(ACTION_INFO_NEURON_NAME)

@@ -47,7 +47,7 @@ async def run(user_input: str):
 
     # 2. build context config
     context_config = AmniConfigFactory.create(
-        AmniConfigLevel.NAVIGATOR,
+        AmniConfigLevel.COPILOT,
         debug_mode=True
     )
 
