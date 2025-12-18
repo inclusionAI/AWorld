@@ -144,38 +144,38 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
     ) -> "TrajectoryDataset":
         """
         Create TrajectoryDataset from event messages.
-
+        
         Args:
             name: Dataset name
             event_messages: List of event messages to process
             task_id: Task identifier
             state_manager: Runtime state manager instance
-            storage: Storage instance for trajectory data. If None and enable_storage is True,
+            storage: Storage instance for trajectory data. If None and enable_storage is True, 
                     creates default InmemoryStorage
             enable_storage: Whether to enable storage (default: True)
             extra_transform: Optional transform function
-
+            
         Returns:
             TrajectoryDataset instance with processed data
         """
         if not state_manager:
             from aworld.runners.state_manager import EventRuntimeStateManager
             state_manager = EventRuntimeStateManager.instance()
-
+        
         # Create default InmemoryStorage if storage is not provided
         if storage is None and enable_storage:
             logger.info("No storage provided, creating default InmemoryStorage for trajectory data")
             storage = InmemoryStorage(InmemoryConfig(max_capacity=100000))
-
+        
         data: List[TrajectoryItem] = []
         ds = cls(
-            name=name,
-            data=[],
+            name=name, 
+            data=[], 
             state_manager=state_manager,
             storage=storage,
             enable_storage=enable_storage
         )
-
+        
         # Create storage block for this task's trajectory data (best-effort)
         block_id = _trajectory_block_id(task_id)
         if ds.storage and ds.enable_storage:
@@ -184,7 +184,7 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
                 logger.info(f"Created storage block: {block_id}")
             except Exception as e:
                 logger.error(f"Failed to create storage block {block_id}: {str(e)}")
-
+        
         if event_messages:
             valid_agent_messages = await cls._filter_replay_messages(event_messages, task_id)
             if valid_agent_messages:
@@ -192,11 +192,11 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
                     item = await ds.message_to_trajectory_item(msg)
                     if item:
                         data.append(item)
-
+        
         # Batch store all trajectory items to storage
         if data and ds.storage and ds.enable_storage:
             await ds.save_task_trajectory(task_id, data)
-
+        
         ds.data = data
         if extra_transform is not None:
             ds.data = [extra_transform(it) for it in ds.data]
@@ -426,13 +426,13 @@ async def generate_trajectory_from_strategy(
 ) -> List[Dict[str, Any]] | None:
     """
     Generate trajectory using a custom strategy or default implementation.
-
+    
     Args:
         task_id (str): Task identifier
         trajectory_strategy (Type[TrajectoryStrategy]): Strategy class for trajectory generation.
             If None, uses DefaultTrajectoryStrategy
         event_runner (TaskRunner): Task runner containing event manager and state manager
-
+        
     Returns:
         Optional[List[Dict[str, Any]]]: Generated trajectory data or None
     """
@@ -449,7 +449,7 @@ async def generate_trajectory_from_strategy(
             # Fallback to default strategy
             from aworld.dataset.trajectory_strategy import DefaultTrajectoryStrategy
             strategy = DefaultTrajectoryStrategy()
-
+    
     # Use the strategy to generate trajectory
     try:
         trajectory = await strategy.generate(task_id, event_runner)
@@ -459,29 +459,29 @@ async def generate_trajectory_from_strategy(
         return None
 
 async def generate_trajectory(
-    messages: List[Message],
-    task_id: str,
+    messages: List[Message], 
+    task_id: str, 
     state_mng: RuntimeStateManager = None,
     storage: Optional[Storage[Any]] = None,
     enable_storage: bool = True
 ) -> List[Dict[str, Any]] | None:
     """
     Generate trajectory from messages and optionally store to storage.
-
+    
     Args:
         messages: List of event messages
         task_id: Task identifier
         state_mng: Runtime state manager
         storage: Storage instance. If None and enable_storage is True, creates InmemoryStorage
         enable_storage: Whether to enable storage (default: True)
-
+        
     Returns:
         List of trajectory data as dictionaries, or None if failed
     """
     traj_dataset = await TrajectoryDataset.from_messages(
-        name=f"{task_id}_trajectory_dataset",
-        event_messages=messages,
-        task_id=task_id,
+        name=f"{task_id}_trajectory_dataset", 
+        event_messages=messages, 
+        task_id=task_id, 
         state_manager=state_mng,
         storage=storage,
         enable_storage=enable_storage
@@ -489,11 +489,11 @@ async def generate_trajectory(
 
     try:
         trajectory_data = traj_dataset.to_json()
-
+        
         if enable_storage and traj_dataset.storage:
             logger.info(f"Trajectory data for task {task_id} stored successfully. "
                        f"Total {len(traj_dataset.data)} data rows")
-
+        
         return trajectory_data
     except Exception as e:
         logger.error(f"Failed to save trajectories: {str(e)}.{traceback.format_exc()}")
