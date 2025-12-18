@@ -11,7 +11,6 @@ import abc
 import json
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from aworld.core.agent.base import AgentFactory
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
 from aworld.dataset.types import (
@@ -186,9 +185,6 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         return state
 
     async def build_trajectory_action(self, source: Any, **kwargs) -> Optional[TrajectoryAction]:
-        from aworld.core.event.base import Message
-        if not isinstance(source, Message):
-            return None
         from aworld.core.common import ActionModel
         from aworld.core.event.base import Message
         from aworld.utils.serialized_util import to_serializable
@@ -214,12 +210,10 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
             return default
 
         action_content = None
-        agent_name = None
         tool_calls: List[Dict[str, Any]] = []
         if agent_results:
             first_action = agent_results[0]
             action_content = _get_attr_from_action(first_action, "policy_info", None)
-            agent_name = _get_attr_from_action(first_action, "agent_name")
             for action in agent_results:
                 tool_call_id = _get_attr_from_action(action, "tool_call_id")
                 if tool_call_id:
@@ -231,10 +225,7 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
                             "arguments": json.dumps(_get_attr_from_action(action, "params"), ensure_ascii=False),
                         }
                     })
-        if not agent_name:
-            agent_name = source.receiver
-        agent = AgentFactory.agent_instance(agent_name)
-        action = TrajectoryAction(content=action_content, tool_calls=tool_calls, is_agent_finished=agent.finished)
+        action = TrajectoryAction(content=action_content, tool_calls=tool_calls)
         return action
 
     async def build_trajectory_reward(self, source: Any, **kwargs) -> Optional[TrajectoryReward]:
