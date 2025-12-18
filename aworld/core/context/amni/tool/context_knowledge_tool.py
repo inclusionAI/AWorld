@@ -122,6 +122,12 @@ class ContextKnowledgeAction(ToolAction):
     ADD_KNOWLEDGE = ToolActionInfo(
         name="add_knowledge",
         input_params={
+            "name": ParamInfo(
+                name="name",
+                type="string",
+                required=True,
+                desc="The name of the knowledge artifact"
+            ),
             "knowledge_content": ParamInfo(
                 name="knowledge_content",
                 type="string",
@@ -346,6 +352,7 @@ class ContextKnowledgeTool(AsyncTool):
                         result = "\n".join(result_lines)
                     
                 elif action_name == ContextKnowledgeAction.ADD_KNOWLEDGE.value.name:
+                    name = action.params.get("name", "")
                     knowledge_content = action.params.get("knowledge_content", "")
                     content_summary = action.params.get("content_summary", "")
                     
@@ -353,15 +360,19 @@ class ContextKnowledgeTool(AsyncTool):
                         raise ValueError("knowledge_content and content_summary are required")
                     
                     import uuid
+                    metadata = {
+                        "context_type": "actions_info",
+                        "task_id": getattr(message.context, 'task_id', None),
+                        "summary": content_summary
+                    }
+                    if name:
+                        metadata["name"] = name
+                    
                     artifact = Artifact(
                         artifact_id=f"actions_info_{str(uuid.uuid4())}",
                         artifact_type=ArtifactType.TEXT,
                         content=knowledge_content,
-                        metadata={
-                            "context_type": "actions_info",
-                            "task_id": getattr(message.context, 'task_id', None),
-                            "summary": content_summary
-                        }
+                        metadata=metadata
                     )
                     await message.context.knowledge_service.add_knowledge(artifact, namespace, index=False)
                     result = f"✅ Knowledge added successfully\n📝 Knowledge ID: {artifact.artifact_id}\n📄 Summary: {content_summary}\n💡 Use get_knowledge_by_id({artifact.artifact_id}) to retrieve content"
