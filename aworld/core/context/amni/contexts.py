@@ -109,10 +109,10 @@ class ContextManager(BaseModel):
             None
         """
         # 1. Save conversations to memory
-        save_memory_task = self._save_conversations_to_memory(context, **kwargs)
+        # save_memory_task = self._save_conversations_to_memory(context, **kwargs)
 
         # 2. Save checkpoint
-        save_checkpoint_task = self._save_context_checkpoint_async(context, **kwargs)
+        # save_checkpoint_task = self._save_context_checkpoint_async(context, **kwargs)
 
         # 3. refresh workspace
         refresh_workspace_working_dir = self._refresh_workspace(context)
@@ -120,8 +120,8 @@ class ContextManager(BaseModel):
 
         # 3. Execute all three tasks concurrently
         await asyncio.gather(
-            save_memory_task,
-            save_checkpoint_task,
+            # save_memory_task,
+            # save_checkpoint_task,
             refresh_workspace_working_dir
         )
 
