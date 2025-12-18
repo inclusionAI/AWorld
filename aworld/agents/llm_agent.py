@@ -241,8 +241,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         # Stateless tool
         try:
+            tool_names = self.tool_names or []
+            if context.get_agent_context_config(self.id()).automated_reasoning_orchestrator:
+                from aworld.core.context.amni.tool.context_planning_tool import CONTEXT_PLANNING
+                if CONTEXT_PLANNING not in tool_names:
+                    tool_names.extend([CONTEXT_PLANNING])
+
+            if context.get_agent_context_config(self.id()).automated_cognitive_ingestion:
+                from aworld.core.context.amni.tool.context_knowledge_tool import CONTEXT_KNOWLEDGE
+                if CONTEXT_KNOWLEDGE not in tool_names:
+                    tool_names.extend([CONTEXT_KNOWLEDGE])
             self.tools = tool_desc_transform(get_tool_desc(),
-                                             tools=self.tool_names if self.tool_names else [],
+                                             tools=tool_names,
                                              black_tool_actions=self.black_tool_actions)
         except:
             logger.warning(f"{self.id()} get tools desc fail, no tool to use. error: {traceback.format_exc()}")

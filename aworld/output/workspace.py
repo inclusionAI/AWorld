@@ -126,7 +126,7 @@ class WorkSpace(BaseModel):
             else:
                 self.artifacts = []
                 self.metadata = {}
-            logger.info(f"load_workspace_data finished, cost {time.time() - start}s")
+            logger.info(f"load_workspace_data finished(load_artifact_content={load_artifact_content}), cost {time.time() - start}s")
         except Exception as e:
             logger.warning(f"Error loading workspace data: {traceback.print_exc()}")
             return None
