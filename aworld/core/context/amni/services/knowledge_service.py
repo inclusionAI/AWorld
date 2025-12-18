@@ -910,20 +910,11 @@ class KnowledgeService(IKnowledgeService):
         """
         Add or update todo content in workspace.
         
-        This method checks if planning is enabled before proceeding.
-        If enable_planing is False, the operation will be skipped.
-        
         Args:
             todo_content: The todo content to add or update
             namespace: Namespace for storage
         """
-        
-        
-        # Check if planning is enabled
-        agent_config = self._context.get_agent_context_config(namespace)
-        if not agent_config or not agent_config.enable_planing:
-            logger.warning(f"⚠️ Planning is not enabled (enable_planing=False). Skipping add_todo operation.")
-            return
+        from aworld.logs.util import logger
         
         workspace = await self._context._ensure_workspace()
         workspace._load_workspace_data()
@@ -954,22 +945,13 @@ class KnowledgeService(IKnowledgeService):
         """
         Get todo content from workspace.
         
-        This method checks if planning is enabled before proceeding.
-        If enable_planing is False, returns None.
-        
         Args:
             namespace: Namespace for retrieval
             
         Returns:
-            Todo content string if found and planning is enabled, None otherwise
+            Todo content string if found, None otherwise
         """
-        
-        
-        # Check if planning is enabled
-        agent_config = self._context.get_agent_context_config(namespace)
-        if not agent_config or not agent_config.enable_planing:
-            logger.debug(f"Planning is not enabled (enable_planing=False). Returning None for get_todo.")
-            return None
+        from aworld.logs.util import logger
         
         workspace = await self._context._ensure_workspace()
         
