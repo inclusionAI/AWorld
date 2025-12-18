@@ -4,7 +4,8 @@ from aworld.sandbox import Sandbox
 
 
 async def main():
-    #1、注册中心，通过环境变量获取注册中心地址，如果不填写默认本地，默认注册中心本地地址是：~/workspace/registry.json
+    # Registration center, obtain the registration center address through env variables.
+    # If `ENV_REGISTRY_URL` is not filled in, use: ~/workspace/registry.json
     os.environ["ENV_REGISTRY_URL"] = '**'
     os.environ["REGISTRY_TOKEN"] = '**'
     servers = {
@@ -18,17 +19,19 @@ async def main():
         }
     }
     result = await Sandbox.register(servers=servers)
-    #
-    # 2、使用注册中心调用环境
+
+    # 2、call the environment
     sand_box = Sandbox(
         tools=["read_text_file"],
         mcp_servers=["filesystem"])
 
-    # 获取相关环境工具和调用工具
-    mcp_tools = await sand_box.list_tools()  # 调用工具直接call_tool
+    # get tools
+    mcp_tools = await sand_box.list_tools()
     print(mcp_tools)
-    #
-    # 3、使用自定义配置使用环境
+    # call tools
+    # await sand_box.call_tool(...)
+
+    # 3、custom config
     sand_box = Sandbox(
         mcp_servers=["filesystem"],
         mcp_config={
@@ -43,11 +46,10 @@ async def main():
                 }
             }
         })
-    # 获取相关环境工具和调用工具
-    mcp_tools = await sand_box.list_tools()  # 调用工具直接call_tool
+    mcp_tools = await sand_box.list_tools()
     print(mcp_tools)
 
-    # 4、外部工具安装到环境内部
+    # 4、External tools
     os.environ["CUSTOM_ENV_URL"] = "***"
     os.environ["CUSTOM_ENV_TOKEN"] = "***"
     os.environ["CUSTOM_ENV_IMAGE_VERSION"] = '***'
@@ -72,8 +74,8 @@ async def main():
             }
         }
     )
-    # 获取相关环境工具和调用工具
     mcp_tools = await sand_box.list_tools()
+    print(mcp_tools)
 
 
 if __name__ == "__main__":

@@ -2,10 +2,12 @@
 # Copyright (c) 2025 inclusionAI.
 import time
 import uuid
-
 from dataclasses import dataclass, field
-from dataclasses_json import dataclass_json
 from typing import Any
+
+from pydantic import BaseModel
+
+from aworld.utils.serialized_util import to_serializable
 
 
 @dataclass
@@ -16,9 +18,7 @@ class DataBlock:
     meta_info: dict = field(default_factory=dict)
 
 
-@dataclass_json
-@dataclass
-class Data:
+class Data(BaseModel):
     """The base definition structure of AWorld data storage."""
     block_id: str = field(default=None)
     id: str = field(default=uuid.uuid4().hex)
@@ -33,3 +33,14 @@ class Data:
 
     def model_dump(self):
         return self.to_dict()
+
+    def to_dict(self):
+        return {
+            "block_id": self.block_id,
+            "id": self.id,
+            "value": to_serializable(self.value) if self.value is not None else None,
+            "create_at": self.create_at,
+            "update_at": self.update_at,
+            "expires_at": self.expires_at,
+            "meta_info": self.meta_info
+        }
