@@ -86,8 +86,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         feedback_tool_result: bool = True,
         wait_tool_result: bool = False,
         sandbox: Sandbox = None,
-        enable_planing=False,
-        enable_knowledge=False,
         **kwargs,
     ):
         """Base agent init.
@@ -148,21 +146,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             self.tool_names.extend([PTC_TOOL])
         else:
             self.ptc_tools = []
-
-        if enable_planing:
-            from aworld.core.context.amni.tool.context_planning_tool import CONTEXT_PLANNING
-            self.tool_names.extend([CONTEXT_PLANNING])
-            self.enable_planing = True
-        else:
-            self.enable_planing = False
-
-        if enable_knowledge:
-            from aworld.core.context.amni.tool.context_knowledge_tool import CONTEXT_KNOWLEDGE
-            self.tool_names.extend([CONTEXT_KNOWLEDGE])
-            self.enable_knowledge = True
-        else:
-            self.enable_knowledge = False
-
 
         # tool_name: [tool_action1, tool_action2, ...]
         self.black_tool_actions: Dict[str, List[str]] = black_tool_actions or {}

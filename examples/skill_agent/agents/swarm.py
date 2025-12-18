@@ -11,9 +11,7 @@ def build_swarm():
         desc="orchestrator_agent",
         conf=orchestrator_agent_config,
         system_prompt=orchestrator_agent_system_prompt,
-        mcp_config=MCP_CONFIG,
-        enable_planing=True,
-        enable_knowledge=True
+        mcp_config=MCP_CONFIG
     )
 
     return TeamSwarm(orchestrator_agent)

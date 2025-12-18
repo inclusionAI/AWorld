@@ -67,10 +67,11 @@ class SystemPromptAugmentOp(BaseOp):
         Supports filtering components configured in component_neuron based on namespace
         """
         agent_id = getattr(event, 'agent_id', None)
+        agent_context_config = context.get_agent_context_config(agent_id)
         agent = AgentFactory.agent_instance(agent_id)
         if not agent:
             return None
-        if not context.get_agent_context_config(agent_id).enable_system_prompt_augment and not agent.ptc_tools:
+        if not agent_context_config.enable_system_prompt_augment and not agent.ptc_tools:
             logger.info(f"[SYSTEM_PROMPT_AUGMENT_OP] switch is disabled")
             return None
 
@@ -85,7 +86,7 @@ class SystemPromptAugmentOp(BaseOp):
         namespace = getattr(event, 'namespace', None)
 
         # Process components
-        neuron_names = context.get_agent_context_config(agent_id).neuron_names
+        neuron_names = agent_context_config.neuron_names
 
         # Enable PTC Feature
         if agent.ptc_tools:
@@ -96,7 +97,7 @@ class SystemPromptAugmentOp(BaseOp):
                neuron_names.append(PTC_NEURON_NAME)
 
         # Enable Planing Feature
-        if agent.enable_planing:
+        if agent_context_config.automated_cognitive_ingestion:
             if not neuron_names:
                 neuron_names = []
             from aworld.core.context.amni.prompt.neurons.todo_neuron import TODO_NEURON_NAME
@@ -104,7 +105,7 @@ class SystemPromptAugmentOp(BaseOp):
                neuron_names.append(TODO_NEURON_NAME)
 
         # Enable Knowledge Feature
-        if agent.enable_knowledge:
+        if agent_context_config.automated_cognitive_ingestion:
             if not neuron_names:
                 neuron_names = []
             from aworld.core.context.amni.prompt.neurons.action_info_neuron import ACTION_INFO_NEURON_NAME
