@@ -46,6 +46,28 @@ DOCUMENT_SKILLS = {
     },
 }
 
+PLANNING_SKILLS = {
+    "planning": {
+        "name": "Planning",
+        "desc": "Task planning and progress tracking capability",
+        "usage": "Create, manage and track todos to monitor task execution progress and organize work efficiently",
+        "tool_list": {
+            "amnicontext-server": ["add_todo", "get_todo"]
+        },
+        "active": True
+    },
+    "scratchpad": {
+        "name": "Scratchpad",
+        "desc": "Knowledge management and documentation capability",
+        "usage": "Create, update, and manage knowledge documents to record key information, findings, and insights during task execution",
+        "tool_list": {
+            "amnicontext-server": ["add_knowledge", "get_knowledge", "grep_knowledge", "list_knowledge_info",
+                                   "update_knowledge"]
+        },
+        "active": True
+    }
+}
+
 BROWSER_SKILLS = {
     "browser": {
         "name": "Browser",
@@ -71,5 +93,6 @@ orchestrator_agent_config = AgentConfig(
         llm_base_url=os.environ.get("LLM_BASE_URL")
     ),
     use_vision=False,
-    skill_configs= BROWSER_SKILLS | CUSTOM_SKILLS
+    skill_configs= PLANNING_SKILLS | BROWSER_SKILLS| CUSTOM_SKILLS
+    # skill_configs= PLANNING_SKILLS | BASIC_SKILLS | BROWSER_SKILLS
 )

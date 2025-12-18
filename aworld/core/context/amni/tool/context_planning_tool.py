@@ -23,7 +23,7 @@ class ContextPlanningAction(ToolAction):
         input_params={
             "todo_content": ParamInfo(
                 name="todo_content",
-                type="string",
+                type="str",
                 required=True,
                 desc="The todo content in markdown format. Use [ ] for incomplete tasks and [x] for completed tasks."
             )
@@ -113,7 +113,7 @@ class ContextPlanningTool(AsyncTool):
                     todo_content = await message.context.knowledge_service.get_todo(namespace=namespace)
                     
                     if todo_content is None:
-                        result = "📋 Todo is empty"
+                        result = "Todo is empty or planning is not enabled (enable_planing=False)"
                     else:
                         result = f"📋 Current Todo:\n\n{todo_content}"
                     
