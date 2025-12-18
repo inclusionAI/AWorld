@@ -2,19 +2,17 @@ import abc
 import asyncio
 import copy
 import traceback
-import uuid
-from typing import Optional, Any, List, Dict, Tuple, TYPE_CHECKING
+from typing import Optional, Any, List, Dict, Tuple
 
 from aworld import trace
 from aworld.config import AgentConfig, AgentMemoryConfig
+from aworld.core.common import TaskStatus
 # lazy import
 from aworld.core.context.base import Context
 from aworld.dataset.types import TrajectoryItem
-from aworld.events.util import send_message_with_future
 from aworld.logs.util import logger
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace, StreamingOutputs
-from aworld.output.artifact import ArtifactAttachment
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory, ContextEnvConfig
 from .contexts import ContextManager
@@ -30,7 +28,6 @@ from .state.task_state import SubTask
 from .utils.text_cleaner import truncate_content
 from .worksapces import ApplicationWorkspace
 from .worksapces import ApplicationWorkspace, workspace_repo
-from aworld.core.common import TaskStatus
 
 DEFAULT_VALUE = None
 
