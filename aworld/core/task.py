@@ -16,10 +16,7 @@ from aworld.core.common import Config, Observation, StreamingMode, TaskStatus, T
 from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
-
-
-if TYPE_CHECKING:
-    from aworld.core.context.amni.config import AmniContextConfig
+from aworld.core.context.amni.config import AmniContextConfig
 
 
 @dataclass
