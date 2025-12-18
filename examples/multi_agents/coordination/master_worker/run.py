@@ -1,3 +1,4 @@
+import asyncio
 import os
 from pathlib import Path
 import sys
@@ -52,7 +53,7 @@ def get_single_action_team_swarm(user_input):
         name="plan_agent",
         desc="Agent responsible for deciding whether to execute search or summary based on current context",
         conf=agent_config,
-        system_prompt_template=plan_sys_prompt,
+        system_prompt=plan_sys_prompt,
         use_planner=False,
         use_tools_in_prompt=False
     )
@@ -62,7 +63,7 @@ def get_single_action_team_swarm(user_input):
         name="search_agent",
         desc="Agent responsible for executing web search tasks",
         conf=agent_config,
-        system_prompt_template=search_sys_prompt,
+        agent_config=search_sys_prompt,
         tool_names=[Tools.SEARCH_API.value]
     )
     
@@ -71,7 +72,7 @@ def get_single_action_team_swarm(user_input):
         name="summary_agent",
         desc="Agent responsible for summarizing information and generating final reports",
         conf=agent_config,
-        system_prompt_template=summary_sys_prompt,
+        agent_config=summary_sys_prompt,
     )
 
     # Create TeamSwarm, with plan_agent as the lead Agent and other Agents as executors
@@ -80,16 +81,19 @@ def get_single_action_team_swarm(user_input):
     
 
 if __name__ == "__main__":
-    # User input example
-    user_input = "Please provide me with information about the latest developments in large language models"
-    
-    # Create single-action version of TeamSwarm
-    swarm = get_single_action_team_swarm(user_input)
-    
-    # Run TeamSwarm
-    result = Runners.sync_run(
-        input=user_input,
-        swarm=swarm
-    )
-    
-    print("Single-action TeamSwarm execution result: ", result) 
+
+    async def run():
+        # User input example
+        user_input = "Please provide me with information about the latest developments in large language models"
+
+        # Create single-action version of TeamSwarm
+        swarm = get_single_action_team_swarm(user_input)
+
+        # Run TeamSwarm
+        result = await Runners.run(
+            input=user_input,
+            swarm=swarm
+        )
+
+        print("Single-action TeamSwarm execution result: ", result)
+    asyncio.run(run())
