@@ -112,6 +112,13 @@ class TrajectoryDataset(Dataset[TrajectoryItem]):
                 if target_task_id:
                     await self.save_task_trajectory(target_task_id, [item])
                 return item
+                # item_dict = item.to_dict() if hasattr(item, "to_dict") else item
+                # # Save to storage
+                # target_task_id = task_id or (message.task_id if hasattr(message, 'task_id') else None)
+                # if target_task_id:
+                #     await self.save_task_trajectory(target_task_id, [item_dict])
+                #
+                # return item_dict
         except Exception as e:
             logger.error(f"Failed to append message to trajectory: {e}")
         return None

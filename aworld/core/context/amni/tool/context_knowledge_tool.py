@@ -24,7 +24,7 @@ class ContextKnowledgeAction(ToolAction):
         input_params={
             "knowledge_id": ParamInfo(
                 name="knowledge_id",
-                type="str",
+                type="string",
                 required=True,
                 desc="The unique identifier of the knowledge artifact to retrieve"
             )
@@ -37,19 +37,19 @@ class ContextKnowledgeAction(ToolAction):
         input_params={
             "knowledge_id": ParamInfo(
                 name="knowledge_id",
-                type="str",
+                type="string",
                 required=True,
                 desc="The unique identifier of the knowledge artifact"
             ),
             "start_line": ParamInfo(
                 name="start_line",
-                type="int",
+                type="integer",
                 required=True,
                 desc="The starting line number (1-based, inclusive)"
             ),
             "end_line": ParamInfo(
                 name="end_line",
-                type="int",
+                type="integer",
                 required=True,
                 desc="The ending line number (1-based, inclusive)"
             )
@@ -62,37 +62,37 @@ class ContextKnowledgeAction(ToolAction):
         input_params={
             "knowledge_id": ParamInfo(
                 name="knowledge_id",
-                type="str",
+                type="string",
                 required=True,
                 desc="The unique identifier of the knowledge artifact"
             ),
             "pattern": ParamInfo(
                 name="pattern",
-                type="str",
+                type="string",
                 required=True,
                 desc="The search pattern (supports regular expressions)"
             ),
             "ignore_case": ParamInfo(
                 name="ignore_case",
-                type="bool",
+                type="boolean",
                 required=False,
                 desc="Whether to perform case-insensitive search (default: False)"
             ),
             "context_before": ParamInfo(
                 name="context_before",
-                type="int",
+                type="integer",
                 required=False,
                 desc="Number of lines to show before each match (default: 0)"
             ),
             "context_after": ParamInfo(
                 name="context_after",
-                type="int",
+                type="integer",
                 required=False,
                 desc="Number of lines to show after each match (default: 0)"
             ),
             "max_results": ParamInfo(
                 name="max_results",
-                type="int",
+                type="integer",
                 required=False,
                 desc="Maximum number of matching lines to return (default: 100)"
             )
@@ -105,13 +105,13 @@ class ContextKnowledgeAction(ToolAction):
         input_params={
             "limit": ParamInfo(
                 name="limit",
-                type="int",
+                type="integer",
                 required=False,
                 desc="Maximum number of knowledge artifacts to return (default: 100)"
             ),
             "offset": ParamInfo(
                 name="offset",
-                type="int",
+                type="integer",
                 required=False,
                 desc="Offset for pagination (default: 0)"
             )
@@ -122,15 +122,21 @@ class ContextKnowledgeAction(ToolAction):
     ADD_KNOWLEDGE = ToolActionInfo(
         name="add_knowledge",
         input_params={
+            "name": ParamInfo(
+                name="name",
+                type="string",
+                required=True,
+                desc="The name of the knowledge artifact"
+            ),
             "knowledge_content": ParamInfo(
                 name="knowledge_content",
-                type="str",
+                type="string",
                 required=True,
                 desc="The content of the knowledge artifact"
             ),
             "content_summary": ParamInfo(
                 name="content_summary",
-                type="str",
+                type="string",
                 required=True,
                 desc="The summary of the knowledge artifact"
             )
@@ -143,19 +149,19 @@ class ContextKnowledgeAction(ToolAction):
         input_params={
             "knowledge_id": ParamInfo(
                 name="knowledge_id",
-                type="str",
+                type="string",
                 required=True,
                 desc="The ID of the knowledge artifact to update"
             ),
             "knowledge_content": ParamInfo(
                 name="knowledge_content",
-                type="str",
+                type="string",
                 required=True,
                 desc="The updated content of the knowledge artifact"
             ),
             "content_summary": ParamInfo(
                 name="content_summary",
-                type="str",
+                type="string",
                 required=True,
                 desc="The updated summary of the knowledge artifact"
             )
@@ -168,13 +174,13 @@ class ContextKnowledgeAction(ToolAction):
         input_params={
             "user_query": ParamInfo(
                 name="user_query",
-                type="str",
+                type="string",
                 required=True,
                 desc="The search query string for semantic search"
             ),
             "top_k": ParamInfo(
                 name="top_k",
-                type="int",
+                type="integer",
                 required=False,
                 desc="Number of results to return (default: None, uses default)"
             )
@@ -187,13 +193,13 @@ class ContextKnowledgeAction(ToolAction):
         input_params={
             "knowledge_id": ParamInfo(
                 name="knowledge_id",
-                type="str",
+                type="string",
                 required=True,
                 desc="The unique identifier of the knowledge artifact"
             ),
             "chunk_index": ParamInfo(
                 name="chunk_index",
-                type="int",
+                type="integer",
                 required=True,
                 desc="The index of the specific chunk to retrieve (zero-based)"
             )
@@ -346,6 +352,7 @@ class ContextKnowledgeTool(AsyncTool):
                         result = "\n".join(result_lines)
                     
                 elif action_name == ContextKnowledgeAction.ADD_KNOWLEDGE.value.name:
+                    name = action.params.get("name", "")
                     knowledge_content = action.params.get("knowledge_content", "")
                     content_summary = action.params.get("content_summary", "")
                     
@@ -353,15 +360,19 @@ class ContextKnowledgeTool(AsyncTool):
                         raise ValueError("knowledge_content and content_summary are required")
                     
                     import uuid
+                    metadata = {
+                        "context_type": "actions_info",
+                        "task_id": getattr(message.context, 'task_id', None),
+                        "summary": content_summary
+                    }
+                    if name:
+                        metadata["name"] = name
+                    
                     artifact = Artifact(
                         artifact_id=f"actions_info_{str(uuid.uuid4())}",
                         artifact_type=ArtifactType.TEXT,
                         content=knowledge_content,
-                        metadata={
-                            "context_type": "actions_info",
-                            "task_id": getattr(message.context, 'task_id', None),
-                            "summary": content_summary
-                        }
+                        metadata=metadata
                     )
                     await message.context.knowledge_service.add_knowledge(artifact, namespace, index=False)
                     result = f"✅ Knowledge added successfully\n📝 Knowledge ID: {artifact.artifact_id}\n📄 Summary: {content_summary}\n💡 Use get_knowledge_by_id({artifact.artifact_id}) to retrieve content"
