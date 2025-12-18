@@ -115,6 +115,22 @@ class AgentContextConfig(BaseConfig):
     enable_semantic_index: bool = Field(default=False, description="enable_semantic_index")
     enable_rerank: bool = Field(default=False, description="enable_rerank")
 
+    # Autonomous Reasoning Orchestrator
+    automated_reasoning_orchestrator: bool = Field(default=False,
+                                 description="Enable autonomous reasoning orchestration. Planning is essentially reasoning - the orchestrator acts like an automated factory dispatch center, automatically decomposing task logic flows. Once a goal is input, the reasoning engine automatically ignites to formulate strategies and decompose tasks.")
+
+    # Automated Cognitive Ingestion
+    automated_cognitive_ingestion: bool = Field(default=False,
+                                   description="Enable automated cognitive ingestion. Knowledge for agents is cognition. Ingestion is a professional term from big data engineering (ingestion/absorption). Like an oil refinery automatically extracting crude oil, the agent automatically ingests fragmented information during runtime and transforms it into structured cognitive assets.")
+
+    # Recursive Experience Loop
+    automated_memory_recursive: bool = Field(default=False,
+                                           description="Enable recursive experience loop. Memory is not simple storage, but the reuse of experience. Recursive (recursion/loop) reflects the agent's continuous retrospection of the past and correction of the present. The loop is the soul of automated control systems, representing fully automated closed-loop memory retrieval and storage.")
+
+    # Automated Memory Recall
+    automated_memory_recall: bool = Field(default=False,
+                                         description="Enable automated memory recall. The agent automatically retrieves relevant memories from past experiences based on current context and task requirements, without manual intervention. This enables proactive context awareness and intelligent decision-making by leveraging historical knowledge.")
+
     def to_memory_config(self) -> AgentMemoryConfig:
         return AgentMemoryConfig(
             history_rounds=self.history_rounds,
@@ -312,7 +328,7 @@ class AmniConfigFactory:
         if env_config is None:
             env_config = ContextEnvConfig()
 
-        if not level or level == AmniConfigLevel.PILOT or level == AmniConfigLevel.COPILOT:
+        if not level or level == AmniConfigLevel.PILOT:
             config = get_default_config()
             config.agent_config = AgentContextConfig(neuron_names=neuron_names)
             if neuron_names:
@@ -320,19 +336,49 @@ class AmniConfigFactory:
             config.debug_mode = debug_mode
             config.env_config = env_config
             return config
+        elif level == AmniConfigLevel.COPILOT:
+            config = get_default_config()
+            config.debug_mode = debug_mode
+            config.agent_config = AgentContextConfig(
+                enable_system_prompt_augment=True,
+                neuron_names=neuron_names or ["working_dir", "basic"],
+                history_rounds=kwargs.get("history_rounds", 20),
+                enable_summary=kwargs.get("enable_summary", True),
+                summary_rounds=kwargs.get("summary_rounds", 30),
+                summary_context_length=kwargs.get("summary_context_length", 40960),
+                summary_summaried=kwargs.get("summary_summaried", True),
+                summary_role=kwargs.get("summary_role", "user"),
+                summary_prompts=kwargs.get("summary_prompts", []),
+                tool_result_offload=kwargs.get("tool_result_offload", True),
+                tool_action_white_list=kwargs.get("tool_action_white_list", CONTEXT_OFFLOAD_TOOL_NAME_WHITE),
+                tool_result_length_threshold=kwargs.get("tool_result_length_threshold", 30000),
+                automated_memory_recall=kwargs.get("automated_memory_recall", False),
+                automated_memory_recursive=kwargs.get("automated_memory_recursive", False),
+                automated_cognitive_ingestion=kwargs.get("automated_cognitive_ingestion", False),
+                automated_reasoning_orchestrator=kwargs.get("automated_reasoning_orchestrator", False)
+            )
+            config.env_config = env_config
+            return config
         elif level == AmniConfigLevel.NAVIGATOR:
             config = get_default_config()
             config.debug_mode = debug_mode
             config.agent_config = AgentContextConfig(
                 enable_system_prompt_augment=True,
-                neuron_names= neuron_names or ["task", "working_dir", "todo", "action_info", "skills", "basic"],
-                history_rounds= 20,
+                neuron_names= neuron_names or ["task", "working_dir", "skills", "basic"],
+                history_rounds= kwargs.get("history_rounds", 20),
                 enable_summary=True,
-                summary_rounds= 30,
-                summary_context_length= 40960,
+                summary_rounds= kwargs.get("summary_rounds", 30),
+                summary_context_length= kwargs.get("summary_context_length", 40960),
+                summary_summaried=kwargs.get("summary_summaried", True),
+                summary_role=kwargs.get("summary_role", "user"),
+                summary_prompts=kwargs.get("summary_prompts", []),
                 tool_result_offload= True,
-                tool_action_white_list= CONTEXT_OFFLOAD_TOOL_NAME_WHITE,
-                tool_result_length_threshold= 30000
+                tool_action_white_list= kwargs.get("tool_action_white_list", CONTEXT_OFFLOAD_TOOL_NAME_WHITE),
+                tool_result_length_threshold= kwargs.get("tool_result_length_threshold", 30000),
+                automated_memory_recall=True,
+                automated_memory_recursive=True,
+                automated_cognitive_ingestion=True,
+                automated_reasoning_orchestrator=True
             )
             config.env_config = env_config
             return config
