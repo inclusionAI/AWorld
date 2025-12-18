@@ -1,7 +1,7 @@
 ---
 name: read large webpage or knowledge
 description: This skill is used for segmented reading and organization when facing large-scale knowledge bases or web pages. It captures original content segment by segment, summarizes key points in real-time, and continuously deposits them into the knowledge base, ensuring orderly information ingestion, clear structure, and traceability.
-tool_list: {"ms-playwright": []}
+tool_list: {"ms-playwright": [], "amnicontext-server": []}
 active: True
 type: agent
 ---

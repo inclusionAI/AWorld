@@ -1618,6 +1618,17 @@ class ApplicationContext(AmniContext):
     def deep_copy(self) -> 'ApplicationContext':
         return self
 
+    def merge_context(self, other_context: 'ApplicationContext') -> None:
+        super().merge_context(other_context)
+        # Merge task_state
+        if hasattr(other_context, 'task_state') and other_context.task_state:
+            try:
+                for key, value in other_context.task_state.items():
+                    # If key already exists, the value will be overwritten
+                    self.task_state[key] = value
+            except Exception as e:
+                logger.warning(f"Failed to merge task_state: {e}")
+
     def to_dict(self) -> dict:
         result = {}
 

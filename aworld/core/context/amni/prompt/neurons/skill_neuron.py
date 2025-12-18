@@ -29,8 +29,8 @@ SKILLS_PROMPT = """
 </skills_guide>
 """
 
-SKILL_NEURON_NAME = "skills"
-@neuron_factory.register(name=SKILL_NEURON_NAME, desc="skills neuron", prio=8)
+
+@neuron_factory.register(name="skills", desc="skills neuron", prio=8)
 class SkillsNeuron(Neuron):
     """Neuron for handling plan related properties"""
 
