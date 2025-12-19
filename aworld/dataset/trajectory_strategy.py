@@ -9,6 +9,7 @@ from task execution. Users can implement custom strategies by extending Trajecto
 
 import abc
 import json
+import traceback
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from aworld.core.agent.base import AgentFactory
@@ -198,14 +199,14 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         agent_results = []
         ext_info = {}
         status = RunNodeStatus.SUCCESS.value
-        err_msg = None
+        err_msg = ""
         if node and node.results:
             for handle_result in node.results:
                 result = handle_result.result
                 result_status = handle_result.status
                 if result_status == RunNodeStatus.FAILED or result_status == RunNodeStatus.TIMEOUT:
                     status = result_status.value
-                    err_msg += f"{node.id}:{handle_result.result_msg}\n"
+                    err_msg += f"{node.msg_id}:{handle_result.result_msg}\n"
                 if isinstance(result, Message) and isinstance(result.payload, list):
                     agent_results.extend(result.payload)
                 else:
