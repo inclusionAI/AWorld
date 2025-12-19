@@ -60,6 +60,8 @@ class Task:
     task_status: TaskStatus = field(default=TaskStatusValue.INIT)
     # streaming support
     streaming_mode: StreamingMode = field(default=None)
+    # custom error formatter for error responses
+    error_formatter: Optional[Callable[[str], str]] = field(default=None, repr=False)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize Task to dict while excluding parent_task to avoid recursion.
@@ -114,9 +116,31 @@ class TaskResponse:
 
     @classmethod
     def build_error_response(cls, task_id: str, msg: str, status: str = TaskStatusValue.FAILED, context: Context = None,
-                             time_cost: float = 0.0, usage: Dict[str, Any] = None) -> 'TaskResponse':
+                             time_cost: float = 0.0, usage: Dict[str, Any] = None, 
+                             error_formatter: Optional[Callable[[str], str]] = None) -> 'TaskResponse':
+        """Build an error response with customizable error formatting.
+        
+        Args:
+            task_id: The task ID
+            msg: Error message
+            status: Task status, defaults to FAILED
+            context: Task context
+            time_cost: Time cost in seconds
+            usage: Usage statistics
+            error_formatter: Optional callable to format error message. 
+                           If None, uses default '__AWORLD_ERROR__: ' prefix.
+                           Example: lambda msg: f"ERROR: {msg}"
+        
+        Returns:
+            TaskResponse: Error response object
+        """
+        if error_formatter is None:
+            formatted_answer = '__AWORLD_ERROR__: ' + msg
+        else:
+            formatted_answer = error_formatter(msg)
+        
         return cls(
-            answer='__AWORLD_ERROR__: ' + msg,
+            answer=formatted_answer,
             success=False,
             context=context,
             id=task_id,
