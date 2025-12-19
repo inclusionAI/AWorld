@@ -77,7 +77,8 @@ class DefaultTaskHandler(TaskHandler):
                 task_id=self.runner.task.id, msg=task_item.msg,
                 context=message.context,
                 time_cost=(time.time() - self.runner.start_time),
-                usage=self.runner.context.token_usage
+                usage=self.runner.context.token_usage,
+                error_formatter=self.runner.task.error_formatter
             )
 
             await self.runner.stop()
@@ -135,7 +136,8 @@ class DefaultTaskHandler(TaskHandler):
                 status=TaskStatusValue.CANCELLED,
                 context=message.context,
                 time_cost=(time.time() - self.runner.start_time),
-                usage=self.runner.context.token_usage
+                usage=self.runner.context.token_usage,
+                error_formatter=self.runner.task.error_formatter
             )
 
             await self.runner.stop()
@@ -150,7 +152,8 @@ class DefaultTaskHandler(TaskHandler):
                 status=TaskStatusValue.INTERRUPTED,
                 context=message.context,
                 time_cost=(time.time() - self.runner.start_time),
-                usage=self.runner.context.token_usage
+                usage=self.runner.context.token_usage,
+                error_formatter=self.runner.task.error_formatter
             )
 
             await self.runner.stop()
