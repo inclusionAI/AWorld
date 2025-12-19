@@ -806,6 +806,7 @@ class EventRuntimeStateManager(RuntimeStateManager):
                 handle_result = HandleResult(
                     name=name,
                     status=RunNodeStatus.FAILED,
+                    result_msg=getattr(result.payload, "msg"),
                     result=result)
             else:
                 handle_result = HandleResult(

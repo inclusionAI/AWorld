@@ -112,6 +112,20 @@ class TaskResponse:
     # task final status, e.g. success/failed/cancelled
     status: TaskStatus | None = field(default=TaskStatusValue.SUCCESS)
 
+    @classmethod
+    def build_error_response(cls, task_id: str, msg: str, status: str = TaskStatusValue.FAILED, context: Context = None,
+                             time_cost: float = 0.0, usage: Dict[str, Any] = None) -> 'TaskResponse':
+        return cls(
+            answer='__AWORLD_ERROR__: ' + msg,
+            success=False,
+            context=context,
+            id=task_id,
+            time_cost=time_cost,
+            usage=usage,
+            msg=msg,
+            status=status
+        )
+
 
 class Runner(object):
     __metaclass__ = abc.ABCMeta

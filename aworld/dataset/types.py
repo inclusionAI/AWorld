@@ -42,6 +42,8 @@ class TrajectoryAction(BaseModel):
     content: Optional[str] = Field(default=None, description="Assistant message content")
     tool_calls: List[Dict[str, Any]] = Field(default_factory=list, description="Tool calls")
     is_agent_finished: bool = Field(default=False, description="Is agent finished")
+    status: Optional[str] = Field(default=None, description="Execution status")
+    msg: Optional[str] = Field(default=None, description="Execution error message")
     ext_info: Dict[str, Any] = Field(default_factory=dict, description="Extra information")
 
 class TrajectoryReward(BaseModel):
