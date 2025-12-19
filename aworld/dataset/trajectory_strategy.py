@@ -9,6 +9,7 @@ from task execution. Users can implement custom strategies by extending Trajecto
 
 import abc
 import json
+import traceback
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from aworld.core.agent.base import AgentFactory
@@ -21,6 +22,7 @@ from aworld.dataset.types import (
     TrajectoryReward,
     ExpMeta,
 )
+from aworld.runners.state_manager import RunNodeStatus
 
 if TYPE_CHECKING:
     from aworld.core.agent.swarm import Swarm
@@ -196,9 +198,15 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         node = state_manager._find_node(source.id) if state_manager else None
         agent_results = []
         ext_info = {}
+        status = RunNodeStatus.SUCCESS.value
+        err_msg = ""
         if node and node.results:
             for handle_result in node.results:
                 result = handle_result.result
+                result_status = handle_result.status
+                if result_status == RunNodeStatus.FAILED or result_status == RunNodeStatus.TIMEOUT:
+                    status = result_status.value
+                    err_msg += f"{node.msg_id}:{handle_result.result_msg}\n"
                 if isinstance(result, Message) and isinstance(result.payload, list):
                     agent_results.extend(result.payload)
                 else:
@@ -234,7 +242,8 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         if not agent_name:
             agent_name = source.receiver
         agent = AgentFactory.agent_instance(agent_name)
-        action = TrajectoryAction(content=action_content, tool_calls=tool_calls, is_agent_finished=agent.finished)
+        action = TrajectoryAction(content=action_content, tool_calls=tool_calls, is_agent_finished=agent.finished,
+                                  status=status, msg=err_msg)
         return action
 
     async def build_trajectory_reward(self, source: Any, **kwargs) -> Optional[TrajectoryReward]:

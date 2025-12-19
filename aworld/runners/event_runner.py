@@ -321,10 +321,16 @@ class TaskEventRunner(TaskRunner):
                                                            context=message.context,
                                                            success=True if not msg else False,
                                                            id=self.task.id,
-                                                           time_cost=(
-                                                               time.time() - start),
+                                                           time_cost=(time.time() - start),
                                                            usage=self.context.token_usage,
-                                                           status=TaskStatusValue.SUCCESS if not msg else TaskStatusValue.FAILED)
+                                                           status=TaskStatusValue.SUCCESS)
+                        if msg:
+                            self._task_response = TaskResponse.build_error_response(
+                                task_id=self.task.id, msg=msg,
+                                context=message.context if message else self.context,
+                                time_cost=(time.time() - start),
+                                usage=self.context.token_usage,
+                                error_formatter=self.task.error_formatter)
                     break
                 logger.debug(f"{task_flag} task {self.task.id} next message snap")
                 # consume message
@@ -395,9 +401,11 @@ class TaskEventRunner(TaskRunner):
         if self.context.get_task().conf and self.context.get_task().conf.resp_carry_context == False:
             self._task_response.context = None
         if self._task_response is None:
-            self._task_response = TaskResponse(id=self.context.task_id if self.context else "",
-                                               success=False,
-                                               msg="Task return None.")
+            self._task_response = TaskResponse.build_error_response(
+                task_id=self.context.task_id if self.context else "",
+                msg="Task return None.",
+                error_formatter=self.task.error_formatter
+            )
         if self.context.get_task().conf and self.context.get_task().conf.resp_carry_raw_llm_resp == True:
             self._task_response.raw_llm_resp = self.context.context_info.get('llm_output')
         self._task_response.trace_id = get_trace_id()
@@ -410,7 +418,7 @@ class TaskEventRunner(TaskRunner):
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
             if traj:
                 self._task_response.trajectory = [step.to_dict() for step in traj]
-                logger.debug(f"{self.task.id}|{self.task.is_sub_task}#_task_response.trajectory: {json.dumps(self._task_response.trajectory, ensure_ascii=False)}")
+                logger.warn(f"{self.task.id}|{self.task.is_sub_task}#_task_response.trajectory: {json.dumps(self._task_response.trajectory, ensure_ascii=False)}")
 
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
@@ -423,15 +431,14 @@ class TaskEventRunner(TaskRunner):
         if 0 < self.task.timeout < time_cost:
             logger.warn(
                 f"{task_flag} task {self.task.id} timeout after {time_cost} seconds.")
-            self._task_response = TaskResponse(
-                answer='',
-                success=False,
+            self._task_response = TaskResponse.build_error_response(
+                task_id=self.task.id,
+                msg=f'Task timeout after {time_cost} seconds.',
                 context=message.context if message else self.context,
-                id=self.task.id,
                 time_cost=(time.time() - self.start_time),
                 usage=self.context.token_usage,
-                msg=f'Task timeout after {time_cost} seconds.',
-                status=TaskStatusValue.TIMEOUT
+                status=TaskStatusValue.TIMEOUT,
+                error_formatter=self.task.error_formatter
             )
             await self.context.update_task_status(self.task.id, TaskStatusValue.TIMEOUT)
             return True
@@ -440,15 +447,14 @@ class TaskEventRunner(TaskRunner):
         task_status = await self.context.get_task_status()
         if task_status == TaskStatusValue.INTERRUPTED or task_status == TaskStatusValue.CANCELLED:
             logger.warn(f"{task_flag} task {self.task.id} is {task_status}.")
-            self._task_response = TaskResponse(
-                answer='',
-                success=False,
+            self._task_response = TaskResponse.build_error_response(
+                task_id=self.task.id,
+                msg=f'Task is {task_status}.',
                 context=message.context if message else self.context,
-                id=self.task.id,
                 time_cost=time_cost,
                 usage=self.context.token_usage,
-                msg=f'Task is {task_status}.',
-                status=task_status
+                status=task_status,
+                error_formatter=self.task.error_formatter
             )
             return True
         return False

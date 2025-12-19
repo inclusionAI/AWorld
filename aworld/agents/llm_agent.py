@@ -596,7 +596,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         output_message = Message(
                             category=Constants.OUTPUT,
                             payload=Output(
-                                data=f"llm result error: {llm_response.error}"
+                                data="",
+                                metadata={"error": f"llm result error: {llm_response.error}"}
                             ),
                             sender=self.id(),
                             session_id=message.context.session_id if message.context else "",
@@ -827,7 +828,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             await send_message(Message(
                 category=Constants.OUTPUT,
                 payload=Output(
-                    data=f"Failed to call llm model: {e}"
+                    data="",
+                    metadata={"error": f"Failed to call llm model: {str(e)}"},
                 ),
                 sender=self.id(),
                 session_id=message.context.session_id if message.context else "",
