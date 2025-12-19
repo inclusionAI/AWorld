@@ -64,16 +64,23 @@ class TaskInput(OpenAIChatCompletionForm):
         task_content (Union[Optional[str], list[OpenAIChatMessage]]): Task input content, supports string or message list
         origin_user_input (Union[Optional[str], list[OpenAIChatMessage]]): Original user input content
     """
-    user_id: str
+    user_id: str = "user"
     session_id: str
     task_id: str
 
     # Task input content
-    task_content: Union[Optional[str], list[dict]]
+    task_content: Union[Optional[str], list[dict]] = ""
 
-    # Original user input content
-    origin_user_input: Union[Optional[str], list[dict]]
+    # Original user input content (defaults to task_content if not provided)
+    origin_user_input: Union[Optional[str], list[dict]] = Field(default=None)
     model_config = ConfigDict(extra="allow", arbitrary_types_allowed=True)
+    
+    def __init__(self, **data):
+        """Initialize TaskInput, setting origin_user_input to task_content if not provided."""
+        # If origin_user_input is not provided, default to task_content
+        if 'origin_user_input' not in data or data.get('origin_user_input') is None:
+            data['origin_user_input'] = data.get('task_content', "")
+        super().__init__(**data)
 
     @property
     def agent_id(self) -> str:

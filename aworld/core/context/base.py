@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Dict, Any, TYPE_CHECKING, List, Literal, Optional
 
 from aworld.checkpoint.inmemory import InMemoryCheckpointRepository
-from aworld.config import ConfigDict
+from aworld.config import ConfigDict, AgentMemoryConfig
 from aworld.core.context.context_state import ContextState
 from aworld.core.context.session import Session
 from aworld.logs.util import logger
@@ -16,9 +16,9 @@ from aworld.utils.common import nest_dict_counter
 
 if TYPE_CHECKING:
     from aworld.core.task import Task, TaskResponse, TaskStatus, TaskStatusValue
-    from aworld.core.agent.swarm import Swarm
     from aworld.events.manager import EventManager
     from aworld.core.agent import BaseAgent
+    from aworld.core.context.amni import AgentContextConfig
 
 
 @dataclass
@@ -136,16 +136,14 @@ class Context:
                  task_id: str = None,
                  trace_id: str = None,
                  session: Session = None,
-                 engine: str = None,
                  **kwargs):
         self._user = user
         self._init(task_id=task_id, trace_id=trace_id,
-                   session=session, engine=engine, **kwargs)
+                   session=session, **kwargs)
 
-    def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, engine: str = None, **kwargs):
+    def _init(self, *, task_id: str = None, trace_id: str = None, session: Session = None, **kwargs):
         self._task_id = task_id
         self._task = None
-        self._engine = engine
         self._trace_id = trace_id
         self._session: Session = session
         self.context_info = ContextState()
@@ -157,13 +155,15 @@ class Context:
             "total_tokens": 0,
         }
         # TODO workspace
-        self._swarm = None
         self._event_manager = None
         # checkpoint repository for saving/restoring context state
         self._checkpoint_repository = kwargs.get('checkpoint_repository', InMemoryCheckpointRepository())
         self._start = time.time()
         # agent_id -> token_id trajectory
         self._agent_token_id_traj: Dict[str, List[AgentTokenIdTrajectory]] = {}
+
+        self._task_graph: Dict[str, Dict[str, Any]] = {}
+        self.trajectory_dataset = None
 
     @property
     def start_time(self) -> float:
@@ -192,14 +192,6 @@ class Context:
     @property
     def token_usage(self):
         return self._token_usage
-
-    @property
-    def engine(self):
-        return self._engine
-
-    @engine.setter
-    def engine(self, engine: str):
-        self._engine = engine
 
     @property
     def user(self):
@@ -236,11 +228,7 @@ class Context:
 
     @property
     def swarm(self):
-        return self._swarm
-
-    @swarm.setter
-    def swarm(self, swarm: 'Swarm'):
-        self._swarm = swarm
+        return self._task.swarm
 
     @property
     def event_manager(self):
@@ -281,6 +269,14 @@ class Context:
     def outputs(self):
         return self._task.outputs
 
+    @property
+    def task_graph(self):
+        return self._task_graph
+
+    @task_graph.setter
+    def task_graph(self, task_graph):
+        self._task_graph = task_graph
+
     def get_state(self, key: str, default: Any = None) -> Any:
         return self.context_info.get(key, default)
 
@@ -293,6 +289,7 @@ class Context:
         self._deep_copy(new_context)
         new_context.task_id = sub_task_id
         new_context.task_input = sub_task_content
+        self.add_task_node(sub_task_id, self.task_id, caller_agent_info=self.agent_info, **kwargs)
         return new_context
 
     def merge_sub_context(self, sub_task_context: 'ApplicationContext', **kwargs):
@@ -314,7 +311,6 @@ class Context:
         # Basic attributes
         new_context._user = self._user
         new_context._task_id = self._task_id
-        new_context._engine = self._engine
         new_context._trace_id = self._trace_id
         new_context._start = self._start
         # Session - shallow copy to maintain reference
@@ -322,6 +318,9 @@ class Context:
 
         # Task - set to None to avoid circular references
         new_context._task = None
+
+        new_context._task_graph = self._task_graph
+        new_context.trajectory_dataset = self.trajectory_dataset
 
         # Deep copy complex state objects
         try:
@@ -361,8 +360,6 @@ class Context:
             new_context._token_usage = copy.copy(self._token_usage)
 
         # Copy other attributes if they exist
-        if hasattr(self, '_swarm'):
-            new_context._swarm = self._swarm  # Shallow copy for complex objects
         if hasattr(self, '_event_manager'):
             new_context._event_manager = self._event_manager  # Shallow copy for complex objects
 
@@ -478,6 +475,24 @@ class Context:
 
     async def update_task_after_run(self, task_response: 'TaskResponse'):
         pass
+
+    def update_agent_step(self, agent_id: str):
+        self.agent_info.current_agent_id = agent_id
+        if agent_id not in self.agent_info:
+            self.agent_info[agent_id] = {}
+        if self.task_id not in self.agent_info[agent_id]:
+            self.agent_info[agent_id][self.task_id] = {}
+        agent_task_info = self.agent_info[agent_id][self.task_id]
+        agent_task_info['step'] = agent_task_info.get('step', 0) + 1
+
+    def get_agent_step(self, agent_id: str, task_id: str = None, agent_info: dict = None):
+        if not agent_info:
+            agent_info = self.agent_info
+        if not task_id:
+            task_id = self.task_id
+        if not agent_id or not agent_info.get(agent_id, {}).get(task_id):
+            return 0
+        return agent_info[agent_id][task_id].get('step', 0)
 
     """
     Agent Skills Support
@@ -654,7 +669,6 @@ class Context:
             'user': self._user,
             'task_id': self._task_id,
             'trace_id': self._trace_id,
-            'engine': self._engine,
 
             # Timestamp for checkpoint creation
             'checkpoint_created_at': datetime.now().isoformat(),
@@ -731,8 +745,130 @@ class Context:
         return checkpoint
 
     async def get_task_status(self):
-        from aworld.core.task import TaskStatusValue
+        from aworld.core.common import TaskStatusValue
         return TaskStatusValue.SUCCESS
 
     async def update_task_status(self, task_id: str, status: 'TaskStatus'):
         pass
+
+    async def post_init(self):
+        pass
+
+    def get_agent_context_config(self, namespace: str) -> 'AgentContextConfig':
+        pass
+
+    def get_agent_memory_config(self, namespace: str) -> 'AgentMemoryConfig':
+        pass
+
+
+
+    """
+        Sub Task Trajectory Support
+    """
+
+    async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]]):
+        """Add trajectory data for a task.
+
+        Args:
+            task_id: The task id.
+            task_trajectory: The list of trajectory steps.
+        """
+        if self.trajectory_dataset is not None:
+            await self.trajectory_dataset.save_task_trajectory(task_id, task_trajectory)
+
+
+    async def update_task_trajectory(self, message: Any, task_id: str = None, **kwargs):
+        """
+        Generate trajectory item from message (or other source) and append to dataset.
+
+        Args:
+            message: Source message or data
+            task_id: Optional task id
+        """
+        if not task_id:
+            logger.error("update_task_trajectory#task_id is required")
+            raise Exception("update_task_trajectory#task_id is required")
+
+        if self.trajectory_dataset is not None:
+            item = await self.trajectory_dataset.append_trajectory(message, task_id=task_id)
+
+    async def get_task_trajectory(self, task_id: str) -> List['TrajectoryItem']:
+        """Get trajectory data for a task.
+
+        Args:
+            task_id: The task id.
+
+        Returns:
+            List[Dict[str, Any]]: The list of trajectory steps.
+        """
+        # Try to get from storage first
+        if self.trajectory_dataset is not None:
+            trajectory = await self.trajectory_dataset.get_task_trajectory(task_id)
+            return trajectory
+
+    def add_task_node(self, child_task_id: str, parent_task_id: str, caller_agent_info: dict = None, **kwargs):
+        """Add a task node and its relationship to the task graph.
+
+        Args:
+            child_task_id: Child task id.
+            parent_task_id: Parent task id.
+        """
+        if child_task_id not in self._task_graph:
+            self._task_graph[child_task_id] = {}
+        child_task_node = self._task_graph[child_task_id]
+
+        agent_info = caller_agent_info
+        if not agent_info:
+            agent_info = self.agent_info
+        caller_id = agent_info.current_agent_id if agent_info and hasattr(agent_info, 'current_agent_id') else None
+        caller_info = child_task_node.get("caller_info", {})
+        caller_info.update({
+            "agent_id": caller_id,
+            "agent_step": self.get_agent_step(caller_id, task_id=parent_task_id, agent_info=agent_info)
+        })
+
+        self._task_graph[child_task_id].update({
+            "parent_task": parent_task_id,
+            "caller_info": caller_info,
+            **kwargs
+        })
+        logger.info(f"{self.task_id}#Task graph: {self._task_graph}")
+
+    def get_task_graph(self) -> Dict[str, Any]:
+        """Get the task execution graph structure.
+
+        Returns:
+            Dict containing nodes and edges representing the task execution flow.
+            Format:
+            {
+                "nodes": [{"id": "task_id", "data": {...}}],
+                "edges": [{"source": "parent_id", "target": "child_id", "relation": "..."}]
+            }
+        """
+        nodes = []
+        edges = []
+
+        # Collect all unique task IDs
+        task_ids = set(self._task_graph.keys())
+        for child_data in self._task_graph.values():
+            if "parent_task" in child_data and child_data["parent_task"] is not None:
+                task_ids.add(child_data["parent_task"])
+
+        # Build nodes
+        for tid in task_ids:
+            nodes.append({"id": tid})
+
+        # Build edges
+        for child_id, data in self._task_graph.items():
+            parent_id = data.get("parent_task")
+            if parent_id:
+                edges.append({
+                    "source": parent_id,
+                    "target": child_id,
+                    "metadata": data
+                })
+
+        return {
+            "nodes": nodes,
+            "edges": edges
+        }

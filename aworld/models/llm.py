@@ -5,9 +5,11 @@ from typing import (
     Union,
     Generator,
     AsyncGenerator,
+    Any, Optional,
 )
 from aworld.config import ConfigDict, ModelConfig
 from aworld.config.conf import AgentConfig, ClientType
+from aworld.core.model_output_parser.default_parsers import ToolParser, ReasoningParser, CodeParser, JsonParser
 from aworld.logs.util import logger
 
 from aworld.core.llm_provider import LLMProviderBase
@@ -16,6 +18,8 @@ from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.ant_provider import AntProvider
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
+from aworld.core.model_output_parser import ModelOutputParser, BaseContentParser
+from aworld.utils.common import sync_exec
 
 # Predefined model names for common providers
 MODEL_NAMES = {
@@ -41,6 +45,94 @@ PROVIDER_CLASSES = {
 }
 
 
+class ModelResponseParser(ModelOutputParser[ModelResponse, ModelResponse]):
+    def __init__(self, parsers: List[BaseContentParser] = None, enable_default_parsers: bool = False) -> None:
+        """Initialize the ModelOutputParser with default parsers and optional user-defined parsers.
+
+        Args:
+            parsers (List[BaseContentParser], optional): A list of custom parsers to register.
+                These parsers will override default parsers if they share the same parser_type.
+        Note:
+            - If enable_default_parsers is True, the default parsers will be registered.
+            - If parsers is provided, the user provided parsers will be registered.
+            - If both are provided, the user provided parsers will be registered and the default parsers will be ignored.
+            - default parsers: tool, thinking, code, json
+        """
+        self._parsers: Dict[str, BaseContentParser] = {}
+
+        # Initialize default parsers
+        default_parsers = [
+            ToolParser(),
+            ReasoningParser(),
+            CodeParser(),
+            JsonParser()
+        ]
+
+        if enable_default_parsers:
+            for parser in default_parsers:
+                self.register_parser(parser)
+
+        # Register user provided parsers
+        if parsers:
+            for parser in parsers:
+                self.register_parser(parser)
+
+    def register_parser(self, parser: BaseContentParser) -> None:
+        """Register a new content parser.
+
+        If a parser with the same type already exists, it will be overwritten.
+
+        Args:
+            parser (BaseContentParser): The parser instance to register.
+        """
+        self._parsers[parser.parser_type] = parser
+
+    def get_parser(self, parser_type: str) -> Optional[BaseContentParser]:
+        """Retrieve a registered parser by its type.
+
+        Args:
+            parser_type (str): The type of the parser to retrieve (e.g., 'tool', 'thinking').
+
+        Returns:
+            Optional[BaseContentParser]: The parser instance if found, otherwise None.
+        """
+        return self._parsers.get(parser_type)
+
+    def get_parsers(self) -> Dict[str, BaseContentParser]:
+        """Get all registered parsers.
+
+        Returns:
+            Dict[str, BaseContentParser]: A dictionary mapping parser types to parser instances.
+        """
+        return self._parsers
+
+    def list_supported_parser_types(self) -> List[str]:
+        """List all supported parser types currently registered.
+
+        Returns:
+            List[str]: A list of parser type strings (e.g., ['tool', 'thinking', 'code', 'json']).
+        """
+        return list(self._parsers.keys())
+
+    async def parse(self, resp: ModelResponse, **kwargs) -> ModelResponse:
+        """Standard parse based Openai API."""
+
+        if not resp:
+            logger.warning("no valid content to parse!")
+            return resp
+        if kwargs.get("use_tools_in_prompt", False) and 'tool' not in self.list_supported_parser_types():
+            self.register_parser(ToolParser())
+
+        for content_parser in self.get_parsers().values():
+            resp = await content_parser.parse(resp, **kwargs)
+
+        return resp
+
+    async def parse_chunk(self, chunk: ModelResponse, **kwargs) -> ModelResponse:
+        """Standard parse based Openai API."""
+        return chunk
+
+
 class LLMModel:
     """Unified large model interface, encapsulates different model implementations, provides a unified completion method.
     """
@@ -57,6 +149,8 @@ class LLMModel:
                 - model_name: Model name.
                 - temperature: Temperature parameter.
         """
+        self.llm_response_parser: ModelResponseParser = conf.llm_response_parser \
+            if conf and hasattr(conf, 'llm_response_parser') else None
 
         # If custom_provider instance is provided, use it directly
         if custom_provider is not None:
@@ -116,7 +210,7 @@ class LLMModel:
             conf_dict = conf
 
         ignored_keys = ["llm_provider", "llm_base_url", "llm_model_name", "llm_api_key", "llm_sync_enabled",
-                        "llm_async_enabled", "llm_client_type"]
+                        "llm_async_enabled", "llm_client_type", "llm_response_parser"]
         args = {}
         # Filter out used parameters and add remaining parameters to args
         for key, value in conf_dict.items():
@@ -219,7 +313,7 @@ class LLMModel:
         """
         # Call provider's acompletion method directly
         try:
-            return await self.provider.acompletion(
+            resp = await self.provider.acompletion(
                 messages=messages,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -227,6 +321,10 @@ class LLMModel:
                 context=context,
                 **kwargs
             )
+            if self.llm_response_parser:
+                response_parse_args = kwargs.get("response_parse_args") or {}
+                resp = await self.llm_response_parser.parse(resp, **response_parse_args)
+            return resp
         except AttributeError as e:
             logger.error(f"Provider {self.provider_name} does not support acompletion: {e}")
             raise NotImplementedError(f"Provider {self.provider_name} does not support async completion") from e
@@ -259,7 +357,7 @@ class LLMModel:
             ModelResponse: Unified model response object.
         """
         # Call provider's completion method directly
-        return self.provider.completion(
+        resp = self.provider.completion(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
@@ -267,6 +365,10 @@ class LLMModel:
             context=context,
             **kwargs
         )
+        if self.llm_response_parser:
+            response_parse_args = kwargs.get("response_parse_args") or {}
+            resp = sync_exec(self.llm_response_parser.parse, resp, **response_parse_args)
+        return resp
 
     def stream_completion(self,
                           messages: List[Dict[str, str]],
@@ -328,6 +430,9 @@ class LLMModel:
                 context=context,
                 **kwargs
         ):
+            if self.llm_response_parser:
+                response_parse_args = kwargs.get("response_parse_args") or {}
+                chunk = await self.llm_response_parser.parse_chunk(chunk, **response_parse_args)
             yield chunk
 
     def speech_to_text(self,

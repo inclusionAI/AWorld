@@ -1,4 +1,5 @@
 import json
+import os
 import time
 import traceback
 from datetime import datetime
@@ -144,7 +145,7 @@ class PromptLogger:
 
         try:
             # Log context length information
-            PromptLogger._log_context_length(messages, agent.conf.llm_config['llm_model_name'], context, agent)
+            PromptLogger._log_context_length(messages, os.getenv("CONTEXT_TOKEN_MODEL", agent.conf.llm_config['llm_model_name']), context, agent)
         except Exception as e:
             prompt_logger.warning(f"❌ Error logging context length: {str(e)}")
 
@@ -174,7 +175,7 @@ class PromptLogger:
             # Log context tree information
             PromptLogger._log_context_tree(context)
         except Exception as e:
-            prompt_logger.warning(f"❌ Error logging context tree: {str(e)}")
+            prompt_logger.warning(f"❌ Error logging context tree: {str(e)}, traceback is {traceback.format_exc()}")
 
         try:
             if not hasattr(context, "get_config") or context.get_config().debug_mode:

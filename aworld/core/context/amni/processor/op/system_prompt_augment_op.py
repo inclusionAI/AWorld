@@ -67,10 +67,11 @@ class SystemPromptAugmentOp(BaseOp):
         Supports filtering components configured in component_neuron based on namespace
         """
         agent_id = getattr(event, 'agent_id', None)
+        agent_context_config = context.get_agent_context_config(agent_id)
         agent = AgentFactory.agent_instance(agent_id)
         if not agent:
             return None
-        if not context.get_agent_context_config(agent_id).enable_system_prompt_augment and not agent.ptc_tools:
+        if not agent_context_config.enable_system_prompt_augment and not agent.ptc_tools:
             logger.info(f"[SYSTEM_PROMPT_AUGMENT_OP] switch is disabled")
             return None
 
@@ -85,15 +86,31 @@ class SystemPromptAugmentOp(BaseOp):
         namespace = getattr(event, 'namespace', None)
 
         # Process components
-        neuron_names = context.get_agent_context_config(agent_id).neuron_names
+        neuron_names = agent_context_config.neuron_names or []
 
         # Enable PTC Feature
         if agent.ptc_tools:
-            if not neuron_names:
-                neuron_names = []
             from aworld.experimental.ptc.ptc_neuron import PTC_NEURON_NAME
             if PTC_NEURON_NAME not in neuron_names:
                neuron_names.append(PTC_NEURON_NAME)
+
+        # Enable Skill Feature
+        if agent.skill_configs:
+            from aworld.core.context.amni.prompt.neurons.skill_neuron import SKILL_NEURON_NAME
+            if SKILL_NEURON_NAME not in neuron_names:
+                neuron_names.append(SKILL_NEURON_NAME)
+
+        # Enable Planing Feature
+        if agent_context_config.automated_cognitive_ingestion:
+            from aworld.core.context.amni.prompt.neurons.todo_neuron import TODO_NEURON_NAME
+            if TODO_NEURON_NAME not in neuron_names:
+               neuron_names.append(TODO_NEURON_NAME)
+
+        # Enable Knowledge Feature
+        if agent_context_config.automated_cognitive_ingestion:
+            from aworld.core.context.amni.prompt.neurons.action_info_neuron import ACTION_INFO_NEURON_NAME
+            if ACTION_INFO_NEURON_NAME not in neuron_names:
+               neuron_names.append(ACTION_INFO_NEURON_NAME)
 
         neurons = neuron_factory.get_neurons_by_names(names=neuron_names)
 
@@ -285,14 +302,38 @@ class SystemPromptAugmentOp(BaseOp):
         )
 
     async def check_system_prompt_existed(self, context, event):
-        session_id = context.get_task().session_id
-        task_id = context.get_task().id
+        agent_id = event.agent_id
+        filters = {
+            "agent_id": agent_id
+        }
+
+        agent_memory_config = context.get_agent_memory_config(agent_id)
+
+        if not agent_memory_config:
+            agent = AgentFactory.agent_instance(agent_id)
+            if agent:
+                agent_memory_config = agent.conf.memory_config
+
+        query_scope = agent_memory_config.history_scope if agent_memory_config and agent_memory_config.history_scope else "task"
+        task = context.get_task()
+
+        if query_scope == "user":
+            # Pass user_id when query_scope is user
+            if hasattr(context, 'user_id') and context.user_id:
+                filters["user_id"] = context.user_id
+            elif hasattr(task, 'user_id') and task.user_id:
+                filters["user_id"] = task.user_id
+        elif query_scope == "session":
+            # Pass session_id when query_scope is session
+            if task and task.session_id:
+                filters["session_id"] = task.session_id
+        else:  # query_scope == "task" or default
+            # Pass task_id when query_scope is task
+            if task and task.id:
+                filters["task_id"] = task.id
+
         # Check history
-        histories = self._memory.get_last_n(0, filters={
-            "agent_id": event.agent_id,
-            "session_id": session_id,
-            "task_id": task_id
-        })
+        histories = self._memory.get_last_n(0, filters=filters)
         return histories and len(histories) > 0
 
     async def _build_system_message(self,

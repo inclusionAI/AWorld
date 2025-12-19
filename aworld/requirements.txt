@@ -15,9 +15,11 @@ opentelemetry-sdk~=1.32.1
 opentelemetry-exporter-otlp~=1.32.1
 tiktoken~=0.9.0
 fastapi
-aiohttp~=3.9.5
+aiohttp>=3.9.5
 click
 packaging
 numpy
 langchain-text-splitters~=0.3.8
-json_repair
+json_repair~=0.49.0
+rich~=14.0.0
+bs4~=0.0.2
