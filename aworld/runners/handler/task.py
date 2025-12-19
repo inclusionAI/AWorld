@@ -73,13 +73,13 @@ class DefaultTaskHandler(TaskHandler):
                 yield event
 
             logger.warning(f"{task_flag} task {self.runner.task.id} stop, cause: {task_item.msg}")
-            self.runner._task_response = TaskResponse(msg=task_item.msg,
-                                                      answer='',
-                                                      context=message.context,
-                                                      success=False,
-                                                      id=self.runner.task.id,
-                                                      time_cost=(time.time() - self.runner.start_time),
-                                                      usage=self.runner.context.token_usage)
+            self.runner._task_response = TaskResponse.build_error_response(
+                task_id=self.runner.task.id, msg=task_item.msg,
+                context=message.context,
+                time_cost=(time.time() - self.runner.start_time),
+                usage=self.runner.context.token_usage
+            )
+
             await self.runner.stop()
             yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers, topic=TopicType.TASK_RESPONSE)
         elif topic == TopicType.FINISHED:
@@ -130,14 +130,14 @@ class DefaultTaskHandler(TaskHandler):
             yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock',
                           headers={"context": message.context})
             # mark task response as cancelled
-            self.runner._task_response = TaskResponse(answer='',
-                                                      success=False,
-                                                      context=message.context,
-                                                      id=self.runner.task.id,
-                                                      time_cost=(time.time() - self.runner.start_time),
-                                                      usage=self.runner.context.token_usage,
-                                                      msg=f'cancellation message received: {task_item.msg}',
-                                                      status=TaskStatusValue.CANCELLED)
+            self.runner._task_response = TaskResponse.build_error_response(
+                task_id=self.runner.task.id, msg=f'cancellation message received: {task_item.msg}',
+                status=TaskStatusValue.CANCELLED,
+                context=message.context,
+                time_cost=(time.time() - self.runner.start_time),
+                usage=self.runner.context.token_usage
+            )
+
             await self.runner.stop()
             yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers, topic=TopicType.TASK_RESPONSE)
         elif topic == TopicType.INTERRUPT:
@@ -145,14 +145,14 @@ class DefaultTaskHandler(TaskHandler):
             yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock',
                           headers={"context": message.context})
             # mark task response as interrupted
-            self.runner._task_response = TaskResponse(answer='',
-                                                      success=False,
-                                                      context=message.context,
-                                                      id=self.runner.task.id,
-                                                      time_cost=(time.time() - self.runner.start_time),
-                                                      usage=self.runner.context.token_usage,
-                                                      msg=f'interruption message received: {task_item.msg}',
-                                                      status=TaskStatusValue.INTERRUPTED)
+            self.runner._task_response = TaskResponse.build_error_response(
+                task_id=self.runner.task.id, msg=f'interruption message received: {task_item.msg}',
+                status=TaskStatusValue.INTERRUPTED,
+                context=message.context,
+                time_cost=(time.time() - self.runner.start_time),
+                usage=self.runner.context.token_usage
+            )
+
             await self.runner.stop()
             yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers,
                           topic=TopicType.TASK_RESPONSE)
