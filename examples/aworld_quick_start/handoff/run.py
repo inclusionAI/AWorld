@@ -21,7 +21,7 @@ async def main():
             """
     # swarm = Swarm((plan, search), (plan, summary), build_type=GraphBuildType.HANDOFF)
     # or
-    swarm = TeamSwarm((plan, search), (plan, summary))
+    swarm = TeamSwarm(plan, search, summary)
 
     task = Task(swarm=swarm, input=goal, endless_threshold=5)
     resp = await Runners.run_task(task)

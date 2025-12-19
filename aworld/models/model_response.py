@@ -187,6 +187,8 @@ class ModelResponse:
 
         self.finish_reason = finish_reason
 
+        self.structured_output = dict()
+
     @classmethod
     def _get_item_from_openai_message(cls, message:Any, key: str, default_value: Any = None) -> Any:
         if not message:
@@ -643,7 +645,8 @@ class ModelResponse:
             "message": self.message,
             "reasoning_content": self.reasoning_content,
             "created_at": self.created_at,
-            "finish_reason": self.finish_reason
+            "finish_reason": self.finish_reason,
+            "structured_output": self.structured_output
         }
 
     def get_message(self) -> Dict[str, Any]:

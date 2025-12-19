@@ -7,18 +7,18 @@ import uuid
 from collections import OrderedDict
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, TYPE_CHECKING, ClassVar
+from typing import Any, Dict, List, Optional, Callable, Union, Iterable, Type, TYPE_CHECKING
 
 import yaml
 from pydantic import BaseModel, Field
 
-from aworld.logs.util import logger
-
 if TYPE_CHECKING:
     from aworld.dataset.trajectory_strategy import TrajectoryStrategy
-
+    from aworld.dataset.trajectory_storage import TrajectoryStorage
 
 def load_config(file_name: str, dir_name: str = None) -> Dict[str, Any]:
+    from aworld.logs.util import logger
+
     """Dynamically load config file form current path.
 
     Args:
@@ -132,6 +132,7 @@ class ModelConfig(BaseConfig):
     model_type: Optional[str] = 'qwen'  # Model type determines tokenizer and maximum length
     params: Optional[Dict[str, Any]] = {}
     ext_config: Optional[Dict[str, Any]] = {}
+    llm_response_parser: Optional[Any] = None
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -230,7 +231,6 @@ class AgentMemoryConfig(BaseConfig):
 class AgentConfig(BaseConfig):
     llm_config: ModelConfig = ModelConfig()
     memory_config: AgentMemoryConfig = AgentMemoryConfig()
-    context_rule: ContextRuleConfig = ContextRuleConfig()
 
     # default reset init in first
     need_reset: bool = True
@@ -287,6 +287,7 @@ class TaskConfig(BaseConfig):
     task_name: str | None = None
     max_steps: int = 100
     trajectory_strategy: Optional[Type['TrajectoryStrategy']] = None
+    trajectory_storage: Optional[Type['TrajectoryStorage']] = None
     stream: bool = False
     resp_carry_context: bool = True
     resp_carry_raw_llm_resp: bool = False

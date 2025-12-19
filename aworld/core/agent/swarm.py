@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import uuid
 from collections import OrderedDict
 from enum import Enum
 from typing import Dict, List, Any, Callable, Optional, Tuple, Iterator, Union
@@ -39,7 +40,7 @@ class Swarm(object):
                  build_type: GraphBuildType = GraphBuildType.WORKFLOW,
                  builder_cls: str = None,
                  keep_build_type: bool = True,
-                 event_driven: bool = True):
+                 event_driven: bool = True, **kwargs):
         """Swarm init.
 
         Args:
@@ -82,6 +83,8 @@ class Swarm(object):
         self.task = ''
         self.initialized: bool = False
         self._finished: bool = False
+        self._name = kwargs.get('name', f"swarm_{uuid.uuid1().hex}")
+        self._id = f"{self._name}_{uuid.uuid1().hex}"
 
     def setting_build_type(self, build_type: GraphBuildType):
         all_pair = True
@@ -165,7 +168,8 @@ class Swarm(object):
             if hasattr(agent, 'need_reset') and agent.need_reset:
                 agent.reset()
             # global tools
-            agent.tool_names.extend(self.tools)
+            if hasattr(agent, 'tool_names'):
+                agent.tool_names.extend(self.tools)
 
         Swarm.register_agent(list(self.agent_graph.agents.values()))
         Swarm.register_agent(self.register_agents)
@@ -359,6 +363,12 @@ class Swarm(object):
     def finished(self, finished):
         self._finished = finished
 
+    def id(self):
+        return self._id
+
+    def name(self):
+        return self._name
+
     def add_agents(self, agents: List[BaseAgent]):
         logger.info(f"add agents {agents} to swarm.agents: {self.agents}")
         registered_agents = set([agent.id() for agent in self.register_agents])
@@ -378,7 +388,8 @@ class WorkflowSwarm(Swarm):
                  max_steps: int = 0,
                  register_agents: List[BaseAgent] = None,
                  builder_cls: str = None,
-                 event_driven: bool = True):
+                 event_driven: bool = True
+                 ,**kwargs):
         super().__init__(*args,
                          topology=topology,
                          root_agent=root_agent,
@@ -386,7 +397,8 @@ class WorkflowSwarm(Swarm):
                          register_agents=register_agents,
                          build_type=GraphBuildType.WORKFLOW,
                          builder_cls=builder_cls,
-                         event_driven=event_driven)
+                         event_driven=event_driven
+                         ,**kwargs)
 
 
 class TeamSwarm(Swarm):
@@ -399,7 +411,8 @@ class TeamSwarm(Swarm):
                  max_steps: int = 0,
                  register_agents: List[BaseAgent] = None,
                  builder_cls: str = None,
-                 event_driven: bool = True):
+                 event_driven: bool = True,
+                 **kwargs):
         super().__init__(*args,
                          topology=topology,
                          root_agent=root_agent,
@@ -407,7 +420,7 @@ class TeamSwarm(Swarm):
                          register_agents=register_agents,
                          build_type=GraphBuildType.TEAM,
                          builder_cls=builder_cls,
-                         event_driven=event_driven)
+                         event_driven=event_driven, **kwargs)
 
 
 # Alias for TeamSwarm
@@ -702,8 +715,8 @@ class TopologyBuilder:
     def _to_task_agent(self, swarm: Swarm):
         """Nested swarm wrapped with `TaskAgent`, used to support mixed topology."""
         from aworld.agents.task_llm_agent import TaskAgent
-
-        return TaskAgent(name=f"swarm_{swarm.build_type}", swarm=swarm)
+        swarm_name = f"swarm_{swarm.build_type}" if not swarm.name() else swarm.name()
+        return TaskAgent(name=swarm_name, swarm=swarm)
 
     def _is_star(self, single_agents: list) -> bool:
         # special process, identify whether it is a star topology
@@ -1036,7 +1049,7 @@ class TeamBuilder(TopologyBuilder):
         single_agents = []
         for agent in self.topology[1:]:
             if isinstance(agent, (BaseAgent, Swarm)):
-                single_agents.append(agent)
+                single_agents.append(agent if isinstance(agent, BaseAgent) else self._to_task_agent(agent))
             elif isinstance(agent, tuple):
                 valid_agents.append(agent)
             else:
@@ -1055,7 +1068,7 @@ class TeamBuilder(TopologyBuilder):
             agent_graph.add_edge(root_agent, agent)
 
             root_agent.handoffs.append(agent.id())
-            if agent.id() in agent.handoffs:
+            if isinstance(agent, BaseAgent) and agent.id() in agent.handoffs:
                 agent.handoffs.remove(agent.id())
 
         for pair in valid_agents:

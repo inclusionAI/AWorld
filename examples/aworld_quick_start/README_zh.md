@@ -30,6 +30,10 @@ AWorld中有较多的概念，如Sandbox, LLModel等，
   Single-agent使用MCP工具执行任务示例。用于需要使用MCP工具的场景。
 
 
+- [使用PTC](ptc) \
+  Aagent使用PTC(Programmatic Tool Calling)执行任务示例。用于需要使用PTC工具的场景。
+
+
 - [人机协同](HITL) \
   示例主要展示了如何使用AWorld框架做人机协同。用于人机交互的场景。
 
@@ -53,7 +57,15 @@ AWorld中有较多的概念，如Sandbox, LLModel等，
 - [基于配置运行](run_by_config) \
   Demo功能。加载配置文件，生成agent或swarm，并运行。
 
+
+- [CLI运行](cli)\
+  使用CLI示例。用于通过命令行交互的场景。
+
 ### 模块使用示例
+
+- [使用Sandbox](env)\
+  sandbox示例。用于连接和操作MCP等服务的工具环境。
+
 
 - [使用Memory](use_memory)\
   读写Memory示例。用于自定义操作Memory。

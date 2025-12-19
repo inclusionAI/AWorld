@@ -35,3 +35,17 @@ class PostLLMCallContextProcessHook(PostLLMCallHook):
     async def exec(self, message: Message, context: Context = None) -> Message:
         # get context
         pass
+
+
+@HookFactory.register(name="PostLLMTrajectoryHook",
+                      desc="PostLLMTrajectoryHook")
+class PostLLMTrajectoryHook(PostLLMCallHook):
+    """Update trajectory after llm call."""
+    def name(self):
+        return convert_to_snake("PostLLMTrajectoryHook")
+    async def exec(self, message: Message, context: Context = None) -> Message:
+        # get context
+        agent_message = message.headers.get("agent_message")
+        if not agent_message:
+            return None
+        await context.update_task_trajectory(message=agent_message, task_id=context.task_id)

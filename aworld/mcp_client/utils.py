@@ -134,8 +134,9 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
         return openai_tools
 
 
-async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[str]] = None) -> List[Dict[str, Any]]:
+async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[str]] = None, tool_actions: Optional[List[str]] = None) -> List[Dict[str, Any]]:
     openai_tools = []
+    tool_actions_set = set(tool_actions) if tool_actions else None
     for i, server in enumerate(mcp_servers):
         try:
             tools = await server.list_tools()
@@ -151,6 +152,11 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
                         f"server #{i + 1} ({balck_server}) black_tool_actions: {tool.name}"
                     )
                     continue
+                
+                # Filter by tool_actions (whitelist)
+                if tool_actions_set is not None:
+                    if tool.name not in tool_actions_set:
+                        continue
                 required = []
                 properties = {}
                 if tool.inputSchema and tool.inputSchema.get("properties"):
@@ -389,7 +395,8 @@ async def mcp_tool_desc_transform_v2(
         tools: List[str] = None, mcp_config: Dict[str, Any] = None, context: Context = None,
         server_instances: Dict[str, Any] = None,
         black_tool_actions: Dict[str, List[str]] = None,
-        sandbox_id: Optional[str] = None
+        sandbox_id: Optional[str] = None,
+        tool_actions: Optional[List[str]] = None
 ) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
@@ -511,11 +518,15 @@ async def mcp_tool_desc_transform_v2(
                     params = server_config["params"].copy()
                     headers = params.get("headers") or {}
                     env_name = headers.get("env_name")
+                    _SESSION_ID = env_name or ""
                     if sandbox_id:
-                        headers["SESSION_ID"] = f"{env_name}_{sandbox_id}"
+                        _SESSION_ID = _SESSION_ID + "_" + sandbox_id if _SESSION_ID else sandbox_id
                         from aworld.core.context.amni import AmniContext
                         if isinstance(context, AmniContext) and context.get_config().env_config.isolate:
-                            headers["SESSION_ID"] = f"{env_name}_{sandbox_id}_{context.task_id}"
+                            if context.task_id:
+                              _SESSION_ID = _SESSION_ID + "_" + str(context.task_id)
+                        headers["SESSION_ID"] = _SESSION_ID
+
                     params["headers"] = headers
                     server = MCPServerSse(
                         name=server_config["name"], params=params
@@ -524,11 +535,14 @@ async def mcp_tool_desc_transform_v2(
                     params = server_config["params"].copy()
                     headers = params.get("headers") or {}
                     env_name = headers.get("env_name")
+                    _SESSION_ID = env_name or ""
                     if sandbox_id:
-                        headers["SESSION_ID"] = f"{env_name}_{sandbox_id}"
+                        _SESSION_ID = _SESSION_ID + "_" + sandbox_id if _SESSION_ID else sandbox_id
                         from aworld.core.context.amni import AmniContext
                         if isinstance(context, AmniContext) and context.get_config().env_config.isolate:
-                            headers["SESSION_ID"] = f"{env_name}_{sandbox_id}_{context.task_id}"
+                            if context.task_id:
+                                _SESSION_ID = _SESSION_ID + "_" + str(context.task_id)
+                        headers["SESSION_ID"] = _SESSION_ID
 
                     params["headers"] = headers
                     if "timeout" in params and not isinstance(params["timeout"], timedelta):
@@ -550,7 +564,11 @@ async def mcp_tool_desc_transform_v2(
 
                 server = await stack.enter_async_context(server)
                 # servers.append(server)
-                _mcp_openai_tools = await run([server], black_tool_actions)
+                _mcp_openai_tools = await run(
+                    mcp_servers=[server],
+                    black_tool_actions=black_tool_actions,
+                    tool_actions=tool_actions
+                )
             if _mcp_openai_tools:
                 mcp_openai_tools.extend(_mcp_openai_tools)
         except BaseException as err:
@@ -906,11 +924,14 @@ async def get_server_instance(
         elif "sse" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
             env_name = headers.get("env_name")
+            _SESSION_ID = env_name or ""
             if sandbox_id:
-                headers["SESSION_ID"] = f"{env_name}_{sandbox_id}"
+                _SESSION_ID = _SESSION_ID + "_" + sandbox_id if _SESSION_ID else sandbox_id
                 from aworld.core.context.amni import AmniContext
                 if isinstance(context, AmniContext) and context.get_config().env_config.isolate:
-                    headers["SESSION_ID"] = f"{env_name}_{sandbox_id}_{context.task_id}"
+                    if context.task_id:
+                        _SESSION_ID = _SESSION_ID + "_" + str(context.task_id)
+                headers["SESSION_ID"] = _SESSION_ID
             server = MCPServerSse(
                 name=server_name,
                 params={
@@ -927,11 +948,14 @@ async def get_server_instance(
         elif "streamable-http" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
             env_name = headers.get("env_name")
+            _SESSION_ID = env_name or ""
             if sandbox_id:
-                headers["SESSION_ID"] = f"{env_name}_{sandbox_id}"
+                _SESSION_ID = _SESSION_ID + "_" + sandbox_id if _SESSION_ID else sandbox_id
                 from aworld.core.context.amni import AmniContext
                 if isinstance(context, AmniContext) and context.get_config().env_config.isolate:
-                    headers["SESSION_ID"] = f"{env_name}_{sandbox_id}_{context.task_id}"
+                    if context.task_id:
+                        _SESSION_ID = _SESSION_ID + "_" + str(context.task_id)
+                headers["SESSION_ID"] = _SESSION_ID
             server = MCPServerStreamableHttp(
                 name=server_name,
                 params={

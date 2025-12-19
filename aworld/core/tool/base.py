@@ -207,8 +207,9 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                         act.tool_call_id) or self.name(),
                     tool_name=act.tool_name,
                     action_name=act.action_name,
-                    data=step_res[0].content,
+                    data=step_res[0].action_result[idx].content,
                     origin_tool_call=ToolCall.from_dict({
+                        "id": act.tool_call_id,
                         "function": {
                             "name": act.action_name,
                             "arguments": act.params,
@@ -376,8 +377,9 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                         act.tool_call_id) or self.name(),
                     tool_name=act.tool_name,
                     action_name=act.action_name,
-                    data=step_res[0].content,
+                    data=step_res[0].action_result[idx].content,
                     origin_tool_call=ToolCall.from_dict({
+                        "id": act.tool_call_id,
                         "function": {
                             "name": act.action_name,
                             "arguments": act.params,
