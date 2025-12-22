@@ -78,6 +78,9 @@ class WorkspaceCheckpointRepository(BaseCheckpointRepository):
         checkpoint_artifact = workspace.get_artifact(CHECKPOINT_LATEST)
         if not checkpoint_artifact:
             return None
+        # Check if content is None before validation
+        if checkpoint_artifact.content is None:
+            return None
         return Checkpoint.model_validate(checkpoint_artifact.content)
 
 
