@@ -44,7 +44,7 @@ async def get_knowledge(
         workspace = await workspace_repo.get_session_workspace(session_id=session_id)
         logger.info(f"✅ Workspace retrieved successfully for session: {session_id}")
         
-        artifact = workspace.get_artifact(knowledge_id)
+        artifact = workspace.get_latest_artifact(knowledge_id)
         if not artifact:
             logger.warning(f"⚠️ Knowledge artifact not found: knowledge_id={knowledge_id}, session_id={session_id}")
             return f"Not found knowledge#{knowledge_id}"
@@ -154,7 +154,7 @@ async def get_knowledge_by_lines(
         workspace = await workspace_repo.get_session_workspace(session_id=session_id)
         logger.info(f"✅ Workspace retrieved successfully for session: {session_id}")
         
-        artifact = workspace.get_artifact(knowledge_id)
+        artifact = workspace.get_latest_artifact(knowledge_id)
         if not artifact:
             logger.warning(f"⚠️ Knowledge artifact not found: knowledge_id={knowledge_id}, session_id={session_id}")
             return f"Not found knowledge#{knowledge_id}"
@@ -249,7 +249,7 @@ async def grep_knowledge(
         workspace = await workspace_repo.get_session_workspace(session_id=session_id)
         logger.info(f"✅ Workspace retrieved successfully for session: {session_id}")
         
-        artifact = workspace.get_artifact(knowledge_id)
+        artifact = workspace.get_latest_artifact(knowledge_id)
         if not artifact:
             logger.warning(f"⚠️ Knowledge artifact not found: knowledge_id={knowledge_id}, session_id={session_id}")
             return f"Not found knowledge#{knowledge_id}"
@@ -398,7 +398,7 @@ async def list_knowledge_info(
         logger.info(f"✅ Workspace retrieved successfully for session: {session_id}")
         
         # Load workspace data
-        workspace._load_workspace_data()
+        workspace._load_workspace_data(load_artifact_content=False)
         
         # Query all knowledge artifacts with context_type = "actions_info"
         artifacts = await workspace.query_artifacts(search_filter={
@@ -620,7 +620,7 @@ async def get_todo(session_id: str = None) -> Union[str, TextContent]:
     logger.info(f"🔍 Getting todo: session_id={session_id}")
     try:
         workspace = await workspace_repo.get_session_workspace(session_id=session_id)
-        todo = workspace.get_artifact(f"session_{session_id}_todo")
+        todo = workspace.get_latest_artifact(f"session_{session_id}_todo")
         if not todo:
             logger.info(f"⚠️ Todo not found: session_id={session_id}")
             return f"todo is empty"
