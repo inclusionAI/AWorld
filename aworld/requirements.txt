@@ -22,3 +22,4 @@ numpy
 langchain-text-splitters~=0.3.8
 json_repair~=0.49.0
 rich~=14.0.0
+bs4~=0.0.2

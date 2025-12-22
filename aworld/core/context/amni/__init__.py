@@ -6,11 +6,14 @@ from typing import Optional, Any, List, Dict, Tuple
 
 from aworld import trace
 from aworld.config import AgentConfig, AgentMemoryConfig
+from aworld.core.common import TaskStatus
 # lazy import
 from aworld.core.context.base import Context
+from aworld.dataset.types import TrajectoryItem
 from aworld.logs.util import logger
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.output import Artifact, WorkSpace, StreamingOutputs
+from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory, ContextEnvConfig
 from .contexts import ContextManager
 from .prompt.prompts import AMNI_CONTEXT_PROMPT
@@ -25,7 +28,6 @@ from .state.task_state import SubTask
 from .utils.text_cleaner import truncate_content
 from .worksapces import ApplicationWorkspace
 from .worksapces import ApplicationWorkspace, workspace_repo
-from ...task import TaskStatus
 
 DEFAULT_VALUE = None
 
@@ -371,7 +373,7 @@ class AmniContext(Context):
     async def active_skill(self, skill_name: str, namespace: str) -> str:
         """
         Activate a skill to help agent perform a task.
-        
+
         Delegates to SkillService.active_skill().
         """
         return await self.skill_service.active_skill(skill_name, namespace)
@@ -379,7 +381,7 @@ class AmniContext(Context):
     async def load_skill_agent_mcp_config(self, skill_agent: str) -> Dict[str, Any]:
         """
         Load skill agent MCP config.
-        
+
         Delegates to SkillService.load_skill_agent_mcp_config().
         """
         return await self.skill_service.load_skill_agent_mcp_config(skill_agent)
@@ -407,7 +409,7 @@ class AmniContext(Context):
     async def offload_skill(self, skill_name: str, namespace: str) -> str:
         """
         Offload a skill to help agent perform a task.
-        
+
         Delegates to SkillService.offload_skill().
         """
         return await self.skill_service.offload_skill(skill_name, namespace)
@@ -415,7 +417,7 @@ class AmniContext(Context):
     async def get_active_skills(self, namespace: str) -> list[str]:
         """
         Get active skills from context.
-        
+
         Delegates to SkillService.get_active_skills().
         """
         return await self.skill_service.get_active_skills(namespace)
@@ -423,7 +425,7 @@ class AmniContext(Context):
     async def get_skill_list(self, namespace: str) -> Dict[str, Any]:
         """
         Get skill list from context.
-        
+
         Delegates to SkillService.get_skill_list().
         """
         return await self.skill_service.get_skill_list(namespace)
@@ -431,7 +433,7 @@ class AmniContext(Context):
     async def get_skill(self, skill_name: str, namespace: str) -> Dict[str, Any]:
         """
         Get a specific skill configuration.
-        
+
         Delegates to SkillService.get_skill().
         """
         return await self.skill_service.get_skill(skill_name, namespace)
@@ -439,7 +441,7 @@ class AmniContext(Context):
     async def get_skill_name_list(self, namespace: str) -> list[str]:
         """
         Get list of skill names.
-        
+
         Delegates to SkillService.get_skill_name_list().
         """
         return await self.skill_service.get_skill_name_list(namespace)
@@ -481,7 +483,7 @@ class ApplicationContext(AmniContext):
         self._config = context_config
         self._working_dir = working_dir
         self._initialized = False
-        
+
         # Initialize services (lazy initialization)
         self._knowledge_service = None
         self._skill_service = None
@@ -506,7 +508,7 @@ class ApplicationContext(AmniContext):
             from .services import KnowledgeService
             self._knowledge_service = KnowledgeService(self)
         return self._knowledge_service
-    
+
     @property
     def skill_service(self):
         """Get SkillService instance (lazy initialization)."""
@@ -514,7 +516,7 @@ class ApplicationContext(AmniContext):
             from .services import SkillService
             self._skill_service = SkillService(self)
         return self._skill_service
-    
+
     @property
     def task_state_service(self):
         """Get TaskStateService instance (lazy initialization)."""
@@ -522,7 +524,7 @@ class ApplicationContext(AmniContext):
             from .services import TaskStateService
             self._task_state_service = TaskStateService(self)
         return self._task_state_service
-    
+
     @property
     def memory_service(self):
         """Get MemoryService instance (lazy initialization)."""
@@ -530,7 +532,7 @@ class ApplicationContext(AmniContext):
             from .services import MemoryService
             self._memory_service = MemoryService(self)
         return self._memory_service
-    
+
     @property
     def prompt_service(self):
         """Get PromptService instance (lazy initialization)."""
@@ -538,11 +540,11 @@ class ApplicationContext(AmniContext):
             from .services import PromptService
             self._prompt_service = PromptService(self)
         return self._prompt_service
-    
+
     @property
     def freedom_space_service(self):
         """Get FreedomSpaceService instance (lazy initialization).
-        
+
         """
         if self._freedom_space_service is None:
             from .services import FreedomSpaceService
@@ -562,10 +564,10 @@ class ApplicationContext(AmniContext):
                **kwargs) -> "ApplicationContext":
         """
         Create ApplicationContext synchronously with simplified parameters.
-        
+
         This is a synchronous factory method that creates a minimal ApplicationContext
         without requiring async operations. Workspace will be initialized lazily when needed.
-        
+
         Args:
             user_id: User identifier, defaults to "user"
             session_id: Session identifier. If None, will be generated from timestamp
@@ -574,10 +576,10 @@ class ApplicationContext(AmniContext):
             context_config: Context configuration. If None, will create default config
             parent: Parent ApplicationContext for hierarchical contexts
             **kwargs: Additional arguments passed to __init__
-            
+
         Returns:
             ApplicationContext: Created ApplicationContext instance
-            
+
         Example:
             >>> context = ApplicationContext.create(
             ...     session_id="session_123",
@@ -586,13 +588,13 @@ class ApplicationContext(AmniContext):
             ... )
         """
         from datetime import datetime
-        
+
         # Generate IDs if not provided
         if not session_id:
             session_id = f"session_{datetime.now().strftime('%Y%m%d%H%M%S')}"
         if not task_id:
             task_id = f"task_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-        
+
         # Create TaskInput with simplified parameters
         task_input = TaskInput(
             user_id=user_id,
@@ -601,18 +603,18 @@ class ApplicationContext(AmniContext):
             task_content=task_content,
             origin_user_input=task_content
         )
-        
+
         # Create default config if not provided
         if not context_config:
             context_config = AmniConfigFactory.create()
-        
+
         # Create minimal TaskWorkingState (synchronously, without async memory operations)
         task_working_state = TaskWorkingState(
             history_messages=[],
             user_profiles=[],
             kv_store={}
         )
-        
+
         # Create ApplicationTaskContextState
         task_state = ApplicationTaskContextState(
             task_input=task_input,
@@ -620,7 +622,7 @@ class ApplicationContext(AmniContext):
             previous_round_results=[],
             task_output=TaskOutput()
         )
-        
+
         # Create ApplicationContext with workspace=None (will be initialized lazily)
         context = cls(
             task_state=task_state,
@@ -633,11 +635,11 @@ class ApplicationContext(AmniContext):
             session=kwargs.get('session'),
             engine=kwargs.get('engine')
         )
-        
+
         # Store current round's input as a separate field
         context.put("origin_task_input", context.task_input)
         context.put("origin_task_output", context.task_output)
-        
+
         return context
 
     @classmethod
@@ -745,13 +747,24 @@ class ApplicationContext(AmniContext):
         agent_list = []
         if agents:
             agent_list = [agent for agent_id, agent in agents.items()]
-        return await self.build_sub_task_context(sub_task_input, agents=agent_list, task_type=task_type)
+
+        sub_context = await self.build_sub_task_context(sub_task_input, agents=agent_list, task_type=task_type)
+
+        # Record task relationship
+        self.add_task_node(
+            child_task_id=sub_context.task_id,
+            parent_task_id=self.task_id,
+            caller_agent_info=self.agent_info,
+            caller_id=self.agent_info.current_agent_id if self.agent_info and hasattr(self.agent_info, 'current_agent_id') else None
+        )
+
+        return sub_context
 
     def add_sub_tasks(self, sub_task_inputs: list[TaskInput], task_type: str = 'normal'):
         """Add sub tasks to the task list.
-        
+
         Delegates to TaskStateService.add_sub_task().
-        
+
         Args:
             sub_task_inputs: List of task inputs.
             task_type: Task type, 'normal' or 'background'. Defaults to 'normal'.
@@ -892,7 +905,7 @@ class ApplicationContext(AmniContext):
             if sub_task.task_id == sub_task_id:
                 sub_task.status = sub_task_context.task_status
                 sub_task.result = sub_task_context.task_output_object
-                
+
                 # For background tasks, use the latest task state
                 if sub_task.task_type == 'background' and sub_task_context._task:
                     sub_task.status = sub_task_context._task.task_status
@@ -911,16 +924,15 @@ class ApplicationContext(AmniContext):
         if task_response and task_response.success:
             self.task_status = task_response.status
             self.task_output = task_response.answer
-            self.task_output_object.actions_info = await self.get_actions_info()
-            self.task_output_object.todo_info = await self.get_todo_info()
         else:
             self.task_status = task_response.status
             if self._task.outputs and isinstance(self._task.outputs, StreamingOutputs):
                 self.task_output = self._task.outputs.get_message_output_content()
             else:
                 self.task_output = task_response.msg
-            self.task_output_object.actions_info = await self.get_actions_info()
-            self.task_output_object.todo_info = await self.get_todo_info()
+
+        self.task_output_object.actions_info = await self.get_actions_info()
+        self.task_output_object.todo_info = await self.get_todo_info()
 
         if self.parent:
             self.parent.merge_sub_context(self)
@@ -935,7 +947,7 @@ class ApplicationContext(AmniContext):
     def set_agent_state(self, agent_id: str, agent_state: ApplicationAgentState):
         """
         Set agent state for the given agent_id.
-        
+
         Delegates to TaskStateService.set_agent_state().
         """
         self.task_state_service.set_agent_state(agent_id, agent_state)
@@ -943,7 +955,7 @@ class ApplicationContext(AmniContext):
     def get_agent_state(self, agent_id: str) -> Optional[ApplicationAgentState]:
         """
         Get agent state for the given agent_id.
-        
+
         Delegates to TaskStateService.get_agent_state().
         """
         return self.task_state_service.get_agent_state(agent_id)
@@ -951,7 +963,7 @@ class ApplicationContext(AmniContext):
     def has_agent_state(self, agent_id: str):
         """
         Check if agent state exists for the given agent_id.
-        
+
         Delegates to TaskStateService.has_agent_state().
         """
         return self.task_state_service.has_agent_state(agent_id)
@@ -1007,12 +1019,12 @@ class ApplicationContext(AmniContext):
         self.task_state.task_output.result = result
 
     @property
-    def task_status(self) -> TaskStatus:
+    def task_status(self) -> 'TaskStatus':
         """Get current task status."""
         return self.task_state_service.get_task_status()
 
     @task_status.setter
-    def task_status(self, status: TaskStatus):
+    def task_status(self, status: 'TaskStatus'):
         """Set task status."""
         self.task_state_service.set_task_status(status)
 
@@ -1063,31 +1075,31 @@ class ApplicationContext(AmniContext):
     @workspace.setter
     def workspace(self, workspace):
         self._workspace = workspace
-    
+
     async def init_workspace(self) -> "ApplicationWorkspace":
         """
         Initialize workspace asynchronously (lazy initialization).
-        
+
         This method should be called when workspace is needed for the first time.
         Workspace will be created based on session_id.
-        
+
         Returns:
             ApplicationWorkspace: Initialized workspace instance
         """
         if self._workspace is None:
             self._workspace = await workspace_repo.get_session_workspace(session_id=self.session_id)
         return self._workspace
-    
+
     async def _ensure_workspace(self) -> "ApplicationWorkspace":
         """
         Ensure workspace is initialized, initializing it if necessary.
-        
+
         This is a helper method to be used in methods that require workspace.
         It automatically initializes workspace if it's None.
-        
+
         Returns:
             ApplicationWorkspace: Initialized workspace instance
-            
+
         Raises:
             RuntimeError: If workspace cannot be initialized (e.g., session_id is None)
         """
@@ -1265,7 +1277,7 @@ class ApplicationContext(AmniContext):
                                                agent_name: str, namespace: str = "default"):
         """
         Publish and wait for system prompt event.
-        
+
         Delegates to PromptService.pub_and_wait_system_prompt_event().
         """
         return await self.prompt_service.pub_and_wait_system_prompt_event(
@@ -1280,7 +1292,7 @@ class ApplicationContext(AmniContext):
                                              namespace: str = "default"):
         """
         Publish and wait for tool result event.
-        
+
         Delegates to PromptService.pub_and_wait_tool_result_event().
         """
         return await self.prompt_service.pub_and_wait_tool_result_event(
@@ -1292,7 +1304,7 @@ class ApplicationContext(AmniContext):
     async def offload_by_workspace(self, artifacts: list[Artifact], namespace="default", biz_id: str = None):
         """
         Context Offloading - Store information outside the LLM's context via external storage.
-        
+
         Delegates to KnowledgeService.offload_by_workspace().
         """
         return await self.knowledge_service.offload_by_workspace(artifacts, namespace, biz_id)
@@ -1300,7 +1312,7 @@ class ApplicationContext(AmniContext):
     def need_index(self, artifact: Artifact):
         """
         Check if artifact needs indexing.
-        
+
         Delegates to KnowledgeService._need_index().
         """
         return self.knowledge_service._need_index(artifact)
@@ -1317,7 +1329,7 @@ class ApplicationContext(AmniContext):
     ):
         """
         Load knowledge context from workspace.
-        
+
         Delegates to KnowledgeService.load_context_by_workspace().
         """
         return await self.knowledge_service.load_context_by_workspace(
@@ -1343,7 +1355,7 @@ class ApplicationContext(AmniContext):
     async def add_knowledge_list(self, knowledge_list: List[Artifact], namespace: str = "default", build_index=True) -> None:
         """
         Add multiple knowledge artifacts in batch.
-        
+
         Delegates to KnowledgeService.add_knowledge_list().
         """
         return await self.knowledge_service.add_knowledge_list(knowledge_list, namespace, build_index)
@@ -1351,7 +1363,7 @@ class ApplicationContext(AmniContext):
     async def add_knowledge(self, knowledge: Artifact, namespace: str = "default", index=True) -> None:
         """
         Add a single knowledge artifact.
-        
+
         Delegates to KnowledgeService.add_knowledge().
         """
         return await self.knowledge_service.add_knowledge(knowledge, namespace, index)
@@ -1359,7 +1371,7 @@ class ApplicationContext(AmniContext):
     async def update_knowledge(self, knowledge: Artifact, namespace: str = "default") -> None:
         """
         Update an existing knowledge artifact.
-        
+
         Delegates to KnowledgeService.update_knowledge().
         """
         return await self.knowledge_service.update_knowledge(knowledge, namespace)
@@ -1424,7 +1436,7 @@ class ApplicationContext(AmniContext):
     async def refresh_working_dir(self):
         """
         Refresh freedom space and sync to workspace.
-                
+
         Delegates to FreedomSpaceService.refresh_freedom_space().
         """
         return await self.freedom_space_service.refresh_freedom_space()
@@ -1437,7 +1449,7 @@ class ApplicationContext(AmniContext):
     async def add_task_output(self, output_artifact: Artifact, namespace: str = "default", index=True) -> None:
         """
         Add a task output artifact to task state and workspace.
-        
+
         Delegates to KnowledgeService.add_task_output().
         """
         return await self.knowledge_service.add_task_output(output_artifact, namespace, index)
@@ -1463,7 +1475,7 @@ class ApplicationContext(AmniContext):
     def add_fact(self, fact: Fact, namespace: str = "default", **kwargs):
         """
         Add a fact to working state (long-term memory).
-        
+
         Delegates to MemoryService.add_fact().
         """
         self.memory_service.add_fact(fact, namespace, **kwargs)
@@ -1471,7 +1483,7 @@ class ApplicationContext(AmniContext):
     async def retrival_facts(self, namespace: str = "default", **kwargs) -> Optional[list[Fact]]:
         """
         Retrieve facts from long-term memory storage.
-        
+
         Delegates to MemoryService.retrieval_facts().
         """
         return await self.memory_service.retrieval_facts(namespace, **kwargs)
@@ -1479,7 +1491,7 @@ class ApplicationContext(AmniContext):
     def get_facts(self, namespace: str = "default", **kwargs) -> Optional[list[Fact]]:
         """
         Get facts from working state (long-term memory).
-        
+
         Delegates to MemoryService.get_facts().
         """
         return self.memory_service.get_facts(namespace, **kwargs)
@@ -1487,7 +1499,7 @@ class ApplicationContext(AmniContext):
     def get_user_profiles(self, namespace: str = "default") -> Optional[list[UserProfile]]:
         """
         Get user profiles from working state.
-        
+
         Delegates to MemoryService.get_user_profiles().
         """
         return self.memory_service.get_user_profiles(namespace)
@@ -1507,15 +1519,15 @@ class ApplicationContext(AmniContext):
     async def get_todo_info(self):
         """
         Get todo information from workspace.
-        
+
         Delegates to KnowledgeService.get_todo_info().
         """
-        return await self.knowledge_service.get_todo_info()
+        return await self.knowledge_service.get_todo()
 
     async def get_actions_info(self, namespace = "default"):
         """
         Get actions information from workspace.
-        
+
         Delegates to KnowledgeService.get_actions_info().
         """
         return await self.knowledge_service.get_actions_info(namespace)
@@ -1523,7 +1535,7 @@ class ApplicationContext(AmniContext):
     async def consolidation(self, namespace = "default"):
         """
         Context consolidation: Extract and generate long-term memory from context.
-        
+
         Delegates to MemoryService.consolidation().
         """
         return await self.memory_service.consolidation(namespace)
@@ -1533,7 +1545,7 @@ class ApplicationContext(AmniContext):
     def get(self, key: str, namespace: str = "default") -> Any:
         """
         Get a value from key-value store.
-        
+
         Delegates to TaskStateService.get_kv().
         """
         logger.info(f"{id(self)}#get value for namespace: {namespace} -> key: {key}")
@@ -1542,7 +1554,7 @@ class ApplicationContext(AmniContext):
     def get_memory_messages(self, last_n=100, namespace: str = "default") -> list[MemoryMessage]:
         """
         Get memory messages from working state (short-term memory).
-        
+
         Delegates to MemoryService.get_memory_messages().
         """
         return self.memory_service.get_memory_messages(last_n, namespace)
@@ -1558,7 +1570,7 @@ class ApplicationContext(AmniContext):
     async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Chunk]:
         """
         Get a specific chunk from a knowledge artifact.
-        
+
         Delegates to KnowledgeService.get_knowledge_chunk().
         """
         return await self.knowledge_service.get_knowledge_chunk(knowledge_id, chunk_index)
@@ -1567,7 +1579,7 @@ class ApplicationContext(AmniContext):
                                ) -> Optional[SearchResults]:
         """
         Search knowledge using semantic search.
-        
+
         Delegates to KnowledgeService.search_knowledge().
         """
         return await self.knowledge_service.search_knowledge(user_query, top_k, search_filter, namespace)
@@ -1575,7 +1587,7 @@ class ApplicationContext(AmniContext):
     async def delete_knowledge_by_id(self, knowledge_id: str, namespace: str = "default") -> None:
         """
         Delete a knowledge artifact by ID.
-        
+
         Delegates to KnowledgeService.delete_knowledge_by_id().
         """
         return await self.knowledge_service.delete_knowledge_by_id(knowledge_id, namespace)
@@ -1585,7 +1597,7 @@ class ApplicationContext(AmniContext):
     async def build_knowledge_context(self, namespace: str = "default", search_filter:dict = None, top_k=20) -> str:
         """
         Build knowledge context string.
-        
+
         Delegates to KnowledgeService.build_knowledge_context().
         """
         return await self.knowledge_service.build_knowledge_context(namespace, search_filter, top_k)
@@ -1602,17 +1614,6 @@ class ApplicationContext(AmniContext):
 
     def deep_copy(self) -> 'ApplicationContext':
         return self
-
-    def merge_context(self, other_context: 'ApplicationContext') -> None:
-        super().merge_context(other_context)
-        # Merge task_state
-        if hasattr(other_context, 'task_state') and other_context.task_state:
-            try:
-                for key, value in other_context.task_state.items():
-                    # If key already exists, the value will be overwritten
-                    self.task_state[key] = value
-            except Exception as e:
-                logger.warning(f"Failed to merge task_state: {e}")
 
     def to_dict(self) -> dict:
         result = {}
@@ -1696,3 +1697,43 @@ class ApplicationContext(AmniContext):
             await self.build_agent_state(self._task.agent)
 
         self._initialized = True
+
+    async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]]):
+        """Add trajectory data for a task.
+        Delegate to root context to centralize storage.
+        """
+        if self.root != self:
+            await self.root.add_task_trajectory(task_id, task_trajectory)
+        else:
+            await super().add_task_trajectory(task_id, task_trajectory)
+
+
+    async def update_task_trajectory(self, message: Any, task_id: str = None, **kwargs):
+        """Generate trajectory item from message and append to dataset.
+        Delegate to root context.
+        """
+        if self.root != self:
+            await self.root.update_task_trajectory(message, task_id, **kwargs)
+        else:
+            await super().update_task_trajectory(message, task_id, **kwargs)
+
+    async def get_task_trajectory(self, task_id: str) -> List[TrajectoryItem]:
+        """Get trajectory data for a task.
+        Delegate to root context.
+        """
+        if self.root != self:
+            return await self.root.get_task_trajectory(task_id)
+        else:
+            return await super().get_task_trajectory(task_id)
+
+    def add_task_node(self, child_task_id: str, parent_task_id: str, caller_agent_info=None, **kwargs):
+        """Record the relationship between child task and parent task.
+        Delegate to root context.
+        """
+        agent_info = caller_agent_info
+        if not agent_info:
+            agent_info = self.agent_info
+        if self.root != self:
+            self.root.add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)
+        else:
+            super().add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)

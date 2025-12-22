@@ -8,6 +8,7 @@ from aworld.utils.serialized_util import to_serializable
 
 
 class ExpMeta(BaseModel):
+    session_id: str
     task_id: str
     task_name: Optional[str] = None
     agent_id: Optional[str] = None
@@ -17,6 +18,7 @@ class ExpMeta(BaseModel):
 
     def to_dict(self):
         return {
+            "session_id": self.session_id,
             "task_id": self.task_id,
             "task_name": self.task_name,
             "agent_id": self.agent_id,
@@ -24,6 +26,31 @@ class ExpMeta(BaseModel):
             "execute_time": self.execute_time,
             "pre_agent": self.pre_agent
         }
+
+class TrajectoryState(BaseModel):
+    """
+    S: Environment & Context
+    """
+    input: Any = Field(default=None, description="Agent input (query)")
+    messages: List[Dict[str, Any]] = Field(default_factory=list, description="History messages")
+    context: Dict[str, Any] = Field(default_factory=dict, description="Context variables")
+
+class TrajectoryAction(BaseModel):
+    """
+    A: Decision & Execution
+    """
+    content: Optional[str] = Field(default=None, description="Assistant message content")
+    tool_calls: List[Dict[str, Any]] = Field(default_factory=list, description="Tool calls")
+    is_agent_finished: bool = Field(default=False, description="Is agent finished")
+    ext_info: Dict[str, Any] = Field(default_factory=dict, description="Extra information")
+
+class TrajectoryReward(BaseModel):
+    """
+    R: Feedback & Result
+    """
+    tool_outputs: List[Dict[str, Any]] = Field(default_factory=list, description="Tool message output")
+    status: Optional[str] = Field(default=None, description="Execution status")
+    score: Optional[float] = Field(default=None, description="User feedback or score")
 
 
 class Experience(BaseModel):
@@ -58,4 +85,23 @@ class DataRow(BaseModel):
             "exp_meta": self.exp_meta.to_dict(),
             "exp_data": self.exp_data.to_dict(),
             "id": self.id
+        }
+
+class TrajectoryItem(BaseModel):
+    """
+    Standardized Trajectory Item with SAR structure
+    """
+    id: str
+    meta: ExpMeta
+    state: TrajectoryState
+    action: TrajectoryAction
+    reward: TrajectoryReward
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "meta": self.meta.to_dict(),
+            "state": self.state.model_dump(),
+            "action": self.action.model_dump(),
+            "reward": self.reward.model_dump()
         }
