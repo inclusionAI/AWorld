@@ -175,7 +175,7 @@ class MemoryService(IMemoryService):
         
         start_time = time.time()
         memory = MemoryFactory.instance()
-        todo_info = await self._context.get_todo_info()
+        todo_info = await self._context.get_todo()
         current_task = "current_task: " + self._context.task_input
         concat_task_input = current_task + (todo_info if todo_info else "")
         facts = await memory.retrival_facts(

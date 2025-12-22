@@ -9,11 +9,11 @@ providing a clean interface for adding, updating, retrieving, and searching know
 import abc
 from typing import Optional, List, Dict, Any
 
-from aworld.output import Artifact
+from aworld.output import Artifact, ArtifactType
 from aworld.core.context.amni.retrieval.chunker import Chunk
 from aworld.core.context.amni.retrieval.embeddings import SearchResults
 from aworld.core.context.amni.state.common import WorkingState
-
+from aworld.logs.util import logger
 
 class IKnowledgeService(abc.ABC):
     """Interface for knowledge management operations."""
@@ -89,6 +89,58 @@ class IKnowledgeService(abc.ABC):
             
         Returns:
             Chunk if found, None otherwise
+        """
+        pass
+    
+    @abc.abstractmethod
+    async def get_knowledge_by_lines(self, knowledge_id: str, start_line: int, end_line: int, namespace: str = "default") -> Optional[str]:
+        """
+        Get knowledge content by line range.
+        
+        Args:
+            knowledge_id: ID of the artifact
+            start_line: Starting line number (1-based, inclusive)
+            end_line: Ending line number (1-based, inclusive)
+            namespace: Namespace for retrieval
+            
+        Returns:
+            Content string of the specified line range, or None if not found
+        """
+        pass
+    
+    @abc.abstractmethod
+    async def grep_knowledge(self, knowledge_id: str, pattern: str, ignore_case: bool = False, 
+                            context_before: int = 0, context_after: int = 0, max_results: int = 100,
+                            namespace: str = "default") -> Optional[str]:
+        """
+        Search for pattern in knowledge content using grep-like functionality.
+        
+        Args:
+            knowledge_id: ID of the artifact
+            pattern: Search pattern (supports regular expressions)
+            ignore_case: Whether to perform case-insensitive search
+            context_before: Number of lines to show before each match
+            context_after: Number of lines to show after each match
+            max_results: Maximum number of matching lines to return
+            namespace: Namespace for search
+            
+        Returns:
+            Search results string with matching lines and context, or None if not found
+        """
+        pass
+    
+    @abc.abstractmethod
+    async def list_knowledge_info(self, limit: int = 100, offset: int = 0, namespace: str = "default") -> Optional[List[Dict[str, Any]]]:
+        """
+        List all knowledge artifacts (actions_info) from workspace.
+        
+        Args:
+            limit: Maximum number of knowledge artifacts to return
+            offset: Offset for pagination
+            namespace: Namespace for retrieval
+            
+        Returns:
+            List of knowledge artifacts with their IDs and summaries, or None if error
         """
         pass
     
@@ -169,6 +221,30 @@ class IKnowledgeService(abc.ABC):
         pass
     
     @abc.abstractmethod
+    async def add_todo(self, todo_content: str, namespace: str = "default") -> None:
+        """
+        Add or update todo content in workspace.
+        
+        Args:
+            todo_content: The todo content to add or update
+            namespace: Namespace for storage
+        """
+        pass
+    
+    @abc.abstractmethod
+    async def get_todo(self, namespace: str = "default") -> Optional[str]:
+        """
+        Get todo content from workspace.
+        
+        Args:
+            namespace: Namespace for retrieval
+            
+        Returns:
+            Todo content string if found, None otherwise
+        """
+        pass
+    
+    @abc.abstractmethod
     async def get_actions_info(self, namespace: str = "default") -> str:
         """
         Get actions information from workspace.
@@ -217,7 +293,7 @@ class KnowledgeService(IKnowledgeService):
     
     async def add_knowledge(self, knowledge: Artifact, namespace: str = "default", index: bool = True) -> None:
         """Add a single knowledge artifact."""
-        from aworld.logs.util import logger
+        
         
         logger.debug(f"add knowledge #{knowledge.artifact_id} start")
         self._get_working_state(namespace).save_knowledge(knowledge)
@@ -232,7 +308,7 @@ class KnowledgeService(IKnowledgeService):
         """Add multiple knowledge artifacts in batch."""
         import asyncio
         import time
-        from aworld.logs.util import logger
+        
         
         logger.debug(f"add_knowledge_list start")
         
@@ -270,12 +346,236 @@ class KnowledgeService(IKnowledgeService):
     async def get_knowledge_by_id(self, knowledge_id: str, namespace: str = "default") -> Optional[Artifact]:
         """Get a knowledge artifact by ID."""
         workspace = await self._context._ensure_workspace()
-        return workspace.get_artifact(knowledge_id)
+        return workspace.get_latest_artifact(knowledge_id)
     
     async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Chunk]:
         """Get a specific chunk from a knowledge artifact."""
         workspace = await self._context._ensure_workspace()
         return await workspace.get_artifact_chunk(knowledge_id, chunk_index=chunk_index)
+    
+    async def get_knowledge_by_lines(self, knowledge_id: str, start_line: int, end_line: int, namespace: str = "default") -> Optional[str]:
+        """
+        Get knowledge content by line range.
+        
+        Args:
+            knowledge_id: ID of the artifact
+            start_line: Starting line number (1-based, inclusive)
+            end_line: Ending line number (1-based, inclusive)
+            namespace: Namespace for retrieval
+            
+        Returns:
+            Content string of the specified line range, or None if not found
+        """
+        
+        
+        try:
+            workspace = await self._context._ensure_workspace()
+            artifact = workspace.get_latest_artifact(knowledge_id)
+            
+            if not artifact:
+                logger.warning(f"⚠️ Knowledge artifact not found: knowledge_id={knowledge_id}")
+                return None
+            
+            # Split content into lines
+            content_str = artifact.content if isinstance(artifact.content, str) else str(artifact.content)
+            lines = content_str.split('\n')
+            total_lines = len(lines)
+            
+            # Validate line numbers (1-based indexing)
+            if start_line < 1 or end_line < 1:
+                logger.warning(f"⚠️ Line numbers must be positive. Got start_line={start_line}, end_line={end_line}")
+                return None
+            
+            if start_line > total_lines:
+                logger.warning(f"⚠️ start_line ({start_line}) exceeds total lines ({total_lines})")
+                return None
+            
+            if start_line > end_line:
+                logger.warning(f"⚠️ start_line ({start_line}) must be less than or equal to end_line ({end_line})")
+                return None
+            
+            # Adjust end_line if it exceeds total lines
+            actual_end_line = min(end_line, total_lines)
+            
+            # Extract lines (convert to 0-based indexing)
+            selected_lines = lines[start_line - 1:actual_end_line]
+            content = '\n'.join(selected_lines)
+            
+            logger.info(f"✅ Knowledge lines retrieved: knowledge_id={knowledge_id}, lines={start_line}-{actual_end_line}")
+            return f"Lines {start_line}-{actual_end_line} of {total_lines} (knowledge_id: {knowledge_id}):\n\n{content}"
+            
+        except Exception as e:
+            logger.error(f"❌ Error retrieving knowledge by lines: knowledge_id={knowledge_id}, error={str(e)}")
+            return None
+    
+    async def grep_knowledge(self, knowledge_id: str, pattern: str, ignore_case: bool = False, 
+                            context_before: int = 0, context_after: int = 0, max_results: int = 100,
+                            namespace: str = "default") -> Optional[str]:
+        """
+        Search for pattern in knowledge content using grep-like functionality.
+        
+        Args:
+            knowledge_id: ID of the artifact
+            pattern: Search pattern (supports regular expressions)
+            ignore_case: Whether to perform case-insensitive search
+            context_before: Number of lines to show before each match
+            context_after: Number of lines to show after each match
+            max_results: Maximum number of matching lines to return
+            namespace: Namespace for search
+            
+        Returns:
+            Search results string with matching lines and context, or None if not found
+        """
+        import re
+        
+        
+        try:
+            workspace = await self._context._ensure_workspace()
+            artifact = workspace.get_latest_artifact(knowledge_id)
+            
+            if not artifact:
+                logger.warning(f"⚠️ Knowledge artifact not found: knowledge_id={knowledge_id}")
+                return None
+            
+            # Split content into lines
+            content_str = artifact.content if isinstance(artifact.content, str) else str(artifact.content)
+            lines = content_str.split('\n')
+            total_lines = len(lines)
+            
+            # Compile regex pattern
+            try:
+                flags = re.IGNORECASE if ignore_case else 0
+                regex = re.compile(pattern, flags)
+            except re.error as e:
+                logger.warning(f"⚠️ Invalid regex pattern: {str(e)}")
+                return None
+            
+            # Find matching lines
+            matches = []
+            matched_line_numbers = set()
+            
+            for line_num, line in enumerate(lines, start=1):
+                if regex.search(line):
+                    matches.append(line_num)
+                    matched_line_numbers.add(line_num)
+                    
+                    if len(matches) >= max_results:
+                        break
+            
+            if not matches:
+                logger.info(f"✅ No matches found for pattern: {pattern}")
+                return f"No matches found for pattern '{pattern}' in knowledge#{knowledge_id}"
+            
+            # Build result with context
+            result_lines = []
+            lines_to_show = set()
+            
+            # Collect all lines to show (including context)
+            for match_line in matches:
+                # Add context before
+                for i in range(max(1, match_line - context_before), match_line):
+                    lines_to_show.add(i)
+                
+                # Add matching line
+                lines_to_show.add(match_line)
+                
+                # Add context after
+                for i in range(match_line + 1, min(total_lines + 1, match_line + context_after + 1)):
+                    lines_to_show.add(i)
+            
+            # Sort and format output
+            sorted_lines = sorted(lines_to_show)
+            prev_line = 0
+            
+            for line_num in sorted_lines:
+                # Add separator for gaps
+                if prev_line > 0 and line_num > prev_line + 1:
+                    result_lines.append("--")
+                
+                line_content = lines[line_num - 1]
+                
+                # Mark matching lines with different prefix
+                if line_num in matched_line_numbers:
+                    prefix = f"{line_num}:"
+                    # Highlight matches in the line
+                    highlighted_line = regex.sub(lambda m: f"**{m.group(0)}**", line_content)
+                    result_lines.append(f"{prefix} {highlighted_line}")
+                else:
+                    prefix = f"{line_num}-"
+                    result_lines.append(f"{prefix} {line_content}")
+                
+                prev_line = line_num
+            
+            result_text = "\n".join(result_lines)
+            
+            # Prepare summary
+            summary_text = f"Found {len(matches)} match(es) for pattern '{pattern}' in knowledge#{knowledge_id} ({total_lines} total lines)\n\n{result_text}"
+            
+            if len(matches) >= max_results:
+                summary_text += f"\n\n⚠️ Results limited to {max_results} matches. Use max_results parameter to see more."
+            
+            logger.info(f"✅ Grep completed: found {len(matches)} matches for pattern '{pattern}'")
+            return summary_text
+            
+        except Exception as e:
+            logger.error(f"❌ Error grepping knowledge: knowledge_id={knowledge_id}, pattern={pattern}, error={str(e)}")
+            return None
+    
+    async def list_knowledge_info(self, limit: int = 100, offset: int = 0, namespace: str = "default") -> Optional[List[Dict[str, Any]]]:
+        """
+        List all knowledge artifacts (actions_info) from workspace.
+        
+        Args:
+            limit: Maximum number of knowledge artifacts to return
+            offset: Offset for pagination
+            namespace: Namespace for retrieval
+            
+        Returns:
+            List of knowledge artifacts with their IDs and summaries, or None if error
+        """
+        
+        
+        try:
+            workspace = await self._context._ensure_workspace()
+            workspace._load_workspace_data(load_artifact_content=False)
+            
+            # Query all knowledge artifacts with context_type = "actions_info"
+            artifacts = await workspace.query_artifacts(search_filter={
+                "context_type": "actions_info"
+            })
+            
+            total_count = len(artifacts)
+            logger.info(f"📊 Found {total_count} knowledge artifacts")
+            
+            if total_count == 0:
+                return []
+            
+            # Apply pagination
+            start_idx = offset
+            end_idx = min(offset + limit, total_count)
+            paginated_artifacts = artifacts[start_idx:end_idx]
+            
+            # Build result list
+            knowledge_list = []
+            for idx, artifact in enumerate(paginated_artifacts, start=start_idx + 1):
+                knowledge_id = artifact.artifact_id
+                summary = artifact.metadata.get('summary', 'No summary available') if hasattr(artifact, 'metadata') and artifact.metadata else 'No summary available'
+                task_id = artifact.metadata.get('task_id', 'N/A') if hasattr(artifact, 'metadata') and artifact.metadata else 'N/A'
+                
+                knowledge_info = {
+                    "index": idx,
+                    "knowledge_id": knowledge_id,
+                    "summary": summary,
+                    "task_id": task_id
+                }
+                knowledge_list.append(knowledge_info)
+            
+            logger.info(f"✅ Knowledge list retrieved: {len(paginated_artifacts)} items returned")
+            return knowledge_list
+            
+        except Exception as e:
+            logger.error(f"❌ Error listing knowledge info: error={str(e)}")
+            return None
     
     async def search_knowledge(self, user_query: str, top_k: int = None, search_filter: Dict[str, Any] = None, namespace: str = "default") -> Optional[SearchResults]:
         """Search knowledge using semantic search."""
@@ -491,7 +791,7 @@ class KnowledgeService(IKnowledgeService):
         """Offload artifacts to workspace (context offloading)."""
         import uuid
         import asyncio
-        from aworld.logs.util import logger
+        
         
         if not artifacts:
             return ""
@@ -527,7 +827,7 @@ class KnowledgeService(IKnowledgeService):
                                         search_by_index: bool = True) -> str:
         """Load knowledge context from workspace."""
         import time
-        from aworld.logs.util import logger
+        
         from aworld.core.context.amni.prompt.prompts import AMNI_CONTEXT_PROMPT
         
         # Ensure workspace is initialized
@@ -594,25 +894,79 @@ class KnowledgeService(IKnowledgeService):
     
     async def get_todo_info(self) -> str:
         """Get todo information from workspace."""
-        from aworld.logs.util import logger
+        
         
         workspace = await self._context._ensure_workspace()
-        workspace._load_workspace_data()
         todo_info = (
             "Below is the global task execute todo information, explaining the current progress:\n"
         )
-        artifact = workspace.get_artifact(f"session_{self._context.session_id}_todo")
+        artifact = workspace.get_latest_artifact(artifact_id=f"session_{self._context.session_id}_todo")
         if not artifact:
             return "Todo is Empty"
         todo_info += f"{artifact.content}"
         return todo_info
     
-    async def get_actions_info(self, namespace: str = "default") -> str:
-        """Get actions information from workspace."""
+    async def add_todo(self, todo_content: str, namespace: str = "default") -> None:
+        """
+        Add or update todo content in workspace.
+        
+        Args:
+            todo_content: The todo content to add or update
+            namespace: Namespace for storage
+        """
         from aworld.logs.util import logger
         
         workspace = await self._context._ensure_workspace()
         workspace._load_workspace_data()
+        
+        todo_artifact_id = f"session_{self._context.session_id}_todo"
+        existing_artifact = workspace.get_artifact(todo_artifact_id)
+        
+        if existing_artifact:
+            # Update existing todo artifact
+            await workspace.update_artifact(artifact_id=todo_artifact_id, content=todo_content)
+            logger.info(f"✅ Updated todo artifact: {todo_artifact_id}")
+        else:
+            # Create new todo artifact
+            todo_artifact = Artifact(
+                artifact_id=todo_artifact_id,
+                artifact_type=ArtifactType.TEXT,
+                content=todo_content,
+                metadata={
+                    "context_type": "todo",
+                    "session_id": self._context.session_id,
+                    "task_id": self._context.task_id
+                }
+            )
+            await workspace.add_artifact(todo_artifact, index=False)
+            logger.info(f"✅ Created todo artifact: {todo_artifact_id}")
+    
+    async def get_todo(self, namespace: str = "default") -> Optional[str]:
+        """
+        Get todo content from workspace.
+        
+        Args:
+            namespace: Namespace for retrieval
+            
+        Returns:
+            Todo content string if found, None otherwise
+        """
+        from aworld.logs.util import logger
+        
+        workspace = await self._context._ensure_workspace()
+        
+        todo_artifact_id = f"session_{self._context.session_id}_todo"
+        artifact = workspace.get_latest_artifact(todo_artifact_id)
+        
+        if not artifact:
+            return None
+        
+        return artifact.content if isinstance(artifact.content, str) else str(artifact.content)
+    
+    async def get_actions_info(self, namespace: str = "default") -> str:
+        """Get actions information from workspace."""
+        workspace = await self._context._ensure_workspace()
+        workspace._load_workspace_data(load_artifact_content=False)
         artifacts = await workspace.query_artifacts(search_filter={
             "context_type": "actions_info",
             "task_id": self._context.task_id

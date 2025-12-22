@@ -5,30 +5,18 @@ import asyncio
 import enum
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Union, List, Dict, Callable, Optional, Literal
+from typing import Any, Union, List, Dict, Callable, Optional, Literal, TYPE_CHECKING
 
+from aworld.dataset.types import TrajectoryItem
 from aworld.utils.serialized_util import to_serializable
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
-from aworld.core.common import Config, Observation, StreamingMode
+from aworld.core.common import Config, Observation, StreamingMode, TaskStatus, TaskStatusValue
 from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
 from aworld.core.context.amni.config import AmniContextConfig
-
-
-class TaskStatusValue:
-    """Task status constants."""
-    INIT = 'init'
-    RUNNING = 'running'
-    SUCCESS = 'success'
-    FAILED = 'failed'
-    CANCELLED = 'cancelled'
-    INTERRUPTED = 'interrupted'
-    TIMEOUT = 'timeout'
-
-TaskStatus = Literal['init', 'running', 'success', 'failed', 'cancelled', 'interrupted', 'timeout']
 
 
 @dataclass
@@ -120,7 +108,7 @@ class TaskResponse:
     time_cost: float | None = field(default=0.0)
     success: bool = field(default=False)
     msg: str | None = field(default=None)
-    trajectory: List[Dict[str, Any]] = field(default_factory=list)
+    trajectory: List[Dict[str, Any]]= field(default_factory=list)
     # task final status, e.g. success/failed/cancelled
     status: TaskStatus | None = field(default=TaskStatusValue.SUCCESS)
 

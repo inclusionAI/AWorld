@@ -87,8 +87,8 @@ TODO_PROMPT = """
 </todo_guide>
 """
 
-
-@neuron_factory.register(name="todo", desc="Todo neuron", prio=2)
+TODO_NEURON_NAME = "todo"
+@neuron_factory.register(name=TODO_NEURON_NAME, desc="Todo neuron", prio=2)
 class TodoNeuron(Neuron):
     """Neuron for handling plan related properties"""
 
