@@ -142,7 +142,8 @@ class ModelResponse:
             raw_response: Any = None,
             message: Dict[str, Any] = None,
             reasoning_content: str = None,
-            finish_reason: str = None
+            finish_reason: str = None,
+            reasoning_details: Dict[str, Any] = None
     ):
         """
         Initialize ModelResponse object
@@ -186,6 +187,8 @@ class ModelResponse:
         self.created_at = datetime.now().isoformat()
 
         self.finish_reason = finish_reason
+
+        self.reasoning_details = reasoning_details
 
         self.structured_output = dict()
 
@@ -316,6 +319,12 @@ class ModelResponse:
         if message_dict and processed_tool_calls:
             message_dict["tool_calls"] = [tool_call.to_dict() for tool_call in processed_tool_calls]
 
+        # extract reasoning_details
+        reasoning_details = cls._get_item_from_openai_message(message, 'reasoning_details')
+        if not reasoning_details:
+            model_extra = cls._get_item_from_openai_message(message, 'model_extra', {})
+            reasoning_details = model_extra.get('reasoning_details', None)
+
         # Create and return ModelResponse
         return cls(
             id=response.id if hasattr(response, 'id') else response.get('id', 'unknown'),
@@ -326,7 +335,8 @@ class ModelResponse:
             raw_response=response,
             message=message_dict,
             reasoning_content=reasoning_content,
-            finish_reason=finish_reason
+            finish_reason=finish_reason,
+            reasoning_details=reasoning_details
         )
 
     @classmethod
