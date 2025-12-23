@@ -36,7 +36,7 @@ class DefaultHumanHandler(DefaultHandler):
 
     async def handle_user_input(self, data):
         # rewrite this method to handle user input
-        return input(f"Human Confirm Info: {data}\nPlease Input:")
+        return input(f"Human message: {data}\nConfirm Info: {data.payload}\nPlease Input:")
 
     async def _do_handle(self, message: Message) -> AsyncGenerator[Message, None]:
         headers = {"context": message.context}
