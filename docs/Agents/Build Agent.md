@@ -1,16 +1,12 @@
-# Building and Running Agents
-
-In AWorld's design, both Workflows and Multi-Agent Systems (MAS) are complex systems built around Agents as the core
-component. Using the most common llm_agent as an example, this tutorial provides detailed guidance on:
+<h1 id="BKFxm">Building and Running Agents</h1>
+Using the most common llm_agent as an example, this tutorial provides detailed guidance on:
 
 1. How to quickly build an Agent
-2. How to customize an Agent
-   This document is divided into two parts to explain AWorld's design philosophy.
+2. How to customize an Agent  
+This document is divided into two parts to explain AWorld's design philosophy.
 
-## Part 1: Quick Agent Setup
-
-### Declaring an Agent
-
+<h2 id="iFKMm">Quick Agent Setup</h2>
+<h3 id="A1BVO">Declaring an Agent</h3>
 ```python
 from aworld.agents.llm_agent import Agent
 
@@ -18,10 +14,8 @@ from aworld.agents.llm_agent import Agent
 agent = Agent(name="my_agent")
 ```
 
-### Configuring LLM
-
-#### Method 1: Using Environment Variables
-
+<h3 id="SnC96">Configuring LLM</h3>
+<h4 id="obpm9">Method 1: Using Environment Variables</h4>
 ```python
 import os
 
@@ -32,8 +26,7 @@ os.environ["LLM_API_KEY"] = "your-api-key"
 os.environ["LLM_BASE_URL"] = "https://api.openai.com/v1"  # Optional for OpenAI
 ```
 
-#### Method 2: Using AgentConfig
-
+<h4 id="wRp8S">Method 2: Using AgentConfig</h4>
 ```python
 import os
 from aworld.agents.llm_agent import Agent
@@ -49,8 +42,7 @@ agent_config = AgentConfig(
 agent = Agent(name="my_agent", conf=agent_config)
 ```
 
-#### Method 3: Using Shared ModelConfig
-
+<h4 id="NDNsw">Method 3: Using Shared ModelConfig</h4>
 When multiple agents use the same LLM service, you can specify a shared ModelConfig:
 
 ```python
@@ -74,8 +66,7 @@ agent_config = AgentConfig(
 agent = Agent(name="my_agent", conf=agent_config)
 ```
 
-### Configuring Prompts
-
+<h3 id="i8Rp7">Configuring Prompts</h3>
 ```python
 from aworld.agents.llm_agent import Agent
 import os
@@ -103,10 +94,8 @@ agent = Agent(
 )
 ```
 
-### Configuring Tools
-
-#### Local Tools
-
+<h3 id="aWS23">Configuring Tools</h3>
+<h4 id="mvy8i">Local Tools</h4>
 ```python
 from aworld.agents.llm_agent import Agent
 import os
@@ -142,8 +131,7 @@ agent = Agent(
 )
 ```
 
-#### MCP (Model Context Protocol) Tools
-
+<h4 id="RpDnK">MCP (Model Context Protocol) Tools</h4>
 ```python
 from aworld.agents.llm_agent import Agent
 import os
@@ -183,8 +171,7 @@ agent = Agent(
 )
 ```
 
-#### Agent as Tool
-
+<h4 id="XXwHB">Agent as Tool</h4>
 ```python
 from aworld.agents.llm_agent import Agent
 import os
@@ -215,10 +202,8 @@ agent = Agent(
 )
 ```
 
-## Part 2: Customizing Agents
-
-### Customizing Agent Input
-
+<h2 id="Zvu7e">Customizing Agents</h2>
+<h3 id="lcJ3t">Customizing Agent Input</h3>
 Override the `init_observation()` function to customize how your agent processes initial observations:
 
 ```python
@@ -229,9 +214,8 @@ async def init_observation(self, observation: Observation) -> Observation:
     return observation
 ```
 
-### Customizing Model Input
-
-Override the `async_messages_transform()` function to customize how messages are transformed before being sent to the
+<h3 id="LziMs">Customizing Model Input</h3>
+Override the `async_messages_transform()` function to customize how messages are transformed before being sent to the  
 model:
 
 ```python
@@ -269,8 +253,9 @@ async def async_messages_transform(self,
     return messages
 ```
 
-### Customizing Model Logic
+<h3 id="memVz">Customizing Model Logic</h3>
 Override the `invoke_model()` function to implement custom model logic:
+
 ```python
 async def invoke_model(self,
                        messages: List[Dict[str, str]] = [],
@@ -296,8 +281,9 @@ async def invoke_model(self,
       )
 ```
 
-### Customizing Model Output
+<h3 id="Q0Dah">Customizing Model Output</h3>
 Create a custom `ModelOutputParser` class and specify it using the `model_output_parser` parameter:
+
 ```python
 from aworld.models.model_output_parser import ModelOutputParser
 
@@ -327,8 +313,10 @@ agent = Agent(
     model_output_parser=CustomOutputParser()
 )
 ```
-### Customizing Agent Response
+
+<h3 id="VSib1">Customizing Agent Response</h3>
 Override the `async_post_run()` function to customize how your agent responds:
+
 ```python
 from aworld.core.message import Message
 
@@ -355,8 +343,29 @@ async def async_post_run(self,
        )
 ```
 
-### Custom Response Parsing
-If the framework doesn't support your response structure, you can create a custom response parser:
+<h3 id="aBJ4H">Custom Agent Policy</h3>
+Override the `async_policy()` function to customize your agent policy logic:
+
+```python
+async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
+                           **kwargs) -> List[ActionModel]:
+    self._finished = False
+    # build model input messages
+    messages = await self.build_llm_input(observation, info, message)
+    # call model
+    llm_response = await self.invoke_model(messages, message=message, **kwargs)
+    # parse model response
+    agent_result = await self.model_output_parser.parse(llm_response,
+                                                        agent_id=self.id(),
+                                                        use_tools_in_prompt=self.use_tools_in_prompt)
+
+    self._finished = True
+    return agent_result.actions
+```
+
+<h3 id="FFSXC">Custom Agent Event Parsing</h3>
+If the framework still does not support the response structure you want, or if there is special logic processing (such as triggering multiple downstream agents based on Agent response), you can create a custom agent response event handler:
+
 ```python
 from aworld.runners import HandlerFactory
 from aworld.runners.default_handler import DefaultHandler
@@ -389,5 +398,6 @@ agent = Agent(
     event_handler_name=custom_name
 )
 ```
-**Important Note:** The `custom_name` variable value must remain consistent across your handler registration and agent
-configuration.
+
+**Important Note:** The `custom_name` variable value must remain consistent across your handler registration and agent configuration.
+
