@@ -69,6 +69,7 @@ async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str
         run_conf: Runtime config, can choose the special computing engine to execute the runner.
     """
     engine = await runtime_engine(run_conf)
+    run_conf = run_conf or RunConfig()
 
     if run_conf.engine_name != EngineName.LOCAL or run_conf.reuse_process == False:
         # distributed in AWorld, the `context` can't carry by response
