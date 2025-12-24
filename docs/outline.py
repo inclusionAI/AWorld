@@ -10,7 +10,8 @@ docs = "docs"
 black_keys = ["Index"]
 black_values = ["index.md"]
 file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities"],
-                 "Basic Usage": ["HITL"]}
+                 "Basic Usage": ["HITL"],
+                 "Runtime": ["Overview"]}
 file_mapping = {"Hitl": "HITL"}
 dir_order = ["Get Start", "Basic Usage", "Agents", "Environment", "Runtime", "Key Components"]
 
