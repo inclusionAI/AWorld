@@ -81,7 +81,7 @@ It encapsulates all information required to execute a task, typically including:
 
 ```python
 from aworld.core.task import Task
-from aworld core.common import StreamingMode
+from aworld.core.common import StreamingMode
 
 # example of task
 task = Task(
@@ -179,7 +179,7 @@ The `StateManager` tracks and manages all runtime state—including execution st
 ### Event-Driven Agent Runtime
 AWorld implements a complete **event-driven runtime** specifically for agents. 
 
-![](https://intranetproxy.alipay.com/skylark/lark/0/2025/png/7350/1766386690189-be4c71e2-24fa-4843-a0af-396c6ea27cbc.png)
+![](../imgs/runtime.png)
 
 This runtime fully integrates all behaviors, modules, and capabilities—including **context updates**, **trajectory construction**, and **human-in-the-loop interactions**—into a single, coherent execution flow.
 

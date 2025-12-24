@@ -156,7 +156,7 @@ agent = Agent(
         llm_model_name="gpt-4",
         llm_api_key="your-api-key",
         llm_base_url='available url'
-    )
+    ),
     system_prompt="..."
 )
 

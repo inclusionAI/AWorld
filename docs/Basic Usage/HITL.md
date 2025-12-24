@@ -16,7 +16,7 @@ The design of HITL functionality follows several core principles:
 AWorld implements HITL based on tools and events,  [example](https://github.com/inclusionAI/AWorld/blob/main/examples/aworld_quick_start/HITL/run.py).
 
 <h3 id="G4ris">HITL process</h3>
-![](https://intranetproxy.alipay.com/skylark/lark/0/2025/png/7350/1766116774337-771e79e3-8f40-4615-89be-10548368449e.png)
+![](../imgs/hitl.png)
 
 <h3 id="humantool">HumanTool</h3>
 **HumanTool** is a built-in utility dedicated to human-AI collaboration. When user input is required, the agent invokes this tool, emits a **HumanMessage** event, and pauses the task execution until a response is received. Once the user replies, the system treats the response as the tool’s execution result and resumes the workflow.
