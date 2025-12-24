@@ -78,9 +78,67 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             self._mcp_servers = mcp_servers
         self._skill_configs = skill_configs
         self._black_tool_actions = black_tool_actions or {}
+        self._tools = tools or []
+        self._custom_env_tools = custom_env_tools
+
+        # Initialize sandbox if configuration is provided
+        # Support lazy initialization: if no config provided, skip initialization
+        if mcp_config or mcp_servers or tools:
+            self._initialize_sandbox(
+                mcp_servers=mcp_servers,
+                mcp_config=mcp_config,
+                black_tool_actions=black_tool_actions,
+                skill_configs=skill_configs,
+                tools=tools,
+                custom_env_tools=custom_env_tools
+            )
+        else:
+            # Mark as not initialized for lazy initialization
+            self._initialized = False
+
+    def _initialize_sandbox(
+        self,
+        mcp_servers: Optional[List[str]] = None,
+        mcp_config: Optional[Any] = None,
+        black_tool_actions: Optional[Dict[str, List[str]]] = None,
+        skill_configs: Optional[Any] = None,
+        tools: Optional[List[str]] = None,
+        custom_env_tools: Optional[Any] = None,
+    ):
+        """
+        Initialize sandbox with MCP configuration.
+        This method can be called during __init__ or later for lazy initialization.
+        
+        Args:
+            mcp_servers: List of MCP servers to use.
+            mcp_config: Configuration for MCP servers.
+            black_tool_actions: Black list of tool actions.
+            skill_configs: Skill configurations.
+            tools: List of tools.
+            custom_env_tools: Custom environment tools.
+        """
+        # Use instance attributes if not provided
+        mcp_servers = mcp_servers if mcp_servers is not None else self._mcp_servers
+        mcp_config = mcp_config if mcp_config is not None else self._mcp_config
+        black_tool_actions = black_tool_actions if black_tool_actions is not None else self._black_tool_actions
+        skill_configs = skill_configs if skill_configs is not None else self._skill_configs
+        tools = tools if tools is not None else self._tools
+        custom_env_tools = custom_env_tools if custom_env_tools is not None else self._custom_env_tools
+
+        # Update instance attributes
+        self._mcp_servers = mcp_servers
+        self._mcp_config = mcp_config
+        self._black_tool_actions = black_tool_actions or {}
+        self._skill_configs = skill_configs
+        self._tools = tools or []
+        self._custom_env_tools = custom_env_tools
+
+        # Keep original logic: if mcp_config exists and mcp_servers is empty, populate from mcp_config
+        if mcp_config and not mcp_servers:
+            mcp_servers = list(mcp_config.get("mcpServers", {}).keys())
+            self._mcp_servers = mcp_servers
 
         # Resolve MCP configuration based on priority: tools > mcp_servers > mcp_config
-        tools = tools or []
         registry_url = self.registry_url or ""
 
         # Step 1: Backup local mcp_config
@@ -144,7 +202,15 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             self._mcp_config = getattr(response, 'mcp_config', None)
             self._skill_configs = getattr(response, 'skill_configs', None)
 
-        # Initialize McpServers with a reference to this sandbox instance
+        # Initialize or reinitialize McpServers with a reference to this sandbox instance
+        # Clean up existing instance if reinitializing
+        if hasattr(self, '_mcpservers') and self._mcpservers:
+            try:
+                # Use sync_exec to handle async cleanup
+                sync_exec(self._mcpservers.cleanup)
+            except Exception as e:
+                logger.warning(f"Failed to cleanup existing MCP servers: {e}")
+
         self._mcpservers = McpServers(
             mcp_servers=final_mcp_servers,
             mcp_config=final_mcp_config,
@@ -153,6 +219,52 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             skill_configs=self._skill_configs,
             tool_actions=tools
         )
+        
+        # Mark as initialized
+        self._initialized = True
+
+    def _reinitialize_mcpservers(self):
+        """
+        Reinitialize MCP servers when configuration changes.
+        This is called automatically when mcp_config, mcp_servers, black_tool_actions, or skill_configs are set.
+        """
+        if not self._initialized:
+            # If not initialized yet, do full initialization
+            self._initialize_sandbox()
+        else:
+            # Reinitialize only MCP servers part
+            final_mcp_servers = self._mcp_servers
+            final_mcp_config = copy.deepcopy(self._mcp_config) if self._mcp_config else {}
+            
+            # Handle custom_env_tools: convert and merge into mcp_config
+            if self._custom_env_tools:
+                custom_mcp_config = self._convert_custom_env_tools_to_mcp_config(self._custom_env_tools)
+                if custom_mcp_config:
+                    # Merge custom_env_tools config into final_mcp_config
+                    if "mcpServers" not in final_mcp_config:
+                        final_mcp_config["mcpServers"] = {}
+                    for server_name, server_config in custom_mcp_config.get("mcpServers", {}).items():
+                        if server_name not in final_mcp_config.get("mcpServers", {}):
+                            final_mcp_servers.append(server_name)
+                        final_mcp_config["mcpServers"][server_name] = server_config
+            
+            # Clean up existing instance (async cleanup in sync context)
+            if hasattr(self, '_mcpservers') and self._mcpservers:
+                try:
+                    # Use sync_exec to handle async cleanup
+                    sync_exec(self._mcpservers.cleanup)
+                except Exception as e:
+                    logger.warning(f"Failed to cleanup existing MCP servers: {e}")
+
+            # Recreate McpServers instance
+            self._mcpservers = McpServers(
+                mcp_servers=final_mcp_servers,
+                mcp_config=final_mcp_config,
+                sandbox=self,
+                black_tool_actions=self._black_tool_actions,
+                skill_configs=self._skill_configs,
+                tool_actions=self._tools
+            )
 
     async def fetch_config_from_registry(
         self,
