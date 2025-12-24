@@ -12,7 +12,7 @@ Through elegant design and high-level abstraction, AWorld delivers unified paral
 + **Strong Extensibility</font>**: A modular, plugin-based architecture makes it easy to add support for new compute engines to meet evolving requirements.</font>
 
 <h3 id="UuBBo">Tasks Execution Process</h3>
-![](https://intranetproxy.alipay.com/skylark/lark/0/2025/png/7350/1766138528576-4a7c95f1-373e-46d4-9b35-8612c2e8d23d.png)
+![](../imgs/parallel_task.png)
 
 <h3 id="runtime-engines">Runtime Engines</font></h3>
 AWorld currently supports three execution engines:</font>

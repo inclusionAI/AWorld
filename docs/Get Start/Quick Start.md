@@ -96,7 +96,7 @@ Use the configuration to connect to your VirtualPC MCP Server instance:
 }
 ```
 
-<h2 id="gKF0N">Trainning</h2>
+<h2 id="gKF0N">Training</h2>
 <h3 id="FaWk9">Prerequisites</h3>
 + aworld
 + AWorld env
@@ -106,7 +106,7 @@ Use the configuration to connect to your VirtualPC MCP Server instance:
 Example with Verl
 
 <h4 id="g0QLt">1. Docker Image</h4>
-Use a mirror of the specified training framework，example：**verl0.5-cu126-torch2.7.1-fa2.8.0，**URL：[https://github.com/volcengine/verl/tree/main/docker](https://github.com/volcengine/verl/tree/main/docker)
+Use a mirror of the specified training framework, example：**verl0.5-cu126-torch2.7.1-fa2.8.0，**URL: [https://github.com/volcengine/verl/tree/main/docker](https://github.com/volcengine/verl/tree/main/docker)
 
 <h4 id="LH6Q7">2. Agent Define</h4>
 Define Agent：
@@ -131,7 +131,7 @@ Specify the path to the local file, Huggingface Dataset, or load the dataset (re
 train_dataset, test_dataset = "/Users/your_name/dataset/train", "/Users/your_name/dataset/test"
 ```
 
-<h4 id="nSTzo">4. 训练配置</h4>
+<h4 id="nSTzo">4. Training Config</h4>
 Customize configuration items based on specific training frameworks.
 
 Note: It is necessary to define a reward function for evaluating agent behavior based on specific task objectives, which can be set in the training configuration.
@@ -143,7 +143,7 @@ custom_train_config = "string or json"
 reward_func = "None or string or code reference"
 ```
 
-<h4 id="DUYK7">5. 运行</h4>
+<h4 id="DUYK7">5. Run</h4>
 Build a trainer instance and start training.
 
 Note: If reward_func is code reference, it needs to be used as a parameter for AgentTrain.

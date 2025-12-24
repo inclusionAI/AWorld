@@ -1,6 +1,6 @@
-<font style="color:rgb(13, 18, 57);">AWorld provides a fundamental Agent interface that unlocks limitless possibilities for agent capabilities. While the </font>**<font style="color:rgb(13, 18, 57);">LLMAgent</font>**<font style="color:rgb(13, 18, 57);"> is the most commonly used implementation, the framework imposes no restrictions on other agent types—such as those powered by rule-based systems or traditional machine learning models—as their decision core.</font>
+AWorld provides a fundamental Agent interface that unlocks limitless possibilities for agent capabilities. While the **LLMAgent** is the most commonly used implementation, the framework imposes no restrictions on other agent types—such as those powered by rule-based systems or traditional machine learning models—as their decision core.
 
-<h2 id="npPgL"><font style="color:rgb(13, 18, 57);">LLMAgent customization</font></h2>
+<h2 id="npPgL">LLMAgent customization</h2>
 The most typical ability of LLM Agent is to use LLM to make decisions, which is abstracted into 5 steps in AWorld:
 
 1. Agent initialization,
