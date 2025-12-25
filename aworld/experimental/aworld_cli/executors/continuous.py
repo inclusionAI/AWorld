@@ -1,6 +1,5 @@
 """
 Continuous execution executor for running agents in a loop.
-参考 continuous-claude 的设计，支持连续运行模式。
 """
 import asyncio
 import time
@@ -205,12 +204,12 @@ class ContinuousExecutor:
         
         try:
             while True:
-                iteration += 1
-                
-                # Check limits
-                if max_runs is not None and max_runs > 0 and iteration > max_runs:
+                # Check limits before incrementing iteration
+                if max_runs is not None and max_runs > 0 and iteration >= max_runs:
                     self.console.print(f"\n[yellow]⏸️  Max runs ({max_runs}) reached.[/yellow]")
                     break
+                
+                iteration += 1
                 
                 if self._check_cost_limit(max_cost):
                     self.console.print(f"\n[yellow]⏸️  Max cost (${max_cost:.2f}) reached.[/yellow]")

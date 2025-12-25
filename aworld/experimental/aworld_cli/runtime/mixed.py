@@ -15,16 +15,6 @@ from ..executors.remote import RemoteAgentExecutor
 from ..core.registry import LocalAgentRegistry
 from ..core.loader import init_agents
 
-# Try to import aworldappinfra for backward compatibility
-try:
-    from aworldappinfra.core.registry import AgentTeamRegistry
-    from aworldappinfra.utils.team_loader import init_teams
-    HAS_AWORLDAPPINFRA = True
-except ImportError:
-    HAS_AWORLDAPPINFRA = False
-    AgentTeamRegistry = None
-    init_teams = None
-
 
 class MixedRuntime(BaseAgentRuntime):
     """
@@ -40,26 +30,51 @@ class MixedRuntime(BaseAgentRuntime):
         >>> await runtime.start()
     """
     
-    def __init__(self, agent_name: Optional[str] = None):
+    def __init__(
+        self, 
+        agent_name: Optional[str] = None, 
+        remote_backends: Optional[List[str]] = None,
+        local_dirs: Optional[List[str]] = None
+    ):
         """
         Initialize Mixed Runtime.
         
         Args:
             agent_name: The name of the agent to interact with. If None, user will be prompted to select.
+            remote_backends: Optional list of remote backend URLs (overrides environment variables)
+            local_dirs: Optional list of local agent directories (overrides environment variables)
         """
         super().__init__(agent_name)
-        self._parse_config()
+        self._parse_config(remote_backends, local_dirs)
         self._agent_sources: Dict[str, Dict] = {}  # agent_name -> {type, location, source}
     
-    def _parse_config(self):
-        """Parse configuration from environment variables."""
-        # Parse LOCAL_AGENTS_DIR (semicolon-separated)
-        local_dirs_str = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or ""
-        self.local_dirs = [d.strip() for d in local_dirs_str.split(";") if d.strip()]
+    def _parse_config(
+        self, 
+        remote_backends: Optional[List[str]] = None,
+        local_dirs: Optional[List[str]] = None
+    ):
+        """
+        Parse configuration from environment variables or provided parameters.
         
-        # Parse REMOTE_AGENT_BACKEND (semicolon-separated)
-        remote_backends_str = os.getenv("REMOTE_AGENT_BACKEND") or ""
-        self.remote_backends = [b.strip().rstrip("/") for b in remote_backends_str.split(";") if b.strip()]
+        Args:
+            remote_backends: Optional list of remote backend URLs (overrides environment variables)
+            local_dirs: Optional list of local agent directories (overrides environment variables)
+        """
+        # Use provided local_dirs if available, otherwise use environment variables
+        if local_dirs:
+            self.local_dirs = [d.strip() for d in local_dirs]
+        else:
+            # Parse LOCAL_AGENTS_DIR (semicolon-separated)
+            local_dirs_str = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or ""
+            self.local_dirs = [d.strip() for d in local_dirs_str.split(";") if d.strip()]
+        
+        # Parse REMOTE_AGENT_BACKEND or REMOTE_AGENTS_BACKEND (semicolon-separated)
+        # Use provided remote_backends if available, otherwise use environment variables
+        if remote_backends:
+            self.remote_backends = [b.strip().rstrip("/") for b in remote_backends]
+        else:
+            remote_backends_str = os.getenv("REMOTE_AGENT_BACKEND") or os.getenv("REMOTE_AGENTS_BACKEND") or ""
+            self.remote_backends = [b.strip().rstrip("/") for b in remote_backends_str.split(";") if b.strip()]
         
         # If no config, use current working directory as default
         if not self.local_dirs and not self.remote_backends:
@@ -89,25 +104,6 @@ class MixedRuntime(BaseAgentRuntime):
                         all_agents.append(agent_info)
                 except Exception as e:
                     self.cli.console.print(f"[dim]⚠️ Failed to load with @agent decorator: {e}[/dim]")
-                
-                # Try old @agent_team decorator for backward compatibility
-                if HAS_AWORLDAPPINFRA:
-                    try:
-                        init_teams(local_dir)
-                        teams = AgentTeamRegistry.list_team()
-                        for team in teams:
-                            # Skip if already loaded from @agent
-                            if team.name not in [a.name for a in all_agents]:
-                                agent_info = AgentInfo.from_team(team)
-                                # Store source information for executor creation
-                                self._agent_sources[agent_info.name] = {
-                                    "type": "local",
-                                    "location": local_dir,
-                                    "source": team
-                                }
-                                all_agents.append(agent_info)
-                    except Exception as e:
-                        self.cli.console.print(f"[dim]⚠️ Failed to load with @agent_team decorator: {e}[/dim]")
                         
             except Exception as e:
                 self.cli.console.print(f"[yellow]⚠️ Failed to load from {local_dir}: {e}[/yellow]")
@@ -167,10 +163,6 @@ class MixedRuntime(BaseAgentRuntime):
         """Create executor for local agent."""
         try:
             source = source_info["source"]
-            
-            # Check if it's a LocalAgent (new) or AgentTeam (old, backward compatibility)
-            from ..core.registry import LocalAgent
-            is_local_agent = isinstance(source, LocalAgent)
             
             # Get context config from source if available
             # env_config from env TODO

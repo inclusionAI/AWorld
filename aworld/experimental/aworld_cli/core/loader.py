@@ -179,5 +179,90 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
             print(f"  - {file_path}: {error}")
 
 
-__all__ = ["init_agents", "_has_agent_decorator"]
+def init_agent_file(agent_file: Union[str, Path]) -> Optional[str]:
+    """
+    Initialize and register a single agent file (Python or Markdown).
+    
+    Args:
+        agent_file: Path to the agent file (Python .py or Markdown .md)
+    
+    Returns:
+        Agent name if successfully loaded, None otherwise
+    
+    Example:
+        >>> from aworld_cli.core.loader import init_agent_file
+        >>> agent_name = init_agent_file("./agents/my_agent.py")
+        >>> if agent_name:
+        ...     print(f"Loaded agent: {agent_name}")
+    """
+    from .registry import LocalAgentRegistry
+    from .markdown_agent_loader import parse_markdown_agent
+    
+    # Convert to Path object if it's a string
+    agent_file = Path(agent_file) if isinstance(agent_file, str) else agent_file
+    
+    if not agent_file.exists():
+        print(f"⚠️ Agent file not found: {agent_file}")
+        return None
+    
+    if agent_file.suffix == '.md':
+        # Load markdown agent
+        try:
+            agent = parse_markdown_agent(agent_file)
+            if agent:
+                LocalAgentRegistry.register(agent)
+                print(f"✅ Loaded markdown agent: {agent.name}")
+                return agent.name
+            else:
+                print(f"⚠️ Failed to parse markdown agent from: {agent_file}")
+                return None
+        except Exception as e:
+            print(f"❌ Failed to load markdown agent from {agent_file}: {e}")
+            return None
+    elif agent_file.suffix == '.py':
+        # Load Python agent
+        if not _has_agent_decorator(agent_file):
+            print(f"⚠️ Python file {agent_file} does not contain @agent decorator, skipping")
+            return
+        
+        try:
+            # Find project root (parent directory containing the file)
+            project_root = agent_file.parent
+            project_root_str = str(project_root.absolute())
+            
+            # Add project root to sys.path if not already there
+            if project_root_str not in sys.path:
+                sys.path.insert(0, project_root_str)
+            
+            # Calculate module name
+            module_name = agent_file.stem
+            
+            # Use importlib to load the module
+            spec = importlib.util.spec_from_file_location(module_name, agent_file)
+            if spec is None or spec.loader is None:
+                print(f"⚠️ Could not create spec for {agent_file}")
+                return
+            
+            module = importlib.util.module_from_spec(spec)
+            
+            # Execute the module to trigger decorator registration
+            spec.loader.exec_module(module)
+            print(f"✅ Loaded agent from: {agent_file.name}")
+            
+            # Try to get the agent name from registry (get the most recently registered agent)
+            # This works because the decorator registers the agent when the module is executed
+            agents = LocalAgentRegistry.list_agents()
+            if agents:
+                # Return the last registered agent name (most likely from this file)
+                return agents[-1].name
+            return None
+        except Exception as e:
+            print(f"❌ Failed to load Python agent from {agent_file}: {e}")
+            return None
+    else:
+        print(f"⚠️ Unsupported file type: {agent_file.suffix}. Only .py and .md files are supported.")
+        return None
+
+
+__all__ = ["init_agents", "init_agent_file", "_has_agent_decorator"]
 

@@ -187,6 +187,7 @@ class DefaultMemoryHandler(DefaultHandler):
         ai_message = MemoryAIMessage(
             content=llm_response.content,
             tool_calls=llm_response.tool_calls,
+            reasoning_details=llm_response.reasoning_details,
             metadata=MessageMetadata(
                 session_id=context.get_task().session_id,
                 user_id=context.get_task().user_id,
