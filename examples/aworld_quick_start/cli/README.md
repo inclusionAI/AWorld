@@ -70,6 +70,8 @@ mcp_config: {
         }
     }
 }
+skills_path: ../skills;https://github.com/user/repo
+skill_names: pdf;excel;regex:^context-.*
 ---
 ### 🎯 Mission
 A friendly and helpful AI assistant...
@@ -83,7 +85,19 @@ A friendly and helpful AI assistant...
 - ✅ **Simple YAML front matter**: Define agent metadata, MCP servers, and configuration
 - ✅ **Rich Markdown content**: Describe agent capabilities, usage examples, and guidelines
 - ✅ **MCP Integration**: Easily configure MCP servers and tools
+- ✅ **Skills Support**: Load skills from local paths or GitHub repositories
+- ✅ **Regex Pattern Matching**: Use regex patterns to match multiple skills
 - ✅ **No Python required**: Perfect for non-developers or quick prototyping
+
+**Skills Configuration:**
+- `skills_path`: Skill sources to register (optional, semicolon-separated)
+  - Local paths: `../skills` or `/absolute/path/to/skills`
+  - GitHub URLs: `https://github.com/user/repo` or `https://github.com/user/repo/tree/branch/skills`
+  - Multiple sources: `https://github.com/user/repo;../skills`
+- `skill_names`: Skills to use for this agent (optional, semicolon-separated)
+  - Exact names: `pdf;excel;browser`
+  - Regex patterns: `regex:^context-.*` or `regex:.*browser.*`
+  - Mixed: `pdf;excel;regex:^context-.*`
 
 **Available Markdown Agents:**
 - `document_agent.md` - DocumentAgent: A specialized agent focused on document management and generation
@@ -204,6 +218,49 @@ A versatile agent with filesystem-server capabilities focused on **Document Mana
 
 See `agents/document_agent.md` for detailed capabilities and usage examples.
 
+### Skills in Markdown Agents
+
+You can easily configure skills for your markdown agents using the `skills_path` and `skill_names` fields:
+
+**Example 1: Basic Skills Configuration**
+```markdown
+---
+name: MyAgent
+description: An agent with PDF and Excel skills
+skill_names: pdf;excel
+---
+```
+
+**Example 2: Skills from Multiple Sources**
+```markdown
+---
+name: MyAgent
+description: An agent with skills from local and GitHub sources
+skills_path: ../skills;https://github.com/user/repo
+skill_names: pdf;excel;browser
+---
+```
+
+**Example 3: Using Regex Patterns**
+```markdown
+---
+name: MyAgent
+description: An agent with skills matched by regex patterns
+skill_names: pdf;regex:^context-.*;regex:.*browser.*
+---
+```
+This will:
+- Load the exact skill named `pdf`
+- Load all skills starting with `context-` (e.g., `context-fundamentals`, `context-advanced`)
+- Load all skills containing `browser` (e.g., `browser-automation`, `web-browser`)
+
+**Skills are automatically registered from:**
+- `./skills` directory (if exists, registered automatically)
+- `../skills` directory relative to markdown file (if exists, registered automatically)
+- Sources specified in `skills_path` field
+- Sources specified in `SKILLS_PATH` environment variable
+- Command-line arguments: `aworld-cli --skill-path ../skills --skill-path https://github.com/user/repo`
+
 ## Configuration
 
 ### Environment Variables
@@ -218,10 +275,122 @@ Configure the following variables in the `.env` file:
 - `LOCAL_AGENTS_DIR`: Agent definitions directory (defaults to current directory)
 - `TAVILY_API_KEY`: Tavily API key (for web search, optional)
 
+**Skills Configuration (Optional):**
+- `SKILLS_PATH`: Skill sources (semicolon-separated): `../skills;https://github.com/user/repo`
+- `SKILLS_DIR`: Single skills directory path (legacy, use `SKILLS_PATH` for multiple sources)
+- `SKILLS_CACHE_DIR`: Cache directory for GitHub repositories (default: `~/.aworld/skills`)
+
+### Command-Line Options
+
+**Server Mode Options:**
+- `serve`: Start HTTP and/or MCP servers
+- `--http`: Enable HTTP server
+- `--http-host HOST`: HTTP server host (default: 0.0.0.0)
+- `--http-port PORT`: HTTP server port (default: 8000)
+- `--mcp`: Enable MCP server
+- `--mcp-name NAME`: MCP server name (default: AWorldAgent)
+- `--mcp-transport TYPE`: MCP transport (stdio/sse/streamable-http, default: stdio)
+- `--mcp-host HOST`: MCP server host for SSE/streamable-http (default: 0.0.0.0)
+- `--mcp-port PORT`: MCP server port for SSE/streamable-http (default: 8001)
+
+**Agent Loading Options:**
+- `--agent-dir DIR`: Agent directory (can be specified multiple times)
+- `--agent-file FILE`: Individual agent file (can be specified multiple times)
+- `--remote-backend URL`: Remote backend URL (can be specified multiple times)
+- `--skill-path PATH`: Skill source path (can be specified multiple times)
+
 ### Using aworld-cli
 
 1. **Interactive Mode**: Run `aworld-cli` to display available agents, select one, and start a conversation
 ![/](../../readme_assets/aworld_cli_02.jpg)
+
+2. **Server Mode**: Start HTTP and/or MCP servers to expose agents via API
+
+#### HTTP Server
+
+Start an HTTP server to expose agents via REST API (OpenAI-compatible):
+
+```bash
+# Start HTTP server on default port 8000
+aworld-cli serve --http
+
+# Start HTTP server on custom port
+aworld-cli serve --http --http-port 8080
+
+# Start HTTP server with custom agent directory
+aworld-cli serve --http --agent-dir ./agents
+```
+
+Once started, the HTTP server provides:
+- **OpenAI-compatible API**: `/v1/chat/completions` and `/chat/completions`
+- **Agent listing**: `GET /agents` - List all available agents
+- **Health check**: `GET /health` - Server health status
+
+**Example API Usage:**
+```bash
+# List available agents
+curl http://localhost:8000/agents
+
+# Chat completion (OpenAI format)
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "BasicAgent",
+    "messages": [
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'
+```
+
+#### MCP Server
+
+Start an MCP (Model Context Protocol) server to expose agents via MCP protocol:
+
+```bash
+# Start MCP server in stdio mode (for CLI usage)
+aworld-cli serve --mcp
+
+# Start MCP server in streamable-http mode (for HTTP clients)
+aworld-cli serve --mcp --mcp-transport streamable-http --mcp-port 8001
+
+# Start MCP server with custom name
+aworld-cli serve --mcp --mcp-name MyAgentServer
+```
+
+**MCP Transport Modes:**
+- **stdio**: Standard input/output mode (for CLI and direct integration)
+- **sse**: Server-Sent Events mode (HTTP+SSE)
+- **streamable-http**: Streamable HTTP mode (compatible with MCP streamable-http clients)
+
+**MCP Tools Available:**
+- `list_agents`: List all available agents
+- `get_agent_info`: Get information about a specific agent
+- `run_task`: Run a task directly with an agent
+- `health_check`: Health check endpoint
+
+#### Combined Servers
+
+Start both HTTP and MCP servers simultaneously:
+
+```bash
+# Start both HTTP and MCP servers
+aworld-cli serve --http --http-port 8000 --mcp --mcp-transport streamable-http --mcp-port 8001
+
+# With custom agent directory
+aworld-cli serve --http --mcp --agent-dir ./agents
+```
+
+**Server Options:**
+- `--http`: Start HTTP server
+- `--http-host HOST`: HTTP server host (default: 0.0.0.0)
+- `--http-port PORT`: HTTP server port (default: 8000)
+- `--mcp`: Start MCP server
+- `--mcp-name NAME`: MCP server name (default: AWorldAgent)
+- `--mcp-transport TYPE`: MCP transport type: stdio, sse, or streamable-http (default: stdio)
+- `--mcp-host HOST`: MCP server host for SSE/streamable-http (default: 0.0.0.0)
+- `--mcp-port PORT`: MCP server port for SSE/streamable-http (default: 8001)
+
+Press `Ctrl+C` to stop all servers gracefully.
 
 ## Agent Types Comparison
 
@@ -231,7 +400,7 @@ Configure the following variables in the `.env` file:
 | **Complexity** | More flexible, requires Python knowledge | Simpler, no coding required |
 | **MCP Integration** | ✅ Full support | ✅ Full support |
 | **Multi-Agent** | ✅ Full support (Swarm, TeamSwarm) | ✅ Supported via configuration |
-| **Skills** | ✅ Full support | ✅ Can reference skills |
+| **Skills** | ✅ Full support | ✅ Full support (with regex pattern matching) |
 | **Best For** | Complex logic, custom behavior | Quick prototyping, documentation-focused agents |
 
 ## More Examples
