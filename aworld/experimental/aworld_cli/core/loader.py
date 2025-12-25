@@ -49,7 +49,7 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
         # Default to current working directory if not specified
         agents_dir = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or os.getcwd()
 
-    from .registry import LocalAgentRegistry
+    from .agent_registry import LocalAgentRegistry
     from .markdown_agent_loader import load_markdown_agents
 
     # Convert to Path object if it's a string
@@ -195,7 +195,7 @@ def init_agent_file(agent_file: Union[str, Path]) -> Optional[str]:
         >>> if agent_name:
         ...     print(f"Loaded agent: {agent_name}")
     """
-    from .registry import LocalAgentRegistry
+    from .agent_registry import LocalAgentRegistry
     from .markdown_agent_loader import parse_markdown_agent
     
     # Convert to Path object if it's a string

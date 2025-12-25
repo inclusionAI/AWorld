@@ -35,7 +35,7 @@ class TaskHistoryNeuron(Neuron):
 
         # Original user input
         origin_user_input = context.origin_user_input
-        if origin_user_input:
+        if origin_user_input and origin_user_input != task_input:
             items.append(f"  <origin_user_input>{origin_user_input}</origin_user_input>")
 
         todo_info = await context.get_todo_info()

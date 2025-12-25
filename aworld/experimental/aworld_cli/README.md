@@ -12,7 +12,7 @@ aworld_cli/
 ├── core/                # Core functionality directory
 │   ├── __init__.py      # Exports core modules
 │   ├── loader.py        # Agent loader for scanning and loading agents
-│   └── registry.py      # Local agent registry and @agent decorator
+│   └── agent_registry.py  # Local agent registry and @agent decorator
 ├── runtime/             # Runtime environment directory
 │   ├── __init__.py      # Exports all adapters
 │   ├── base.py          # Base adapter class
@@ -95,7 +95,7 @@ class CustomExecutor(AgentExecutor):
 The `@agent` decorator provides a convenient way to register agents:
 
 ```python
-from aworld.experimental.aworld_cli.core.registry import agent
+from aworld.experimental.aworld_cli.core.agent_registry import agent
 from aworld.core.agent.swarm import Swarm
 from aworld.agents.llm_agent import Agent
 
@@ -190,4 +190,8 @@ aworld-cli list
 
 - `LOCAL_AGENTS_DIR`: Semicolon-separated list of local agent directories
 - `REMOTE_AGENTS_BACKEND`: Semicolon-separated list of remote backend URLs
+- `SKILLS_PATH`: Semicolon-separated list of skill sources (local directories or GitHub URLs)
+  - Example: `SKILLS_PATH=./skills;https://github.com/user/repo;../custom-skills`
+- `SKILLS_DIR`: Single skills directory (legacy, for backward compatibility)
+- `SKILLS_CACHE_DIR`: Custom cache directory for GitHub skill repositories (default: ~/.aworld/skills)
 - `AWORLD_DISABLE_CONSOLE_LOG`: Disable console logging (set to 'true')

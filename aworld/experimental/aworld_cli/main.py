@@ -121,9 +121,16 @@ Agent Files:
   # Direct run with agent name (explicit)
   aworld-cli --task "test" --agent MyAgent --agent-file ./my_agent.py
 
+Skill Sources:
+  # Use skill sources from command line
+  aworld-cli --skill-path ./skills --skill-path https://github.com/user/repo list
+  
+  # Use multiple skill sources
+  aworld-cli --skill-path ./skills --skill-path ../custom-skills --skill-path https://github.com/user/repo list
+
 Combined Options:
   # Combine all options
-  aworld-cli --agent-dir ./agents --agent-file ./custom_agent.py --remote-backend http://localhost:8000 list
+  aworld-cli --agent-dir ./agents --agent-file ./custom_agent.py --remote-backend http://localhost:8000 --skill-path ./skills list
 """
     
     # Chinese help text
@@ -177,9 +184,16 @@ Agent 文件：
   # 显式指定 agent 名称直接运行
   aworld-cli --task "test" --agent MyAgent --agent-file ./my_agent.py
 
+技能源：
+  # 从命令行使用技能源
+  aworld-cli --skill-path ./skills --skill-path https://github.com/user/repo list
+  
+  # 使用多个技能源
+  aworld-cli --skill-path ./skills --skill-path ../custom-skills --skill-path https://github.com/user/repo list
+
 组合选项：
   # 组合所有选项
-  aworld-cli --agent-dir ./agents --agent-file ./custom_agent.py --remote-backend http://localhost:8000 list
+  aworld-cli --agent-dir ./agents --agent-file ./custom_agent.py --remote-backend http://localhost:8000 --skill-path ./skills list
 """
     
     description_en = "AWorld Agent CLI - Interact with agents directly from the terminal"
@@ -287,6 +301,13 @@ Agent 文件：
         help='Individual agent file path (Python .py or Markdown .md, can be specified multiple times).'
     )
     
+    parser.add_argument(
+        '--skill-path',
+        type=str,
+        action='append',
+        help='Skill source path (local directory or GitHub URL, can be specified multiple times). Overrides SKILLS_PATH environment variable.'
+    )
+    
     args = parser.parse_args()
     
     # Handle --examples flag: show examples and exit
@@ -319,11 +340,23 @@ Agent 文件：
         parser_zh.add_argument('--remote-backend', type=str, action='append', help='远程后端 URL（可指定多次）。覆盖 REMOTE_AGENT_BACKEND 环境变量。')
         parser_zh.add_argument('--agent-dir', type=str, action='append', help='包含 agents 的目录（可指定多次）。覆盖 LOCAL_AGENTS_DIR 环境变量。')
         parser_zh.add_argument('--agent-file', type=str, action='append', help='单个 agent 文件路径（Python .py 或 Markdown .md，可指定多次）。')
+        parser_zh.add_argument('--skill-path', type=str, action='append', help='技能源路径（本地目录或 GitHub URL，可指定多次）。覆盖 SKILLS_PATH 环境变量。')
         parser_zh.print_help()
         return
     
     # Load environment variables
     load_dotenv(args.env_file)
+    
+    # Initialize skill registry early with command-line arguments (overrides env vars)
+    # This ensures skill registry is ready before agents are loaded
+    if args.skill_path:
+        from .core.skill_registry import get_skill_registry
+        # Initialize registry with command-line skill paths (these take precedence)
+        get_skill_registry(skill_paths=args.skill_path)
+    else:
+        # Still initialize registry to load from env vars and defaults
+        from .core.skill_registry import get_skill_registry
+        get_skill_registry()
 
     # Handle 'list' command separately before setting up the full app loop if possible
     if args.command == "list":
