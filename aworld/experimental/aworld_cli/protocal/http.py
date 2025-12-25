@@ -253,11 +253,11 @@ def create_app(
         
     Returns:
         Configured FastAPI application instance
-        
+
     Example:
         >>> from aworldappinfra.application import AWorldApp
         >>> from aworldappinfra.protocols.http import HttpProtocol
-        >>> 
+        >>>
         >>> # HttpProtocol automatically calls create_app internally
         >>> aworld_app = AWorldApp()
         >>> aworld_app.add_protocol(HttpProtocol(title="My Agent App", host="0.0.0.0", port=8000))
@@ -283,8 +283,7 @@ def create_app(
         return [
             TeamInfo(
                 name=agent.name,
-                desc=agent.desc,
-                metadata=agent.metadata
+                desc=agent.desc
             ) for agent in agents
         ]
     
@@ -314,21 +313,6 @@ class HttpProtocol(AppProtocol):
     
     This protocol MUST be used with AWorldApp for unified lifecycle management.
     Do not call start()/stop() directly - use AWorldApp.run() instead.
-    
-    Example:
-        >>> from aworldappinfra.application import AWorldApp
-        >>> from aworldappinfra.protocols.http import HttpProtocol
-        >>> 
-        >>> # Simple usage - auto-create FastAPI app
-        >>> aworld_app = AWorldApp()
-        >>> aworld_app.add_protocol(HttpProtocol(title="My Agent App", host="0.0.0.0", port=8000))
-        >>> aworld_app.run()
-        
-        >>> # Advanced usage - provide custom FastAPI app
-        >>> from aworldappinfra.protocols.http import create_app
-        >>> custom_app = create_app(title="Custom App", lifespan=custom_lifespan)
-        >>> aworld_app.add_protocol(HttpProtocol(custom_app, host="0.0.0.0", port=8000))
-        >>> aworld_app.run()
     """
     
     def __init__(
