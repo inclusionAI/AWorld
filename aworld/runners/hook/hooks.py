@@ -16,6 +16,8 @@ class HookPoint:
     OUTPUT_PROCESS = "output_process"
     PRE_TOOL_CALL = "pre_tool_call"
     POST_TOOL_CALL = "post_tool_call"
+    PRE_TASK_CALL = "pre_task_call"
+    POST_TASK_CALL = "post_task_call"
 
 class Hook:
     """Runner hook."""
@@ -107,4 +109,18 @@ class PostToolCallHook(Hook):
 
     def point(self):
         return HookPoint.POST_TOOL_CALL
+
+class PreTaskCallHook(Hook):
+    """Process in the hook point of the post_task_call."""
+    __metaclass__ = abc.ABCMeta
+
+    def point(self):
+        return HookPoint.PRE_TASK_CALL
+
+class PostTaskCallHook(Hook):
+    """Process in the hook point of the post_task_call."""
+    __metaclass__ = abc.ABCMeta
+
+    def point(self):
+        return HookPoint.POST_TASK_CALL
 
