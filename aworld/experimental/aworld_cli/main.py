@@ -187,8 +187,7 @@ Agent 文件：
     
     parser = argparse.ArgumentParser(
         description=description_en,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=english_epilog
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     
     parser.add_argument(
@@ -290,14 +289,23 @@ Agent 文件：
     
     args = parser.parse_args()
     
+    # Handle --examples flag: show examples and exit
+    if args.examples:
+        examples_text = chinese_epilog if args.zh else english_epilog
+        title = "AWorld CLI 使用示例" if args.zh else "AWorld CLI Usage Examples"
+        print(f"\n{title}")
+        print("=" * len(title))
+        print(examples_text)
+        return
+    
     # Handle -zh flag: if specified, show Chinese help and exit
     if args.zh:
         parser_zh = argparse.ArgumentParser(
             description=description_zh,
-            formatter_class=argparse.RawDescriptionHelpFormatter,
-            epilog=chinese_epilog
+            formatter_class=argparse.RawDescriptionHelpFormatter
         )
         parser_zh.add_argument('-zh', '--zh', action='store_true', help='显示中文帮助')
+        parser_zh.add_argument('--examples', action='store_true', help='显示使用示例')
         parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list'], help='要执行的命令（默认：interactive）')
         parser_zh.add_argument('--task', type=str, help='发送给 agent 的任务（非交互模式）')
         parser_zh.add_argument('--agent', type=str, help='要使用的 agent 名称（直接运行模式必需）')
