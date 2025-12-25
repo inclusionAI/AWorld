@@ -18,6 +18,53 @@ def is_url(path: str) -> bool:
     return path.startswith("http://") or path.startswith("https://")
 
 
+def is_remote_url(location: str) -> bool:
+    """Check if the given location is a remote URL.
+    
+    This function checks if the location is a local path:
+    - If it's clearly a local path, return False
+    - Otherwise, default to True (assume it's a remote URL)
+    
+    Args:
+        location: Location string to check (can be a path or URL)
+        
+    Returns:
+        True if location is a remote URL, False if it's a local path
+    """
+    if not location or not isinstance(location, str):
+        return False
+    
+    location = location.strip()
+    
+    # Check if it's a local path
+    # 1. Absolute paths (Unix/Mac): /path/to/file
+    if location.startswith("/"):
+        return False
+    
+    # 2. Relative paths: ./path or ../path
+    if location.startswith("./") or location.startswith("../"):
+        return False
+    
+    # 3. User home directory: ~/path
+    if location.startswith("~/"):
+        return False
+    
+    # 4. Windows absolute paths: C:\path or D:\path
+    if len(location) >= 3 and location[1:3] == ":\\":
+        return False
+    
+    # 5. Windows relative paths: .\path or ..\path
+    if location.startswith(".\\") or location.startswith("..\\"):
+        return False
+    
+    # 6. File protocol: file://
+    if location.startswith("file://"):
+        return False
+    
+    # If none of the above, it's not a local path, so assume it's a remote URL
+    return True
+
+
 def process_registry_url(registry_url: str) -> str:
     """Process registry_url: expand paths, handle directories, and create file if needed.
     

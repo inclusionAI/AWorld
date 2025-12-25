@@ -26,6 +26,7 @@ class BaseSandbox(Sandbox):
             tools: Optional[List[str]] = None,
             registry_url: Optional[str] = None,
             custom_env_tools: Optional[Any] = None,
+            agents: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize a new BaseSandbox instance.
@@ -42,6 +43,28 @@ class BaseSandbox(Sandbox):
             tools: List of tools. Optional parameter.
             registry_url: Environment registry URL. Optional parameter, reads from environment variable "ENV_REGISTRY_URL" if not provided, defaults to empty string.
             custom_env_tools: Custom environment tools. Optional parameter.
+            agents: Custom environment agents. Optional parameter.
+                Supports two formats (mixed mode):
+                
+                Simple format (auto-detected):
+                {
+                    "local_agent": "/path/to/agent.py",
+                    "remote_agent": "https://github.com/..."
+                }
+                
+                Extended format (with additional config):
+                {
+                    "advanced_agent": {
+                        "location": "/path/to/agent.py",  # or "https://..."
+                        "type": "local",  # optional: "local" or "remote" (case-insensitive), default is "local"
+                        "env": {"KEY": "value"},  # optional
+                        "args": ["--option"],  # optional
+                        # ... other optional config
+                    }
+                }
+                
+                Note: If "type" is provided, it will be used directly (case-insensitive).
+                      If "type" is not provided, the function will auto-detect based on location.
         """
         super().__init__(
             sandbox_id=sandbox_id,
@@ -54,7 +77,8 @@ class BaseSandbox(Sandbox):
             skill_configs=skill_configs,
             tools=tools,
             registry_url=registry_url,
-            custom_env_tools=custom_env_tools
+            custom_env_tools=custom_env_tools,
+            agents=agents
         )
         self._logger = self._setup_logger()
         # Track if sandbox has been initialized (for lazy initialization support)
@@ -68,12 +92,10 @@ class BaseSandbox(Sandbox):
             reinit_type: Type of reinitialization - "mcpservers" (lightweight) or "full" (complete)
             attribute_name: Name of the attribute being changed (for error messages)
         """
-        if not self._initialized:
-            return
-        
         if reinit_type == "mcpservers":
             # Lightweight reinitialization: only recreate MCP servers
             if hasattr(self, '_reinitialize_mcpservers'):
+                # _reinitialize_mcpservers handles both initialized and uninitialized cases
                 self._reinitialize_mcpservers()
         elif reinit_type == "full":
             # Full reinitialization: reparse config, query registry, etc.
@@ -204,6 +226,17 @@ class BaseSandbox(Sandbox):
         """Set custom environment tools. May trigger reinitialization if sandbox is already initialized."""
         self._custom_env_tools = value
         self._trigger_reinitialize("mcpservers", "custom_env_tools")
+    
+    @property
+    def agents(self) -> Optional[Dict[str, Any]]:
+        """Returns the custom environment agents."""
+        return self._agents
+    
+    @agents.setter
+    def agents(self, value: Optional[Dict[str, Any]]):
+        """Set custom environment agents. May trigger reinitialization if sandbox is already initialized."""
+        self._agents = value
+        self._trigger_reinitialize("mcpservers", "agents")
     
     @property
     def metadata(self) -> Dict[str, Any]:
