@@ -70,6 +70,8 @@ mcp_config: {
         }
     }
 }
+skills_path: ../skills;https://github.com/user/repo
+skill_names: pdf;excel;regex:^context-.*
 ---
 ### 🎯 Mission
 A friendly and helpful AI assistant...
@@ -83,7 +85,19 @@ A friendly and helpful AI assistant...
 - ✅ **Simple YAML front matter**: Define agent metadata, MCP servers, and configuration
 - ✅ **Rich Markdown content**: Describe agent capabilities, usage examples, and guidelines
 - ✅ **MCP Integration**: Easily configure MCP servers and tools
+- ✅ **Skills Support**: Load skills from local paths or GitHub repositories
+- ✅ **Regex Pattern Matching**: Use regex patterns to match multiple skills
 - ✅ **No Python required**: Perfect for non-developers or quick prototyping
+
+**Skills Configuration:**
+- `skills_path`: Skill sources to register (optional, semicolon-separated)
+  - Local paths: `../skills` or `/absolute/path/to/skills`
+  - GitHub URLs: `https://github.com/user/repo` or `https://github.com/user/repo/tree/branch/skills`
+  - Multiple sources: `https://github.com/user/repo;../skills`
+- `skill_names`: Skills to use for this agent (optional, semicolon-separated)
+  - Exact names: `pdf;excel;browser`
+  - Regex patterns: `regex:^context-.*` or `regex:.*browser.*`
+  - Mixed: `pdf;excel;regex:^context-.*`
 
 **Available Markdown Agents:**
 - `document_agent.md` - DocumentAgent: A specialized agent focused on document management and generation
@@ -204,6 +218,49 @@ A versatile agent with filesystem-server capabilities focused on **Document Mana
 
 See `agents/document_agent.md` for detailed capabilities and usage examples.
 
+### Skills in Markdown Agents
+
+You can easily configure skills for your markdown agents using the `skills_path` and `skill_names` fields:
+
+**Example 1: Basic Skills Configuration**
+```markdown
+---
+name: MyAgent
+description: An agent with PDF and Excel skills
+skill_names: pdf;excel
+---
+```
+
+**Example 2: Skills from Multiple Sources**
+```markdown
+---
+name: MyAgent
+description: An agent with skills from local and GitHub sources
+skills_path: ../skills;https://github.com/user/repo
+skill_names: pdf;excel;browser
+---
+```
+
+**Example 3: Using Regex Patterns**
+```markdown
+---
+name: MyAgent
+description: An agent with skills matched by regex patterns
+skill_names: pdf;regex:^context-.*;regex:.*browser.*
+---
+```
+This will:
+- Load the exact skill named `pdf`
+- Load all skills starting with `context-` (e.g., `context-fundamentals`, `context-advanced`)
+- Load all skills containing `browser` (e.g., `browser-automation`, `web-browser`)
+
+**Skills are automatically registered from:**
+- `./skills` directory (if exists, registered automatically)
+- `../skills` directory relative to markdown file (if exists, registered automatically)
+- Sources specified in `skills_path` field
+- Sources specified in `SKILLS_PATH` environment variable
+- Command-line arguments: `aworld-cli --skill-path ../skills --skill-path https://github.com/user/repo`
+
 ## Configuration
 
 ### Environment Variables
@@ -218,6 +275,11 @@ Configure the following variables in the `.env` file:
 - `LOCAL_AGENTS_DIR`: Agent definitions directory (defaults to current directory)
 - `TAVILY_API_KEY`: Tavily API key (for web search, optional)
 
+**Skills Configuration (Optional):**
+- `SKILLS_PATH`: Skill sources (semicolon-separated): `../skills;https://github.com/user/repo`
+- `SKILLS_DIR`: Single skills directory path (legacy, use `SKILLS_PATH` for multiple sources)
+- `SKILLS_CACHE_DIR`: Cache directory for GitHub repositories (default: `~/.aworld/skills`)
+
 ### Using aworld-cli
 
 1. **Interactive Mode**: Run `aworld-cli` to display available agents, select one, and start a conversation
@@ -231,7 +293,7 @@ Configure the following variables in the `.env` file:
 | **Complexity** | More flexible, requires Python knowledge | Simpler, no coding required |
 | **MCP Integration** | ✅ Full support | ✅ Full support |
 | **Multi-Agent** | ✅ Full support (Swarm, TeamSwarm) | ✅ Supported via configuration |
-| **Skills** | ✅ Full support | ✅ Can reference skills |
+| **Skills** | ✅ Full support | ✅ Full support (with regex pattern matching) |
 | **Best For** | Complex logic, custom behavior | Quick prototyping, documentation-focused agents |
 
 ## More Examples
