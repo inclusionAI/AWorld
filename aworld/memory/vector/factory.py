@@ -18,5 +18,8 @@ class VectorDBFactory:
         if vector_db_config.provider == "chroma":
             from aworld.memory.vector.dbs.chroma import ChromaVectorDB
             return ChromaVectorDB(vector_db_config.config)
+        if vector_db_config.provider == "qdrant":
+            from aworld.memory.vector.dbs.qdrant import QdrantVectorDB
+            return QdrantVectorDB(vector_db_config.config)
         else:
             raise ValueError(f"Vector database {vector_db_config.provider} is not supported")
