@@ -27,26 +27,6 @@ class McpProtocol(AppProtocol):
     
     This protocol MUST be used with AWorldApp for unified lifecycle management.
     Do not call start()/stop() directly - use AWorldApp.run() instead.
-    
-    Example:
-        >>> from aworldappinfra.application import AWorldApp
-        >>> from aworldappinfra.protocols.mcp import McpProtocol
-        >>> 
-        >>> # Create AWorldApp and register MCP protocol
-        >>> aworld_app = AWorldApp()
-        >>> 
-        >>> # stdio mode
-        >>> aworld_app.add_protocol(McpProtocol(name="AWorldAgent", transport="stdio"))
-        >>> 
-        >>> # streamable-http mode (requires host and port)
-        >>> aworld_app.add_protocol(McpProtocol(
-        ...     name="AWorldAgent", 
-        ...     transport="streamable-http",
-        ...     host="0.0.0.0",
-        ...     port=8001
-        ... ))
-        >>> 
-        >>> aworld_app.run()
     """
     
     def __init__(
@@ -98,8 +78,7 @@ class McpProtocol(AppProtocol):
                 agents_list = [
                     {
                         "name": agent.name,
-                        "desc": agent.desc,
-                        "metadata": agent.metadata
+                        "desc": agent.desc
                     }
                     for agent in agents
                 ]
