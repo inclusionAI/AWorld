@@ -245,6 +245,10 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
     - skills_path: Path to directory containing skill.md files (optional, e.g., "../skills").
       Skills will be automatically collected from subdirectories containing skill.md files.
       Path can be relative (to markdown file directory) or absolute.
+    - include_skills: Specify which skills to include (optional).
+      - Comma-separated list: "screenshot,notify" (exact match for each name)
+      - Regex pattern: "screen.*" (pattern match)
+      - If not specified, uses INCLUDE_SKILLS environment variable or loads all skills
     
     The markdown body content will be used as part of the system prompt.
     
@@ -376,8 +380,17 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
                 if not skills_dir.exists():
                     logger.warning(f"⚠️ Skills directory not found: {skills_dir}, skipping skill collection")
                 else:
-                    # Collect skills from the directory
-                    collected_skills = collect_skill_docs(skills_dir)
+                    # Get include_skills from front_matter or environment variable
+                    include_skills = front_matter.get("include_skills")
+                    if include_skills is None:
+                        # Support both new and old environment variable names for backward compatibility
+                        include_skills = os.environ.get("INCLUDE_SKILLS") or os.environ.get("SKILL_FILTER")
+                    
+                    if include_skills:
+                        logger.info(f"🔍 Including skills: {include_skills}")
+                    
+                    # Collect skills from the directory with optional filter
+                    collected_skills = collect_skill_docs(skills_dir, include_skills=include_skills)
                     if collected_skills:
                         # Convert collected skills to the format expected by AgentConfig
                         # collect_skill_docs returns: {skill_name: {name, description, tool_list, usage, type, active, skill_path}}
