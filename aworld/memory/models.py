@@ -443,10 +443,14 @@ class MemoryAIMessage(MemoryMessage):
         metadata (MessageMetadata): Metadata object containing user, session, task, and agent IDs.
         content (str): The content of the message.
     """
-    def __init__(self, content: str, tool_calls: Optional[List[ToolCall]] = [], metadata: MessageMetadata = None, **kwargs) -> None:
+
+    def __init__(self, content: str, tool_calls: Optional[List[ToolCall]] = [], reasoning_details=None,
+                 metadata: MessageMetadata = None, **kwargs) -> None:
         meta = metadata.to_dict
         if tool_calls:
             meta['tool_calls'] = [tool_call.to_dict() for tool_call in tool_calls]
+        if reasoning_details:
+            meta['reasoning_details'] = reasoning_details
         super().__init__(role="assistant", metadata=MessageMetadata(**meta), content=content, **kwargs)
 
     @property
@@ -457,6 +461,12 @@ class MemoryAIMessage(MemoryMessage):
         return tc if len(tc) > 0 else None
 
     @property
+    def reasoning_details(self) -> Dict[str, Any]:
+        if "reasoning_details" not in self.metadata or not self.metadata['reasoning_details']:
+            return None
+        return self.metadata['reasoning_details']
+
+    @property
     def embedding_text(self) -> Optional[str]:
         return None
 
@@ -464,7 +474,8 @@ class MemoryAIMessage(MemoryMessage):
         return {
             "role": self.role,
             "content": self.content,
-            "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls or []] or None
+            "tool_calls": [tool_call.to_dict() for tool_call in self.tool_calls or []] or None,
+            "reasoning_details": self.reasoning_details
         }
 
     def to_dict(self) -> dict:
