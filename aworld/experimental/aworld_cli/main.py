@@ -349,14 +349,21 @@ Agent 文件：
     
     # Initialize skill registry early with command-line arguments (overrides env vars)
     # This ensures skill registry is ready before agents are loaded
+    from .core.skill_registry import get_skill_registry
     if args.skill_path:
-        from .core.skill_registry import get_skill_registry
         # Initialize registry with command-line skill paths (these take precedence)
-        get_skill_registry(skill_paths=args.skill_path)
+        registry = get_skill_registry(skill_paths=args.skill_path)
     else:
         # Still initialize registry to load from env vars and defaults
-        from .core.skill_registry import get_skill_registry
-        get_skill_registry()
+        registry = get_skill_registry()
+    
+    # Display global skills loading information
+    all_skills = registry.get_all_skills()
+    if all_skills:
+        skill_names = list(all_skills.keys())
+        print(f"📚 Loaded {len(skill_names)} global skill(s): {', '.join(skill_names)}")
+    else:
+        print("📚 No global skills loaded")
 
     # Handle 'list' command separately before setting up the full app loop if possible
     if args.command == "list":

@@ -75,9 +75,12 @@ def get_skill_registry(
             if skill_paths:
                 for skill_path in skill_paths:
                     try:
-                        _global_registry.register_source(skill_path, source_name=skill_path)
+                        count = _global_registry.register_source(skill_path, source_name=skill_path)
+                        if count > 0:
+                            print(f"📚 Registered skill source: {skill_path} ({count} skills)")
                         logger.debug(f"📚 Registered skill source from parameter: {skill_path}")
                     except Exception as e:
+                        print(f"⚠️ Failed to register skill source '{skill_path}': {e}")
                         logger.warning(f"⚠️ Failed to register skill source '{skill_path}': {e}")
             
             # Register default skills directory if provided or exists
@@ -94,6 +97,8 @@ def get_skill_registry(
                         str(default_skills_dir),
                         source_name="default_skills"
                     )
+                    if count > 0:
+                        print(f"📚 Registered default skills directory: {default_skills_dir} ({count} skills)")
                     logger.info(f"📚 Auto-registered default skills directory: {default_skills_dir} ({count} skills)")
                 except Exception as e:
                     logger.debug(f"ℹ️ Default skills directory already registered or failed: {default_skills_dir}: {e}")
@@ -116,9 +121,12 @@ def _register_from_env(registry: SkillRegistry) -> None:
         skill_sources = [s.strip() for s in skills_path_env.split(';') if s.strip()]
         for source in skill_sources:
             try:
-                registry.register_source(source, source_name=source)
+                count = registry.register_source(source, source_name=source)
+                if count > 0:
+                    print(f"📚 Registered skill source from {ENV_SKILLS_PATH}: {source} ({count} skills)")
                 logger.info(f"📚 Registered skill source from {ENV_SKILLS_PATH}: {source}")
             except Exception as e:
+                print(f"⚠️ Failed to register skill source from env '{source}': {e}")
                 logger.warning(f"⚠️ Failed to register skill source from env '{source}': {e}")
     
     # Register from SKILLS_DIR (legacy, single directory for backward compatibility)
@@ -127,11 +135,14 @@ def _register_from_env(registry: SkillRegistry) -> None:
         try:
             skills_dir_path = Path(skills_dir_env).resolve()
             if skills_dir_path.exists() and skills_dir_path.is_dir():
-                registry.register_source(str(skills_dir_path), source_name=str(skills_dir_path))
+                count = registry.register_source(str(skills_dir_path), source_name=str(skills_dir_path))
+                if count > 0:
+                    print(f"📚 Registered skill source from {ENV_SKILLS_DIR}: {skills_dir_path} ({count} skills)")
                 logger.info(f"📚 Registered skill source from {ENV_SKILLS_DIR}: {skills_dir_path}")
             else:
                 logger.warning(f"⚠️ {ENV_SKILLS_DIR} directory not found: {skills_dir_path}")
         except Exception as e:
+            print(f"⚠️ Failed to register skill source from {ENV_SKILLS_DIR}: {e}")
             logger.warning(f"⚠️ Failed to register skill source from {ENV_SKILLS_DIR}: {e}")
 
 
