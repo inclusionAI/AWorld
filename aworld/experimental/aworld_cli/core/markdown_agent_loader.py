@@ -378,7 +378,9 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
         default_skills_dir = (md_file_path.parent / "../skills").resolve()
         if default_skills_dir.exists() and default_skills_dir.is_dir():
             try:
-                registry.register_source(str(default_skills_dir), source_name=str(default_skills_dir))
+                count = registry.register_source(str(default_skills_dir), source_name=str(default_skills_dir))
+                if count > 0:
+                    print(f"📚 Registered skills directory: {default_skills_dir} ({count} skills)")
                 logger.debug(f"📚 Registered default skills directory: {default_skills_dir}")
             except Exception as e:
                 # Source might already be registered, that's fine
@@ -410,7 +412,9 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
                             resolved_source = resolved_source_str
                         
                         # Register source to registry
-                        registry.register_source(resolved_source, source_name=source_name)
+                        count = registry.register_source(resolved_source, source_name=source_name)
+                        if count > 0:
+                            print(f"📚 Registered skill source: {source_name} ({count} skills)")
                         logger.debug(f"📚 Registered skill source: {source_name}")
                     except Exception as e:
                         logger.warning(f"⚠️ Failed to register skill source '{source}': {e}")
@@ -450,8 +454,12 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
                         missing_skills.append(skill_name)
                 
                 if found_skills:
+                    skill_list_str = ", ".join(found_skills)
+                    print(f"📚 Loaded {len(found_skills)} skill(s) for agent '{agent_name}': {skill_list_str}")
                     logger.info(f"✅ Loaded {len(found_skills)} skill(s) from registry: {found_skills}")
                 if missing_skills:
+                    missing_list_str = ", ".join(missing_skills)
+                    print(f"⚠️ Skill(s) not found for agent '{agent_name}': {missing_list_str}")
                     logger.warning(f"⚠️ Skill(s) not found in registry: {missing_skills}. Available skills: {list(all_registry_skills.keys())}")
             except Exception as e:
                 logger.error(f"❌ Failed to get skills from registry: {e}")
