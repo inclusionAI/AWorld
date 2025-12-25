@@ -6,8 +6,9 @@ Export structured metadata for all skill documentation files.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 from aworld.logs.util import logger
 
 def extract_front_matter(content_lines: List[str]) -> Tuple[Dict[str, Any], int]:
@@ -57,12 +58,20 @@ def extract_front_matter(content_lines: List[str]) -> Tuple[Dict[str, Any], int]
     return front_matter, end_index + 1
 
 
-def collect_skill_docs(root_path: Union[str, Path]) -> Dict[str, Dict[str, Any]]:
+def collect_skill_docs(
+    root_path: Union[str, Path],
+    include_skills: Optional[Union[str, List[str]]] = None
+) -> Dict[str, Dict[str, Any]]:
     """
     Collect skill documentation metadata from all subdirectories containing skill.md files.
 
     Args:
         root_path (Union[str, Path]): Root directory to search for skill documentation files.
+        include_skills (Optional[Union[str, List[str]]]): Specify which skills to include.
+            - Comma-separated string: "screenshot,notify" (exact match for each name)
+            - Regex pattern string: "screen.*" (pattern match)
+            - List of strings: ["screenshot", "notify"] or ["screen.*"] (mix of exact and regex)
+            - If None: collect all skills
 
     Returns:
         Dict[str, Dict[str, Any]]: Mapping from skill names to metadata containing
@@ -71,6 +80,10 @@ def collect_skill_docs(root_path: Union[str, Path]) -> Dict[str, Dict[str, Any]]
     Example:
         >>> collect_skill_docs(Path("."))
         {'tts': {'name': 'tts', 'desc': '...', 'tool_list': {...}, 'usage': '...', 'skill_path': '...'}}
+        >>> collect_skill_docs(Path("."), "screenshot,notify")
+        {'screenshot': {...}, 'notify': {...}}
+        >>> collect_skill_docs(Path("."), "screen.*")
+        {'screenshot': {...}}
     """
     results: Dict[str, Dict[str, Any]] = {}
     logger.debug("Starting to collect skill : %s", root_path)
@@ -78,6 +91,41 @@ def collect_skill_docs(root_path: Union[str, Path]) -> Dict[str, Dict[str, Any]]
         root_dir = Path(root_path).resolve()
     else:
         root_dir = root_path
+
+    # Parse include_skills parameter
+    filter_patterns: List[str] = []
+    if include_skills:
+        if isinstance(include_skills, str):
+            # Check if it's comma-separated list
+            if "," in include_skills:
+                filter_patterns = [pattern.strip() for pattern in include_skills.split(",")]
+            else:
+                # Single regex pattern
+                filter_patterns = [include_skills]
+        elif isinstance(include_skills, list):
+            filter_patterns = include_skills
+        else:
+            logger.warning(f"⚠️ Invalid include_skills type: {type(include_skills)}, ignoring filter")
+            filter_patterns = []
+
+    def should_include_skill(skill_name: str) -> bool:
+        """Check if skill should be included based on filter patterns"""
+        if not filter_patterns:
+            return True
+        
+        for pattern in filter_patterns:
+            # Try exact match first
+            if pattern == skill_name:
+                return True
+            # Try regex match
+            try:
+                if re.match(pattern, skill_name):
+                    return True
+            except re.error as e:
+                logger.warning(f"⚠️ Invalid regex pattern '{pattern}': {e}, treating as exact match")
+                if pattern == skill_name:
+                    return True
+        return False
 
     for skill_file in root_dir.glob("**/skill.md"):
         logger.debug("Finished collecting skill: %s", skill_file)
@@ -95,6 +143,11 @@ def collect_skill_docs(root_path: Union[str, Path]) -> Dict[str, Dict[str, Any]]
             tool_list = {}
 
         skill_name = skill_file.parent.name
+        
+        # Apply filter
+        if not should_include_skill(skill_name):
+            logger.debug(f"⏭️ Skipping skill '{skill_name}' (not matching filter)")
+            continue
 
         results[skill_name] = {
             "name": skill_name,

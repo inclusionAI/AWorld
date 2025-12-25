@@ -9,16 +9,24 @@ import yaml
 docs = "docs"
 black_keys = ["Index"]
 black_values = ["index.md"]
-file_priority = {"Quickstart": ["Install", "Agent Construction", "Workflow Construction",
-                                "Multi-agent System Construction", "Environment"]
-                 }
-dir_order = ["Quickstart", "Tutorials"]
+file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities"],
+                 "Basic Usage": ["HITL"],
+                 "Runtime": ["Overview"]}
+file_mapping = {"Hitl": "HITL"}
+dir_order = ["Get Start", "Basic Usage", "Agents", "Environment", "Runtime", "Key Components"]
 
 
 def scan_path(path: str) -> List[dict]:
     items = scan(path)
     res = []
-    for k, v in items.items():
+    order_items = OrderedDict()
+    for d in dir_order:
+        if d in items:
+            order_items[d] = items[d]
+            items.pop(d)
+    order_items.update(items)
+
+    for k, v in order_items.items():
         # root path
         if k in black_keys and v in black_values:
             continue
