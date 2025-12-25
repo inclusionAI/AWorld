@@ -45,7 +45,7 @@ class RemoteRuntime(BaseAgentRuntime):
                 self.cli.console.print("[red]❌ No agents found on remote server.[/red]")
                 return []
             
-            return [AgentInfo.from_dict(data) for data in agents_data]
+            return [AgentInfo.from_dict(data, source_location=self.remote_backend) for data in agents_data]
             
         except httpx.RequestError as e:
             self.cli.console.print(f"[red]❌ Could not connect to remote server: {e}[/red]")

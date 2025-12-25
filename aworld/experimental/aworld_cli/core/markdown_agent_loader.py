@@ -11,13 +11,14 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from aworld.utils.skill_loader import extract_front_matter, collect_skill_docs
+from .skill_registry import get_skill_registry
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.config import AgentConfig, ModelConfig
 from aworld.logs.util import logger
 from aworld.mcp_client.utils import extract_mcp_servers_from_config
 
-from .registry import LocalAgent, LocalAgentRegistry
+from .agent_registry import LocalAgent, LocalAgentRegistry
 
 
 def _extract_front_matter_with_multiline_json(content_lines: List[str]) -> Tuple[Dict[str, Any], int]:
@@ -242,9 +243,18 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
         - A variable named `MCP_CONFIG` (dict), or
         - A function `get_mcp_config()` that returns a dict
     - ptc_tools: List of tool names to enable PTC (Programmatic Tool Calling) for (optional, e.g., ["browser_navigate", "browser_snapshot"])
-    - skills_path: Path to directory containing skill.md files (optional, e.g., "../skills").
-      Skills will be automatically collected from subdirectories containing skill.md files.
-      Path can be relative (to markdown file directory) or absolute.
+    - skills_path: Skill sources to register in SkillRegistry (optional, semicolon-separated).
+      Can be:
+      - Local path (relative to markdown file directory or absolute, e.g., "../skills")
+      - GitHub URL (e.g., "https://github.com/user/repo" or "https://github.com/user/repo/tree/branch/skills")
+      - Multiple sources separated by semicolon (e.g., "https://github.com/user/repo;../skills")
+      Note: If not specified, skills will be loaded from the default SkillRegistry which includes:
+      - ./skills directory (if exists, registered automatically by get_skill_registry)
+      - ../skills directory relative to markdown file (if exists, registered automatically)
+    - skill_names: Skill names to use for this agent (optional, semicolon-separated).
+      Skills will be retrieved from the global SkillRegistry (includes default sources and skills_path).
+      Example: "pdf;excel;browser" or just "pdf"
+      Note: If skill_names is not specified, no skills will be loaded for this agent.
     
     The markdown body content will be used as part of the system prompt.
     
@@ -360,41 +370,91 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
             logger.warning(f"⚠️ ptc_tools should be a list in {md_file_path}, converting")
             ptc_tools = [ptc_tools] if ptc_tools else []
         
-        # Get skills_path and collect skills
+        # Get skill registry (will auto-initialize with default ./skills if exists)
+        registry = get_skill_registry()
+        
+        # Always register ../skills directory relative to markdown file (if exists)
+        # This is the default skills directory for markdown agents
+        default_skills_dir = (md_file_path.parent / "../skills").resolve()
+        if default_skills_dir.exists() and default_skills_dir.is_dir():
+            try:
+                registry.register_source(str(default_skills_dir), source_name=str(default_skills_dir))
+                logger.debug(f"📚 Registered default skills directory: {default_skills_dir}")
+            except Exception as e:
+                # Source might already be registered, that's fine
+                logger.debug(f"ℹ️ Default skills directory registration: {default_skills_dir} ({e})")
+        
+        # Parse skills_path (semicolon-separated) and register to registry
         skills_path = front_matter.get("skills_path")
-        skill_configs = {}
         if skills_path:
             try:
-                # Resolve skills path (relative to markdown file directory or absolute)
-                if os.path.isabs(skills_path):
-                    skills_dir = Path(skills_path)
-                else:
-                    skills_dir = md_file_path.parent / skills_path
+                # Split by semicolon to get multiple paths
+                skill_sources = [s.strip() for s in str(skills_path).split(';') if s.strip()]
                 
-                skills_dir = skills_dir.resolve()
-                
-                if not skills_dir.exists():
-                    logger.warning(f"⚠️ Skills directory not found: {skills_dir}, skipping skill collection")
-                else:
-                    # Collect skills from the directory
-                    collected_skills = collect_skill_docs(skills_dir)
-                    if collected_skills:
-                        # Convert collected skills to the format expected by AgentConfig
-                        # collect_skill_docs returns: {skill_name: {name, description, tool_list, usage, type, active, skill_path}}
-                        # AgentConfig expects: {skill_name: {name, desc, usage, tool_list, active}}
-                        for skill_name, skill_data in collected_skills.items():
-                            skill_configs[skill_name] = {
-                                "name": skill_data.get("name", skill_name),
-                                "desc": skill_data.get("description", ""),
-                                "usage": skill_data.get("usage", ""),
-                                "tool_list": skill_data.get("tool_list", {}),
-                                "active": skill_data.get("active", True)
-                            }
-                        logger.info(f"✅ Collected {len(skill_configs)} skill(s) from {skills_dir}")
-                    else:
-                        logger.debug(f"ℹ️ No skills found in {skills_dir}")
+                for source in skill_sources:
+                    try:
+                        # Resolve path relative to markdown file directory if it's a local path
+                        if 'github.com' in source or source.startswith('git@'):
+                            # GitHub URL, use as-is
+                            resolved_source = source
+                            source_name = source
+                        else:
+                            # Local path, resolve relative to markdown file directory
+                            if os.path.isabs(source):
+                                resolved_source = Path(source)
+                            else:
+                                resolved_source = (md_file_path.parent / source).resolve()
+                            
+                            resolved_source_str = str(resolved_source)
+                            source_name = resolved_source_str
+                            resolved_source = resolved_source_str
+                        
+                        # Register source to registry
+                        registry.register_source(resolved_source, source_name=source_name)
+                        logger.debug(f"📚 Registered skill source: {source_name}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Failed to register skill source '{source}': {e}")
             except Exception as e:
-                logger.error(f"❌ Failed to collect skills from {skills_path}: {e}")
+                logger.error(f"❌ Failed to parse skills_path: {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
+        
+        # Parse skill_names (semicolon-separated) and get skills from registry
+        # If skill_names is not configured, skill_configs will be empty (no skills loaded)
+        skill_names_str = front_matter.get("skill_names")
+        skill_configs = {}
+        if skill_names_str:
+            try:
+                # Split by semicolon to get multiple skill names
+                skill_names = [name.strip() for name in str(skill_names_str).split(';') if name.strip()]
+                
+                # Get all skills from registry
+                all_registry_skills = registry.get_all_skills()
+                found_skills = []
+                missing_skills = []
+                
+                for skill_name in skill_names:
+                    if skill_name in all_registry_skills:
+                        skill_data = all_registry_skills[skill_name]
+                        # Convert to AgentConfig format
+                        skill_configs[skill_name] = {
+                            "name": skill_data.get("name", skill_name),
+                            "desc": skill_data.get("description", skill_data.get("desc", "")),
+                            "usage": skill_data.get("usage", ""),
+                            "tool_list": skill_data.get("tool_list", {}),
+                            "type": skill_data.get("type", ""),
+                            "active": skill_data.get("active", False)
+                        }
+                        found_skills.append(skill_name)
+                    else:
+                        missing_skills.append(skill_name)
+                
+                if found_skills:
+                    logger.info(f"✅ Loaded {len(found_skills)} skill(s) from registry: {found_skills}")
+                if missing_skills:
+                    logger.warning(f"⚠️ Skill(s) not found in registry: {missing_skills}. Available skills: {list(all_registry_skills.keys())}")
+            except Exception as e:
+                logger.error(f"❌ Failed to get skills from registry: {e}")
                 import traceback
                 logger.debug(traceback.format_exc())
         
@@ -456,6 +516,7 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
                 "mcp_config": mcp_config,
                 "ptc_tools": ptc_tools,
                 "skills_path": skills_path,
+                "skill_names": skill_names_str,
                 "skill_configs": skill_configs
             }
         )

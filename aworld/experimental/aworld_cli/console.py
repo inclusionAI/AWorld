@@ -79,8 +79,8 @@ class AWorldCLI:
         
         Args:
             agents: List of agents to display
-            source_type: Source type (LOCAL, REMOTE, etc.)
-            source_location: Source location (directory path or URL)
+            source_type: Source type (LOCAL, REMOTE, etc.) - used as fallback if agent doesn't have source_type
+            source_location: Source location (directory path or URL) - used as fallback if agent doesn't have source_location
         """
         if not agents:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
@@ -94,7 +94,28 @@ class AWorldCLI:
 
         for agent in agents:
             desc = getattr(agent, "desc", "No description") or "No description"
-            table.add_row(agent.name, desc, source_type, source_location)
+            # Always use agent's own source_type and source_location if they exist and are valid
+            # Fallback to provided parameters only if agent doesn't have these attributes
+            agent_source_type = getattr(agent, "source_type", None)
+            agent_source_location = getattr(agent, "source_location", None)
+            
+            # Use agent's source_type if it exists and is valid, otherwise use fallback
+            if agent_source_type and agent_source_type != "UNKNOWN" and agent_source_type.strip() != "":
+                # Use agent's own source_type
+                pass
+            else:
+                # Use fallback
+                agent_source_type = source_type
+            
+            # Use agent's source_location if it exists and is valid, otherwise use fallback
+            if agent_source_location and agent_source_location.strip() != "":
+                # Use agent's own source_location
+                pass
+            else:
+                # Use fallback
+                agent_source_location = source_location
+            
+            table.add_row(agent.name, desc, agent_source_type, agent_source_location)
 
         self.console.print(table)
 
@@ -123,7 +144,28 @@ class AWorldCLI:
 
         for idx, agent in enumerate(agents, 1):
             desc = getattr(agent, "desc", "No description") or "No description"
-            table.add_row(str(idx), agent.name, desc, source_type, source_location)
+            # Always use agent's own source_type and source_location if they exist and are valid
+            # Fallback to provided parameters only if agent doesn't have these attributes
+            agent_source_type = getattr(agent, "source_type", None)
+            agent_source_location = getattr(agent, "source_location", None)
+            
+            # Use agent's source_type if it exists and is valid, otherwise use fallback
+            if agent_source_type and agent_source_type != "UNKNOWN" and agent_source_type.strip() != "":
+                # Use agent's own source_type
+                pass
+            else:
+                # Use fallback
+                agent_source_type = source_type
+            
+            # Use agent's source_location if it exists and is valid, otherwise use fallback
+            if agent_source_location and agent_source_location.strip() != "":
+                # Use agent's own source_location
+                pass
+            else:
+                # Use fallback
+                agent_source_location = source_location
+            
+            table.add_row(str(idx), agent.name, desc, agent_source_type, agent_source_location)
 
         self.console.print(table)
 
