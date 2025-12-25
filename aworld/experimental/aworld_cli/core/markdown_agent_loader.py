@@ -253,7 +253,8 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
       - ../skills directory relative to markdown file (if exists, registered automatically)
     - skill_names: Skill names to use for this agent (optional, semicolon-separated).
       Skills will be retrieved from the global SkillRegistry (includes default sources and skills_path).
-      Example: "pdf;excel;browser" or just "pdf"
+      Supports both exact skill names and regex patterns (prefixed with "regex:").
+      Example: "pdf;excel;browser" or "pdf;regex:^context-.*" or "regex:.*browser.*"
       Note: If skill_names is not specified, no skills will be loaded for this agent.
     
     The markdown body content will be used as part of the system prompt.
@@ -424,34 +425,61 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
                 logger.debug(traceback.format_exc())
         
         # Parse skill_names (semicolon-separated) and get skills from registry
+        # Supports both exact skill names and regex patterns (prefixed with "regex:")
         # If skill_names is not configured, skill_configs will be empty (no skills loaded)
         skill_names_str = front_matter.get("skill_names")
         skill_configs = {}
         if skill_names_str:
             try:
-                # Split by semicolon to get multiple skill names
-                skill_names = [name.strip() for name in str(skill_names_str).split(';') if name.strip()]
+                # Split by semicolon to get multiple skill names or regex patterns
+                skill_patterns = [pattern.strip() for pattern in str(skill_names_str).split(';') if pattern.strip()]
                 
                 # Get all skills from registry
                 all_registry_skills = registry.get_all_skills()
                 found_skills = []
                 missing_skills = []
                 
-                for skill_name in skill_names:
-                    if skill_name in all_registry_skills:
-                        skill_data = all_registry_skills[skill_name]
-                        # Convert to AgentConfig format
-                        skill_configs[skill_name] = {
-                            "name": skill_data.get("name", skill_name),
-                            "desc": skill_data.get("description", skill_data.get("desc", "")),
-                            "usage": skill_data.get("usage", ""),
-                            "tool_list": skill_data.get("tool_list", {}),
-                            "type": skill_data.get("type", ""),
-                            "active": skill_data.get("active", False)
-                        }
-                        found_skills.append(skill_name)
+                for pattern in skill_patterns:
+                    # Check if this is a regex pattern (prefixed with "regex:")
+                    if pattern.startswith("regex:"):
+                        # Extract regex pattern (remove "regex:" prefix)
+                        regex_pattern = pattern[6:].strip()
+                        try:
+                            # Use regex to find matching skills
+                            matched_skills = registry.get_skills_by_regex(regex_pattern, match_field="name")
+                            
+                            for skill_name, skill_data in matched_skills.items():
+                                # Skip if already added (avoid duplicates)
+                                if skill_name not in skill_configs:
+                                    # Convert to AgentConfig format
+                                    skill_configs[skill_name] = {
+                                        "name": skill_data.get("name", skill_name),
+                                        "desc": skill_data.get("description", skill_data.get("desc", "")),
+                                        "usage": skill_data.get("usage", ""),
+                                        "tool_list": skill_data.get("tool_list", {}),
+                                        "type": skill_data.get("type", ""),
+                                        "active": skill_data.get("active", False)
+                                    }
+                                    found_skills.append(skill_name)
+                        except Exception as regex_error:
+                            logger.warning(f"⚠️ Invalid regex pattern '{regex_pattern}': {regex_error}")
+                            missing_skills.append(pattern)
                     else:
-                        missing_skills.append(skill_name)
+                        # Exact skill name match
+                        if pattern in all_registry_skills:
+                            skill_data = all_registry_skills[pattern]
+                            # Convert to AgentConfig format
+                            skill_configs[pattern] = {
+                                "name": skill_data.get("name", pattern),
+                                "desc": skill_data.get("description", skill_data.get("desc", "")),
+                                "usage": skill_data.get("usage", ""),
+                                "tool_list": skill_data.get("tool_list", {}),
+                                "type": skill_data.get("type", ""),
+                                "active": skill_data.get("active", False)
+                            }
+                            found_skills.append(pattern)
+                        else:
+                            missing_skills.append(pattern)
                 
                 if found_skills:
                     skill_list_str = ", ".join(found_skills)
