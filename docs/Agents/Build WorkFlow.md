@@ -1,10 +1,7 @@
+We use the classic graph syntax to describe workflows in AWorld. The following are the basic scenarios for constructing agent workflows.
 
-We use the classic graph syntax to describe workflows in AWorld. 
-The following are the basic scenarios for constructing agent workflows.
-
-## Agent Native Workflow
-
-### Sequential
+<h1 id="YT9yl">Agent Native Workflow</h1>
+<h2 id="bKjc4">Sequential</h2>
 ```python
 """
 Sequential Agent Pipeline: agent1 → agent2 → agent3
@@ -13,11 +10,11 @@ Executes agents in sequence where each agent's output becomes
 the next agent's input, enabling multi-step collaborative processing.
 """
 
-swarm = Swarm(topology=[(agent1, agent2), (agent2, agent3)], root_agent=[agent1])
+swarm = Swarm([(agent1, agent2), (agent2, agent3)], root_agent=[agent1])
 result: TaskResponse = Runners.run(input=question, swarm=swarm)
 ```
 
-### Parallel
+<h2 id="k4dbY">Parallel</h2>
 ```python
 """
 Parallel Agent Execution with Barrier Synchronization
@@ -31,11 +28,11 @@ Parallel Agent Execution with Barrier Synchronization
 - agent3 processes combined outputs from agent1 and agent2
 """
 
-swarm = Swarm(topology=[(agent1, agent3), (agent2, agent3)], root_agent=[agent1, agent2])
+swarm = Swarm([(agent1, agent3), (agent2, agent3)], root_agent=[agent1, agent2])
 result: TaskResponse = Runners.run(input=question, swarm=swarm)
 ```
 
-### Parallel Multi-Path 
+<h2 id="hjbFN">Parallel Multi-Path </h2>
 ```python
 """
 Parallel Multi-Path Agent Execution
@@ -51,15 +48,15 @@ Parallel Multi-Path Agent Execution
 - agent3 synthesizes outputs from both agent1 and agent2
 """
 
-swarm = Swarm(topology=[(agent1, agent2), (agent1, agent3), (agent2, agent3)], root_agent=[agent1])
+swarm = Swarm([(agent1, agent2), (agent1, agent3), (agent2, agent3)], root_agent=[agent1])
 result: TaskResponse = Runners.run(input=question, swarm=swarm)
 ```
 
-## Task Native Workflow
-Task native workflow is further implemented for Isolating the agent runtimes and environments, 
-in the distributed or other easy-to-overlap scenarios. 
-Task native workflow is further implemented for isolating agent runtimes and environments, 
-particularly useful in distributed or other scenarios where tool-isolation is required. 
+<h1 id="fjEEl">Task Native Workflow</h1>
+Task native workflow is further implemented for Isolating the agent runtimes and environments, in the distributed or other easy-to-overlap scenarios. 
+
+Task native workflow is further implemented for isolating agent runtimes and environments, particularly useful in distributed or other scenarios where tool-isolation is required. 
+
 ```python
 task1 = Task(input="my question", agent=agent1)
 task2 = Task(agent=agent2)
@@ -68,3 +65,4 @@ tasks = [task1, task2, task3]
 
 result: Dict[str, TaskResponse] = Runners.run_task(tasks, RunConfig(sequence_dependent=True))
 ```
+
