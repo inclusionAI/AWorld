@@ -415,19 +415,20 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
         else:
             system_prompt = "You are a helpful AI agent."
         
-        # Create agent configuration
-        agent_config = AgentConfig(
-            llm_config=ModelConfig(
-                llm_model_name=os.environ.get("LLM_MODEL_NAME", "gpt-4"),
-                llm_provider=os.environ.get("LLM_PROVIDER", "openai"),
-                llm_api_key=os.environ.get("LLM_API_KEY"),
-                llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
-                llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.7"))
-            ),
-        )
+
         
         # Create a factory function that builds the Swarm
         def build_swarm() -> Swarm:
+            # Create agent configuration
+            agent_config = AgentConfig(
+                llm_config=ModelConfig(
+                    llm_model_name=os.environ.get("LLM_MODEL_NAME", "gpt-4"),
+                    llm_provider=os.environ.get("LLM_PROVIDER", "openai"),
+                    llm_api_key=os.environ.get("LLM_API_KEY"),
+                    llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
+                    llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+                )
+            )
             """Build Swarm from markdown agent definition."""
             agent = Agent(
                 name=agent_name,
@@ -464,6 +465,7 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
         
     except Exception as e:
         logger.error(f"❌ Failed to parse markdown agent from {md_file_path}: {e}")
+        print(f"failed load markdown agent: {md_file_path}, error: {e}, please see log for more details")
         import traceback
         logger.debug(traceback.format_exc())
         return None
@@ -508,6 +510,7 @@ def load_markdown_agents(agents_dir: Path) -> List[LocalAgent]:
             if agent:
                 agents.append(agent)
         except Exception as e:
+            print(f"failed load markdown agent: {md_file}, error: {e}, please see log for more details")
             logger.error(f"❌ Error processing {md_file}: {e}")
             continue
     
