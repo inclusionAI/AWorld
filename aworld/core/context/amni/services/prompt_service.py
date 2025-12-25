@@ -174,7 +174,7 @@ class PromptService(IPromptService):
             sender=None,
             receiver=None,
             session_id=self._context.session_id,
-            topic=TopicType.SYSTEM_PROMPT,
+            topic=TopicType.TOOL_RESULT,
             headers={"context": self._context}
         )
         # Send via message system by default
