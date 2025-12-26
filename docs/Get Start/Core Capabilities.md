@@ -1,6 +1,6 @@
 AWorld delivers a vibrant set of capabilities for building AI agents. At the architectural level, it offers four core pillars:
 
-<h3 id="XkxNd">1. Flexible Multi-Agent Orchestration</h3>
+### 1. Flexible Multi-Agent Orchestration
 One of AWorld’s most distinctive features is its built-in support for multi-agent collaboration, enabling flexible orchestration of Multi-Agent Systems (MAS) with diverse topologies and interaction patterns.
 
 **Key Features:**
@@ -32,7 +32,7 @@ swarm = Swarm(
 )
 ```
 
-<h3 id="2.-rich-environment-sandbox">2. Rich Environment Sandbox</h3>
+### 2. Rich Environment Sandbox
 AWorld provides a standardized tool abstraction layer that transforms complex real-world environments into agent-friendly, Gym-style or API-style interfaces. It supports both local and remote tools and integrates seamlessly with tools implementing the **Model Context Protocol (MCP)**.
 
 **Key Features:**
@@ -74,7 +74,7 @@ agent = Agent(
 )
 ```
 
-<h3 id="3.-closed-loop-self-evolution-training">3. Closed-Loop Self-Evolution Training</h3>
+### 3. Closed-Loop Self-Evolution Training
 This is AWorld’s most innovative capability. Beyond just building and running agents, AWorld collects high-quality execution trajectories and provides a complete pipeline for training and continuous evolution.
 
 **Key Features:**
@@ -104,7 +104,7 @@ trainer = AgentTrainer(agent=agent,
 trainer.train()
 ```
 
-<h3 id="bb24ea02">4. Comprehensive Observability Tracing</h3>
+### 4. Comprehensive Observability Tracing
 AWorld includes a full-featured tracing framework that supports distributed tracing, context propagation, and span management—capturing every tool call and token consumption across multi-step reasoning chains.
 
 **Key Features:**
@@ -133,8 +133,8 @@ execute_your_task()
 asyncio_monitor.stop()
 ```
 
-<h3 id="additional-key-capabilities">Additional Key Capabilities</h3>
-<h4 id="task-runtime">**Task Runtime**</h4>
+### Additional Key Capabilities
+#### **Task Runtime**
 AWorld offers a flexible and powerful task execution runtime, supporting diverse execution modes through multiple types of Runners.
 
 **Key Features:**
@@ -175,7 +175,7 @@ result = Runners.sync_run(
 print(f"answer: {result.answer}, trajectory: {result.trajectory}")
 ```
 
-<h4 id="context-management">**Context Management**</h4>
+#### **Context Management**
 AWorld’s context management system provides agents with comprehensive state tracking, configuration control, and prompt optimization.
 
 **Key Features:**
@@ -203,7 +203,7 @@ context.merge_context(other_context)
 context.merge_sub_context(sub_task_context)
 ```
 
-<h4 id="memory-system">**Memory System**</h4>
+#### **Memory System**
 AWorld includes an extensible memory module that supports short-term and long-term memory, summarization, retrieval, and embedding.
 
 **Key Features:**
@@ -236,7 +236,7 @@ await memory.add(
 )
 ```
 
-<h4 id="multi-model-support">**Multi-Model Support**</h4>
+#### **Multi-Model Support**
 AWorld’s **Models** module offers a powerful and flexible LLM interface, enabling seamless integration of various large language model providers and effortless switching between them.
 
 **Key Features:**
