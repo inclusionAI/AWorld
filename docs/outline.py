@@ -103,7 +103,7 @@ if __name__ == '__main__':
         "repo_url": "https://github.com/inclusionAI/AWorld",
         "edit_uri": "tree/main/docs/",
         "copyright": "\u00A9 Copyright 2025 inclusionAI AWorld Team.",
-        "extra_css": ["css/aworld-modern.css"],
+        "extra_css": ["css/aworld.css"],
         "extra_javascript": [
             "js/hide-home-edit.js",
             "js/aworld-enhancements.js",
