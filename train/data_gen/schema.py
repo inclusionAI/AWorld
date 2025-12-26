@@ -153,6 +153,7 @@ class GeneratedTool:
     timeout_rate: float = field(default=1e-5)
     error_rate: float = field(default=1e-6)
     is_mcp: bool = field(default=False)
+    mock: bool = field(default=True)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -189,12 +190,25 @@ class GeneratedTask:
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     description: str = field(default="")
     expected_tools: List[str] = field(default_factory=list)
-    expected_output: str = field(default="")
+    expected_output: Any = field(default="")
     complexity: int = field(default=1)
     category: str = field(default="")
     task_type: TaskType = field(default=TaskType.SINGLE_TOOL)
-    context: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class GeneratedAgent:
+    """Agent structure data, not an `Agent`."""
+    name: str = field(default="")
+    description: str = field(default="")
+    tools: List[str] = field(default_factory=list)
+    system_prompt: str = field(default="")
+    dependencies: List[str] = field(default_factory=list)
+    # serial, parallel, aggregator
+    process_type: str = field(default="serial")
+    input_intro: str = field(default="")
+    output_intro: str = field(default="")
 
 
 # ------------------------------------------ Task Solve ----------------------------------------------- #
