@@ -63,7 +63,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 {
                     "advanced_agent": {
                         "location": "/path/to/agent.py",  # or "https://..."
-                        "type": "local",  # optional: "local" or "remote" (case-insensitive), default is "local"
+                        "run_mode": "local",  # optional: "local" or "remote" (case-insensitive), default is "local"
                         "env": {"KEY": "value"},  # optional
                         "args": ["--option"],  # optional
                         # ... other optional config
@@ -958,7 +958,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 {
                     "advanced_agent": {
                         "location": "/path/to/agent.py",  # or "https://..."
-                        "type": "local",  # optional: "local" or "remote" (case-insensitive), default is "local"
+                        "run_mode": "local",  # optional: "local" or "remote" (case-insensitive), default is "local"
                         "env": {"KEY": "value"},  # optional
                         "args": ["--option"],  # optional
                         # ... other optional config
@@ -1013,28 +1013,28 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                     logger.warning(f"Agent '{agent_name}' has invalid 'location' field (expected string, got {type(location)})")
                     continue
                 
-                # Check if type is explicitly provided
-                if "type" in agent_config:
-                    # Use explicit type field (case-insensitive)
-                    agent_type = agent_config.get("type")
-                    if isinstance(agent_type, str):
-                        agent_type = agent_type.lower().strip()
-                        if agent_type == "remote":
+                # Check if run_mode is explicitly provided
+                if "run_mode" in agent_config:
+                    # Use explicit run_mode field (case-insensitive)
+                    agent_run_mode = agent_config.get("run_mode")
+                    if isinstance(agent_run_mode, str):
+                        agent_run_mode = agent_run_mode.lower().strip()
+                        if agent_run_mode == "remote":
                             is_remote = True
-                        elif agent_type == "local":
+                        elif agent_run_mode == "local":
                             is_remote = False
                         else:
-                            logger.warning(f"Agent '{agent_name}' has invalid 'type' field ('{agent_type}'), expected 'local' or 'remote'. Defaulting to 'local'.")
+                            logger.warning(f"Agent '{agent_name}' has invalid 'run_mode' field ('{agent_run_mode}'), expected 'local' or 'remote'. Defaulting to 'local'.")
                             is_remote = False
                     else:
-                        logger.warning(f"Agent '{agent_name}' has invalid 'type' field (expected string, got {type(agent_type)}). Defaulting to 'local'.")
+                        logger.warning(f"Agent '{agent_name}' has invalid 'run_mode' field (expected string, got {type(agent_run_mode)}). Defaulting to 'local'.")
                         is_remote = False
                 else:
-                    # Type not provided, auto-detect based on location
+                    # Run mode not provided, auto-detect based on location
                     is_remote = is_remote_url(location)
                 
-                # Extract extra config (excluding 'location' and 'type')
-                extra_config = {k: v for k, v in agent_config.items() if k not in ("location", "type")}
+                # Extract extra config (excluding 'location' and 'run_mode')
+                extra_config = {k: v for k, v in agent_config.items() if k not in ("location", "run_mode")}
             
             else:
                 logger.warning(f"Invalid agent config for '{agent_name}': expected string or dict, got {type(agent_config)}")
