@@ -5,14 +5,14 @@ In the AWorld framework, similar to Workflow Construction, the fundamental build
 
 This design ensures unified underlying capabilities (i.e., Agent, Graph-based Topology) while maintaining extensibility.
 
-<h2 id="ETrEQ">Why use AWorld to build MAS</h2>
+## Why use AWorld to build MAS
 + Convenient. Build a multi-agent system in one row in the form of a graph.
 + Efficient. Independent agents and tools automatically execute in parallel.
 + Flexible. Not only can the strategy be adjusted at any time, but different types of swarms can also be combined arbitrarily.
 + General. Provide general Workflow and Handoff mechanisms to support various collaboration paradigms.
 + Good scalability. It can be achieved by defining its own Swarm type or setting it through `build_cls`.
 
-<h2 id="GxkRY">MAS Construction</h2>
+## MAS Construction
 Similar to Workflows, we can easily define communication networks between Agents through topology. The key difference is that by using `build_type=GraphBuildType.HANDOFF`, we allow dynamic decision-making for inter-agent calling relationships:
 
 1. `agent1` can selectively decide to call `agent2` and `agent3`; the number of calls is also dynamic (once or multiple times)
@@ -41,7 +41,7 @@ swarm = Swarm(
 Runners.run(input="your question", swarm=swarm)
 ```
 
-<h3 id="fPRpe">Specifying Entry Agent</h3>
+### Specifying Entry Agent
 Since MAS is essentially a Graph by definition, different Agents can accept external input. We can specify which Agent receives the query using the `root_agent` parameter.
 
 ```python
@@ -52,7 +52,7 @@ swarm = Swarm(
 )
 ```
 
-<h3 id="Vh3xW">Dynamic Routing</h3>
+### Dynamic Routing
 When the `policy()` function decides which agent to call next, for special cases, Agents may need customized routing based on specific business rules. You can override the handler in the corresponding Agent:
 
 ```python
@@ -86,8 +86,8 @@ class YourHandler(DefaultHandler):
 
 You can refer to the implementation of `DefaultTaskHandler` in AWorld.
 
-<h4 id="AoTGY">Two Examples of Overriding Routing: ReAct and Plan-Execute</h4>
-<h5 id="cWW5K">ReAct</h5>
+#### Two Examples of Overriding Routing: ReAct and Plan-Execute
+##### ReAct
 ```python
 @HandlerFactory.register(name='react')
 class ReactHandler(AgentHandler):
@@ -100,7 +100,7 @@ class ReactHandler(AgentHandler):
         yield message
 ```
 
-<h5 id="Wyict">Plan-Execute</h5>
+##### Plan-Execute
 Compared to ReAct, agent2 and agent3 can execute in parallel simultaneously.
 
 ```python
@@ -139,7 +139,7 @@ class PlanExecuteHandler(AgentHandler):
 
 For more details, refer to the examples.
 
-<h2 id="LBhd1">Combination and Recursion of MAS and Workflow</h2>
+## Combination and Recursion of MAS and Workflow
 Same or different types of Swarms can be deeply nested, providing multi-level Swarms with different interaction mechanisms to support complex multi-agent interactions. For example, when creating a travel itinerary planner, using a combination of Workflow + MAS, where Workflow provides deterministic processes and MAS handles multi-source information retrieval and integration.
 
 ```python

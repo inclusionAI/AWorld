@@ -1,38 +1,38 @@
-AWorld supports parallel execution of multiple tasks—not only via local multi-processing, but also through seamless integration with distributed computing engines like </font>**Ray</font>** and </font>**Apache Spark</font>**—making large-scale parallel task processing simple and efficient. This capability is built upon several core design principles:</font>
+AWorld supports parallel execution of multiple tasks—not only via local multi-processing, but also through seamless integration with distributed computing engines like **Ray** and **Apache Spark**—making large-scale parallel task processing simple and efficient. This capability is built upon several core design principles:
 
-+ **Unified Abstraction</font>**: Regardless of the underlying compute engine (local, Ray, or Spark), AWorld exposes a consistent API to users.</font>
-+ **Transparent Switching</font>**: Users can effortlessly switch between different compute engines without modifying their business logic.</font>
-+ **High Scalability</font>**: The framework is designed to support a smooth transition from small-scale local testing to large-scale distributed production environments.</font>
++ **Unified Abstraction**: Regardless of the underlying compute engine (local, Ray, or Spark), AWorld exposes a consistent API to users.
++ **Transparent Switching**: Users can effortlessly switch between different compute engines without modifying their business logic.
++ **High Scalability**: The framework is designed to support a smooth transition from small-scale local testing to large-scale distributed production environments.
 
-Through elegant design and high-level abstraction, AWorld delivers unified parallel task processing across diverse compute backends. With a single, consistent API, developers can easily parallelize workloads—boosting both development efficiency and system performance. Key advantages include:</font>
+Through elegant design and high-level abstraction, AWorld delivers unified parallel task processing across diverse compute backends. With a single, consistent API, developers can easily parallelize workloads—boosting both development efficiency and system performance. Key advantages include:
 
-+ **Improved Execution Efficiency</font>**: Parallel execution of multiple tasks significantly reduces total runtime, especially when handling large volumes of independent tasks.</font>
-+ **Flexible Deployment Options</font>**: Users can choose the most suitable execution engine based on their needs—enabling seamless progression from local development to large-scale production.</font>
-+ **Simplified Distributed Computing</font>**: The complexity of distributed systems is abstracted away, allowing developers to focus on business logic rather than infrastructure details.</font>
-+ **Strong Extensibility</font>**: A modular, plugin-based architecture makes it easy to add support for new compute engines to meet evolving requirements.</font>
++ **Improved Execution Efficiency**: Parallel execution of multiple tasks significantly reduces total runtime, especially when handling large volumes of independent tasks.
++ **Flexible Deployment Options**: Users can choose the most suitable execution engine based on their needs—enabling seamless progression from local development to large-scale production.
++ **Simplified Distributed Computing**: The complexity of distributed systems is abstracted away, allowing developers to focus on business logic rather than infrastructure details.
++ **Strong Extensibility**: A modular, plugin-based architecture makes it easy to add support for new compute engines to meet evolving requirements.
 
-<h3 id="UuBBo">Tasks Execution Process</h3>
+### Tasks Execution Process
 ![](../imgs/parallel_task.png)
 
-<h3 id="runtime-engines">Runtime Engines</font></h3>
-AWorld currently supports three execution engines:</font>
+### Runtime Engines
+AWorld currently supports three execution engines:
 
-+ **LocalRuntime</font>**: A local multi-process engine requiring no external dependencies—ideal for development and small-scale deployments.</font>
-+ **RayRuntime</font>**: A distributed execution engine built on</font> </font>**Ray</font>**, optimized for large-scale parallel processing.</font>
-+ **SparkRuntime</font>**: An execution engine based on </font>**Apache Spark</font>**, tailored for big data processing scenarios.</font>
++ **LocalRuntime**: A local multi-process engine requiring no external dependencies—ideal for development and small-scale deployments.
++ **RayRuntime**: A distributed execution engine built on **Ray**, optimized for large-scale parallel processing.
++ **SparkRuntime**: An execution engine based on **Apache Spark**, tailored for big data processing scenarios.
 
-<h3 id="runtime-configuration">Runtime Configuration</font></h3>
-**RunConfig</font>** </font>is the key to switching between runtime engines. By setting properties such as:</font>
+### Runtime Configuration
+**RunConfig** is the key to switching between runtime engines. By setting properties such as:
 
-+ `engine_name</font>`: Specifies which compute engine to use (e.g.,</font> </font>`"ray"</font>`,</font> </font>`"spark"</font>`,</font> </font>`"local"</font>`),</font>
-+ `sequence_dependent</font>`: Indicates whether tasks have sequential dependencies,</font>
-+ `in_local</font>`: For distributed engines, enables local mode for testing,</font>
-+ `cls</font>`: Allows custom</font> </font>`RuntimeEngine</font>` </font>implementations,</font>
++ `engine_name`: Specifies which compute engine to use (e.g., `"ray"`, `"spark"`, `"local"`),
++ `sequence_dependent`: Indicates whether tasks have sequential dependencies,
++ `in_local`: For distributed engines, enables local mode for testing,
++ `cls`: Allows custom `RuntimeEngine` implementations,
 
-Users can fine-tune execution for optimal performance.</font>
+Users can fine-tune execution for optimal performance.
 
-<h3 id="unified-entry-point">Unified Entry Point</font></h3>
-**Runners</font>** </font>provide a standardized, tool-oriented interface for task submission. Internally, they expose utility methods like</font> </font>`exec_tasks</font>`, enabling on-demand task submission and immediate execution.</font>
+### Unified Entry Point
+**Runners** provide a standardized, tool-oriented interface for task submission. Internally, they expose utility methods like `exec_tasks`, enabling on-demand task submission and immediate execution.
 
 ```python
 from aworld.core.task import Task
@@ -63,8 +63,8 @@ from aworld.utils.run_util import exec_tasks
 exec_tasks(tasks=tasks, run_conf=run_conf)
 ```
 
-<h3 id="agent-level-parallelism">Agent-Level Parallelism</font></h3>
-While tasks represent a coarser granularity than agents, AWorld also supports parallelism at the agent level via </font>**ParallelizableAgent</font>**.</font>
+### Agent-Level Parallelism
+While tasks represent a coarser granularity than agents, AWorld also supports parallelism at the agent level via **ParallelizableAgent**.
 
 ```python
 sub_agents = [google_search, bing_search, wiki, ...]
@@ -72,7 +72,7 @@ parallel_agent = ParallelizableAgent(name=f"parallel_search",
                                      agents=sub_agents)
 ```
 
-Additionally, users can define custom result aggregation functions to process outputs from parallel agent executions.</font>
+Additionally, users can define custom result aggregation functions to process outputs from parallel agent executions.
 
 ```python
 def custom_aggregate_func(agent: ParallelizableAgent, results: Dict[str, Any]) -> ActionModel:
