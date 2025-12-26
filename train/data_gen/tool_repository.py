@@ -41,8 +41,8 @@ class ToolRepository:
             if len(self.tools) >= self.mem_buffer_size:
                 await self._evict_tool()
 
-            self.tools[tool.id] = tool
-            self.access_count[tool.id] = 0
+            self.tools[tool.spec.name] = tool
+            self.access_count[tool.spec.name] = 0
             self.distribution[tool.spec.category] = self.distribution.get(tool.spec.category, 0) + 1
 
             self.stored_buffer.append(tool)
@@ -210,7 +210,7 @@ class ToolRepository:
         tool_list = await self.get_by_category(cate)
         # Randomly select one
         tool = random.choice(tool_list)
-        await self.remove_tool(tool.id)
+        await self.remove_tool(tool.spec.name)
 
         return True
 
