@@ -24,6 +24,7 @@ class SandboxBuilder:
         self._registry_url: Optional[str] = None
         self._custom_env_tools: Optional[Any] = None
         self._agents: Optional[Dict[str, Any]] = None
+        self._streaming: bool = False
         self._agents_builder = AgentsBuilder(self)
     
     def sandbox_id(self, sandbox_id: str) -> 'SandboxBuilder':
@@ -114,6 +115,18 @@ class SandboxBuilder:
             return self
         return self._agents_builder
     
+    def streaming(self, streaming: bool) -> 'SandboxBuilder':
+        """Set streaming mode for tool responses.
+        
+        Args:
+            streaming: Whether to enable streaming for tool responses.
+        
+        Returns:
+            SandboxBuilder: Self for method chaining.
+        """
+        self._streaming = streaming
+        return self
+    
     def _add_agent(self, name: str, config: Dict[str, Any]):
         """Internal method to add an agent configuration."""
         if self._agents is None:
@@ -156,6 +169,8 @@ class SandboxBuilder:
             kwargs['custom_env_tools'] = self._custom_env_tools
         if self._agents is not None:
             kwargs['agents'] = self._agents
+        if self._streaming is not False:  # Only add if explicitly set to True
+            kwargs['streaming'] = self._streaming
         
         return Sandbox(**kwargs)
 

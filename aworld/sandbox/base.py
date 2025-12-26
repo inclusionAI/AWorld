@@ -108,6 +108,15 @@ class Sandbox(SandboxSetup):
         return self._agents
 
     @property
+    def streaming(self) -> bool:
+        """Returns whether streaming is enabled for tool responses.
+        
+        Returns:
+            bool: True if streaming is enabled, False otherwise.
+        """
+        return self._streaming
+
+    @property
     @abc.abstractmethod
     def mcpservers(self) -> McpServers:
         """Module for running MCP in the sandbox.
@@ -131,6 +140,7 @@ class Sandbox(SandboxSetup):
             registry_url: Optional[str] = None,
             custom_env_tools: Optional[Any] = None,
             agents: Optional[Dict[str, Any]] = None,
+            streaming: bool = False,
     ):
         """Initialize a new Sandbox instance.
         
@@ -168,6 +178,7 @@ class Sandbox(SandboxSetup):
                 
                 Note: If "type" is provided, it will be used directly (case-insensitive).
                       If "type" is not provided, the function will auto-detect based on location.
+            streaming: Whether to enable streaming for tool responses. Defaults to False.
         """
         # Initialize basic attributes
         self._sandbox_id = sandbox_id or str(uuid.uuid4())
@@ -185,6 +196,7 @@ class Sandbox(SandboxSetup):
         self._registry_url = registry_url or default_registry_url
         self._custom_env_tools = custom_env_tools
         self._agents = agents
+        self._streaming = streaming
 
     @abc.abstractmethod
     def get_info(self) -> SandboxInfo:

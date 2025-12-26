@@ -27,6 +27,7 @@ class BaseSandbox(Sandbox):
             registry_url: Optional[str] = None,
             custom_env_tools: Optional[Any] = None,
             agents: Optional[Dict[str, Any]] = None,
+            streaming: bool = False,
     ):
         """
         Initialize a new BaseSandbox instance.
@@ -65,6 +66,7 @@ class BaseSandbox(Sandbox):
                 
                 Note: If "type" is provided, it will be used directly (case-insensitive).
                       If "type" is not provided, the function will auto-detect based on location.
+            streaming: Whether to enable streaming for tool responses. Defaults to False.
         """
         super().__init__(
             sandbox_id=sandbox_id,
@@ -78,7 +80,8 @@ class BaseSandbox(Sandbox):
             tools=tools,
             registry_url=registry_url,
             custom_env_tools=custom_env_tools,
-            agents=agents
+            agents=agents,
+            streaming=streaming
         )
         self._logger = self._setup_logger()
         # Track if sandbox has been initialized (for lazy initialization support)

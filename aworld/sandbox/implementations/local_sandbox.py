@@ -86,7 +86,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             tools=tools,
             registry_url=registry_url,
             custom_env_tools=custom_env_tools,
-            agents=agents
+            agents=agents,
+            streaming=kwargs.get('streaming', False)
         )
 
         # Initialize properties
