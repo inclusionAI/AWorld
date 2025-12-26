@@ -159,7 +159,7 @@ class Sandbox(SandboxSetup):
                 {
                     "advanced_agent": {
                         "location": "/path/to/agent.py",  # or "https://..."
-                        "type": "local",  # optional: "local" or "remote" (case-insensitive), default is "local"
+                        "run_mode": "local",  # optional: "local" or "remote" (case-insensitive), default is "local"
                         "env": {"KEY": "value"},  # optional
                         "args": ["--option"],  # optional
                         # ... other optional config
