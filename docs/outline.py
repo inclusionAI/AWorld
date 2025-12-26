@@ -63,14 +63,52 @@ def scan(path: str) -> dict:
 
 if __name__ == '__main__':
     outline = scan_path(docs)
+
+    theme_cfg = {
+        "name": "material",
+        "language": "en",
+        "features": [
+            "navigation.instant",
+            "navigation.tracking",
+            "navigation.tabs",
+            "toc.follow",
+            "content.code.copy",
+            "content.code.annotate",
+            "content.action.edit",
+            "header.autohide",
+        ],
+        "palette": [
+            {
+                "media": "(prefers-color-scheme: light)",
+                "scheme": "default",
+                "primary": "blue",
+                "accent": "deep purple",
+            },
+            {
+                "media": "(prefers-color-scheme: dark)",
+                "scheme": "slate",
+                "primary": "blue",
+                "accent": "deep purple",
+            },
+        ],
+        "font": {
+            "text": "Inter",
+            "code": "JetBrains Mono",
+        },
+    }
+
     cfg = {
         "site_name": "AWorld Docs",
         "site_url": "https://github.com/inclusionAI/AWorld",
         "repo_url": "https://github.com/inclusionAI/AWorld",
         "edit_uri": "tree/main/docs/",
         "copyright": "\u00A9 Copyright 2025 inclusionAI AWorld Team.",
-        "extra_javascript": ["js/hide-home-edit.js"],
-        "theme": "material", # readthedocs
+        "extra_css": ["css/aworld.css"],
+        "extra_javascript": [
+            "js/hide-home-edit.js",
+            "js/aworld-enhancements.js",
+        ],
+        "theme": theme_cfg,
         "nav": outline,
     }
 

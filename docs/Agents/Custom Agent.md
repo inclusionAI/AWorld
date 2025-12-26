@@ -1,6 +1,6 @@
 AWorld provides a fundamental Agent interface that unlocks limitless possibilities for agent capabilities. While the **LLMAgent** is the most commonly used implementation, the framework imposes no restrictions on other agent types—such as those powered by rule-based systems or traditional machine learning models—as their decision core.
 
-<h2 id="npPgL">LLMAgent customization</h2>
+## LLMAgent customization
 The most typical ability of LLM Agent is to use LLM to make decisions, which is abstracted into 5 steps in AWorld:
 
 1. Agent initialization,
@@ -9,7 +9,7 @@ The most typical ability of LLM Agent is to use LLM to make decisions, which is 
 4. Parse the LLM output,
 5. Generate Agent response.
 
-<h3 id="H5hYx">Customizing Agent Input</h3>
+### Customizing Agent Input
 Override the `init_observation()` function to customize how your agent processes initial observations:
 
 ```python
@@ -20,7 +20,7 @@ async def init_observation(self, observation: Observation) -> Observation:
     return observation
 ```
 
-<h3 id="bMevF">Customizing Model Input</h3>
+### Customizing Model Input
 Override the `async_messages_transform()` function to customize how messages are transformed before being sent to the  
 model:
 
@@ -59,7 +59,7 @@ async def async_messages_transform(self,
     return messages
 ```
 
-<h3 id="AL32g">Customizing Model Logic</h3>
+### Customizing Model Logic
 Override the `invoke_model()` function to implement custom model logic:
 
 ```python
@@ -87,7 +87,7 @@ async def invoke_model(self,
       )
 ```
 
-<h3 id="DOUEy">Customizing Model Output</h3>
+### Customizing Model Output
 Create a custom `ModelOutputParser` class and specify it using the `model_output_parser` parameter:
 
 ```python
@@ -120,7 +120,7 @@ agent = Agent(
 )
 ```
 
-<h3 id="qLyhb">Customizing Agent Response</h3>
+### Customizing Agent Response
 Override the `async_post_run()` function to customize how your agent responds:
 
 ```python
@@ -149,7 +149,7 @@ async def async_post_run(self,
        )
 ```
 
-<h3 id="aBJ4H">Custom Agent Policy</h3>
+### Custom Agent Policy
 Override the `async_policy()` function to customize your agent policy logic:
 
 ```python
@@ -169,7 +169,7 @@ async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}
     return agent_result.actions
 ```
 
-<h3 id="qPvls">Custom Agent Event Parsing</h3>
+### Custom Agent Event Parsing
 If the framework still does not support the response structure you want, or if there is special logic processing (such as triggering multiple downstream agents based on Agent response), you can create a custom agent response event handler:
 
 ```python
@@ -207,10 +207,10 @@ agent = Agent(
 
 **Important Note:** The `custom_name` variable value must remain consistent across your handler registration and agent configuration.
 
-<h2 id="eBvOz">Agent customization</h2>
+## Agent customization
 Users can also implement their own designed Agent, as long as it complies with interface specifications.
 
-<h3 id="whnhd">Customize the overall process</h3>
+### Customize the overall process
 Override the`run()` or`async_run()` function to implement custom model logic:
 
 ```python
@@ -224,7 +224,7 @@ def run(self, message: Message, **kwargs) -> Message:
 
 ```
 
-<h3 id="bYTbX">Customized decision process</h3>
+### Customized decision process
 It is recommended to use Observation and List [ActionModel] for INPUT and OUTPUT, which can be customized with minimal cost.
 
 Override the`policy()` or`async_policy()` function to implement custom model logic:
