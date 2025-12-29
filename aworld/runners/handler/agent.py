@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
 from typing import AsyncGenerator, Tuple
 
 from aworld.agents.loop_llm_agent import LoopableAgent
@@ -324,14 +325,41 @@ class DefaultAgentHandler(AgentHandler):
             # next
             successor = agent_graph.successor.get(agent_name)
             if not successor:
-                yield Message(
-                    category=Constants.TASK,
-                    payload=action.policy_info,
-                    sender=agent.id(),
-                    session_id=session_id,
-                    topic=TopicType.FINISHED,
-                    headers=message.headers
-                )
+                if agent.finished:
+                    yield Message(
+                        category=Constants.TASK,
+                        payload=action.policy_info,
+                        sender=agent.id(),
+                        session_id=session_id,
+                        topic=TopicType.FINISHED,
+                        headers=message.headers
+                    )
+                else:
+                    # todo: not finished, loop current agent
+                    logger.warn(f"{agent_name} not finished, will wait background_task finish and loop it.")
+                    yield Message(
+                        category="mock",
+                        payload=action.policy_info,
+                        sender=agent.id(),
+                        session_id=session_id,
+                        topic=TopicType.RERUN,
+                        headers=message.headers
+                    )
+                    i = 0
+                    while message.context.has_pending_background_tasks(agent_id=agent_name, parent_task_id=message.context.task_id):
+                        await asyncio.sleep(1)
+                        i += 1
+                        logger.info(f"{agent_name} is waiting pending background_tasks#{i}")
+                    yield Message(
+                        category=Constants.AGENT,
+                        # default use string as content
+                        payload=Observation(content="Background_tasks results received ."),
+                        sender=agent_name,
+                        session_id=session_id,
+                        receiver=agent_name,
+                        headers=message.headers
+                    )
+                    return
                 return
 
             for k, _ in successor.items():
