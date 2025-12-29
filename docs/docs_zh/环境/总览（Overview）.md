@@ -1,0 +1,648 @@
+## 简介
+Environment（环境）是 AWorld 框架中的核心概念，为智能体提供安全、隔离的工具执行环境。Environment 统一管理 MCP（Model Context Protocol）服务器，使智能体能够无缝使用各种外部工具和服务。
+
+在 AWorld 框架中，`Sandbox` 是 Environment 的一个客户端实现，提供了 Environment 接口的具体实现。通过 `Sandbox` 类，你可以创建和管理 Environment 实例。
+
+### 主要特性
++ ✅ **MCP 服务器管理**：统一管理多个 MCP 服务器连接
++ ✅ **工具自动发现**：自动发现并注册 MCP 工具
++ ✅ **连接池管理**：智能缓存服务器连接，提升性能
++ ✅ **注册中心集成**：支持本地和远程工具注册中心
++ ✅ **进度回调**：支持长时间运行的工具显示执行进度
++ ✅ **自动参数补充**：从上下文自动补充 session_id、task_id 等参数
+
+---
+
+## 快速开始
+### 安装
+Environment 模块已包含在 AWorld 框架中，无需单独安装。
+
+```bash
+pip install aworld
+```
+
+### 最小示例
+```python
+import asyncio
+from aworld.sandbox import Sandbox  # Sandbox 是 Environment 的客户端实现
+
+# 配置 MCP 服务器
+mcp_config = {
+    "mcpServers": {
+        "gaia-mcp": {
+            "type": "streamable-http",
+            "url": "https://mcp.example.com/mcp",
+            "headers": {
+                "Authorization": "Bearer YOUR_TOKEN",
+                "MCP_SERVERS": "server1,server2"
+            },
+            "timeout": 6000,
+            "sse_read_timeout": 6000
+        }
+    }
+}
+
+async def main():
+    # 通过 Sandbox（Environment 的客户端）创建 Environment 实例
+    sandbox = Sandbox(mcp_config=mcp_config)
+    
+    # 列出可用工具
+    tools = await sandbox.list_tools()
+    print(f"可用工具数量: {len(tools)}")
+    
+    # 调用工具
+    result = await sandbox.call_tool(action_list=[{
+        "tool_name": "gaia-mcp",
+        "action_name": "tool_name",
+        "params": {}
+    }])
+    print(f"工具执行结果: {result}")
+    
+    # 清理资源
+    await sandbox.cleanup()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+---
+
+## 核心概念
+### Environment（环境）
+Environment 是 AWorld 框架中的核心概念，代表一个工具执行环境。Environment 提供工具执行的基础设施，每个 Environment 实例管理一组 MCP 服务器，为智能体提供统一的工具访问接口。
+
+### Sandbox（Environment 的客户端实现）
+`Sandbox` 是 Environment 的一个客户端实现类。在代码中，你通过 `Sandbox` 类来创建和使用 Environment 实例：
+
+```python
+from aworld.sandbox import Sandbox
+
+# Sandbox 是 Environment 的客户端实现
+sandbox = Sandbox(mcp_config={...})
+```
+
+虽然代码中使用的是 `Sandbox` 类，但从概念上讲，你创建的是一个 Environment 实例。`Sandbox` 提供了 Environment 接口的具体实现，包括：
+
++ MCP 服务器连接管理
++ 工具发现和调用
++ 资源清理等功能
+
+### MCP 服务器
+MCP（Model Context Protocol）服务器提供工具服务。支持以下类型：
+
++ **stdio**：标准输入输出（本地进程）
++ **sse**：Server-Sent Events（HTTP SSE）
++ **streamable-http**：流式 HTTP（支持进度回调）
++ **api**：RESTful API（简单 HTTP 调用）
++ **function_tool**：Python 函数工具
+
+### 工具
+工具是 MCP 服务器提供的可执行功能。工具命名格式：`server_name__tool_name`
+
+例如：`gaia-mcp__doc_txt__list_supported_formats_for_txt`
+
+---
+
+## 基本操作
+### 创建 Environment
+在 AWorld 中，你通过 `Sandbox` 类（Environment 的客户端实现）来创建 Environment 实例：
+
+```python
+from aworld.sandbox import Sandbox
+
+# 方式 1：使用 mcp_config
+# Sandbox 是 Environment 的客户端实现
+sandbox = Sandbox(
+    mcp_config={
+        "mcpServers": {
+            "server1": {
+                "type": "streamable-http",
+                "url": "https://...",
+                "headers": {...}
+            }
+        }
+    }
+)
+
+# 方式 2：指定服务器名称
+sandbox = Sandbox(
+    mcp_servers=["server1", "server2"],
+    mcp_config={
+        "mcpServers": {
+            "server1": {...},
+            "server2": {...}
+        }
+    }
+)
+
+# 方式 3：使用工具名称（从注册中心查找）
+sandbox = Sandbox(
+    tools=["tool1", "tool2"],
+    registry_url="https://registry.example.com"
+)
+
+# 方式 4：指定 sandbox_id
+sandbox = Sandbox(
+    sandbox_id="my-sandbox-id",
+    mcp_config={
+        "mcpServers": {
+            "server_name": {...}
+        }
+    }
+)
+```
+
+### 列出工具
+```python
+# 获取所有可用工具
+tools = await sandbox.list_tools()
+
+# 工具格式示例
+[
+    {
+        "type": "function",
+        "function": {
+            "name": "server_name__tool_name",
+            "description": "工具描述",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "param1": {
+                        "type": "string",
+                        "description": "参数描述"
+                    }
+                },
+                "required": ["param1"]
+            }
+        }
+    }
+]
+```
+
+### 调用工具
+```python
+# 单个工具调用
+result = await sandbox.call_tool(action_list=[{
+    "tool_name": "server_name",
+    "action_name": "tool_name",
+    "params": {
+        "param1": "value1"
+    }
+}])
+
+# 多个工具调用（并行）
+results = await sandbox.call_tool(action_list=[
+    {
+        "tool_name": "server1",
+        "action_name": "tool1",
+        "params": {}
+    },
+    {
+        "tool_name": "server2",
+        "action_name": "tool2",
+        "params": {}
+    }
+])
+
+# 结果格式
+[
+    ActionResult(
+        tool_name="server_name",
+        action_name="tool_name",
+        content="执行结果",
+        success=True,
+        metadata={...}
+    )
+]
+```
+
+### 获取 Environment 信息
+```python
+info = sandbox.get_info()
+# {
+#     "sandbox_id": "...",
+#     "status": "Running",
+#     "metadata": {...},
+#     "env_type": 1
+# }
+```
+
+### 清理资源
+```python
+# 手动清理
+await sandbox.cleanup()
+
+# 自动清理（对象销毁时）
+# Environment 会在 __del__ 时自动清理
+```
+
+---
+
+## 高级功能
+### 注册中心集成
+#### 本地注册中心
+```python
+# 使用本地 JSON 文件作为注册中心
+sandbox = Sandbox(
+    tools=["tool1", "tool2"],
+    registry_url="~/workspace/registry.json"
+)
+
+# 注册中心文件格式
+{
+    "tool:server_name": {
+        "entity_type": "tool",
+        "name": "server_name",
+        "description": "服务器描述",
+        "tools": [
+            {
+                "name": "tool_name",
+                "description": "工具描述"
+            }
+        ],
+        "data": {
+            "type": "streamable-http",
+            "url": "https://...",
+            "headers": {...}
+        }
+    }
+}
+```
+
+#### 远程注册中心
+```python
+# 使用远程注册中心
+sandbox = Sandbox(
+    tools=["tool1", "tool2"],
+    registry_url="https://registry.example.com"
+)
+
+# 注册中心 API
+# POST /api/v1/registry/search
+{
+    "entity_type": "tool",
+    "status": "active",
+    "tools": ["tool1", "tool2"]  # 可选
+}
+```
+
+### 自定义环境工具
+```python
+import os
+
+# 设置环境变量
+os.environ["CUSTOM_ENV_URL"] = "https://custom.example.com"
+os.environ["CUSTOM_ENV_TOKEN"] = "your_token"
+os.environ["CUSTOM_ENV_IMAGE_VERSION"] = "v1.0.0"
+
+# 使用自定义环境工具
+sandbox = Sandbox(
+    custom_env_tools={
+        "custom_server": {
+            "type": "streamable-http",
+            "url": "...",
+            "headers": {...}
+        }
+    }
+)
+```
+
+### 黑名单工具
+```python
+# 禁用特定工具
+sandbox = Sandbox(
+    mcp_config={
+        "mcpServers": {
+            "server_name": {...}
+        }
+    },
+    black_tool_actions={
+        "server_name": ["tool1", "tool2"]  # 禁用这些工具
+    }
+)
+```
+
+### 技能配置
+```python
+# 配置技能系统
+sandbox = Sandbox(
+    mcp_config={
+        "mcpServers": {
+            "server_name": {...}
+        }
+    },
+    skill_configs={
+        "skill1": {
+            "tools": ["tool1", "tool2"],
+            "description": "技能描述"
+        }
+    }
+)
+```
+
+### 进度回调
+```python
+# 在工具调用时接收进度更新
+# 进度消息会自动发送到事件总线
+result = await sandbox.call_tool(action_list=[{
+    "tool_name": "server_name",
+    "action_name": "long_running_tool",
+    "params": {}
+}])
+
+# 进度消息格式
+# Message(
+#     category=Constants.OUTPUT,
+#     payload=Output(data="进度信息"),
+#     sender="server_name__tool_name"
+# )
+```
+
+---
+
+## 工具注册
+### 注册到远程注册中心
+```python
+from aworld.sandbox import Sandbox
+
+result = await Sandbox.register(
+    registry_url="https://registry.example.com",
+    name="my-server",
+    version="1.0.0",
+    description="我的服务器描述",
+    data={
+        "type": "streamable-http",
+        "url": "https://...",
+        "headers": {...}
+    },
+    tools=[
+        {
+            "name": "tool_name",
+            "description": "工具描述"
+        }
+    ],
+    token="your_registry_token"
+)
+
+# 返回结果
+# {
+#     "success": True,
+#     "entity_id": "...",
+#     "message": "Successfully registered my-server"
+# }
+```
+
+### 注册到本地文件
+```python
+result = await Sandbox.register(
+    registry_url="~/workspace/registry.json",
+    servers={
+        "mcpServers": {
+            "server_name": {
+                "type": "streamable-http",
+                "url": "https://...",
+                "headers": {...}
+            }
+        }
+    }
+)
+
+# 返回结果
+# {
+#     "success": True,
+#     "file_path": "/path/to/registry.json",
+#     "message": "Successfully registered 1 server(s) to local file",
+#     "registered_count": 1
+# }
+```
+
+---
+
+## 常见问题
+### Q1: 如何查看 Environment 支持的所有工具？
+```python
+tools = await sandbox.list_tools()
+for tool in tools:
+    print(tool["function"]["name"])
+```
+
+### Q2: 工具调用失败怎么办？
+```python
+# 检查工具调用结果
+result = await sandbox.call_tool(action_list=[{
+    "tool_name": "server_name",
+    "action_name": "tool_name",
+    "params": {}
+}])
+for r in result:
+    if not r.success:
+        print(f"工具 {r.tool_name} 调用失败: {r.content}")
+```
+
+### Q3: 如何设置超时时间？
+```python
+sandbox = Sandbox(
+    timeout=10000,  # 10 秒
+    mcp_config={
+        "mcpServers": {
+            "server_name": {
+                "type": "streamable-http",
+                "url": "https://...",
+                "timeout": 6000,  # 6 秒
+                "sse_read_timeout": 6000
+            }
+        }
+    }
+)
+```
+
+### Q4: 如何禁用某个服务器？
+```python
+mcp_config = {
+    "mcpServers": {
+        "server_name": {
+            "disabled": True,  # 禁用此服务器
+            ...
+        }
+    }
+}
+```
+
+### Q5: 如何从注册中心查找工具？
+```python
+# 方式 1：按工具名查找
+sandbox = Sandbox(
+    tools=["tool1", "tool2"],
+    registry_url="https://registry.example.com"
+)
+
+# 方式 2：按服务器名查找
+sandbox = Sandbox(
+    mcp_servers=["server1", "server2"],
+    registry_url="https://registry.example.com"
+)
+```
+
+---
+
+## 最佳实践
+### 1. 重用 Environment 实例
+```python
+# ✅ 推荐：创建一次，多次使用
+# 通过 Sandbox（Environment 的客户端）创建 Environment 实例
+sandbox = Sandbox(mcp_config=mcp_config)
+tools = await sandbox.list_tools()
+result = await sandbox.call_tool(action_list=[{
+    "tool_name": "server_name",
+    "action_name": "tool_name",
+    "params": {}
+}])
+another_result = await sandbox.call_tool(action_list=[{
+    "tool_name": "server_name",
+    "action_name": "another_tool",
+    "params": {}
+}])
+await sandbox.cleanup()
+
+# ❌ 不推荐：频繁创建和销毁
+for i in range(10):
+    # 每次循环都创建新的 Environment 实例，效率低
+    sandbox = Sandbox(mcp_config=mcp_config)
+    result = await sandbox.call_tool(action_list=[{
+        "tool_name": "server_name",
+        "action_name": "tool_name",
+        "params": {}
+    }])
+    await sandbox.cleanup()
+```
+
+### 2. 使用连接池
+Environment 自动管理服务器连接池，无需手动管理连接。
+
+### 3. 合理设置超时
+```python
+# 根据工具执行时间设置合适的超时
+sandbox = Sandbox(
+    timeout=30000,  # 30 秒
+    mcp_config={
+        "mcpServers": {
+            "server_name": {
+                "type": "streamable-http",
+                "url": "https://...",
+                "timeout": 60000,  # 60 秒
+                "sse_read_timeout": 120000  # 120 秒
+            }
+        }
+    }
+)
+```
+
+### 4. 使用注册中心管理工具
+```python
+# 推荐使用注册中心统一管理工具配置
+sandbox = Sandbox(
+    tools=["tool1", "tool2"],
+    registry_url="https://registry.example.com"
+)
+```
+
+### 5. 错误处理
+```python
+try:
+    result = await sandbox.call_tool(action_list=[{
+        "tool_name": "server_name",
+        "action_name": "tool_name",
+        "params": {}
+    }])
+    for r in result:
+        if not r.success:
+            logger.error(f"工具调用失败: {r.content}")
+except Exception as e:
+    logger.error(f"Environment 操作失败: {e}")
+finally:
+    await sandbox.cleanup()
+```
+
+---
+
+## 示例代码
+### 完整示例：使用 GAIA 环境
+```python
+import asyncio
+import json
+from aworld.sandbox import Sandbox
+
+# GAIA MCP 配置
+URL = "https://mcp.aworldagents.com/vpc-pre/mcp"
+TOKEN = "YOUR_TOKEN"
+IMAGE_VERSION = "gaia-20251125152015"
+
+gaia_mcp_config = {
+    "mcpServers": {
+        "gaia-mcp": {
+            "type": "streamable-http",
+            "url": URL,
+            "headers": {
+                "env_name": "gaia",
+                "Authorization": f"Bearer {TOKEN}",
+                "MCP_SERVERS": (
+                    "googlesearch,readweb-server,media-audio,media-image,"
+                    "media-video,intell-code,intell-guard,doc-csv,doc-xlsx,"
+                    "doc-docx,doc-pptx,doc-txt,doc-pdf,download,parxiv-server,"
+                    "terminal-server,wayback-server,wiki-server"
+                ),
+                "IMAGE_VERSION": IMAGE_VERSION,
+            },
+            "timeout": 6000,
+            "sse_read_timeout": 6000,
+            "client_session_timeout_seconds": 6000,
+        }
+    }
+}
+
+async def main():
+    # 通过 Sandbox（Environment 的客户端）创建 Environment 实例
+    sandbox = Sandbox(mcp_config=gaia_mcp_config)
+    
+    # 列出工具
+    tools = await sandbox.list_tools()
+    print(f"可用工具数量: {len(tools)}")
+    
+    # 调用工具示例
+    result = await sandbox.call_tool(action_list=[{
+        "tool_name": "gaia-mcp",
+        "action_name": "doc_txt__list_supported_formats_for_txt",
+        "params": {}
+    }])
+    
+    print(f"工具执行结果: {json.dumps(result, ensure_ascii=False, indent=2)}")
+    
+    # 清理
+    await sandbox.cleanup()
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+### 示例：与 Agent 集成
+```python
+from aworld.agents.llm_agent import Agent
+from aworld.runner import Runners
+
+# 通过 Sandbox（Environment 的客户端）创建 Environment 实例
+sandbox = Sandbox(mcp_config={...})
+
+# 创建 Agent（自动使用 Environment）
+agent = Agent(
+    name="MyAgent",
+    system_prompt="你是一个助手",
+    sandbox=sandbox  # 传入 Environment 实例
+)
+
+# 运行 Agent（自动使用 Environment 中的工具）
+result = await Runners.run(
+    input="使用工具执行任务",
+    agent=agent
+)
+```
+
