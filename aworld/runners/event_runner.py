@@ -10,6 +10,7 @@ from typing import List, Callable, Any
 import aworld.trace as trace
 from aworld.core.agent.base import BaseAgent, is_agent_by_name
 from aworld.core.common import TaskItem, ActionModel
+from aworld.core.context.amni import AmniContext, ApplicationContext
 from aworld.core.context.base import Context
 from aworld.dataset.trajectory_storage import get_storage_instance
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
@@ -309,8 +310,10 @@ class TaskEventRunner(TaskRunner):
                 # External control - Check task status before processing each message
                 should_stop_task = await self.should_stop_task(message)
                 if should_stop_task:
-                    logger.warn(f"Runner {message.context.get_task().id} task should stop.")
+                    logger.warn(f"Runner {self.task.id} task should stop.")
                     await self.stop()
+                else:
+                    self._stopped.clear()
                 if await self.is_stopped():
                     logger.info(f"{task_flag} task {self.task.id} stoped and will break snap")
                     await self.event_mng.done()
@@ -451,4 +454,12 @@ class TaskEventRunner(TaskRunner):
                 status=task_status
             )
             return True
-        return False
+
+        # Check if all background tasks are done
+        if isinstance(self.context, ApplicationContext):
+            sub_task_list = self.context.task_state_service.get_sub_task_list()
+            for sub_task in sub_task_list or []:
+                if sub_task.task_type == 'background' and sub_task.status in ['running', 'init']:
+                    return False
+
+        return await self.is_stopped()

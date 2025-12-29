@@ -209,6 +209,57 @@ def sync_exec(async_func: Callable[..., Any], *args, **kwargs):
     return result
 
 
+def trigger_background_task(context_or_message: Any, coro: Any, agent_id: str = None, agent_name: str = None):
+    """Unified interface for triggering a background task.
+
+    Args:
+        context_or_message: The context or message to record the background task in.
+        coro: The coroutine to run in the background.
+        agent_id: The ID of the agent that triggered this background task.
+        agent_name: The name of the agent that triggered this background task.
+    """
+    import uuid
+    from aworld.core.event.base import Message
+    
+    context = context_or_message
+    if isinstance(context_or_message, Message):
+        context = context_or_message.context
+        if not agent_id and context_or_message.payload and isinstance(context_or_message.payload, list) and len(context_or_message.payload) > 0:
+            # Try to get agent info from message payload (ActionModel)
+            action = context_or_message.payload[0]
+            agent_name = agent_name or action.agent_name
+            if context.swarm and agent_name:
+                agent = context.swarm.agents.get(agent_name)
+                if agent:
+                    agent_id = agent.id()
+        
+        if not agent_id:
+            agent_id = context_or_message.sender # Fallback
+            agent_name = agent_name or context_or_message.sender
+
+    task_id = f"bg_{uuid.uuid4().hex}"
+    parent_task_id = getattr(context, 'task_id', None)
+
+    # context might be any object that has add_background_task and mark_background_task_completed
+    if hasattr(context, 'add_background_task'):
+        context.add_background_task(task_id, agent_id, agent_name, parent_task_id=parent_task_id)
+    else:
+        logger.warning(f"Context {type(context)} does not have add_background_task method")
+
+    async def _wrapper():
+        try:
+            await coro
+        except Exception as e:
+            logger.error(f"Background task {task_id} failed: {e}\n{traceback.format_exc()}")
+        finally:
+            if hasattr(context, 'mark_background_task_completed'):
+                context.mark_background_task_completed(task_id)
+            else:
+                logger.warning(f"Context {type(context)} does not have mark_background_task_completed method")
+
+    return asyncio.create_task(_wrapper())
+
+
 def nest_dict_counter(usage: Dict[str, Union[int, Dict[str, int]]],
                       other: Dict[str, Union[int, Dict[str, int]]],
                       ignore_zero: bool = False):

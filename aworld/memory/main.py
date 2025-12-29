@@ -68,9 +68,14 @@ Please read the conversation carefully and extract new information from the conv
 class InMemoryMemoryStore(MemoryStore):
     def __init__(self):
         self.memory_items = []
+        self.pending_memory_items = []
 
     def add(self, memory_item: MemoryItem):
-        self.memory_items.append(memory_item)
+        if memory_item.memory_type == "pending":
+            memory_item.memory_type = "message"
+            self.pending_memory_items.append(memory_item)
+        else:
+            self.memory_items.append(memory_item)
 
     def get(self, memory_id) -> Optional[MemoryItem]:
         return next((item for item in self.memory_items if item.id == memory_id), None)
@@ -88,8 +93,17 @@ class InMemoryMemoryStore(MemoryStore):
 
     def get_all(self, filters: dict = None) -> list[MemoryItem]:
         """Filter memory items based on filters."""
+        self.load_pending_memory(filters)
         filtered_items = [item for item in self.memory_items if self._filter_memory_item(item, filters)]
         return filtered_items
+
+    def load_pending_memory(self, filters: dict = None):
+        filtered_pending_items = [item for item in self.pending_memory_items if self._filter_memory_item(item, filters)]
+        if filtered_pending_items:
+            for item in filtered_pending_items:
+                item.created_at = datetime.now().isoformat()
+                self.memory_items.append(item)
+                self.pending_memory_items.remove(item)
 
     def _filter_memory_item(self, memory_item: MemoryItem, filters: dict = None) -> bool:
         if memory_item.deleted:
