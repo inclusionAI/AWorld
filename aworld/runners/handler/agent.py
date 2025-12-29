@@ -344,6 +344,7 @@ class DefaultAgentHandler(AgentHandler):
                 for pre_k, _ in predecessor.items():
                     if pre_k == agent_name:
                         all_input[agent_name] = action.policy_info
+                        pre_finished = agent.finished
                         continue
                     # check all predecessor agent finished
                     run_node: RunNode = self.runner.state_manager.query_by_task(

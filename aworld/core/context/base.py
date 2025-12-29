@@ -473,6 +473,40 @@ class Context:
         }
         self.trajectories[step_key] = step_data
 
+    def add_background_task(self, task_id: str, agent_id: str, agent_name: str, parent_task_id: str = None):
+        """Add a background task to the context."""
+        if 'background_tasks' not in self.context_info:
+            self.context_info['background_tasks'] = {}
+        
+        self.context_info['background_tasks'][task_id] = {
+            'bg_task_id': task_id,
+            'agent_id': agent_id,
+            'agent_name': agent_name,
+            'parent_task_id': parent_task_id,
+            'status': 'running',
+            'start_time': time.time()
+        }
+        logger.info(f"Added background task {task_id} for agent {agent_name}({agent_id}) in task {parent_task_id}")
+
+    def mark_background_task_completed(self, task_id: str):
+        """Mark a background task as completed in the context."""
+        if 'background_tasks' in self.context_info and task_id in self.context_info['background_tasks']:
+            self.context_info['background_tasks'][task_id]['status'] = 'completed'
+            self.context_info['background_tasks'][task_id]['end_time'] = time.time()
+            logger.info(f"Marked background task {task_id} as completed")
+
+    def has_pending_background_tasks(self, agent_id: str, parent_task_id: str = None) -> bool:
+        """Check if an agent has any pending background tasks for a specific parent task."""
+        if 'background_tasks' not in self.context_info:
+            return False
+        
+        for task_id, task_info in self.context_info['background_tasks'].items():
+            if (task_info.get('agent_id') == agent_id and 
+                task_info.get('status') == 'running' and 
+                (parent_task_id is None or task_info.get('parent_task_id') == parent_task_id)):
+                return True
+        return False
+
     async def update_task_after_run(self, task_response: 'TaskResponse'):
         pass
 
