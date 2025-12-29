@@ -148,8 +148,7 @@ Built on OpenTelemetry and using the **OTLP** protocol (the de facto standard fo
 1. Create a project on Logfire and obtain a **Write Token**
 2. Configure AWorld:
 
-```plain
-python
+```python
 
 
 from aworld.trace.config import configure, ObservabilityConfig
