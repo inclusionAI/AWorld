@@ -11,7 +11,7 @@ from .base import BaseAgentRuntime
 from ..models import AgentInfo
 from ..executors import AgentExecutor
 from ..executors.local import LocalAgentExecutor
-from ..core.registry import LocalAgentRegistry
+from ..core.agent_registry import LocalAgentRegistry
 from ..core.loader import init_agents
 
 
@@ -54,7 +54,8 @@ class LocalRuntime(BaseAgentRuntime):
             self.cli.console.print("Please configure LOCAL_AGENTS_DIR in .env or ensure agents are defined correctly.")
             return []
         
-        return [AgentInfo.from_source(agent) for agent in agents]
+        source_location = self.local_agents_dir or os.getcwd()
+        return [AgentInfo.from_source(agent, source_location=source_location) for agent in agents]
     
     async def _create_executor(self, agent: AgentInfo) -> Optional[AgentExecutor]:
         """Create executor for local agent."""
