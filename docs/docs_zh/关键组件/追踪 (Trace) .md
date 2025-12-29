@@ -52,7 +52,7 @@ Trace UI 提供了以下功能：
 
 
 ### Trace UI 信息解读
-![](https://intranetproxy.alipay.com/skylark/lark/0/2025/png/193971/1765178334359-c565bcea-f427-4aca-9c07-07a35529c3dc.png)
+![](../../imgs/trace_ui.png)
 
 AWorld 框架在运行过程中会自动创建多个核心 Span，用于追踪框架各个组件的执行情况。以下是主要的核心 Span 类型：
 
@@ -322,7 +322,7 @@ os.environ["MONITOR_SERVICE_NAME"] = "otlp_example"
 ### 集成其他Trace传播协议
 AWorld Trace 模块内部默认使用Opentelemetry的W3C传播协议，当使用其他Trace传播协议的应用与AWorld应用交互时，由于协议不一致，trace就无法跨应用传播。为此，AWorld Trace 支持通过自定义传播协议实现不同系统间的追踪上下文传递。传播协议负责在服务间或应用间传递 TraceContext 信息，确保追踪链路的连续性。例如，AWorld支持与Sofa应用的Trace无缝传播，您也可以通过实现自定义传播协议，实现AWorld应用与使用Zipkin做Trace追踪的应用互通Trace上下文。
 
-![画板](https://intranetproxy.alipay.com/skylark/lark/0/2025/jpeg/193971/1765194838474-01995985-87aa-47ea-80af-48a19f18a06f.jpeg)
+![画板](../../imgs/trace.png)
 
 #### 核心概念
 + Propagator ：传播器接口，定义了从载体提取和注入追踪上下文的方法
@@ -332,7 +332,7 @@ AWorld Trace 模块内部默认使用Opentelemetry的W3C传播协议，当使用
 #### 传播协议集成架构
 AWorld 使用 CompositePropagator 实现多协议支持，其架构如下：
 
-![画板](https://intranetproxy.alipay.com/skylark/lark/0/2025/jpeg/193971/1765247036744-57c8b857-59da-40a8-86cd-ff9848fab367.jpeg)
+![画板](../../imgs/trace_propagator.png)
 
 
 

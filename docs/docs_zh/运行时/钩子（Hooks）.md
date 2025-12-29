@@ -11,13 +11,13 @@ Hooks可以在以下场景发挥作用：
 6. **审计和追踪** - 记录所有关键操作
 
 ### 为什么需要Hooks？
-在没有Hooks的架构中，一般需要修改框架代码来添加功能。使用Hooks的方式允许通过注册钩子函数来扩展框架功能，无需修改主流程代码。<font style="color:rgb(0, 0, 0);">合理使用Hooks，开发者可以优雅地扩展框架功能，同时保持代码的清晰和可维护性。</font>
+在没有Hooks的架构中，一般需要修改框架代码来添加功能。使用Hooks的方式允许通过注册钩子函数来扩展框架功能，无需修改主流程代码。合理使用Hooks，开发者可以优雅地扩展框架功能，同时保持代码的清晰和可维护性。
 
-1. **<font style="color:rgb(0, 0, 0);">非侵入式的扩展机制</font>**<font style="color:rgb(0, 0, 0);"> </font><font style="color:rgb(0, 0, 0);">- 无需修改框架代码</font>
-2. **<font style="color:rgb(0, 0, 0);">清晰的生命周期拦截</font>**<font style="color:rgb(0, 0, 0);"> </font><font style="color:rgb(0, 0, 0);">- 在关键点插入逻辑</font>
-3. **<font style="color:rgb(0, 0, 0);">灵活的组合方式</font>**<font style="color:rgb(0, 0, 0);"> </font><font style="color:rgb(0, 0, 0);">- 支持Hook链和条件执行</font>
-4. **<font style="color:rgb(0, 0, 0);">强大的监控能力</font>**<font style="color:rgb(0, 0, 0);"> </font><font style="color:rgb(0, 0, 0);">- 完整的事件追踪</font>
-5. **<font style="color:rgb(0, 0, 0);">可维护的代码</font>**<font style="color:rgb(0, 0, 0);"> - 关注点分离</font>
+1. **非侵入式的扩展机制** - 无需修改框架代码
+2. **清晰的生命周期拦截** - 在关键点插入逻辑
+3. **灵活的组合方式** - 支持Hook链和条件执行
+4. **强大的监控能力** - 完整的事件追踪
+5. **可维护的代码** - 关注点分离
 
 ### Hook机制
 #### Hook点（Hook Point）
@@ -74,7 +74,7 @@ class Hook:
 消息输出
 ```
 
-#### <font style="color:#000000;background-color:#ffffff;">Hook注册</font>
+#### Hook注册
 Hook可以自动注册到`HookFactory`：
 
 ```python

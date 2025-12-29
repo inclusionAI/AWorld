@@ -188,7 +188,7 @@ async def messages_by_task_id(self, task_id: str):
 ## 事件驱动的Agent运行时
 AWorld面向Agent，实现了完整的事件驱动的Agent运行时流程：
 
-![](https://intranetproxy.alipay.com/skylark/lark/0/2025/png/7350/1766385765498-f9cc41cb-8e98-42de-96ce-ea88cc910269.png)
+![](../../imgs/runtime.png)
 
 所有相关的行为，模块和能力，都体现在这个完整流程中，如Context的更新，Trajectory构建，人机交互等。
 
