@@ -102,6 +102,21 @@ class Sandbox(SandboxSetup):
         return self._custom_env_tools
 
     @property
+    def agents(self) -> Optional[Dict[str, Any]]:
+        """Returns the custom environment agents.
+        """
+        return self._agents
+
+    @property
+    def streaming(self) -> bool:
+        """Returns whether streaming is enabled for tool responses.
+        
+        Returns:
+            bool: True if streaming is enabled, False otherwise.
+        """
+        return self._streaming
+
+    @property
     @abc.abstractmethod
     def mcpservers(self) -> McpServers:
         """Module for running MCP in the sandbox.
@@ -124,6 +139,8 @@ class Sandbox(SandboxSetup):
             tools: Optional[List[str]] = None,
             registry_url: Optional[str] = None,
             custom_env_tools: Optional[Any] = None,
+            agents: Optional[Dict[str, Any]] = None,
+            streaming: bool = False,
     ):
         """Initialize a new Sandbox instance.
         
@@ -139,6 +156,29 @@ class Sandbox(SandboxSetup):
             tools: List of tools. Optional parameter.
             registry_url: Environment registry URL. Optional parameter, reads from environment variable "ENV_REGISTRY_URL" if not provided, defaults to empty string.
             custom_env_tools: Custom environment tools. Optional parameter.
+            agents: Custom environment agents. Optional parameter.
+                Supports two formats (mixed mode):
+                
+                Simple format (auto-detected):
+                {
+                    "local_agent": "/path/to/agent.py",
+                    "remote_agent": "https://github.com/..."
+                }
+                
+                Extended format (with additional config):
+                {
+                    "advanced_agent": {
+                        "location": "/path/to/agent.py",  # or "https://..."
+                        "run_mode": "local",  # optional: "local" or "remote" (case-insensitive), default is "local"
+                        "env": {"KEY": "value"},  # optional
+                        "args": ["--option"],  # optional
+                        # ... other optional config
+                    }
+                }
+                
+                Note: If "type" is provided, it will be used directly (case-insensitive).
+                      If "type" is not provided, the function will auto-detect based on location.
+            streaming: Whether to enable streaming for tool responses. Defaults to False.
         """
         # Initialize basic attributes
         self._sandbox_id = sandbox_id or str(uuid.uuid4())
@@ -155,6 +195,8 @@ class Sandbox(SandboxSetup):
         default_registry_url = os.getenv("ENV_REGISTRY_URL", "~/workspace/registry.json")
         self._registry_url = registry_url or default_registry_url
         self._custom_env_tools = custom_env_tools
+        self._agents = agents
+        self._streaming = streaming
 
     @abc.abstractmethod
     def get_info(self) -> SandboxInfo:
