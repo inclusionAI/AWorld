@@ -83,8 +83,6 @@ This modular, extensible design allows AWorld to support diverse training method
 #### **AgentTrainer**
 The central training coordinator that unifies and manages all training-related components.
 
-全屏复制
-
 | **Attribute** | **Type** | **Description** |
 | --- | --- | --- |
 | `agent` | `Union[str, Agent]` | Agent instance or config file path |

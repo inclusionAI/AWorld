@@ -137,9 +137,8 @@ SpanConsumer 是消费 Span 数据的组件，可以帮助用户实现对Spen数
 
 #### 使用方式
 ```python
-from aworld.trace.span_cosumer import SpanConsumer
+from aworld.trace.span_cosumer import SpanConsumer, register_span_consumer
 from aworld.trace.base import Span
-from aworld.trace.span_cosumer import register_span_consumer
 from typing import Sequence
 
 @register_span_consumer
@@ -148,7 +147,6 @@ class MySpanConsumer(SpanConsumer):
         # Process the spans
         for span in spans:
             print(f"Span processed: {span.get_name()}")
-```
 ```
 
 ### Instrumentation（插桩）
@@ -169,7 +167,7 @@ Instrumentation 是自动追踪框架核心组件的机制，通过字节码增�
 ```python
 from aworld.trace.instrumentation.fastapi import FastAPIInstrumentor
 
-FastAPIInstrumentor().instrument(）
+FastAPIInstrumentor().instrument()
 ```
 
 ## 集成三方观测平台

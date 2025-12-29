@@ -35,7 +35,7 @@ async def async_messages_transform(self,
         messages.append({"role": "system", "content": self.system_prompt})
 
     # Add user message
-    if message and message.:
+    if message and message.content:
         messages.append({"role": "user", "content": message.content})
 
     # Add images if present

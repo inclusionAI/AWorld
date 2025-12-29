@@ -55,7 +55,7 @@ agent6        agent7             agent5
 ```python
 swarm = Swarm(topology=[
     (agent1, agent2), (agent2, agent3), (agent2, agent4), 
-    (agent3, agent5), (agent4, agent6), (agetn4, agent7), 
+    (agent3, agent5), (agent4, agent6), (agent4, agent7), 
     (agent6, agent8), (agent7, agent8), (agent5, agent8)
 ], build_type=GraphBuildType.HANDOFF, root_agent=agent1)
 ```
@@ -97,7 +97,7 @@ class YourHandler(DefaultHandler):
             pass
 ```
 
-在AWorld中可以参考<font style="color:#000000;background-color:#ffffff;">DefaultTaskHandler的实现。</font>
+在AWorld中可以参考DefaultTaskHandler的实现。
 
 ### 复写Routing的两个例子：ReAct和Plan-Execute
 拓扑结构如下：
@@ -154,7 +154,7 @@ class PlanHandler(AgentHandler):
 
 更多细节可以参考[examples](https://github.com/inclusionAI/AWorld/blob/main/examples/multi_agents/coordination/deepresearch/planner/plan_handler.py).
 
-# <font style="color:#000000;background-color:#ffffff;">MAS和Workflow的组合与递归</font>
+# MAS和Workflow的组合与递归
 相同或不同类型的Swarm可以深层嵌套，提供多层级不同交互机制的Swarm，以支持复杂的multi-agent交互。如做一个旅游行程规划，使用**Workflow + Team**的结合，Workflow提供确定性的流程，Team做多源信息的检索和整合。
 
 ```python
