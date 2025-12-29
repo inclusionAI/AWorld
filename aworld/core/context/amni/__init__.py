@@ -1737,3 +1737,21 @@ class ApplicationContext(AmniContext):
             self.root.add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)
         else:
             super().add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)
+
+    def add_background_task(self, task_id: str, agent_id: str, agent_name: str, parent_task_id: str = None):
+        if self.root != self:
+            self.root.add_background_task(task_id, agent_id, agent_name, parent_task_id)
+        else:
+            super().add_background_task(task_id, agent_id, agent_name, parent_task_id)
+
+    def mark_background_task_completed(self, task_id: str):
+        if self.root != self:
+            self.root.mark_background_task_completed(task_id)
+        else:
+            super().mark_background_task_completed(task_id)
+
+    def has_pending_background_tasks(self, agent_id: str, parent_task_id: str = None) -> bool:
+        if self.root != self:
+            return self.root.has_pending_background_tasks(agent_id, parent_task_id)
+        else:
+            return super().has_pending_background_tasks(agent_id, parent_task_id)

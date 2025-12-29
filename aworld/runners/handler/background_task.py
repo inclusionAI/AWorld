@@ -79,7 +79,8 @@ class DefaultBackgroundTaskHandler(BackgroundTaskHandler):
             Message: Follow-up messages based on background task result
         """
         task_flag = "sub" if self.runner.task.is_sub_task else "main"
-        logger.info(f"[{self.name()}] {task_flag} task {self.runner.task.id} received background task message: {message}")
+        logger.info(
+            f"[{self.name()}] {task_flag} task {self.runner.task.id} received background task message: {message}, payload: {message.payload}")
 
         headers = {"context": message.context}
         topic = message.topic

@@ -93,7 +93,8 @@ class InMemoryMemoryStore(MemoryStore):
 
     def get_all(self, filters: dict = None) -> list[MemoryItem]:
         """Filter memory items based on filters."""
-        self.load_pending_memory(filters)
+        if filters and filters.get('load_pending_memory', False):
+            self.load_pending_memory(filters)
         filtered_items = [item for item in self.memory_items if self._filter_memory_item(item, filters)]
         return filtered_items
 
