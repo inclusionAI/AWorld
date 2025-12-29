@@ -10,10 +10,12 @@ docs = "docs"
 black_keys = ["Index"]
 black_values = ["index.md"]
 file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities"],
-                 "Basic Usage": ["HITL"],
+                 "Basic Usage": ["Hitl"],
                  "Runtime": ["Overview"]}
 file_mapping = {"Hitl": "HITL"}
-dir_order = ["Get Start", "Basic Usage", "Agents", "Environment", "Runtime", "Key Components"]
+dir_order = ["Get Start", "Basic Usage", "Agents", "Environment", "Runtime", "Training", "Key Components"]
+
+zh_v = ["开始", "基本使用", "智能体", "环境", "运行时", "训练", "关键组件"]
 
 
 def scan_path(path: str) -> List[dict]:
@@ -35,9 +37,16 @@ def scan_path(path: str) -> List[dict]:
         final_map = OrderedDict()
         for file in file_priority.get(k, []):
             if file in v:
-                final_map[file] = v[file]
+                final_map[file_mapping.get(file, file)] = v[file]
                 v.pop(file)
         final_map.update(v)
+
+        final_v = OrderedDict()
+        if k == 'docs_zh':
+            for d in zh_v:
+                final_v[d] = v[d]
+        if final_v:
+            final_map = final_v
 
         res.append({k: dict(final_map)})
     return res
