@@ -1,0 +1,3534 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://github.com/inclusionAI/AWorld/Key%20Components/Memory/">
+      
+      
+        <link rel="prev" href="../Context/">
+      
+      
+        <link rel="next" href="../Trace/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.1">
+    
+    
+      
+        <title>Memory - AWorld Docs</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../css/aworld.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="deep-purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#1-core-concepts" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="AWorld Docs" class="md-header__button md-logo" aria-label="AWorld Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AWorld Docs
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Memory
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="deep-purple"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="blue" data-md-color-accent="deep-purple"  aria-hidden="true"  type="radio" name="__palette" id="__palette_1">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/inclusionAI/AWorld" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../Get%20Start/Overview/" class="md-tabs__link">
+          
+  
+  
+  Get Start
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../Basic%20Usage/HITL/" class="md-tabs__link">
+          
+  
+  
+  Basic Usage
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../Agents/Build%20Agent/" class="md-tabs__link">
+          
+  
+  
+  Agents
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../Environment/Overview/" class="md-tabs__link">
+          
+  
+  
+  Environment
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../Runtime/Overview/" class="md-tabs__link">
+          
+  
+  
+  Runtime
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../Training/Evaluation/" class="md-tabs__link">
+          
+  
+  
+  Training
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../Context/" class="md-tabs__link">
+          
+  
+  
+  Key Components
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../docs_zh/%E5%BC%80%E5%A7%8B/%E5%BF%AB%E9%80%9F%E5%BC%80%E5%A7%8B%EF%BC%88Quick%20Start%EF%BC%89/" class="md-tabs__link">
+          
+  
+  
+  docs_zh
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="AWorld Docs" class="md-nav__button md-logo" aria-label="AWorld Docs" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    AWorld Docs
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/inclusionAI/AWorld" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Get Start
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Get Start
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Get%20Start/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Get%20Start/Core%20Capabilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Get%20Start/Quick%20Start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Basic Usage
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Basic Usage
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Basic%20Usage/HITL/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    HITL
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Basic%20Usage/Parallel%20Tasks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel tasks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Basic%20Usage/Streaming%20Response/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming response
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agents
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Agents
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Build%20Agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Build%20Multi-Agent%20System%28MAS%29/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build multi-agent system(mas)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Build%20WorkFlow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Custom%20Agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Environment
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Environment
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Environment/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Runtime
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Runtime/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Runtime/Custom%20Runner/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom runner
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Runtime/Hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Training
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Training
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Training/Evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Training/Trainer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trainer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Key Components
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Key Components
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-core-concepts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Core Concepts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Core Concepts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-short-term-memory-stm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 Short-Term Memory (STM)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-long-term-memory-ltm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 Long-Term Memory (LTM)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Quick Start
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Quick Start">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-initializing-the-memory-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Initializing the Memory Environment
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-using-memory-in-agents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Using Memory in Agents
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-basic-operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Basic Operations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Basic Operations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-core-operation-interface-crud" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Core Operation Interface (CRUD)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3.1 Core Operation Interface (CRUD)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-add-record-add" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Add Record (add)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-delete-record-delete" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Delete Record (delete)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-get-recent-history-get_last_n" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Get Recent History (get_last_n)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-get-all-records-get_all" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Get All Records (get_all)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-memory-isolation-levels-and-retrieval-filters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Memory Isolation Levels and Retrieval Filters
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3.2 Memory Isolation Levels and Retrieval Filters">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-isolation-level-history-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Isolation Level (History Scope)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-building-retrieval-filters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Building Retrieval Filters
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-retrieving-long-term-memory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Retrieving Long-Term Memory
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-long-term-extraction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Long-term Extraction
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Long-term Extraction">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-triggering-mechanism" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Triggering Mechanism
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-extraction-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Extraction Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-fact-extraction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Fact Extraction
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-related-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Related Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-advanced-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Advanced Features
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Advanced Features">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-vector-storage-and-semantic-search" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Vector Storage and Semantic Search
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-semantic-retrieval-interface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Semantic Retrieval Interface
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-internal-implementation-and-optimization-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Internal Implementation and Optimization Reference
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5.3 Internal Implementation and Optimization Reference">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#message-format-conversion-llm-adaptation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Message Format Conversion (LLM Adaptation)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#redundant-tool-call-cleaning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Redundant Tool Call Cleaning
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-best-practices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Best Practices
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../Trace/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    docs_zh
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    docs_zh
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_8_1" id="__nav_8_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    开始
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    开始
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E5%BC%80%E5%A7%8B/%E5%BF%AB%E9%80%9F%E5%BC%80%E5%A7%8B%EF%BC%88Quick%20Start%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    快速开始（quick start）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E5%BC%80%E5%A7%8B/%E6%80%BB%E8%A7%88%20%28Overview%29/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    总览 (overview)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E5%BC%80%E5%A7%8B/%E6%A0%B8%E5%BF%83%E8%83%BD%E5%8A%9B%20%28Core%20Capabilities%29/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    核心能力 (core capabilities)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_8_2" id="__nav_8_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    基本使用
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    基本使用
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E5%9F%BA%E6%9C%AC%E4%BD%BF%E7%94%A8/%E4%BA%BA%E6%9C%BA%E5%8D%8F%E5%90%8C%EF%BC%88HITL%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    人机协同（hitl）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E5%9F%BA%E6%9C%AC%E4%BD%BF%E7%94%A8/%E5%B9%B6%E8%A1%8C%E4%BB%BB%E5%8A%A1%EF%BC%88Parallel%20Tasks%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    并行任务（parallel tasks）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_8_3" id="__nav_8_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    智能体
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    智能体
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E6%99%BA%E8%83%BD%E4%BD%93/%E6%9E%84%E5%BB%BAAgent%EF%BC%88Build%20Agent%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    构建agent（build agent）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E6%99%BA%E8%83%BD%E4%BD%93/%E6%9E%84%E5%BB%BAWorkflow%EF%BC%88Build%20Workflow%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    构建workflow（build workflow）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E6%99%BA%E8%83%BD%E4%BD%93/%E6%9E%84%E5%BB%BA%E5%A4%9AAgent%28Build%20MAS%29/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    构建多agent(build mas)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E6%99%BA%E8%83%BD%E4%BD%93/%E8%87%AA%E5%AE%9A%E4%B9%89Agent%EF%BC%88Custom%20Agent%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    自定义agent（custom agent）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_8_4" id="__nav_8_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    环境
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    环境
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E7%8E%AF%E5%A2%83/%E6%80%BB%E8%A7%88%EF%BC%88Overview%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    总览（overview）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_8_5" id="__nav_8_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    运行时
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    运行时
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E8%BF%90%E8%A1%8C%E6%97%B6/%E8%87%AA%E5%AE%9A%E4%B9%89Runner%EF%BC%88Custom%20Runner%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    自定义runner（custom runner）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E8%BF%90%E8%A1%8C%E6%97%B6/%E8%BF%90%E8%A1%8C%E6%97%B6%E6%A6%82%E8%BF%B0%EF%BC%88Runtime%20Overview%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    运行时概述（runtime overview）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E8%BF%90%E8%A1%8C%E6%97%B6/%E9%92%A9%E5%AD%90%EF%BC%88Hooks%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    钩子（hooks）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_8_6" id="__nav_8_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    训练
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    训练
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E8%AE%AD%E7%BB%83/%E8%AE%AD%E7%BB%83%E5%99%A8%EF%BC%88Trainer%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    训练器（trainer）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E8%AE%AD%E7%BB%83/%E8%AF%84%E4%BC%B0%EF%BC%88Evaluation%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    评估（evaluation）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_8_7" id="__nav_8_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    关键组件
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_8_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8_7">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    关键组件
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E5%85%B3%E9%94%AE%E7%BB%84%E4%BB%B6/%E4%B8%8A%E4%B8%8B%E6%96%87%EF%BC%88Context%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    上下文（context）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E5%85%B3%E9%94%AE%E7%BB%84%E4%BB%B6/%E8%AE%B0%E5%BF%86%EF%BC%88Memory%EF%BC%89/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    记忆（memory）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../docs_zh/%E5%85%B3%E9%94%AE%E7%BB%84%E4%BB%B6/%E8%BF%BD%E8%B8%AA%20%28Trace%29%20/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    追踪 (trace) 
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1-core-concepts" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Core Concepts
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. Core Concepts">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11-short-term-memory-stm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 Short-Term Memory (STM)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12-long-term-memory-ltm" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 Long-Term Memory (LTM)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Quick Start
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. Quick Start">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21-initializing-the-memory-environment" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 Initializing the Memory Environment
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22-using-memory-in-agents" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 Using Memory in Agents
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-basic-operations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Basic Operations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. Basic Operations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31-core-operation-interface-crud" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 Core Operation Interface (CRUD)
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3.1 Core Operation Interface (CRUD)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-add-record-add" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Add Record (add)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-delete-record-delete" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Delete Record (delete)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-get-recent-history-get_last_n" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. Get Recent History (get_last_n)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-get-all-records-get_all" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Get All Records (get_all)
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32-memory-isolation-levels-and-retrieval-filters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 Memory Isolation Levels and Retrieval Filters
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3.2 Memory Isolation Levels and Retrieval Filters">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-isolation-level-history-scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. Isolation Level (History Scope)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-building-retrieval-filters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. Building Retrieval Filters
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#33-retrieving-long-term-memory" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.3 Retrieving Long-Term Memory
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4-long-term-extraction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. Long-term Extraction
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Long-term Extraction">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-triggering-mechanism" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Triggering Mechanism
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42-extraction-flow" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 Extraction Flow
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43-fact-extraction" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 Fact Extraction
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#44-related-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.4 Related Configuration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-advanced-features" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Advanced Features
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. Advanced Features">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51-vector-storage-and-semantic-search" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 Vector Storage and Semantic Search
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52-semantic-retrieval-interface" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 Semantic Retrieval Interface
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53-internal-implementation-and-optimization-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 Internal Implementation and Optimization Reference
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5.3 Internal Implementation and Optimization Reference">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#message-format-conversion-llm-adaptation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Message Format Conversion (LLM Adaptation)
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#redundant-tool-call-cleaning" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Redundant Tool Call Cleaning
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5-best-practices" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. Best Practices
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/inclusionAI/AWorld/tree/main/docs/Key Components/Memory.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+  <h1>Memory</h1>
+
+<p>AWorld Memory is a unified memory management framework designed for multi-agent systems. It aims to help agents store, retrieve, and process information, enabling continuous learning, personalized interaction, and experiential evolution across sessions.</p>
+<h2 id="1-core-concepts">1. Core Concepts</h2>
+<p>AWorld divides memory into two primary dimensions: <strong>Short-Term Memory (STM)</strong> and <strong>Long-Term Memory (LTM)</strong>.</p>
+<h3 id="11-short-term-memory-stm">1.1 Short-Term Memory (STM)</h3>
+<p>Used to store immediate interaction records of the agent in the current task or session.</p>
+<ul>
+<li><strong>Storage Objects</strong>: <code>MemoryHumanMessage</code> (User input), <code>MemoryAIMessage</code> (AI response), <code>MemoryToolMessage</code> (Tool execution results), <code>MemorySystemMessage</code> (System instructions).</li>
+<li><strong>Storage Engines</strong>: Supports multiple backends, defaulting to <code>InMemoryMemoryStore</code>. <code>PostgresMemoryStore</code> is recommended for production environments.</li>
+<li><strong>Context Management</strong>: To prevent context overflow, several automatic compression strategies are provided:<ul>
+<li><strong>Trimming</strong>: Keeps only the last N rounds of conversation.</li>
+<li><strong>Fixed Step Summary</strong>: Generates a summary every N messages and removes the summarized messages.</li>
+<li><strong>Length-based Summary</strong>: Triggers summarization when the total message length exceeds a threshold.</li>
+<li><strong>Single Round Summary</strong>: Compresses individual messages that are excessively long.</li>
+</ul>
+</li>
+</ul>
+<h3 id="12-long-term-memory-ltm">1.2 Long-Term Memory (LTM)</h3>
+<p>Used to store information with persistent value, supporting cross-session retrieval.</p>
+<ul>
+<li><strong>UserProfile</strong>:<ul>
+<li>Structured storage of user preferences, profession, tech stack, communication style, etc.</li>
+<li><strong>Example</strong>: <code>key="preferences.technical", value={"preferred_languages": ["Python"]}</code>.</li>
+</ul>
+</li>
+<li><strong>AgentExperience</strong>:<ul>
+<li>Records the successful paths and skills of the agent in solving complex problems.</li>
+<li><strong>Structure</strong>: <code>skill</code> (Skill name), <code>actions</code> (Action sequence), <code>outcome</code> (Execution result).</li>
+</ul>
+</li>
+<li><strong>Fact</strong>:<ul>
+<li>Concrete factual information extracted from conversations (e.g., "User lives in Shanghai").</li>
+</ul>
+</li>
+<li><strong>ConversationSummary</strong>:<ul>
+<li>High-level summaries of completed sessions, serving as background reference for future interactions.</li>
+</ul>
+</li>
+</ul>
+<hr />
+<h2 id="2-quick-start">2. Quick Start</h2>
+<h3 id="21-initializing-the-memory-environment">2.1 Initializing the Memory Environment</h3>
+<p>It is recommended to use <code>MemoryFactory</code> for global initialization.</p>
+<pre><code class="language-python">from aworld.memory.main import MemoryFactory
+from aworld.core.memory import MemoryConfig, MemoryLLMConfig
+
+# Initialize Memory Factory
+MemoryFactory.init(
+    config=MemoryConfig(
+        provider=&quot;aworld&quot;, # Core engine
+        llm_config=MemoryLLMConfig(
+            provider=&quot;openai&quot;,
+            model_name=&quot;gpt-4o&quot;,
+            api_key=&quot;your_api_key&quot;
+        )
+    )
+)
+
+# Get Instance
+memory = MemoryFactory.instance()
+</code></pre>
+<h3 id="22-using-memory-in-agents">2.2 Using Memory in Agents</h3>
+<p>Deeply customize the memory behavior of each agent through <code>AgentMemoryConfig</code>.</p>
+<pre><code class="language-python">from aworld.agents.llm_agent import Agent
+from aworld.core.memory import AgentMemoryConfig, LongTermConfig
+
+# 1. Configure Memory Behavior
+memory_config = AgentMemoryConfig(
+    enable_summary=True,        # Enable automatic summarization
+    trim_rounds=20,             # Keep the last 20 rounds
+    enable_long_term=True,      # Enable long-term memory
+    long_term_config=LongTermConfig.create_simple_config(
+        enable_user_profiles=True,
+        enable_agent_experiences=True
+    )
+)
+
+# 2. Create Agent
+agent = Agent(
+    name=&quot;MemoryAgent&quot;,
+    agent_memory_config=memory_config,
+    # ... other configurations
+)
+</code></pre>
+<hr />
+<h2 id="3-basic-operations">3. Basic Operations</h2>
+<h3 id="31-core-operation-interface-crud">3.1 Core Operation Interface (CRUD)</h3>
+<p>After obtaining an instance via <code>MemoryFactory.instance()</code>, you can perform the following core operations:</p>
+<h4 id="1-add-record-add">1. Add Record (<code>add</code>)</h4>
+<p>Used to store new messages or memory items into the system. In AWorld, adding a record usually triggers subsequent automatic summarization or long-term memory extraction logic.</p>
+<pre><code class="language-python">from aworld.memory.models import MemoryHumanMessage, MessageMetadata
+
+# Prepare metadata
+metadata = MessageMetadata(
+    user_id=&quot;u_001&quot;,
+    session_id=&quot;s_123&quot;,
+    agent_id=&quot;a_999&quot;,
+    task_id=&quot;t_456&quot;
+)
+
+# Create message object
+message = MemoryHumanMessage(content=&quot;Hello&quot;, metadata=metadata)
+
+# Add memory
+# agent_memory_config is optional, used to trigger specific summarization strategies for that agent
+await memory.add(
+    message, 
+    agent_memory_config=context.get_config().get_agent_memory_config(namespace=&quot;a_999&quot;)
+)
+</code></pre>
+<h4 id="2-delete-record-delete">2. Delete Record (<code>delete</code>)</h4>
+<p>Deletes a specified memory item based on its ID (usually a logical deletion).</p>
+<pre><code class="language-python"># Delete by memory_id
+await memory.delete(&quot;mem_uuid_12345&quot;)
+</code></pre>
+<h4 id="3-get-recent-history-get_last_n">3. Get Recent History (<code>get_last_n</code>)</h4>
+<p>This is the most commonly used interface, used to retrieve the recent conversation context when building LLM Prompts. It automatically handles the merging of <code>init</code> (system/initial info), <code>message</code> (dialogue), and <code>summary</code>.</p>
+<pre><code class="language-python"># Get the last 10 rounds of history
+# filters must include agent_id, session_id, task_id to ensure isolation
+filters = {
+    &quot;agent_id&quot;: &quot;a_999&quot;,
+    &quot;session_id&quot;: &quot;s_123&quot;,
+    &quot;task_id&quot;: &quot;t_456&quot;
+}
+
+histories = memory.get_last_n(
+    last_rounds=10, 
+    filters=filters,
+    agent_memory_config=agent_memory_config # Pass config to support complex merging logic
+)
+</code></pre>
+<h4 id="4-get-all-records-get_all">4. Get All Records (<code>get_all</code>)</h4>
+<p>Retrieves all matching memory items based on a filter.</p>
+<pre><code class="language-python"># Get all message records under the current task
+all_messages = memory.get_all(filters={
+    &quot;task_id&quot;: &quot;t_456&quot;,
+    &quot;memory_type&quot;: &quot;message&quot;
+})
+</code></pre>
+<h3 id="32-memory-isolation-levels-and-retrieval-filters">3.2 Memory Isolation Levels and Retrieval Filters</h3>
+<p>After obtaining the instance, the most important step is to determine the <strong>History Scope</strong>. This determines the range of historical information the agent can "recall."</p>
+<h4 id="1-isolation-level-history-scope">1. Isolation Level (History Scope)</h4>
+<p>Configured via the <code>history_scope</code> parameter in <code>AgentMemoryConfig</code>. It supports three levels:</p>
+<table>
+<thead>
+<tr>
+<th>Level</th>
+<th>Parameter Value</th>
+<th>Description</th>
+<th>Use Case</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Task Level (Default)</strong></td>
+<td><code>task</code></td>
+<td>Retrieves only messages under the current <code>task_id</code>.</td>
+<td>Independent task execution without historical context.</td>
+</tr>
+<tr>
+<td><strong>Session Level</strong></td>
+<td><code>session</code></td>
+<td>Retrieves all messages under the same <code>session_id</code> (may span multiple tasks).</td>
+<td>Continuous multi-round dialogue composed of sub-tasks.</td>
+</tr>
+<tr>
+<td><strong>User Level</strong></td>
+<td><code>user</code></td>
+<td>Retrieves all history of that <code>user_id</code> on that specific Agent.</td>
+<td>Long-term personal assistant needing to remember user habits.</td>
+</tr>
+</tbody>
+</table>
+<h4 id="2-building-retrieval-filters">2. Building Retrieval Filters</h4>
+<p>When calling <code>get_last_n</code> or <code>search</code>, the framework automatically builds filters based on the configured Scope. Manual operation example:</p>
+<pre><code class="language-python"># Logic reference: aworld/agents/llm_agent.py
+def build_filters(self, context: Context):
+    filters = {&quot;agent_id&quot;: self.id()}
+    config = context.get_agent_memory_config(self.id())
+
+    # Core logic: Determine filter dimensions based on history_scope
+    scope = config.history_scope or &quot;task&quot;
+    if scope == &quot;user&quot;:
+        filters[&quot;user_id&quot;] = context.user_id # or from task
+    elif scope == &quot;session&quot;:
+        filters[&quot;session_id&quot;] = context.get_task().session_id
+    else:
+        filters[&quot;task_id&quot;] = context.get_task().id
+    return filters
+
+# Use filter to get recent history
+histories = memory.get_last_n(
+    last_rounds=config.history_rounds, 
+    filters=build_filters(context)
+)
+</code></pre>
+<h3 id="33-retrieving-long-term-memory">3.3 Retrieving Long-Term Memory</h3>
+<pre><code class="language-python"># Retrieve UserProfile
+profiles = await memory.retrival_user_profile(
+    user_id=&quot;u_001&quot;, 
+    user_input=&quot;I want to write some Python code&quot;
+)
+
+# Retrieve Related Experiences
+experiences = await memory.retrival_agent_experience(
+    agent_id=&quot;a_999&quot;,
+    user_input=&quot;Handling API rate limit errors&quot;
+)
+</code></pre>
+<hr />
+<h2 id="4-long-term-extraction">4. Long-term Extraction</h2>
+<p>Long-term extraction is the core mechanism for "Agent Evolution" in AWorld. It automatically distills knowledge with persistent value by analyzing short-term dialogue history.</p>
+<h3 id="41-triggering-mechanism">4.1 Triggering Mechanism</h3>
+<p>Long-term memory extraction does not happen in every round; it is triggered by the <code>DefaultMemoryOrchestrator</code> based on configuration:</p>
+<ul>
+<li><strong>Message Count Trigger</strong>: Triggered when the number of messages in STM reaches the <code>message_count_threshold</code> (default 10).</li>
+<li><strong>Importance Trigger</strong>: Monitors keywords in messages (e.g., "error", "success", "completed") and triggers upon a match.</li>
+<li><strong>Forced Trigger</strong>: Triggered by setting <code>force=True</code> in <code>trigger_short_term_memory_to_long_term</code>.</li>
+</ul>
+<h3 id="42-extraction-flow">4.2 Extraction Flow</h3>
+<p>AWorld's long-term memory extraction is a <strong>fully automated</strong> process executed silently in the background.</p>
+<ol>
+<li><strong>Task Creation</strong>: The Orchestrator automatically collects relevant message streams based on the <code>history_scope</code>.</li>
+<li><strong>Asynchronous Processing</strong>: If <code>enable_background_processing</code> is enabled, the extraction task runs in the background, not affecting the response speed of the main dialogue.</li>
+<li><strong>LLM Extraction (Gungnir)</strong>: <ul>
+<li><strong>Automatic Identification</strong>: The system automatically identifies key information in the dialogue and structures it.</li>
+<li><strong>Support for Prompt Customization</strong>: Although extraction is auto-triggered, developers can customize extraction Prompt templates. By modifying <code>user_profile_extraction_prompt</code> or <code>agent_experience_extraction_prompt</code> in <code>ExtractionConfig</code>, you can precisely control what information the LLM focuses on and the output format.</li>
+</ul>
+</li>
+<li><strong>Structured Storage</strong>: Extraction results are converted into <code>UserProfile</code> or <code>AgentExperience</code> objects and persisted in the <code>MemoryStore</code> and vector database.</li>
+</ol>
+<h3 id="43-fact-extraction">4.3 Fact Extraction</h3>
+<p>Besides profiles and experiences, AWorld supports extracting atomized <strong>Facts</strong> from tool execution results (e.g., search results).</p>
+<ul>
+<li><strong>Scenario</strong>: Usually triggered by <code>ExtractToolFactOp</code> when a tool returns a large volume of information.</li>
+<li><strong>Characteristics</strong>: Deconstructs complex information streams into independent, minimum units of knowledge (e.g., a company's financial data, a software's release date).</li>
+<li><strong>Function</strong>: Prevents the agent from losing details when processing long documents or vast search results, while enabling precise "Fact Recall" through vector retrieval.</li>
+</ul>
+<h3 id="44-related-configuration">4.4 Related Configuration</h3>
+<pre><code class="language-python">from aworld.core.memory import LongTermConfig
+
+# Deeply customize extraction behavior
+lt_config = LongTermConfig()
+lt_config.trigger.message_count_threshold = 15      # Increase trigger threshold
+lt_config.trigger.enable_importance_trigger = True  # Enable importance monitoring
+
+# Customize Extraction Prompt (Optional)
+lt_config.extraction.user_profile_extraction_prompt = &quot;You are a professional personality analyst, please extract from the conversation...&quot;
+lt_config.extraction.agent_experience_extraction_prompt = &quot;Please summarize the core technical path of the agent in this task...&quot;
+
+lt_config.extraction.enable_user_profile_extraction = True
+lt_config.processing.enable_background_processing = True
+</code></pre>
+<hr />
+<h2 id="5-advanced-features">5. Advanced Features</h2>
+<h3 id="51-vector-storage-and-semantic-search">5.1 Vector Storage and Semantic Search</h3>
+<p>AWorld Memory has built-in vectorization support, enabling retrieval of the most relevant historical information based on semantics.</p>
+<pre><code class="language-python">from aworld.core.memory import EmbeddingsConfig, VectorDBConfig
+
+# Configure Vector Database (e.g., ChromaDB)
+custom_config = MemoryConfig(
+    embedding_config=EmbeddingsConfig(
+        provider=&quot;openai&quot;,
+        model_name=&quot;text-embedding-3-small&quot;
+    ),
+    vector_store_config=VectorDBConfig(
+        provider=&quot;chroma&quot;,
+        config={&quot;chroma_data_path&quot;: &quot;./data/chroma&quot;}
+    )
+)
+</code></pre>
+<h3 id="52-semantic-retrieval-interface">5.2 Semantic Retrieval Interface</h3>
+<p>The <code>search</code> method supports hybrid retrieval:</p>
+<pre><code class="language-python">results = memory.search(
+    query=&quot;User preferences for programming languages&quot;,
+    memory_type=&quot;user_profile&quot;,
+    filters={&quot;user_id&quot;: &quot;u_001&quot;},
+    limit=5
+)
+</code></pre>
+<h3 id="53-internal-implementation-and-optimization-reference">5.3 Internal Implementation and Optimization Reference</h3>
+<h4 id="message-format-conversion-llm-adaptation">Message Format Conversion (LLM Adaptation)</h4>
+<p>AWorld internally uses <code>to_openai_message()</code> to uniformly convert memory items into formats acceptable by models:</p>
+<pre><code class="language-python"># Logic reference: aworld/agents/llm_agent.py
+messages = []
+for history in histories:
+    if isinstance(history, MemoryMessage):
+        # Automatically handles role, content, and complex structures like tool_calls
+        messages.append(history.to_openai_message())
+</code></pre>
+<h4 id="redundant-tool-call-cleaning">Redundant Tool Call Cleaning</h4>
+<p>To keep the context clean and save tokens, the framework automatically cleans up redundant tool call messages at specific moments (e.g., loop termination or reset):</p>
+<pre><code class="language-python"># See _clean_redundant_tool_call_messages implementation
+# Logic: Traverse backwards, deleting tool_call records that produced no results or are invalid
+memory.delete(history_item_id)
+</code></pre>
+<hr />
+<h2 id="5-best-practices">5. Best Practices</h2>
+<ol>
+<li><strong>Metadata Consistency</strong>: Always provide complete <code>MessageMetadata</code>. Since AWorld defaults to using <code>task_id</code> for isolation, missing metadata will lead to "amnesia" or "memory interference" for the agent.</li>
+<li><strong>Choosing Isolation Level (History Scope)</strong>:<ul>
+<li><strong>Use </strong><code>task</code><strong> (Default)</strong>: <ul>
+<li>When tasks are atomized (e.g., translating a paragraph, executing a SQL).</li>
+<li>To save tokens and prevent history from interfering with current decisions.</li>
+<li>Executing multiple unrelated sub-tasks in parallel.</li>
+</ul>
+</li>
+<li><strong>Use </strong><code>session</code>:<ul>
+<li>Interactive dialogues (Chat): Users will refer to history with "what I just said."</li>
+<li>Complex pipelines: The output of a previous Task is the background for the next (e.g., Search -&gt; Organize -&gt; Write Report).</li>
+<li>Context maintenance during a single login period.</li>
+</ul>
+</li>
+<li><strong>Use </strong><code>user</code>:<ul>
+<li>Personalized butler: Needs to remember the user's name, preferences, profession, etc.</li>
+<li>Long-term project tracking: Continuous support spanning multiple days and logins.</li>
+<li>Note: The higher the level, the greater the token consumption and retrieval pressure. It is recommended to use this with <code>enable_summary</code>.</li>
+</ul>
+</li>
+</ul>
+</li>
+<li><strong>Context Compression and History Transfer Strategy</strong>:<ul>
+<li><strong>Short Context Scenarios</strong>: Recommended to share history messages via <code>session</code> level. When session length is controllable, passing original messages maintains the highest interaction fidelity.</li>
+<li><strong>Long Context Scenarios</strong>: <ul>
+<li><strong>Summary Strategy</strong>: Recommended to enable <code>enable_summary</code> to replace old messages with periodic summaries, effectively reducing token consumption while retaining key background.</li>
+<li><strong>Combining with </strong><code>add_knowledge</code>: For ultra-long information or knowledge that needs persistence, it's recommended to use <code>add_knowledge</code> to distill it into knowledge snippets. Use the pattern of "Summary for streaming background" + "<code>add_knowledge</code> for key details" to achieve efficient context management.</li>
+</ul>
+</li>
+</ul>
+</li>
+</ol>
+<hr />
+<p><em>For more technical details, please refer to the source module: </em><code>aworld.memory</code></p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © Copyright 2025 inclusionAI AWorld Team.
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "toc.follow", "content.code.copy", "content.code.annotate", "content.action.edit", "header.autohide"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../js/hide-home-edit.js"></script>
+      
+        <script src="../../js/aworld-enhancements.js"></script>
+      
+    
+  </body>
+</html>
