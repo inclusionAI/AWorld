@@ -5,6 +5,8 @@ import asyncio
 import time
 from typing import AsyncGenerator, TYPE_CHECKING, Tuple
 
+from env_channel import EnvChannelMessage
+
 from aworld.core.common import TaskItem, Observation
 from aworld.core.context.amni import get_context_manager, ContextManager, ApplicationContext, AmniContext
 from aworld.core.context.base import Context
@@ -362,6 +364,9 @@ class DefaultBackgroundTaskHandler(BackgroundTaskHandler):
     async def _merge_by_topic(self, message: Message):
         topic = message.topic
         headers = {"context": message.context}
+        if not message or not message.payload:
+            logger.error(f"[{self.name()}] Empty background task message: {message}")
+            return
         # Extract background task information
         bg_task_msg: BackgroundTaskMessage = message
         bg_task_context = message.context
@@ -376,23 +381,39 @@ class DefaultBackgroundTaskHandler(BackgroundTaskHandler):
                 session_id = message.context.get_task().session_id
                 user_id = message.context.get_task().user_id
                 data = message.payload
+                content = data
                 if isinstance(data, Tuple) and isinstance(data[0], Observation):
                     data = data[0]
-                if isinstance(data, Observation):
+                    content = data.content
+                elif isinstance(data, Observation):
+                    content = data.content
+                elif isinstance(data, EnvChannelMessage):
+                    data = data.message
+                    if not agent_id:
+                        agent_id = data.get('agent_id')
+                    content = data
+                elif isinstance(data, dict):
+                    if not agent_id:
+                        agent_id = data.get('agent_id')
+                    content = data
+                else:
+                    logger.warning(f"[{self.name()}] Unsupported background tool result: {data}.")
+                try:
                     pending_msg = MemoryHumanMessage(
-                        content=data.content,
+                        content=content,
                         metadata=MessageMetadata(
                             session_id=session_id,
                             user_id=user_id,
                             task_id=parent_task_id,
                             agent_id=agent_id,
-                            agent_name=agent_name,
+                            agent_name=agent_id,
                         ),
                         memory_type="pending"
                     )
                     await memory.add(pending_msg)
-                else:
-                    logger.warning(f"[{self.name()}] Unsupported background tool result: {data}")
+                except Exception as e:
+                    logger.error(f"[{self.name()}] Failed to add background task result to memory: {e}")
+                    raise e
             elif isinstance(message.payload, TaskResponse):
                 bg_task_response: TaskResponse = message.payload
                 # 1. Merge background task context into main context
@@ -421,9 +442,9 @@ class DefaultBackgroundTaskHandler(BackgroundTaskHandler):
                     'status': bg_task_response.status,
                     'completed_at': time.time()
                 }
-
+            logger.info(f"[{self.name()}] Merged background task message: {message}")
         except Exception as e:
             logger.warn(f"[{self.name()}] Failed to merge background task message: {e}", exc_info=True)
-        logger.info(f"[{self.name()}] Merged background task message: {message}")
+
 
 
