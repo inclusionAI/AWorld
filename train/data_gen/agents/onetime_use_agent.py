@@ -24,9 +24,9 @@ class OnetimeUseAgent(Agent):
             logger.warn(traceback.format_exc())
             raise e
         # parse llm output
-        agent_result = await self.model_output_parser.parse(llm_response,
-                                                            agent_id=self.id(),
-                                                            use_tools_in_prompt=self.use_tools_in_prompt)
+        agent_result = await self.output_converter.parse(llm_response,
+                                                         agent_id=self.id(),
+                                                         use_tools_in_prompt=self.use_tools_in_prompt)
 
         self._finished = True
         # agent actions
