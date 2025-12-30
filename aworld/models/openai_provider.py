@@ -490,14 +490,18 @@ class OpenAIProvider(LLMProviderBase):
             "frequency_penalty", "logit_bias", "logprobs", "top_logprobs",
             "presence_penalty", "response_format", "seed", "stream", "top_p",
             "user", "function_call", "functions", "tools", "tool_choice", "metadata",
-            "prompt_cache_key", "safety_identifier", "store", "verbosity", "extra_body"
+            "prompt_cache_key", "safety_identifier", "store", "verbosity", "extra_body", "model"
         ]
 
         llm_params = self.kwargs.get("params", {})
         llm_params.update(kwargs)
+        llm_params.pop("response_parse_args", None)
+        llm_params.pop("context", None)
 
-        for param in supported_params:
-            if param in llm_params and llm_params[param] is not None:
+        for param in llm_params:
+            if param not in supported_params:
+                logger.warning(f"Using unsupported openai parameter may cause exception: {param}")
+            if llm_params[param]:
                 openai_params[param] = llm_params[param]
         return openai_params
 

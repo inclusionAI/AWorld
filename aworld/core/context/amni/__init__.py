@@ -1,22 +1,18 @@
 import abc
 import asyncio
 import copy
-import os
-import time
 import traceback
-import uuid
-from typing import Optional, Any, Literal, List, Dict, Tuple
+from typing import Optional, Any, List, Dict, Tuple
 
 from aworld import trace
-from aworld.config import AgentConfig, ContextRuleConfig
+from aworld.config import AgentConfig, AgentMemoryConfig
+from aworld.core.common import TaskStatus
 # lazy import
 from aworld.core.context.base import Context
-from aworld.events.util import send_message_with_future
+from aworld.dataset.types import TrajectoryItem
 from aworld.logs.util import logger
-from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
-from aworld.output import Artifact, WorkSpace, StreamingOutputs, MessageOutput
-from aworld.output.artifact import ArtifactAttachment
+from aworld.output import Artifact, WorkSpace, StreamingOutputs
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory, ContextEnvConfig
 from .contexts import ContextManager
@@ -32,8 +28,6 @@ from .state.task_state import SubTask
 from .utils.text_cleaner import truncate_content
 from .worksapces import ApplicationWorkspace
 from .worksapces import ApplicationWorkspace, workspace_repo
-from ...event.base import ContextMessage, Constants, TopicType
-from ...task import TaskStatus
 
 DEFAULT_VALUE = None
 
@@ -275,6 +269,9 @@ class AmniContext(Context):
     def get_agent_context_config(self, namespace: str) -> AgentContextConfig:
         pass
 
+    def get_agent_memory_config(self, namespace: str) -> AgentMemoryConfig:
+        pass
+
     ####################### Context Write #######################
 
     @abc.abstractmethod
@@ -375,61 +372,19 @@ class AmniContext(Context):
 
     async def active_skill(self, skill_name: str, namespace: str) -> str:
         """
-        activate a skill help agent to perform a task
+        Activate a skill to help agent perform a task.
+
+        Delegates to SkillService.active_skill().
         """
-        if not skill_name:
-            return "skill name is required"
-        agent_skills = await self.get_skill_name_list(namespace)
-        if skill_name not in agent_skills:
-            return "skill not found"
-        activate_skills = await self.get_active_skills(namespace)
-        if not activate_skills:
-            activate_skills = []
-        if skill_name in activate_skills:
-            return f"skill {skill_name} already activated, current skills: {activate_skills}"
-        activate_skills.append(skill_name)
-        skill = await self.get_skill(skill_name=skill_name, namespace=namespace)
-
-        if skill.get('type') == "agent":
-            skill_name = skill.get('name')
-            agent_type = skill.get('agent_type', 'aworld.agents.llm_agent.Agent')
-            if agent_type == "aworld.agents.llm_agent.Agent":
-                from aworld.agents.llm_agent import Agent
-                orchestrator_agent = self._swarm.agents.get(namespace)
-                agent_config = AgentConfig(
-                    llm_config = orchestrator_agent.conf.llm_config,
-                    use_vision=False
-                )
-                skill_agent = Agent(
-                    name=skill.get('name'),
-                    desc=skill.get('description'),
-                    conf=agent_config,
-                    system_prompt=skill.get('usage', ''),
-                    mcp_servers=list(skill.get('tool_list').keys()),
-                    mcp_config=orchestrator_agent.mcp_config
-                )
-                self._swarm.add_agents([skill_agent])
-                orchestrator_agent.handoffs.append(skill_agent.id())
-            else:
-                raise Exception(f"agent type {agent_type} not supported")
-
-        self.put(ACTIVE_SKILLS_KEY, activate_skills, namespace=namespace)
-        return (f"skill {skill_name} activated, current skills: {activate_skills} \n\n"
-                    f"<skill_guide>{skill.get('usage', '')}</skill_guide>\n\n"
-                    f"<skill_path>{skill.get('skill_path', '')}</skill_path>\n\n"
-                )
+        return await self.skill_service.active_skill(skill_name, namespace)
 
     async def load_skill_agent_mcp_config(self, skill_agent: str) -> Dict[str, Any]:
         """
-        load skill agent mcp config
+        Load skill agent MCP config.
+
+        Delegates to SkillService.load_skill_agent_mcp_config().
         """
-        env_config_obj = await self.get_env_config(skill_agent)
-        mcp_config_path = env_config_obj.env_config.get('MCP_CONFIG_PATH')
-        if mcp_config_path:
-            with open(mcp_config_path, 'r') as f:
-                import json
-                return json.load(f)
-        return {}
+        return await self.skill_service.load_skill_agent_mcp_config(skill_agent)
 
     async def get_env_config(self, namespace: str) -> ContextEnvConfig:
         """
@@ -451,43 +406,45 @@ class AmniContext(Context):
         return ContextEnvConfig()
 
 
-    async def offload_skill(self, skill_name: str,namespace: str) -> str:
+    async def offload_skill(self, skill_name: str, namespace: str) -> str:
         """
-        offload a skill help agent to perform a task
+        Offload a skill to help agent perform a task.
+
+        Delegates to SkillService.offload_skill().
         """
-        skills = await self.get_active_skills(namespace)
-        if not skills or skill_name not in skills:
-            return f"skill {skill_name} not found, current skills: {skills}"
-        skills.remove(skill_name)
-        self.put(ACTIVE_SKILLS_KEY, skills, namespace=namespace)
-        return f"skill {skill_name} offloaded, current skills: {skills}"
+        return await self.skill_service.offload_skill(skill_name, namespace)
 
     async def get_active_skills(self, namespace: str) -> list[str]:
         """
-        get skills from context
+        Get active skills from context.
+
+        Delegates to SkillService.get_active_skills().
         """
-        skills = self.get(ACTIVE_SKILLS_KEY, namespace=namespace)
-        if not skills:
-            skills = []
-        return skills
+        return await self.skill_service.get_active_skills(namespace)
 
     async def get_skill_list(self, namespace: str) -> Dict[str, Any]:
-        return self.get(SKILL_LIST_KEY, namespace=namespace)
+        """
+        Get skill list from context.
+
+        Delegates to SkillService.get_skill_list().
+        """
+        return await self.skill_service.get_skill_list(namespace)
 
     async def get_skill(self, skill_name: str, namespace: str) -> Dict[str, Any]:
-        skills = await self.get_skill_list(namespace)
-        if not skills:
-            return {}
-        return skills.get(skill_name, {})
+        """
+        Get a specific skill configuration.
+
+        Delegates to SkillService.get_skill().
+        """
+        return await self.skill_service.get_skill(skill_name, namespace)
 
     async def get_skill_name_list(self, namespace: str) -> list[str]:
-        agent_skills = self.get(SKILL_LIST_KEY, namespace=namespace)
-        skill_names = []
-        if not agent_skills:
-            return []
-        for skill_name, skill_config in agent_skills.items():
-            skill_names.append(skill_name)
-        return skill_names
+        """
+        Get list of skill names.
+
+        Delegates to SkillService.get_skill_name_list().
+        """
+        return await self.skill_service.get_skill_name_list(namespace)
 
 
 # Global context manager instance
@@ -525,6 +482,15 @@ class ApplicationContext(AmniContext):
         self._parent = parent
         self._config = context_config
         self._working_dir = working_dir
+        self._initialized = False
+
+        # Initialize services (lazy initialization)
+        self._knowledge_service = None
+        self._skill_service = None
+        self._task_state_service = None
+        self._memory_service = None
+        self._prompt_service = None
+        self._freedom_space_service = None
 
     def get_config(self) -> AmniContextConfig:
         return self._config
@@ -532,8 +498,149 @@ class ApplicationContext(AmniContext):
     def get_agent_context_config(self, namespace: str) -> AgentContextConfig:
         return self.get_config().get_agent_context_config(namespace=namespace)
 
+    def get_agent_memory_config(self, namespace: str) -> AgentMemoryConfig:
+        return self.get_config().get_agent_memory_config(namespace=namespace)
+
+    @property
+    def knowledge_service(self):
+        """Get KnowledgeService instance (lazy initialization)."""
+        if self._knowledge_service is None:
+            from .services import KnowledgeService
+            self._knowledge_service = KnowledgeService(self)
+        return self._knowledge_service
+
+    @property
+    def skill_service(self):
+        """Get SkillService instance (lazy initialization)."""
+        if self._skill_service is None:
+            from .services import SkillService
+            self._skill_service = SkillService(self)
+        return self._skill_service
+
+    @property
+    def task_state_service(self):
+        """Get TaskStateService instance (lazy initialization)."""
+        if self._task_state_service is None:
+            from .services import TaskStateService
+            self._task_state_service = TaskStateService(self)
+        return self._task_state_service
+
+    @property
+    def memory_service(self):
+        """Get MemoryService instance (lazy initialization)."""
+        if self._memory_service is None:
+            from .services import MemoryService
+            self._memory_service = MemoryService(self)
+        return self._memory_service
+
+    @property
+    def prompt_service(self):
+        """Get PromptService instance (lazy initialization)."""
+        if self._prompt_service is None:
+            from .services import PromptService
+            self._prompt_service = PromptService(self)
+        return self._prompt_service
+
+    @property
+    def freedom_space_service(self):
+        """Get FreedomSpaceService instance (lazy initialization).
+
+        """
+        if self._freedom_space_service is None:
+            from .services import FreedomSpaceService
+            self._freedom_space_service = FreedomSpaceService(self)
+        return self._freedom_space_service
 
     ####################### Context Build/Copy/Merge/Restore #######################
+
+    @classmethod
+    def create(cls,
+               user_id: str = "user",
+               session_id: str = None,
+               task_id: str = None,
+               task_content: str = "",
+               context_config: AmniContextConfig = None,
+               parent: "ApplicationContext" = None,
+               **kwargs) -> "ApplicationContext":
+        """
+        Create ApplicationContext synchronously with simplified parameters.
+
+        This is a synchronous factory method that creates a minimal ApplicationContext
+        without requiring async operations. Workspace will be initialized lazily when needed.
+
+        Args:
+            user_id: User identifier, defaults to "user"
+            session_id: Session identifier. If None, will be generated from timestamp
+            task_id: Task identifier. If None, will be generated from timestamp
+            task_content: Task content string, defaults to empty string
+            context_config: Context configuration. If None, will create default config
+            parent: Parent ApplicationContext for hierarchical contexts
+            **kwargs: Additional arguments passed to __init__
+
+        Returns:
+            ApplicationContext: Created ApplicationContext instance
+
+        Example:
+            >>> context = ApplicationContext.create(
+            ...     session_id="session_123",
+            ...     task_id="task_456",
+            ...     task_content="Do something"
+            ... )
+        """
+        from datetime import datetime
+
+        # Generate IDs if not provided
+        if not session_id:
+            session_id = f"session_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        if not task_id:
+            task_id = f"task_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+
+        # Create TaskInput with simplified parameters
+        task_input = TaskInput(
+            user_id=user_id,
+            session_id=session_id,
+            task_id=task_id,
+            task_content=task_content,
+            origin_user_input=task_content
+        )
+
+        # Create default config if not provided
+        if not context_config:
+            context_config = AmniConfigFactory.create()
+
+        # Create minimal TaskWorkingState (synchronously, without async memory operations)
+        task_working_state = TaskWorkingState(
+            history_messages=[],
+            user_profiles=[],
+            kv_store={}
+        )
+
+        # Create ApplicationTaskContextState
+        task_state = ApplicationTaskContextState(
+            task_input=task_input,
+            working_state=task_working_state,
+            previous_round_results=[],
+            task_output=TaskOutput()
+        )
+
+        # Create ApplicationContext with workspace=None (will be initialized lazily)
+        context = cls(
+            task_state=task_state,
+            workspace=None,  # Workspace will be initialized lazily
+            parent=parent,
+            context_config=context_config,
+            working_dir=None,
+            task_id=task_id,
+            trace_id=kwargs.get('trace_id'),
+            session=kwargs.get('session'),
+            engine=kwargs.get('engine')
+        )
+
+        # Store current round's input as a separate field
+        context.put("origin_task_input", context.task_input)
+        context.put("origin_task_output", context.task_output)
+
+        return context
 
     @classmethod
     async def from_input(cls, task_input: TaskInput, workspace: WorkSpace = None, use_checkpoint: bool = False, context_config: AmniContextConfig = None,  **kwargs) -> "ApplicationContext":
@@ -631,7 +738,7 @@ class ApplicationContext(AmniContext):
             task_output=TaskOutput()
         )
 
-    async def build_sub_context(self, sub_task_content: str, sub_task_id: str = None, **kwargs):
+    async def build_sub_context(self, sub_task_content: str, sub_task_id: str = None, task_type: str = 'normal', **kwargs):
         logger.info(f"build_sub_context: {self.task_id} -> {sub_task_id}: {sub_task_content}")
         # force cast to string to avoid type error
         sub_task_content = str(sub_task_content)
@@ -640,21 +747,36 @@ class ApplicationContext(AmniContext):
         agent_list = []
         if agents:
             agent_list = [agent for agent_id, agent in agents.items()]
-        return await self.build_sub_task_context(sub_task_input, agents=agent_list)
 
-    def add_sub_tasks(self, sub_task_inputs: list[TaskInput]):
+        sub_context = await self.build_sub_task_context(sub_task_input, agents=agent_list, task_type=task_type)
+
+        # Record task relationship
+        self.add_task_node(
+            child_task_id=sub_context.task_id,
+            parent_task_id=self.task_id,
+            caller_agent_info=self.agent_info,
+            caller_id=self.agent_info.current_agent_id if self.agent_info and hasattr(self.agent_info, 'current_agent_id') else None
+        )
+
+        return sub_context
+
+    def add_sub_tasks(self, sub_task_inputs: list[TaskInput], task_type: str = 'normal'):
+        """Add sub tasks to the task list.
+
+        Delegates to TaskStateService.add_sub_task().
+
+        Args:
+            sub_task_inputs: List of task inputs.
+            task_type: Task type, 'normal' or 'background'. Defaults to 'normal'.
+        """
         for sub_task_input in sub_task_inputs:
-            sub_task = SubTask(
-                task_id=sub_task_input.task_id,
-                input=sub_task_input,
-                status='INIT'
-            )
-            self.task_state.working_state.sub_task_list.append(sub_task)
+            self.task_state_service.add_sub_task(sub_task_input, task_type)
 
     async def build_sub_task_context(self, sub_task_input: TaskInput,
                                      sub_task_history: list[MemoryMessage] = None,
                                      workspace: WorkSpace = None,
-                                     agents = None) -> "ApplicationContext":
+                                     agents = None,
+                                     task_type: str = 'normal') -> "ApplicationContext":
         task_state = await self.build_sub_task_state(sub_task_input, sub_task_history)
         if not workspace:
             workspace = self.workspace
@@ -662,7 +784,7 @@ class ApplicationContext(AmniContext):
         sub_context = ApplicationContext(task_state, workspace, parent=self, context_config=self.get_config())
         # Initialize sub-context event bus (global event bus already started, no need to restart here)
         # Upsert sub task to task state
-        self.task_state.working_state.upsert_subtask_by_input(sub_task_input)
+        self.task_state_service.upsert_sub_task(sub_task_input, task_type)
 
         if agents:
             await sub_context.build_agents_state(agents)
@@ -694,8 +816,8 @@ class ApplicationContext(AmniContext):
             swarm: Swarm
         Returns:
         """
-        self._swarm = swarm
-        await self.build_agents_state(swarm.topology)
+        pass
+
 
     async def build_agents_state(self, agents):
         """Build Multi Agent's Private State
@@ -714,6 +836,17 @@ class ApplicationContext(AmniContext):
             else:
                 await self.build_agent_state(agent)
 
+    async def init_agent_state(self, agent):
+        """Build Single Agent Private State.
+
+        Args:
+            agent: Agent
+
+        Returns:
+
+        """
+        await self.build_agent_state(agent)
+
     async def build_agent_state(self, agent):
         """Build Single Agent Private State.
 
@@ -725,7 +858,7 @@ class ApplicationContext(AmniContext):
         """
         if not self.has_agent_state(agent.id()):
             logger.info(f"build_agent_state agent#{agent.id()}")
-            application_agent_state = await self._build_agent_state(agent_id=agent.id(), agent_config=agent.conf)
+            application_agent_state = self._build_agent_state(agent_id=agent.id(), agent_config=agent.conf)
 
             # check agent has init_working_state method, if has, call it to set working_state
             if hasattr(agent, 'init_working_state') and callable(getattr(agent, 'init_working_state')):
@@ -743,16 +876,12 @@ class ApplicationContext(AmniContext):
                 logger.debug(f"init_skill_list: {agent.id()}")
                 await self.init_skill_list(namespace=agent.id(), skill_list=agent.conf.skill_configs)
 
-    async def _build_agent_state(self, agent_id: str, agent_config: AgentConfig) -> ApplicationAgentState:
+    def _build_agent_state(self, agent_id: str, agent_config: AgentConfig) -> ApplicationAgentState:
         agent_state = ApplicationAgentState()
 
         # agent config
         agent_state.agent_id = agent_id
         agent_state.agent_config = agent_config
-
-        # restore context
-        agent_state.memory_config = await get_context_manager()._get_memory_config(agent_id)
-        agent_state.context_rule = ContextRuleConfig()
 
         self.set_agent_state(agent_id, agent_state)
         return agent_state
@@ -763,17 +892,27 @@ class ApplicationContext(AmniContext):
         super().merge_sub_context(sub_task_context)
 
         # merge sub task kv_store
-        if sub_task_context.task_state.working_state.kv_store:
-            self.task_state.working_state.kv_store.update(
-                sub_task_context.task_state.working_state.kv_store)
+        sub_task_kv_store = sub_task_context.task_state_service.get_kv_store()
+        if sub_task_kv_store:
+            current_kv_store = self.task_state_service.get_kv_store()
+            current_kv_store.update(sub_task_kv_store)
 
         # merge sub task status & result
-        sub_task_id = sub_task_context.task_state.task_input.task_id
+        sub_task_id = sub_task_context.task_state_service.get_task_input().task_id
         # Iterate through sub_task_list to find matching sub_task_id
-        for sub_task in self.task_state.working_state.sub_task_list:
+        sub_task_list = self.task_state_service.get_sub_task_list()
+        for sub_task in sub_task_list or []:
             if sub_task.task_id == sub_task_id:
                 sub_task.status = sub_task_context.task_status
                 sub_task.result = sub_task_context.task_output_object
+
+                # For background tasks, use the latest task state
+                if sub_task.task_type == 'background' and sub_task_context._task:
+                    sub_task.status = sub_task_context._task.task_status
+                    # Update result from task response if available
+                    if hasattr(sub_task_context._task, 'outputs') and sub_task_context._task.outputs:
+                        # Get the latest output from task
+                        pass  # Task output is already merged via task_output_object
                 break
 
         # merge token
@@ -785,30 +924,49 @@ class ApplicationContext(AmniContext):
         if task_response and task_response.success:
             self.task_status = task_response.status
             self.task_output = task_response.answer
-            self.task_output_object.actions_info = await self.get_actions_info()
-            self.task_output_object.todo_info = await self.get_todo_info()
         else:
             self.task_status = task_response.status
             if self._task.outputs and isinstance(self._task.outputs, StreamingOutputs):
                 self.task_output = self._task.outputs.get_message_output_content()
             else:
                 self.task_output = task_response.msg
-            self.task_output_object.actions_info = await self.get_actions_info()
-            self.task_output_object.todo_info = await self.get_todo_info()
+
+        self.task_output_object.actions_info = await self.get_actions_info()
+        self.task_output_object.todo_info = await self.get_todo_info()
 
         if self.parent:
             self.parent.merge_sub_context(self)
 
     #################### Agent Isolated State ###################
+    """
+    Agent State Management
+    
+    Note: These methods delegate to TaskStateService. For direct service access, use context.task_state_service.
+    """
 
     def set_agent_state(self, agent_id: str, agent_state: ApplicationAgentState):
-        self.task_state.set_agent_state(agent_id, agent_state)
+        """
+        Set agent state for the given agent_id.
+
+        Delegates to TaskStateService.set_agent_state().
+        """
+        self.task_state_service.set_agent_state(agent_id, agent_state)
 
     def get_agent_state(self, agent_id: str) -> Optional[ApplicationAgentState]:
-        return self.task_state.get_agent_state(agent_id)
+        """
+        Get agent state for the given agent_id.
+
+        Delegates to TaskStateService.get_agent_state().
+        """
+        return self.task_state_service.get_agent_state(agent_id)
 
     def has_agent_state(self, agent_id: str):
-        return self.task_state.has_agent_state(agent_id)
+        """
+        Check if agent state exists for the given agent_id.
+
+        Delegates to TaskStateService.has_agent_state().
+        """
+        return self.task_state_service.has_agent_state(agent_id)
 
     ####################### Properties #######################
 
@@ -861,24 +1019,29 @@ class ApplicationContext(AmniContext):
         self.task_state.task_output.result = result
 
     @property
-    def task_status(self) -> TaskStatus:
-        return self.task_state.working_state.status
+    def task_status(self) -> 'TaskStatus':
+        """Get current task status."""
+        return self.task_state_service.get_task_status()
 
     @task_status.setter
-    def task_status(self, status: TaskStatus):
-        self.task_state.working_state.status = status
+    def task_status(self, status: 'TaskStatus'):
+        """Set task status."""
+        self.task_state_service.set_task_status(status)
 
     @property
     def task_input_object(self) -> TaskInput:
-        return self.task_state.task_input
+        """Get task input object."""
+        return self.task_state_service.get_task_input()
 
     @property
     def task_output_object(self) -> TaskOutput:
-        return self.task_state.task_output
+        """Get task output object."""
+        return self.task_state_service.get_task_output()
 
     @property
     def sub_task_list(self) -> Optional[list[SubTask]]:
-        return self.task_state.working_state.sub_task_list
+        """Get list of sub tasks."""
+        return self.task_state_service.get_sub_task_list()
 
     @property
     def parent(self) -> Optional["ApplicationContext"]:
@@ -906,154 +1069,67 @@ class ApplicationContext(AmniContext):
 
     @property
     def workspace(self):
+        """Get workspace. Returns None if not initialized. Use init_workspace() for async initialization."""
         return self._workspace
 
     @workspace.setter
     def workspace(self, workspace):
         self._workspace = workspace
 
+    async def init_workspace(self) -> "ApplicationWorkspace":
+        """
+        Initialize workspace asynchronously (lazy initialization).
+
+        This method should be called when workspace is needed for the first time.
+        Workspace will be created based on session_id.
+
+        Returns:
+            ApplicationWorkspace: Initialized workspace instance
+        """
+        if self._workspace is None:
+            self._workspace = await workspace_repo.get_session_workspace(session_id=self.session_id)
+        return self._workspace
+
+    async def _ensure_workspace(self) -> "ApplicationWorkspace":
+        """
+        Ensure workspace is initialized, initializing it if necessary.
+
+        This is a helper method to be used in methods that require workspace.
+        It automatically initializes workspace if it's None.
+
+        Returns:
+            ApplicationWorkspace: Initialized workspace instance
+
+        Raises:
+            RuntimeError: If workspace cannot be initialized (e.g., session_id is None)
+        """
+        if self._workspace is None:
+            if not self.session_id:
+                raise RuntimeError("Cannot initialize workspace: session_id is required")
+            self._workspace = await workspace_repo.get_session_workspace(session_id=self.session_id)
+        return self._workspace
+
     @property
     def model_config(self):
-        return self.task_state.model_config
+        """Get model configuration from task state."""
+        return self.task_state_service.get_model_config()
 
     @property
     def history(self):
-        if hasattr(self.task_state, 'working_state') and self.task_state.working_state:
-            return self.task_state.working_state.history_messages
-        return []
+        """Get history messages from working state."""
+        return self.task_state_service.get_history_messages()
 
     @property
     def tree(self) -> str:
         """Generate a tree representation showing the current context's position in the context hierarchy.
         
-        Traverses up the parent chain to build a visual tree structure that shows
-        the current context's location relative to its parent contexts, including subtasks.
+        Delegates to utils.build_context_tree().
         
         Returns:
             str: A formatted tree string showing the context hierarchy with subtasks
         """
-        # 1. Collect entire context hierarchy
-        context_path = []
-        current = self
-        while current is not None:
-            context_path.append(current)
-            current = getattr(current, '_parent', None)
-
-        # Reverse list so root context is first
-        context_path.reverse()
-
-        # 2. Get current task ID
-        current_task_id = getattr(self, 'task_id', None)
-
-        # 3. Create a set to track processed task IDs
-        processed_task_ids = set()
-
-        # 4. Add global flag to ensure current task is only displayed once
-        current_task_marked = False
-
-        # 5. Create result list
-        tree_lines = []
-
-        # 6. Recursively build tree
-        def build_tree(context, level, prefix):
-            nonlocal current_task_marked
-
-            # Get context identifier
-            context_id = getattr(context, 'task_id', None) or getattr(context, 'session_id', 'unknown')
-            task_content = getattr(context, 'task_input', '')
-            if isinstance(task_content, list):
-                task_content = task_content[0]['text']
-
-            # Build description
-            swarm_desc = ':'.join([agent.name() for agent in context.swarm.topology])
-            context_desc = f"[T]{context_id}: [R]{task_content} : [O]{context.task_input_object.origin_user_input}" if task_content else str(context_id)
-
-            # Check if current context and not yet marked
-            is_current = context is self and not current_task_marked
-
-            # Add current context line, only if context ID hasn't been processed
-            if context_id not in processed_task_ids:
-                if is_current:
-                    tree_lines.append(f"{prefix}📍 {context_desc} (current)")
-                    current_task_marked = True
-                else:
-                    tree_lines.append(f"{prefix}├─ {context_desc}")
-
-                # Mark as processed
-                processed_task_ids.add(context_id)
-
-            # Get sub-task list
-            sub_tasks = []
-            if hasattr(context, 'task_state') and context.task_state:
-                if hasattr(context.task_state.working_state, 'sub_task_list') and context.task_state.working_state.sub_task_list:
-                    sub_tasks = context.task_state.working_state.sub_task_list
-
-            # Check if there is a next level context
-            next_context_index = level + 1
-            next_context = context_path[next_context_index] if next_context_index < len(context_path) else None
-            next_context_id = getattr(next_context, 'task_id', None) if next_context else None
-
-            # Calculate sub-task indentation
-            child_prefix = prefix + "│   "
-
-            # Process sub-tasks in original order
-            valid_sub_tasks = []
-            next_context_sub_task_index = -1
-
-            # Collect valid sub-tasks (not yet processed)
-            for i, sub_task in enumerate(sub_tasks):
-                sub_task_id = getattr(sub_task, 'task_id', None)
-                if sub_task_id and sub_task_id not in processed_task_ids:
-                    valid_sub_tasks.append((i, sub_task))
-                    # Check if it's the next level context
-                    if sub_task_id == next_context_id:
-                        next_context_sub_task_index = len(valid_sub_tasks) - 1
-
-            # Process valid sub-tasks
-            for i, (original_index, sub_task) in enumerate(valid_sub_tasks):
-                sub_task_id = getattr(sub_task, 'task_id', None)
-
-                # Get sub-task content
-                subtask_content = ""
-                if hasattr(sub_task, 'input') and sub_task.input:
-                    subtask_content = getattr(sub_task.input, 'task_content', str(sub_task.input))
-                    if isinstance(subtask_content, list):
-                        subtask_content = subtask_content[0]['text']
-                else:
-                    subtask_content = str(sub_task)
-
-                # Determine if it's the last sub-task
-                is_last = i == len(valid_sub_tasks) - 1
-
-                # Choose appropriate connector
-                connector = "└─" if is_last else "├─"
-
-                # Check if it contains the next level context
-                is_next_context_task = i == next_context_sub_task_index and next_context
-
-                # Add sub-task line
-                if sub_task_id == current_task_id and not current_task_marked:
-                    tree_lines.append(f"{child_prefix}{connector} 📍{swarm_desc} {sub_task_id}: {subtask_content} (current)")
-                    current_task_marked = True
-                else:
-                    tree_lines.append(f"{child_prefix}{connector} {swarm_desc} {sub_task_id}: {subtask_content}")
-
-                # Mark as processed
-                processed_task_ids.add(sub_task_id)
-
-                # If it's a sub-task containing the next level context, recursively process the next level
-                if is_next_context_task:
-                    next_child_prefix = child_prefix + ("    " if is_last else "│   ")
-                    build_tree(next_context, level + 1, next_child_prefix)
-
-        # Start building tree from root context
-        if context_path:
-            build_tree(context_path[0], 0, "")
-
-        # Add tree header
-        tree_header = "Context Tree (from root to current):\n"
-
-        return tree_header + "\n".join(tree_lines)
+        from .utils import build_context_tree
+        return build_context_tree(self)
 
     @staticmethod
     async def user_similar_history(context: "ApplicationContext") -> str:
@@ -1190,30 +1266,23 @@ class ApplicationContext(AmniContext):
 
     ####################### Context Long Term Memory Processor Event #######################
 
+    ####################### Prompt Management #######################
+    """
+    Prompt Management Operations
+    
+    Note: These methods delegate to PromptService. For direct service access, use context.prompt_service.
+    """
+
     async def pub_and_wait_system_prompt_event(self, system_prompt: str, user_query: str, agent_id: str,
                                                agent_name: str, namespace: str = "default"):
-        from .payload import SystemPromptMessagePayload
-        logger.info(f"ApplicationContext|pub_and_wait_system_prompt_event|start|{namespace}|{agent_id}")
-        payload = SystemPromptMessagePayload(context=self, system_prompt=system_prompt, user_query=user_query,
-                                   agent_id=agent_id, agent_name=agent_name,
-                                   event_type=TopicType.SYSTEM_PROMPT, namespace=namespace)
-        message = ContextMessage(
-            category=Constants.CONTEXT,
-            payload=payload,
-            sender=None,
-            receiver=None,
-            session_id=self.session_id,
-            topic=TopicType.SYSTEM_PROMPT,
-            headers={"context": self}
+        """
+        Publish and wait for system prompt event.
+
+        Delegates to PromptService.pub_and_wait_system_prompt_event().
+        """
+        return await self.prompt_service.pub_and_wait_system_prompt_event(
+            system_prompt, user_query, agent_id, agent_name, namespace
         )
-        # Send via message system by default
-        try:
-            future = await send_message_with_future(message)
-            results = await future.wait(timeout=300)
-            if not results:
-                logger.warning(f"context write task failed: {message}")
-        except Exception as e:
-            logger.warn(f"context write task failed: {traceback.format_exc()}")
 
     async def pub_and_wait_tool_result_event(self,
                                              tool_result: Any,
@@ -1221,121 +1290,33 @@ class ApplicationContext(AmniContext):
                                              agent_id: str,
                                              agent_name: str,
                                              namespace: str = "default"):
-        from .payload import ToolResultMessagePayload
-        logger.info(f"ApplicationContext|pub_and_wait_tool_result_event|start|{namespace}|{agent_id}")
-        payload = ToolResultMessagePayload(event_type=TopicType.TOOL_RESULT,
-                                           tool_result=tool_result,
-                                           context=self,
-                                           tool_call_id=tool_call_id,
-                                           agent_id=agent_id,
-                                           agent_name=agent_name,
-                                           namespace=namespace)
-        message = ContextMessage(
-            category=Constants.CONTEXT,
-            payload=payload,
-            sender=None,
-            receiver=None,
-            session_id=self.session_id,
-            topic=TopicType.SYSTEM_PROMPT,
-            headers={"context": self}
+        """
+        Publish and wait for tool result event.
+
+        Delegates to PromptService.pub_and_wait_tool_result_event().
+        """
+        return await self.prompt_service.pub_and_wait_tool_result_event(
+            tool_result, tool_call_id, agent_id, agent_name, namespace
         )
-        # Send via message system by default
-        try:
-            future = await send_message_with_future(message)
-            results = await future.wait(timeout=300)
-            if not results:
-                logger.warning(f"context write task failed: {message}")
-        except Exception as e:
-            logger.warn(f"context write task failed: {traceback.format_exc()}")
 
     ####################### Context Write #######################
 
     async def offload_by_workspace(self, artifacts: list[Artifact], namespace="default", biz_id: str = None):
         """
-        Context Offloading - Store information outside the LLM's context via external storage
-        """
-        if not artifacts:
-            return ""
+        Context Offloading - Store information outside the LLM's context via external storage.
 
-        use_index = self.need_index(artifacts[0])
-        ## 1. add knowledge to workspace
-        if not biz_id:
-            biz_id = str(uuid.uuid4())
-        for artifact in artifacts:
-            artifact.metadata.update({
-                "biz_id": biz_id
-            })
-        await self.add_knowledge_list(artifacts, namespace=namespace, build_index=use_index)
-        # Add a strategy: single page should not exceed 40K
-        if len(artifacts) == 1 and len(artifacts[0].content) < 40_000:
-            logger.info(f"directly return artifacts content: {len(artifacts[0].content)}")
-            return f"{artifacts[0].content}"
-        logger.info(f"add artifacts to context: {[artifact.artifact_id for artifact in artifacts]}")
-        artifact_context = "This is cur action result: a list of knowledge artifacts:"
-        artifact_context += "\n<knowledge_list>\n"
-        search_tasks = []
-        for artifact in artifacts:
-            search_tasks.append(self._get_knowledge_index_context(artifact, load_chunk_content_size=5))
-        search_task_results = await asyncio.gather(*search_tasks)
-        artifact_context += "\n".join(search_task_results)
-        artifact_context += "</knowledge_list>"
-        return f"{artifact_context}"
+        Delegates to KnowledgeService.offload_by_workspace().
+        """
+        return await self.knowledge_service.offload_by_workspace(artifacts, namespace, biz_id)
 
     def need_index(self, artifact: Artifact):
-        return isinstance(artifact, SearchArtifact)
+        """
+        Check if artifact needs indexing.
 
-    async def _get_knowledge_index_context(self,
-                                           knowledge: Artifact,
-                                           namespace: str = "default",
-                                           load_chunk_indicis: bool = True,
-                                           load_chunk_content_size: int = 5):
-        knowledge_context = "<knowledge>\n"
-        knowledge_context += f"<id>{knowledge.artifact_id}</id>\n"
+        Delegates to KnowledgeService._need_index().
+        """
+        return self.knowledge_service._need_index(artifact)
 
-        if knowledge.summary:
-            knowledge_context += f"{knowledge.summary}\n"
-
-        knowledge_chunk_context = ""
-        if knowledge.metadata.get("chunked"):
-            total_chunk = knowledge.metadata.get("chunks")
-            chunk_count_desc = f"Total is {total_chunk} chunks"
-            knowledge_context += f"<chunks description='{chunk_count_desc}'>\n"
-
-            # Load chunk index
-            if load_chunk_indicis:
-                pass
-
-            # Load head and tail chunks
-            if load_chunk_content_size:
-                def _format_chunk_content(_chunk: Chunk) -> str:
-                    return (
-                        f"  <knowledge_chunk>\n"
-                        f"    <chunk_id>{_chunk.chunk_id}</chunk_id>\n"
-                        f"    <chunk_index>{_chunk.chunk_metadata.chunk_index}</chunk_index>\n"
-                        f"    <chunk_content>{truncate_content(_chunk.content, 1000)}</chunk_content>\n"
-                        f"  </knowledge_chunk>\n"
-                    )
-
-                head_chunks, tail_chunks = await self._workspace.get_artifact_chunks_head_and_tail(
-                    knowledge.artifact_id,
-                    load_chunk_content_size
-                )
-                # Add head chunks
-                if head_chunks:
-                    knowledge_chunk_context += f"\n<head_chunks start='{head_chunks[0].chunk_id}' end='{head_chunks[len(head_chunks)-1].chunk_id}'>\n"
-                    for chunk in head_chunks:
-                        knowledge_chunk_context += _format_chunk_content(chunk)
-                    knowledge_chunk_context += f"\n</head_chunks>\n"
-
-                # Add tail chunks
-                if tail_chunks:
-                    knowledge_chunk_context += f"<tail_chunks  start='{tail_chunks[0].chunk_id}' end='{tail_chunks[len(tail_chunks)-1].chunk_id}'>\n"
-                    for chunk in tail_chunks:
-                        knowledge_chunk_context += _format_chunk_content(chunk)
-                    knowledge_chunk_context += f"\n</tail_chunks>\n"
-            knowledge_context += f"{knowledge_chunk_context}\n</chunks>\n"
-        knowledge_context += "</knowledge>\n"
-        return knowledge_context
 
     async def load_context_by_workspace(
             self,
@@ -1346,82 +1327,19 @@ class ApplicationContext(AmniContext):
             load_index: bool = True,
             search_by_index: bool = True
     ):
-        if not search_filter:
-            search_filter = {}
+        """
+        Load knowledge context from workspace.
 
-        # 1. Get knowledge_chunk_index with biz_id
-        knowledge_index_context = ""
-        knowledge_chunk_context = ""
-        if search_by_index:
-            if load_index:
-                artifacts_indicis = await self._workspace.search_artifact_chunks_index(
-                    self.task_input,
-                    search_filter=search_filter,
-                    top_k=top_k * 3
-                )
-                if artifacts_indicis:
-                    for item in artifacts_indicis:
-                        knowledge_index_context += f"{item.model_dump()}\n"
-            if load_content:
-                knowledge_chunk_context = await self._load_artifact_chunks_by_workspace(search_filter=search_filter,
-                                                                                        namespace=namespace,
-                                                                                        top_k=top_k)
-        else:
-            start_time = time.time()
-            artifacts_indicis = await self._workspace.async_query_artifact_index(search_filter=search_filter)
-            logger.info(f"📊 artifacts_indicis loaded successfully in {time.time() - start_time:.3f} seconds")
-
-            if artifacts_indicis:
-                # 📈 1. Get artifact statistics info
-                artifact_stats = await self._get_artifact_statistics(artifacts_indicis)
-                if artifact_stats:
-                    knowledge_index_context += artifact_stats
-
-                # 🔍 2. Process load_index logic - each artifact read the index from topk to 2*topk
-                if load_index:
-                    knowledge_index_context += await self._load_artifact_index_context(
-                        artifact_chunk_indicis=artifacts_indicis,
-                        top_k=top_k
-                    )
-
-                # 📄 3. Process load_content logic - each artifact keep head-topk and tail-topk chunks
-                if load_content:
-                    knowledge_chunk_context += await self._load_artifact_content_context(
-                        chunk_indicis=artifacts_indicis,
-                        top_k=top_k
-                    )
-
-        # 3. Format context
-        knowledge_context = AMNI_CONTEXT_PROMPT["KNOWLEDGE_PART"].format(
-            knowledge_index=knowledge_index_context,
-            knowledge_chunks=knowledge_chunk_context
+        Delegates to KnowledgeService.load_context_by_workspace().
+        """
+        return await self.knowledge_service.load_context_by_workspace(
+            search_filter=search_filter,
+            namespace=namespace,
+            top_k=top_k,
+            load_content=load_content,
+            load_index=load_index,
+            search_by_index=search_by_index
         )
-
-        return knowledge_context
-
-    async def _load_artifact_chunks_by_workspace(self, search_filter: dict,
-                                                 namespace="default",
-                                                 top_k: int = 20):
-        knowledge_chunk_context = ""
-        knowledge_chunks = await self.search_knowledge(user_query=self.task_input,
-                                                       namespace=namespace,
-                                                       search_filter=search_filter,
-                                                       top_k=top_k)
-        if not knowledge_chunks:
-            return knowledge_chunk_context
-
-        for item in knowledge_chunks.docs:
-            metadata: EmbeddingsMetadata = item.metadata
-            knowledge_chunk_context += (
-                f"<knowledge_chunk>\n"
-                f"<chunk_id>{item.id}</chunk_id>\n"
-                f"<chunk_index>{metadata.chunk_index}</chunk_id>\n"
-                f"<relevant_score>{item.score:.3f}</relevant_score>\n"
-                f"<origin_knowledge_id>{metadata.artifact_id}</origin_knowledge_id>\n"
-                f"<origin_knowledge_type>{metadata.artifact_type}</origin_knowledge_type>\n"
-                f"<chunk_content>{item.content}</chunk_content>\n"
-                f"</knowledge_chunk>\n")
-        return knowledge_chunk_context
 
     ####################### Context Write #######################
 
@@ -1435,218 +1353,93 @@ class ApplicationContext(AmniContext):
 
     @trace.func_span(span_name="ApplicationContext#add_knowledge_list", extract_args = False)
     async def add_knowledge_list(self, knowledge_list: List[Artifact], namespace: str = "default", build_index=True) -> None:
-        logger.debug(f"add_knowledge_list start")
+        """
+        Add multiple knowledge artifacts in batch.
 
-        if knowledge_list:
-            logger.debug(f"🧠 Start adding knowledge in batch, total {len(knowledge_list)} items")
-            start_time = time.time()
-
-            # Batch process all knowledge items concurrently
-            await asyncio.gather(*(self.add_knowledge(knowledge, namespace, build_index) for knowledge in knowledge_list))
-            elapsed = time.time() - start_time
-            logger.info(f"✅ Batch add {len(knowledge_list)} knowledge addition completed, elapsed time: {elapsed:.3f} seconds")
-        logger.debug(f"add_knowledge_list end")
+        Delegates to KnowledgeService.add_knowledge_list().
+        """
+        return await self.knowledge_service.add_knowledge_list(knowledge_list, namespace, build_index)
 
     async def add_knowledge(self, knowledge: Artifact, namespace: str = "default", index=True) -> None:
-        logger.debug(f"add knowledge #{knowledge.artifact_id} start")
-        self._get_working_state(namespace).save_knowledge(knowledge)
-        if self._workspace:
-            await self._workspace.add_artifact(knowledge, index=index)
-            logger.info(f"add knowledge to#{knowledge.artifact_id} workspace finished")
-        logger.debug(f"add knowledge #{knowledge.artifact_id} finished")
+        """
+        Add a single knowledge artifact.
+
+        Delegates to KnowledgeService.add_knowledge().
+        """
+        return await self.knowledge_service.add_knowledge(knowledge, namespace, index)
 
     async def update_knowledge(self, knowledge: Artifact, namespace: str = "default") -> None:
-        self._get_working_state(namespace).save_knowledge(knowledge)
-        if self._workspace:
-            await self._workspace.update_artifact(artifact_id=knowledge.artifact_id, content=knowledge.content)
+        """
+        Update an existing knowledge artifact.
 
-    ####################### Context User Working Directory #######################
+        Delegates to KnowledgeService.update_knowledge().
+        """
+        return await self.knowledge_service.update_knowledge(knowledge, namespace)
+
+    ####################### Freedom Space #######################
+    """
+    Freedom Space Management Operations
+        
+    Note: These methods delegate to FreedomSpaceService. For direct service access, use context.freedom_space_service.
+    """
 
     @property
     def working_dir_env_mounted_path(self) -> str:
         """
-        # This property returns the absolute path where the working directory (dir_artifact) is mounted inside the environment.
-        # The working directory acts as a shared workspace and can be stored either locally or remotely.
-        # When using a remote environment, the remote working directory will be mounted to the environment for the agent to use.
-        # The agent interacts with the environment through the env-client (also known as mcp), which accesses files via this mounted directory.
-        #
-        # Diagram:
-        #
-        #          +------------------------------+
-        #          |        Working Dir           |  <--- working_dir_path(local or remote storage)
-        #          +------------------------------+
-        #                       |
-        #                       v   (mounted/sync)
-        #           +----------------------------+
-        #           |      Environment           | <--- env_mounted_path
-        #           +----------------------------+
-        #                       |
-        #                       v   (file operations)
-        #           +----------------------------+
-        #           |   env-client (mcp)         |
-        #           +----------------------------+
-        #                       |
-        #                       v
-        #                  Agent logic
-        #
-        # The agent accesses and manages files in the environment through the env-client interface, which ultimately interacts with the mounted working directory.
-        """
-        return self._config.env_config.env_mount_path
+        Get environment mounted path for freedom space.
 
+        Delegates to FreedomSpaceService.get_env_mounted_path().
+        """
+        return self.freedom_space_service.get_env_mounted_path()
 
     def get_working_dir_path(self) -> str:
-        return self._working_dir.base_path
+        """
+        Get freedom space base path.
+
+        Delegates to FreedomSpaceService.get_freedom_space_path().
+        """
+        return self.freedom_space_service.get_freedom_space_path()
 
     def abs_file_path(self, filename: str):
-        return self.working_dir_env_mounted_path + "/" + filename
+        """
+        Get absolute file path in the environment.
+
+        Delegates to FreedomSpaceService.get_abs_file_path().
+        """
+        return self.freedom_space_service.get_abs_file_path(filename)
 
     async def add_file(self, filename: Optional[str], content: Optional[Any], mime_type: Optional[str] = "text",
                        namespace: str = "default", origin_type: str = None, origin_path : str = None) -> Tuple[bool, Optional[str], Optional[str]]:
-        # Save metadata
-        file = ArtifactAttachment(filename=filename, mime_type=mime_type, content=content, origin_type=origin_type, origin_path=origin_path)
-        dir_artifact: DirArtifact = await self.load_working_dir()
-        # Persist the new file to the directory
-        success, file_path, content = await dir_artifact.add_file(file)
-        if not success:
-            return False, None, None
-        # Refresh directory index
-        await self.add_knowledge(dir_artifact, namespace, index=False)
-        return True, self.abs_file_path(filename), content
+        """
+        Add a file to freedom space.
+
+        Delegates to FreedomSpaceService.add_file().
+        """
+        return await self.freedom_space_service.add_file(filename, content, mime_type, namespace, origin_type, origin_path)
 
     async def init_working_dir(self) -> DirArtifact:
-        if self._working_dir:
-            return self._working_dir
-
-        # Initialize working directory
-        if self._config.env_config.env_type == 'remote' and self._config.env_config.enabled_file_share:
-            # Get OSS configuration with priority: config > environment variables
-            oss_config = self._get_oss_config()
-            self._working_dir = DirArtifact.with_oss_repository(
-                access_key_id=oss_config['access_key_id'],
-                access_key_secret=oss_config['access_key_secret'],
-                endpoint=oss_config['endpoint'],
-                bucket_name=oss_config['bucket_name'],
-                base_path=self.build_working_dir_base_path(),
-                mount_path=self.get_config().env_config.env_mount_path
-            )
-        else:
-            # default local - use the same path building logic for consistency
-            self._working_dir = DirArtifact.with_local_repository(base_path=self.build_working_dir_base_path())
-
-
-        return self._working_dir
-
-    def _get_oss_config(self) -> Dict[str, Optional[str]]:
         """
-        Get OSS configuration with priority order: config.working_dir_oss_config > environment variables.
-        
-        Returns:
-            Dict containing OSS configuration: access_key_id, access_key_secret, endpoint, bucket_name
-        """
-        env_config = self._config.env_config if self._config and self._config.env_config else None
-        oss_config = env_config.working_dir_oss_config if env_config and env_config.working_dir_oss_config else None
-        
-        # Priority: config.working_dir_oss_config > WORKING_DIR_OSS_* > OSS_*
-        access_key_id = (
-            oss_config.access_key_id if oss_config and oss_config.access_key_id
-            else os.environ.get('WORKING_DIR_OSS_ACCESS_KEY_ID') or os.environ.get('OSS_ACCESS_KEY_ID')
-        )
-        
-        access_key_secret = (
-            oss_config.access_key_secret if oss_config and oss_config.access_key_secret
-            else os.environ.get('WORKING_DIR_OSS_ACCESS_KEY_SECRET') or os.environ.get('OSS_ACCESS_KEY_SECRET')
-        )
-        
-        endpoint = (
-            oss_config.endpoint if oss_config and oss_config.endpoint
-            else os.environ.get('WORKING_DIR_OSS_ENDPOINT') or os.environ.get('OSS_ENDPOINT')
-        )
-        
-        bucket_name = (
-            oss_config.bucket_name if oss_config and oss_config.bucket_name
-            else os.environ.get('WORKING_DIR_OSS_BUCKET_NAME') or os.environ.get('OSS_BUCKET_NAME')
-        )
-        
-        return {
-            'access_key_id': access_key_id,
-            'access_key_secret': access_key_secret,
-            'endpoint': endpoint,
-            'bucket_name': bucket_name
-        }
+        Initialize freedom space (working directory).
 
-    def build_working_dir_base_path(self) -> str:
+        Delegates to FreedomSpaceService.init_freedom_space().
         """
-        Build the working directory base path with support for custom templates.
-        
-        Base path priority order:
-        1. Config base_path (from context_config.env_config.working_dir_base_path)
-        2. Environment variable WORKING_DIR_BASE_PATH
-        3. Environment variable WORKING_DIR_OSS_BASE_PATH
-        4. Environment variable WORKSPACE_PATH
-        5. Empty string (if none of the above are set)
-        
-        Template priority order:
-        1. Config template (from context_config.env_config.working_dir_path_template)
-        2. Environment variable template (WORKING_DIR_PATH_TEMPLATE)
-        3. Default template: "{base_path}/{session_id}/files"
-        
-        Template placeholders:
-        - {base_path}: Base path resolved from above priority order
-        - {session_id}: Current session ID
-        
-        Examples:
-        - Template: "{base_path}/custom/{session_id}/workspace"
-        - Template: "{base_path}/{session_id}/files"
-        - Template: "/absolute/path/{session_id}/data"
-        
-        Returns:
-            str: The resolved working directory base path
-        """
-        # Get base path with priority order
-        base_path = None
-        if self._config and self._config.env_config and self._config.env_config.working_dir_base_path:
-            base_path = self._config.env_config.working_dir_base_path
-        elif os.environ.get('WORKING_DIR_BASE_PATH'):
-            base_path = os.environ.get('WORKING_DIR_BASE_PATH')
-        elif os.environ.get('WORKING_DIR_OSS_BASE_PATH'):
-            base_path = os.environ.get('WORKING_DIR_OSS_BASE_PATH')
-        elif os.environ.get('WORKSPACE_PATH'):
-            base_path = os.environ.get('WORKSPACE_PATH')
-        else:
-            base_path = './data/workspaces'
-            if not os.path.exists(base_path):
-                os.makedirs(base_path)
-        
-        # Get template with priority order
-        config_template = None
-        if self._config and self._config.env_config and self._config.env_config.working_dir_path_template:
-            config_template = self._config.env_config.working_dir_path_template
-        
-        env_template = os.environ.get('WORKING_DIR_PATH_TEMPLATE')
-        template = config_template or env_template or "{base_path}/{session_id}/files"
-        
-        # Replace placeholders
-        try:
-            path = template.format(
-                base_path=base_path,
-                session_id=self.session_id,
-                task_id=self.task_id
-            )
-            return path
-        except KeyError as e:
-            # If template contains unsupported placeholders, fall back to default
-            logger.warning(f"Unsupported placeholder in working_dir_path_template: {e}, using default template")
-            return f"{base_path}/{self.session_id}/files"
+        return await self.freedom_space_service.init_freedom_space()
 
     async def load_working_dir(self) -> DirArtifact:
-        await self.init_working_dir()
-        self._working_dir.reload_working_files()
-        return self._working_dir
+        """
+        Load freedom space and reload files.
+
+        Delegates to FreedomSpaceService.load_freedom_space().
+        """
+        return await self.freedom_space_service.load_freedom_space()
 
     async def refresh_working_dir(self):
-        await self.init_working_dir()
-        self._working_dir.reload_working_files()
-        await self._workspace.add_artifact(self._working_dir, index=False)
+        """
+        Refresh freedom space and sync to workspace.
+
+        Delegates to FreedomSpaceService.refresh_freedom_space().
+        """
+        return await self.freedom_space_service.refresh_freedom_space()
 
 
 
@@ -1654,40 +1447,62 @@ class ApplicationContext(AmniContext):
     #####################################################################
 
     async def add_task_output(self, output_artifact: Artifact, namespace: str = "default", index=True) -> None:
-        self.task_state.task_output.add_file(output_artifact.artifact_id, output_artifact.summary)
-        if self._workspace:
-            await self._workspace.add_artifact(output_artifact, index=index)
+        """
+        Add a task output artifact to task state and workspace.
 
+        Delegates to KnowledgeService.add_task_output().
+        """
+        return await self.knowledge_service.add_task_output(output_artifact, namespace, index)
+
+
+    ################################ Memory Management #####################################
+    """
+    Memory Management Operations
+    
+    Note: These methods delegate to MemoryService. For direct service access, use context.memory_service.
+    """
 
     def add_history_message(self, memory_message: MemoryMessage, namespace: str = "default") -> None:
-        # Hook call processor such as tool_node_with_pruning
-        self._get_working_state(namespace).history_messages.append(memory_message)
+        """
+        Add a memory message to the working state (short-term memory).
 
+        Delegates to MemoryService.add_history_message().
+        """
+        self.memory_service.add_history_message(memory_message, namespace)
 
     ################################ Long Term Memory #####################################
 
     def add_fact(self, fact: Fact, namespace: str = "default", **kwargs):
-        self.root._get_working_state(namespace).facts.append(fact)
+        """
+        Add a fact to working state (long-term memory).
+
+        Delegates to MemoryService.add_fact().
+        """
+        self.memory_service.add_fact(fact, namespace, **kwargs)
 
     async def retrival_facts(self, namespace: str = "default", **kwargs) -> Optional[list[Fact]]:
-        if not self._get_working_state(namespace):
-            return []
-        st = time.time()
-        memory = MemoryFactory.instance()
-        todo_info = await self.get_todo_info()
-        current_task = "current_task: " + self.task_input
-        concat_task_input = current_task + (todo_info if todo_info else "")
-        facts = await memory.retrival_facts(user_id=self.user_id, user_input=concat_task_input, limit=10)
-        logger.info(f"get_facts cost: {time.time() - st}")
-        return facts
+        """
+        Retrieve facts from long-term memory storage.
+
+        Delegates to MemoryService.retrieval_facts().
+        """
+        return await self.memory_service.retrieval_facts(namespace, **kwargs)
 
     def get_facts(self, namespace: str = "default", **kwargs) -> Optional[list[Fact]]:
-        if not self._get_working_state(namespace):
-            return []
-        return self._get_working_state(namespace).facts
+        """
+        Get facts from working state (long-term memory).
+
+        Delegates to MemoryService.get_facts().
+        """
+        return self.memory_service.get_facts(namespace, **kwargs)
 
     def get_user_profiles(self, namespace: str = "default") -> Optional[list[UserProfile]]:
-        return self._get_working_state(namespace).user_profiles
+        """
+        Get user profiles from working state.
+
+        Delegates to MemoryService.get_user_profiles().
+        """
+        return self.memory_service.get_user_profiles(namespace)
 
     #####################################################################
 
@@ -1702,95 +1517,90 @@ class ApplicationContext(AmniContext):
         return result
 
     async def get_todo_info(self):
-        """Get cooperation info from working state."""
-        self._workspace._load_workspace_data()
-        todo_info = (
-            "Below is the global task execute todo information, explaining the current progress:\n"
-        )
-        artifact = self._workspace.get_artifact(f"session_{self.session_id}_todo")
-        if not artifact:
-            return "Todo is Empty"
-        todo_info += f"{artifact.content}"
-        return todo_info
+        """
+        Get todo information from workspace.
+
+        Delegates to KnowledgeService.get_todo_info().
+        """
+        return await self.knowledge_service.get_todo()
 
     async def get_actions_info(self, namespace = "default"):
-        """Get cooperation info from working state."""
-        self._workspace._load_workspace_data()
-        artifacts = await self._workspace.query_artifacts(search_filter={
-            "context_type": "actions_info",
-            "task_id": self.task_id
-        })
-        logger.info(f"get_actions_info: {len(artifacts)}")
-        actions_info = (
-            "\nBelow is the actions information, including both successful and failed experiences, "
-            "as well as key knowledge and insights obtained during the process. "
-            "\nMake full use of this information:\n"
-            "<knowledge_list>"
-        )
-        for artifact in artifacts:
-            actions_info += f"  <knowledge id='{artifact.artifact_id}' summary='{artifact.summary}<'>: </knowledge>\n"
-        actions_info += f"\n</knowledge_list>\n\n<tips>\n"
-        actions_info += f"you can use get_knowledge(knowledge_id_xxx) to got detail content\n"
-        actions_info += f"</tips>\n"
-        return actions_info
+        """
+        Get actions information from workspace.
+
+        Delegates to KnowledgeService.get_actions_info().
+        """
+        return await self.knowledge_service.get_actions_info(namespace)
 
     async def consolidation(self, namespace = "default"):
-        pass
-        # consolidation_event = EventBus.create_context_event(event_type=EventType.CONTEXT_CONSOLIDATION, context=self.deep_copy(), namespace=namespace)
-        # event_bus = await get_global_event_bus()
-        # await event_bus.publish(consolidation_event)
-        # logger.info(f"context#{self.task_id}[{namespace}] -> consolidation trigger")
+        """
+        Context consolidation: Extract and generate long-term memory from context.
+
+        Delegates to MemoryService.consolidation().
+        """
+        return await self.memory_service.consolidation(namespace)
 
     ####################### Context Read #######################
 
     def get(self, key: str, namespace: str = "default") -> Any:
-        logger.info(f"{id(self)}#get value for namespace: {namespace} -> key: {key}")
-        if self._is_default_namespace(namespace):
-            return self.task_state.working_state.kv_store.get(key)
+        """
+        Get a value from key-value store.
 
-        if self._get_working_state(namespace):
-            return self._get_working_state(namespace).kv_store.get(key)
+        Delegates to TaskStateService.get_kv().
+        """
+        logger.info(f"{id(self)}#get value for namespace: {namespace} -> key: {key}")
+        return self.task_state_service.get_kv(key, namespace)
 
     def get_memory_messages(self, last_n=100, namespace: str = "default") -> list[MemoryMessage]:
-        return self._get_working_state(namespace).memory_messages[:last_n]
+        """
+        Get memory messages from working state (short-term memory).
+
+        Delegates to MemoryService.get_memory_messages().
+        """
+        return self.memory_service.get_memory_messages(last_n, namespace)
 
     async def get_knowledge_by_id(self, knowledge_id: str, namespace: str = "default"):
-        # check knowledge in the namespace
-        return self._get_knowledge(knowledge_id)
+        """
+        Get a knowledge artifact by ID.
 
-
-    def _get_knowledge(self, knowledge_id: str) -> Optional[Artifact]:
-        return self.workspace.get_artifact(knowledge_id)
+        Delegates to KnowledgeService.get_knowledge_by_id().
+        """
+        return await self.knowledge_service.get_knowledge_by_id(knowledge_id, namespace)
 
     async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Chunk]:
-        return await self._workspace.get_artifact_chunk(knowledge_id, chunk_index=chunk_index)
+        """
+        Get a specific chunk from a knowledge artifact.
+
+        Delegates to KnowledgeService.get_knowledge_chunk().
+        """
+        return await self.knowledge_service.get_knowledge_chunk(knowledge_id, chunk_index)
 
     async def search_knowledge(self, user_query: str, top_k: int = None, search_filter:dict = None, namespace: str = "default"
                                ) -> Optional[SearchResults]:
-        """semantic search knowledge from working state
-
-        Args:
-            user_query:
-            namespace:
-
-        Returns:
-
         """
-        if self._workspace:
-            if not search_filter:
-                search_filter = {}
-            search_filter = {
-                # "type": "knowledge",
-                **search_filter
-            }
-            return await self._workspace.search_artifact_chunks(user_query=user_query, search_filter=search_filter,
-                                                                top_k=top_k)
-        return None
+        Search knowledge using semantic search.
+
+        Delegates to KnowledgeService.search_knowledge().
+        """
+        return await self.knowledge_service.search_knowledge(user_query, top_k, search_filter, namespace)
+
+    async def delete_knowledge_by_id(self, knowledge_id: str, namespace: str = "default") -> None:
+        """
+        Delete a knowledge artifact by ID.
+
+        Delegates to KnowledgeService.delete_knowledge_by_id().
+        """
+        return await self.knowledge_service.delete_knowledge_by_id(knowledge_id, namespace)
 
     ####################### Context Internal Method #######################
 
     async def build_knowledge_context(self, namespace: str = "default", search_filter:dict = None, top_k=20) -> str:
-        return await self.load_context_by_workspace(search_filter, namespace=namespace, top_k=top_k)
+        """
+        Build knowledge context string.
+
+        Delegates to KnowledgeService.build_knowledge_context().
+        """
+        return await self.knowledge_service.build_knowledge_context(namespace, search_filter, top_k)
 
     def _get_working_state(self, namespace: str = "default") -> Optional[WorkingState]:
         if self._is_default_namespace(namespace):
@@ -1804,17 +1614,6 @@ class ApplicationContext(AmniContext):
 
     def deep_copy(self) -> 'ApplicationContext':
         return self
-
-    def merge_context(self, other_context: 'ApplicationContext') -> None:
-        super().merge_context(other_context)
-        # Merge task_state
-        if hasattr(other_context, 'task_state') and other_context.task_state:
-            try:
-                for key, value in other_context.task_state.items():
-                    # If key already exists, the value will be overwritten
-                    self.task_state[key] = value
-            except Exception as e:
-                logger.warning(f"Failed to merge task_state: {e}")
 
     def to_dict(self) -> dict:
         result = {}
@@ -1880,101 +1679,6 @@ class ApplicationContext(AmniContext):
             # Return a basic ApplicationContext
             return cls(task_state=ApplicationTaskContextState())
 
-    async def _get_artifact_statistics(self, chunk_indicis: list) -> str:
-        if not chunk_indicis:
-            return ""
-        # Generate statistics info
-        artifact_count_info = ", ".join(
-            [f"{item.artifact_id}: {item.chunk_count} chunks " for item in chunk_indicis[:100]]
-        )
-
-        summary_prompt = (
-            f"📊 Total {len(chunk_indicis)} artifacts.\n"
-            f"📈 details is: \n {artifact_count_info}"
-        )
-
-        return summary_prompt
-
-    async def _load_artifact_index_context(self, artifact_chunk_indicis: list, top_k: int) -> str:
-        if not artifact_chunk_indicis:
-            return ""
-
-        # Group by artifact_id
-        artifact_chunks = {}
-        for chunk_item in artifact_chunk_indicis:
-            if hasattr(chunk_item, "artifact_id"):
-                artifact_id = chunk_item.artifact_id
-                if artifact_id not in artifact_chunks:
-                    artifact_chunks[artifact_id] = []
-                artifact_chunks[artifact_id].append(chunk_item)
-
-        # 🚀 Get middle range indices for each artifact using efficient range queries
-        tasks = []
-        for artifact_id in artifact_chunks.keys():
-            task = self._workspace.get_artifact_chunk_indices_middle_range(artifact_id, top_k)
-            tasks.append(task)
-        knowledge_index_context = ""
-        if tasks:
-            middle_range_indices = await asyncio.gather(*tasks)
-            for artifact_id, indices in zip(artifact_chunks.keys(), middle_range_indices):
-                if indices:
-                    knowledge_index_context += f"\n📄 Artifact {artifact_id} (chunks {top_k} to {2*top_k}): index :\n"
-                    for item in indices:
-                        knowledge_index_context += f"{item.model_dump()}\n"
-
-        return knowledge_index_context
-
-    async def _load_artifact_content_context(self, chunk_indicis: list, top_k: int) -> str:
-        if not chunk_indicis:
-            return ""
-
-        knowledge_chunk_context = ""
-
-        # Group by artifact_id
-        artifact_chunks = {}
-        for chunk_item in chunk_indicis:
-            if hasattr(chunk_item, "artifact_id"):
-                artifact_id = chunk_item.artifact_id
-                if artifact_id not in artifact_chunks:
-                    artifact_chunks[artifact_id] = []
-                artifact_chunks[artifact_id].append(chunk_item)
-
-        # 🚀 Get head and tail chunks for each artifact using efficient range queries
-        tasks = []
-        for artifact_id in artifact_chunks.keys():
-            task = self._workspace.get_artifact_chunks_head_and_tail(artifact_id, top_k)
-            tasks.append(task)
-
-        if tasks:
-            head_tail_chunks = await asyncio.gather(*tasks)
-            for artifact_id, (head_chunks, tail_chunks) in zip(artifact_chunks.keys(), head_tail_chunks):
-                if head_chunks or tail_chunks:
-                    knowledge_chunk_context += f"\n📄 Artifact {artifact_id} content:\n"
-
-                    # Add head chunks
-                    if head_chunks:
-                        knowledge_chunk_context += f"🔝 head chunks ({len(head_chunks)} chunks):\n"
-                        for chunk in head_chunks:
-                            knowledge_chunk_context += self._format_chunk_content(chunk)
-
-                    # Add tail chunks
-                    if tail_chunks:
-                        knowledge_chunk_context += f"🔚 tail chunks ({len(tail_chunks)} chunks):\n"
-                        for chunk in tail_chunks:
-                            knowledge_chunk_context += self._format_chunk_content(chunk)
-
-        return knowledge_chunk_context
-
-    def _format_chunk_content(self, chunk) -> str:
-        return (
-            f"<knowledge_chunk>\n"
-            f"<chunk_id>{chunk.chunk_id}</chunk_id>\n"
-            f"<chunk_index>{chunk.chunk_metadata.chunk_index}</chunk_index>\n"
-            f"<origin_knowledge_id>{chunk.chunk_metadata.artifact_id}</origin_knowledge_id>\n"
-            f"<origin_knowledge_type>{chunk.chunk_metadata.artifact_type}</origin_knowledge_type>\n"
-            f"<chunk_content>{chunk.content}</chunk_content>\n"
-            f"</knowledge_chunk>\n"
-        )
 
     async def get_task_status(self):
         return self.root._task.task_status
@@ -1982,3 +1686,54 @@ class ApplicationContext(AmniContext):
     async def update_task_status(self, task_id: str, status: 'TaskStatus'):
         if task_id == self.task_id:
             self._task.task_status = status
+
+    async def post_init(self):
+        if self._initialized:
+            return
+
+        if self._task.swarm:
+            await self.build_agents_state(self._task.swarm.ordered_agents)
+        elif self._task.agent:
+            await self.build_agent_state(self._task.agent)
+
+        self._initialized = True
+
+    async def add_task_trajectory(self, task_id: str, task_trajectory: List[Dict[str, Any]]):
+        """Add trajectory data for a task.
+        Delegate to root context to centralize storage.
+        """
+        if self.root != self:
+            await self.root.add_task_trajectory(task_id, task_trajectory)
+        else:
+            await super().add_task_trajectory(task_id, task_trajectory)
+
+
+    async def update_task_trajectory(self, message: Any, task_id: str = None, **kwargs):
+        """Generate trajectory item from message and append to dataset.
+        Delegate to root context.
+        """
+        if self.root != self:
+            await self.root.update_task_trajectory(message, task_id, **kwargs)
+        else:
+            await super().update_task_trajectory(message, task_id, **kwargs)
+
+    async def get_task_trajectory(self, task_id: str) -> List[TrajectoryItem]:
+        """Get trajectory data for a task.
+        Delegate to root context.
+        """
+        if self.root != self:
+            return await self.root.get_task_trajectory(task_id)
+        else:
+            return await super().get_task_trajectory(task_id)
+
+    def add_task_node(self, child_task_id: str, parent_task_id: str, caller_agent_info=None, **kwargs):
+        """Record the relationship between child task and parent task.
+        Delegate to root context.
+        """
+        agent_info = caller_agent_info
+        if not agent_info:
+            agent_info = self.agent_info
+        if self.root != self:
+            self.root.add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)
+        else:
+            super().add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)
