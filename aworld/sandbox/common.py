@@ -28,6 +28,8 @@ class BaseSandbox(Sandbox):
             custom_env_tools: Optional[Any] = None,
             agents: Optional[Dict[str, Any]] = None,
             streaming: bool = False,
+            env_content_name: Optional[str] = None,
+            env_content: Optional[Dict[str, Any]] = None,
     ):
         """
         Initialize a new BaseSandbox instance.
@@ -67,6 +69,9 @@ class BaseSandbox(Sandbox):
                 Note: If "type" is provided, it will be used directly (case-insensitive).
                       If "type" is not provided, the function will auto-detect based on location.
             streaming: Whether to enable streaming for tool responses. Defaults to False.
+            env_content_name: Parameter name for environment content in tool schemas. Defaults to "env_content".
+            env_content: User-defined context values to be automatically injected into tool calls.
+                Note that task_id and session_id are added dynamically from context during tool calls.
         """
         super().__init__(
             sandbox_id=sandbox_id,
@@ -81,7 +86,9 @@ class BaseSandbox(Sandbox):
             registry_url=registry_url,
             custom_env_tools=custom_env_tools,
             agents=agents,
-            streaming=streaming
+            streaming=streaming,
+            env_content_name=env_content_name,
+            env_content=env_content
         )
         self._logger = self._setup_logger()
         # Track if sandbox has been initialized (for lazy initialization support)
@@ -260,6 +267,39 @@ class BaseSandbox(Sandbox):
     def timeout(self, value: int):
         """Set timeout value for sandbox operations."""
         self._timeout = value or self.default_sandbox_timeout
+    
+    @property
+    def env_content_name(self) -> str:
+        """Returns the environment content parameter name used in tool schemas."""
+        return self._env_content_name
+    
+    @env_content_name.setter
+    def env_content_name(self, value: str):
+        """Set environment content parameter name and reinitialize if needed.
+        
+        Changing env_content_name requires reprocessing tool schemas to remove
+        the old parameter name and handle the new one.
+        """
+        old_value = self._env_content_name
+        self._env_content_name = value or "env_content"
+        # If the name changed and sandbox is initialized, need to reinitialize
+        # to reprocess tool schemas with the new parameter name
+        if old_value != self._env_content_name and self._initialized:
+            self._trigger_reinitialize("mcpservers", "env_content_name")
+    
+    @property
+    def env_content(self) -> Dict[str, Any]:
+        """Returns the environment content values (user-defined context)."""
+        return self._env_content
+    
+    @env_content.setter
+    def env_content(self, value: Dict[str, Any]):
+        """Set environment content values.
+        
+        Changing env_content only affects the values injected during tool calls,
+        it does not affect tool schemas, so no reinitialization is needed.
+        """
+        self._env_content = value or {}
     
     @abc.abstractmethod
     def get_skill_list(self) -> Optional[Any]:
