@@ -9,16 +9,26 @@ import yaml
 docs = "docs"
 black_keys = ["Index"]
 black_values = ["index.md"]
-file_priority = {"Quickstart": ["Install", "Agent Construction", "Workflow Construction",
-                                "Multi-agent System Construction", "Environment"]
-                 }
-dir_order = ["Quickstart", "Tutorials"]
+file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities"],
+                 "Basic Usage": ["Hitl"],
+                 "Runtime": ["Overview"]}
+file_mapping = {"Hitl": "HITL"}
+dir_order = ["Get Start", "Basic Usage", "Agents", "Environment", "Runtime", "Training", "Key Components"]
+
+zh_v = ["开始", "基本使用", "智能体", "环境", "运行时", "训练", "关键组件"]
 
 
 def scan_path(path: str) -> List[dict]:
     items = scan(path)
     res = []
-    for k, v in items.items():
+    order_items = OrderedDict()
+    for d in dir_order:
+        if d in items:
+            order_items[d] = items[d]
+            items.pop(d)
+    order_items.update(items)
+
+    for k, v in order_items.items():
         # root path
         if k in black_keys and v in black_values:
             continue
@@ -27,9 +37,16 @@ def scan_path(path: str) -> List[dict]:
         final_map = OrderedDict()
         for file in file_priority.get(k, []):
             if file in v:
-                final_map[file] = v[file]
+                final_map[file_mapping.get(file, file)] = v[file]
                 v.pop(file)
         final_map.update(v)
+
+        final_v = OrderedDict()
+        if k == 'docs_zh':
+            for d in zh_v:
+                final_v[d] = v[d]
+        if final_v:
+            final_map = final_v
 
         res.append({k: dict(final_map)})
     return res
@@ -63,7 +80,6 @@ if __name__ == '__main__':
             "navigation.instant",
             "navigation.tracking",
             "navigation.tabs",
-            "navigation.sections",
             "toc.follow",
             "content.code.copy",
             "content.code.annotate",
@@ -96,7 +112,7 @@ if __name__ == '__main__':
         "repo_url": "https://github.com/inclusionAI/AWorld",
         "edit_uri": "tree/main/docs/",
         "copyright": "\u00A9 Copyright 2025 inclusionAI AWorld Team.",
-        "extra_css": ["css/aworld-modern.css"],
+        "extra_css": ["css/aworld.css"],
         "extra_javascript": [
             "js/hide-home-edit.js",
             "js/aworld-enhancements.js",

@@ -35,7 +35,7 @@ class Function(BaseModel):
     Represents a function call made by a model
     """
     name: str
-    arguments: str = None
+    arguments: Optional[str] = None
 
 
 class ToolCall(BaseModel):
@@ -46,6 +46,7 @@ class ToolCall(BaseModel):
     id: str
     type: str = "function"
     function: Function = None
+    extra_content: Optional[dict] = None
 
     # name: str = None
     # arguments: str = None
@@ -82,11 +83,18 @@ class ToolCall(BaseModel):
             arguments = json.dumps(arguments, ensure_ascii=False)
 
         function = Function(name=name, arguments=arguments)
+        if 'model_extra' in data and 'extra_content' in data['model_extra']:
+            extra_content = data['model_extra']['extra_content']
+        else:
+            extra_content = None
+        if 'extra_content' in data:
+            extra_content = data['extra_content']
 
         return cls(
             id=tool_id,
             type=tool_type,
             function=function,
+            extra_content=extra_content
             # name=name,
             # arguments=arguments,
         )
@@ -104,7 +112,8 @@ class ToolCall(BaseModel):
             "function": {
                 "name": self.function.name,
                 "arguments": self.function.arguments
-            }
+            },
+            "extra_content": self.extra_content
         }
 
     def __repr__(self):
@@ -133,7 +142,8 @@ class ModelResponse:
             raw_response: Any = None,
             message: Dict[str, Any] = None,
             reasoning_content: str = None,
-            finish_reason: str = None
+            finish_reason: str = None,
+            reasoning_details: Dict[str, Any] = None
     ):
         """
         Initialize ModelResponse object
@@ -177,6 +187,10 @@ class ModelResponse:
         self.created_at = datetime.now().isoformat()
 
         self.finish_reason = finish_reason
+
+        self.reasoning_details = reasoning_details
+
+        self.structured_output = dict()
 
     @classmethod
     def _get_item_from_openai_message(cls, message:Any, key: str, default_value: Any = None) -> Any:
@@ -296,10 +310,20 @@ class ModelResponse:
                             "name": function.name if hasattr(function, 'name') else None,
                             "arguments": function.arguments if hasattr(function, 'arguments') else None
                         }
+                    if hasattr(tool_call, 'model_extra'):
+                        model_extra = tool_call.model_extra
+                        if model_extra:
+                            tool_call_dict["model_extra"] = model_extra
                     processed_tool_calls.append(ToolCall.from_dict(tool_call_dict))
 
         if message_dict and processed_tool_calls:
             message_dict["tool_calls"] = [tool_call.to_dict() for tool_call in processed_tool_calls]
+
+        # extract reasoning_details
+        reasoning_details = cls._get_item_from_openai_message(message, 'reasoning_details')
+        if not reasoning_details:
+            model_extra = cls._get_item_from_openai_message(message, 'model_extra', {})
+            reasoning_details = model_extra.get('reasoning_details', None)
 
         # Create and return ModelResponse
         return cls(
@@ -311,7 +335,8 @@ class ModelResponse:
             raw_response=response,
             message=message_dict,
             reasoning_content=reasoning_content,
-            finish_reason=finish_reason
+            finish_reason=finish_reason,
+            reasoning_details=reasoning_details
         )
 
     @classmethod
@@ -630,7 +655,8 @@ class ModelResponse:
             "message": self.message,
             "reasoning_content": self.reasoning_content,
             "created_at": self.created_at,
-            "finish_reason": self.finish_reason
+            "finish_reason": self.finish_reason,
+            "structured_output": self.structured_output
         }
 
     def get_message(self) -> Dict[str, Any]:

@@ -3,8 +3,9 @@
 import enum
 
 from pydantic import BaseModel
-from typing import Dict, Any, Optional, Union, List
+from typing import Dict, Any, Optional, Union, List, Literal
 from enum import Enum
+
 
 from aworld.config import ConfigDict
 
@@ -119,3 +120,16 @@ class StreamingMode(enum.Enum):
     CHUNK_OUTPUT = 'chunk_output'
     # all: all message
     ALL = 'all'
+
+
+class TaskStatusValue:
+    """Task status constants."""
+    INIT = 'init'
+    RUNNING = 'running'
+    SUCCESS = 'success'
+    FAILED = 'failed'
+    CANCELLED = 'cancelled'
+    INTERRUPTED = 'interrupted'
+    TIMEOUT = 'timeout'
+
+TaskStatus = Literal['init', 'running', 'success', 'failed', 'cancelled', 'interrupted', 'timeout']

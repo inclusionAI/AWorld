@@ -5,8 +5,8 @@ from ... import ApplicationContext, logger
 from . import Neuron
 from .neuron_factory import neuron_factory
 
-
-@neuron_factory.register(name="action_info", desc="Action info neuron", prio=3)
+ACTION_INFO_NEURON_NAME = "action_info"
+@neuron_factory.register(name=ACTION_INFO_NEURON_NAME, desc="Action info neuron", prio=3)
 class ActionInfoNeuron(Neuron):
     """Neuron for handling action information related properties"""
 

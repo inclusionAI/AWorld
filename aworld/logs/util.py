@@ -86,11 +86,33 @@ class AWorldLogger:
                  name: str = 'AWorld',
                  console_level: str = CONSOLE_LEVEL,
                  file_level: str = STORAGE_LEVEL,
-                 formatter: Union[str, Callable] = None):
+                 formatter: Union[str, Callable] = None,
+                 disable_console: bool = None):
+        """
+        Initialize AWorldLogger.
+        
+        Args:
+            tag: Logger tag
+            name: Logger name
+            console_level: Console log level
+            file_level: File log level
+            formatter: Custom formatter
+            disable_console: If True, disable console output. If None, check environment variable AWORLD_DISABLE_CONSOLE_LOG.
+            
+        Example:
+            >>> logger = AWorldLogger(disable_console=True)  # Disable console output
+            >>> logger = AWorldLogger()  # Use environment variable or default (False)
+        """
         self.tag = tag
         self.name = name
         self.console_level = console_level
         self.file_level = file_level
+        
+        # Check environment variable if disable_console is not explicitly set
+        if disable_console is None:
+            disable_console = os.getenv('AWORLD_DISABLE_CONSOLE_LOG', 'false').lower() in ('true', '1', 'yes')
+        
+        self.disable_console = disable_console
         file_formatter = formatter
         console_formatter = formatter
         if not formatter:
@@ -128,13 +150,20 @@ class AWorldLogger:
             console_formatter = console_formatter
             file_formatter = file_formatter
 
-        base_logger.add(sys.stderr,
-                        filter=lambda record: record['extra'].get('name') == tag,
-                        colorize=True,
-                        format=console_formatter,
-                        level=console_level)
+        # Only add stderr handler if console output is not disabled
+        if not disable_console:
+            base_logger.add(sys.stderr,
+                            filter=lambda record: record['extra'].get('name') == tag,
+                            colorize=True,
+                            format=console_formatter,
+                            level=console_level)
 
-        log_file = f'{os.getcwd()}/logs/{tag}-{{time:YYYY-MM-DD}}.log'
+        # Before using aworld, including imports!
+        log_path = os.environ.get('AWORLD_LOG_PATH')
+        if log_path:
+            log_file = f'{log_path}/{tag}-{{time:YYYY-MM-DD}}.log'
+        else:
+            log_file = f'{os.getcwd()}/logs/{tag}-{{time:YYYY-MM-DD}}.log'
         error_log_file = f'{os.getcwd()}/logs/AWorld_error.log'
         handler_key = f'{name}_{tag}'
         error_handler_key = f'{name}_{tag}_error'
@@ -190,7 +219,7 @@ class AWorldLogger:
         AWorldLogger._added_handlers.discard(error_handler_key)
         self.__init__(tag=self.tag, name=self.name,
                       console_level=self.console_level, file_level=self.file_level,
-                      formatter=format_str)
+                      formatter=format_str, disable_console=self.disable_console)
 
     def __getattr__(self, name: str):
         from aworld.trace.base import get_trace_id
