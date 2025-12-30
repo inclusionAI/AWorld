@@ -15,15 +15,22 @@ from aworld.utils.common import sync_exec
 
 from aworld.events.util import send_message
 
-from aworld.core.event.base import Message, Constants
+from aworld.core.event.base import Message, Constants, BackgroundTaskMessage
 from typing_extensions import Optional, List, Dict, Any
+from typing import TYPE_CHECKING
 
 from aworld.mcp_client.utils import mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
     call_function_tool, mcp_tool_desc_transform_v2
 from mcp.types import TextContent, ImageContent
 
-from aworld.core.common import ActionResult
+from aworld.core.common import ActionResult, Observation
 from aworld.output import Output
+
+# Import env_channel for subscription
+from env_channel import EnvChannelMessage, env_channel_sub
+
+if TYPE_CHECKING:
+    from aworld.sandbox.base import Sandbox
 
 
 class McpServers:
@@ -32,7 +39,7 @@ class McpServers:
             self,
             mcp_servers: Optional[List[str]] = None,
             mcp_config: Dict[str, Any] = None,
-            sandbox=None,
+            sandbox: Optional["Sandbox"] = None,
             black_tool_actions: Dict[str, List[str]] = None,
             skill_configs: Dict[str, Any] = None,
             tool_actions: Optional[List[str]] = None,
@@ -43,6 +50,7 @@ class McpServers:
         self.sandbox = sandbox
         # Dictionary to store server instances {server_name: server_instance}
         self.server_instances = {}
+        self.server_instances_session = {}
         self.tool_list = None
         self.black_tool_actions = black_tool_actions or {}
         self.map_tool_list = {}
@@ -197,15 +205,18 @@ class McpServers:
 
                 # Prioritize using existing server instances
                 server = self.server_instances.get(server_name)
+                env_session_id = self.server_instances_session.get(server_name)
                 if server is None:
                     # If it doesn't exist, create a new instance and save it
                     sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
-                    server = await get_server_instance(server_name=server_name, mcp_config=self.mcp_config,context=context,sandbox_id=sandbox_id)
+                    server, env_session_id = await get_server_instance(server_name=server_name, mcp_config=self.mcp_config,context=context,sandbox_id=sandbox_id)
                     if server:
                         self.server_instances[server_name] = server
+                        if env_session_id:
+                            self.server_instances_session[server_name] = env_session_id
                         logger.info(f"Created and cached new server instance for {server_name}")
                     else:
-                        logger.warning(f"Created new server failed: {server_name}, session_id: {session_id}, tool_name: {tool_name}")
+                        logger.warning(f"Created new server failed: {server_name}, env_session_id: {env_session_id}, tool_name: {tool_name}")
 
                         self._update_metadata(result_key, {"error": "Failed to create server instance"}, operation_info)
                         continue
@@ -218,9 +229,14 @@ class McpServers:
                     content="",
                     keep=True
                 )
+                
                 call_mcp_e = None
                 max_retry = 3
                 for i in range(max_retry):
+                    # Initialize subscription (only once) - check inside loop but only execute once
+                    if self.sandbox and self.sandbox.streaming:
+                        if not hasattr(self, '_tool_result_handler'):
+                            self._init_tool_result_subscription(env_session_id=env_session_id, context=context)
                     try:
                         async def progress_callback(
                                 progress: float, total: float | None, message: str | None
@@ -278,6 +294,8 @@ class McpServers:
                         try:
                             await cleanup_server(self.server_instances[server_name])
                             del self.server_instances[server_name]
+                            if server_name in self.server_instances_session:
+                                del self.server_instances_session[server_name]
                         except Exception as e:
                             logger.warning(f"Failed to cleanup server {server_name}: {e}")
                 else:
@@ -360,6 +378,54 @@ class McpServers:
         except Exception as e:
             logger.debug(f"Failed to update sandbox metadata: {e}")
 
+    def _init_tool_result_subscription(self, env_session_id: Optional[str] = None, context: Context = None):
+        """Initialize subscription for tool results."""
+        # Only initialize once
+        if hasattr(self, '_tool_result_handler'):
+            return
+        if not env_session_id:
+            logger.warning("env_session_id is not provided")
+            return
+        
+        try:
+            token = os.getenv("ENV_CHANNEL_TOKEN", "")
+            _ws_headers = {"Authorization": f"Bearer {token}"}
+            
+            server_url = f"ws://mcp.aworldagents.com/vpc-pre/stream/{env_session_id}/channel"
+            
+            @env_channel_sub(
+                server_url=server_url,
+                topics=["env-tool-message-topic"],
+                auto_connect=True,
+                auto_reconnect=True,
+                reconnect_interval=10.0,
+                headers=_ws_headers,
+                auto_start=True
+            )
+            async def handle_tool_result(msg: EnvChannelMessage):
+                # bg_msg = BackgroundTaskMessage(
+                #     background_task_id=f"bg_{uuid.uuid4().hex}",
+                #     parent_task_id=context.task_id,
+                #     payload=msg.message,
+                #     sender=self.name(),
+                #     receiver=message.sender,
+                #     session_id=context.session_id,
+                #     topic=TopicType.BACKGROUND_TOOL_COMPLETE,
+                #     agent_id=sender_agent.id() if sender_agent else None,
+                #     agent_name=sender_agent.name() if sender_agent else None,
+                #     headers={"context": context}
+                # )
+                # await send_message(bg_msg)
+                # logger.info(f"Mock background task for {self.name()} sent message back")
+                # logger.info("2222244Received tool result-logger: %s", msg.message)
+                print("22222233Received tool result-print: %s", msg.message)
+            
+            # Store the handler to keep reference
+            self._tool_result_handler = handle_tool_result
+            logger.info(f"Initialized tool result subscription for env_session_id: {env_session_id}, server_url: {server_url}")
+        except Exception as e:
+            logger.warning(f"Failed to initialize tool result subscription: {e}")
+
     # Add cleanup method, called when Sandbox is destroyed
     async def cleanup(self):
         """Clean up all server connections"""
@@ -367,6 +433,8 @@ class McpServers:
             try:
                 await cleanup_server(server)
                 del self.server_instances[server_name]
+                if server_name in self.server_instances_session:
+                    del self.server_instances_session[server_name]
                 logger.info(f"Cleaned up server instance for {server_name}")
             except Exception as e:
                 logger.warning(f"Failed to cleanup server {server_name}: {e}")
