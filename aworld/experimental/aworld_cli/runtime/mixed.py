@@ -60,13 +60,28 @@ class MixedRuntime(BaseAgentRuntime):
             remote_backends: Optional list of remote backend URLs (overrides environment variables)
             local_dirs: Optional list of local agent directories (overrides environment variables)
         """
+        # Get the inner_plugins directory path (relative to this file)
+        import pathlib
+        current_dir = pathlib.Path(__file__).parent.parent
+        inner_plugins_dir = current_dir / "inner_plugins"
+        
+        # Scan inner_plugins for agents directories (e.g., inner_plugins/*/agents)
+        inner_plugins_agent_dirs = []
+        if inner_plugins_dir.exists() and inner_plugins_dir.is_dir():
+            for plugin_dir in inner_plugins_dir.iterdir():
+                if plugin_dir.is_dir():
+                    agents_dir = plugin_dir / "agents"
+                    if agents_dir.exists() and agents_dir.is_dir():
+                        inner_plugins_agent_dirs.append(str(agents_dir))
+        
         # Use provided local_dirs if available, otherwise use environment variables
         if local_dirs:
-            self.local_dirs = [d.strip() for d in local_dirs]
+            self.local_dirs = inner_plugins_agent_dirs + [d.strip() for d in local_dirs]
         else:
             # Parse LOCAL_AGENTS_DIR (semicolon-separated)
             local_dirs_str = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or ""
-            self.local_dirs = [d.strip() for d in local_dirs_str.split(";") if d.strip()]
+            config_dirs = [d.strip() for d in local_dirs_str.split(";") if d.strip()]
+            self.local_dirs = inner_plugins_agent_dirs + config_dirs
         
         # Parse REMOTE_AGENT_BACKEND or REMOTE_AGENTS_BACKEND (semicolon-separated)
         # Use provided remote_backends if available, otherwise use environment variables
@@ -76,9 +91,9 @@ class MixedRuntime(BaseAgentRuntime):
             remote_backends_str = os.getenv("REMOTE_AGENT_BACKEND") or os.getenv("REMOTE_AGENTS_BACKEND") or ""
             self.remote_backends = [b.strip().rstrip("/") for b in remote_backends_str.split(";") if b.strip()]
         
-        # If no config, use current working directory as default
-        if not self.local_dirs and not self.remote_backends:
-            self.local_dirs = [os.getcwd()]
+        # If no config (besides inner_plugins), use current working directory as default
+        if len(self.local_dirs) == len(inner_plugins_agent_dirs) and not self.remote_backends:  # Only inner_plugins agents or empty
+            self.local_dirs.append(os.getcwd())
     
     async def _load_agents(self) -> List[AgentInfo]:
         """Load agents from all configured sources."""

@@ -1,0 +1,32 @@
+TeamSwarm Directory Structure Template
+
+team_name/
+├── __init__.py
+├── agents/
+│   ├── __init__.py
+│   ├── swarm.py
+│   ├── orchestrator_agent/
+│   │   ├── __init__.py
+│   │   ├── agent.py          # OrchestratorAgent class
+│   │   ├── config.py          # AgentConfig for orchestrator
+│   │   └── prompt.py          # System prompt for orchestrator
+│   ├── worker_agent_1/
+│   │   ├── __init__.py
+│   │   ├── agent.py          # Worker agent class (or base Agent)
+│   │   ├── config.py          # AgentConfig for worker
+│   │   └── prompt.py          # System prompt for worker
+│   └── worker_agent_2/
+│       ├── __init__.py
+│       ├── agent.py
+│       ├── config.py
+│       └── prompt.py
+└── mcp/ (optional)
+    ├── __init__.py
+    └── mcp_config.py
+
+Key Points:
+- First agent in TeamSwarm constructor is the orchestrator (leader)
+- Orchestrator typically extends Agent class with custom coordination logic
+- Worker agents can use base Agent class or custom implementations
+- All agents are registered in swarm.py
+

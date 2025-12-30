@@ -1,0 +1,30 @@
+Swarm Directory Structure Template
+
+swarm_name/
+├── __init__.py
+├── agents/
+│   ├── __init__.py
+│   ├── swarm.py              # Swarm initialization
+│   ├── config.py              # Shared AgentConfig
+│   ├── prompt.py              # All agent prompts
+│   ├── agent1/ (optional)
+│   │   └── agent.py          # Custom agent class if needed
+│   └── agent2/ (optional)
+│       └── agent.py
+
+Key Points:
+- Agents execute in the order passed to Swarm constructor
+- Shared config.py contains common AgentConfig
+- All prompts typically in one prompt.py file
+- Agents can use base Agent class (simple) or custom classes (advanced)
+- Data flows sequentially: Agent1 → Agent2 → Agent3
+
+Simple Structure (recommended for most cases):
+swarm_name/
+├── __init__.py
+├── agents/
+│   ├── __init__.py
+│   ├── swarm.py
+│   ├── config.py
+│   └── prompt.py
+
