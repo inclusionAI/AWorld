@@ -896,22 +896,24 @@ async def get_server_instance(
         server_name: str, mcp_config: Dict[str, Any] = None,
         context: Context = None,
         sandbox_id: Optional[str] = None
-) -> Any:
+) -> Tuple[Any, Optional[str]]:
     """Get server instance, create a new one if it doesn't exist
 
     Args:
         server_name: Server name
         mcp_config: MCP configuration
+        context: Context object
+        sandbox_id: Sandbox ID
 
     Returns:
-        Server instance or None (if creation fails)
+        Tuple of (Server instance or None, _SESSION_ID or None)
     """
     if not mcp_config or mcp_config.get("mcpServers") is None:
-        return None
+        return None, None
 
     mcp_servers = mcp_config.get("mcpServers")
     if not mcp_servers.get(server_name):
-        return None
+        return None, None
 
     server_config = mcp_servers.get(server_name)
     try:
@@ -920,7 +922,7 @@ async def get_server_instance(
         # Here we don't return None, but let the caller handle it
         if "api" == server_config.get("type", ""):
             logger.info(f"API server {server_name} doesn't need persistent connection")
-            return None
+            return None, None
         elif "sse" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
             env_name = headers.get("env_name")
@@ -944,7 +946,7 @@ async def get_server_instance(
             )
             await server.connect()
             logger.info(f"Successfully connected to SSE server: {server_name}")
-            return server
+            return server, _SESSION_ID
         elif "streamable-http" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
             env_name = headers.get("env_name")
@@ -967,7 +969,7 @@ async def get_server_instance(
             )
             await server.connect()
             logger.info(f"Successfully connected to STREAMABLE-HTTP server: {server_name}")
-            return server
+            return server, _SESSION_ID
         else:  # stdio type
             params = {
                 "command": server_config["command"],
@@ -983,10 +985,10 @@ async def get_server_instance(
             server = MCPServerStdio(name=server_name, params=params)
             await server.connect()
             logger.info(f"Successfully connected to stdio server: {server_name}")
-            return server
+            return server, None
     except Exception as e:
         logger.warning(f"Failed to create server instance for {server_name}: {e}")
-        return None
+        return None, None
 
 
 async def cleanup_server(server):
