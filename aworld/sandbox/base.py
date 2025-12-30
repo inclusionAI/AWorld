@@ -117,6 +117,46 @@ class Sandbox(SandboxSetup):
         return self._streaming
 
     @property
+    def env_content_name(self) -> str:
+        """Returns the environment content parameter name used in tool schemas.
+        
+        Returns:
+            str: The parameter name (default: "env_content").
+        """
+        return self._env_content_name
+
+    @env_content_name.setter
+    def env_content_name(self, value: str):
+        """Set environment content parameter name.
+        
+        Args:
+            value: The parameter name to use in tool schemas.
+        """
+        self._env_content_name = value or "env_content"
+
+    @property
+    def env_content(self) -> Dict[str, Any]:
+        """Returns the environment content values (user-defined context).
+        
+        This dictionary stores user-defined context parameters that will be
+        automatically injected into tool calls. Note that task_id and session_id
+        are added dynamically from context during tool calls.
+        
+        Returns:
+            Dict[str, Any]: Dictionary of context values.
+        """
+        return self._env_content
+
+    @env_content.setter
+    def env_content(self, value: Dict[str, Any]):
+        """Set environment content values.
+        
+        Args:
+            value: Dictionary of user-defined context parameters.
+        """
+        self._env_content = value or {}
+
+    @property
     @abc.abstractmethod
     def mcpservers(self) -> McpServers:
         """Module for running MCP in the sandbox.
@@ -141,6 +181,8 @@ class Sandbox(SandboxSetup):
             custom_env_tools: Optional[Any] = None,
             agents: Optional[Dict[str, Any]] = None,
             streaming: bool = False,
+            env_content_name: Optional[str] = None,
+            env_content: Optional[Dict[str, Any]] = None,
     ):
         """Initialize a new Sandbox instance.
         
@@ -179,6 +221,9 @@ class Sandbox(SandboxSetup):
                 Note: If "type" is provided, it will be used directly (case-insensitive).
                       If "type" is not provided, the function will auto-detect based on location.
             streaming: Whether to enable streaming for tool responses. Defaults to False.
+            env_content_name: Parameter name for environment content in tool schemas. Defaults to "env_content".
+            env_content: User-defined context values to be automatically injected into tool calls.
+                Note that task_id and session_id are added dynamically from context during tool calls.
         """
         # Initialize basic attributes
         self._sandbox_id = sandbox_id or str(uuid.uuid4())
@@ -197,6 +242,9 @@ class Sandbox(SandboxSetup):
         self._custom_env_tools = custom_env_tools
         self._agents = agents
         self._streaming = streaming
+        # Environment content context for tool parameters
+        self._env_content_name: str = env_content_name or "env_content"  # Parameter name in tool schema
+        self._env_content: Dict[str, Any] = env_content or {}  # User-defined context values
 
     @abc.abstractmethod
     def get_info(self) -> SandboxInfo:

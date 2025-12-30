@@ -25,6 +25,8 @@ class SandboxBuilder:
         self._custom_env_tools: Optional[Any] = None
         self._agents: Optional[Dict[str, Any]] = None
         self._streaming: bool = False
+        self._env_content_name: Optional[str] = None
+        self._env_content: Optional[Dict[str, Any]] = None
         self._agents_builder = AgentsBuilder(self)
     
     def sandbox_id(self, sandbox_id: str) -> 'SandboxBuilder':
@@ -127,6 +129,30 @@ class SandboxBuilder:
         self._streaming = streaming
         return self
     
+    def env_content_name(self, env_content_name: str) -> 'SandboxBuilder':
+        """Set environment content parameter name.
+        
+        Args:
+            env_content_name: Parameter name for environment content in tool schemas.
+        
+        Returns:
+            SandboxBuilder: Self for method chaining.
+        """
+        self._env_content_name = env_content_name
+        return self
+    
+    def env_content(self, env_content: Dict[str, Any]) -> 'SandboxBuilder':
+        """Set environment content values.
+        
+        Args:
+            env_content: User-defined context values to be automatically injected into tool calls.
+        
+        Returns:
+            SandboxBuilder: Self for method chaining.
+        """
+        self._env_content = env_content
+        return self
+    
     def _add_agent(self, name: str, config: Dict[str, Any]):
         """Internal method to add an agent configuration."""
         if self._agents is None:
@@ -171,6 +197,10 @@ class SandboxBuilder:
             kwargs['agents'] = self._agents
         if self._streaming is not False:  # Only add if explicitly set to True
             kwargs['streaming'] = self._streaming
+        if self._env_content_name is not None:
+            kwargs['env_content_name'] = self._env_content_name
+        if self._env_content is not None:
+            kwargs['env_content'] = self._env_content
         
         return Sandbox(**kwargs)
 

@@ -35,6 +35,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             registry_url: Optional[str] = None,
             custom_env_tools: Optional[Any] = None,
             agents: Optional[Dict[str, Any]] = None,
+            env_content_name: Optional[str] = None,
+            env_content: Optional[Dict[str, Any]] = None,
             **kwargs
     ):
         """Initialize a new LocalSandbox instance.
@@ -72,6 +74,9 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 
                 Note: If "type" is provided, it will be used directly (case-insensitive).
                       If "type" is not provided, the function will auto-detect based on location.
+            env_content_name: Parameter name for environment content in tool schemas. Defaults to "env_content".
+            env_content: User-defined context values to be automatically injected into tool calls.
+                Note that task_id and session_id are added dynamically from context during tool calls.
             **kwargs: Additional parameters for specific sandbox types.
         """
         super().__init__(
@@ -87,7 +92,9 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             registry_url=registry_url,
             custom_env_tools=custom_env_tools,
             agents=agents,
-            streaming=kwargs.get('streaming', False)
+            streaming=kwargs.get('streaming', False),
+            env_content_name=env_content_name,
+            env_content=env_content
         )
 
         # Initialize properties
