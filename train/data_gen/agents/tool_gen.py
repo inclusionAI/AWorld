@@ -17,7 +17,7 @@ class ToolModelGeneratorAgent(OnetimeUseAgent):
     """Generate independent and unrelated tools."""
 
     def __init__(self, category: str = None, rule_gen_cls: str = None, **kwargs):
-        kwargs['name'] = kwargs.get('name', 'tool_model_generator_agent')
+        kwargs['name'] = kwargs.get('name', 'tool_generator_agent')
         kwargs['description'] = kwargs.get('description', 'Solve the task based on input task.')
         kwargs['system_prompt'] = kwargs.get(
             'system_prompt',
