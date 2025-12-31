@@ -9,11 +9,16 @@ from aworld.config import BaseConfig, ModelConfig, RunConfig
 from aworld.core.tool.base import BaseTool, AsyncBaseTool
 
 
+class EvolutionConfig(BaseConfig):
+    llm_config: Optional[ModelConfig] = None
+    hitl: bool = False
+
 # ------------------------------------------ Generation ----------------------------------------------- #
 
 class OntologyConfig(BaseConfig):
     llm_config: Optional[ModelConfig] = None
     source_paths: List[str] = None
+    task: Optional[str] = None
 
 
 class DataGenConfig(BaseConfig):

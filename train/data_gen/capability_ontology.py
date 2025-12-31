@@ -26,6 +26,7 @@ class CapabilityOntology:
         # category -> nodes
         self.cate_nodes: Dict[str, TreeNode] = {}
         self.config = config or OntologyConfig()
+        self.task = self.config.task
 
     async def build(self):
         meta_datas = await self.load_sources()
@@ -40,23 +41,124 @@ class CapabilityOntology:
     async def load_sources(self) -> List[Dict]:
         """Load capability data from source paths."""
         if not self.config.source_paths:
-            logger.error("no source paths provide, will use default data.")
-            return [
-                {
-                    "category": "Financial Services",
-                    "capabilities": [
-                        "Stock price inquiry", "Exchange rate conversion", "Account balance inquiry",
-                        "Transaction records", "Portfolio analysis", "Risk assessment"
-                    ]
-                },
-                {
-                    "category": "Transportation and Travel",
-                    "capabilities": [
-                        "Route planning", "Realtime traffic", "Public transportation inquiry",
-                        "Taxi service", "Parking information", "Flight inquiry"
-                    ]
-                },
-            ]
+            if not self.config.llm_config:
+                logger.error("no source paths and llm config provide, will use default data.")
+                return [
+                    {
+                        "category": "Financial Services",
+                        "capabilities": [
+                            "Stock price inquiry", "Exchange rate conversion", "Account balance inquiry",
+                            "Transaction records", "Portfolio analysis", "Risk assessment"
+                        ]
+                    },
+                    {
+                        "category": "Transportation and Travel",
+                        "capabilities": [
+                            "Route planning", "Realtime traffic", "Public transportation inquiry",
+                            "Taxi service", "Parking information", "Flight inquiry"
+                        ]
+                    },
+                ]
+            else:
+                prompt = """You are a domain modeling expert. Your task is to break down a given input (which may be a broad industry topic, a complex mixed requirement, or a system description) into multiple independent **functional domains (Categories)**, and list the core **atomic capabilities** for each domain.
+
+# Goal
+Output a JSON Array where each object represents an independent business module or functional category.
+
+# Rules
+1. **Decomposition**:
+    - If the input is a large topic (such as "Smart Home Solution"), please break it down into subsystems (such as "Lighting Control", "Security", "Appliance Management").
+    - If the input contains multiple unrelated intentions, please separate them.
+2. **Category**: Must be a specific noun phrase representing an independent functional module.
+3. **Capabilities**:
+    - List 5-10 core functions for each category.
+    - The format must be **Verb+Noun** (verb object structure, such as "Book flight", "Cancel order").
+    - The functional points should cover the main use cases of the module.
+4. **Format**: Directly output a JSON list without including Markdown tags or other explanatory text.
+
+# Few-Shot Examples
+
+## Example 1: Broad Topic Decomposition
+**Input**: "Design a complete e-commerce backend management system"
+**Output**:
+```json
+[
+    {
+        "category": "Order Management",
+        "capabilities": ["Create order", "Cancel order", "Track shipment", "Process refund", "View order history"]
+    },
+    {
+        "category": "Inventory Management",
+        "capabilities": ["Add product", "Update stock level", "Remove product", "Check low stock", "Manage suppliers"]
+    },
+    {
+        "category": "User Management",
+        "capabilities": ["Register user", "Reset password", "Ban user", "Update profile", "Assign roles"]
+    }
+]
+```
+## Example 2: Mixed User Intent
+**Input**: "I need to check the weather tomorrow, also check how much the ticket to London costs, and help me remember the meeting tomorrow afternoon."
+**Output**:
+```json
+[
+    {
+        "category": "Weather Service",
+        "capabilities": ["Check current weather", "Get weather forecast", "Check air quality"]
+    },
+    {
+        "category": "Travel Booking",
+        "capabilities": ["Search flights", "Compare ticket prices", "Book flight", "Check flight status"]
+    },
+    {
+        "category": "Calendar & Reminders",
+        "capabilities": ["Create event", "Set reminder", "Check availability", "Delete event"]
+    }
+]
+```
+
+## Example 3: Specific Domain Expansion
+**Input**: "Healthcare App"
+**Output**:
+```json
+[
+    {
+        "category": "Appointment Scheduling",
+        "capabilities": ["Book doctor appointment", "Reschedule visit", "Cancel appointment", "Find nearby clinic"]
+    },
+    {
+        "category": "Telemedicine",
+        "capabilities": ["Start video consultation", "Chat with doctor", "Upload medical report", "Download prescription"]
+    },
+    {
+        "category": "Health Tracking",
+        "capabilities": ["Log heart rate", "Track sleep patterns", "Input blood pressure", "View health trends"]
+    }
+]
+```
+"""
+                messages = [
+                    {
+                        "role": "system", "content": prompt
+                    },
+                    {
+                        "role": "user", "content": self.task
+                    }
+                ]
+
+                try:
+                    llm_model = get_llm_model(self.config.llm_config)
+                    resp = call_llm_model(llm_model, messages=messages)
+
+                    result = json.loads(resp.content)
+
+                    if result and "category" in result and "capabilities" in result:
+                        return result
+                    else:
+                        return []
+                except Exception as e:
+                    logger.error(f"Obtain category and capabilities fail. {traceback.format_exc()}")
+                    return []
 
         meta_datas = []
         for path in self.config.source_paths:
