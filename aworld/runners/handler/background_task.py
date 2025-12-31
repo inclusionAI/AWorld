@@ -155,6 +155,8 @@ class DefaultBackgroundTaskHandler(BackgroundTaskHandler):
         """
         if isinstance(message.context, ApplicationContext):
             cur_context: ApplicationContext = message.context
+            if cur_context.task_id == task_id:
+                return cur_context.task_status
             if cur_context.parent and cur_context.parent.task_id == task_id:
                 return cur_context.parent.task_status
         else:
