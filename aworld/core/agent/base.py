@@ -108,7 +108,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         if conf is None:
             conf = AgentConfig()
         if isinstance(conf, ConfigDict):
-            pass
+            self.conf = conf
         elif isinstance(conf, Dict):
             self.conf = ConfigDict(conf)
         elif isinstance(conf, AgentConfig):
@@ -317,7 +317,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     async def async_post_run(
         self, policy_result: OUTPUT, input: INPUT, message: Message = None
     ) -> Message:
-        return policy_result
+        return AgentMessage(payload=policy_result, sender=self.id(), headers=message.headers)
 
     def sync_should_terminate_loop(self, message: Message) -> bool:
         return sync_exec(self.should_terminate_loop, message)

@@ -6,14 +6,14 @@ from typing import Dict, Any, List
 
 from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message
-from aworld.core.tool_call_data_generation_framework import GeneratedTool, ToolSpec
 from aworld.logs.util import logger
 from aworld.utils.common import new_instance
 from train.data_gen.agents.onetime_use_agent import OnetimeUseAgent
-from train.data_gen.schema import TreeNode
+from train.data_gen.agents.prompts import tool_generator_agent_system_prompt
+from train.data_gen.schema import TreeNode, Specification, GeneratedTool
 
 
-class ToolModelGeneratorAgent(OnetimeUseAgent):
+class ToolGeneratorAgent(OnetimeUseAgent):
     """Generate independent and unrelated tools."""
 
     def __init__(self, category: str = None, rule_gen_cls: str = None, **kwargs):
@@ -21,42 +21,7 @@ class ToolModelGeneratorAgent(OnetimeUseAgent):
         kwargs['description'] = kwargs.get('description', 'Solve the task based on input task.')
         kwargs['system_prompt'] = kwargs.get(
             'system_prompt',
-            '''You are a tool design expert. Please design a complete tool definition and description based on the given category and capability list.
-
-Please return the tool definition in the following JSON Schema format:
-{
-    "name": "tool_name",
-    "description": "Tool Function Description",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "param_name": {
-                "type": "string|integer|boolean|array|object",
-                "description": "parameter description",
-                "minimum": 1,  // Optional constraints
-                "maximum": 100,  // Optional constraints
-                "pattern": "^[a-z]+$"  // Optional constraints
-            }
-        },
-        "required": ["required_param_name"]
-    },
-    "output_parameters": {
-        "type": "object",
-        "description": "Return value description",
-        "properties": {
-            "result": {"type": "object", "description": "result data"}
-        }
-    }
-}
-
-Requirements:
-- The tool name should be in English and follow the RESTful naming convention
-- Parameter design should be reasonable and include necessary constraints
-- The return value structure should be clear and in line with actual usage scenarios
-- The description should be accurate and professional
-
-Please return the complete JSON format tool definition.
-'''
+            tool_generator_agent_system_prompt
         )
         super().__init__(**kwargs)
 
@@ -73,7 +38,7 @@ Please return the complete JSON format tool definition.
         if actions:
             # if it has policy info, parse and use the first one
             if actions[0].policy_info:
-                actions[0].policy_info = self._parse(actions[0].policy_info)
+                actions[0].policy_info = await self._parse(actions[0].policy_info)
                 actions = [actions[0]]
             # wait tool result...
 
@@ -88,15 +53,24 @@ Please return the complete JSON format tool definition.
 
         return resp
 
-    async def _parse(self, info: str) -> GeneratedTool:
+    async def _parse(self, info: str) -> List[GeneratedTool]:
+        info = info.replace("```json", "").replace("```", "")
         info_json = json.loads(info)
-        spec = ToolSpec(**info_json)
 
-        gen_tool = GeneratedTool(
-            spec=spec,
-            examples=[]
-        )
-        return gen_tool
+        gen_tools = []
+        if isinstance(info_json, list):
+            for tool_info in info_json:
+                spec = Specification(**tool_info)
+                gen_tools.append(GeneratedTool(
+                    spec=spec,
+                    examples=[]
+                ))
+        else:
+            gen_tools.append(GeneratedTool(
+                spec=Specification(**info_json),
+                examples=[]
+            ))
+        return gen_tools
 
     async def build_llm_input(self,
                               observation: Observation,

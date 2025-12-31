@@ -5,6 +5,8 @@ import random
 from typing import Dict, List, Optional, Any
 from dataclasses import asdict
 
+from jsonlines import jsonlines
+
 from aworld.core.storage.base import Storage
 from aworld.core.storage.data import Data
 from aworld.logs.util import logger
@@ -27,6 +29,11 @@ class ToolRepository:
         self._lock = asyncio.Lock()
         self.storage = storage
         self.load_from_storage()
+
+    async def add_tools(self, tools: List[GeneratedTool]) -> bool:
+        for tool in tools:
+            await self.add_tool(tool)
+        return True
 
     async def add_tool(self, tool: GeneratedTool) -> bool:
         """Add a tool to the repository.
@@ -214,6 +221,32 @@ class ToolRepository:
 
         return True
 
+    async def save_to_json(self, file_path: str) -> bool:
+        try:
+            serializable_tools = []
+            for tid, tool in self.tools.items():
+                tool_dict = {
+                    'id': tool.id,
+                    'spec': asdict(tool.spec),
+                    'examples': tool.examples,
+                    'complexity_score': tool.complexity_score,
+                    'diversity_score': tool.diversity_score,
+                    'active': tool.active,
+                    'success_rate': tool.success_rate,
+                    'timeout_rate': tool.timeout_rate,
+                    'error_rate': tool.error_rate,
+                    'metadata': tool.metadata
+                }
+                serializable_tools.append(tool_dict)
+
+            with jsonlines.open(file_path, "w") as f:
+                f.write_all(serializable_tools)
+            logger.info(f"{len(self.tools)} tools saved to {file_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Tool persistence failed, error: {str(e)}")
+            return False
+
     async def save_to_storage(self) -> bool:
         """Save tools to persistent storage.
         
@@ -247,6 +280,35 @@ class ToolRepository:
             return True
         except Exception as e:
             logger.error(f"Tool persistence failed, error: {str(e)}")
+            return False
+
+    async def load_from_file(self, file_path: str) -> bool:
+        """Load tools from special file.
+
+        Returns:
+            Whether the load operation was successful.
+        """
+        try:
+            with open(file_path, "r+", encoding="utf8") as f:
+                for data in jsonlines.Reader(f):
+                    self.tools[data['id']] = GeneratedTool(
+                        id=data['id'],
+                        spec=Specification(**data['spec']),
+                        examples=data['examples'],
+                        complexity_score=data['complexity_score'],
+                        diversity_score=data['diversity_score'],
+                        active=data['active'],
+                        success_rate=data['success_rate'],
+                        timeout_rate=data['timeout_rate'],
+                        error_rate=data['error_rate'],
+                        metadata=data['metadata']
+                    )
+                    self.distribution[data['spec']['category']] = self.distribution.get(data['spec']['category'], 0) + 1
+
+            logger.info(f"Loaded {len(self.tools)} tools from {self.storage.name()} {self.name}")
+            return True
+        except Exception as e:
+            logger.error(f"Loading tools from {self.storage.name()} failed, error: {str(e)}")
             return False
 
     async def load_from_storage(self) -> bool:
