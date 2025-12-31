@@ -528,7 +528,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                              if memory.memory_store._filter_memory_item(item, filters)]
             if pending_items:
                 logger.info(f"🧠 [Agent:{self.id()}] Found {len(pending_items)} pending memory items, "
-                            f"holding task execution. Pending content: {pending_items[0].content[:100]}...")
+                            f"holding task execution. Pending content: {pending_items[0]}...")
                 self._finished = False
         return self._agent_result(
             policy_result,

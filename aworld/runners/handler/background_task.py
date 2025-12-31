@@ -392,17 +392,17 @@ class DefaultBackgroundTaskHandler(BackgroundTaskHandler):
                 elif isinstance(data, EnvChannelMessage):
                     data = data.message
                     if not agent_id:
-                        agent_id = data.get('agent_id')
+                        agent_id = data.get('env_content', {}).get('agent_id')
                     content = data
                 elif isinstance(data, dict):
                     if not agent_id:
-                        agent_id = data.get('agent_id')
+                        agent_id = data.get('env_content', {}).get('agent_id')
                     content = data
                 else:
                     logger.warning(f"[{self.name()}] Unsupported background tool result: {data}.")
                 try:
                     pending_msg = MemoryHumanMessage(
-                        content=content,
+                        content=str(content),
                         metadata=MessageMetadata(
                             session_id=session_id,
                             user_id=user_id,
