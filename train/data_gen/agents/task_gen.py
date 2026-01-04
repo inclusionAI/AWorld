@@ -4,6 +4,7 @@ import json
 from typing import Dict, Any, List
 
 from aworld.agents.llm_agent import Agent
+from aworld.core.agent.base import AgentFactory
 from aworld.core.common import Observation
 from aworld.core.event.base import Message
 from aworld.memory.main import MemoryFactory
@@ -14,10 +15,11 @@ from train.data_gen.graph_parser import ExecutionGraph
 from train.data_gen.tool_repository import ToolRepository
 
 
+@AgentFactory.register(name="task_generator_agent", desc="Generate task and answer based on user input.")
 class TaskGeneratorAgent(Agent):
     def __init__(self, tool_repository: ToolRepository, **kwargs):
-        kwargs['name'] = kwargs.get('name', 'task_answer_agent')
-        kwargs['description'] = kwargs.get('description', 'Answer task based on user input.')
+        kwargs['name'] = kwargs.get('name', 'task_generator_agent')
+        kwargs['description'] = kwargs.get('description', 'Generate task and answer based on user input.')
         kwargs['system_prompt'] = kwargs.get(
             'system_prompt',
             task_generator_agent_system_prompt
@@ -72,28 +74,35 @@ class TaskGeneratorAgent(Agent):
             })
         else:
             # no histories need
-            con: str = observation.content
+            if self.tool_repository:
+                con: str = observation.content
 
-            con_dict = json.loads(con)
-            execution_str = con_dict.get('execution_graph', '')
-            graph = await ExecutionGraph.parse(execution_str)
-            tool_ids: List[str] = await ExecutionGraph.collect_entity(graph)
+                con_dict = json.loads(con)
+                execution_str = con_dict.get('execution_graph', '')
+                graph = await ExecutionGraph.parse(execution_str)
+                tool_ids: List[str] = await ExecutionGraph.collect_entity(graph)
 
-            tools = []
-            for tool_id in tool_ids:
-                tool = await self.tool_repository.get_tool(tool_id)
-                if tool:
-                    tools.append(tool)
+                tools = []
+                for tool_id in tool_ids:
+                    tool = await self.tool_repository.get_tool(tool_id)
+                    if tool:
+                        tools.append(tool)
 
-            tools_info = tools_meta(tools, self.max_tool_num)
-            # add to context for next
-            context.agent_info[context.get_task().id] = tools_info
+                tools_info = tools_meta(tools, self.max_tool_num)
+                # add to context for next
+                context.agent_info[context.get_task().id] = tools_info
 
-            tools_info = "\n".join(tools_info)
+                tools_info = "\n".join(tools_info)
 
-            user_content = f"Please generate an initial task based on the information: {tools_info}"
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_content}
-            ]
+                info = {"tools": tools_info, "chain": execution_str}
+                user_content = f"Please generate an initial task based on the information: {info}"
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": user_content}
+                ]
+            else:
+                messages = [
+                    {"role": "system", "content": self.system_prompt},
+                    {"role": "user", "content": f"Please generate an task based on information: {observation.content}"}
+                ]
         return messages

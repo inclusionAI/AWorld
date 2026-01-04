@@ -5,6 +5,7 @@ import traceback
 from typing import List, Any, Dict
 
 from aworld.agents.llm_agent import Agent
+from aworld.core.agent.base import AgentFactory
 from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message
 from aworld.logs.util import logger
@@ -12,6 +13,7 @@ from train.data_gen.agents.prompts import tool_orchestra_agent_system_prompt
 from train.data_gen.tool_repository import ToolRepository
 
 
+@AgentFactory.register(name="tool_orchestra_agent", desc="Produce tools call chain based on tool list")
 class ToolOrchestratorAgent(Agent):
     def __init__(self, tool_repository: ToolRepository, **kwargs):
         kwargs['name'] = kwargs.get('name', 'tool_orchestra_agent')
@@ -67,6 +69,11 @@ class ToolOrchestratorAgent(Agent):
                               info: Dict[str, Any] = {},
                               message: Message = None,
                               **kwargs) -> List[Dict[str, Any]]:
+
+        tools = observation.content
+        tool_cons = []
+        for tool in tools:
+            tool_cons.append(tool.to_dict())
         # one time execution
         messages = [
             {
@@ -75,7 +82,7 @@ class ToolOrchestratorAgent(Agent):
             },
             {
                 "role": "user",
-                "content": f"""Please based on the following information:\n{observation.content}"""
+                "content": f"""Please based on the following information:\n{tool_cons}"""
             }
         ]
         return messages

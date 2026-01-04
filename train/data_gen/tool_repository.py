@@ -28,7 +28,6 @@ class ToolRepository:
         self.access_count: Dict[str, int] = {}
         self._lock = asyncio.Lock()
         self.storage = storage
-        self.load_from_storage()
 
     async def add_tools(self, tools: List[GeneratedTool]) -> bool:
         for tool in tools:
@@ -94,18 +93,21 @@ class ToolRepository:
                     break
             return filtered_tools
 
-    async def get_by_random(self, count: int = 5) -> List[GeneratedTool]:
+    async def get_by_random(self, base_count: int = 5, use_random_count: bool = False) -> List[GeneratedTool]:
         """Get tools randomly.
         
         Args:
-            count: Number of tools to retrieve.
+            base_count: Number of tools to retrieve.
+            use_random_count: Whether to use a random number.
             
         Returns:
             Randomly selected tools.
         """
         async with self._lock:
             tool_list = list(self.tools.values())
-            return random.choices(tool_list, k=count)
+            if use_random_count:
+                base_count = random.choice(range(1, base_count + 1))
+            return random.choices(tool_list, k=base_count)
 
     async def get_by_capability(self, capability: str, count: int = 5) -> List[GeneratedTool]:
         """Get tools by capability.

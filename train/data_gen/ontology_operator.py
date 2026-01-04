@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import random
+from copy import deepcopy
 from typing import Dict, List
 
 from aworld.logs.util import logger
@@ -79,19 +80,32 @@ class OntologyOperator:
         if cate is None:
             return self._fallback_spec('', Diversity.LOW, Complexity.LOW)
 
-        cate_node = self.ontology_tree.cate_nodes[cate]
+        return await self.single_capability(cate)
+
+    async def single_capability(self, cate: str, capability: str = None) -> Specification:
+        """Build specification with single capability of category."""
+
+        cate_node = self.ontology_tree.cate_nodes.get(cate)
+        if cate_node is None:
+            logger.warning(f"Category {cate} not found in ontology network")
+            return self._fallback_spec('', Diversity.LOW, Complexity.LOW)
         if cate_node.children:
-            ability = random.choice(list(cate_node.children.keys()))
-            ability_node = cate_node.children[ability]
+            ability = capability or random.choice(list(cate_node.children.keys()))
+            ability_node = cate_node.children.get(ability)
+            if ability_node is None:
+                logger.warning(f"capability {ability} not found in ontology network")
+                return self._fallback_spec(cate, Diversity.LOW, Complexity.LOW)
 
             subtree = TreeNode(name=cate, description=f"{cate} category", children={})
-            node = TreeNode(name=ability, description=ability_node.description, children={})
+            node = TreeNode(name=ability,
+                            description=ability_node.description,
+                            children=deepcopy(ability_node.children))
             subtree.add_child(node)
 
             return Specification(
                 name=f"{ability}_ability",
                 description="",
-                category=category,
+                category=cate,
                 capabilities=[ability],
                 diversity=Diversity.LOW,
                 complexity=Complexity.LOW,
