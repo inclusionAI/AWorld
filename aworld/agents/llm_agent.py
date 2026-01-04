@@ -403,14 +403,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     for tool_call_id in last_tool_calls:
                         if tool_call_id not in tool_calls_map:
                             raise AWorldRuntimeException(
-                                f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, messages: {messages}")
+                                f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
                         messages.append(tool_calls_map.get(tool_call_id))
                     tool_calls_map = {}
                     last_tool_calls = []
 
                 if isinstance(history, MemoryMessage):
                     if isinstance(history, MemoryToolMessage):
-                        tool_calls_map[history.tool_call_id] = history.to_openai_message()
+                        if history.tool_call_id in last_tool_calls:
+                            tool_calls_map[history.tool_call_id] = history.to_openai_message()
+                        else:
+                            logger.warning(f"Ignore stray tool message in memory: {history.tool_call_id}, "
+                                           f"expected one of {last_tool_calls}")
                     else:
                         messages.append(history.to_openai_message())
                         if isinstance(history, MemoryAIMessage) and history.tool_calls:
@@ -418,9 +422,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 else:
                     role = history.metadata['role']
                     if role == 'tool':
-                        msg = {'role': history.metadata['role'], 'content': history.content,
-                               'tool_call_id': history.metadata.get('tool_call_id')}
-                        tool_calls_map[history.metadata.get("tool_call_id")] = msg
+                        tool_call_id = history.metadata.get("tool_call_id")
+                        if tool_call_id in last_tool_calls:
+                            msg = {'role': history.metadata['role'], 'content': history.content,
+                                   'tool_call_id': tool_call_id}
+                            tool_calls_map[tool_call_id] = msg
+                        else:
+                            logger.warning(f"Ignore stray tool message in memory metadata: {tool_call_id}, "
+                                           f"expected one of {last_tool_calls}")
                     else:
                         if not self.use_tools_in_prompt and history.metadata.get('tool_calls'):
                             messages.append({'role': history.metadata['role'], 'content': history.content,
@@ -434,7 +443,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 for tool_call_id in last_tool_calls:
                     if tool_call_id not in tool_calls_map:
                         raise AWorldRuntimeException(
-                            f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, messages: {messages}")
+                            f"tool_calls mismatch! {tool_call_id} not found in {tool_calls_map}, last_tool_calls: {last_tool_calls}, messages: {messages}, histories: {histories}")
                     messages.append(tool_calls_map.get(tool_call_id))
                 tool_calls_map = {}
                 last_tool_calls = []
