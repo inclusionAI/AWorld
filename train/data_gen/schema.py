@@ -12,6 +12,7 @@ from aworld.core.tool.base import BaseTool, AsyncBaseTool
 class EvolutionConfig(BaseConfig):
     llm_config: Optional[ModelConfig] = None
     hitl: bool = False
+    run_conf: Optional[RunConfig] = None
 
 # ------------------------------------------ Generation ----------------------------------------------- #
 
@@ -141,6 +142,9 @@ class ToolGenerateConfig(BaseConfig):
     gen_number: int = field(default=10)
     batch_size: int = field(default=100)
     max_workers: int = field(default=1)
+    category: str = field(default="")
+    complexity: str = field(default="")
+    diversity: str = field(default="")
     rule_cls: str = field(default=None)
 
 

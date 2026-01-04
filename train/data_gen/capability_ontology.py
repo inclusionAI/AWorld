@@ -40,79 +40,116 @@ class CapabilityOntology:
 
     async def load_sources(self) -> List[Dict]:
         """Load capability data from source paths."""
+        default_sources = [{
+            "category": "Local Life Services",
+            "capabilities": ["Food & Dining", "Home Services", "Community Events", "Local Shopping", "Transportation",
+                             "Healthcare Access", "Recreation & Leisure"],
+            "sub_capabilities": {
+                "Food & Dining": ["Search restaurants", "Order food delivery", "Book table", "Review restaurant",
+                                  "View menu"],
+                "Home Services": ["Book cleaning service", "Request repair", "Schedule maintenance", "Hire babysitter",
+                                  "Cancel service"],
+                "Community Events": ["Browse events", "Register for event", "Share event", "Create event",
+                                     "Cancel registration"],
+                "Local Shopping": ["Search local stores", "Order product", "Reserve item", "Track delivery",
+                                   "Review store"],
+                "Transportation": ["Book taxi", "Check bus schedule", "Rent bike", "Track ride", "Cancel booking"],
+                "Healthcare Access": ["Find nearby clinic", "Book doctor appointment", "Order medicine",
+                                      "Consult pharmacist", "View health tips"],
+                "Recreation & Leisure": ["Search parks", "Book sports facility", "Join club", "View activity schedule",
+                                         "Cancel booking"]
+            }
+        }]
         if not self.config.source_paths:
             if not self.config.llm_config:
                 logger.error("no source paths and llm config provide, will use default data.")
-                return [
-                    {
-                        "category": "Financial Services",
-                        "capabilities": [
-                            "Stock price inquiry", "Exchange rate conversion", "Account balance inquiry",
-                            "Transaction records", "Portfolio analysis", "Risk assessment"
-                        ]
-                    },
-                    {
-                        "category": "Transportation and Travel",
-                        "capabilities": [
-                            "Route planning", "Realtime traffic", "Public transportation inquiry",
-                            "Taxi service", "Parking information", "Flight inquiry"
-                        ]
-                    },
-                ]
+                return default_sources
             else:
-                prompt = """You are a domain modeling expert. Your task is to break down a given input (which may be a broad industry topic, a complex mixed requirement, or a system description) into multiple independent **functional domains (Categories)**, and list the core **atomic capabilities** for each domain.
+                prompt = """You are a senior domain modeling architect and intent classification expert. Your task is to analyze user inputs (task descriptions, system requirements, or mixed instructions) and construct a **three-level hierarchical** functional classification system.
 
-# Goal
-Output a JSON Array where each object represents an independent business module or functional category.
+# Hierarchy Definitions
+1.  **Category**: Macro industry or business domain boundaries (e.g., "Financial Services", "Smart Home").
+2.  **Capability**: The core functional modules or service groups within this domain (e.g., "Stock Trading", "Lighting Control").
+3.  **Sub-capability**: The specific executable atomic operations/intentions under this module (e.g., "Buy stock", "Dim the lights").
+
+# Output Format
+Output a list of JSON Object with the following structure:
+```json
+[
+    {
+        "category": "Domain Name",
+        "capabilities": ["Capability_A", "Capability_B"],
+        "sub_capabilities": {
+            "Capability_A": ["Atomic Action 1", "Atomic Action 2"],
+            "Capability_B": ["Atomic Action 3", "Atomic Action 4"]
+        }
+    }
+]
 
 # Rules
 1. **Decomposition**:
     - If the input is a large topic (such as "Smart Home Solution"), please break it down into subsystems (such as "Lighting Control", "Security", "Appliance Management").
-    - If the input contains multiple unrelated intentions, please separate them.
-2. **Category**: Must be a specific noun phrase representing an independent functional module.
-3. **Capabilities**:
-    - List 5-10 core functions for each category.
-    - The format must be **Verb+Noun** (verb object structure, such as "Book flight", "Cancel order").
+    - If the input encompasses multiple unrelated domains, generate multiple Objects to describe them respectively.
+2. **Consistency**: 
+    - The Key in the sub_capabilities object must strictly match the strings in the capabilities list.
+    - Do not create Sub-capabilities without corresponding Key.
+3. **Granularity**:
+    - **Category**: Must be a specific noun phrase representing an independent domain module.
+    - **Capability** It should be a noun phrase (functional module).
+    - **Sub-capability** It should be a phrase in the "Verb + Noun" structure, indicating a specific action.
+4. **Coverage**:
+    - List 3-10 core Capability for each category.
+    - The Capability points should cover the main use cases of the module.
+    - List at least 3-5 sub-capabilities under each capability, covering CRUD operations or core business processes.
     - The functional points should cover the main use cases of the module.
-4. **Format**: Directly output a JSON list without including Markdown tags or other explanatory text.
+5. **Format**: Directly output a JSON list without including Markdown tags or other explanatory text.
 
 # Few-Shot Examples
 
 ## Example 1: Broad Topic Decomposition
-**Input**: "Design a complete e-commerce backend management system"
+**Input**: "Design the core functions of an e-commerce platform"
 **Output**:
 ```json
 [
     {
-        "category": "Order Management",
-        "capabilities": ["Create order", "Cancel order", "Track shipment", "Process refund", "View order history"]
-    },
-    {
-        "category": "Inventory Management",
-        "capabilities": ["Add product", "Update stock level", "Remove product", "Check low stock", "Manage suppliers"]
-    },
-    {
-        "category": "User Management",
-        "capabilities": ["Register user", "Reset password", "Ban user", "Update profile", "Assign roles"]
+        "category": "E-commerce Platform",
+        "capabilities": ["Product Search", "Cart Management", "Order Management", "Inventory Management", "User Management"],
+        "sub_capabilities": {
+            "Product Search": ["Search by keyword", "Filter by price", "View product details", "Check reviews"],
+            "Cart Management": ["Add to cart", "Remove from cart", "Update quantity", "Clear cart"],
+            "Order Processing": ["Checkout", "Apply coupon", "Select shipping address"],
+            "Order Management": ["Create order", "Cancel order", "Track shipment", "Process refund", "View order history"],
+            "Inventory Management": ["Add product", "Update stock level", "Remove product", "Check low stock", "Manage suppliers"]
+            "User Management": ["Register user", "Reset password", "Ban user", "Update profile", "Assign roles"]
+        }
     }
 ]
 ```
 ## Example 2: Mixed User Intent
-**Input**: "I need to check the weather tomorrow, also check how much the ticket to London costs, and help me remember the meeting tomorrow afternoon."
+**Input**: "Help me handle the bank transfer, book a ticket to Shanghai, and remind me of the meeting tomorrow morning."
 **Output**:
 ```json
 [
     {
-        "category": "Weather Service",
-        "capabilities": ["Check current weather", "Get weather forecast", "Check air quality"]
+        "category": "Financial Services",
+        "capabilities": ["Fund Transfer"],
+        "sub_capabilities": {
+            "Fund Transfer": ["Check balance", "Transfer money", "View transaction history", "Add beneficiary"]
+        }
     },
     {
-        "category": "Travel Booking",
-        "capabilities": ["Search flights", "Compare ticket prices", "Book flight", "Check flight status"]
+        "category": "Travel & Transportation",
+        "capabilities": ["Flight Booking"],
+        "sub_capabilities": {
+            "Flight Booking": ["Search flights", "Book ticket", "Check flight status", "Cancel booking"]
+        }
     },
     {
-        "category": "Calendar & Reminders",
-        "capabilities": ["Create event", "Set reminder", "Check availability", "Delete event"]
+        "category": "Personal Efficiency",
+        "capabilities": ["Schedule Management"],
+        "sub_capabilities": {
+            "Schedule Management": ["Create event", "Set reminder", "List upcoming events", "Delete reminder"]
+        }
     }
 ]
 ```
@@ -123,16 +160,13 @@ Output a JSON Array where each object represents an independent business module 
 ```json
 [
     {
-        "category": "Appointment Scheduling",
-        "capabilities": ["Book doctor appointment", "Reschedule visit", "Cancel appointment", "Find nearby clinic"]
-    },
-    {
-        "category": "Telemedicine",
-        "capabilities": ["Start video consultation", "Chat with doctor", "Upload medical report", "Download prescription"]
-    },
-    {
-        "category": "Health Tracking",
-        "capabilities": ["Log heart rate", "Track sleep patterns", "Input blood pressure", "View health trends"]
+        "category": "Healthcare",
+        "capabilities": ["Appointment Scheduling", "Telemedicine", "Health Tracking"]
+        "sub_capabilities": {
+            "Appointment Scheduling": ["Book doctor appointment", "Reschedule visit", "Cancel appointment", "Find nearby clinic"]
+            "Telemedicine": ["Start video consultation", "Chat with doctor", "Upload medical report", "Download prescription"]
+            "Health Tracking": ["Log heart rate", "Track sleep patterns", "Input blood pressure", "View health trends"]
+        }
     }
 ]
 ```
@@ -149,16 +183,24 @@ Output a JSON Array where each object represents an independent business module 
                 try:
                     llm_model = get_llm_model(self.config.llm_config)
                     resp = call_llm_model(llm_model, messages=messages)
+                    resp.content = resp.content.replace("```json", "").replace("```", "")
+                    results: list = json.loads(resp.content)
 
-                    result = json.loads(resp.content)
-
-                    if result and "category" in result and "capabilities" in result:
-                        return result
+                    if results:
+                        idxs = []
+                        for idx, result in enumerate(results):
+                            if "category" in result and "capabilities" in result:
+                                continue
+                            logger.warning(f"Invalid result: {result}")
+                            idxs.append(idx)
+                        [results.pop(idx) for idx in idxs]
+                        return results
                     else:
-                        return []
+                        logger.warning(f"No results found, please check your input.")
+                        return default_sources
                 except Exception as e:
                     logger.error(f"Obtain category and capabilities fail. {traceback.format_exc()}")
-                    return []
+                    return default_sources
 
         meta_datas = []
         for path in self.config.source_paths:
@@ -171,10 +213,7 @@ Output a JSON Array where each object represents an independent business module 
     async def _category(self, meta_data: Dict[str, Any]) -> Optional[Dict]:
         """Obtain category and capabilities information from a metadata json or using LLM"""
         if "category" in meta_data and "capabilities" in meta_data:
-            return {
-                "category": meta_data["category"],
-                "capabilities": meta_data["capabilities"]
-            }
+            return meta_data
 
         if "content" in meta_data:
             return await self._category_from_llm(meta_data["content"])

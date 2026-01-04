@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 from typing import List, Dict, Any
 
-from aworld.core.agent.base import BaseAgent
+from aworld.core.agent.base import BaseAgent, AgentFactory
 from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message
 from aworld.logs.util import logger
@@ -10,6 +10,7 @@ from train.data_gen.schema import GeneratedTool
 from train.data_gen.tool_repository import ToolRepository
 
 
+@AgentFactory.register(name="tool_select_agent", desc="A tool select strategy agent")
 class ToolSelectAgent(BaseAgent):
     """Rule Agent, no predict model."""
 
@@ -33,5 +34,6 @@ class ToolSelectAgent(BaseAgent):
             await self.tool_repository.load_from_file(file_path)
 
         # random strategy
-        tools: List[GeneratedTool] = await self.tool_repository.get_by_random(count=self.count)
+        tools: List[GeneratedTool] = await self.tool_repository.get_by_random(base_count=self.count,
+                                                                              use_random_count=True)
         return [ActionModel(policy_info=tools, agent_name=self.id())]
