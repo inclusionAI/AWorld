@@ -6,16 +6,15 @@ from typing import List
 
 import yaml
 
-docs = "docs"
+docs = "."
 black_keys = ["Index"]
 black_values = ["index.md"]
-file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities"],
-                 "Basic Usage": ["Hitl"],
+file_priority = {"Get Start": ["Overview", "Quick start", "Core capabilities"],
                  "Runtime": ["Overview"]}
 file_mapping = {"Hitl": "HITL"}
-dir_order = ["Get Start", "Basic Usage", "Agents", "Environment", "Runtime", "Training", "Key Components"]
+dir_order = ["Get Start", "Agents", "Environment", "Training", "Key Components"]
 
-zh_v = ["开始", "基本使用", "智能体", "环境", "运行时", "训练", "关键组件"]
+zh_v = ["开始", "智能体", "环境", "训练", "关键组件"]
 
 
 def scan_path(path: str) -> List[dict]:
