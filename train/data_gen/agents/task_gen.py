@@ -9,7 +9,7 @@ from aworld.core.common import Observation
 from aworld.core.event.base import Message
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemorySystemMessage, MemoryToolMessage
-from train.data_gen.agents.prompts import task_generator_agent_system_prompt
+from train.data_gen.agents.prompts import task_generator_agent_system_prompt, task_generator_agent_no_tool_system_prompt
 from train.data_gen.agents.util import tools_meta
 from train.data_gen.graph_parser import ExecutionGraph
 from train.data_gen.tool_repository import ToolRepository
@@ -102,7 +102,7 @@ class TaskGeneratorAgent(Agent):
                 ]
             else:
                 messages = [
-                    {"role": "system", "content": self.system_prompt},
+                    {"role": "system", "content": task_generator_agent_no_tool_system_prompt},
                     {"role": "user", "content": f"Please generate an task based on information: {observation.content}"}
                 ]
         return messages

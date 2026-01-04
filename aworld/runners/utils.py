@@ -13,7 +13,7 @@ from aworld.runners.task_runner import TaskRunner
 from aworld.utils.common import new_instance, snake_to_camel
 
 
-async def runtime_engine(run_conf: RunConfig):
+async def runtime_engine(run_conf: RunConfig = None):
     run_conf = run_conf or RunConfig()
     name = run_conf.engine_name
     if run_conf.cls:
