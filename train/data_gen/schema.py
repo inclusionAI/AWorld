@@ -14,6 +14,7 @@ class EvolutionConfig(BaseConfig):
     hitl: bool = False
     run_conf: Optional[RunConfig] = None
 
+
 # ------------------------------------------ Generation ----------------------------------------------- #
 
 class OntologyConfig(BaseConfig):
@@ -22,20 +23,25 @@ class OntologyConfig(BaseConfig):
     task: Optional[str] = None
 
 
-class DataGenConfig(BaseConfig):
+class DataSynthesisConfig(BaseConfig):
+    name: str = 'data_gen_task'
+    dir_name: str = '.'
+    tool_file_name: str = 'tools.jsonl'
+    task_file_name: str = 'synthesis_data.jsonl'
     gen_tools: bool = False
-    gen_queries: bool = False
-    gen_tasks: bool = False
-    eval_tasks: bool = False
-    tool_gen_config: Optional['ToolGenerateConfig'] = None
-    query_gen_config: Optional = None
+    gen_tasks: bool = True
+    exec_tasks: bool = False
+    eval_data: bool = False
+    llm_config: Optional[ModelConfig] = None
+    tool_gen_config: Optional['ToolSynthesisConfig'] = None
+    task_gen_config: Optional['TaskSynthesisConfig'] = None
     run_conf: Optional[RunConfig] = None
 
     def model_post_init(self, __context: any):
         """Check params after model initialization and validation."""
 
-        if self.gen_queries and self.gen_tasks:
-            raise ValueError("Cannot set generate queries and tasks at the same time, gen_queries include gen tasks.")
+        if not self.gen_tasks and not self.gen_tools:
+            raise ValueError("No data need synthesis.")
 
 
 class GenerationStrategy:
@@ -135,7 +141,7 @@ class Specification:
 
 # ------------------------------------------ Tool Generation ----------------------------------------------- #
 
-class ToolGenerateConfig(BaseConfig):
+class ToolSynthesisConfig(BaseConfig):
     llm_config: Optional[ModelConfig] = None
     ontology_config: Optional[OntologyConfig] = None
     strategy: str = GenerationStrategy.LLM
@@ -191,6 +197,17 @@ class TaskType(Enum):
     MULTI_TOOL = "multi_tool"
     TOOL_CHAIN = "tool_chain"
     PARALLEL_TOOL = "parallel_tool"
+
+
+class TaskSynthesisConfig(BaseConfig):
+    llm_config: Optional[ModelConfig] = None
+    strategy: str = GenerationStrategy.LLM
+    gen_number: int = field(default=10)
+    # Does the task require the use of tools
+    use_tool: bool = field(default=False)
+    # Generate Query-answer pair
+    gen_qa: bool = field(default=True)
+    agents: Optional[List[Dict[str, Any]]] = field(default_factory=list)
 
 
 @dataclass
