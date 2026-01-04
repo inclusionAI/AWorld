@@ -26,7 +26,7 @@ class OntologyConfig(BaseConfig):
 class DataSynthesisConfig(BaseConfig):
     name: str = 'data_gen_task'
     dir_name: str = '.'
-    tool_file_name: str = 'tools.jsonl'
+    tool_file_name: str = None
     task_file_name: str = 'synthesis_data.jsonl'
     gen_tools: bool = False
     gen_tasks: bool = True

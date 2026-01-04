@@ -7,7 +7,7 @@ from typing import Tuple
 
 from jsonlines import jsonlines
 
-from aworld.config import load_config, AgentConfig
+from aworld.config import AgentConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Runner, Task, TaskResponse
 from aworld.logs.util import logger
@@ -31,40 +31,47 @@ class DataSynthesisRunner(Runner):
         self.task = task
         self.conf = conf
         self.tool_repository = None
-        self.event = asyncio.Event()
+        self.tool_gen_event = asyncio.Event()
 
     async def do_run(self):
         """The workflow of data synthesis, tool_gen -> task_gen -> task_exec -> data_eval.
 
         Returns:
-            Path of the dataset used for training and testing.
+            Path of the dataset used for training and testing, tool data.
         """
-        tool_data_path = None
         dir_name = self.conf.dir_name or "spec"
+        tool_data_path = f"{dir_name}/{self.conf.tool_file_name}"
 
         ## Tool generate
         if self.conf.gen_tools:
             tool_data_path = await self.tool_synthesis(dir_name)
+
+            if self.conf.eval_data:
+                # eval tools
+                pass
         else:
-            self.event.set()
+            self.tool_gen_event.set()
 
         # Waiting for pre-processing tool synthesis
-        await self.event.wait()
+        await self.tool_gen_event.wait()
 
         ## Task Generate
-        train_data_path, test_data_path = await self.sample_synthesis(dir_name=dir_name,
-                                                                      tool_data_path=tool_data_path)
+        train_data_path, test_data_path = None, None
+        if self.conf.gen_tasks:
+            train_data_path, test_data_path = await self.sample_synthesis(dir_name=dir_name,
+                                                                          tool_data_path=tool_data_path)
 
         ## Task Execute
-        if self.conf.exec_tasks:
+        if train_data_path and self.conf.exec_tasks:
             pass
 
         # Result data evaluate
-        if self.conf.eval_data:
+        if test_data_path and self.conf.eval_data:
+            # eval synthesis samples
             pass
 
         logger.info(f"{self.conf.gen_name} data synthesis done. Config: {self.conf}")
-        return train_data_path, test_data_path
+        return train_data_path, test_data_path, tool_data_path
 
     async def tool_synthesis(self, dir_name: str = None) -> str:
         """Synthesis tools.
@@ -215,8 +222,11 @@ class DataSynthesisRunner(Runner):
             await self.tool_repository.add_tools(results)
 
             # With a certain number of tools, can start synthesizing
-            if not self.event.is_set() and generated_num >= batch_size:
-                self.event.set()
+            if not self.tool_gen_event.is_set() and generated_num >= batch_size:
+                self.tool_gen_event.set()
+
+        if not self.tool_gen_event.is_set():
+            self.tool_gen_event.set()
         return results
 
     async def _exec_tool_gen_agent(self,
