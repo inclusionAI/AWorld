@@ -394,7 +394,7 @@ class DefaultAgentHandler(AgentHandler):
                     topic=TopicType.FINISHED,
                     headers={"context": message.context}
                 )
-        agent = self.swarm.agents.get(action.agent_name)
+
         caller = self.swarm.agent_graph.root_agent.id() or message.caller
         if agent.id() != self.swarm.agent_graph.root_agent.id():
             yield Message(

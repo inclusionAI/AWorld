@@ -318,7 +318,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         if isinstance(policy_result, list):
             for action in policy_result:
                 # ActionModel agent_name
-                if not getattr(action, "agent_name", None):
+                if hasattr(action, "agent_name") and not getattr(action, "agent_name", None):
                     action.agent_name = self.id()
         return AgentMessage(payload=policy_result, sender=self.id(), headers=message.headers)
 
