@@ -1,6 +1,5 @@
 
 
-# AWorld Context Engineering
 > **First Principle**: The performance bottleneck of large models lies not in parameter count, but in the "quality of context" they perceive. Despite expanding context windows, research has found a "**Context Rot**" phenomenon: as the number of tokens increases, the model's ability to accurately recall information decreases. Context engineering is the connector between an Agent's "digital brain" and the real world, and it is the **natural evolution of Prompt Engineering** — shifting from simple instruction writing to the dynamic curation and maintenance of the optimal token set during the LLM's reasoning process.
 >
 
