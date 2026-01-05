@@ -8,8 +8,9 @@ In the AWorld framework, `Sandbox` is a client implementation of Environment, pr
 + ✅ **Automatic Tool Discovery**: Automatically discover and register MCP tools
 + ✅ **Connection Pool Management**: Intelligently cache server connections to improve performance
 + ✅ **Registry Integration**: Support for local and remote tool registries
-+ ✅ **Progress Callbacks**: Support for displaying execution progress for long-running tools
-+ ✅ **Automatic Parameter Injection**: Automatically inject session_id, task_id, and other parameters from context
++ ✅ **Streaming Response**: Support for streaming tool responses, including progress callbacks
++ ✅ **Environment Context Capability**: Automatically inject user-defined context parameters into tool calls
++ ✅ **Agent Runtime Support**: Support for running Agents in Environment
 
 ---
 
@@ -44,7 +45,8 @@ mcp_config = {
 
 async def main():
     # Create an Environment instance through Sandbox (Environment's client)
-    sandbox = Sandbox(mcp_config=mcp_config)
+    # Using Builder pattern
+    sandbox = Sandbox().mcp_config(mcp_config).build()
     
     # List available tools
     tools = await sandbox.list_tools()
@@ -105,51 +107,51 @@ Example: `gaia-mcp__doc_txt__list_supported_formats_for_txt`
 
 ## Basic Operations
 ### Creating an Environment
-In AWorld, you create Environment instances through the `Sandbox` class (Environment's client implementation):
+In AWorld, you create Environment instances through the `Sandbox` class (Environment's client implementation). Builder pattern is recommended:
 
 ```python
 from aworld.sandbox import Sandbox
 
-# Method 1: Using mcp_config
-# Sandbox is a client implementation of Environment
-sandbox = Sandbox(
-    mcp_config={
-        "mcpServers": {
-            "server1": {
-                "type": "streamable-http",
-                "url": "https://...",
-                "headers": {...}
-            }
+# Method 1: Using mcp_config (Builder pattern)
+sandbox = Sandbox().mcp_config({
+    "mcpServers": {
+        "server1": {
+            "type": "streamable-http",
+            "url": "https://...",
+            "headers": {...}
         }
     }
-)
+}).build()
 
-# Method 2: Specify server names
-sandbox = Sandbox(
-    mcp_servers=["server1", "server2"],
-    mcp_config={
-        "mcpServers": {
-            "server1": {...},
-            "server2": {...}
-        }
+# Method 2: Specify server names (Builder pattern)
+sandbox = Sandbox().mcp_servers(["server1", "server2"]).mcp_config({
+    "mcpServers": {
+        "server1": {...},
+        "server2": {...}
     }
-)
+}).build()
 
-# Method 3: Using tool names (lookup from registry)
-sandbox = Sandbox(
-    tools=["tool1", "tool2"],
-    registry_url="https://registry.example.com"
-)
+# Method 3: Using tool names (lookup from registry, Builder pattern)
+sandbox = Sandbox().tools(["tool1", "tool2"]).registry_url("https://registry.example.com").build()
 
-# Method 4: Specify sandbox_id
-sandbox = Sandbox(
-    sandbox_id="my-sandbox-id",
-    mcp_config={
-        "mcpServers": {
-            "server_name": {...}
-        }
+# Method 4: Specify sandbox_id (Builder pattern)
+sandbox = Sandbox().sandbox_id("my-sandbox-id").mcp_config({
+    "mcpServers": {
+        "server_name": {...}
     }
+}).build()
+
+# Method 5: Chain multiple options (Builder pattern)
+sandbox = (Sandbox()
+    .mcp_config({...})
+    .streaming(True)  # Enable streaming, see Advanced Capabilities
+    .env_content({"user_id": "user123"})  # Configure environment context, see Advanced Capabilities
+    .agents({"my_agent": "/path/to/agents"})  # Configure agents, see Advanced Capabilities
+    .build()
 )
+
+# Note: Direct constructor is also supported (backward compatible)
+sandbox = Sandbox(mcp_config={...})
 ```
 
 ### Listing Tools
@@ -222,8 +224,7 @@ info = sandbox.get_info()
 # {
 #     "sandbox_id": "...",
 #     "status": "Running",
-#     "metadata": {...},
-#     "env_type": 1
+#     "metadata": {...}
 # }
 ```
 
@@ -234,186 +235,6 @@ await sandbox.cleanup()
 
 # Automatic cleanup (when object is destroyed)
 # Environment will automatically clean up in __del__
-```
-
----
-
-## Advanced Features
-### Registry Integration
-#### Local Registry
-```python
-# Use a local JSON file as the registry
-sandbox = Sandbox(
-    tools=["tool1", "tool2"],
-    registry_url="~/workspace/registry.json"
-)
-
-# Registry file format
-{
-    "tool:server_name": {
-        "entity_type": "tool",
-        "name": "server_name",
-        "description": "Server description",
-        "tools": [
-            {
-                "name": "tool_name",
-                "description": "Tool description"
-            }
-        ],
-        "data": {
-            "type": "streamable-http",
-            "url": "https://...",
-            "headers": {...}
-        }
-    }
-}
-```
-
-#### Remote Registry
-```python
-# Use a remote registry
-sandbox = Sandbox(
-    tools=["tool1", "tool2"],
-    registry_url="https://registry.example.com"
-)
-
-# Registry API
-# POST /api/v1/registry/search
-{
-    "entity_type": "tool",
-    "status": "active",
-    "tools": ["tool1", "tool2"]  # Optional
-}
-```
-
-### Custom Environment Tools
-```python
-import os
-
-# Set environment variables
-os.environ["CUSTOM_ENV_URL"] = "https://custom.example.com"
-os.environ["CUSTOM_ENV_TOKEN"] = "your_token"
-os.environ["CUSTOM_ENV_IMAGE_VERSION"] = "v1.0.0"
-
-# Use custom environment tools
-sandbox = Sandbox(
-    custom_env_tools={
-        "custom_server": {
-            "type": "streamable-http",
-            "url": "...",
-            "headers": {...}
-        }
-    }
-)
-```
-
-### Blacklisted Tools
-```python
-# Disable specific tools
-sandbox = Sandbox(
-    mcp_config={
-        "mcpServers": {
-            "server_name": {...}
-        }
-    },
-    black_tool_actions={
-        "server_name": ["tool1", "tool2"]  # Disable these tools
-    }
-)
-```
-
-### Skill Configuration
-```python
-# Configure skill system
-sandbox = Sandbox(
-    mcp_config={
-        "mcpServers": {
-            "server_name": {...}
-        }
-    },
-    skill_configs={
-        "skill1": {
-            "tools": ["tool1", "tool2"],
-            "description": "Skill description"
-        }
-    }
-)
-```
-
-### Progress Callbacks
-```python
-# Receive progress updates during tool calls
-# Progress messages are automatically sent to the event bus
-result = await sandbox.call_tool(action_list=[{
-    "tool_name": "server_name",
-    "action_name": "long_running_tool",
-    "params": {}
-}])
-
-# Progress message format
-# Message(
-#     category=Constants.OUTPUT,
-#     payload=Output(data="Progress information"),
-#     sender="server_name__tool_name"
-# )
-```
-
----
-
-## Tool Registration
-### Registering to Remote Registry
-```python
-from aworld.sandbox import Sandbox
-
-result = await Sandbox.register(
-    registry_url="https://registry.example.com",
-    name="my-server",
-    version="1.0.0",
-    description="My server description",
-    data={
-        "type": "streamable-http",
-        "url": "https://...",
-        "headers": {...}
-    },
-    tools=[
-        {
-            "name": "tool_name",
-            "description": "Tool description"
-        }
-    ],
-    token="your_registry_token"
-)
-
-# Return result
-# {
-#     "success": True,
-#     "entity_id": "...",
-#     "message": "Successfully registered my-server"
-# }
-```
-
-### Registering to Local File
-```python
-result = await Sandbox.register(
-    registry_url="~/workspace/registry.json",
-    servers={
-        "mcpServers": {
-            "server_name": {
-                "type": "streamable-http",
-                "url": "https://...",
-                "headers": {...}
-            }
-        }
-    }
-)
-
-# Return result
-# {
-#     "success": True,
-#     "file_path": "/path/to/registry.json",
-#     "message": "Successfully registered 1 server(s) to local file",
-#     "registered_count": 1
-# }
 ```
 
 ---
@@ -441,19 +262,17 @@ for r in result:
 
 ### Q3: How to set timeout?
 ```python
-sandbox = Sandbox(
-    timeout=10000,  # 10 seconds
-    mcp_config={
-        "mcpServers": {
-            "server_name": {
-                "type": "streamable-http",
-                "url": "https://...",
-                "timeout": 6000,  # 6 seconds
-                "sse_read_timeout": 6000
-            }
+# Builder pattern
+sandbox = Sandbox().timeout(10000).mcp_config({
+    "mcpServers": {
+        "server_name": {
+            "type": "streamable-http",
+            "url": "https://...",
+            "timeout": 6000,  # 6 seconds
+            "sse_read_timeout": 6000
         }
     }
-)
+}).build()
 ```
 
 ### Q4: How to disable a server?
@@ -470,27 +289,26 @@ mcp_config = {
 
 ### Q5: How to find tools from the registry?
 ```python
-# Method 1: Search by tool name
-sandbox = Sandbox(
-    tools=["tool1", "tool2"],
-    registry_url="https://registry.example.com"
-)
+# Method 1: Search by tool name (Builder pattern)
+sandbox = Sandbox().tools(["tool1", "tool2"]).registry_url("https://registry.example.com").build()
 
-# Method 2: Search by server name
-sandbox = Sandbox(
-    mcp_servers=["server1", "server2"],
-    registry_url="https://registry.example.com"
-)
+# Method 2: Search by server name (Builder pattern)
+sandbox = Sandbox().mcp_servers(["server1", "server2"]).registry_url("https://registry.example.com").build()
 ```
+
+### Q6: How to use environment context capability?
+See the "Environment Context Capability" section in the Advanced Capabilities document.
+
+### Q7: How to configure agents to run in Environment?
+See the "Agent Runtime Support" section in the Advanced Capabilities document.
 
 ---
 
 ## Best Practices
 ### 1. Reuse Environment Instances
 ```python
-# ✅ Recommended: Create once, use multiple times
-# Create an Environment instance through Sandbox (Environment's client)
-sandbox = Sandbox(mcp_config=mcp_config)
+# ✅ Recommended: Create once, use multiple times (Builder pattern)
+sandbox = Sandbox().mcp_config(mcp_config).build()
 tools = await sandbox.list_tools()
 result = await sandbox.call_tool(action_list=[{
     "tool_name": "server_name",
@@ -507,7 +325,7 @@ await sandbox.cleanup()
 # ❌ Not recommended: Frequently create and destroy
 for i in range(10):
     # Creating a new Environment instance in each loop is inefficient
-    sandbox = Sandbox(mcp_config=mcp_config)
+    sandbox = Sandbox().mcp_config(mcp_config).build()
     result = await sandbox.call_tool(action_list=[{
         "tool_name": "server_name",
         "action_name": "tool_name",
@@ -521,29 +339,23 @@ Environment automatically manages server connection pools, no need to manually m
 
 ### 3. Set Reasonable Timeouts
 ```python
-# Set appropriate timeouts based on tool execution time
-sandbox = Sandbox(
-    timeout=30000,  # 30 seconds
-    mcp_config={
-        "mcpServers": {
-            "server_name": {
-                "type": "streamable-http",
-                "url": "https://...",
-                "timeout": 60000,  # 60 seconds
-                "sse_read_timeout": 120000  # 120 seconds
-            }
+# Set appropriate timeouts based on tool execution time (Builder pattern)
+sandbox = Sandbox().timeout(30000).mcp_config({
+    "mcpServers": {
+        "server_name": {
+            "type": "streamable-http",
+            "url": "https://...",
+            "timeout": 60000,  # 60 seconds
+            "sse_read_timeout": 120000  # 120 seconds
         }
     }
-)
+}).build()
 ```
 
 ### 4. Use Registry to Manage Tools
 ```python
-# Recommended: Use registry to centrally manage tool configurations
-sandbox = Sandbox(
-    tools=["tool1", "tool2"],
-    registry_url="https://registry.example.com"
-)
+# Recommended: Use registry to centrally manage tool configurations (Builder pattern)
+sandbox = Sandbox().tools(["tool1", "tool2"]).registry_url("https://registry.example.com").build()
 ```
 
 ### 5. Error Handling
@@ -601,8 +413,8 @@ gaia_mcp_config = {
 }
 
 async def main():
-    # Create an Environment instance through Sandbox (Environment's client)
-    sandbox = Sandbox(mcp_config=gaia_mcp_config)
+    # Create an Environment instance through Sandbox (Environment's client) (Builder pattern)
+    sandbox = Sandbox().mcp_config(gaia_mcp_config).build()
     
     # List tools
     tools = await sandbox.list_tools()
@@ -629,8 +441,8 @@ if __name__ == "__main__":
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
 
-# Create an Environment instance through Sandbox (Environment's client)
-sandbox = Sandbox(mcp_config={...})
+# Create an Environment instance through Sandbox (Environment's client) (Builder pattern)
+sandbox = Sandbox().mcp_config({...}).build()
 
 # Create Agent (automatically uses Environment)
 agent = Agent(
