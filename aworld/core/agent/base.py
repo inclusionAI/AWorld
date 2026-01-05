@@ -267,7 +267,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             observation: The state observed from tools in the environment.
             info: Extended information is used to assist the agent to decide a policy.
         """
-        return sync_exec(self.policy, observation, info=info, **kwargs)
+        return sync_exec(self.async_policy, observation, info=info, **kwargs)
 
     @abc.abstractmethod
     async def async_policy(
