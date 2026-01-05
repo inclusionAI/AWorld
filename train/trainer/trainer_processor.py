@@ -19,6 +19,7 @@ class TrainerProcessor:
     def __init__(self, run_path: str):
         self.run_path = run_path
         self._initialized = False
+        self.reward_func_based_on_config = False
 
     @abc.abstractmethod
     def train(self):
