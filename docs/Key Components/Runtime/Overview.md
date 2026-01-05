@@ -74,8 +74,8 @@ Create task
 Task response
 ```
 
-#### Core Components
-**Task – Task Definition**  
+### Core Components
+#### **Task – Task Definition**  
 `Task` is one of the three fundamental executable concepts in AWorld (with `Agent` and `Tool`).  
 It encapsulates all information required to execute a task, typically including: input data, the agent(s) involved, required tools, contextual dependencies, and execution mode. See a concrete implementation of the `Task` structure for details.
 
@@ -101,7 +101,7 @@ task = Task(
 )
 ```
 
-**Runner – Task Executor**  
+#### **Runner – Task Executor**  
 The `Runner` is the concrete executor of a `Task` and serves as the heart of the runtime. Each major task category—such as agent execution, evaluation, data generation, or training—has a dedicated `Runner` responsible for managing its full lifecycle and workflow.
 
 For example, in agent tasks, an **event-driven Runner** manages the entire event loop: receiving and emitting events, orchestrating the execution flow, and linking upstream and downstream components via events.
@@ -118,7 +118,7 @@ async def do_run(self):
     resp = self._response()
 ```
 
-**RuntimeEngine – Compute Engine**  
+#### **RuntimeEngine – Compute Engine**  
 `RuntimeEngine` abstracts underlying compute backends (local, Ray, Spark, etc.) behind a unified interface, enabling tasks to run seamlessly on any specified engine—including in distributed mode. It hides the complexity of distributed computing, allowing developers to focus on business logic rather than infrastructure. New capabilities of engine can be added through extension.
 
 ```python
@@ -136,7 +136,7 @@ class RuntimeEngine(object):
     ...
 ```
 
-**EventBus – Event Communication**  
+#### **EventBus – Event Communication**  
 The `EventBus` is the core messaging infrastructure in AWorld, enabling communication between system components via a **publish-subscribe** model with asynchronous message passing. This decouples components and enhances scalability and concurrency. Agents, Tools, and other modules communicate loosely through the EventBus. Currently supports two implementations: **in-memory** and **Redis**.
 
 ```python
@@ -147,7 +147,7 @@ async def consume(self, message: Message, **kwargs):
     """consume msg."""
 ```
 
-**EventManager – Event Orchestration**  
+#### **EventManager – Event Orchestration**  
 As the central coordinator of the event system, `EventManager` manages the full lifecycle of events—including registration, dispatching, and storage. It maintains a registry of event handlers, provides subscription interfaces, and supports **event persistence**, enabling replay and audit capabilities for full traceability of system state.
 
 ```python
@@ -164,16 +164,16 @@ async def messages_by_task_id(self, task_id: str):
     
 ```
 
-**Handler – Event Processor**  
+#### **Handler – Event Processor**  
 A `Handler` is the execution unit that processes events delivered via the EventBus. Different handlers specialize in specific event types—for example, `AgentHandler` for agent-related events, `ToolHandler` for tool invocations. Handlers implement standardized interfaces to ensure proper processing and support chaining and asynchronous execution.
 
-**Callback – Asynchronous Result Handling**  
+#### **Callback – Asynchronous Result Handling**  
 The `Callback` mechanism handles results from asynchronous operations—especially after tool execution or long-running tasks. Tightly integrated with state management, it ensures accurate tracking and handling of completion status, preventing state inconsistencies caused by async operations.
 
-**Hooks – Extensibility Injection Points**  
+#### **Hooks – Extensibility Injection Points**  
 `Hooks` provide powerful extensibility by allowing custom logic to be injected at key points in the task execution flow (e.g., before/after LLM calls, before/after tool execution, at task start/end). Developers can implement logging, input/output transformation, permission checks, etc., without modifying core code.
 
-**StateManager – State Tracking**  
+#### **StateManager – State Tracking**  
 The `StateManager` tracks and manages all runtime state—including execution status, results, and errors—using structured data models like `RunNode` and `NodeGroup`. It enables hierarchical state organization, dependency coordination via waiting mechanisms, and correct execution of complex workflows.
 
 ### Event-Driven Agent Runtime

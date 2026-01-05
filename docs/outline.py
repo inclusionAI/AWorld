@@ -9,11 +9,12 @@ import yaml
 docs = "docs"
 black_keys = ["Index"]
 black_values = ["index.md"]
-file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities"],
-                 "Basic Usage": ["HITL"],
+file_priority = {"Get Start": ["Overview", "Quick start", "Core capabilities"],
                  "Runtime": ["Overview"]}
 file_mapping = {"Hitl": "HITL"}
-dir_order = ["Get Start", "Basic Usage", "Agents", "Environment", "Runtime", "Key Components"]
+dir_order = ["Get Start", "Agents", "Environment", "Training", "Key Components"]
+
+zh_v = ["开始", "智能体", "环境", "训练", "关键组件"]
 
 
 def scan_path(path: str) -> List[dict]:
@@ -35,9 +36,16 @@ def scan_path(path: str) -> List[dict]:
         final_map = OrderedDict()
         for file in file_priority.get(k, []):
             if file in v:
-                final_map[file] = v[file]
+                final_map[file_mapping.get(file, file)] = v[file]
                 v.pop(file)
         final_map.update(v)
+
+        final_v = OrderedDict()
+        if k == 'docs_zh':
+            for d in zh_v:
+                final_v[d] = v[d]
+        if final_v:
+            final_map = final_v
 
         res.append({k: dict(final_map)})
     return res
@@ -63,14 +71,52 @@ def scan(path: str) -> dict:
 
 if __name__ == '__main__':
     outline = scan_path(docs)
+
+    theme_cfg = {
+        "name": "material",
+        "language": "en",
+        "features": [
+            "navigation.instant",
+            "navigation.tracking",
+            "navigation.tabs",
+            "toc.follow",
+            "content.code.copy",
+            "content.code.annotate",
+            "content.action.edit",
+            "header.autohide",
+        ],
+        "palette": [
+            {
+                "media": "(prefers-color-scheme: light)",
+                "scheme": "default",
+                "primary": "blue",
+                "accent": "deep purple",
+            },
+            {
+                "media": "(prefers-color-scheme: dark)",
+                "scheme": "slate",
+                "primary": "blue",
+                "accent": "deep purple",
+            },
+        ],
+        "font": {
+            "text": "Inter",
+            "code": "JetBrains Mono",
+        },
+    }
+
     cfg = {
         "site_name": "AWorld Docs",
         "site_url": "https://github.com/inclusionAI/AWorld",
         "repo_url": "https://github.com/inclusionAI/AWorld",
         "edit_uri": "tree/main/docs/",
         "copyright": "\u00A9 Copyright 2025 inclusionAI AWorld Team.",
-        "extra_javascript": ["js/hide-home-edit.js"],
-        "theme": "material", # readthedocs
+        "extra_css": ["css/aworld.css"],
+        "extra_javascript": [
+            "js/hide-home-edit.js",
+            "js/aworld-enhancements.js",
+        ],
+        "theme": theme_cfg,
         "nav": outline,
     }
 

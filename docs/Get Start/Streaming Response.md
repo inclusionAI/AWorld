@@ -1,11 +1,11 @@
 Stream agent responses in real-time for responsive user interfaces and applications.
 
-<h2 id="xx4xx">Overview</h2>
+### Overview
 Messages from the **AWorld** runtime can be **streamed** to the client. If you’re building a UI on AWorld, enabling streaming allows your UI to update in real-time as the agent generates a response (tokens), executes tools, or changes state.
 
 When working with agents that execute long-running operations (e.g., complex tool calls, extensive searches, or code execution), streaming provides immediate feedback to the user.
 
-<h2 id="AzSZb">Quick Start</h2>
+### Quick Start
 AWorld supports flexible streaming modes via the `Runners.streaming_run` interface.
 
 To enable streaming, use `Runners.streaming_run` (for direct execution) or `Runners.streaming_run_task` (for task objects):
@@ -40,7 +40,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-<h2 id="zHqSr">Streaming Modes</h2>
+### Streaming Modes
 AWorld provides granular control over what information is streamed back to the client via the `StreamingMode` enum.
 
 | Mode | Description |
@@ -59,10 +59,10 @@ from aworld.core.common import StreamingMode
 stream = Runners.streaming_run(..., streaming_mode=StreamingMode.CHUNK)
 ```
 
-<h2 id="ZONms">Understanding Message Flow</h2>
+### Understanding Message Flow
 Unlike simple LLM streaming, AWorld streams **Events**. An agent execution involves multiple steps: reasoning, tool calling, tool execution, and memory updates.
 
-<h3 id="yzT5p">Message Types Reference</h3>
+#### Message Types Reference
 The stream yields `Message` objects. Key message types you will encounter:
 
 + `ChunkMessage`: Represents a partial piece of content (e.g., a token from the LLM).
@@ -76,7 +76,7 @@ The stream yields `Message` objects. Key message types you will encounter:
 + `TaskMessage`: Indicates task status updates (Start, Finish, Error).
     - `msg.topic`: `TopicType.TASK_RESPONSE` signals the end of the stream.
 
-<h2 id="ofjCb">Example: handling Different Events</h2>
+### Example: handling Different Events
 Here is a comprehensive example handling various event types to build a rich UI experience:
 
 ```python

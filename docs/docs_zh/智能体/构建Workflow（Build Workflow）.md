@@ -1,7 +1,7 @@
-We use the classic graph syntax to describe workflows in AWorld. The following are the basic scenarios for constructing agent workflows.
+AWorld使用经典的图语法来描述AWorld中的工作流。以下是构建代理工作流的基本场景。
 
-### Agent Native Workflow
-#### Sequential
+# Agent Workflow
+## 顺序
 ```python
 """
 Sequential Agent Pipeline: agent1 → agent2 → agent3
@@ -14,7 +14,7 @@ swarm = Swarm([(agent1, agent2), (agent2, agent3)], root_agent=[agent1])
 result: TaskResponse = Runners.run(input=question, swarm=swarm)
 ```
 
-#### Parallel
+## 并行
 ```python
 """
 Parallel Agent Execution with Barrier Synchronization
@@ -32,7 +32,7 @@ swarm = Swarm([(agent1, agent3), (agent2, agent3)], root_agent=[agent1, agent2])
 result: TaskResponse = Runners.run(input=question, swarm=swarm)
 ```
 
-#### Parallel Multi-Path 
+## 并行多路径
 ```python
 """
 Parallel Multi-Path Agent Execution
@@ -52,10 +52,8 @@ swarm = Swarm([(agent1, agent2), (agent1, agent3), (agent2, agent3)], root_agent
 result: TaskResponse = Runners.run(input=question, swarm=swarm)
 ```
 
-### Task Native Workflow
-Task native workflow is further implemented for Isolating the agent runtimes and environments, in the distributed or other easy-to-overlap scenarios. 
-
-Task native workflow is further implemented for isolating agent runtimes and environments, particularly useful in distributed or other scenarios where tool-isolation is required. 
+# 面向任务的Workflow
+在分布式或其他易于出现耦合的场景中，进一步支持了面向任务的Workflow，以隔离代理运行时和环境，在需要工具隔离的分布式或其他场景中特别有用。 
 
 ```python
 task1 = Task(input="my question", agent=agent1)
