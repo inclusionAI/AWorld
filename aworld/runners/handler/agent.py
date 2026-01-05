@@ -379,18 +379,21 @@ class DefaultAgentHandler(AgentHandler):
         caller = message.caller
         session_id = message.session_id
         agent = self.swarm.agents.get(action.agent_name)
-        if ((not caller or caller == self.swarm.communicate_agent.id())
-                and (self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished or
-                     (agent.id() == self.swarm.agent_graph.root_agent.id() and agent.finished))):
-            logger.info(f"Team swarm {self.swarm} finished {self.swarm.finished}, run step: {self.swarm.cur_step}")
-            yield Message(
-                category=Constants.TASK,
-                payload=action.policy_info,
-                sender=agent.id(),
-                session_id=session_id,
-                topic=TopicType.FINISHED,
-                headers={"context": message.context}
-            )
+
+        # must be an interactive call
+        if len(self.agent_calls) > 2:
+            if ((not caller or caller == self.swarm.communicate_agent.id())
+                    and (self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished or
+                         (agent.id() == self.swarm.agent_graph.root_agent.id() and agent.finished))):
+                logger.info(f"Team swarm {self.swarm} finished {self.swarm.finished}, run step: {self.swarm.cur_step}")
+                yield Message(
+                    category=Constants.TASK,
+                    payload=action.policy_info,
+                    sender=agent.id(),
+                    session_id=session_id,
+                    topic=TopicType.FINISHED,
+                    headers={"context": message.context}
+                )
         agent = self.swarm.agents.get(action.agent_name)
         caller = self.swarm.agent_graph.root_agent.id() or message.caller
         if agent.id() != self.swarm.agent_graph.root_agent.id():
@@ -401,6 +404,18 @@ class DefaultAgentHandler(AgentHandler):
                 session_id=message.session_id,
                 receiver=caller,
                 headers=message.headers
+            )
+        else:
+            text = "self to self" if len(self.agent_calls) > 2 else "at the first"
+            yield Message(
+                category=Constants.TASK,
+                payload=TaskItem(msg=f"Team leader complete the task {text} decision.",
+                                 data=message.payload,
+                                 stop=True),
+                sender=self.name(),
+                session_id=message.session_id,
+                headers=message.headers,
+                topic=TopicType.ERROR
             )
 
     async def _handoff_stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
