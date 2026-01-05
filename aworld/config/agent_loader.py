@@ -119,8 +119,11 @@ def load_agents_from_yaml(path: str) -> Dict[str, Agent]:
     if not isinstance(agents_conf, dict):
         raise ValueError("`agents` must be a mapping of name -> config")
 
+    return load_agents_from_dict(agents_conf)
+
+def load_agents_from_dict(agent_conf: Dict[str, Any]) -> Dict[str, Agent]:
     agents: Dict[str, Agent] = {}
-    for name, conf_dict in agents_conf.items():
+    for name, conf_dict in agent_conf.items():
         if not isinstance(conf_dict, dict):
             raise ValueError(f"Agent `{name}` config must be a mapping")
 

@@ -287,7 +287,7 @@ __all__ = ['MyFrameworkTrainer']
 **Option A: Dynamic Registration (in user code)**
 
 ```python
-from train.adapter.my_framework import MyFrameworkTrainer
+from train.integration.my_framework import MyFrameworkTrainer
 from train.trainer.agent_trainer import AgentTrainer
 
 AgentTrainer.register_processor('my_framework', MyFrameworkTrainer)
@@ -304,7 +304,7 @@ trainer = AgentTrainer(
 # train/trainer/__init__.py
 
 from .agent_trainer import AgentTrainer
-from train.adapter.my_framework import MyFrameworkTrainer
+from train.integration.my_framework import MyFrameworkTrainer
 
 # Auto-register when module is imported
 AgentTrainer.register_processor('my_framework', MyFrameworkTrainer)
