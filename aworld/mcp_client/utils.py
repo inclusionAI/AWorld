@@ -515,12 +515,12 @@ async def mcp_tool_desc_transform_v2(
             _mcp_openai_tools = []
             server_name = server_config["name"]
             
-            # 1. 优先使用缓存的服务器实例（与 call_tool 保持一致）
+            # 1. Prioritize using cached server instances (consistent with call_tool)
             server = None
             if server_instances and server_name in server_instances:
                 server = server_instances.get(server_name)
             
-            # 2. 如果没有缓存，使用 get_server_instance 创建新实例
+            # 2. If no cache exists, create a new instance using get_server_instance
             if not server:
                 server = await get_server_instance(
                     server_name=server_name,
@@ -533,12 +533,12 @@ async def mcp_tool_desc_transform_v2(
                     logger.warning(f"Failed to create server instance for '{server_name}'")
                     continue
                 
-                # 3. 将新创建的实例保存到 server_instances 中（如果提供了）
+                # 3. Save the newly created instance to server_instances (if provided)
                 if server_instances is not None:
                     server_instances[server_name] = server
                     logger.info(f"Created and cached new server instance for {server_name}")
             
-            # 4. 使用服务器实例获取工具列表（与 call_tool 保持一致：先使用，失败后再清理）
+            # 4. Use server instance to get tool list (consistent with call_tool: use first, cleanup on failure)
             if server:
                 try:
                     _mcp_openai_tools = await run(
@@ -549,7 +549,7 @@ async def mcp_tool_desc_transform_v2(
                     if _mcp_openai_tools:
                         mcp_openai_tools.extend(_mcp_openai_tools)
                 except Exception as e:
-                    # 如果使用缓存的服务器实例失败，清理并重建（与 call_tool 逻辑一致）
+                    # If using cached server instance fails, cleanup and recreate (consistent with call_tool logic)
                     logger.warning(
                         f"Failed to get tools from cached server '{server_name}', cleaning up and recreating: {e}"
                     )
@@ -560,7 +560,7 @@ async def mcp_tool_desc_transform_v2(
                             logger.warning(f"Failed to cleanup invalid server {server_name}: {cleanup_err}")
                         del server_instances[server_name]
                     
-                    # 尝试重新创建实例
+                    # Try to recreate the instance
                     server = await get_server_instance(
                         server_name=server_name,
                         mcp_config=mcp_config,
