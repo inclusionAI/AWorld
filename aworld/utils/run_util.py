@@ -7,7 +7,7 @@ from typing import Any, List, Dict
 from aworld.agents.llm_agent import Agent
 from aworld.config import RunConfig
 from aworld.config.conf import TaskConfig
-from aworld.core.common import ActionModel
+from aworld.core.common import ActionModel, Observation
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, TopicType
 from aworld.core.task import Task, TaskResponse
@@ -101,6 +101,9 @@ async def exec_agent(question: Any,
                 group_id=task_group_id,
                 session_id=session_id,
                 conf=task_conf)
+    if isinstance(question, Observation):
+        task.observation = question
+        task.input = question.content
     if outputs:
         task.outputs = outputs
     if sub_task and kwargs.get("tool_call_id"):

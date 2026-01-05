@@ -280,10 +280,117 @@ Configure the following variables in the `.env` file:
 - `SKILLS_DIR`: Single skills directory path (legacy, use `SKILLS_PATH` for multiple sources)
 - `SKILLS_CACHE_DIR`: Cache directory for GitHub repositories (default: `~/.aworld/skills`)
 
+### Command-Line Options
+
+**Server Mode Options:**
+- `serve`: Start HTTP and/or MCP servers
+- `--http`: Enable HTTP server
+- `--http-host HOST`: HTTP server host (default: 0.0.0.0)
+- `--http-port PORT`: HTTP server port (default: 8000)
+- `--mcp`: Enable MCP server
+- `--mcp-name NAME`: MCP server name (default: AWorldAgent)
+- `--mcp-transport TYPE`: MCP transport (stdio/sse/streamable-http, default: stdio)
+- `--mcp-host HOST`: MCP server host for SSE/streamable-http (default: 0.0.0.0)
+- `--mcp-port PORT`: MCP server port for SSE/streamable-http (default: 8001)
+
+**Agent Loading Options:**
+- `--agent-dir DIR`: Agent directory (can be specified multiple times)
+- `--agent-file FILE`: Individual agent file (can be specified multiple times)
+- `--remote-backend URL`: Remote backend URL (can be specified multiple times)
+- `--skill-path PATH`: Skill source path (can be specified multiple times)
+
 ### Using aworld-cli
 
 1. **Interactive Mode**: Run `aworld-cli` to display available agents, select one, and start a conversation
 ![/](../../readme_assets/aworld_cli_02.jpg)
+
+2. **Server Mode**: Start HTTP and/or MCP servers to expose agents via API
+
+#### HTTP Server
+
+Start an HTTP server to expose agents via REST API (OpenAI-compatible):
+
+```bash
+# Start HTTP server on default port 8000
+aworld-cli serve --http
+
+# Start HTTP server on custom port
+aworld-cli serve --http --http-port 8080
+
+# Start HTTP server with custom agent directory
+aworld-cli serve --http --agent-dir ./agents
+```
+
+Once started, the HTTP server provides:
+- **OpenAI-compatible API**: `/v1/chat/completions` and `/chat/completions`
+- **Agent listing**: `GET /agents` - List all available agents
+- **Health check**: `GET /health` - Server health status
+
+**Example API Usage:**
+```bash
+# List available agents
+curl http://localhost:8000/agents
+
+# Chat completion (OpenAI format)
+curl -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "BasicAgent",
+    "messages": [
+      {"role": "user", "content": "Hello!"}
+    ]
+  }'
+```
+
+#### MCP Server
+
+Start an MCP (Model Context Protocol) server to expose agents via MCP protocol:
+
+```bash
+# Start MCP server in stdio mode (for CLI usage)
+aworld-cli serve --mcp
+
+# Start MCP server in streamable-http mode (for HTTP clients)
+aworld-cli serve --mcp --mcp-transport streamable-http --mcp-port 8001
+
+# Start MCP server with custom name
+aworld-cli serve --mcp --mcp-name MyAgentServer
+```
+
+**MCP Transport Modes:**
+- **stdio**: Standard input/output mode (for CLI and direct integration)
+- **sse**: Server-Sent Events mode (HTTP+SSE)
+- **streamable-http**: Streamable HTTP mode (compatible with MCP streamable-http clients)
+
+**MCP Tools Available:**
+- `list_agents`: List all available agents
+- `get_agent_info`: Get information about a specific agent
+- `run_task`: Run a task directly with an agent
+- `health_check`: Health check endpoint
+
+#### Combined Servers
+
+Start both HTTP and MCP servers simultaneously:
+
+```bash
+# Start both HTTP and MCP servers
+aworld-cli serve --http --http-port 8000 --mcp --mcp-transport streamable-http --mcp-port 8001
+
+# With custom agent directory
+aworld-cli serve --http --mcp --agent-dir ./agents
+```
+
+**Server Options:**
+- `--http`: Start HTTP server
+- `--http-host HOST`: HTTP server host (default: 0.0.0.0)
+- `--http-port PORT`: HTTP server port (default: 8000)
+- `--mcp`: Start MCP server
+- `--mcp-name NAME`: MCP server name (default: AWorldAgent)
+- `--mcp-transport TYPE`: MCP transport type: stdio, sse, or streamable-http (default: stdio)
+- `--mcp-host HOST`: MCP server host for SSE/streamable-http (default: 0.0.0.0)
+- `--mcp-port PORT`: MCP server port for SSE/streamable-http (default: 8001)
+
+Press `Ctrl+C` to stop all servers gracefully.
 
 ## Agent Types Comparison
 
