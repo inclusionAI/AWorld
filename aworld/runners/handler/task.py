@@ -74,14 +74,17 @@ class DefaultTaskHandler(TaskHandler):
 
             logger.warning(f"{task_flag} task {self.runner.task.id} stop, cause: {task_item.msg}")
             self.runner._task_response = TaskResponse(msg=task_item.msg,
-                                                      answer='',
+                                                      answer=f'Task fail, cause: {task_item.msg}',
                                                       context=message.context,
                                                       success=False,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
             await self.runner.stop()
-            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers, topic=TopicType.TASK_RESPONSE)
+            yield Message(payload=self.runner._task_response,
+                          session_id=message.session_id,
+                          headers=message.headers,
+                          topic=TopicType.TASK_RESPONSE)
         elif topic == TopicType.FINISHED:
             async for event in self.run_hooks(message, HookPoint.FINISHED):
                 yield event
@@ -100,7 +103,8 @@ class DefaultTaskHandler(TaskHandler):
             logger.info(f"{task_flag} task {self.runner.task.id} receive finished message.")
 
             await self.runner.stop()
-            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers, topic=TopicType.TASK_RESPONSE)
+            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers,
+                          topic=TopicType.TASK_RESPONSE)
         elif topic == TopicType.START:
             async for event in self.run_hooks(message, HookPoint.START):
                 yield event
@@ -124,7 +128,8 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage)
             await self.runner.stop()
-            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers, topic=TopicType.TASK_RESPONSE)
+            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers,
+                          topic=TopicType.TASK_RESPONSE)
         elif topic == TopicType.CANCEL:
             # Avoid waiting to receive events and send a mock event for quick cancel
             yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock',
@@ -139,7 +144,8 @@ class DefaultTaskHandler(TaskHandler):
                                                       msg=f'cancellation message received: {task_item.msg}',
                                                       status=TaskStatusValue.CANCELLED)
             await self.runner.stop()
-            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers, topic=TopicType.TASK_RESPONSE)
+            yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers,
+                          topic=TopicType.TASK_RESPONSE)
         elif topic == TopicType.INTERRUPT:
             # Avoid waiting to receive events and send a mock event for quick interrupt
             yield Message(session_id=self.runner.context.session_id, sender=self.name(), category='mock',
