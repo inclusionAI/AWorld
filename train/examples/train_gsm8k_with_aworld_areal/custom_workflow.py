@@ -36,7 +36,7 @@ import aworld.utils.async_func
 aworld.utils.async_func.use_new_loop = True
 
 from aworld.utils.async_func import use_new_loop
-from train.adapter.areal.aworld_workflow import AworldWorkflow, create_pool, close_pool
+from train.integration.areal.aworld_workflow import AworldWorkflow, create_pool, close_pool
 
 
 class Gsm8kWorkflow(AworldWorkflow):

@@ -7,7 +7,7 @@ from datasets import Dataset
 from aworld.agents.llm_agent import Agent
 from aworld.core.common import Config
 from aworld.logs.util import logger
-from train.adapter.verl.verl_trainer import VerlTrainer
+from train.integration.verl.verl_trainer import VerlTrainer
 from train.trainer.trainer_processor import TrainerProcessor
 
 TRAIN_PROCESSOR: Dict[str, Type[TrainerProcessor]] = {
