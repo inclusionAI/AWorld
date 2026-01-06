@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
 
+import os
 from typing import Union, Any, Callable, List, Dict
 
 import yaml
@@ -10,6 +11,7 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
 )
+from transformers.trainer_utils import PredictionOutput
 from trl import GRPOConfig, GRPOTrainer
 from aworld.agents.llm_agent import Agent
 from aworld.config.agent_loader import load_agents_from_yaml
@@ -43,6 +45,36 @@ class TrlTrainer(TrainerProcessor):
         trainer.train()
         trainer.save_model(self.config.output_dir)
         tokenizer.save_pretrained(self.config.output_dir)
+
+    def inference(self, dataset: Union[str, Dataset] = None) -> PredictionOutput:
+        model_name = self.model_name
+
+        if self.config.output_dir and os.path.exists(os.path.join(self.config.output_dir, "model.safetensors")):
+            model_name = self.config.output_dir
+            logger.info(f"Using trained model from {model_name}")
+
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, device_map="auto",
+        )
+        tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True, padding_side="left")
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+
+        trainer = GRPOTrainer(
+            model=model,
+            processing_class=tokenizer,
+            args=self.config,
+            train_dataset=self.train_dataset,
+            eval_dataset=self.test_dataset,
+            reward_funcs=self.reward_func,
+        )
+
+        if isinstance(dataset, str):
+            dataset = load_dataset("json", data_files=dataset, split='train')
+
+        dataset = dataset or self.test_dataset
+        output = trainer.predict(test_dataset=dataset)
+        return output
 
     def check_dataset(self, dataset: Union[str, Dataset] = None, test_dataset: Union[str, Dataset] = None):
         if isinstance(dataset, str):
