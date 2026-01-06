@@ -2,10 +2,13 @@
 # Copyright (c) 2025 inclusionAI.
 import asyncio
 import json
+import math
 import os
 import traceback
+from collections import Counter
 from typing import List, Dict, Any, Tuple, Optional
 from transformers import AutoTokenizer
+
 
 def turns_num(messages: List[Dict[str, Any]]) -> int:
     # Normalize messages to satisfy chat templates expectations
@@ -219,18 +222,18 @@ def get_agent_tool_env_and_servers(
     if not server_url or not authorization:
         raise ValueError("url, Authorization are required. Please set MCP_SERVER_URL and MCP_SERVER_TOKEN environment variable \
             or provide them in tool_config parameter.")
-# =======
-# def get_agent_tool_env_and_servers(tool_config: Dict[str, Any] = None) -> tuple[Dict[str, Any], List[str]]:
-#     if not tool_config or not tool_config.get("url") or not tool_config.get("authorization"):
-#         tool_config["url"] = os.getenv("MCP_SERVER_URL")
-#         tool_config["authorization"] = f"Bearer {os.getenv('MCP_SERVER_TOKEN')}"
-#     url = tool_config.get("url")
-#     authorization = tool_config.get("authorization")
-#     mcp_servers_str = tool_config.get("mcp_servers", "")
-#     if not url or not authorization:
-#         raise ValueError("url, Authorization are required. Please set MCP_SERVER_URL and MCP_SERVER_TOKEN environment variable \
-#             or provide them in tool_config parameter.")
-# >>>>>>> verl_support:train/adapter/verl/common.py
+    # =======
+    # def get_agent_tool_env_and_servers(tool_config: Dict[str, Any] = None) -> tuple[Dict[str, Any], List[str]]:
+    #     if not tool_config or not tool_config.get("url") or not tool_config.get("authorization"):
+    #         tool_config["url"] = os.getenv("MCP_SERVER_URL")
+    #         tool_config["authorization"] = f"Bearer {os.getenv('MCP_SERVER_TOKEN')}"
+    #     url = tool_config.get("url")
+    #     authorization = tool_config.get("authorization")
+    #     mcp_servers_str = tool_config.get("mcp_servers", "")
+    #     if not url or not authorization:
+    #         raise ValueError("url, Authorization are required. Please set MCP_SERVER_URL and MCP_SERVER_TOKEN environment variable \
+    #             or provide them in tool_config parameter.")
+    # >>>>>>> verl_support:train/adapter/verl/common.py
     server_name = tool_config.get('server_name', 'aworld-mcp')
     server_type = tool_config.get('type', 'streamable-http')
     timeout = tool_config.get('timeout', 600)
@@ -252,3 +255,64 @@ def get_agent_tool_env_and_servers(
     }
     servers = list(server_name for server_name in mcp_config.get("mcpServers", {}).keys())
     return mcp_config, servers
+
+
+def cosine_similarity(text1: str, text2: str) -> float:
+    """No dependency calculate cosine similarity using term frequency vectors."""
+    import re
+
+    if not text1 and not text2:
+        return 1.0
+    if not text1 or not text2:
+        return 0.0
+
+    words1 = re.split(r'\W+', text1.lower())
+    words2 = re.split(r'\W+', text2.lower())
+
+    words1 = [w for w in words1 if w]
+    words2 = [w for w in words2 if w]
+
+    freq1 = Counter(words1)
+    freq2 = Counter(words2)
+
+    all_words = set(freq1.keys()).union(set(freq2.keys()))
+
+    if not all_words:
+        return 1.0 if text1 == text2 else 0.0
+
+    vector1 = [freq1.get(word, 0) for word in all_words]
+    vector2 = [freq2.get(word, 0) for word in all_words]
+
+    dot_product = sum(a * b for a, b in zip(vector1, vector2))
+
+    magnitude1 = math.sqrt(sum(a * a for a in vector1))
+    magnitude2 = math.sqrt(sum(b * b for b in vector2))
+
+    if magnitude1 == 0 or magnitude2 == 0:
+        return 0.0
+
+    cosine_sim = dot_product / (magnitude1 * magnitude2)
+
+    return max(0.0, min(1.0, cosine_sim))
+
+
+def semantic_similarity(text1: str, text2: str, embedding_func=None) -> float:
+    if embedding_func is None:
+        return cosine_similarity(text1, text2)
+
+    try:
+        emb1 = embedding_func(text1)
+        emb2 = embedding_func(text2)
+
+        dot_product = sum(a * b for a, b in zip(emb1, emb2))
+        magnitude1 = math.sqrt(sum(a * a for a in emb1))
+        magnitude2 = math.sqrt(sum(b * b for b in emb2))
+
+        if magnitude1 == 0 or magnitude2 == 0:
+            return 0.0
+
+        cosine_sim = dot_product / (magnitude1 * magnitude2)
+
+        return max(0.0, min(1.0, (cosine_sim + 1) / 2))
+    except Exception:
+        return cosine_similarity(text1, text2)

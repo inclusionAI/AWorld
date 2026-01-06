@@ -30,6 +30,10 @@ class TrainerProcessor:
         raise NotImplementedError
 
     @abc.abstractmethod
+    def inference(self, dataset: Union[str, Dataset] = None):
+        """Batch inference and return predictions and potential metrics."""
+
+    @abc.abstractmethod
     def check_dataset(self, dataset: Union[str, Dataset] = None, test_dataset: Union[str, Dataset] = None):
         """Check if the dataset or configuration meets the requirements of the specified training framework.
 
