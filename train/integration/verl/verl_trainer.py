@@ -15,7 +15,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.config import BaseConfig, ConfigDict, load_config
 from aworld.core.common import Config
 from aworld.logs.util import logger
-from train.adapter.verl.agent_template import VERL_TEMPLATE
+from train.integration.verl.agent_template import VERL_TEMPLATE
 from train.trainer.trainer_processor import TrainerProcessor
 
 
@@ -134,8 +134,8 @@ class VerlTrainer(TrainerProcessor):
         else:
             model_dict = dict(model_config.to_dict())
 
-        for key in ["llm_provider", "llm_model_name", "llm_base_url",
-                    "llm_api_key", "llm_client_type", "params", "model_type"]:
+        for key in ["llm_provider", "llm_model_name", "llm_base_url", "llm_api_key", "llm_client_type",
+                    "params", "model_type", "llm_response_parser"]:
             model_dict.pop(key, None)
 
         model_kv_parameters = ",\n".join([f"{k}={v}" for k, v in model_dict.items()])
@@ -170,7 +170,7 @@ class VerlTrainer(TrainerProcessor):
         # NOTE: If the basic interface of the `Agent` changes, an upgrade is required
         con = VERL_TEMPLATE.format(agent_name=agent.name(),
                                    agent_desc=agent.desc(),
-                                   system_prompt=agent.system_prompt,
+                                   system_prompt=agent.system_prompt or '',
                                    mcp_config=agent.mcp_config,
                                    tool_names=agent.tool_names,
                                    agent_names=agent.handoffs,
@@ -181,8 +181,8 @@ class VerlTrainer(TrainerProcessor):
                                    event_handler_name=agent.event_handler_name,
                                    tool_aggregate_func_import_str=func_str,
                                    tools_aggregate_func=func_name,
-                                   parser_module=type(agent.model_output_parser).__module__,
-                                   parser_name=type(agent.model_output_parser).__name__,
+                                   parser_module=type(agent.output_converter).__module__,
+                                   parser_name=type(agent.output_converter).__name__,
                                    model_kv_parameters=model_kv_parameters,
                                    agent_import_str=import_str,
                                    real_agent=agent.__class__.__name__,
@@ -193,7 +193,8 @@ class VerlTrainer(TrainerProcessor):
 
         # VeRL agent config file
         module = module.replace(os.getcwd(), '').replace('/', '.')
-        module = module[1:] if module[0] == '.' else module
+
+        module = module.lstrip('.')
         con = f"""- name: {agent.name()}
   _target_: {module}.VerlAgentLoop
                """

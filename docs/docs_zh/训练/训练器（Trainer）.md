@@ -345,7 +345,7 @@ __all__ = ['MyFrameworkTrainer']
 选项 A: 在代码中动态注册
 
 ```python
-from train.adapter.my_framework import MyFrameworkTrainer
+from train.integration.my_framework import MyFrameworkTrainer
 from train.trainer.agent_trainer import AgentTrainer
 
 # 注册框架
@@ -364,7 +364,7 @@ trainer = AgentTrainer(
 # train/trainer/__init__.py
 
 from .agent_trainer import AgentTrainer
-from train.adapter.my_framework import MyFrameworkTrainer
+from train.integration.my_framework import MyFrameworkTrainer
 
 # 在模块导入时自动注册
 AgentTrainer.register_processor('my_framework', MyFrameworkTrainer)

@@ -19,6 +19,7 @@ class TrainerProcessor:
     def __init__(self, run_path: str):
         self.run_path = run_path
         self._initialized = False
+        self.reward_func_based_on_config = False
 
     @abc.abstractmethod
     def train(self):
@@ -27,6 +28,10 @@ class TrainerProcessor:
         Before calling, it is necessary to correctly process the required dataset, agent, reward, and configuration.
         """
         raise NotImplementedError
+
+    @abc.abstractmethod
+    def inference(self, dataset: Union[str, Dataset] = None):
+        """Batch inference and return predictions and potential metrics."""
 
     @abc.abstractmethod
     def check_dataset(self, dataset: Union[str, Dataset] = None, test_dataset: Union[str, Dataset] = None):
