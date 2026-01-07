@@ -21,11 +21,12 @@ from aworld.runners.runtime_engine import RuntimeEngine
 from aworld.runners.utils import runtime_engine
 from aworld.tools.human.human import HUMAN
 from aworld.utils.run_util import exec_tool
+
 from train.integration.verl.reward_func import verl_default_reward_func
 from train.data_gen.data_synthesis_runner import DataSynthesisRunner
-
-from train.data_gen.schema import EvolutionConfig, TreeNode, DataSynthesisConfig
+from train.data_gen.schema import DataSynthesisConfig
 from train.evolve.auto_evolve_agent import AutoEvolutionAgent
+from train.evolve.config import EvolutionConfig
 from train.trainer.agent_trainer import AgentTrainer, TRAIN_PROCESSOR
 from train.trainer.utils import TRAIN_DEFAULT_CONFIG
 
@@ -70,11 +71,17 @@ class EvolutionRunner(Runner):
             # config: {"project_name": "", "workspace": "", "max_epoches": 1, "model":"", "process_tasks": []}
             plan = json.loads(plan)
         config = plan.get("config", {})
+        task = plan.get("task")
         dir_name = config.get("workspace", "spec")
 
         # todo: in agent and auto modify
-        await self.human_confirm(content=f"Please confirm the generated plan and configuration in {dir_name}.")
+        await self.human_confirm(
+            content=f"Please confirm the generated plan and configuration `evolve_config.yaml` in {dir_name}."
+                    f"It may be necessary to modify the model path, etc",
+            hitl=self.conf.hitl_plan
+        )
 
+        config = load_config("evolve_config.yaml", dir_name=dir_name)
         logger.info(f"Evolution plan finished, result: {plan}")
 
         # default minimum workflow
@@ -83,7 +90,7 @@ class EvolutionRunner(Runner):
         for epoch in range(epoches):
             #### Data Synthesis
             logger.info(f"Epoch {epoch} start dataset synthesis...")
-            train_synthesis_data, test_synthesis_data = await self.data_synthesis(task=plan.get("task"),
+            train_synthesis_data, test_synthesis_data = await self.data_synthesis(task=task,
                                                                                   dir_name=dir_name,
                                                                                   process_tasks=process_tasks)
             # Keep tools for next epoch
@@ -100,7 +107,7 @@ class EvolutionRunner(Runner):
                              test_dataset_file=test_synthesis_data)
 
             #### Evaluation
-            if "evaluation" in process_tasks:
+            if "evaluate" in process_tasks:
                 logger.info(f"Epoch {epoch} start evaluating...")
                 await self.evaluation(dir_name=dir_name, test_dataset_file=test_synthesis_data)
 
@@ -296,7 +303,8 @@ class EvolutionRunner(Runner):
                 test_synthesis_data = os.path.join(dir_name, f"test_{postfix}")
 
         if not train_synthesis_data:
-            data_synthesis_config.tool_file_name = os.path.basename(tool_data_file)
+            if tool_data_file:
+                data_synthesis_config.tool_file_name = os.path.basename(tool_data_file)
             # eval synthesis task
             if "sample_verify" in process_tasks:
                 data_synthesis_config.eval_data = True
@@ -313,13 +321,15 @@ class EvolutionRunner(Runner):
             )
         return train_synthesis_data, test_synthesis_data
 
-    async def human_confirm(self, content: str):
+    async def human_confirm(self, content: str, hitl: bool = None):
         """Human confirm.
 
         Args:
             content: Confirm content.
         """
-        if self.conf.hitl:
+        if hitl is None:
+            hitl = self.conf.hitl_all
+        if hitl:
             logger.info("Waiting for confirmation...\nContinue only after receiving confirmed input")
             await exec_tool(tool_name=HUMAN,
                             action_name="HUMAN_CONFIRM",

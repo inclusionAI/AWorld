@@ -199,11 +199,14 @@ class Runners:
         return is_finished, observation, resp
 
     @staticmethod
-    async def evolve(task: Any, run_conf: RunConfig = None):
+    async def evolve(task: Any, evolve_conf=None, run_conf: RunConfig = None):
         """Run evolve task."""
+        from train.evolve.config import EvolutionConfig
         from train.evolve.evolution_runner import EvolutionRunner
-        from train.data_gen.schema import EvolutionConfig
 
-        evolution_conf = EvolutionConfig(run_conf=run_conf)
-        runner = EvolutionRunner(task=task, config=evolution_conf)
+        if not evolve_conf:
+            evolve_conf = EvolutionConfig(run_conf=run_conf)
+        if run_conf:
+            evolve_conf.run_conf = run_conf
+        runner = EvolutionRunner(task=task, config=evolve_conf)
         await execute_runner([runner], run_conf)

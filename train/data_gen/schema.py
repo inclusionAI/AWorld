@@ -9,12 +9,6 @@ from aworld.config import BaseConfig, ModelConfig, RunConfig
 from aworld.core.tool.base import BaseTool, AsyncBaseTool
 
 
-class EvolutionConfig(BaseConfig):
-    llm_config: Optional[ModelConfig] = None
-    hitl: bool = False
-    run_conf: Optional[RunConfig] = None
-
-
 # ------------------------------------------ Generation ----------------------------------------------- #
 
 class OntologyConfig(BaseConfig):
