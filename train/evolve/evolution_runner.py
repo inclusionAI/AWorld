@@ -12,7 +12,7 @@ from aworld.config import AgentConfig, load_config, ModelConfig
 from aworld.config.agent_loader import load_agents_from_dict
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.base import Context
-from aworld.core.task import Runner, Task, TaskResponse
+from aworld.core.task import Runner
 from aworld.logs.util import logger
 from aworld.runner import Runners
 from aworld.runners.runtime_engine import RuntimeEngine
@@ -24,7 +24,7 @@ from aworld.utils.run_util import exec_tool
 from train.integration.verl.reward_func import verl_default_reward_func
 from train.data_gen.data_synthesis_runner import DataSynthesisRunner
 from train.data_gen.schema import DataSynthesisConfig
-from train.evolve.auto_evolve_agent import AutoEvolutionAgent
+from train.evolve.evolve_pipeline_agent import EvolutionPipelineAgent
 from train.evolve.config import EvolutionConfig
 from train.trainer.agent_trainer import AgentTrainer, TRAIN_PROCESSOR
 from train.trainer.utils import TRAIN_DEFAULT_CONFIG
@@ -69,7 +69,7 @@ class EvolutionRunner(Runner):
         #### Plan: tool_synthesis -> tool_verify -> sample_synthesis -> sample_verify -> train -> evaluate
         # Create evolve yaml
         logger.info(f"Evolution plan start...")
-        res = await Runners.run(input=self.task, agent=AutoEvolutionAgent(conf=AgentConfig(**self.conf.to_dict())))
+        res = await Runners.run(input=self.task, agent=EvolutionPipelineAgent(conf=AgentConfig(**self.conf.to_dict())))
         plan = res.answer
 
         if isinstance(plan, str):
@@ -120,6 +120,7 @@ class EvolutionRunner(Runner):
 
             logger.info(f"Epoch {epoch} finished")
         logger.info(f"Evolution pipeline finished!")
+        return f"Evolution pipeline finished, please check dir: {dir_name}"
 
     async def evaluation(self, dir_name: str, test_dataset_file: str):
         """Run evaluation on the test dataset and save results."""
