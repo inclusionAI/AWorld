@@ -32,9 +32,7 @@ def is_agent_by_name(name: str) -> bool:
 
 
 def is_agent(policy: ActionModel) -> bool:
-    return is_agent_by_name(policy.tool_name) or (
-        not policy.tool_name and not policy.action_name
-    )
+    return is_agent_by_name(policy.tool_name) or (not policy.tool_name and not policy.action_name)
 
 
 class AgentStatus:
@@ -260,9 +258,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         final_result = await self.async_post_run(result, observation, message)
         return final_result
 
-    @abc.abstractmethod
     def policy(
-        self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
+            self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
     ) -> OUTPUT:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
@@ -270,10 +267,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             observation: The state observed from tools in the environment.
             info: Extended information is used to assist the agent to decide a policy.
         """
+        return sync_exec(self.async_policy, observation, info=info, **kwargs)
 
     @abc.abstractmethod
     async def async_policy(
-        self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
+            self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
     ) -> OUTPUT:
         """The strategy of an agent can be to decide which tools to use in the environment, or to delegate tasks to other agents.
 
@@ -307,16 +305,21 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         pass
 
     def post_run(
-        self, policy_result: OUTPUT, input: INPUT, message: Message = None
+            self, policy_result: OUTPUT, input: INPUT, message: Message = None
     ) -> Message:
-        return policy_result
+        return sync_exec(self.async_post_run, policy_result, input, message)
 
     async def async_pre_run(self):
         pass
 
     async def async_post_run(
-        self, policy_result: OUTPUT, input: INPUT, message: Message = None
+            self, policy_result: OUTPUT, input: INPUT, message: Message = None
     ) -> Message:
+        if isinstance(policy_result, list):
+            for action in policy_result:
+                # ActionModel agent_name
+                if hasattr(action, "agent_name") and not getattr(action, "agent_name", None):
+                    action.agent_name = self.id()
         return AgentMessage(payload=policy_result, sender=self.id(), headers=message.headers)
 
     def sync_should_terminate_loop(self, message: Message) -> bool:
