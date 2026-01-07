@@ -242,12 +242,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # Stateless tool
         try:
             tool_names = self.tool_names or []
-            if context.get_agent_context_config(self.id()).automated_reasoning_orchestrator:
+            if getattr(context.get_agent_context_config(self.id()), "automated_reasoning_orchestrator", None):
                 from aworld.core.context.amni.tool.context_planning_tool import CONTEXT_PLANNING
                 if CONTEXT_PLANNING not in tool_names:
                     tool_names.extend([CONTEXT_PLANNING])
 
-            if context.get_agent_context_config(self.id()).automated_cognitive_ingestion:
+            if getattr(context.get_agent_context_config(self.id()), "automated_cognitive_ingestion", None):
                 from aworld.core.context.amni.tool.context_knowledge_tool import CONTEXT_KNOWLEDGE
                 if CONTEXT_KNOWLEDGE not in tool_names:
                     tool_names.extend([CONTEXT_KNOWLEDGE])
