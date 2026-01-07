@@ -140,7 +140,7 @@ class TrlTrainer(TrainerProcessor):
                 weights=[1.],
             )
         else:
-            logger.warning("No reward function found, will.")
+            logger.warning("No reward function found, will load later.")
             self.reward_func_based_on_config = True
             return
 

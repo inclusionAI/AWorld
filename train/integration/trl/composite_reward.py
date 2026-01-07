@@ -77,7 +77,7 @@ class CompositeReward:
 def build_reward_model_fn(
         reward_model_name: str,
         local: bool = True,
-        normalize: bool = True,
+        normalize: bool = False,
 ) -> Callable[[List[str], List[str]], List[float]]:
     """Build a reward function based on a pre-trained reward model.
 
@@ -114,7 +114,7 @@ def build_api_reward_model_fn(
         for idx, completion in enumerate(completions):
             prompt = eval_prompt.replace("{{key_points}}", solutions[idx])
             prompt = prompt.replace("{{model_response}}", completion)
-            messages = [{"role": "user", "content": prompt},]
+            messages = [{"role": "user", "content": prompt}, ]
             response = call_llm_model(llm_model, messages=messages)
             content = response.content.replace("```json", "").replace("```", "")
             outputs.append(json.loads(content))
@@ -139,60 +139,48 @@ def build_local_reward_model_fn(
         reward_model_name: str,
         normalize: bool = True,
 ) -> Callable[[List[str], List[str]], List[float]]:
+    if reward_model_name:
+        rm_tokenizer = AutoTokenizer.from_pretrained(reward_model_name, use_fast=True)
+        # ensure padding token exists for batched inference
+        if rm_tokenizer.pad_token is None:
+            candidate = rm_tokenizer.eos_token or rm_tokenizer.sep_token or rm_tokenizer.cls_token or rm_tokenizer.unk_token
+            if candidate is not None:
+                rm_tokenizer.pad_token = candidate
+            else:
+                rm_tokenizer.add_special_tokens({"pad_token": "[PAD]"})
 
-    rm_pipe = None
+        rm_model = AutoModelForSequenceClassification.from_pretrained(reward_model_name,
+                                                                      dtype=torch.float16,
+                                                                      device_map="auto")
+        if getattr(rm_model.config, "pad_token_id", None) is None and rm_tokenizer.pad_token_id is not None:
+            rm_model.config.pad_token_id = rm_tokenizer.pad_token_id
 
-    def rm_call(solutions):
-        if solutions:
-            # use rules to evaluate model_resp and solution pair
-            def generate(completions: List[str], **kwargs):
-                results = []
-                for idx, completion in enumerate(completions):
-                    res = semantic_similarity(completion, solutions[idx])
-                    results.append([{"score": res}])
-                return results
+        rm_pipe = pipeline(
+            task="text-classification",
+            model=rm_model,
+            tokenizer=rm_tokenizer,
+            truncation=True,
+            top_k=None,
+            function_to_apply="none",  # use raw logits so we can map scores directly
+            return_all_scores=True,
+        )
 
-            pipe = generate
-        else:
-            rm_tokenizer = AutoTokenizer.from_pretrained(reward_model_name, use_fast=True)
-            # ensure padding token exists for batched inference
-            if rm_tokenizer.pad_token is None:
-                candidate = rm_tokenizer.eos_token or rm_tokenizer.sep_token or rm_tokenizer.cls_token or rm_tokenizer.unk_token
-                if candidate is not None:
-                    rm_tokenizer.pad_token = candidate
-                else:
-                    rm_tokenizer.add_special_tokens({"pad_token": "[PAD]"})
-
-            rm_model = AutoModelForSequenceClassification.from_pretrained(reward_model_name,
-                                                                          dtype=torch.float16,
-                                                                          device_map="auto")
-            if getattr(rm_model.config, "pad_token_id", None) is None and rm_tokenizer.pad_token_id is not None:
-                rm_model.config.pad_token_id = rm_tokenizer.pad_token_id
-
-            # use a pipeline for batching and device placement
-            pipe = pipeline(
-                task="text-classification",
-                model=rm_model,
-                tokenizer=rm_tokenizer,
-                truncation=True,
-                top_k=None,
-                function_to_apply="none",  # use raw logits so we can map scores directly
-                return_all_scores=True,
-            )
-
-        return pipe
+    def generate(completions: List[str], solutions: List[str]):
+        results = []
+        for idx, completion in enumerate(completions):
+            res = semantic_similarity(completion, solutions[idx])
+            results.append([{"score": res}])
+        return results
 
     def reward_fn(completions: List[str], prompts: List[str], **kwargs) -> List[float]:
         # unused here
         del prompts
 
-        # solutions = kwargs.get("solution")
-        solutions = None
-        rm_judge = rm_pipe
-        if rm_judge is None:
-            rm_judge = rm_call(solutions)
-
-        outputs = rm_judge(completions, batch_size=kwargs.get("batch_size", 2))
+        solutions = kwargs.get("solution")
+        if solutions:
+            outputs = generate(completions, solutions=solutions)
+        else:
+            outputs = rm_pipe(completions, batch_size=kwargs.get("batch_size", 2))
         scores: List[float] = []
         for out in outputs:
             # If binary classifier, use logit of positive class; otherwise sum weighted by label index

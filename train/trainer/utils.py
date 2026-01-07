@@ -31,7 +31,7 @@ TRAIN_DEFAULT_CONFIG = {
         "output_dir": ".", "learning_rate": 5e-6, "per_device_train_batch_size": 2,
         "gradient_accumulation_steps": 1, "num_train_epochs": 1, "logging_steps": 10,
         "save_strategy": "steps", "save_steps": 100, "eval_strategy": "no", "remove_unused_columns": False,
-        "fp16": True, "max_prompt_length": 12800, "max_completion_length": 2048, "num_generations": 2,
-        "report_to": ["none"], "use_liger_kernel": False, "push_to_hub": False, "max_steps": 1
+        "fp16": True, "max_prompt_length": 12800, "max_completion_length": 128, "num_generations": 2,
+        "report_to": ["none"], "use_liger_kernel": False, "push_to_hub": False, "max_steps": 2
     }
 }

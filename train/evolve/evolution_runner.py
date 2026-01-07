@@ -31,9 +31,9 @@ from train.trainer.utils import TRAIN_DEFAULT_CONFIG
 
 
 class EvolutionRunner(Runner):
-    def __init__(self, task: Any, conf: EvolutionConfig):
+    def __init__(self, task: Any, config: EvolutionConfig):
         self.task = task
-        self.conf = conf
+        self.conf = config
         self.tool_repository = None
         self.event = asyncio.Event()
 
@@ -60,6 +60,7 @@ class EvolutionRunner(Runner):
     async def do_run(self):
         #### Plan: tool_synthesis -> tool_verify -> sample_synthesis -> sample_verify -> train -> evaluate
         # Create evolve yaml
+        logger.info(f"Evolution plan start...")
         res = await Runners.run(input=self.task, agent=AutoEvolutionAgent(conf=AgentConfig(**self.conf.to_dict())))
         plan = res.answer
 
@@ -71,14 +72,17 @@ class EvolutionRunner(Runner):
         config = plan.get("config", {})
         dir_name = config.get("workspace", "spec")
 
+        # todo: in agent and auto modify
         await self.human_confirm(content=f"Please confirm the generated plan and configuration in {dir_name}.")
+
+        logger.info(f"Evolution plan finished, result: {plan}")
 
         # default minimum workflow
         process_tasks = config.get("process_tasks", ["sample_synthesis", "train"])
         epoches = config.get("max_epoches", 1)
         for epoch in range(epoches):
             #### Data Synthesis
-            logger.info(f"Epoch {epoch} dataset synthesis...")
+            logger.info(f"Epoch {epoch} start dataset synthesis...")
             train_synthesis_data, test_synthesis_data = await self.data_synthesis(task=plan.get("task"),
                                                                                   dir_name=dir_name,
                                                                                   process_tasks=process_tasks)
@@ -86,7 +90,7 @@ class EvolutionRunner(Runner):
             process_tasks.remove("tool_synthesis")
 
             #### Training
-            logger.info(f"Epoch {epoch} training...")
+            logger.info(f"Epoch {epoch} start training...")
             # TODO: train agent create train.yaml with some parameters
 
             # train can not skip
@@ -96,44 +100,23 @@ class EvolutionRunner(Runner):
 
             #### Evaluation
             if "evaluation" in process_tasks:
-                logger.info(f"Epoch {epoch} evaluating...")
-                await self.evaluation(test_dataset_file=test_synthesis_data)
+                logger.info(f"Epoch {epoch} start evaluating...")
+                await self.evaluation(dir_name=dir_name, test_dataset_file=test_synthesis_data)
 
             logger.info(f"Epoch {epoch} finished")
+        logger.info(f"Evolution pipeline finished!")
 
-    async def evaluation(self, test_dataset_file: str):
+    async def evaluation(self, dir_name: str, test_dataset_file: str):
         """Run evaluation on the test dataset and save results."""
         if not test_dataset_file or not os.path.exists(test_dataset_file):
             logger.warning(f"Test dataset file not found: {test_dataset_file}")
             return
 
-        dir_name = os.path.dirname(os.path.dirname(test_dataset_file))
-        configs = load_config(dir_name=dir_name, file_name='train.yaml')
-        if "dir_name" not in configs:
-            configs['dir_name'] = dir_name
+        if not hasattr(self, "trainer"):
+            logger.warning(f"Need to complete the training first!")
+            return
 
-        train_engine_name = configs.get('train_framework')
-        if train_engine_name not in TRAIN_PROCESSOR:
-            train_engine_name = 'trl'
-
-        if not configs.get('test_dataset'):
-            configs['test_dataset'] = await self._convert_dataset(test_dataset_file, train_framework=train_engine_name)
-
-        config_file = await self._generate_config(configs=configs, train_framework=train_engine_name)
-
-        agents_dict = configs.get("agents", {})
-        agent = await self._generate_agent(agents_dict)
-        reward_func = await self._generate_reward_fn(train_framework=train_engine_name)
-
-        trainer = AgentTrainer(agent=agent,
-                               config=config_file,
-                               reward_func=reward_func,
-                               train_dataset=configs.get('train_dataset'),
-                               test_dataset=configs.get('test_dataset'),
-                               train_engine_name=train_engine_name,
-                               run_path=dir_name)
-
-        metrics = await trainer.inference()
+        metrics = await self.trainer.inference()
 
         try:
             result_file = os.path.join(dir_name, 'evaluation_result.json')
@@ -153,6 +136,7 @@ class EvolutionRunner(Runner):
             test_dataset_file: Test dataset file path.
         """
         dir_name = evolve_config.get("workspace", "spec")
+        # todo: create train.yaml by agent
         configs = load_config(dir_name=dir_name, file_name='train.yaml')
         if "dir_name" not in configs:
             configs['dir_name'] = dir_name
@@ -191,6 +175,7 @@ class EvolutionRunner(Runner):
                                train_engine_name=train_engine_name,
                                run_path=dir_name)
         trainer.train()
+        self.trainer = trainer
 
     async def _convert_dataset(self, input_file: str, train_framework: str):
         if train_framework == 'verl':

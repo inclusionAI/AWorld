@@ -197,3 +197,13 @@ class Runners:
             task.observation = observation
         observation = resp.answer if resp else None
         return is_finished, observation, resp
+
+    @staticmethod
+    async def evolve(task: Any, run_conf: RunConfig = None):
+        """Run evolve task."""
+        from train.evolve.evolution_runner import EvolutionRunner
+        from train.data_gen.schema import EvolutionConfig
+
+        evolution_conf = EvolutionConfig(run_conf=run_conf)
+        runner = EvolutionRunner(task=task, config=evolution_conf)
+        await execute_runner([runner], run_conf)
