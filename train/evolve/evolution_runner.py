@@ -53,7 +53,7 @@ class EvolutionRunner(Runner):
             model_conf = ModelConfig(
                 llm_model_name=os.getenv('LLM_MODEL_NAME'),
                 llm_api_key=os.getenv('LLM_API_KEY'),
-                llm_base_url=os.getenv('LLM_BASE_URL'),
+                llm_base_url=os.getenv('LLM_BASE_URL', "https://api.openai.com/v1"),
                 llm_provider=os.getenv('LLM_PROVIDER', "openai"),
             )
             self.conf.llm_config = model_conf
