@@ -11,7 +11,7 @@ from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message
 
 
-class AutoEvolutionAgent(Agent):
+class EvolutionPipelineAgent(Agent):
     def __init__(self, **kwargs):
         kwargs['name'] = kwargs.get('name', 'arch_agent')
         kwargs['description'] = kwargs.get('description', 'arch agent')
