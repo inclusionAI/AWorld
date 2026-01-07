@@ -12,7 +12,6 @@ from transformers import (
     AutoTokenizer,
 )
 from transformers.trainer_utils import PredictionOutput
-from trl import GRPOConfig, GRPOTrainer
 from aworld.agents.llm_agent import Agent
 from aworld.config.agent_loader import load_agents_from_yaml
 from aworld.config.conf import load_config
@@ -25,6 +24,8 @@ class TrlTrainer(TrainerProcessor):
     """Local train."""
 
     def train(self):
+        from trl import GRPOTrainer
+
         model_name = self.model_name
         model = AutoModelForCausalLM.from_pretrained(
             model_name, device_map="auto",
@@ -47,6 +48,8 @@ class TrlTrainer(TrainerProcessor):
         tokenizer.save_pretrained(self.config.output_dir)
 
     def inference(self, dataset: Union[str, Dataset] = None) -> PredictionOutput:
+        from trl import GRPOTrainer
+
         model_name = self.model_name
 
         if self.config.output_dir and os.path.exists(os.path.join(self.config.output_dir, "model.safetensors")):
@@ -87,6 +90,8 @@ class TrlTrainer(TrainerProcessor):
         self.test_dataset = test_dataset
 
     def check_config(self, config: Union[str, Any] = None):
+        from trl import GRPOConfig
+
         if isinstance(config, str):
             config = load_config(config, dir_name=".")
         elif isinstance(config, dict):

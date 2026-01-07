@@ -8,8 +8,6 @@ import yaml
 from typing import Callable, Union, Tuple
 
 from datasets import Dataset
-from omegaconf import OmegaConf
-from omegaconf.dictconfig import DictConfig
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import BaseConfig, ConfigDict, load_config
@@ -206,8 +204,11 @@ class VerlTrainer(TrainerProcessor):
         logger.info(f"View agent config in file: {agent_yaml}")
         return self.agent_yaml
 
-    def check_config(self, config: Union[str, Config] = None) -> DictConfig:
+    def check_config(self, config: Union[str, Config] = None):
         import verl.trainer.config
+
+        from omegaconf import OmegaConf
+        from omegaconf.dictconfig import DictConfig
 
         logger.info("Check config...")
 
