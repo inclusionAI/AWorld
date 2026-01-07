@@ -103,7 +103,9 @@ class TrlTrainer(TrainerProcessor):
         self.config = grpo_cfg
 
         # for check
-        yaml.safe_dump(grpo_cfg.to_dict(), open(f"{self.run_path}/final_train_config.yaml", "w"))
+        final_config_path = os.path.join(self.run_path, "final_train_config.yaml")
+        with open(final_config_path, "w") as f:
+            yaml.safe_dump(grpo_cfg.to_dict(), f)
         logger.info(f"View TRL final tain config in file: {self.run_path}/final_train_config.yaml")
         return grpo_cfg
 

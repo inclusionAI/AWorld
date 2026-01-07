@@ -87,7 +87,8 @@ class EvolutionRunner(Runner):
                                                                                   dir_name=dir_name,
                                                                                   process_tasks=process_tasks)
             # Keep tools for next epoch
-            process_tasks.remove("tool_synthesis")
+            if "tool_synthesis" in process_tasks:
+                process_tasks.remove("tool_synthesis")
 
             #### Training
             logger.info(f"Epoch {epoch} start training...")
@@ -191,7 +192,7 @@ class EvolutionRunner(Runner):
                         "agent_name": "evolve_agent"
                     })
             df = pd.DataFrame(datas)
-            dataset_file = input_file.replace('.jsonl', '.parquet')
+            dataset_file = os.path.splitext(input_file)[0] + '.parquet'
             df.to_parquet(dataset_file, index=False)
         elif train_framework == 'trl':
             datas = []
