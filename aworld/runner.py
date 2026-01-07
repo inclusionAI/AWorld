@@ -21,6 +21,7 @@ from aworld.utils.run_util import exec_tasks, streaming_exec_task
 
 class Runners:
     """Unified entrance to the utility class of the runnable task of execution."""
+    SPCECIAL = {"evolve_agent": "evolve"}
 
     @staticmethod
     def streamed_run_task(task: Task, run_conf: RunConfig = None) -> StreamingOutputs:
@@ -37,9 +38,10 @@ class Runners:
         streamed_result.task_id = task.id
 
         logger.info(f"start task_id={task.id}, agent={task.agent}, swarm = {task.swarm} ")
-
+        agent_name = task.agent.name() if task.agent else task.swarm.ordered_agents[0].name()
+        func_name = Runners.SPCECIAL.get(agent_name, "run_task")
         streamed_result._run_impl_task = asyncio.create_task(
-            Runners.run_task(task, run_conf=run_conf)
+            getattr(Runners, func_name)(task, run_conf=run_conf)
         )
         return streamed_result
 

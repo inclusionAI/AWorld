@@ -12,7 +12,7 @@ from aworld.config import AgentConfig, load_config, ModelConfig
 from aworld.config.agent_loader import load_agents_from_dict
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.base import Context
-from aworld.core.task import Runner
+from aworld.core.task import Runner, TaskResponse
 from aworld.logs.util import logger
 from aworld.runner import Runners
 from aworld.runners.runtime_engine import RuntimeEngine
@@ -83,7 +83,7 @@ class EvolutionRunner(Runner):
 
         # todo: in agent and auto modify
         await self.human_confirm(
-            content=f"Please confirm the generated plan and configuration `evolve_config.yaml` in {dir_name}."
+            content=f"Please confirm the generated plan and configuration `evolve_config.yaml` in {os.path.abspath(dir_name)}."
                     f"It may be necessary to modify the model path, etc",
             hitl=self.conf.hitl_plan
         )
@@ -120,7 +120,7 @@ class EvolutionRunner(Runner):
 
             logger.info(f"Epoch {epoch} finished")
         logger.info(f"Evolution pipeline finished!")
-        return f"Evolution pipeline finished, please check dir: {dir_name}"
+        return TaskResponse(answer=f"Evolution pipeline finished, please check dir: {os.path.abspath(dir_name)}")
 
     async def evaluation(self, dir_name: str, test_dataset_file: str):
         """Run evaluation on the test dataset and save results."""
