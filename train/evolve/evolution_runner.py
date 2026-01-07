@@ -5,8 +5,6 @@ import json
 import os
 from typing import Any, List, Tuple, Dict, Union
 
-import jsonlines
-import pandas as pd
 import yaml
 
 from aworld.agents.llm_agent import Agent
@@ -20,6 +18,7 @@ from aworld.runner import Runners
 from aworld.runners.runtime_engine import RuntimeEngine
 from aworld.runners.utils import runtime_engine
 from aworld.tools.human.human import HUMAN
+from aworld.utils import import_package, import_packages
 from aworld.utils.run_util import exec_tool
 
 from train.integration.verl.reward_func import verl_default_reward_func
@@ -39,6 +38,14 @@ class EvolutionRunner(Runner):
         self.event = asyncio.Event()
 
     async def pre_run(self):
+        # dataset, pandas and jsonlines is needed
+        import_packages(["datasets", "jsonlines", "pandas"])
+        # transformers needed
+        try:
+            import transformers
+        except ImportError:
+            import_package(package_name="transformers", version="4.57.1")
+
         # check llm_config for planning or other high-level tasks,
         if not self.conf.llm_config:
             if not os.environ.get("LLM_MODEL_NAME") or not os.environ.get("LLM_API_KEY"):
@@ -186,6 +193,9 @@ class EvolutionRunner(Runner):
         self.trainer = trainer
 
     async def _convert_dataset(self, input_file: str, train_framework: str):
+        import jsonlines
+        import pandas as pd
+
         if train_framework == 'verl':
             datas = []
             with jsonlines.open(input_file) as reader:
@@ -225,10 +235,15 @@ class EvolutionRunner(Runner):
         """
         train_configs = TRAIN_DEFAULT_CONFIG.get(train_framework)
         if train_framework == 'verl':
+            logger.info("VeRL relies on multiple modules, please confirm in advance that the relevant dependencies have been installed")
+
             train_configs['reward_model']['model']['path'] = configs.get('reward_model')
             train_configs['trainer']['default_local_dir'] = configs.get('dir_name')
             train_configs['actor_rollout_ref']['model']['path'] = configs.get('model')
         elif train_framework == 'trl':
+            logger.info("Auto check the dependent modules of TRL.")
+            import_packages(["scipy", "trl"])
+
             train_configs['model'] = configs.get('model')
             train_configs['reward_model'] = configs.get('reward_model', configs.get('model'))
             train_configs['output_dir'] = configs.get('dir_name')
