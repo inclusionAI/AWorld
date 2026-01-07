@@ -117,7 +117,10 @@ def build_api_reward_model_fn(
             messages = [{"role": "user", "content": prompt}, ]
             response = call_llm_model(llm_model, messages=messages)
             content = response.content.replace("```json", "").replace("```", "")
-            outputs.append(json.loads(content))
+            try:
+                outputs.append(json.loads(content))
+            except json.JSONDecodeError:
+                outputs.append({"score": 0.0})
 
         scores: List[float] = []
         for out in outputs:

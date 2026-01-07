@@ -193,13 +193,8 @@ class VerlTrainer(TrainerProcessor):
 
         # VeRL agent config file
         module = module.replace(os.getcwd(), '').replace('/', '.')
-        idx = 0
-        for i in module:
-            if i == '.':
-                idx += 1
-            else:
-                break
-        module = module[idx:]
+
+        module = module.lstrip('.')
         con = f"""- name: {agent.name()}
   _target_: {module}.VerlAgentLoop
                """
