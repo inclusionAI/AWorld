@@ -9,6 +9,9 @@ from .runtime import LocalRuntime, RemoteRuntime, MixedRuntime, BaseAgentRuntime
 from .models import AgentInfo, TeamInfo
 from .executors import AgentExecutor
 
+# Import handlers to ensure they are registered
+from .handlers import CLIHumanHandler
+
 __all__ = [
     "AWorldCLI",
     "LocalRuntime",
@@ -18,5 +21,6 @@ __all__ = [
     "AgentInfo",
     "TeamInfo",
     "AgentExecutor",
+    "CLIHumanHandler",
 ]
 
