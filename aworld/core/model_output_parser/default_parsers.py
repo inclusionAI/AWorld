@@ -26,12 +26,12 @@ class ToolParser(BaseContentParser):
         if not kwargs.get("use_tools_in_prompt", False):
             return resp
         raw_content = resp.content
-        content, tool_calls = await self.extract_tool_calls(raw_content)
+        content, tool_calls = await self.extract_tool_calls(raw_content, **kwargs)
         resp.content = content
         resp.tool_calls = tool_calls
         return resp
 
-    async def extract_tool_calls(self, content: str) -> tuple[str, list[ToolCall]]:
+    async def extract_tool_calls(self, content: str, **kwargs) -> tuple[str, list[ToolCall]]:
         if self.tool_call_start_token not in content or self.tool_call_end_token not in content:
             return content, []
 
