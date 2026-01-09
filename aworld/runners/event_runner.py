@@ -309,7 +309,7 @@ class TaskEventRunner(TaskRunner):
                 # External control - Check task status before processing each message
                 should_stop_task = await self.should_stop_task(message)
                 if should_stop_task:
-                    logger.warn(f"Runner {message.context.get_task().id} task should stop.")
+                    logger.warn(f"Runner {self.task.id} task should stop.")
                     await self.stop()
                 if await self.is_stopped():
                     logger.info(f"{task_flag} task {self.task.id} stoped and will break snap")

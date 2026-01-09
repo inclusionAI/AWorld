@@ -323,6 +323,7 @@ class LLMModel:
             )
             if self.llm_response_parser:
                 response_parse_args = kwargs.get("response_parse_args") or {}
+                response_parse_args["tools"] = kwargs.get("tools")
                 resp = await self.llm_response_parser.parse(resp, **response_parse_args)
             return resp
         except AttributeError as e:
