@@ -9,11 +9,14 @@ import yaml
 docs = "docs"
 black_keys = ["Index"]
 black_values = ["index.md"]
-file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities"],
-                 "Basic Usage": ["HITL"],
-                 "Runtime": ["Overview"]}
+file_priority = {"Get Start": ["Overview", "Quick start", "Core capabilities"],
+                 "Runtime": ["Overview"],
+                 "Environment": ["Overview", "Env Client", "Advanced Capabilities"],
+                 "环境": ["总览（Overview）", "环境客户端", "高级能力"]}
 file_mapping = {"Hitl": "HITL"}
-dir_order = ["Get Start", "Basic Usage", "Agents", "Environment", "Runtime", "Key Components"]
+dir_order = ["Get Start", "Agents", "Environment", "Training", "Key Components"]
+
+zh_v = ["开始", "智能体", "环境", "训练", "关键组件"]
 
 
 def scan_path(path: str) -> List[dict]:
@@ -35,9 +38,16 @@ def scan_path(path: str) -> List[dict]:
         final_map = OrderedDict()
         for file in file_priority.get(k, []):
             if file in v:
-                final_map[file] = v[file]
+                final_map[file_mapping.get(file, file)] = v[file]
                 v.pop(file)
         final_map.update(v)
+
+        final_v = OrderedDict()
+        if k == 'docs_zh':
+            for d in zh_v:
+                final_v[d] = v[d]
+        if final_v:
+            final_map = final_v
 
         res.append({k: dict(final_map)})
     return res
@@ -56,7 +66,7 @@ def scan(path: str) -> dict:
                 items[name] = children
         elif name.endswith(".md"):
             words = os.path.splitext(name)[0].split('_')
-            key = ' '.join([w.capitalize() for w in words])
+            key = ' '.join([w.title() if w else w for w in words])
             items[key] = os.path.relpath(p, docs).replace(os.sep, "/")
     return items
 

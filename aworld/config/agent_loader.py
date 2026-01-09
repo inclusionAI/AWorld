@@ -46,6 +46,7 @@ import yaml
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
+from aworld.core.agent.base import AgentFactory
 from aworld.core.agent.swarm import Swarm, GraphBuildType
 from aworld.logs.util import logger
 from aworld.utils.common import replace_env_variables
@@ -118,14 +119,24 @@ def load_agents_from_yaml(path: str) -> Dict[str, Agent]:
     if not isinstance(agents_conf, dict):
         raise ValueError("`agents` must be a mapping of name -> config")
 
+    return load_agents_from_dict(agents_conf)
+
+def load_agents_from_dict(agent_conf: Dict[str, Any]) -> Dict[str, Agent]:
     agents: Dict[str, Agent] = {}
-    for name, conf_dict in agents_conf.items():
+    for name, conf_dict in agent_conf.items():
         if not isinstance(conf_dict, dict):
             raise ValueError(f"Agent `{name}` config must be a mapping")
+
         try:
             # Pydantic will parse nested llm_config, memory_config, etc.
-            agent_conf = AgentConfig(**conf_dict)
-            agent = Agent(name=name, conf=agent_conf)
+            agent_conf_dict = conf_dict.get("config", {})
+            agent_conf = AgentConfig(**agent_conf_dict)
+            if name in AgentFactory:
+                agent_cls = AgentFactory.get_class(name)
+                conf_dict.pop("system_prompt", None)
+                agent = agent_cls(name=name, desc=AgentFactory.desc(name), conf=agent_conf, **conf_dict)
+            else:
+                agent = Agent(name=name, conf=agent_conf, **conf_dict)
             agents[name] = agent
         except Exception as e:
             logger.error(f"Failed to load agent `{name}` from YAML: {e}")

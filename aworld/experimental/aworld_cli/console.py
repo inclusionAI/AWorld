@@ -6,14 +6,12 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import NestedCompleter
 from prompt_toolkit.formatted_text import HTML
 from rich import box
-from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 
 from .models import AgentInfo
-
-console = Console()
+from ._globals import console
 
 # ... existing imports ...
 

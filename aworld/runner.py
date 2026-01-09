@@ -37,7 +37,6 @@ class Runners:
         streamed_result.task_id = task.id
 
         logger.info(f"start task_id={task.id}, agent={task.agent}, swarm = {task.swarm} ")
-
         streamed_result._run_impl_task = asyncio.create_task(
             Runners.run_task(task, run_conf=run_conf)
         )
@@ -197,3 +196,16 @@ class Runners:
             task.observation = observation
         observation = resp.answer if resp else None
         return is_finished, observation, resp
+
+    @staticmethod
+    async def evolve(task: Any, evolve_conf=None, run_conf: RunConfig = None):
+        """Run evolve task."""
+        from train.evolve.config import EvolutionConfig
+        from train.evolve.evolution_runner import EvolutionRunner
+
+        if not evolve_conf:
+            evolve_conf = EvolutionConfig(run_conf=run_conf)
+        if run_conf:
+            evolve_conf.run_conf = run_conf
+        runner = EvolutionRunner(task=task, config=evolve_conf)
+        await execute_runner([runner], run_conf)
