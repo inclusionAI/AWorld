@@ -32,7 +32,7 @@ class ToolParser(BaseContentParser):
         return resp
 
     async def extract_tool_calls(self, content: str, **kwargs) -> tuple[str, list[ToolCall]]:
-        if self.tool_call_start_token not in content or self.tool_call_end_token not in content:
+        if not content or self.tool_call_start_token not in content or self.tool_call_end_token not in content:
             return content, []
 
         matches = self.tool_call_regex.findall(content)
@@ -75,7 +75,7 @@ class ReasoningParser(BaseContentParser):
         return resp
 
     async def extract_thinking_content(self, content: str) -> tuple[str, str]:
-        if self.thinking_start_token not in content or self.thinking_end_token not in content:
+        if not content or self.thinking_start_token not in content or self.thinking_end_token not in content:
             return content, ""
 
         matches = self.thinking_regex.findall(content)
@@ -105,7 +105,7 @@ class CodeParser(BaseContentParser):
         return resp
 
     async def extract_code_blocks(self, content: str) -> tuple[str, List[Dict[str, str]]]:
-        if "```" not in content:
+        if not content or "```" not in content:
             return content, []
             
         matches = self.code_block_regex.findall(content)
@@ -140,7 +140,7 @@ class JsonParser(BaseContentParser):
         return resp
 
     async def extract_json_content(self, content: str) -> tuple[str, List[Any]]:
-        if "```json" not in content:
+        if not content or "```json" not in content:
             return content, []
 
         matches = self.json_block_regex.findall(content)
