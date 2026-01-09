@@ -10,15 +10,23 @@ or coordinated multi-agent collaboration.
 """
 import os
 import sys
-from typing import Optional
+from typing import Optional, List
+import logging
+
+from aworld.tools.human.human import HUMAN
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aworld.agents.llm_agent import Agent
-from aworld.core.agent.swarm import TeamSwarm
+from aworld.core.agent.swarm import TeamSwarm, Swarm
+from aworld.core.agent.base import BaseAgent
 from aworld.experimental.aworld_cli.core import agent
+from aworld.experimental.aworld_cli.core.agent_registry import LocalAgentRegistry
+from aworld.experimental.aworld_cli.core.loader import init_agents
 from aworld.config import AgentConfig, ModelConfig
 from aworld.utils.skill_loader import collect_skill_docs
+
+logger = logging.getLogger(__name__)
 
 
 # System prompt based on orchestrator_agent prompt
@@ -163,6 +171,172 @@ When creating agent structures, configuration files, or any code files:
 """
 
 
+def extract_agents_from_swarm(swarm: Swarm) -> List[BaseAgent]:
+    """
+    Extract all Agent instances from a Swarm.
+    
+    This function extracts agents from a Swarm in multiple ways:
+    1. If swarm has agent_graph with agents dict, extract from there
+    2. If swarm has agents property, extract from there
+    3. If swarm has topology, extract agents from topology
+    4. If swarm is a single Agent wrapped, extract the communicate_agent
+    
+    Args:
+        swarm: The Swarm instance to extract agents from
+        
+    Returns:
+        List of BaseAgent instances extracted from the swarm
+        
+    Example:
+        >>> swarm = TeamSwarm(agent1, agent2, agent3)
+        >>> agents = extract_agents_from_swarm(swarm)
+        >>> print(f"Extracted {len(agents)} agents")
+    """
+    agents = []
+    
+    try:
+        # Method 1: Try agent_graph.agents (most reliable after initialization)
+        if hasattr(swarm, 'agent_graph') and swarm.agent_graph:
+            if hasattr(swarm.agent_graph, 'agents') and swarm.agent_graph.agents:
+                if isinstance(swarm.agent_graph.agents, dict):
+                    agents.extend(swarm.agent_graph.agents.values())
+                elif isinstance(swarm.agent_graph.agents, (list, tuple)):
+                    agents.extend(swarm.agent_graph.agents)
+        
+        # Method 2: Try swarm.agents (direct access)
+        if not agents and hasattr(swarm, 'agents') and swarm.agents:
+            if isinstance(swarm.agents, dict):
+                agents.extend(swarm.agents.values())
+            elif isinstance(swarm.agents, (list, tuple)):
+                agents.extend(swarm.agents)
+            elif isinstance(swarm.agents, BaseAgent):
+                agents.append(swarm.agents)
+        
+        # Method 3: Try topology (before initialization)
+        if not agents and hasattr(swarm, 'topology') and swarm.topology:
+            for item in swarm.topology:
+                if isinstance(item, BaseAgent):
+                    agents.append(item)
+                elif isinstance(item, (list, tuple)):
+                    # Handle tuple/list of agents
+                    for sub_item in item:
+                        if isinstance(sub_item, BaseAgent):
+                            agents.append(sub_item)
+                elif isinstance(item, Swarm):
+                    # Recursively extract from nested swarm
+                    nested_agents = extract_agents_from_swarm(item)
+                    agents.extend(nested_agents)
+        
+        # Method 4: Try communicate_agent (root agent)
+        if not agents and hasattr(swarm, 'communicate_agent') and swarm.communicate_agent:
+            if isinstance(swarm.communicate_agent, BaseAgent):
+                agents.append(swarm.communicate_agent)
+            elif isinstance(swarm.communicate_agent, (list, tuple)):
+                agents.extend([a for a in swarm.communicate_agent if isinstance(a, BaseAgent)])
+        
+        # Remove duplicates based on agent id
+        seen_ids = set()
+        unique_agents = []
+        for ag in agents:
+            if isinstance(ag, BaseAgent):
+                agent_id = ag.id() if hasattr(ag, 'id') else id(ag)
+                if agent_id not in seen_ids:
+                    seen_ids.add(agent_id)
+                    unique_agents.append(ag)
+        
+        return unique_agents
+        
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to extract agents from swarm: {e}")
+        return []
+
+
+def load_all_registered_agents(
+    agents_dir: Optional[str] = None,
+    exclude_names: Optional[List[str]] = None
+) -> List[BaseAgent]:
+    """
+    Load all registered agents and extract their Agent instances.
+    
+    This function:
+    1. Initializes agents from the specified directory (or current directory)
+    2. Gets all registered LocalAgent instances
+    3. Extracts Agent instances from each LocalAgent's swarm
+    4. Returns a list of all extracted Agent instances
+    
+    Args:
+        agents_dir: Directory to load agents from. If None, uses current working directory
+        exclude_names: List of agent names to exclude (e.g., ["Aworld"] to exclude self)
+        
+    Returns:
+        List of BaseAgent instances from all registered agents
+        
+    Example:
+        >>> agents = load_all_registered_agents(exclude_names=["Aworld"])
+        >>> print(f"Loaded {len(agents)} sub-agents")
+    """
+    if exclude_names is None:
+        exclude_names = []
+    
+    # Initialize agents from directory if provided
+    if agents_dir:
+        try:
+            init_agents(agents_dir)
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to initialize agents from {agents_dir}: {e}")
+    else:
+        # Try to initialize from current working directory
+        try:
+            init_agents()
+        except Exception as e:
+            logger.debug(f"Could not initialize agents from current directory: {e}")
+    
+    # Get all registered agents
+    registered_agents = LocalAgentRegistry.list_agents()
+    
+    all_agent_instances = []
+    
+    for local_agent in registered_agents:
+        # Skip excluded agents
+        if local_agent.name in exclude_names:
+            logger.debug(f"⏭️ Skipping excluded agent: {local_agent.name}")
+            continue
+        
+        try:
+            # Try to get swarm without context first
+            swarm = None
+            try:
+                # For sync callables or direct instances
+                if isinstance(local_agent.swarm, Swarm):
+                    swarm = local_agent.swarm
+                elif callable(local_agent.swarm):
+                    # Try calling without context
+                    import inspect
+                    sig = inspect.signature(local_agent.swarm)
+                    if len(sig.parameters) == 0:
+                        swarm = local_agent.swarm()
+            except Exception as e:
+                logger.debug(f"Could not get swarm for {local_agent.name} without context: {e}")
+            
+            if swarm:
+                # Extract agents from swarm
+                extracted_agents = extract_agents_from_swarm(swarm)
+                if extracted_agents:
+                    all_agent_instances.extend(extracted_agents)
+                    logger.info(f"✅ Loaded {len(extracted_agents)} agent(s) from {local_agent.name}")
+                else:
+                    logger.warning(f"⚠️ No agents extracted from {local_agent.name}")
+            else:
+                logger.debug(f"⚠️ Could not get swarm for {local_agent.name} (may require context)")
+                
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load agents from {local_agent.name}: {e}")
+            continue
+    
+    logger.info(f"📊 Total loaded {len(all_agent_instances)} sub-agent(s) from registered agents")
+    return all_agent_instances
+
+
 @agent(
     name="Aworld",
     desc="Aworld is a versatile AI assistant that can execute tasks directly or delegate to specialized agent teams. Use when you need: (1) General-purpose task execution, (2) Complex multi-step problem solving, (3) Coordination of specialized agent teams, (4) Adaptive task handling that switches between direct execution and team delegation"
@@ -222,7 +396,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_model_name=os.environ.get("LLM_MODEL_NAME"),
             llm_provider=os.environ.get("LLM_PROVIDER"),
             llm_api_key=os.environ.get("LLM_API_KEY"),
-            llm_base_url=os.environ.get("LLM_BASE_URL")
+            llm_base_url=os.environ.get("LLM_BASE_URL"),
+            params={"max_completion_tokens": os.environ.get("MAX_COMPLETION_TOKENS", 10240), "max_tokens": os.environ.get("MAX_TOKENS", 64000)}
         ),
         use_vision=False,  # Enable if needed for image analysis
         skill_configs=ALL_SKILLS
@@ -237,7 +412,9 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
         system_prompt=aworld_system_prompt,
+        human_tools=[HUMAN],
         mcp_servers=["filesystem-server", "terminal-server"],
+        ptc_tools=["read_file", "write_file", "edit_file"],
         mcp_config={
             "mcpServers": {
                 "filesystem-server": {
@@ -247,7 +424,12 @@ def build_aworld_agent(include_skills: Optional[str] = None):
                         "-y",
                         "@modelcontextprotocol/server-filesystem",
                         current_working_dir
-                    ]
+                    ],
+                    "env": {
+                        # Suppress npx and filesystem-server output
+                        "NODE_ENV": "production",
+                        "NPX_QUIET": "1"
+                    }
                 },
                 "terminal-server": {
                     "type": "stdio",
@@ -255,10 +437,34 @@ def build_aworld_agent(include_skills: Optional[str] = None):
                     "args": [
                         "-m",
                         "aworld.experimental.aworld_cli.mcptools.terminal_server"
-                    ]
+                    ],
+                    "env": {
+                        # Suppress Python warnings and info logs
+                        "PYTHONWARNINGS": "ignore"
+                    }
                 }
             }
         }
     )
 
-    return TeamSwarm(aworld_agent)
+    # Load all registered agents as sub-agents
+    try:
+        # Try to load from current working directory first
+        sub_agents = load_all_registered_agents(
+            agents_dir=None,  # Use default (current directory)
+            exclude_names=["Aworld"]  # Exclude self to avoid circular reference
+        )
+        
+        if sub_agents:
+            logger.info(f"🤝 Adding {len(sub_agents)} sub-agent(s) to Aworld TeamSwarm")
+            # Create TeamSwarm with Aworld as leader and all other agents as sub-agents
+            return TeamSwarm(aworld_agent, *sub_agents)
+        else:
+            logger.info("ℹ️ No sub-agents found, creating Aworld TeamSwarm without sub-agents")
+            return TeamSwarm(aworld_agent)
+    except Exception as e:
+
+
+
+        logger.warning(f"⚠️ Failed to load sub-agents: {e}, creating Aworld TeamSwarm without sub-agents")
+        return TeamSwarm(aworld_agent)

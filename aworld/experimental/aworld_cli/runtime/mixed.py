@@ -62,6 +62,7 @@ class MixedRuntime(BaseAgentRuntime):
         """
         # Get the inner_plugins directory path (relative to this file)
         import pathlib
+        from pathlib import Path as PathLib
         current_dir = pathlib.Path(__file__).parent.parent
         inner_plugins_dir = current_dir / "inner_plugins"
         
@@ -74,14 +75,27 @@ class MixedRuntime(BaseAgentRuntime):
                     if agents_dir.exists() and agents_dir.is_dir():
                         inner_plugins_agent_dirs.append(str(agents_dir))
         
+        # Load installed plugins from ~/.aworld/plugins/
+        installed_plugins_agent_dirs = []
+        try:
+            from ..core.plugin_manager import PluginManager
+            plugin_manager = PluginManager()
+            installed_plugins_agent_dirs = [str(d) for d in plugin_manager.get_plugin_dirs()]
+            if installed_plugins_agent_dirs and hasattr(self, 'cli') and hasattr(self.cli, 'console'):
+                self.cli.console.print(f"📦 Found {len(installed_plugins_agent_dirs)} installed plugin(s) with agents")
+        except Exception as e:
+            # Fail silently if plugin manager is not available or has issues
+            # This ensures backward compatibility
+            pass
+        
         # Use provided local_dirs if available, otherwise use environment variables
         if local_dirs:
-            self.local_dirs = inner_plugins_agent_dirs + [d.strip() for d in local_dirs]
+            self.local_dirs = inner_plugins_agent_dirs + installed_plugins_agent_dirs + [d.strip() for d in local_dirs]
         else:
             # Parse LOCAL_AGENTS_DIR (semicolon-separated)
             local_dirs_str = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or ""
             config_dirs = [d.strip() for d in local_dirs_str.split(";") if d.strip()]
-            self.local_dirs = inner_plugins_agent_dirs + config_dirs
+            self.local_dirs = inner_plugins_agent_dirs + installed_plugins_agent_dirs + config_dirs
         
         # Parse REMOTE_AGENT_BACKEND or REMOTE_AGENTS_BACKEND (semicolon-separated)
         # Use provided remote_backends if available, otherwise use environment variables
@@ -91,8 +105,9 @@ class MixedRuntime(BaseAgentRuntime):
             remote_backends_str = os.getenv("REMOTE_AGENT_BACKEND") or os.getenv("REMOTE_AGENTS_BACKEND") or ""
             self.remote_backends = [b.strip().rstrip("/") for b in remote_backends_str.split(";") if b.strip()]
         
-        # If no config (besides inner_plugins), use current working directory as default
-        if len(self.local_dirs) == len(inner_plugins_agent_dirs) and not self.remote_backends:  # Only inner_plugins agents or empty
+        # If no config (besides inner_plugins and installed plugins), use current working directory as default
+        builtin_plugin_count = len(inner_plugins_agent_dirs) + len(installed_plugins_agent_dirs)
+        if len(self.local_dirs) == builtin_plugin_count and not self.remote_backends:  # Only built-in plugins or empty
             self.local_dirs.append(os.getcwd())
     
     async def _load_agents(self) -> List[AgentInfo]:
