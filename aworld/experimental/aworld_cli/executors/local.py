@@ -942,6 +942,17 @@ class LocalAgentExecutor(AgentExecutor):
         if not isinstance(output, MessageOutput) or not self.console:
             return answer, ""
         
+        # Extract agent name from metadata if available
+        agent_name = ""
+        if hasattr(output, 'metadata') and output.metadata:
+            agent_name = output.metadata.get('agent_name', '')
+        
+        # Build title with agent name
+        if agent_name:
+            panel_title = f"[bold cyan]💬 Agent Message ({agent_name})[/bold cyan]"
+        else:
+            panel_title = "[bold cyan]💬 Agent Message[/bold cyan]"
+        
         # Extract content
         response_text = str(output.response) if hasattr(output, 'response') and output.response else ""
         reasoning_text = str(output.reasoning) if hasattr(output, 'reasoning') and output.reasoning else ""
@@ -991,7 +1002,7 @@ class LocalAgentExecutor(AgentExecutor):
             # Render with Panel
             message_panel = Panel(
                 panel_content,
-                title="[bold cyan]💬 Agent Message[/bold cyan]",
+                title=panel_title,
                 title_align="left",
                 border_style="cyan",
                 padding=(1, 2)
@@ -1048,7 +1059,7 @@ class LocalAgentExecutor(AgentExecutor):
                 
                 message_panel = Panel(
                     panel_content,
-                    title="[bold cyan]💬 Agent Message[/bold cyan]",
+                    title=panel_title,
                     title_align="left",
                     border_style="cyan",
                     padding=(1, 2)

@@ -300,7 +300,8 @@ class LocalAgentRegistry(BaseModel):
             raise ValueError("LocalAgent.name is required for registration")
         with self._lock:
             if agent.name in self._agents:
-                raise ValueError(f"LocalAgent '{agent.name}' is already registered")
+                # logger.warning(f"LocalAgent '{agent.name}' is already registered")
+                return
             self._agents[agent.name] = agent
 
     def upsert(self, agent: LocalAgent) -> None:
