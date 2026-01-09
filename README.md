@@ -494,7 +494,7 @@ For academic citations or wish to contact us, please use the following BibTeX en
 [deepwiki-url]: https://deepwiki.com/inclusionAI/AWorld
 [discord-url]: https://discord.gg/b4Asj2ynMw
 [license-url]: https://opensource.org/licenses/MIT
-[twitter-url]: https://x.com/InclusionAI666
+[twitter-url]: https://x.com/AWorldAgents
 [wechat-url]: https://raw.githubusercontent.com/inclusionAI/AWorld/main/readme_assets/aworld_wechat.png
 [arxiv-url]: https://arxiv.org/abs/2508.
 [tutorial-url]: https://inclusionai.github.io/AWorld/

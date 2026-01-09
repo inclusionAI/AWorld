@@ -1,6 +1,9 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import os
+# use custom log path
+os.environ['AWORLD_LOG_PATH'] = '/tmp/aworld_logs'
 
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners

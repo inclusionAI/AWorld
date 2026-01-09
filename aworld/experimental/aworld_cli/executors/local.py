@@ -462,10 +462,36 @@ class LocalAgentExecutor(AgentExecutor):
                                     answer, _ = self._render_message_output(output, answer)
                                     
                                     # Check if there are tool calls - if so, show "Calling tool..." status
+                                    # Skip status for human tools as they require user interaction
                                     tool_calls = output.tool_calls if hasattr(output, 'tool_calls') and output.tool_calls else []
                                     if tool_calls:
-                                        # Has tool calls, will execute tools next
-                                        _start_loading_status("🔧 Calling tool...")
+                                        # Check if any tool is a human tool (requires user interaction, no loading status)
+                                        # Use the same logic as _format_tool_calls to ensure consistency
+                                        from aworld.models.model_response import ToolCall
+                                        has_human_tool = False
+                                        has_non_human_tool = False
+                                        for tool_call_output in tool_calls:
+                                            tool_call = None
+                                            if hasattr(tool_call_output, 'data'):
+                                                tool_call = tool_call_output.data
+                                            elif isinstance(tool_call_output, ToolCall):
+                                                tool_call = tool_call_output
+                                            else:
+                                                # Try to use it directly if it's already a ToolCall
+                                                tool_call = tool_call_output
+                                            
+                                            if tool_call:
+                                                function_name = ""
+                                                if hasattr(tool_call, 'function') and tool_call.function:
+                                                    function_name = getattr(tool_call.function, 'name', '')
+                                                if 'human' in function_name.lower():
+                                                    has_human_tool = True
+                                                else:
+                                                    has_non_human_tool = True
+                                        
+                                        # Only show loading status if there are non-human tools
+                                        if has_non_human_tool:
+                                            _start_loading_status("🔧 Calling tool...")
                                     # If no tool calls, don't show thinking status here
                                     # It might be final response, or next output will trigger thinking status
                                 
@@ -819,6 +845,7 @@ class LocalAgentExecutor(AgentExecutor):
     def _format_tool_calls(self, tool_calls: list):
         """
         Format multiple tool calls into a readable string or Rich object.
+        Excludes human tools from display as they require user interaction.
         
         Args:
             tool_calls: List of ToolCallOutput or ToolCall objects
@@ -831,11 +858,32 @@ class LocalAgentExecutor(AgentExecutor):
         if not tool_calls:
             return ""
         
+        # Filter out human tools - they should not be displayed in tool calls panel
+        filtered_tool_calls = []
+        for tool_call_output in tool_calls:
+            tool_call = None
+            if hasattr(tool_call_output, 'data'):
+                tool_call = tool_call_output.data
+            elif isinstance(tool_call_output, ToolCall):
+                tool_call = tool_call_output
+            
+            # Skip human tools
+            if tool_call:
+                function_name = ""
+                if hasattr(tool_call, 'function') and tool_call.function:
+                    function_name = getattr(tool_call.function, 'name', '')
+                if 'human' not in function_name.lower():
+                    filtered_tool_calls.append(tool_call_output)
+        
+        # If all tools are human tools, return empty string
+        if not filtered_tool_calls:
+            return ""
+        
         # Build tool calls content (without title, title will be in Panel)
         tool_calls_content = []
         has_rich_objects = False
         
-        for idx, tool_call_output in enumerate(tool_calls):
+        for idx, tool_call_output in enumerate(filtered_tool_calls):
             tool_call = None
             # Extract ToolCall from ToolCallOutput
             if hasattr(tool_call_output, 'data'):
@@ -1013,6 +1061,7 @@ class LocalAgentExecutor(AgentExecutor):
     def _render_tool_result_output(self, output) -> None:
         """
         Render ToolResultOutput to console with collapsible content for long results.
+        Skips rendering for human tools as their results are user input and don't need to be displayed.
         
         Args:
             output: ToolResultOutput instance
@@ -1026,6 +1075,10 @@ class LocalAgentExecutor(AgentExecutor):
         tool_name = getattr(output, 'tool_name', 'Unknown Tool')
         action_name = getattr(output, 'action_name', '')
         tool_type = getattr(output, 'tool_type', '')
+        
+        # Skip rendering for human tools - user input doesn't need to be displayed as tool result
+        if 'human' in tool_name.lower() or 'human' in action_name.lower():
+            return
         
         # Get tool_call_id from metadata first, then from origin_tool_call
         tool_call_id = ""

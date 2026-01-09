@@ -131,6 +131,22 @@ Skill Sources:
 Combined Options:
   # Combine all options
   aworld-cli --agent-dir ./agents --agent-file ./custom_agent.py --remote-backend http://localhost:8000 --skill-path ./skills list
+
+Server Mode:
+  # Start HTTP server
+  aworld-cli serve --http --http-port 8000
+  
+  # Start MCP server (stdio mode)
+  aworld-cli serve --mcp
+  
+  # Start MCP server (streamable-http mode)
+  aworld-cli serve --mcp --mcp-transport streamable-http --mcp-port 8001
+  
+  # Start both HTTP and MCP servers
+  aworld-cli serve --http --http-port 8000 --mcp --mcp-transport streamable-http --mcp-port 8001
+  
+  # Start server with custom agent directory
+  aworld-cli serve --http --agent-dir ./agents
 """
     
     # Chinese help text
@@ -194,6 +210,22 @@ Agent 文件：
 组合选项：
   # 组合所有选项
   aworld-cli --agent-dir ./agents --agent-file ./custom_agent.py --remote-backend http://localhost:8000 --skill-path ./skills list
+
+服务器模式：
+  # 启动 HTTP 服务器
+  aworld-cli serve --http --http-port 8000
+  
+  # 启动 MCP 服务器（stdio 模式）
+  aworld-cli serve --mcp
+  
+  # 启动 MCP 服务器（streamable-http 模式）
+  aworld-cli serve --mcp --mcp-transport streamable-http --mcp-port 8001
+  
+  # 同时启动 HTTP 和 MCP 服务器
+  aworld-cli serve --http --http-port 8000 --mcp --mcp-transport streamable-http --mcp-port 8001
+  
+  # 使用自定义 agent 目录启动服务器
+  aworld-cli serve --http --agent-dir ./agents
 """
     
     description_en = "AWorld Agent CLI - Interact with agents directly from the terminal"
@@ -220,8 +252,8 @@ Agent 文件：
         'command',
         nargs='?',
         default='interactive',
-        choices=['interactive', 'list'],
-        help='Command to execute (default: interactive)'
+        choices=['interactive', 'list', 'serve'],
+        help='Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers.'
     )
     
     parser.add_argument(
@@ -308,6 +340,62 @@ Agent 文件：
         help='Skill source path (local directory or GitHub URL, can be specified multiple times). Overrides SKILLS_PATH environment variable.'
     )
     
+    # Server options (for 'serve' command)
+    parser.add_argument(
+        '--http',
+        action='store_true',
+        help='Start HTTP server (for serve command)'
+    )
+    
+    parser.add_argument(
+        '--http-host',
+        type=str,
+        default='0.0.0.0',
+        help='HTTP server host (default: 0.0.0.0)'
+    )
+    
+    parser.add_argument(
+        '--http-port',
+        type=int,
+        default=8000,
+        help='HTTP server port (default: 8000)'
+    )
+    
+    parser.add_argument(
+        '--mcp',
+        action='store_true',
+        help='Start MCP server (for serve command)'
+    )
+    
+    parser.add_argument(
+        '--mcp-name',
+        type=str,
+        default='AWorldAgent',
+        help='MCP server name (default: AWorldAgent)'
+    )
+    
+    parser.add_argument(
+        '--mcp-transport',
+        type=str,
+        choices=['stdio', 'sse', 'streamable-http'],
+        default='stdio',
+        help='MCP transport type: stdio, sse, or streamable-http (default: stdio)'
+    )
+    
+    parser.add_argument(
+        '--mcp-host',
+        type=str,
+        default='0.0.0.0',
+        help='MCP server host for SSE/streamable-http transport (default: 0.0.0.0)'
+    )
+    
+    parser.add_argument(
+        '--mcp-port',
+        type=int,
+        default=8001,
+        help='MCP server port for SSE/streamable-http transport (default: 8001)'
+    )
+    
     args = parser.parse_args()
     
     # Handle --examples flag: show examples and exit
@@ -327,7 +415,7 @@ Agent 文件：
         )
         parser_zh.add_argument('-zh', '--zh', action='store_true', help='显示中文帮助')
         parser_zh.add_argument('--examples', action='store_true', help='显示使用示例')
-        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list'], help='要执行的命令（默认：interactive）')
+        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器。')
         parser_zh.add_argument('--task', type=str, help='发送给 agent 的任务（非交互模式）')
         parser_zh.add_argument('--agent', type=str, help='要使用的 agent 名称（直接运行模式必需）')
         parser_zh.add_argument('--max-runs', type=int, help='最大运行次数（直接运行模式）')
@@ -341,6 +429,14 @@ Agent 文件：
         parser_zh.add_argument('--agent-dir', type=str, action='append', help='包含 agents 的目录（可指定多次）。覆盖 LOCAL_AGENTS_DIR 环境变量。')
         parser_zh.add_argument('--agent-file', type=str, action='append', help='单个 agent 文件路径（Python .py 或 Markdown .md，可指定多次）。')
         parser_zh.add_argument('--skill-path', type=str, action='append', help='技能源路径（本地目录或 GitHub URL，可指定多次）。覆盖 SKILLS_PATH 环境变量。')
+        parser_zh.add_argument('--http', action='store_true', help='启动 HTTP 服务器（用于 serve 命令）')
+        parser_zh.add_argument('--http-host', type=str, default='0.0.0.0', help='HTTP 服务器主机（默认：0.0.0.0）')
+        parser_zh.add_argument('--http-port', type=int, default=8000, help='HTTP 服务器端口（默认：8000）')
+        parser_zh.add_argument('--mcp', action='store_true', help='启动 MCP 服务器（用于 serve 命令）')
+        parser_zh.add_argument('--mcp-name', type=str, default='AWorldAgent', help='MCP 服务器名称（默认：AWorldAgent）')
+        parser_zh.add_argument('--mcp-transport', type=str, choices=['stdio', 'sse', 'streamable-http'], default='stdio', help='MCP 传输类型：stdio、sse 或 streamable-http（默认：stdio）')
+        parser_zh.add_argument('--mcp-host', type=str, default='0.0.0.0', help='MCP 服务器主机（用于 SSE/streamable-http 传输，默认：0.0.0.0）')
+        parser_zh.add_argument('--mcp-port', type=int, default=8001, help='MCP 服务器端口（用于 SSE/streamable-http 传输，默认：8001）')
         parser_zh.print_help()
         return
     
@@ -379,6 +475,28 @@ Agent 文件：
             cli.display_agents(all_agents)
         else:
             print("❌ No agents found from any source.")
+        return
+    
+    # Handle 'serve' command: start HTTP and/or MCP servers
+    if args.command == "serve":
+        if not args.http and not args.mcp:
+            print("❌ Error: At least one of --http or --mcp must be specified for serve command")
+            parser.print_help()
+            return
+        
+        asyncio.run(_run_serve_mode(
+            http=args.http,
+            http_host=args.http_host,
+            http_port=args.http_port,
+            mcp=args.mcp,
+            mcp_name=args.mcp_name,
+            mcp_transport=args.mcp_transport,
+            mcp_host=args.mcp_host,
+            mcp_port=args.mcp_port,
+            remote_backends=args.remote_backend,
+            local_dirs=args.agent_dir,
+            agent_files=args.agent_file
+        ))
         return
 
     # Handle direct run mode (参考 continuous-claude)
@@ -460,6 +578,111 @@ async def _run_interactive_mode(
         pass
     finally:
         await runtime.stop()
+
+
+async def _run_serve_mode(
+    http: bool = False,
+    http_host: str = "0.0.0.0",
+    http_port: int = 8000,
+    mcp: bool = False,
+    mcp_name: str = "AWorldAgent",
+    mcp_transport: str = "stdio",
+    mcp_host: str = "0.0.0.0",
+    mcp_port: int = 8001,
+    remote_backends: Optional[list[str]] = None,
+    local_dirs: Optional[list[str]] = None,
+    agent_files: Optional[list[str]] = None
+) -> None:
+    """
+    Run server mode: start HTTP and/or MCP servers.
+    
+    Args:
+        http: Whether to start HTTP server
+        http_host: HTTP server host
+        http_port: HTTP server port
+        mcp: Whether to start MCP server
+        mcp_name: MCP server name
+        mcp_transport: MCP transport type (stdio, sse, or streamable-http)
+        mcp_host: MCP server host (for SSE/streamable-http)
+        mcp_port: MCP server port (for SSE/streamable-http)
+        remote_backends: Optional list of remote backend URLs
+        local_dirs: Optional list of local agent directories
+        agent_files: Optional list of individual agent file paths
+    """
+    # Load individual agent files first if provided
+    if agent_files:
+        from .core.loader import init_agent_file
+        for agent_file in agent_files:
+            try:
+                init_agent_file(agent_file)
+            except Exception as e:
+                print(f"⚠️ Failed to load agent file {agent_file}: {e}")
+    
+    # Load agents to ensure they are registered
+    print("🔄 Loading agents...")
+    all_agents = await load_all_agents(
+        remote_backends=remote_backends,
+        local_dirs=local_dirs,
+        agent_files=agent_files
+    )
+    
+    if all_agents:
+        print(f"✅ Loaded {len(all_agents)} agent(s): {', '.join([a.name for a in all_agents])}")
+    else:
+        print("⚠️ No agents loaded. Servers will start but may not have any agents available.")
+    
+    # Import protocols
+    from .protocal.http import HttpProtocol
+    from .protocal.mcp import McpProtocol
+    
+    protocols = []
+    
+    # Create HTTP protocol if requested
+    if http:
+        http_protocol = HttpProtocol(
+            host=http_host,
+            port=http_port,
+            title="AWorld Agent Server",
+            version="1.0.0"
+        )
+        protocols.append(http_protocol)
+        print(f"🌐 HTTP server will start on http://{http_host}:{http_port}")
+    
+    # Create MCP protocol if requested
+    if mcp:
+        mcp_kwargs = {
+            "name": mcp_name,
+            "transport": mcp_transport
+        }
+        if mcp_transport in ["sse", "streamable-http"]:
+            mcp_kwargs["host"] = mcp_host
+            mcp_kwargs["port"] = mcp_port
+            print(f"📡 MCP server will start in {mcp_transport} mode on {mcp_host}:{mcp_port}")
+        else:
+            print(f"📡 MCP server will start in {mcp_transport} mode")
+        
+        mcp_protocol = McpProtocol(**mcp_kwargs)
+        protocols.append(mcp_protocol)
+    
+    if not protocols:
+        print("❌ Error: No protocols to start")
+        return
+    
+    # Start all protocols concurrently
+    print("\n🚀 Starting servers...")
+    print("Press Ctrl+C to stop all servers\n")
+    
+    try:
+        # Start all protocols
+        start_tasks = [protocol.start() for protocol in protocols]
+        await asyncio.gather(*start_tasks)
+    except KeyboardInterrupt:
+        print("\n\n🛑 Shutting down servers...")
+    finally:
+        # Stop all protocols
+        stop_tasks = [protocol.stop() for protocol in protocols]
+        await asyncio.gather(*stop_tasks, return_exceptions=True)
+        print("✅ All servers stopped")
 
 
 async def _run_direct_mode(
