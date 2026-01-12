@@ -522,7 +522,7 @@ async def mcp_tool_desc_transform_v2(
             
             # 2. If no cache exists, create a new instance using get_server_instance
             if not server:
-                server = await get_server_instance(
+                server, env_session_id = await get_server_instance(
                     server_name=server_name,
                     mcp_config=mcp_config,
                     context=context,
@@ -561,7 +561,7 @@ async def mcp_tool_desc_transform_v2(
                         del server_instances[server_name]
                     
                     # Try to recreate the instance
-                    server = await get_server_instance(
+                    server, env_session_id = await get_server_instance(
                         server_name=server_name,
                         mcp_config=mcp_config,
                         context=context,
