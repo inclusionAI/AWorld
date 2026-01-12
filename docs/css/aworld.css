@@ -549,35 +549,40 @@
 }
 
 /* ============================================
-   Code Blocks - Enhanced Letta Style
+   Code Blocks - Letta Style with Language Indicator
    ============================================ */
+/* Inline code */
 .md-typeset code {
-  background: var(--md-code-bg-color);
+  background: rgba(139, 92, 246, 0.1);
   color: var(--aw-accent);
   font-family: var(--md-code-font);
   font-size: 0.875em;
-  padding: 0.2em 0.4em;
+  padding: 0.15em 0.4em;
   border-radius: var(--aw-radius-sm);
-  border: 1px solid var(--aw-border-light);
+  border: 1px solid rgba(139, 92, 246, 0.2);
   font-weight: 500;
 }
 
+/* Code block container */
 .md-typeset pre {
-  background: var(--md-code-bg-color);
+  position: relative;
+  background: #1e293b;
   border: 1px solid var(--aw-border);
   border-radius: var(--aw-radius-lg);
-  box-shadow: var(--aw-shadow);
-  padding: 1.25rem;
-  overflow-x: auto;
+  box-shadow: var(--aw-shadow-md);
+  padding: 0;
+  overflow: hidden;
   margin: 1.5rem 0;
 }
 
 .md-typeset pre code {
   background: transparent;
   border: none;
-  padding: 0;
-  color: var(--md-code-fg-color);
+  padding: 1.25rem;
+  color: #e2e8f0;
   font-weight: 400;
+  display: block;
+  overflow-x: auto;
 }
 
 .md-typeset pre > code {
@@ -585,9 +590,93 @@
   line-height: 1.6;
 }
 
+/* Python syntax highlighting enhancements */
+.md-typeset pre code .hljs-keyword,
+.md-typeset pre code .hljs-built_in {
+  color: #c792ea;
+  font-weight: 500;
+}
+
+.md-typeset pre code .hljs-string {
+  color: #c3e88d;
+}
+
+.md-typeset pre code .hljs-number {
+  color: #f78c6c;
+}
+
+.md-typeset pre code .hljs-comment {
+  color: #697098;
+  font-style: italic;
+}
+
+.md-typeset pre code .hljs-function,
+.md-typeset pre code .hljs-title {
+  color: #82aaff;
+}
+
+.md-typeset pre code .hljs-params {
+  color: #eeffff;
+}
+
+.md-typeset pre code .hljs-class {
+  color: #ffcb6b;
+}
+
+.md-typeset pre code .hljs-attr,
+.md-typeset pre code .hljs-variable {
+  color: #f07178;
+}
+
+/* Language indicator badge */
+.md-typeset .highlight::before {
+  content: attr(data-lang);
+  position: absolute;
+  top: 0.75rem;
+  right: 1rem;
+  padding: 0.25rem 0.625rem;
+  background: rgba(59, 130, 246, 0.15);
+  color: var(--aw-primary-light);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: var(--aw-radius-sm);
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-family: var(--md-code-font);
+  z-index: 1;
+}
+
+/* Python specific */
+.md-typeset .highlight[data-lang="python"]::before,
+.md-typeset .highlight[data-lang="py"]::before {
+  content: "Python";
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border-color: rgba(59, 130, 246, 0.3);
+}
+
+/* Shell/Bash */
+.md-typeset .highlight[data-lang="bash"]::before,
+.md-typeset .highlight[data-lang="shell"]::before {
+  content: "Shell";
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+/* JSON */
+.md-typeset .highlight[data-lang="json"]::before {
+  content: "JSON";
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
 /* Code block with title */
 .md-typeset .highlight {
   margin: 1.5rem 0;
+  position: relative;
 }
 
 .md-typeset .highlighttable {
@@ -974,6 +1063,20 @@
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre {
+  background: #0f172a;
+  border-color: #334155;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code {
+  color: #e2e8f0;
+}
+
+[data-md-color-scheme="slate"] .md-typeset code {
+  background: rgba(139, 92, 246, 0.15);
+  border-color: rgba(139, 92, 246, 0.25);
 }
 
 [data-md-color-scheme="slate"] .aw-hero {
