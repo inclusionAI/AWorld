@@ -121,7 +121,7 @@ class ModelConfig(BaseConfig):
     llm_provider: str = "openai"
     llm_model_name: str = None
     llm_temperature: float = 1.
-    llm_base_url: str = None
+    llm_base_url: str = "https://api.openai.com/v1"
     llm_api_key: str = None
     llm_client_type: ClientType = ClientType.SDK
     llm_sync_enabled: bool = True
