@@ -396,7 +396,8 @@ async def mcp_tool_desc_transform_v2(
         server_instances: Dict[str, Any] = None,
         black_tool_actions: Dict[str, List[str]] = None,
         sandbox_id: Optional[str] = None,
-        tool_actions: Optional[List[str]] = None
+        tool_actions: Optional[List[str]] = None,
+        server_instances_session: Optional[Dict[str, Any]] = None
 ) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
@@ -517,8 +518,10 @@ async def mcp_tool_desc_transform_v2(
             
             # 1. Prioritize using cached server instances (consistent with call_tool)
             server = None
+            env_session_id = None
             if server_instances and server_name in server_instances:
                 server = server_instances.get(server_name)
+                env_session_id = server_instances_session.get(server_name)
             
             # 2. If no cache exists, create a new instance using get_server_instance
             if not server:
@@ -537,6 +540,8 @@ async def mcp_tool_desc_transform_v2(
                 if server_instances is not None:
                     server_instances[server_name] = server
                     logger.info(f"Created and cached new server instance for {server_name}")
+                if env_session_id:
+                    server_instances_session[server_name] = env_session_id
             
             # 4. Use server instance to get tool list (consistent with call_tool: use first, cleanup on failure)
             if server:
@@ -570,6 +575,8 @@ async def mcp_tool_desc_transform_v2(
                     if server:
                         if server_instances is not None:
                             server_instances[server_name] = server
+                        if env_session_id:
+                            server_instances_session[server_name] = env_session_id
                         try:
                             _mcp_openai_tools = await run(
                                 mcp_servers=[server],
