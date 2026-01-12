@@ -42,9 +42,16 @@ nav:
     Streaming Response: Get Start/Streaming Response.md
 - Agents:
     Build Agent: Agents/Build Agent.md
+    Custom Agent: Agents/Custom Agent.md
     Build Multi-Agent System(Mas): Agents/Build Multi-Agent System(MAS).md
     Build Workflow: Agents/Build WorkFlow.md
-    Custom Agent: Agents/Custom Agent.md
+    Context: Agents/Context.md
+    Memory: Agents/Memory.md
+    Runtime:
+      Custom Runner: Agents/Runtime/Custom Runner.md
+      Hooks: Agents/Runtime/Hooks.md
+      Overview: Agents/Runtime/Overview.md
+    Trace: Agents/Trace.md
 - Environment:
     Overview: Environment/Overview.md
     Env Client: Environment/Env Client.md
@@ -52,11 +59,3 @@ nav:
 - Training:
     Evaluation: Training/Evaluation.md
     Trainer: Training/Trainer.md
-- Key Components:
-    Context: Key Components/Context.md
-    Memory: Key Components/Memory.md
-    Runtime:
-      Custom Runner: Key Components/Runtime/Custom Runner.md
-      Hooks: Key Components/Runtime/Hooks.md
-      Overview: Key Components/Runtime/Overview.md
-    Trace: Key Components/Trace.md
