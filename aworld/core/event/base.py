@@ -240,7 +240,6 @@ class BackgroundTaskMessage(Message[Any]):
     background_task_id: str = field(default=None)
     agent_id: str = field(default=None)
     agent_name: str = field(default=None)
-    # priority: int = field(default=-3)
 
 
 class Messageable(object):

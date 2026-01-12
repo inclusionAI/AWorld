@@ -335,7 +335,6 @@ class DefaultAgentHandler(AgentHandler):
                         headers=message.headers
                     )
                 else:
-                    # todo: not finished, loop current agent
                     logger.warn(f"{agent_name} not finished, will wait background_task finish and loop it.")
                     yield Message(
                         category="mock",
@@ -353,7 +352,7 @@ class DefaultAgentHandler(AgentHandler):
                     yield Message(
                         category=Constants.AGENT,
                         # default use string as content
-                        payload=Observation(content="Background_tasks results received ."),
+                        payload=Observation(content="Task is not finished, keep working on it."),
                         sender=agent_name,
                         session_id=session_id,
                         receiver=agent_name,
