@@ -418,9 +418,9 @@
    Typography - Letta Style (Standard Sizes)
    ============================================ */
 .md-typeset {
-  font-size: 1rem;
-  line-height: 1.7;
-  color: var(--aw-text-secondary);
+  font-size: 1.0625rem;
+  line-height: 1.75;
+  color: #24292e;
 }
 
 .md-typeset h1 {
@@ -563,13 +563,13 @@
   font-weight: 500;
 }
 
-/* Code block container */
+/* Code block container - Letta Light Style */
 .md-typeset pre {
   position: relative;
-  background: #1e293b;
-  border: 1px solid var(--aw-border);
+  background: #f8f9fa;
+  border: 1px solid #e1e4e8;
   border-radius: var(--aw-radius-lg);
-  box-shadow: var(--aw-shadow-md);
+  box-shadow: var(--aw-shadow-sm);
   padding: 0;
   overflow: hidden;
   margin: 1.5rem 0;
@@ -579,65 +579,133 @@
   background: transparent;
   border: none;
   padding: 1.25rem;
-  color: #e2e8f0;
+  color: #24292e;
   font-weight: 400;
   display: block;
   overflow-x: auto;
+  font-size: 0.9em;
+  line-height: 1.6;
 }
 
 .md-typeset pre > code {
   display: block;
-  line-height: 1.6;
 }
 
-/* Python syntax highlighting enhancements */
+/* Python syntax highlighting - Letta Style (Pygments) */
+/* Keywords: from, import, def, class, etc. */
+.md-typeset pre code .k,
+.md-typeset pre code .kn,
+.md-typeset pre code .kd {
+  color: #d73a49;
+  font-weight: 500;
+}
+
+/* Strings */
+.md-typeset pre code .s,
+.md-typeset pre code .s1,
+.md-typeset pre code .s2 {
+  color: #0366d6;
+}
+
+/* Numbers */
+.md-typeset pre code .m,
+.md-typeset pre code .mi,
+.md-typeset pre code .mf {
+  color: #005cc5;
+}
+
+/* Comments */
+.md-typeset pre code .c,
+.md-typeset pre code .c1,
+.md-typeset pre code .cm {
+  color: #6a737d;
+  font-style: normal;
+}
+
+/* Function names */
+.md-typeset pre code .nf,
+.md-typeset pre code .fm {
+  color: #6f42c1;
+}
+
+/* Parameters and variables */
+.md-typeset pre code .n,
+.md-typeset pre code .na,
+.md-typeset pre code .nb {
+  color: #e36209;
+}
+
+/* Class names */
+.md-typeset pre code .nc {
+  color: #6f42c1;
+}
+
+/* Built-in names */
+.md-typeset pre code .nn {
+  color: #24292e;
+}
+
+/* Operators */
+.md-typeset pre code .o {
+  color: #d73a49;
+}
+
+/* Also support highlight.js for compatibility */
 .md-typeset pre code .hljs-keyword,
 .md-typeset pre code .hljs-built_in {
-  color: #c792ea;
+  color: #d73a49;
   font-weight: 500;
 }
 
 .md-typeset pre code .hljs-string {
-  color: #c3e88d;
+  color: #0366d6;
 }
 
 .md-typeset pre code .hljs-number {
-  color: #f78c6c;
+  color: #005cc5;
 }
 
 .md-typeset pre code .hljs-comment {
-  color: #697098;
-  font-style: italic;
+  color: #6a737d;
+  font-style: normal;
 }
 
 .md-typeset pre code .hljs-function,
 .md-typeset pre code .hljs-title {
-  color: #82aaff;
+  color: #6f42c1;
 }
 
 .md-typeset pre code .hljs-params {
-  color: #eeffff;
+  color: #e36209;
 }
 
 .md-typeset pre code .hljs-class {
-  color: #ffcb6b;
+  color: #6f42c1;
 }
 
 .md-typeset pre code .hljs-attr,
 .md-typeset pre code .hljs-variable {
-  color: #f07178;
+  color: #e36209;
 }
 
-/* Language indicator badge */
+.md-typeset pre code .hljs-name {
+  color: #22863a;
+}
+
+.md-typeset pre code .hljs-literal {
+  color: #005cc5;
+}
+
+/* Language indicator badge - Letta Style */
 .md-typeset .highlight::before {
   content: attr(data-lang);
   position: absolute;
   top: 0.75rem;
   right: 1rem;
   padding: 0.25rem 0.625rem;
-  background: rgba(59, 130, 246, 0.15);
-  color: var(--aw-primary-light);
-  border: 1px solid rgba(59, 130, 246, 0.3);
+  background: #ffffff;
+  color: #586069;
+  border: 1px solid #d1d5da;
   border-radius: var(--aw-radius-sm);
   font-size: 0.75rem;
   font-weight: 600;
@@ -645,32 +713,33 @@
   letter-spacing: 0.05em;
   font-family: var(--md-code-font);
   z-index: 1;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
 }
 
 /* Python specific */
 .md-typeset .highlight[data-lang="python"]::before,
 .md-typeset .highlight[data-lang="py"]::before {
   content: "Python";
-  background: rgba(59, 130, 246, 0.15);
-  color: #60a5fa;
-  border-color: rgba(59, 130, 246, 0.3);
+  background: #ffffff;
+  color: #586069;
+  border-color: #d1d5da;
 }
 
 /* Shell/Bash */
 .md-typeset .highlight[data-lang="bash"]::before,
 .md-typeset .highlight[data-lang="shell"]::before {
   content: "Shell";
-  background: rgba(16, 185, 129, 0.15);
-  color: #34d399;
-  border-color: rgba(16, 185, 129, 0.3);
+  background: #ffffff;
+  color: #586069;
+  border-color: #d1d5da;
 }
 
 /* JSON */
 .md-typeset .highlight[data-lang="json"]::before {
   content: "JSON";
-  background: rgba(245, 158, 11, 0.15);
-  color: #fbbf24;
-  border-color: rgba(245, 158, 11, 0.3);
+  background: #ffffff;
+  color: #586069;
+  border-color: #d1d5da;
 }
 
 /* Code block with title */
@@ -1066,12 +1135,63 @@
 }
 
 [data-md-color-scheme="slate"] .md-typeset pre {
-  background: #0f172a;
+  background: #1e293b;
   border-color: #334155;
 }
 
 [data-md-color-scheme="slate"] .md-typeset pre code {
   color: #e2e8f0;
+}
+
+/* Dark mode syntax highlighting */
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-keyword,
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-built_in {
+  color: #ff7b72;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-string {
+  color: #a5d6ff;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-number {
+  color: #79c0ff;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-comment {
+  color: #8b949e;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-function,
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-title {
+  color: #d2a8ff;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-params {
+  color: #ffa657;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-class {
+  color: #d2a8ff;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-attr,
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-variable {
+  color: #ffa657;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-name {
+  color: #7ee787;
+}
+
+[data-md-color-scheme="slate"] .md-typeset pre code .hljs-literal {
+  color: #79c0ff;
+}
+
+/* Dark mode language badge */
+[data-md-color-scheme="slate"] .md-typeset .highlight::before {
+  background: #0d1117;
+  color: #8b949e;
+  border-color: #30363d;
 }
 
 [data-md-color-scheme="slate"] .md-typeset code {
