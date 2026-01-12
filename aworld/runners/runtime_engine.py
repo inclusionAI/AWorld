@@ -5,7 +5,6 @@ import inspect
 import os
 import asyncio
 import traceback
-from concurrent.futures import Future
 from concurrent.futures.process import ProcessPoolExecutor
 from types import MethodType
 from typing import List, Callable, Any, Dict
@@ -101,17 +100,25 @@ class LocalRuntime(RuntimeEngine):
                 else:
                     sync_funcs.append(func)
 
-            for func in sync_funcs:
+            for idx, func in enumerate(sync_funcs):
                 try:
                     res = func(*args, **kwargs)
-                    results[res.id] = res
+                    if res:
+                        if hasattr(res, 'id'):
+                            results[res.id] = res
+                        else:
+                            results[f"{idx}"] = res
                 except Exception as e:
                     logger.error(f"⚠️ Task execution failed: {e}, traceback: {traceback.format_exc()}")
                     raise
 
             try:
-                for result in await asyncio.gather(*coroutine_funcs):
-                    results[result.id] = result
+                for idx, result in enumerate(await asyncio.gather(*coroutine_funcs)):
+                    if result:
+                        if hasattr(result, 'id'):
+                            results[result.id] = result
+                        else:
+                            results[f"{idx}"] = result
             except Exception as e:
                 logger.error(f"⚠️ Task execution failed: {e}, traceback: {traceback.format_exc()}")
                 raise
@@ -135,11 +142,14 @@ class LocalRuntime(RuntimeEngine):
 
                 # Wait for all futures to complete with timeout
                 timeout = self.conf.get('timeout', 300)
-                for future in futures:
+                for idx, future in enumerate(futures):
                     try:
                         res = future.result(timeout=timeout)  # 5 minute timeout per task
-                        if res and hasattr(res, 'id'):
-                            results[res.id] = res
+                        if res:
+                            if hasattr(res, 'id'):
+                                results[res.id] = res
+                            else:
+                                results[f"{idx}"] = res
                     except TimeoutError:
                         logger.error(f"Task execution timed out after {timeout} seconds")
                     except Exception as e:
@@ -202,7 +212,13 @@ class SparkRuntime(RuntimeEngine):
             lambda func: RuntimeEngine.func_wrapper(func, *re_args, **kwargs))
 
         res_list = res_rdd.collect()
-        results = {res.id: res for res in res_list}
+
+        results = {}
+        for idx, res in enumerate(res_list):
+            if hasattr(res, 'id'):
+                results[res.id] = res
+            else:
+                results[f"{idx}"] = res
         return results
 
 
@@ -241,7 +257,14 @@ class RayRuntime(RuntimeEngine):
 
         ray_map = lambda func, fn: [func.remote(x, *y) for x, *y in zip(fn, *params)]
         res_list = self.runtime.get(ray_map(fn_wrapper, funcs))
-        return {res.id: res for res in res_list}
+
+        results = {}
+        for idx, res in enumerate(res_list):
+            if hasattr(res, 'id'):
+                results[res.id] = res
+            else:
+                results[f"{idx}"] = res
+        return results
 
 
 RUNTIME: Dict[str, RuntimeEngine] = {}
