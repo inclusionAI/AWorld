@@ -346,7 +346,7 @@
 }
 
 /* ============================================
-   Tabs Navigation
+   Tabs Navigation - Force Visibility
    ============================================ */
 .md-tabs {
   background: var(--aw-background);
@@ -354,9 +354,10 @@
   box-shadow: var(--aw-shadow-sm);
 }
 
+/* Inactive tabs - must be ALWAYS visible */
 .md-tabs__link {
-  color: var(--aw-text-primary);
-  font-weight: 600;
+  color: var(--aw-text-primary) !important;
+  font-weight: 600 !important;
   font-size: 0.875rem;
   transition: all 0.2s ease;
   opacity: 1 !important;
@@ -365,24 +366,25 @@
 }
 
 .md-tabs__link:hover {
-  color: var(--aw-primary);
-  background-color: rgba(59, 130, 246, 0.08);
+  color: var(--aw-primary) !important;
+  background-color: rgba(59, 130, 246, 0.08) !important;
   opacity: 1 !important;
 }
 
+/* Active tab - highly visible */
 .md-tabs__link--active {
   color: #ffffff !important;
-  font-weight: 700;
+  font-weight: 700 !important;
   background: var(--aw-gradient-primary) !important;
-  border-bottom: 3px solid var(--aw-primary-dark);
+  border-bottom: 3px solid var(--aw-primary-dark) !important;
   opacity: 1 !important;
   visibility: visible !important;
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3) !important;
 }
 
 .md-tabs__link--active:hover {
   background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%) !important;
-  box-shadow: 0 2px 12px rgba(59, 130, 246, 0.4);
+  box-shadow: 0 2px 12px rgba(59, 130, 246, 0.4) !important;
 }
 
 /* ============================================
@@ -913,25 +915,26 @@
 }
 
 [data-md-color-scheme="slate"] .md-tabs__link {
-  color: var(--aw-text-primary);
-  font-weight: 600;
+  color: var(--aw-text-primary) !important;
+  font-weight: 600 !important;
 }
 
 [data-md-color-scheme="slate"] .md-tabs__link:hover {
-  color: var(--aw-primary-light);
-  background-color: rgba(96, 165, 250, 0.1);
+  color: var(--aw-primary-light) !important;
+  background-color: rgba(96, 165, 250, 0.1) !important;
 }
 
 [data-md-color-scheme="slate"] .md-tabs__link--active {
   color: #ffffff !important;
+  font-weight: 700 !important;
   background: var(--aw-gradient-primary) !important;
-  border-bottom-color: var(--aw-primary-light);
-  box-shadow: 0 2px 8px rgba(96, 165, 250, 0.4);
+  border-bottom-color: var(--aw-primary-light) !important;
+  box-shadow: 0 2px 8px rgba(96, 165, 250, 0.4) !important;
 }
 
 [data-md-color-scheme="slate"] .md-tabs__link--active:hover {
   background: linear-gradient(135deg, #60a5fa 0%, #a78bfa 100%) !important;
-  box-shadow: 0 2px 12px rgba(96, 165, 250, 0.5);
+  box-shadow: 0 2px 12px rgba(96, 165, 250, 0.5) !important;
 }
 
 [data-md-color-scheme="slate"] .md-typeset h1 {
