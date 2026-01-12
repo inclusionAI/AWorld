@@ -388,20 +388,20 @@
 }
 
 /* ============================================
-   Typography - Letta Style
+   Typography - Letta Style (Updated Font Sizes)
    ============================================ */
 .md-typeset {
-  font-size: 1rem;
-  line-height: 1.7;
+  font-size: 1.0625rem;
+  line-height: 1.75;
   color: var(--aw-text-secondary);
 }
 
 .md-typeset h1 {
   color: var(--aw-text-primary);
-  font-size: 2.5rem;
+  font-size: 2.75rem;
   font-weight: 800;
   letter-spacing: -0.03em;
-  line-height: 1.2;
+  line-height: 1.15;
   margin-bottom: 1.5rem;
   background: var(--aw-gradient-primary);
   -webkit-background-clip: text;
@@ -411,7 +411,7 @@
 
 .md-typeset h2 {
   color: var(--aw-text-primary);
-  font-size: 1.875rem;
+  font-size: 2rem;
   font-weight: 700;
   letter-spacing: -0.025em;
   margin-top: 2.5rem;
@@ -422,7 +422,7 @@
 
 .md-typeset h3 {
   color: var(--aw-text-primary);
-  font-size: 1.5rem;
+  font-size: 1.625rem;
   font-weight: 600;
   letter-spacing: -0.02em;
   margin-top: 2rem;
@@ -431,7 +431,7 @@
 
 .md-typeset h4 {
   color: var(--aw-text-primary);
-  font-size: 1.25rem;
+  font-size: 1.375rem;
   font-weight: 600;
   margin-top: 1.5rem;
   margin-bottom: 0.5rem;
@@ -440,6 +440,7 @@
 .md-typeset h5,
 .md-typeset h6 {
   color: var(--aw-text-primary);
+  font-size: 1.125rem;
   font-weight: 600;
   margin-top: 1.25rem;
 }
@@ -447,6 +448,8 @@
 .md-typeset p {
   margin-bottom: 1.25rem;
   color: var(--aw-text-secondary);
+  font-size: 1.0625rem;
+  line-height: 1.75;
 }
 
 .md-typeset strong {
@@ -471,6 +474,8 @@
 .md-typeset ol {
   margin-bottom: 1.25rem;
   padding-left: 1.5rem;
+  font-size: 1.0625rem;
+  line-height: 1.75;
 }
 
 .md-typeset li {
