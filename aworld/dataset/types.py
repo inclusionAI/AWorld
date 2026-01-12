@@ -39,7 +39,7 @@ class TrajectoryAction(BaseModel):
     """
     A: Decision & Execution
     """
-    content: Optional[str] = Field(default=None, description="Assistant message content")
+    content: Optional[Any] = Field(default=None, description="Assistant message content")
     tool_calls: List[Dict[str, Any]] = Field(default_factory=list, description="Tool calls")
     is_agent_finished: bool = Field(default=False, description="Is agent finished")
     ext_info: Dict[str, Any] = Field(default_factory=dict, description="Extra information")

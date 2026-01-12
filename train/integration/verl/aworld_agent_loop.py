@@ -20,8 +20,8 @@ from verl.experimental.agent_loop.agent_loop import AgentLoopBase, AgentLoopOutp
 
 from aworld.trace.base import Span
 from aworld.trace.span_cosumer import register_span_consumer, SpanConsumer
-from train.adapter.common import encode_messages, turns_num
-from train.adapter.verl.verl_provider import VerlProvider
+from train.integration.common import encode_messages, turns_num
+from train.integration.verl.verl_provider import VerlProvider
 
 
 @register_span_consumer()

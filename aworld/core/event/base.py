@@ -123,7 +123,7 @@ class Message(Generic[DataType]):
 
     @property
     def task_id(self):
-        return self.context.task_id
+        return self.context.get_task().id if self.context.get_task() else self.context.task_id
 
     @property
     def context(self) -> Context:
@@ -240,7 +240,6 @@ class BackgroundTaskMessage(Message[Any]):
     background_task_id: str = field(default=None)
     agent_id: str = field(default=None)
     agent_name: str = field(default=None)
-    # priority: int = field(default=-3)
 
 
 class Messageable(object):
