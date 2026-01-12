@@ -355,8 +355,8 @@
 }
 
 .md-tabs__link {
-  color: var(--aw-text-secondary);
-  font-weight: 500;
+  color: var(--aw-text-primary);
+  font-weight: 600;
   font-size: 0.875rem;
   transition: all 0.2s ease;
   opacity: 1 !important;
@@ -913,7 +913,8 @@
 }
 
 [data-md-color-scheme="slate"] .md-tabs__link {
-  color: var(--aw-text-secondary);
+  color: var(--aw-text-primary);
+  font-weight: 600;
 }
 
 [data-md-color-scheme="slate"] .md-tabs__link:hover {
