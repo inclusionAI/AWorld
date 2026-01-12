@@ -7,16 +7,13 @@ from typing import List
 import yaml
 
 docs = "docs"
-black_keys = ["Index"]
+black_keys = ["Index", "docs_zh", "DESIGN_SYSTEM"]
 black_values = ["index.md"]
 file_priority = {"Get Start": ["Overview", "Quick start", "Core capabilities"],
                  "Runtime": ["Overview"],
-                 "Environment": ["Overview", "Env Client", "Advanced Capabilities"],
-                 "环境": ["总览（Overview）", "环境客户端", "高级能力"]}
+                 "Environment": ["Overview", "Env Client", "Advanced Capabilities"]}
 file_mapping = {"Hitl": "HITL"}
 dir_order = ["Get Start", "Agents", "Environment", "Training", "Key Components"]
-
-zh_v = ["开始", "智能体", "环境", "训练", "关键组件"]
 
 
 def scan_path(path: str) -> List[dict]:
@@ -34,6 +31,10 @@ def scan_path(path: str) -> List[dict]:
         if k in black_keys and v in black_values:
             continue
 
+        # Skip docs_zh directory entirely
+        if k == "docs_zh":
+            continue
+
         # files in dir
         final_map = OrderedDict()
         for file in file_priority.get(k, []):
@@ -41,13 +42,6 @@ def scan_path(path: str) -> List[dict]:
                 final_map[file_mapping.get(file, file)] = v[file]
                 v.pop(file)
         final_map.update(v)
-
-        final_v = OrderedDict()
-        if k == 'docs_zh':
-            for d in zh_v:
-                final_v[d] = v[d]
-        if final_v:
-            final_map = final_v
 
         res.append({k: dict(final_map)})
     return res
@@ -60,7 +54,14 @@ def scan(path: str) -> dict:
         if name.startswith("."):
             continue
 
+        # Skip blacklisted items
+        if name in black_keys or name.startswith("DESIGN_"):
+            continue
+
         if os.path.isdir(p):
+            # Skip docs_zh directory
+            if name == "docs_zh":
+                continue
             children = scan(p)
             if children:
                 items[name] = children

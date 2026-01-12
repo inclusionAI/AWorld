@@ -1,0 +1,62 @@
+site_name: AWorld Docs
+site_url: https://github.com/inclusionAI/AWorld
+repo_url: https://github.com/inclusionAI/AWorld
+edit_uri: tree/main/docs/
+copyright: © Copyright 2025 inclusionAI AWorld Team.
+extra_css:
+- css/aworld.css
+extra_javascript:
+- js/hide-home-edit.js
+- js/aworld-enhancements.js
+theme:
+  name: material
+  language: en
+  features:
+  - navigation.instant
+  - navigation.tracking
+  - navigation.tabs
+  - toc.follow
+  - content.code.copy
+  - content.code.annotate
+  - content.action.edit
+  - header.autohide
+  palette:
+  - media: '(prefers-color-scheme: light)'
+    scheme: default
+    primary: blue
+    accent: deep purple
+  - media: '(prefers-color-scheme: dark)'
+    scheme: slate
+    primary: blue
+    accent: deep purple
+  font:
+    text: Inter
+    code: JetBrains Mono
+nav:
+- Get Start:
+    Overview: Get Start/Overview.md
+    Core Capabilities: Get Start/Core Capabilities.md
+    Hitl: Get Start/HITL.md
+    Parallel Tasks: Get Start/Parallel Tasks.md
+    Quick Start: Get Start/Quick Start.md
+    Streaming Response: Get Start/Streaming Response.md
+- Agents:
+    Build Agent: Agents/Build Agent.md
+    Build Multi-Agent System(Mas): Agents/Build Multi-Agent System(MAS).md
+    Build Workflow: Agents/Build WorkFlow.md
+    Custom Agent: Agents/Custom Agent.md
+- Environment:
+    Overview: Environment/Overview.md
+    Env Client: Environment/Env Client.md
+    Advanced Capabilities: Environment/Advanced Capabilities.md
+- Training:
+    Evaluation: Training/Evaluation.md
+    Trainer: Training/Trainer.md
+- Key Components:
+    Context: Key Components/Context.md
+    Memory: Key Components/Memory.md
+    Runtime:
+      Custom Runner: Key Components/Runtime/Custom Runner.md
+      Hooks: Key Components/Runtime/Hooks.md
+      Overview: Key Components/Runtime/Overview.md
+    Trace: Key Components/Trace.md
