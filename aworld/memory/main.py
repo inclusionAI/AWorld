@@ -68,14 +68,9 @@ Please read the conversation carefully and extract new information from the conv
 class InMemoryMemoryStore(MemoryStore):
     def __init__(self):
         self.memory_items = []
-        self.pending_memory_items = []
 
     def add(self, memory_item: MemoryItem):
-        if memory_item.memory_type == "pending":
-            memory_item.memory_type = "message"
-            self.pending_memory_items.append(memory_item)
-        else:
-            self.memory_items.append(memory_item)
+        self.memory_items.append(memory_item)
 
     def get(self, memory_id) -> Optional[MemoryItem]:
         return next((item for item in self.memory_items if item.id == memory_id), None)
@@ -99,16 +94,23 @@ class InMemoryMemoryStore(MemoryStore):
         return filtered_items
 
     def load_pending_memory(self, filters: dict = None):
-        filtered_pending_items = [item for item in self.pending_memory_items if self._filter_memory_item(item, filters)]
+        # Filter pending items directly from memory_items
+        filtered_pending_items = [item for item in self.memory_items 
+                                  if item.memory_type == "pending" and self._filter_memory_item(item, filters, allow_pending=True)]
         if filtered_pending_items:
             for item in filtered_pending_items:
                 item.created_at = datetime.now().isoformat()
-                self.memory_items.append(item)
-                self.pending_memory_items.remove(item)
+                item.memory_type = "message"
 
-    def _filter_memory_item(self, memory_item: MemoryItem, filters: dict = None) -> bool:
+    def _filter_memory_item(self, memory_item: MemoryItem, filters: dict = None, allow_pending: bool = False) -> bool:
         if memory_item.deleted:
             return False
+        
+        # Default behavior: exclude pending memories unless explicitly allowed or requested in filters
+        if not allow_pending and memory_item.memory_type == "pending":
+            if not filters or 'memory_type' not in filters:
+                return False
+
         if filters is None:
             return True
         if filters.get('application_id') is not None:

@@ -548,16 +548,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         # Check for pending messages in memory store
         memory = MemoryFactory.instance()
-        # Accessing memory_store.pending_memory_items directly for check
-        if hasattr(memory, 'memory_store') and hasattr(memory.memory_store, 'pending_memory_items'):
-            filters = self._build_memory_filters(self.context)
-            # Filter out pending items for current task
-            pending_items = [item for item in memory.memory_store.pending_memory_items
-                             if memory.memory_store._filter_memory_item(item, filters)]
-            if pending_items:
-                logger.info(f"🧠 [Agent:{self.id()}] Found {len(pending_items)} pending memory items, "
-                            f"holding task execution. Pending content: {pending_items[0]}...")
-                self._finished = False
+        filters = self._build_memory_filters(self.context)
+        filters['memory_type'] = 'pending'
+        pending_items = memory.memory_store.get_all(filters)
+        if pending_items:
+            logger.info(f"🧠 [Agent:{self.id()}] Found {len(pending_items)} pending memory items, "
+                        f"holding task execution. Pending content: {pending_items[0]}...")
+            self._finished = False
         return self._agent_result(
             policy_result,
             policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer,
