@@ -228,15 +228,18 @@
 
 
 /* ============================================
-   Main Content Layout
+   Main Content Layout - Optimized Widths
    ============================================ */
 .md-main__inner {
   margin-top: 0;
   padding-top: 1.5rem;
+  max-width: 1440px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .md-content {
-  max-width: none;
+  max-width: 100%;
 }
 
 .md-content__inner {
@@ -244,13 +247,37 @@
   border-radius: var(--aw-radius-xl);
   box-shadow: var(--aw-shadow-md);
   border: 1px solid var(--aw-border-light);
-  padding: 2.5rem 3rem;
+  padding: 2rem 2.5rem;
   margin: 0 auto 2rem;
+  max-width: 800px;
   transition: box-shadow 0.3s ease;
 }
 
 .md-content__inner:hover {
   box-shadow: var(--aw-shadow-lg);
+}
+
+/* Adjust sidebar widths for better balance */
+.md-sidebar--primary {
+  width: 15rem;
+}
+
+.md-sidebar--secondary {
+  width: 14rem;
+}
+
+@media screen and (min-width: 76.25em) {
+  .md-sidebar--primary {
+    width: 16rem;
+  }
+
+  .md-sidebar--secondary {
+    width: 15rem;
+  }
+
+  .md-content__inner {
+    max-width: 900px;
+  }
 }
 
 /* ============================================
@@ -388,20 +415,20 @@
 }
 
 /* ============================================
-   Typography - Letta Style (Updated Font Sizes)
+   Typography - Letta Style (Standard Sizes)
    ============================================ */
 .md-typeset {
-  font-size: 1.0625rem;
-  line-height: 1.75;
+  font-size: 1rem;
+  line-height: 1.7;
   color: var(--aw-text-secondary);
 }
 
 .md-typeset h1 {
   color: var(--aw-text-primary);
-  font-size: 2.75rem;
+  font-size: 2.25rem;
   font-weight: 800;
   letter-spacing: -0.03em;
-  line-height: 1.15;
+  line-height: 1.2;
   margin-bottom: 1.5rem;
   background: var(--aw-gradient-primary);
   -webkit-background-clip: text;
@@ -411,7 +438,7 @@
 
 .md-typeset h2 {
   color: var(--aw-text-primary);
-  font-size: 2rem;
+  font-size: 1.75rem;
   font-weight: 700;
   letter-spacing: -0.025em;
   margin-top: 2.5rem;
@@ -422,7 +449,7 @@
 
 .md-typeset h3 {
   color: var(--aw-text-primary);
-  font-size: 1.625rem;
+  font-size: 1.375rem;
   font-weight: 600;
   letter-spacing: -0.02em;
   margin-top: 2rem;
@@ -431,7 +458,7 @@
 
 .md-typeset h4 {
   color: var(--aw-text-primary);
-  font-size: 1.375rem;
+  font-size: 1.125rem;
   font-weight: 600;
   margin-top: 1.5rem;
   margin-bottom: 0.5rem;
@@ -440,7 +467,7 @@
 .md-typeset h5,
 .md-typeset h6 {
   color: var(--aw-text-primary);
-  font-size: 1.125rem;
+  font-size: 1rem;
   font-weight: 600;
   margin-top: 1.25rem;
 }
@@ -448,8 +475,8 @@
 .md-typeset p {
   margin-bottom: 1.25rem;
   color: var(--aw-text-secondary);
-  font-size: 1.0625rem;
-  line-height: 1.75;
+  font-size: 1rem;
+  line-height: 1.7;
 }
 
 .md-typeset strong {
@@ -474,8 +501,8 @@
 .md-typeset ol {
   margin-bottom: 1.25rem;
   padding-left: 1.5rem;
-  font-size: 1.0625rem;
-  line-height: 1.75;
+  font-size: 1rem;
+  line-height: 1.7;
 }
 
 .md-typeset li {
