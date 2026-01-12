@@ -135,7 +135,7 @@ Ready to build your first agent? Check out our [Quick Start Guide](Quick%20Start
 For detailed information on each component, explore our comprehensive documentation:
 
 - [Build Your First Agent](../Agents/Build%20Agent.md)
-- [Key Components Overview](../Key%20Components/Runtime/Overview.md)
+- [Runtime Overview](../Agents/Runtime/Overview.md)
 - [Environment Setup](../Environment/Overview.md)
 
 ---

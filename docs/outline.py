@@ -10,10 +10,11 @@ docs = "docs"
 black_keys = ["Index", "docs_zh", "DESIGN_SYSTEM"]
 black_values = ["index.md"]
 file_priority = {"Get Start": ["Overview", "Quick start", "Core capabilities"],
+                 "Agents": ["Build Agent", "Build Multi-Agent System(MAS)", "Build WorkFlow", "Custom Agent"],
                  "Runtime": ["Overview"],
                  "Environment": ["Overview", "Env Client", "Advanced Capabilities"]}
 file_mapping = {"Hitl": "HITL"}
-dir_order = ["Get Start", "Agents", "Environment", "Training", "Key Components"]
+dir_order = ["Get Start", "Agents", "Environment", "Training"]
 
 
 def scan_path(path: str) -> List[dict]:
