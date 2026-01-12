@@ -76,7 +76,8 @@ class McpServers:
                 server_instances=self.server_instances,
                 black_tool_actions=self.black_tool_actions,
                 sandbox_id=sandbox_id,
-                tool_actions=self.tool_actions
+                tool_actions=self.tool_actions,
+                server_instances_session = self.server_instances_session
             )
 
             # Process env_content parameters: remove from schema and save mapping
