@@ -13,12 +13,15 @@ from aworld.core.context.amni import AmniContextConfig, AmniConfigFactory
 from aworld.core.context.base import Context
 
 if TYPE_CHECKING:
+    from aworld.core.agent.base import BaseAgent
     from aworld.agents.llm_agent import Agent
 else:
     # Try to import Agent for runtime type checking
     try:
+        from aworld.core.agent.base import BaseAgent
         from aworld.agents.llm_agent import Agent
     except ImportError:
+        BaseAgent = None
         Agent = None
 
 
@@ -521,7 +524,7 @@ def agent(
             def swarm_wrapper(*args, **kwargs):
                 result = func(*args, **kwargs)
                 # Check if result is an Agent instance, wrap it in Swarm if so
-                if Agent is not None and isinstance(result, Agent):
+                if Agent is not None and isinstance(result, BaseAgent):
                     return Swarm(result)
                 return result
         

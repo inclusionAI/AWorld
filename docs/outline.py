@@ -10,7 +10,9 @@ docs = "docs"
 black_keys = ["Index"]
 black_values = ["index.md"]
 file_priority = {"Get Start": ["Overview", "Quick start", "Core capabilities"],
-                 "Runtime": ["Overview"]}
+                 "Runtime": ["Overview"],
+                 "Environment": ["Overview", "Env Client", "Advanced Capabilities"],
+                 "环境": ["总览（Overview）", "环境客户端", "高级能力"]}
 file_mapping = {"Hitl": "HITL"}
 dir_order = ["Get Start", "Agents", "Environment", "Training", "Key Components"]
 
@@ -64,7 +66,7 @@ def scan(path: str) -> dict:
                 items[name] = children
         elif name.endswith(".md"):
             words = os.path.splitext(name)[0].split('_')
-            key = ' '.join([w.capitalize() for w in words])
+            key = ' '.join([w.title() if w else w for w in words])
             items[key] = os.path.relpath(p, docs).replace(os.sep, "/")
     return items
 

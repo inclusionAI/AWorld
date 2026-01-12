@@ -5,7 +5,7 @@ VERL_TEMPLATE = """
 import uuid
 from typing import Union
 
-from aworld.agents.llm_agent import Agent
+from aworld.agents.llm_agent import Agent, LLMAgent
 from aworld.config import AgentConfig, ConfigDict
 from aworld.core.agent.swarm import Swarm
 from aworld.logs.util import logger
@@ -13,7 +13,7 @@ from {parser_module} import {parser_name}
 
 {agent_import_str}
 {tool_aggregate_func_import_str}
-from train.adapter.verl.aworld_agent_loop import AworldAgentLoop
+from train.integration.verl.aworld_agent_loop import AworldAgentLoop
 
 
 class VerlAgentLoop(AworldAgentLoop):

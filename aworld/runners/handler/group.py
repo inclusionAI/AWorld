@@ -103,7 +103,11 @@ class DefaultGroupHandler(GroupHandler):
                     agent_copy = self.copy_agent(original_agent)
                     con = action.policy_info
                     if action.params and 'content' in action.params:
-                        con = action.params['content']
+                        try:
+                            con = Observation.model_validate(action.params)
+                        except Exception as e:
+                            logger.error(f"DefaultGroupHandler|agent_as_tool|Can not build observation for {agent_name} agent.{e}")
+                            con = action.params["content"]
 
                     if agent_name not in agent_messages:
                         agent_messages[agent_name] = []

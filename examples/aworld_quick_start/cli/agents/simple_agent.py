@@ -4,12 +4,11 @@ Basic Agent example for aworld-cli.
 This demonstrates the minimal setup required to create a single-agent Swarm using the @agent decorator.
 This is the simplest example to get started with aworld-cli, suitable for basic tasks and Q&A scenarios.
 """
-from aworld.experimental.aworld_cli.core.registry import agent
+from aworld.experimental.aworld_cli.core import agent
 from aworld.core.agent.swarm import Swarm
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ModelConfig
 import os
-
 
 @agent(
     name="BasicAgent",
