@@ -123,7 +123,7 @@ class Message(Generic[DataType]):
 
     @property
     def task_id(self):
-        return self.context.task_id
+        return self.context.get_task().id if self.context.get_task() else self.context.task_id
 
     @property
     def context(self) -> Context:
