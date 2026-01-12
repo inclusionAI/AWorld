@@ -457,9 +457,10 @@ class TaskEventRunner(TaskRunner):
 
         # Check if all background tasks are done
         if isinstance(self.context, ApplicationContext):
-            sub_task_list = self.context.task_state_service.get_sub_task_list()
-            for sub_task in sub_task_list or []:
-                if sub_task.task_type == 'background' and sub_task.status in ['running', 'init']:
-                    return False
+            need_pending = self.context.has_pending_background_tasks(
+                agent_id=self.context.agent_info.current_agent_id if self.context.agent_info and hasattr(self.context.agent_info, 'current_agent_id') else "",
+                parent_task_id=self.context.task_id)
+            if need_pending:
+                return False
 
         return await self.is_stopped()
