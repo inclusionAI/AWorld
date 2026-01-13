@@ -1737,3 +1737,38 @@ class ApplicationContext(AmniContext):
             self.root.add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)
         else:
             super().add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)
+
+    def add_background_task(self, task_id: str, agent_id: str, agent_name: str, parent_task_id: str = None):
+        """Add a background task as a sub-task in sub_task_list."""
+        from aworld.core.context.amni.state.common import TaskInput
+        sub_task_input = TaskInput(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            task_id=task_id,
+            task_content=f"Background task: {agent_name}",
+            model=agent_id
+        )
+        self.task_state_service.add_sub_task(sub_task_input, task_type='background')
+        
+        # Also record in task graph for consistency
+        self.add_task_node(
+            child_task_id=task_id,
+            parent_task_id=parent_task_id or self.task_id,
+            caller_id=agent_id
+        )
+
+    def mark_background_task_completed(self, task_id: str):
+        """Mark a background task as completed in sub_task_list."""
+        sub_task_list = self.task_state_service.get_sub_task_list()
+        for sub_task in sub_task_list or []:
+            if sub_task.task_id == task_id:
+                sub_task.status = 'success'
+                break
+
+    def has_pending_background_tasks(self, agent_id: str, parent_task_id: str = None) -> bool:
+        """Check for pending background tasks in sub_task_list."""
+        sub_task_list = self.task_state_service.get_sub_task_list()
+        for sub_task in sub_task_list or []:
+            if sub_task.task_type == 'background' and sub_task.status in ['running', 'init']:
+                return True
+        return False

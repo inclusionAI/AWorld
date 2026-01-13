@@ -396,7 +396,8 @@ async def mcp_tool_desc_transform_v2(
         server_instances: Dict[str, Any] = None,
         black_tool_actions: Dict[str, List[str]] = None,
         sandbox_id: Optional[str] = None,
-        tool_actions: Optional[List[str]] = None
+        tool_actions: Optional[List[str]] = None,
+        server_instances_session: Optional[Dict[str, Any]] = None
 ) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
@@ -517,12 +518,14 @@ async def mcp_tool_desc_transform_v2(
             
             # 1. Prioritize using cached server instances (consistent with call_tool)
             server = None
+            env_session_id = None
             if server_instances and server_name in server_instances:
                 server = server_instances.get(server_name)
+                env_session_id = server_instances_session.get(server_name)
             
             # 2. If no cache exists, create a new instance using get_server_instance
             if not server:
-                server = await get_server_instance(
+                server, env_session_id = await get_server_instance(
                     server_name=server_name,
                     mcp_config=mcp_config,
                     context=context,
@@ -537,6 +540,8 @@ async def mcp_tool_desc_transform_v2(
                 if server_instances is not None:
                     server_instances[server_name] = server
                     logger.info(f"Created and cached new server instance for {server_name}")
+                if env_session_id:
+                    server_instances_session[server_name] = env_session_id
             
             # 4. Use server instance to get tool list (consistent with call_tool: use first, cleanup on failure)
             if server:
@@ -561,7 +566,7 @@ async def mcp_tool_desc_transform_v2(
                         del server_instances[server_name]
                     
                     # Try to recreate the instance
-                    server = await get_server_instance(
+                    server, env_session_id = await get_server_instance(
                         server_name=server_name,
                         mcp_config=mcp_config,
                         context=context,
@@ -570,6 +575,8 @@ async def mcp_tool_desc_transform_v2(
                     if server:
                         if server_instances is not None:
                             server_instances[server_name] = server
+                        if env_session_id:
+                            server_instances_session[server_name] = env_session_id
                         try:
                             _mcp_openai_tools = await run(
                                 mcp_servers=[server],
@@ -908,22 +915,24 @@ async def get_server_instance(
         server_name: str, mcp_config: Dict[str, Any] = None,
         context: Context = None,
         sandbox_id: Optional[str] = None
-) -> Any:
+) -> Tuple[Any, Optional[str]]:
     """Get server instance, create a new one if it doesn't exist
 
     Args:
         server_name: Server name
         mcp_config: MCP configuration
+        context: Context object
+        sandbox_id: Sandbox ID
 
     Returns:
-        Server instance or None (if creation fails)
+        Tuple of (Server instance or None, _SESSION_ID or None)
     """
     if not mcp_config or mcp_config.get("mcpServers") is None:
-        return None
+        return None, None
 
     mcp_servers = mcp_config.get("mcpServers")
     if not mcp_servers.get(server_name):
-        return None
+        return None, None
 
     server_config = mcp_servers.get(server_name)
     try:
@@ -932,7 +941,7 @@ async def get_server_instance(
         # Here we don't return None, but let the caller handle it
         if "api" == server_config.get("type", ""):
             logger.info(f"API server {server_name} doesn't need persistent connection")
-            return None
+            return None, None
         elif "sse" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
             env_name = headers.get("env_name")
@@ -956,7 +965,7 @@ async def get_server_instance(
             )
             await server.connect()
             logger.info(f"Successfully connected to SSE server: {server_name}")
-            return server
+            return server, _SESSION_ID
         elif "streamable-http" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
             env_name = headers.get("env_name")
@@ -979,7 +988,7 @@ async def get_server_instance(
             )
             await server.connect()
             logger.info(f"Successfully connected to STREAMABLE-HTTP server: {server_name}")
-            return server
+            return server, _SESSION_ID
         else:  # stdio type
             params = {
                 "command": server_config["command"],
@@ -995,10 +1004,10 @@ async def get_server_instance(
             server = MCPServerStdio(name=server_name, params=params)
             await server.connect()
             logger.info(f"Successfully connected to stdio server: {server_name}")
-            return server
+            return server, None
     except Exception as e:
         logger.warning(f"Failed to create server instance for {server_name}: {e}")
-        return None
+        return None, None
 
 
 async def cleanup_server(server):
