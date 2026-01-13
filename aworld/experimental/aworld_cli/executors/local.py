@@ -81,19 +81,6 @@ class LocalAgentExecutor(AgentExecutor):
         if self.session_id not in self._session_history:
             self._add_session_to_history(self.session_id)
     
-    def _generate_session_id(self) -> str:
-        """
-        Generate a new session ID.
-        
-        Returns:
-            A new session ID string
-            
-        Example:
-            >>> executor = LocalAgentExecutor(swarm)
-            >>> new_id = executor._generate_session_id()
-        """
-        return f"session_{uuid.uuid4().hex[:8]}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    
     def _get_session_history_file(self) -> Path:
         """
         Get the path to session history file.
