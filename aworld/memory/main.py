@@ -88,29 +88,12 @@ class InMemoryMemoryStore(MemoryStore):
 
     def get_all(self, filters: dict = None) -> list[MemoryItem]:
         """Filter memory items based on filters."""
-        if filters and filters.get('load_pending_memory', False):
-            self.load_pending_memory(filters)
         filtered_items = [item for item in self.memory_items if self._filter_memory_item(item, filters)]
         return filtered_items
 
-    def load_pending_memory(self, filters: dict = None):
-        # Filter pending items directly from memory_items
-        filtered_pending_items = [item for item in self.memory_items 
-                                  if item.memory_type == "pending" and self._filter_memory_item(item, filters, allow_pending=True)]
-        if filtered_pending_items:
-            for item in filtered_pending_items:
-                item.created_at = datetime.now().isoformat()
-                item.memory_type = "message"
-
-    def _filter_memory_item(self, memory_item: MemoryItem, filters: dict = None, allow_pending: bool = False) -> bool:
+    def _filter_memory_item(self, memory_item: MemoryItem, filters: dict = None) -> bool:
         if memory_item.deleted:
             return False
-        
-        # Default behavior: exclude pending memories unless explicitly allowed or requested in filters
-        if not allow_pending and memory_item.memory_type == "pending":
-            if not filters or 'memory_type' not in filters:
-                return False
-
         if filters is None:
             return True
         if filters.get('application_id') is not None:
