@@ -115,7 +115,7 @@ class ContinuousExecutor:
         
         try:
             # Run the agent task
-            self.console.print(f"[dim]🤖 ({iteration}) Running agent...[/dim]")
+            self.console.print(f"[dim]🤖 ({iteration}) Running agent...[/dim] -> session@{self.agent_executor.session_id}")
             response = await self.agent_executor.chat(prompt)
             
             # Check for completion signal

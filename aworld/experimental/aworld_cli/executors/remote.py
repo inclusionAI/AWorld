@@ -27,10 +27,11 @@ class RemoteAgentExecutor(AgentExecutor):
         """
         self.backend_url = backend_url
         self.agent_name = agent_name
-        self.session_id = str(uuid.uuid4())
+        self.session_id = self._generate_session_id()
         self.user_id = "cli-user"  # Could be configurable
-        self.console = console or Console()
-    
+        self.console = console
+
+
     def new_session(self) -> str:
         """
         Create a new session and return the new session ID.
@@ -44,9 +45,11 @@ class RemoteAgentExecutor(AgentExecutor):
             >>> new_id = executor.new_session()
             >>> assert old_id != new_id
         """
-        self.session_id = str(uuid.uuid4())
+        self.session_id = self._generate_session_id()
         if self.console:
             self.console.print(f"[green]✨ New session created: {self.session_id}[/green]")
+        else:
+            print(f"[green]✨ New session created: {self.session_id}[/green]")
         return self.session_id
     
     def restore_session(self, session_id: Optional[str] = None) -> str:
