@@ -3,6 +3,7 @@ site_url: https://github.com/inclusionAI/AWorld
 repo_url: https://github.com/inclusionAI/AWorld
 edit_uri: tree/main/docs/
 copyright: © Copyright 2025 inclusionAI AWorld Team.
+plugins: []
 extra_css:
 - css/aworld.css
 extra_javascript:
@@ -48,7 +49,7 @@ nav:
     Core Capabilities: Get Start/Core Capabilities.md
     Parallel Tasks: Get Start/Parallel Tasks.md
     Streaming Response: Get Start/Streaming Response.md
-    Hitl: Get Start/HITL.md
+    Human in the Loop (HITL): Get Start/HITL.md
 - Agents:
     Build Agent: Agents/Build Agent.md
     Custom Agent: Agents/Custom Agent.md
