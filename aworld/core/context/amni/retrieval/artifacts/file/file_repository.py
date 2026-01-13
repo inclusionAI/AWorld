@@ -114,23 +114,38 @@ class LocalFileRepository(FileRepository):
         return os.path.exists(file_path)
     
     def list_files(self, prefix: str = "") -> List[Dict[str, Any]]:
-        """List files in local file system with optional prefix filter."""
+        """
+        List files in local file system with optional prefix filter.
+        Recursively traverses all subdirectories to find files.
+        
+        Args:
+            prefix: Optional prefix to filter files (relative to base_path)
+            
+        Returns:
+            List of dictionaries containing file information (key, filename, size, modified_time, is_file)
+            
+        Example:
+            >>> repo = LocalFileRepository("/tmp/files")
+            >>> files = repo.list_files("ppt_20260112155703")
+            >>> # Returns all files under /tmp/files/ppt_20260112155703/ recursively
+        """
         try:
             search_path = os.path.join(self.base_path, prefix) if prefix else self.base_path
             if not os.path.exists(search_path):
                 return []
             
             files = []
-            for item in os.listdir(search_path):
-                item_path = os.path.join(search_path, item)
-                if os.path.isfile(item_path):
+            # Use os.walk to recursively traverse all subdirectories
+            for root, dirs, filenames in os.walk(search_path):
+                for filename in filenames:
+                    file_path = os.path.join(root, filename)
                     # Get relative path from base_path
-                    rel_path = os.path.relpath(item_path, self.base_path)
+                    rel_path = os.path.relpath(file_path, self.base_path)
                     # Get file stats
-                    stat = os.stat(item_path)
+                    stat = os.stat(file_path)
                     files.append({
                         'key': rel_path,
-                        'filename': item,
+                        'filename': rel_path,  # Keep full relative path as filename
                         'size': stat.st_size,
                         'modified_time': stat.st_mtime,
                         'is_file': True
