@@ -155,33 +155,30 @@
 }
 
 /* ============================================
-   Search Bar - Enhanced Modern Design
+   Search Bar - Fixed Style (Letta-like)
    ============================================ */
+/* Search container positioning and width - Letta style */
+.md-search {
+  order: 100;
+  flex-shrink: 0;
+}
+
+.md-search__inner {
+  width: 220px;
+}
+
 .md-search__form {
   background-color: var(--aw-surface);
-  border: 1.5px solid var(--aw-border-light);
+  border: 1px solid var(--aw-border-light);
   border-radius: var(--aw-radius-md);
-  box-shadow: var(--aw-shadow-sm);
-  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.md-search__form:hover {
-  background-color: var(--aw-background);
-  border-color: var(--aw-primary-light);
-  box-shadow: var(--aw-shadow);
-  transform: translateY(-1px);
-}
-
-.md-search__form:focus-within {
-  background-color: var(--aw-background);
-  border-color: var(--aw-primary);
-  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1), var(--aw-shadow);
+  box-shadow: none;
+  min-width: 220px;
 }
 
 .md-search__input {
   color: var(--aw-text-primary);
-  font-weight: 500;
-  font-size: 0.9375rem;
+  font-weight: 400;
+  font-size: 0.875rem;
 }
 
 .md-search__input::placeholder {
@@ -191,12 +188,6 @@
 
 .md-search__icon {
   color: var(--aw-text-tertiary);
-  transition: color 0.2s ease;
-}
-
-.md-search__form:hover .md-search__icon,
-.md-search__form:focus-within .md-search__icon {
-  color: var(--aw-primary);
 }
 
 .md-search__output {
@@ -393,54 +384,90 @@
 }
 
 /* ============================================
-   Tabs Navigation - Force Visibility
+   Tabs Navigation - Letta Style Left-Aligned
    ============================================ */
 .md-tabs {
   background: var(--aw-background);
   border-bottom: 1px solid var(--aw-border-light);
   box-shadow: var(--aw-shadow-sm);
+  padding-left: 0 !important;
+  margin-left: 0 !important;
+}
+
+/* Override any container max-width that centers tabs */
+.md-tabs .md-tabs__inner,
+.md-tabs > .md-grid {
+  max-width: none !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+  padding-left: 1rem !important;
+  padding-right: 0 !important;
 }
 
 .md-tabs__list {
   justify-content: flex-start !important;
-  padding-left: 0;
+  padding-left: 0 !important;
+  margin-left: 0 !important;
+  /* Force left alignment */
+  display: flex !important;
+  align-items: center !important;
+}
+
+.md-tabs__item {
+  padding-left: 0 !important;
+  margin-left: 0 !important;
+  flex-shrink: 0 !important;
+}
+
+.md-tabs__item:first-child {
+  padding-left: 0 !important;
+  margin-left: 0 !important;
 }
 
 /* Inactive tabs - clean and minimal */
 .md-tabs__link {
-  color: var(--aw-text-secondary) !important;
-  font-weight: 500 !important;
+  color: #6b7280 !important;
+  font-weight: 400 !important;
   font-size: 0.875rem;
   transition: all 0.2s ease;
   opacity: 1 !important;
   visibility: visible !important;
   position: relative;
   background: transparent !important;
-  border-bottom: 2px solid transparent !important;
+  border-bottom: 3px solid transparent !important;
+  padding-left: 0.75rem !important;
+  padding-right: 0.75rem !important;
+  padding-bottom: 0.75rem !important;
+}
+
+.md-tabs__item:first-child .md-tabs__link {
+  padding-left: 0 !important;
 }
 
 .md-tabs__link:hover {
-  color: var(--aw-text-primary) !important;
+  color: #374151 !important;
   background: transparent !important;
   opacity: 1 !important;
 }
 
-/* Active tab - Letta style with underline */
+/* Active tab - Letta style with bold underline */
 .md-tabs__link--active {
-  color: var(--aw-text-primary) !important;
-  font-weight: 600 !important;
+  color: #000000 !important;
+  font-weight: 700 !important;
   background: transparent !important;
-  border-bottom: 2px solid var(--aw-text-primary) !important;
+  border-bottom: 4px solid #000000 !important;
   opacity: 1 !important;
   visibility: visible !important;
   box-shadow: none !important;
+  padding-bottom: 0.7rem !important;
 }
 
 .md-tabs__link--active:hover {
-  color: var(--aw-text-primary) !important;
+  color: #000000 !important;
   background: transparent !important;
-  border-bottom: 2px solid var(--aw-text-primary) !important;
+  border-bottom: 4px solid #000000 !important;
   box-shadow: none !important;
+  padding-bottom: 0.7rem !important;
 }
 
 /* ============================================
