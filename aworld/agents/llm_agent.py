@@ -788,10 +788,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         images = observation.images if self.conf.use_vision else None
         if self.conf.use_vision and not images and observation.image:
             images = [observation.image]
-        try:
-            messages = await self.async_messages_transform(image_urls=images, observation=observation, message=message)
-        except Exception as e:
-            logger.error(f"Failed to transform llm messages: {e}. {traceback.format_exc()}")
+        messages = await self.async_messages_transform(image_urls=images, observation=observation, message=message)
         # truncate and other process
         try:
             messages = self._process_messages(messages=messages, context=message.context)
