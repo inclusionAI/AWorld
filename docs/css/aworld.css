@@ -367,7 +367,7 @@
 /* TOC Links - Match left sidebar exactly */
 .md-nav--secondary .md-nav__link {
   color: var(--aw-text-secondary) !important;
-  font-size: 0.875rem !important;
+  font-size: 0.75rem !important;
   font-weight: 500 !important;
   padding: 0.5rem 0.75rem !important;
   border-radius: var(--aw-radius) !important;
@@ -438,7 +438,7 @@
    Typography - Letta Style (Optimized -2px)
    ============================================ */
 .md-typeset {
-  font-size: 0.9375rem;
+  font-size: 0.875rem;
   line-height: 1.75;
   color: #24292e;
 }
@@ -495,7 +495,7 @@
 .md-typeset p {
   margin-bottom: 1.25rem;
   color: #24292e;
-  font-size: 0.9375rem;
+  font-size: 0.875rem;
   line-height: 1.75;
 }
 
