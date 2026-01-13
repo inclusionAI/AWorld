@@ -325,8 +325,19 @@
   transform: translateX(3px);
 }
 
+/* Actual page links (like "Overview", "Core Concepts") - simpler active style */
 .md-nav--primary .md-nav__link--active,
 .md-nav--primary .md-nav__item--active > .md-nav__link {
+  color: var(--aw-primary);
+  background: rgba(59, 130, 246, 0.06);
+  font-weight: 600;
+  border-left: none;
+  padding-left: 0.75rem;
+}
+
+/* Section headers (like "Guides", "Agents") - prominent active style */
+.md-nav--primary .md-nav__item--nested > .md-nav__link--active,
+.md-nav--primary .md-nav__item--nested.md-nav__item--active > .md-nav__link {
   color: var(--aw-primary);
   background: linear-gradient(90deg, rgba(59, 130, 246, 0.12) 0%, rgba(59, 130, 246, 0.05) 100%);
   font-weight: 600;
@@ -372,13 +383,13 @@
   transform: translateX(3px) !important;
 }
 
-/* TOC Active Link - Match left sidebar with gradient background */
+/* TOC Active Link - Match left sidebar page link style (Overview style) */
 .md-nav--secondary .md-nav__link--active {
   color: var(--aw-primary) !important;
   font-weight: 600 !important;
-  background: linear-gradient(90deg, rgba(59, 130, 246, 0.12) 0%, rgba(59, 130, 246, 0.05) 100%) !important;
-  border-left: 3px solid var(--aw-primary) !important;
-  padding-left: calc(0.75rem - 3px) !important;
+  background: rgba(59, 130, 246, 0.06) !important;
+  border-left: none !important;
+  padding-left: 0.75rem !important;
 }
 
 /* ============================================
