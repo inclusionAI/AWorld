@@ -7,12 +7,13 @@ Provides CLI interface without requiring aworldappinfra.
 import argparse
 import os
 import sys
+from datetime import datetime
 
 # Set environment variable to disable console logging before importing aworld modules
 # This ensures all AWorldLogger instances will disable console output
 os.environ['AWORLD_DISABLE_CONSOLE_LOG'] = 'true'
 import asyncio
-from typing import Optional
+from typing import Optional, Any
 
 # Now import aworld modules (they will respect the environment variable)
 from .runtime.mixed import MixedRuntime
@@ -20,6 +21,13 @@ from .console import AWorldCLI
 from .models import AgentInfo
 from .executors.continuous import ContinuousExecutor
 from rich.console import Console
+
+# Import evaluation types for type hints
+try:
+    from aworld.evaluations.base import EvalResult
+except ImportError:
+    # Fallback if not available
+    EvalResult = Any
 
 
 async def load_all_agents(
@@ -252,8 +260,14 @@ Agent 文件：
         'command',
         nargs='?',
         default='interactive',
-        choices=['interactive', 'list', 'serve'],
-        help='Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers.'
+        choices=['interactive', 'list', 'serve', 'eval'],
+        help='Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers, "eval" for batch evaluation.'
+    )
+    
+    parser.add_argument(
+        'file_path_positional',
+        nargs='?',
+        help='File path for eval command (positional argument)'
     )
     
     parser.add_argument(
@@ -396,6 +410,43 @@ Agent 文件：
         help='MCP server port for SSE/streamable-http transport (default: 8001)'
     )
     
+    # Eval command options
+    parser.add_argument(
+        '--file-path',
+        type=str,
+        help='Path to CSV/JSONL file for batch evaluation (required for eval command)'
+    )
+    parser.add_argument(
+        '--query-column',
+        type=str,
+        default='query',
+        help='Column name in CSV file that contains the query/task content (default: query)'
+    )
+    parser.add_argument(
+        '--parallel-num',
+        type=int,
+        default=10,
+        help='Number of parallel evaluation tasks (default: 10)'
+    )
+    parser.add_argument(
+        '--repeat-times',
+        type=int,
+        default=1,
+        help='Number of times to repeat each evaluation case (default: 1)'
+    )
+    parser.add_argument(
+        '--output-dir',
+        type=str,
+        default=None,
+        help='Output directory for evaluation results (default: current directory)'
+    )
+    parser.add_argument(
+        '--skip-passed',
+        action='store_true',
+        default=False,
+        help='Skip cases that have already passed evaluation'
+    )
+    
     args = parser.parse_args()
     
     # Handle --examples flag: show examples and exit
@@ -493,6 +544,40 @@ Agent 文件：
             mcp_transport=args.mcp_transport,
             mcp_host=args.mcp_host,
             mcp_port=args.mcp_port,
+            remote_backends=args.remote_backend,
+            local_dirs=args.agent_dir,
+            agent_files=args.agent_file
+        ))
+        return
+    
+    # Handle 'eval' command: batch evaluation
+    if args.command == "eval":
+        # Support both positional argument and --file-path option
+        file_path = args.file_path_positional or args.file_path
+        if not file_path:
+            print("❌ Error: File path is required for eval command (use positional argument or --file-path)")
+            parser.print_help()
+            return
+        
+        if not args.agent:
+            print("❌ Error: --agent is required for eval command")
+            parser.print_help()
+            return
+        
+        # Determine remote backend
+        remote_backend = None
+        if args.remote_backend:
+            remote_backend = args.remote_backend[0]  # Use first remote backend
+        
+        asyncio.run(_run_eval_mode(
+            file_path=file_path,
+            agent_name=args.agent,
+            remote_backend=remote_backend,
+            query_column=args.query_column,
+            parallel_num=args.parallel_num,
+            repeat_times=args.repeat_times,
+            output_dir=args.output_dir,
+            skip_passed=args.skip_passed,
             remote_backends=args.remote_backend,
             local_dirs=args.agent_dir,
             agent_files=args.agent_file
@@ -761,6 +846,148 @@ async def _run_direct_mode(
         completion_signal=completion_signal,
         completion_threshold=completion_threshold
     )
+
+
+async def _run_eval_mode(
+    file_path: str,
+    agent_name: str,
+    remote_backend: Optional[str] = None,
+    query_column: str = "query",
+    parallel_num: int = 10,
+    repeat_times: int = 1,
+    output_dir: Optional[str] = None,
+    skip_passed: bool = False,
+    remote_backends: Optional[list[str]] = None,
+    local_dirs: Optional[list[str]] = None,
+    agent_files: Optional[list[str]] = None
+) -> None:
+    """
+    Run batch evaluation on a dataset file.
+    
+    Args:
+        file_path: Path to CSV/JSONL file containing evaluation data.
+        agent_name: Name of the agent to use.
+        remote_backend: Optional remote backend URL.
+        query_column: Column name containing queries.
+        parallel_num: Number of parallel tasks.
+        repeat_times: Number of times to repeat each case.
+        output_dir: Output directory for results.
+        skip_passed: Whether to skip already passed cases.
+        remote_backends: Optional list of remote backend URLs.
+        local_dirs: Optional list of local agent directories.
+        agent_files: Optional list of individual agent file paths.
+    """
+    import logging
+    from aworld.core.context.amni.config import init_middlewares
+    from aworld.runners.evaluate_runner import EvaluateRunner
+    from aworld.config import EvaluationConfig, DataLoaderConfig
+    from aworld.evaluations.base import EvalTask, EvalResult
+    from .eval_target import AWorldCliEvalTarget
+    
+    # Initialize middlewares
+    init_middlewares()
+    
+    # Setup output directory
+    if output_dir is None:
+        output_dir = os.getcwd()
+    output_dir = os.path.abspath(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Build eval target
+    eval_target = AWorldCliEvalTarget(
+        agent_name=agent_name,
+        remote_backend=remote_backend,
+        query_column=query_column,
+        output_dir=output_dir,
+    )
+    
+    # Create evaluation task
+    task_id = f"eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    
+    # Convert file path to absolute path
+    abs_file_path = os.path.abspath(file_path)
+    
+    # Run evaluation
+    logging.info(f"🚀 Starting evaluation on {abs_file_path}")
+    logging.info(f"📊 Agent: {agent_name}, Query column: {query_column}, Parallel: {parallel_num}, Repeat: {repeat_times}")
+    if remote_backend:
+        logging.info(f"🌐 Remote backend: {remote_backend}")
+    
+    result: EvalResult = await EvaluateRunner(
+        task=EvalTask(task_id=task_id),
+        config=EvaluationConfig(
+            eval_target=eval_target,
+            eval_criterias=[
+                # {
+                #     "metric_name": "answer_accuracy",
+                #     "threshold": 0.5,
+                # }
+            ],
+            eval_dataset_id_or_file_path=abs_file_path,
+            eval_dataset_query_column=query_column,
+            eval_dataset_load_config=DataLoaderConfig(),
+            repeat_times=repeat_times,
+            parallel_num=parallel_num,
+            skip_passed_cases=skip_passed,
+        )
+    ).run()
+    
+    # Save results
+    _save_eval_results(result, output_dir, task_id)
+    
+    logging.info(f"✅ Evaluation completed! Results saved to {output_dir}")
+
+
+def _save_eval_results(result: EvalResult, output_dir: str, task_id: str):
+    """
+    Save evaluation results to file.
+    
+    Args:
+        result: Evaluation result object.
+        output_dir: Directory to save results.
+        task_id: Task ID for naming files.
+    """
+    result_file_path = os.path.join(output_dir, "results", task_id)
+    os.makedirs(result_file_path, exist_ok=True)
+    
+    result_file = os.path.join(result_file_path, "results.txt")
+    with open(result_file, "w", encoding="utf-8") as f:
+        f.write(f"{result.run_id}\n")
+        f.write(f"START: {datetime.fromtimestamp(int(result.create_time)).strftime('%Y%m%d %H%M%S')}\n")
+        f.write(f"END: {datetime.now().strftime('%Y%m%d %H%M%S')}\n")
+        
+        f.write(f"---------- SUMMARY --------------\n")
+        if result.summary:
+            for scorer_name, summary in result.summary.items():
+                f.write(f"{scorer_name}: {summary}\n")
+        f.write("\n")
+        
+        f.write("---------- DETAIL -------------\n")
+        for case_result in result.eval_case_results:
+            if not case_result.score_rows:
+                continue
+            
+            # Extract case ID
+            case_id = case_result.eval_case_id
+            input_id = case_result.input.case_data.get('id', 'N/A')
+            
+            # Extract scores
+            score_info = []
+            for scorer_name, scorer_result in case_result.score_rows.items():
+                if scorer_name == 'TimeCostScorer':
+                    time_cost = scorer_result.metric_results.get('predict_time_cost_ms', {})
+                    if isinstance(time_cost, dict):
+                        time_seconds = int(time_cost.get('value', 0) / 1000)
+                        score_info.append(f"time:{time_seconds}s")
+                else:
+                    # Extract main metric
+                    for metric_name, metric_result in scorer_result.metric_results.items():
+                        if isinstance(metric_result, dict):
+                            status = metric_result.get('eval_status', 'N/A')
+                            value = metric_result.get('value', 'N/A')
+                            score_info.append(f"{metric_name}:{value}({status})")
+            
+            f.write(f"{case_id}|{input_id}|{'|'.join(score_info)}\n")
 
 
 if __name__ == "__main__":
