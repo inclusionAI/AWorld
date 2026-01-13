@@ -1,18 +1,23 @@
 site_name: AWorld (Agent World) harness
 site_url: https://github.com/inclusionAI/AWorld
 repo_url: https://github.com/inclusionAI/AWorld
+repo_name: inclusionAI/AWorld
 edit_uri: tree/main/docs/
 copyright: © Copyright 2025 inclusionAI AWorld Team.
+extra: {}
 plugins: []
 extra_css:
 - css/aworld.css
 extra_javascript:
 - js/hide-home-edit.js
 - js/aworld-enhancements.js
+- js/github-stars.js
+- js/github-stats-fallback.js
 theme:
   name: material
   language: en
   logo: img/aworld.png
+  favicon: img/aworld.png
   features:
   - navigation.instant
   - navigation.tracking
