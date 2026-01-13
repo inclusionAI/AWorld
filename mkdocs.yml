@@ -41,13 +41,13 @@ markdown_extensions:
   - pymdownx.snippets
   - pymdownx.superfences
 nav:
-- Get Start:
+- Guides:
     Overview: Get Start/Overview.md
-    Core Capabilities: Get Start/Core Capabilities.md
-    Hitl: Get Start/HITL.md
-    Parallel Tasks: Get Start/Parallel Tasks.md
     Quick Start: Get Start/Quick Start.md
+    Core Capabilities: Get Start/Core Capabilities.md
+    Parallel Tasks: Get Start/Parallel Tasks.md
     Streaming Response: Get Start/Streaming Response.md
+    Hitl: Get Start/HITL.md
 - Agents:
     Build Agent: Agents/Build Agent.md
     Custom Agent: Agents/Custom Agent.md
