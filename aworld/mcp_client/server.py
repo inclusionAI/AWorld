@@ -19,6 +19,60 @@ from typing_extensions import NotRequired, TypedDict
 from aworld.logs.util import logger
 
 
+class TaskAwareAsyncContextManager(AbstractAsyncContextManager):
+    """
+    A wrapper around an async context manager that ensures __aexit__ is only
+    executed in the same asyncio.Task that created/entered the context.
+
+    This is mainly used to wrap `streamablehttp_client`, which internally
+    uses anyio.create_task_group() and requires that the cancel scope is
+    exited from the same task where it was entered.
+    """
+
+    def __init__(
+        self,
+        inner_cm: AbstractAsyncContextManager,
+        creator_task: asyncio.Task | None,
+        name: str | None = None,
+    ):
+        self._inner_cm = inner_cm
+        self._creator_task = creator_task
+        self._name = name or inner_cm.__class__.__name__
+
+    async def __aenter__(self):
+        return await self._inner_cm.__aenter__()
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """
+        Only delegate to the inner context manager's __aexit__ when running
+        in the same task that originally created the context manager.
+
+        If called from a different task (for example due to GeneratorExit
+        or AsyncExitStack cleanup running in another task), we skip calling
+        the inner __aexit__ to avoid:
+
+        RuntimeError: Attempted to exit cancel scope in a different task
+        than it was entered in
+        """
+        current_task = None
+        try:
+            current_task = asyncio.current_task()
+        except RuntimeError:
+            current_task = None
+
+        if self._creator_task is not None and current_task is not None and self._creator_task is not current_task:
+            logger.debug(
+                f"TaskAwareAsyncContextManager.__aexit__ for {self._name} called "
+                f"in different task. Creator task={self._creator_task.get_name()}, "
+                f"current task={current_task.get_name() if hasattr(current_task, 'get_name') else current_task}. "
+                f"Skipping inner __aexit__ to avoid cross-task cancel scope exit."
+            )
+            # Do not suppress any exception; just skip inner cleanup.
+            return False
+
+        return await self._inner_cm.__aexit__(exc_type, exc_val, exc_tb)
+
+
 class MCPServer(abc.ABC):
     """Base class for Model Context Protocol servers."""
 
@@ -499,13 +553,29 @@ class MCPServerStreamableHttp(_MCPServerWithClientSession):
             GetSessionIdCallback | None
         ]
     ]:
-        """Create the streams for the server."""
-        return streamablehttp_client(
+        """
+        Create the streams for the server.
+
+        We wrap `streamablehttp_client` in a TaskAwareAsyncContextManager so that
+        its __aexit__ is only invoked from the same asyncio.Task that originally
+        created/entered the context. This avoids the anyio error:
+
+        RuntimeError: Attempted to exit cancel scope in a different task
+        than it was entered in
+        """
+        inner_cm = streamablehttp_client(
             url=self.params["url"],
             headers=self.params.get("headers", None),
             timeout=self.params.get("timeout", timedelta(seconds=30)),
             sse_read_timeout=self.params.get("sse_read_timeout", timedelta(seconds=60 * 5)),
-            terminate_on_close=self.params.get("terminate_on_close", True)
+            terminate_on_close=self.params.get("terminate_on_close", True),
+        )
+
+        # Use the task recorded in _MCPServerWithClientSession.connect() as creator_task.
+        return TaskAwareAsyncContextManager(
+            inner_cm=inner_cm,
+            creator_task=self._connect_task,
+            name=f"streamablehttp_client({self._name})",
         )
 
     @property
