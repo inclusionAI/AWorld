@@ -956,6 +956,7 @@ def _save_eval_results(result: EvalResult, output_dir: str, eval_task_id: str):
     result_file = os.path.join(result_file_path, "results.txt")
     with open(result_file, "w", encoding="utf-8") as f:
         f.write(f"{result.run_id}\n")
+        logger.info(f"Case Result:{type(result)}: {result}")
         f.write(f"START: {datetime.fromtimestamp(int(result.create_time)).strftime('%Y%m%d %H%M%S')}\n")
         f.write(f"END: {datetime.now().strftime('%Y%m%d %H%M%S')}\n")
         
