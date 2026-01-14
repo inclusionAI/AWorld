@@ -82,6 +82,9 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
         # The cache is always dirty at startup, so that we fetch tools at least once
         self._cache_dirty = True
         self._tools_list: list[MCPTool] | None = None
+        
+        # Record the task that created the connection (for "who creates, who releases" principle)
+        self._connect_task: asyncio.Task | None = None
 
     @abc.abstractmethod
     def create_streams(
@@ -120,6 +123,19 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
     async def connect(self):
         """Connect to the server."""
         try:
+            # Record the task that creates the connection (for "who creates, who releases" principle)
+            try:
+                self._connect_task = asyncio.current_task()
+                if self._connect_task:
+                    logger.debug(
+                        f"Recording connect task for {self.__class__.__name__}: "
+                        f"{self._connect_task.get_name()}"
+                    )
+            except RuntimeError:
+                # No running event loop, cannot get current task
+                self._connect_task = None
+                logger.warning("Cannot get current task, connect task not recorded")
+            
             transport = await self.exit_stack.enter_async_context(self.create_streams())
             # streamablehttp_client returns (read, write, get_session_id)
             # sse_client returns (read, write)
@@ -177,10 +193,32 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
         return await self.session.call_tool(name=tool_name, arguments=arguments,read_timeout_seconds=read_timeout_seconds,progress_callback=progress_callback)
 
     async def cleanup(self):
-        """Cleanup the server."""
+        """Cleanup the server. Only the task that created the connection can cleanup."""
         async with self._cleanup_lock:
+            # Check if we're in the same task that created the connection
+            current_task = None
             try:
-                # Ensure cleanup operations occur in the same task context
+                current_task = asyncio.current_task()
+            except RuntimeError:
+                # No running event loop, cannot get current task
+                current_task = None
+            
+            # If not the creating task, skip cleanup (follow "who creates, who releases" principle)
+            if (self._connect_task is not None and 
+                current_task is not None and 
+                self._connect_task != current_task):
+                
+                logger.debug(
+                    f"cleanup() called in different task for {self.__class__.__name__}. "
+                    f"Original task (creator): {self._connect_task.get_name()}, "
+                    f"Current task: {current_task.get_name()}. "
+                    f"Skipping cleanup (only creator task can cleanup)."
+                )
+                # Directly return without executing any cleanup operations
+                return
+            
+            # We're in the creating task, proceed with normal cleanup
+            try:
                 session = self.session
                 self.session = None  # Remove reference first
 
@@ -196,8 +234,21 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
                 if exit_stack:
                     try:
                         await exit_stack.aclose()
+                    except RuntimeError as e:
+                        # Handle the specific "cancel scope in different task" error
+                        if "cancel scope" in str(e).lower() or "different task" in str(e).lower():
+                            logger.warning(
+                                f"Cannot cleanup exit_stack for {self.__class__.__name__} in different task: {e}. "
+                                f"This should not happen if task check works correctly."
+                            )
+                        else:
+                            logger.debug(f"Error closing exit stack during cleanup: {e}")
                     except Exception as e:
                         logger.debug(f"Error closing exit stack during cleanup: {e}")
+                
+                # Reset the connect task reference after successful cleanup
+                self._connect_task = None
+                
             except Exception as e:
                 logger.error(f"Error during server cleanup: {e}")
             finally:
