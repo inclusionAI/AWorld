@@ -9,6 +9,9 @@ import os
 import sys
 from datetime import datetime
 
+from aworld.logs.util import logger
+from train.integration.trl.composite_reward import eval_prompt
+
 # Set environment variable to disable console logging before importing aworld modules
 # This ensures all AWorldLogger instances will disable console output
 os.environ['AWORLD_DISABLE_CONSOLE_LOG'] = 'true'
@@ -902,7 +905,7 @@ async def _run_eval_mode(
     )
     
     # Create evaluation task
-    task_id = f"eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    eval_task_id = f"eval_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     
     # Convert file path to absolute path
     abs_file_path = os.path.abspath(file_path)
@@ -914,7 +917,7 @@ async def _run_eval_mode(
         logging.info(f"🌐 Remote backend: {remote_backend}")
     
     result: EvalResult = await EvaluateRunner(
-        task=EvalTask(task_id=task_id),
+        task=EvalTask(task_id=eval_task_id),
         config=EvaluationConfig(
             eval_target=eval_target,
             eval_criterias=[
@@ -933,21 +936,21 @@ async def _run_eval_mode(
     ).run()
     
     # Save results
-    _save_eval_results(result, output_dir, task_id)
+    _save_eval_results(result, output_dir, eval_task_id)
     
     logging.info(f"✅ Evaluation completed! Results saved to {output_dir}")
 
 
-def _save_eval_results(result: EvalResult, output_dir: str, task_id: str):
+def _save_eval_results(result: EvalResult, output_dir: str, eval_task_id: str):
     """
     Save evaluation results to file.
     
     Args:
         result: Evaluation result object.
         output_dir: Directory to save results.
-        task_id: Task ID for naming files.
+        eval_task_id: Task ID for naming files.
     """
-    result_file_path = os.path.join(output_dir, "results", task_id)
+    result_file_path = os.path.join(output_dir, "results", eval_task_id)
     os.makedirs(result_file_path, exist_ok=True)
     
     result_file = os.path.join(result_file_path, "results.txt")
@@ -966,10 +969,11 @@ def _save_eval_results(result: EvalResult, output_dir: str, task_id: str):
         for case_result in result.eval_case_results:
             if not case_result.score_rows:
                 continue
-            
+
+            logger.info(f"Case Result:{type(case_result)}: {case_result}")
             # Extract case ID
             case_id = case_result.eval_case_id
-            input_id = case_result.input.case_data.get('id', 'N/A')
+            input_id = case_result.input.get('case_data').get('id', 'N/A')
             
             # Extract scores
             score_info = []
