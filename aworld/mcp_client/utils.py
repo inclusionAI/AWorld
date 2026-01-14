@@ -517,8 +517,8 @@ async def mcp_tool_desc_transform_v2(
             
             # 1. Prioritize using cached server instances (consistent with call_tool)
             server = None
-            if server_instances and server_name in server_instances:
-                server = server_instances.get(server_name)
+            # if server_instances and server_name in server_instances:
+            #     server = server_instances.get(server_name)
             
             # 2. If no cache exists, create a new instance using get_server_instance
             if not server:
@@ -534,9 +534,9 @@ async def mcp_tool_desc_transform_v2(
                     continue
                 
                 # 3. Save the newly created instance to server_instances (if provided)
-                if server_instances is not None:
-                    server_instances[server_name] = server
-                    logger.info(f"Created and cached new server instance for {server_name}")
+                # if server_instances is not None:
+                #     server_instances[server_name] = server
+                #     logger.info(f"Created and cached new server instance for {server_name}")
             
             # 4. Use server instance to get tool list (consistent with call_tool: use first, cleanup on failure)
             if server:
@@ -553,12 +553,12 @@ async def mcp_tool_desc_transform_v2(
                     logger.warning(
                         f"Failed to get tools from cached server '{server_name}', cleaning up and recreating: {e}"
                     )
-                    if server_instances and server_name in server_instances:
-                        try:
-                            await cleanup_server(server_instances[server_name])
-                        except Exception as cleanup_err:
-                            logger.warning(f"Failed to cleanup invalid server {server_name}: {cleanup_err}")
-                        del server_instances[server_name]
+                    # if server_instances and server_name in server_instances:
+                    #     try:
+                    #         await cleanup_server(server_instances[server_name])
+                    #     except Exception as cleanup_err:
+                    #         logger.warning(f"Failed to cleanup invalid server {server_name}: {cleanup_err}")
+                    #     del server_instances[server_name]
                     
                     # Try to recreate the instance
                     server = await get_server_instance(
@@ -568,8 +568,8 @@ async def mcp_tool_desc_transform_v2(
                         sandbox_id=sandbox_id
                     )
                     if server:
-                        if server_instances is not None:
-                            server_instances[server_name] = server
+                        # if server_instances is not None:
+                        #     server_instances[server_name] = server
                         try:
                             _mcp_openai_tools = await run(
                                 mcp_servers=[server],
