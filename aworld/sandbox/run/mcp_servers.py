@@ -1,5 +1,6 @@
 import json
 import traceback
+from contextlib import AsyncExitStack
 
 import time
 from aworld.logs.util import logger
@@ -19,7 +20,7 @@ from aworld.core.event.base import Message, Constants
 from typing_extensions import Optional, List, Dict, Any
 
 from aworld.mcp_client.utils import mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
-    call_function_tool, mcp_tool_desc_transform_v2
+    call_function_tool, mcp_tool_desc_transform_v2, call_mcp_tool_with_exit_stack
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult
@@ -195,22 +196,9 @@ class McpServers:
                         self._update_metadata(result_key, {"error": str(e)}, operation_info)
                     continue
 
-                # Prioritize using existing server instances
-                server = self.server_instances.get(server_name)
-                if server is None:
-                    # If it doesn't exist, create a new instance and save it
-                    sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
-                    server = await get_server_instance(server_name=server_name, mcp_config=self.mcp_config,context=context,sandbox_id=sandbox_id)
-                    if server:
-                        self.server_instances[server_name] = server
-                        logger.info(f"Created and cached new server instance for {server_name}")
-                    else:
-                        logger.warning(f"Created new server failed: {server_name}, session_id: {session_id}, tool_name: {tool_name}")
-
-                        self._update_metadata(result_key, {"error": "Failed to create server instance"}, operation_info)
-                        continue
-
-                # Use server instance to call the tool
+                # Use AsyncExitStack to manage server connection (no caching)
+                # Each call creates a new connection and cleans up after use
+                # Delegate to call_mcp_tool_with_exit_stack in utils.py for cleaner code
                 call_result_raw = None
                 action_result = ActionResult(
                     tool_name=server_name,
@@ -219,48 +207,58 @@ class McpServers:
                     keep=True
                 )
                 call_mcp_e = None
-                max_retry = 3
-                for i in range(max_retry):
+                
+                # Define progress callback for this tool call
+                async def progress_callback(
+                        progress: float, total: float | None, message: str | None
+                ):
+                    # for debug vnc
+                    message_str = message.replace('\n', '\\n') if message else message
+                    logger.info(f"McpServers|progress_callback|{progress}|{total}|{message_str}")
                     try:
-                        async def progress_callback(
-                                progress: float, total: float | None, message: str | None
-                        ):
-                            # for debug vnc
-                            message_str = message.replace('\n', '\\n') if message else message
-                            logger.info(f"McpServers|progress_callback|{progress}|{total}|{message_str}")
-                            try:
-                                output = Output()
-                                output.data = message
-                                tool_output_message = Message(
-                                    category=Constants.OUTPUT,
-                                    payload=output,
-                                    sender=f"{server_name}__{tool_name}",
-                                    session_id=context.session_id if context else "",
-                                    headers={"context": context}
-                                )
-                                sync_exec(send_message, tool_output_message)
-                            except BaseException as e:
-                                logger.warning(f"Error calling progress callback: {e}")
-
-                        await self.check_tool_params(context=context, server_name=server_name, tool_name=tool_name,
-                                                     parameter=parameter)
-                        call_result_raw = await asyncio.wait_for(
-                            server.call_tool(tool_name=tool_name, arguments=parameter,
-                                           progress_callback=progress_callback),
-                            timeout=120
+                        output = Output()
+                        output.data = message
+                        tool_output_message = Message(
+                            category=Constants.OUTPUT,
+                            payload=output,
+                            sender=f"{server_name}__{tool_name}",
+                            session_id=context.session_id if context else "",
+                            headers={"context": context}
                         )
-
-                        break
+                        sync_exec(send_message, tool_output_message)
                     except BaseException as e:
-                        call_mcp_e = e
-                        logger.warning(
-                            f"Error calling tool error: {e}. Extra info: session_id = {session_id}, tool_name = {tool_name}."
-                            f"Traceback:\n{traceback.format_exc()}"
-                        )
+                        logger.warning(f"Error calling progress callback: {e}")
+
+                # Check and supplement tool parameters
+                await self.check_tool_params(
+                    context=context,
+                    server_name=server_name,
+                    tool_name=tool_name,
+                    parameter=parameter
+                )
+                
+                # Call tool using AsyncExitStack (delegated to utils.py)
+                sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
+                call_result_raw = await call_mcp_tool_with_exit_stack(
+                    server_name=server_name,
+                    tool_name=tool_name,
+                    parameter=parameter,
+                    mcp_config=self.mcp_config,
+                    context=context,
+                    sandbox_id=sandbox_id,
+                    progress_callback=progress_callback,
+                    max_retry=3,
+                    timeout=120.0
+                )
+                
+                if not call_result_raw:
+                    call_mcp_e = Exception("Failed to call tool after all retry attempts")
+                
                 logger.info(f"tool_name:{server_name},action_name:{tool_name} finished.")
                 logger.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
+                
                 if not call_result_raw:
-                    logger.warning(f"Error calling tool with cached server")
+                    logger.warning(f"Error calling tool: {server_name}__{tool_name}")
                     action_result = ActionResult(
                         tool_name=server_name,
                         action_name=tool_name,
@@ -270,16 +268,7 @@ class McpServers:
                         parameter=parameter
                     )
                     results.append(action_result)
-
                     self._update_metadata(result_key, {"error": call_mcp_e}, operation_info)
-
-                    # If using cached server instance fails, try to clean up and recreate
-                    if server_name in self.server_instances:
-                        try:
-                            await cleanup_server(self.server_instances[server_name])
-                            del self.server_instances[server_name]
-                        except Exception as e:
-                            logger.warning(f"Failed to cleanup server {server_name}: {e}")
                 else:
                     if call_result_raw and call_result_raw.content:
                         metadata = call_result_raw.content[0].model_extra.get("metadata", {})
