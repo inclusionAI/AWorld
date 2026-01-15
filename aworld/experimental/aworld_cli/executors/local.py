@@ -10,7 +10,7 @@ import uuid
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Union
 from dotenv import load_dotenv
 from rich.console import Console, Group
 from rich.panel import Panel
@@ -25,6 +25,7 @@ from rich.syntax import Syntax
 from aworld.config import TaskConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni import TaskInput, ApplicationContext
+from aworld.core.common import Observation
 from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
 from aworld.core.task import Task
 from aworld.runner import Runners
@@ -272,7 +273,8 @@ class LocalAgentExecutor(AgentExecutor):
         self, 
         task_content: str, 
         session_id: str = None, 
-        task_id: str = None
+        task_id: str = None,
+        image_urls: Optional[List[str]] = None
     ) -> Task:
         """
         Build task from task content.
@@ -281,9 +283,16 @@ class LocalAgentExecutor(AgentExecutor):
             task_content: Task content string
             session_id: Optional session ID. If None, will use the executor's current session_id.
             task_id: Optional task ID. If None, will generate one.
+            image_urls: Optional list of image data URLs (base64 encoded) for multimodal support
             
         Returns:
             Task instance
+            
+        Example:
+            >>> # Text only
+            >>> task = await executor._build_task("Hello")
+            >>> # With images
+            >>> task = await executor._build_task("Analyze this", image_urls=["data:image/jpeg;base64,..."])
         """
         # Use executor's session_id if not provided
         if not session_id:
@@ -325,7 +334,15 @@ class LocalAgentExecutor(AgentExecutor):
         
         context = await build_context(task_input, self.swarm, workspace)
         
-        # 5. Build task with context
+        # 5. Build observation with images if provided
+        observation = None
+        if image_urls:
+            observation = Observation(
+                images=image_urls,
+                content=task_content
+            )
+        
+        # 6. Build task with context and observation
         return Task(
             id=context.task_id,
             user_id=context.user_id,
@@ -338,22 +355,26 @@ class LocalAgentExecutor(AgentExecutor):
                 stream=False,
                 exit_on_failure=True
             ),
-            timeout=60 * 60
+            timeout=60 * 60,
+            observation=observation
         )
     
-    async def chat(self, message: str) -> str:
+    async def chat(self, message: Union[str, tuple[str, List[str]]]) -> str:
             """
             Execute chat with local agent using Task/Runners pattern.
             
             Args:
-                message: User message
+                message: User message (string) or tuple of (text, image_urls) for multimodal support
                 
             Returns:
                 Agent response
                 
             Example:
                 >>> executor = LocalAgentExecutor(swarm)
+                >>> # Text only
                 >>> response = await executor.chat("Hello")
+                >>> # With images
+                >>> response = await executor.chat(("Analyze this", ["data:image/jpeg;base64,..."]))
             """
             # 0. Ensure console logging is disabled (environment variable should already be set in main.py)
             # But we still call _setup_logging as a safety measure
@@ -363,10 +384,17 @@ class LocalAgentExecutor(AgentExecutor):
             load_dotenv()
             init_middlewares()
             
-            # 2. Build task (will use current session_id)
+            # 2. Parse message - handle both string and tuple format
+            if isinstance(message, tuple):
+                task_content, image_urls = message
+            else:
+                task_content = message
+                image_urls = None
+            
+            # 3. Build task (will use current session_id)
             # Update session last used time
             self._update_session_last_used(self.session_id)
-            task = await self._build_task(message, session_id=self.session_id)
+            task = await self._build_task(task_content, session_id=self.session_id, image_urls=image_urls)
             
             # 3. Run task with streaming
             try:
