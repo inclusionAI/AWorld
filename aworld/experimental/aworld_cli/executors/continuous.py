@@ -8,6 +8,7 @@ from typing import Optional, Dict, Any, Union, List
 from rich.console import Console
 from rich.panel import Panel
 from .base import AgentExecutor
+from .._globals import console as global_console
 
 
 class ContinuousExecutor:
@@ -29,10 +30,11 @@ class ContinuousExecutor:
         
         Args:
             agent_executor: Agent executor instance
-            console: Rich console for output
+            console: Rich console for output. If None, uses global console.
         """
         self.agent_executor = agent_executor
-        self.console = console or Console()
+        # Use global console if not provided
+        self.console = console if console is not None else global_console
         self.total_cost: float = 0.0
         self.start_time: Optional[datetime] = None
         
@@ -111,12 +113,21 @@ class ContinuousExecutor:
         Returns:
             Dictionary with iteration results including response, cost, and completion status
         """
-        self.console.print(f"\n[bold cyan]🔄 ({iteration}) Starting iteration...[/bold cyan]")
+
+        session_id = getattr(self.agent_executor, 'session_id', 'unknown')
+        self.console.print(f"\n[bold cyan]🔄({iteration}) Starting iteration  session: {session_id}[/bold cyan]")
         
         try:
-            # Run the agent task
-            session_id = getattr(self.agent_executor, 'session_id', 'unknown')
-            self.console.print(f"[dim]🤖 ({iteration}) Running agent... [session: {session_id}][/dim]")
+            # Ensure agent_executor uses the same console for output rendering
+            # Use global console to ensure consistent output
+            # This MUST be set before calling chat() to ensure output is displayed
+            if hasattr(self.agent_executor, 'console'):
+                # Force set to global console to ensure output is displayed
+                self.agent_executor.console = global_console
+                # Verify it was set correctly
+                if self.agent_executor.console is not global_console:
+                    self.console.print(f"[yellow]⚠️ Warning: Failed to set agent_executor.console[/yellow]")
+            
             response = await self.agent_executor.chat(prompt)
             
             # Check for completion signal (only check if response is string)

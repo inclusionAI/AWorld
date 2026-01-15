@@ -188,6 +188,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
             load_dotenv()
             init_middlewares()
             
+            # 1. Ensure console is set - use global console if not set
+            if not self.console:
+                from .._globals import console as global_console
+                self.console = global_console
+            
             # 2. Parse message - handle both string and tuple format
             if isinstance(message, tuple):
                 task_content, image_urls = message
@@ -202,6 +207,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
             
             # 3. Run task with streaming
             try:
+                # Ensure console is set before running task
+                # Use global console if self.console is not set
+                if not self.console:
+                    from .._globals import console as global_console
+                    self.console = global_console
+                
                 if self.console:
                     self.console.print(f"[dim]🔄 Running task: {task.id}[/dim]")
                 
@@ -281,6 +292,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         _start_loading_status("💭 Thinking...")
                         
                         try:
+                            # Ensure console is set before processing stream events
+                            if not self.console:
+                                from .._globals import console as global_console
+                                self.console = global_console
+                            
                             async for output in outputs.stream_events():
                                 if not self.console:
                                     continue
