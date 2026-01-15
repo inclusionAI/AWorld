@@ -149,6 +149,7 @@ Only output a JSON object, and strictly prohibit including Markdown markup or ot
         return actions
 
     async def _parse(self, policy_info: Any) -> Dict[str, Any]:
+        policy_info = policy_info.replace("```json", "").replace("```", "").strip()
         policy_json = json.loads(policy_info)
         config = policy_json.get("config")
         dir_name = config.get("workspace", "./")

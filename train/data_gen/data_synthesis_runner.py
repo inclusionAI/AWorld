@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 from copy import deepcopy
-from typing import Tuple
+from typing import Tuple, Any
 
 from jsonlines import jsonlines
 
@@ -12,6 +12,8 @@ from aworld.config import AgentConfig, wipe_secret_info
 from aworld.core.agent.swarm import Swarm
 from aworld.core.task import Runner, Task, TaskResponse
 from aworld.logs.util import logger
+from aworld.output import Output
+from aworld.output.outputs import Outputs, StreamingOutputs
 from aworld.runner import Runners
 from aworld.runners.runtime_engine import RuntimeEngine
 from aworld.runners.utils import runtime_engine
@@ -28,8 +30,12 @@ from train.data_gen.tool_repository import ToolRepository
 
 
 class DataSynthesisRunner(Runner):
-    def __init__(self, task, conf: DataSynthesisConfig, **kwargs):
+    def __init__(self, task: Any, conf: DataSynthesisConfig, **kwargs):
         self.task = task
+        if hasattr(task, "outputs") and isinstance(task.outputs, Outputs):
+            self.outputs = task.outputs
+        else:
+            self.outputs = StreamingOutputs()
         self.conf = conf
         self.tool_repository = None
         self.tool_gen_event = asyncio.Event()
@@ -87,6 +93,9 @@ class DataSynthesisRunner(Runner):
             The path of the file containing the tool list.
         """
         # Check if a tool needs to be generated
+        await self.outputs.add_output(Output(data="Tool Synthesis start...",
+                                             metadata={"title": "Tool Synthesis"}))
+
         tool_data_path = tool_data_path or f"{self.dir_name}/tools.jsonl"
         if not os.path.exists(tool_data_path):
             # tool needs to be generated
@@ -95,7 +104,7 @@ class DataSynthesisRunner(Runner):
                 tool_gen_config = ToolSynthesisConfig(llm_config=llm_config,
                                                       ontology_config=OntologyConfig(
                                                           llm_config=llm_config,
-                                                          task=self.task
+                                                          task=self.task.input
                                                       ))
             else:
                 tool_gen_config = self.conf.tool_gen_config
@@ -128,6 +137,10 @@ class DataSynthesisRunner(Runner):
         # tool repository
         if tool_data_path:
             await self._do_read_tools(tool_data_path)
+            await self.outputs.add_output(
+                Output(data=f"Finished tool Synthesis, total tools: {await self.tool_repository.size()}",
+                       metadata={"title": "Tool Synthesis"})
+            )
 
         if not self.conf.task_gen_config:
             task_gen_config = TaskSynthesisConfig(llm_config=self.conf.llm_config)
@@ -136,6 +149,9 @@ class DataSynthesisRunner(Runner):
         # Number of generated samples
         sample_count = task_gen_config.gen_number
 
+        await self.outputs.add_output(
+            Output(data=f"Start task Synthesis...", metadata={"title": "Task Synthesis"})
+        )
         tasks = []
         for i in range(sample_count):
             # TODO: load yaml create agents and swarm
@@ -183,6 +199,11 @@ class DataSynthesisRunner(Runner):
             f.write_all(train_datasets)
         with jsonlines.open(test_dataset_path, "w") as f:
             f.write_all(test_datasets)
+
+        await self.outputs.add_output(
+            Output(data=f"Finished task Synthesis, train size: {len(train_datasets)}, test size: {len(test_datasets)}",
+                   metadata={"title": "Task Synthesis"})
+        )
         return train_dataset_path, test_dataset_path
 
     async def _do_read_tools(self, tool_data_path: str):
