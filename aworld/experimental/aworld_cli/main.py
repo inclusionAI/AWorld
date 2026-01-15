@@ -19,7 +19,6 @@ from .runtime.mixed import MixedRuntime
 from .console import AWorldCLI
 from .models import AgentInfo
 from .executors.continuous import ContinuousExecutor
-from rich.console import Console
 
 
 async def load_all_agents(
@@ -778,7 +777,13 @@ async def _run_direct_mode(
         multimodal_prompt = cleaned_prompt
     
     # Create continuous executor and run
-    console = Console()
+    # Use global console to ensure consistent output across all components
+    from ._globals import console
+    
+    # Ensure agent_executor uses the global console for output rendering
+    if hasattr(agent_executor, 'console'):
+        agent_executor.console = console
+    
     continuous_executor = ContinuousExecutor(agent_executor, console=console)
     
     await continuous_executor.run_continuous(

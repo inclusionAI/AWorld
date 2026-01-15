@@ -4,9 +4,10 @@ Remote agent executor with streaming support.
 import uuid
 import json
 import httpx
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Dict, Any
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.status import Status
 from .base_executor import BaseAgentExecutor
 
 
@@ -48,6 +49,182 @@ class RemoteAgentExecutor(BaseAgentExecutor):
         self.backend_url = backend_url
         self.agent_name = agent_name
         self.user_id = "cli-user"  # Could be configurable
+        # Track activity status for clearing previous state
+        self._activity_status: Optional[Status] = None
+    
+    def _process_output_data(self, data: Dict[str, Any], full_content: str) -> tuple[str, bool]:
+        """
+        Process parsed JSON output data and extract content.
+        Classifies output by metadata["type"] according to Output base classes.
+        
+        Args:
+            data: Parsed JSON data from SSE stream
+            full_content: Current accumulated content string
+            
+        Returns:
+            Tuple of (updated_full_content, should_continue)
+            - updated_full_content: Content string with new data appended
+            - should_continue: False if should stop processing (e.g., error or done)
+            
+        Example:
+            >>> executor = RemoteAgentExecutor("http://localhost:8000", "MyAgent")
+            >>> content, continue_processing = executor._process_output_data(
+            ...     {"metadata": {"type": "activity"}, "activity_type": "STEP", "data": "生成大纲"},
+            ...     ""
+            ... )
+        """
+        # Get metadata and output type
+        metadata = data.get("metadata", {})
+        output_type = metadata.get("type", "default")
+        output_data = data.get("data", "")
+        
+        # Classify by metadata["type"] according to Output base classes
+        if output_type == "activity":
+            # ActivityOutput: display data field and clear previous activity state
+            if output_data:
+                activity_text = str(output_data)
+                
+                # Use Rich Status to automatically clear and update the line
+                formatted_text = f"[dim]📋 {activity_text}[/dim]"
+                
+                if self._activity_status:
+                    # Update existing status (automatically clears previous line)
+                    self._activity_status.update(formatted_text)
+                else:
+                    # Create new status
+                    self._activity_status = Status(formatted_text, console=self.console)
+                    self._activity_status.start()
+                
+                full_content += activity_text + "\n"
+        
+        elif output_type == "step":
+            # StepOutput: step information
+            step_name = data.get("name", "")
+            alias_name = data.get("alias_name", "")
+            status = data.get("status", "START")
+            show_name = alias_name if alias_name else step_name
+            
+            if status == "START":
+                self.console.print(f"[dim]🚀 Step started: {show_name}[/dim]")
+            elif status == "FINISHED":
+                self.console.print(f"[dim]✅ Step finished: {show_name}[/dim]")
+            elif status == "FAILED":
+                self.console.print(f"[red]❌ Step failed: {show_name}[/red]")
+            
+            if output_data:
+                full_content += str(output_data) + "\n"
+        
+        elif output_type == "message":
+            # MessageOutput: LLM message output
+            response = data.get("response", "")
+            reasoning = data.get("reasoning", "")
+            
+            if reasoning:
+                self.console.print(f"[dim]💭 Reasoning: {reasoning}[/dim]")
+                full_content += reasoning + "\n"
+            
+            if response:
+                self.console.print(response)
+                full_content += response
+        
+        elif output_type == "tool_call":
+            # ToolCallOutput: tool call information
+            tool_call_data = output_data if output_data else data.get("tool_call", {})
+            if isinstance(tool_call_data, dict):
+                function_name = tool_call_data.get("function", {}).get("name", "unknown")
+                self.console.print(f"[dim]🔧 Tool call: {function_name}[/dim]")
+            full_content += str(output_data) + "\n"
+        
+        elif output_type == "tool_call_result":
+            # ToolResultOutput: tool execution result
+            tool_name = data.get("tool_name", "unknown")
+            action_name = data.get("action_name", "")
+            tool_info = f"{tool_name}"
+            if action_name:
+                tool_info += f" → {action_name}"
+            
+            if output_data:
+                self.console.print(f"[dim]🔧 Tool result: {tool_info}[/dim]")
+                # Show preview for long results
+                data_str = str(output_data)
+                if len(data_str) > 200:
+                    preview = data_str[:200] + "..."
+                    self.console.print(f"[dim]  {preview}[/dim]")
+                else:
+                    self.console.print(f"[dim]  {data_str}[/dim]")
+            full_content += str(output_data) + "\n"
+        
+        elif output_type == "task_result":
+            # TaskResultOutput: final task result
+            if output_data:
+                # Check if output_data is JSON (string or dict/list)
+                is_json = False
+                formatted_output = output_data
+                
+                # If it's already a dict or list, format as JSON
+                if isinstance(output_data, (dict, list)):
+                    is_json = True
+                    formatted_output = json.dumps(output_data, indent=2, ensure_ascii=False)
+                # If it's a string, try to parse as JSON
+                elif isinstance(output_data, str):
+                    try:
+                        parsed_json = json.loads(output_data)
+                        is_json = True
+                        formatted_output = json.dumps(parsed_json, indent=2, ensure_ascii=False)
+                    except (json.JSONDecodeError, ValueError):
+                        # Not valid JSON, use as-is
+                        formatted_output = output_data
+                
+                # Display formatted output
+                if is_json:
+                    # Use syntax highlighting for JSON
+                    from rich.syntax import Syntax
+                    syntax = Syntax(formatted_output, "json", theme="default", line_numbers=False)
+                    self.console.print(syntax)
+                else:
+                    self.console.print(f"[green]{formatted_output}[/green]")
+                
+                full_content += str(output_data)
+        
+        elif output_type == "finished_signal":
+            # RunFinishedSignal: task finished signal
+            self.console.print("[green]✅ Task finished[/green]")
+        
+        # Extract content from OpenAI format (fallback for compatibility)
+        elif "choices" in data and len(data["choices"]) > 0:
+            choice = data["choices"][0]
+            
+            # Handle delta format (streaming)
+            if "delta" in choice:
+                delta = choice["delta"]
+                if "content" in delta:
+                    content_chunk = delta["content"]
+                    full_content += content_chunk
+                    # Print content chunk immediately for streaming effect
+                    self.console.print(content_chunk, end="", style="dim")
+            
+            # Handle message format (non-streaming chunk)
+            elif "message" in choice:
+                message = choice["message"]
+                if "content" in message:
+                    content_chunk = message["content"]
+                    full_content += content_chunk
+                    self.console.print(content_chunk, end="", style="dim")
+        
+        # Handle default/unknown output type
+        else:
+            # If data field exists, try to display it
+            if output_data:
+                self.console.print(f"[dim]📦 Output: {output_data}[/dim]")
+                full_content += str(output_data) + "\n"
+        
+        # Handle error (check after all type processing)
+        if "error" in data:
+            error_msg = data["error"].get("detail", str(data["error"]))
+            self.console.print(f"\n[red]Error: {error_msg}[/red]")
+            return full_content, False  # Stop processing on error
+        
+        return full_content, True  # Continue processing
     
     async def chat(self, message: Union[str, tuple[str, List[str]]]) -> str:
         """
@@ -110,7 +287,6 @@ class RemoteAgentExecutor(BaseAgentExecutor):
                     # Check if response is streaming (text/event-stream)
                     content_type = response.headers.get("content-type", "")
                     is_streaming = "text/event-stream" in content_type or "stream" in content_type.lower()
-                    
                     if not is_streaming:
                         # Non-streaming response, parse as JSON
                         data = response.json()
@@ -158,46 +334,39 @@ class RemoteAgentExecutor(BaseAgentExecutor):
                                     # Parse JSON data
                                     data = json.loads(data_str)
                                     
-                                    # Extract content from OpenAI format
-                                    if "choices" in data and len(data["choices"]) > 0:
-                                        choice = data["choices"][0]
-                                        
-                                        # Handle delta format (streaming)
-                                        if "delta" in choice:
-                                            delta = choice["delta"]
-                                            if "content" in delta:
-                                                content_chunk = delta["content"]
-                                                full_content += content_chunk
-                                                # Print content chunk immediately for streaming effect
-                                                self.console.print(content_chunk, end="", style="dim")
-                                        
-                                        # Handle message format (non-streaming chunk)
-                                        elif "message" in choice:
-                                            message = choice["message"]
-                                            if "content" in message:
-                                                content_chunk = message["content"]
-                                                full_content += content_chunk
-                                                self.console.print(content_chunk, end="", style="dim")
-                                        
-                                        # Handle error
-                                        if "error" in data:
-                                            error_msg = data["error"].get("detail", str(data["error"]))
-                                            self.console.print(f"\n[red]Error: {error_msg}[/red]")
-                                            return f"Error: {error_msg}"
+                                    # Process output data using extracted method
+                                    full_content, should_continue = self._process_output_data(data, full_content)
+                                    
+                                    # Stop processing if error occurred
+                                    if not should_continue:
+                                        return full_content
                                 
                                 except json.JSONDecodeError:
                                     # Skip invalid JSON lines
                                     continue
+                    
+                    # Stop activity status if still running
+                    if self._activity_status:
+                        self._activity_status.stop()
+                        self._activity_status = None
                     
                     # Print newline after streaming completes
                     self.console.print()
                     return full_content
                     
             except httpx.HTTPStatusError as e:
+                # Stop activity status on error
+                if self._activity_status:
+                    self._activity_status.stop()
+                    self._activity_status = None
                 error_msg = f"Server Error: {e.response.status_code} - {e.response.text}"
                 self.console.print(f"[red]{error_msg}[/red]")
                 return error_msg
             except Exception as e:
+                # Stop activity status on error
+                if self._activity_status:
+                    self._activity_status.stop()
+                    self._activity_status = None
                 error_msg = f"Connection Error: {str(e)}"
                 self.console.print(f"[red]{error_msg}[/red]")
                 return error_msg
