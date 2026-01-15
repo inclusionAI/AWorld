@@ -7,13 +7,28 @@ import httpx
 from typing import Optional, Union, List
 from rich.console import Console
 from rich.markdown import Markdown
-from .base import AgentExecutor
+from .base_executor import BaseAgentExecutor
 
 
-class RemoteAgentExecutor(AgentExecutor):
-    """Executor for remote agents with streaming support."""
+class RemoteAgentExecutor(BaseAgentExecutor):
+    """
+    Executor for remote agents with streaming support.
     
-    def __init__(self, backend_url: str, agent_name: str, console: Optional[Console] = None):
+    Only responsible for:
+    - Building HTTP requests
+    - Executing HTTP calls
+    - Adapting HTTP SSE stream to output format
+    
+    All other capabilities (session management, output rendering, logging) are inherited from BaseAgentExecutor.
+    """
+    
+    def __init__(
+        self, 
+        backend_url: str, 
+        agent_name: str, 
+        console: Optional[Console] = None,
+        session_id: Optional[str] = None
+    ):
         """
         Initialize remote agent executor.
         
@@ -21,68 +36,18 @@ class RemoteAgentExecutor(AgentExecutor):
             backend_url: Backend server URL
             agent_name: Name of the agent
             console: Rich console for output
+            session_id: Optional session ID. If None, will generate one automatically.
             
         Example:
             >>> executor = RemoteAgentExecutor("http://localhost:8000", "MyAgent")
         """
+        # Initialize base executor (handles session management, logging, etc.)
+        super().__init__(console=console, session_id=session_id)
+        
+        # Remote-specific initialization
         self.backend_url = backend_url
         self.agent_name = agent_name
-        self.session_id = str(uuid.uuid4())
         self.user_id = "cli-user"  # Could be configurable
-        self.console = console or Console()
-    
-    def new_session(self) -> str:
-        """
-        Create a new session and return the new session ID.
-        
-        Returns:
-            The new session ID
-            
-        Example:
-            >>> executor = RemoteAgentExecutor("http://localhost:8000", "MyAgent")
-            >>> old_id = executor.session_id
-            >>> new_id = executor.new_session()
-            >>> assert old_id != new_id
-        """
-        self.session_id = str(uuid.uuid4())
-        if self.console:
-            self.console.print(f"[green]✨ New session created: {self.session_id}[/green]")
-        return self.session_id
-    
-    def restore_session(self, session_id: Optional[str] = None) -> str:
-        """
-        Restore to a specific session. For remote executor, this just sets the session_id.
-        Note: Remote executor doesn't maintain session history, so restoring to latest is not supported.
-        
-        Args:
-            session_id: Session ID to restore. If None, creates a new session.
-            
-        Returns:
-            The restored session ID
-            
-        Example:
-            >>> executor = RemoteAgentExecutor("http://localhost:8000", "MyAgent")
-            >>> restored_id = executor.restore_session("session_abc123")
-        """
-        if session_id is None:
-            if self.console:
-                self.console.print("[yellow]⚠️ Remote executor doesn't maintain session history. Creating a new session.[/yellow]")
-            return self.new_session()
-        
-        self.session_id = session_id
-        if self.console:
-            self.console.print(f"[green]✨ Restored to session: {self.session_id}[/green]")
-        return self.session_id
-    
-    def get_latest_session_id(self) -> Optional[str]:
-        """
-        Get the latest session ID. For remote executor, returns current session_id.
-        Note: Remote executor doesn't maintain session history.
-        
-        Returns:
-            Current session ID or None
-        """
-        return self.session_id
     
     async def chat(self, message: Union[str, tuple[str, List[str]]]) -> str:
         """
@@ -102,6 +67,9 @@ class RemoteAgentExecutor(AgentExecutor):
             >>> # With images (remote executor may need to convert to appropriate format)
             >>> response = await executor.chat(("Analyze this", ["data:image/jpeg;base64,..."]))
         """
+        # Update session last used time (inherited from BaseAgentExecutor)
+        self._update_session_last_used(self.session_id)
+        
         async with httpx.AsyncClient(timeout=300.0) as client:
             url = f"{self.backend_url}/chat/completions"
             
@@ -158,6 +126,8 @@ class RemoteAgentExecutor(AgentExecutor):
                             return error_msg
                     
                     # Handle streaming response (SSE format)
+                    # TODO: In the future, we can adapt HTTP SSE stream to unified format
+                    # and use base's output rendering capabilities
                     full_content = ""
                     buffer = ""
                     
