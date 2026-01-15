@@ -159,24 +159,39 @@ class RemoteAgentExecutor(BaseAgentExecutor):
             if output_data:
                 # Check if output_data is JSON (string or dict/list)
                 is_json = False
+                parsed_data = None
                 formatted_output = output_data
                 
-                # If it's already a dict or list, format as JSON
+                # If it's already a dict or list
                 if isinstance(output_data, (dict, list)):
                     is_json = True
+                    parsed_data = output_data
                     formatted_output = json.dumps(output_data, indent=2, ensure_ascii=False)
                 # If it's a string, try to parse as JSON
                 elif isinstance(output_data, str):
                     try:
-                        parsed_json = json.loads(output_data)
+                        parsed_data = json.loads(output_data)
                         is_json = True
-                        formatted_output = json.dumps(parsed_json, indent=2, ensure_ascii=False)
+                        formatted_output = json.dumps(parsed_data, indent=2, ensure_ascii=False)
                     except (json.JSONDecodeError, ValueError):
                         # Not valid JSON, use as-is
+                        parsed_data = None
                         formatted_output = output_data
                 
                 # Display formatted output
-                if is_json:
+                if is_json and isinstance(parsed_data, dict) and "content" in parsed_data:
+                    # If JSON has "content" field, display content as Markdown
+                    content = parsed_data.get("content", "")
+                    if content:
+                        self.console.print(Markdown(content, code_theme="default", inline_code_theme="default"))
+                    # Display other fields as JSON if any
+                    other_fields = {k: v for k, v in parsed_data.items() if k != "content"}
+                    if other_fields:
+                        other_json = json.dumps(other_fields, indent=2, ensure_ascii=False)
+                        from rich.syntax import Syntax
+                        syntax = Syntax(other_json, "json", theme="default", line_numbers=False)
+                        self.console.print(syntax)
+                elif is_json:
                     # Use syntax highlighting for JSON
                     from rich.syntax import Syntax
                     syntax = Syntax(formatted_output, "json", theme="default", line_numbers=False)
