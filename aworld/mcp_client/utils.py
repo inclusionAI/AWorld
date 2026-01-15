@@ -509,80 +509,68 @@ async def mcp_tool_desc_transform_v2(
 
     if not server_configs:
         return openai_tools
-    
+    servers = []
     for server_config in server_configs:
         try:
             _mcp_openai_tools = []
-            server_name = server_config["name"]
-            
-            # 1. 优先使用缓存的服务器实例（与 call_tool 保持一致）
-            server = None
-            if server_instances and server_name in server_instances:
-                server = server_instances.get(server_name)
-            
-            # 2. 如果没有缓存，使用 get_server_instance 创建新实例
-            if not server:
-                server = await get_server_instance(
-                    server_name=server_name,
-                    mcp_config=mcp_config,
-                    context=context,
-                    sandbox_id=sandbox_id
-                )
-                
-                if not server:
-                    logger.warning(f"Failed to create server instance for '{server_name}'")
-                    continue
-                
-                # 3. 将新创建的实例保存到 server_instances 中（如果提供了）
-                if server_instances is not None:
-                    server_instances[server_name] = server
-                    logger.info(f"Created and cached new server instance for {server_name}")
-            
-            # 4. 使用服务器实例获取工具列表（与 call_tool 保持一致：先使用，失败后再清理）
-            if server:
-                try:
-                    _mcp_openai_tools = await run(
-                        mcp_servers=[server],
-                        black_tool_actions=black_tool_actions,
-                        tool_actions=tool_actions
+            async with AsyncExitStack() as stack:
+                if server_config["type"] == "sse":
+                    params = server_config["params"].copy()
+                    headers = params.get("headers") or {}
+                    env_name = headers.get("env_name")
+                    _SESSION_ID = env_name or ""
+                    if sandbox_id:
+                        _SESSION_ID = _SESSION_ID + "_" + sandbox_id if _SESSION_ID else sandbox_id
+                        from aworld.core.context.amni import AmniContext
+                        if isinstance(context, AmniContext) and context.get_config().env_config.isolate:
+                            if context.task_id:
+                              _SESSION_ID = _SESSION_ID + "_" + str(context.task_id)
+                        headers["SESSION_ID"] = _SESSION_ID
+
+                    params["headers"] = headers
+                    server = MCPServerSse(
+                        name=server_config["name"], params=params
                     )
-                    if _mcp_openai_tools:
-                        mcp_openai_tools.extend(_mcp_openai_tools)
-                except Exception as e:
-                    # 如果使用缓存的服务器实例失败，清理并重建（与 call_tool 逻辑一致）
+                elif server_config["type"] == "streamable-http":
+                    params = server_config["params"].copy()
+                    headers = params.get("headers") or {}
+                    env_name = headers.get("env_name")
+                    _SESSION_ID = env_name or ""
+                    if sandbox_id:
+                        _SESSION_ID = _SESSION_ID + "_" + sandbox_id if _SESSION_ID else sandbox_id
+                        from aworld.core.context.amni import AmniContext
+                        if isinstance(context, AmniContext) and context.get_config().env_config.isolate:
+                            if context.task_id:
+                                _SESSION_ID = _SESSION_ID + "_" + str(context.task_id)
+                        headers["SESSION_ID"] = _SESSION_ID
+
+                    params["headers"] = headers
+                    if "timeout" in params and not isinstance(params["timeout"], timedelta):
+                        params["timeout"] = timedelta(seconds=float(params["timeout"]))
+                    if "sse_read_timeout" in params and not isinstance(params["sse_read_timeout"], timedelta):
+                        params["sse_read_timeout"] = timedelta(seconds=float(params["sse_read_timeout"]))
+                    server = MCPServerStreamableHttp(
+                        name=server_config["name"], params=params
+                    )
+                elif server_config["type"] == "stdio":
+                    server = MCPServerStdio(
+                        name=server_config["name"], params=server_config["params"]
+                    )
+                else:
                     logger.warning(
-                        f"Failed to get tools from cached server '{server_name}', cleaning up and recreating: {e}"
+                        f"Unsupported MCP server type: {server_config['type']}"
                     )
-                    if server_instances and server_name in server_instances:
-                        try:
-                            await cleanup_server(server_instances[server_name])
-                        except Exception as cleanup_err:
-                            logger.warning(f"Failed to cleanup invalid server {server_name}: {cleanup_err}")
-                        del server_instances[server_name]
-                    
-                    # 尝试重新创建实例
-                    server = await get_server_instance(
-                        server_name=server_name,
-                        mcp_config=mcp_config,
-                        context=context,
-                        sandbox_id=sandbox_id
-                    )
-                    if server:
-                        if server_instances is not None:
-                            server_instances[server_name] = server
-                        try:
-                            _mcp_openai_tools = await run(
-                                mcp_servers=[server],
-                                black_tool_actions=black_tool_actions,
-                                tool_actions=tool_actions
-                            )
-                            if _mcp_openai_tools:
-                                mcp_openai_tools.extend(_mcp_openai_tools)
-                        except Exception as retry_err:
-                            logger.warning(
-                                f"Failed to get tools after recreating server '{server_name}': {retry_err}"
-                            )
-                
+                    continue
+
+                server = await stack.enter_async_context(server)
+                # servers.append(server)
+                _mcp_openai_tools = await run(
+                    mcp_servers=[server],
+                    black_tool_actions=black_tool_actions,
+                    tool_actions=tool_actions
+                )
+            if _mcp_openai_tools:
+                mcp_openai_tools.extend(_mcp_openai_tools)
         except BaseException as err:
             # single
             logger.warning(
