@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import List, Dict, Optional
+from typing import List, Dict, Union
 import uuid
 
 from aworld.config import RunConfig, EngineName, ConfigDict, TaskConfig
@@ -61,7 +61,7 @@ async def choose_runners(tasks: List[Task], agent_oriented: bool = True) -> List
     return runners
 
 
-async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str, TaskResponse]:
+async def execute_runner(runners: Union[Runner, List[Runner]], run_conf: RunConfig) -> Dict[str, TaskResponse]:
     """Execute runner in the runtime engine.
 
     Args:
@@ -71,6 +71,8 @@ async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str
     engine = await runtime_engine(run_conf)
     run_conf = run_conf or RunConfig()
 
+    if isinstance(runners, Runner):
+        runners = [runners]
     if run_conf.engine_name != EngineName.LOCAL or run_conf.reuse_process == False:
         # distributed in AWorld, the `context` can't carry by response
         for runner in runners:
