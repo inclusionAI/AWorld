@@ -226,6 +226,22 @@ Agent 文件：
   
   # 使用自定义 agent 目录启动服务器
   aworld-cli serve --http --agent-dir ./agents
+
+插件管理：
+  # 从 GitHub 安装插件
+  aworld-cli plugin install my-plugin --url https://github.com/user/repo
+  
+  # 从本地路径安装插件
+  aworld-cli plugin install local-plugin --local-path ./local/plugin
+  
+  # 强制安装（覆盖已存在的插件）
+  aworld-cli plugin install my-plugin --url https://github.com/user/repo --force
+  
+  # 列出已安装的插件
+  aworld-cli plugin list
+  
+  # 移除插件
+  aworld-cli plugin remove my-plugin
 """
     
     description_en = "AWorld Agent CLI - Interact with agents directly from the terminal"
@@ -247,7 +263,7 @@ Agent 文件：
         action='store_true',
         help='Show usage examples / 显示使用示例'
     )
-    
+
     parser.add_argument(
         'command',
         nargs='?',
@@ -396,6 +412,7 @@ Agent 文件：
         help='MCP server port for SSE/streamable-http transport (default: 8001)'
     )
     
+    # Parse arguments normally
     args = parser.parse_args()
     
     # Handle --examples flag: show examples and exit
@@ -415,7 +432,7 @@ Agent 文件：
         )
         parser_zh.add_argument('-zh', '--zh', action='store_true', help='显示中文帮助')
         parser_zh.add_argument('--examples', action='store_true', help='显示使用示例')
-        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器。')
+        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'plugin'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "plugin" 管理插件。')
         parser_zh.add_argument('--task', type=str, help='发送给 agent 的任务（非交互模式）')
         parser_zh.add_argument('--agent', type=str, help='要使用的 agent 名称（直接运行模式必需）')
         parser_zh.add_argument('--max-runs', type=int, help='最大运行次数（直接运行模式）')
@@ -518,13 +535,13 @@ Agent 文件：
                     print(f"❌ Error: Failed to load agent file {args.agent_file[0]}: {e}")
                     return
             else:
-                print("❌ Error: --agent is required when using multiple --agent-file or when not using --agent-file")
+                print("❌ Error: --agent is required when using multiple --agent-file")
                 parser.print_help()
                 return
         elif not agent_name:
-            print("❌ Error: --agent is required when using --task (or use --agent-file with a single file)")
-            parser.print_help()
-            return
+            # Default to "Aworld" agent if no agent is specified
+            agent_name = "Aworld"
+            print(f"ℹ️  Using default agent: {agent_name}")
         
         asyncio.run(_run_direct_mode(
             prompt=args.task,
@@ -702,7 +719,7 @@ async def _run_direct_mode(
     Run agent in direct mode (non-interactive).
     
     Args:
-        prompt: User prompt
+        prompt: User prompt (may contain @ file references for images)
         agent_name: Agent name
         max_runs: Maximum number of runs (default: 1 if not specified)
         max_cost: Maximum cost in USD
@@ -748,12 +765,24 @@ async def _run_direct_mode(
     if max_runs is None:
         max_runs = 1
     
+    # Parse @ file references for multimodal support
+    from .utils import parse_file_references
+    cleaned_prompt, image_urls = parse_file_references(prompt)
+    
+    # Prepare prompt for continuous executor
+    if image_urls:
+        print(f"📷 Found {len(image_urls)} image(s) in prompt")
+        # Pass as tuple (text, image_urls) for multimodal support
+        multimodal_prompt = (cleaned_prompt, image_urls)
+    else:
+        multimodal_prompt = cleaned_prompt
+    
     # Create continuous executor and run
     console = Console()
     continuous_executor = ContinuousExecutor(agent_executor, console=console)
     
     await continuous_executor.run_continuous(
-        prompt=prompt,
+        prompt=multimodal_prompt,
         agent_name=agent_name,
         max_runs=max_runs,
         max_cost=max_cost,
