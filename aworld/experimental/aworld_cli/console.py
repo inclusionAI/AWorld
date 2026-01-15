@@ -356,9 +356,17 @@ class AWorldCLI:
                 self.console.print(f"[bold green]{agent_name}[/bold green]:")
                 
                 try:
-                    # Execute the task/chat
-                    # The executor handles all printing (both streaming and non-streaming)
-                    response = await executor(user_input)
+                    # Parse @ file references for multimodal support
+                    from .utils import parse_file_references
+                    cleaned_text, image_urls = parse_file_references(user_input)
+                    
+                    # Execute the task/chat with text and images
+                    if image_urls:
+                        # Pass as tuple (text, image_urls) for multimodal support
+                        response = await executor((cleaned_text, image_urls))
+                    else:
+                        # Execute the task/chat with text only
+                        response = await executor(cleaned_text)
                     # Response is returned for potential future use, but content is already printed by executor
                 except Exception as e:
                     self.console.print(f"[bold red]Error executing task:[/bold red] {e}")

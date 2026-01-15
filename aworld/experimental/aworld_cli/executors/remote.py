@@ -4,7 +4,7 @@ Remote agent executor with streaming support.
 import uuid
 import json
 import httpx
-from typing import Optional
+from typing import Optional, Union, List
 from rich.console import Console
 from rich.markdown import Markdown
 from .base import AgentExecutor
@@ -84,27 +84,45 @@ class RemoteAgentExecutor(AgentExecutor):
         """
         return self.session_id
     
-    async def chat(self, message: str) -> str:
+    async def chat(self, message: Union[str, tuple[str, List[str]]]) -> str:
         """
         Send chat message and handle streaming response.
         
         Args:
-            message: User message to send
+            message: User message to send (string or tuple of (text, image_urls) for multimodal)
+                    Multimodal format: (text, [image_data_url1, image_data_url2, ...])
             
         Returns:
             Complete response content as string
             
         Example:
             >>> executor = RemoteAgentExecutor("http://localhost:8000", "MyAgent")
+            >>> # Text only
             >>> response = await executor.chat("Hello")
+            >>> # With images (remote executor may need to convert to appropriate format)
+            >>> response = await executor.chat(("Analyze this", ["data:image/jpeg;base64,..."]))
         """
         async with httpx.AsyncClient(timeout=300.0) as client:
             url = f"{self.backend_url}/chat/completions"
             
+            # Handle both string and tuple format
+            if isinstance(message, tuple):
+                # Multimodal content - convert to OpenAI format
+                text, image_urls = message
+                content = [{"type": "text", "text": text}]
+                for img_url in image_urls:
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {"url": img_url}
+                    })
+            else:
+                # String content
+                content = message
+            
             payload = {
                 "model": self.agent_name,
                 "messages": [
-                    {"role": "user", "content": message}
+                    {"role": "user", "content": content}
                 ],
                 "stream": True
             }
