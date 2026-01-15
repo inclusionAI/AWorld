@@ -1,3 +1,4 @@
+import asyncio
 import json
 import traceback
 from contextlib import AsyncExitStack
@@ -130,8 +131,8 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
             f"server_name-get_function_tool:{sever_name} translate failed: {e}"
         )
         return []
-    finally:
-        return openai_tools
+    
+    return openai_tools
 
 
 async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[str]] = None, tool_actions: Optional[List[str]] = None) -> List[Dict[str, Any]]:
@@ -1005,6 +1006,113 @@ async def cleanup_server(server):
         )
     except Exception as e:
         logger.warning(f"Failed to cleanup server: {e}")
+
+
+async def call_mcp_tool_with_exit_stack(
+    server_name: str,
+    tool_name: str,
+    parameter: Dict[str, Any],
+    mcp_config: Dict[str, Any],
+    context: Context = None,
+    sandbox_id: Optional[str] = None,
+    progress_callback=None,
+    max_retry: int = 3,
+    timeout: float = 120.0
+) -> Any:
+    """Call MCP tool using AsyncExitStack to manage connection lifecycle.
+    
+    This method creates a new server connection for each call and automatically
+    cleans it up after use, similar to how list_tools works.
+    
+    Args:
+        server_name: Name of the MCP server
+        tool_name: Name of the tool to call
+        parameter: Tool parameters
+        mcp_config: MCP configuration
+        context: Context object (optional)
+        sandbox_id: Sandbox ID (optional)
+        progress_callback: Optional progress callback function
+        max_retry: Maximum number of retry attempts (default: 3)
+        timeout: Timeout in seconds (default: 120.0)
+    
+    Returns:
+        CallToolResult or None if all attempts fail
+    """
+    call_result_raw = None
+    last_exception = None
+    
+    for attempt in range(max_retry):
+        try:
+            # Create a new server instance for each call using AsyncExitStack
+            async with AsyncExitStack() as stack:
+                server = await get_server_instance(
+                    server_name=server_name,
+                    mcp_config=mcp_config,
+                    context=context,
+                    sandbox_id=sandbox_id
+                )
+                
+                if not server:
+                    logger.warning(
+                        f"Failed to create server instance: {server_name}, "
+                        f"tool_name: {tool_name}, attempt: {attempt + 1}"
+                    )
+                    if attempt == max_retry - 1:
+                        return None
+                    continue
+                
+                # Register cleanup callback since server is already connected
+                # get_server_instance already called connect(), so we just need cleanup
+                async def cleanup_server_on_exit(exc_type, exc_val, exc_tb):
+                    await server.cleanup()
+                stack.push_async_exit(cleanup_server_on_exit)
+                
+                logger.info(
+                    f"Created new server instance for {server_name} "
+                    f"(attempt {attempt + 1}/{max_retry})"
+                )
+                
+                # Call the tool with timeout
+                call_result_raw = await asyncio.wait_for(
+                    server.call_tool(
+                        tool_name=tool_name,
+                        arguments=parameter,
+                        progress_callback=progress_callback
+                    ),
+                    timeout=timeout
+                )
+                
+                # Success, break out of retry loop
+                logger.info(
+                    f"Successfully called tool {server_name}__{tool_name} "
+                    f"(attempt {attempt + 1})"
+                )
+                break
+                
+        except asyncio.TimeoutError as e:
+            last_exception = e
+            logger.warning(
+                f"Timeout calling tool {server_name}__{tool_name} "
+                f"(attempt {attempt + 1}/{max_retry}): {e}"
+            )
+            if attempt == max_retry - 1:
+                logger.error(
+                    f"All {max_retry} attempts failed for {server_name}__{tool_name} "
+                    f"due to timeout"
+                )
+        except BaseException as e:
+            last_exception = e
+            logger.warning(
+                f"Error calling tool {server_name}__{tool_name} "
+                f"(attempt {attempt + 1}/{max_retry}): {e}.\n"
+                f"Traceback:\n{traceback.format_exc()}"
+            )
+            if attempt == max_retry - 1:
+                logger.error(
+                    f"All {max_retry} attempts failed for {server_name}__{tool_name}"
+                )
+    
+    return call_result_raw
 
 # Helper: extract mcp_servers from mcp_config if current_servers is empty
 
