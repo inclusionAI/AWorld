@@ -101,7 +101,7 @@ class EvolutionRunner(Runner):
         logger.info(f"Evolution plan finished, result: {plan}")
         process_tasks = config.get("process_tasks", ["sample_synthesis", "train"])
 
-        render_config = self._render_config(plan, process_tasks)
+        render_config = await self._render_config(plan, process_tasks)
 
         await self.outputs.add_output(
             Output(data=f"Evolution plan finished.\n {evolution_plan_render(render_config)}",
@@ -220,7 +220,7 @@ class EvolutionRunner(Runner):
                                test_dataset=test_dataset,
                                train_engine_name=train_engine_name,
                                run_path=dir_name)
-        await trainer.train()
+        trainer.train()
         self.trainer = trainer
         await self.outputs.add_output(Output(data=f"Finished epoch {epoch} training. ",
                                              metadata={"title": "Training"}))
