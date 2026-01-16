@@ -50,7 +50,6 @@ class TaskCountDetector(MonitorDetector):
         border_width = 3
         content_width = width - border_width
         first_col_ratio = 0.6
-        second_col_ratio = 0.4
 
         first_col_width = int(content_width * first_col_ratio)
         second_col_width = content_width - first_col_width
@@ -184,7 +183,6 @@ class BlockingLocationDetector(MonitorDetector):
         border_width = 3
         content_width = width - border_width
         loc_col_ratio = 0.85
-        count_col_ratio = 0.15
 
         loc_col_width = int(content_width * loc_col_ratio)
         count_col_width = content_width - loc_col_width
