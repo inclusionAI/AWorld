@@ -381,7 +381,7 @@ class DefaultAgentHandler(AgentHandler):
         agent = self.swarm.agents.get(action.agent_name)
 
         # must be an interactive call
-        if len(self.agent_calls) > 2:
+        if len(self.agent_calls) > 0:
             if ((not caller or caller == self.swarm.communicate_agent.id())
                     and (self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished or
                          (agent.id() == self.swarm.agent_graph.root_agent.id() and agent.finished))):
@@ -394,6 +394,7 @@ class DefaultAgentHandler(AgentHandler):
                     topic=TopicType.FINISHED,
                     headers={"context": message.context}
                 )
+                return
 
         caller = self.swarm.agent_graph.root_agent.id() or message.caller
         if agent.id() != self.swarm.agent_graph.root_agent.id():
