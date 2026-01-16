@@ -332,7 +332,7 @@ class EvolutionRunner(Runner):
                 tool_synthesis_config.llm_config = self.conf.llm_config
 
             if not isinstance(task, Task):
-                task = Task(input=task, context=self.task.context)
+                task = Task(input=task, context=getattr(self.task, "context", Context()))
 
             runner = DataSynthesisRunner(task=task, conf=tool_synthesis_config)
             # choose special runtime engine
@@ -406,7 +406,7 @@ class EvolutionRunner(Runner):
         render_config["model"].append(f'evaluation model: {config.get("eval_model", "")}')
 
         render_config['plan_output'].append("{")
-        for k, v in plan.items():
+        for k, v in config.items():
             if k != 'config':
                 con = f"  {k}: {v}"
                 if len(con) > 120:
@@ -416,7 +416,7 @@ class EvolutionRunner(Runner):
                 else:
                     render_config['plan_output'].append(con)
             else:
-                con = f"  config: {os.path.abspath(config['dir_name'])}/evolve_config.yaml"
+                con = f"  config: {os.path.abspath(config.get('config', {}).get('dir_name', '.'))}/evolve_config.yaml"
                 if len(con) > 120:
                     render_config['plan_output'].append(con[0:120])
                     render_config['plan_output'].append(con[120:])
