@@ -74,6 +74,7 @@ class EvolutionRunner(Runner):
                 os.environ['LLM_MODEL_NAME'] = model_conf.llm_model_name
 
     async def do_run(self):
+        # supported text2training pipeline only now
         #### Plan: tool_synthesis -> tool_verify -> sample_synthesis -> sample_verify -> train -> evaluate
         # Create evolve yaml
         logger.info(f"Evolution plan start...")
@@ -103,8 +104,10 @@ class EvolutionRunner(Runner):
 
         render_config = await self._render_config(plan, process_tasks)
 
+        render_con = evolution_plan_render(render_config)
+        logger.info(f"Evolution plan: \n{render_con}")
         await self.outputs.add_output(
-            Output(data=f"Evolution plan finished.\n {evolution_plan_render(render_config)}",
+            Output(data=f"Evolution plan finished.\n {render_con}",
                    metadata={"print_all": True, "title": "Evolution Plan"}))
 
         # default minimum workflow
@@ -402,8 +405,8 @@ class EvolutionRunner(Runner):
             render_config["subagents"].extend(["tool_generator_agent", "tool_select_agent", "task_generator_agent"])
         if self.conf.hitl_plan or self.conf.hitl_all:
             render_config["tools"]["built_in"].append("human-in-the-loop")
-        render_config["model"].append(f'training model: {config.get("model", "")}')
-        render_config["model"].append(f'evaluation model: {config.get("eval_model", "")}')
+        render_config["model"].append(f'training model: {config.get("config", {}).get("model", "")}')
+        render_config["model"].append(f'evaluation model: {config.get("config", {}).get("eval_model", "")}')
 
         render_config['plan_output'].append("{")
         for k, v in config.items():
