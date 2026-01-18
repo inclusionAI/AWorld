@@ -50,8 +50,8 @@ class McpServers:
         self.tool_actions = tool_actions or []
 
     async def list_tools(self, context: Context = None) -> List[Dict[str, Any]]:
-        if self.tool_list:
-            return self.tool_list
+        # if self.tool_list:
+        #     return self.tool_list
         if not self.mcp_servers or not self.mcp_config:
             return []
         try:
