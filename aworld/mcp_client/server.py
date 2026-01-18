@@ -449,12 +449,31 @@ class MCPServerStreamableHttp(_MCPServerWithClientSession):
         ]
     ]:
         """Create the streams for the server."""
+        # Use connection pool optimized client factory
+        # Key: Wrap AsyncClient to prevent MCP SDK from closing connections, enabling connection reuse
+        httpx_client_factory = None
+        try:
+            from aworld.mcp_client.http_client import create_http2_mcp_client_with_url
+            # Create a closure to capture URL info for generating correct pool key
+            url = self.params["url"]
+            httpx_client_factory = lambda headers=None, timeout=None, auth=None: create_http2_mcp_client_with_url(
+                url=url,
+                headers=headers,
+                timeout=timeout,
+                auth=auth
+            )
+            logger.info(f"🔧 Using connection pool optimized HTTP client factory (server: {self._name})")
+        except Exception as e:
+            # If import fails, use default client
+            logger.warning(f"⚠️ Using default HTTP client (server: {self._name}): {e}")
+        
         return streamablehttp_client(
             url=self.params["url"],
             headers=self.params.get("headers", None),
             timeout=self.params.get("timeout", timedelta(seconds=30)),
             sse_read_timeout=self.params.get("sse_read_timeout", timedelta(seconds=60 * 5)),
-            terminate_on_close=self.params.get("terminate_on_close", True)
+            terminate_on_close=self.params.get("terminate_on_close", True),
+            httpx_client_factory=httpx_client_factory  # Pass connection pool optimized client factory
         )
 
     @property
