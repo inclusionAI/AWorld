@@ -102,6 +102,11 @@ class Sandbox(SandboxSetup):
         return self._custom_env_tools
 
     @property
+    def reuse(self) -> bool:
+        """Returns whether to reuse MCP server connections."""
+        return self._reuse
+
+    @property
     @abc.abstractmethod
     def mcpservers(self) -> McpServers:
         """Module for running MCP in the sandbox.
@@ -124,6 +129,7 @@ class Sandbox(SandboxSetup):
             tools: Optional[List[str]] = None,
             registry_url: Optional[str] = None,
             custom_env_tools: Optional[Any] = None,
+            reuse: bool = False,
     ):
         """Initialize a new Sandbox instance.
         
@@ -139,6 +145,7 @@ class Sandbox(SandboxSetup):
             tools: List of tools. Optional parameter.
             registry_url: Environment registry URL. Optional parameter, reads from environment variable "ENV_REGISTRY_URL" if not provided, defaults to empty string.
             custom_env_tools: Custom environment tools. Optional parameter.
+            reuse: Whether to reuse MCP server connections. Default is False (create new connection for each call).
         """
         # Initialize basic attributes
         self._sandbox_id = sandbox_id or str(uuid.uuid4())
@@ -155,6 +162,7 @@ class Sandbox(SandboxSetup):
         default_registry_url = os.getenv("ENV_REGISTRY_URL", "~/workspace/registry.json")
         self._registry_url = registry_url or default_registry_url
         self._custom_env_tools = custom_env_tools
+        self._reuse = reuse
 
     @abc.abstractmethod
     def get_info(self) -> SandboxInfo:
