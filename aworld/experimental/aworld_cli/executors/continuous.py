@@ -4,7 +4,7 @@ Continuous execution executor for running agents in a loop.
 import asyncio
 import time
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Union, List
 from rich.console import Console
 from rich.panel import Panel
 from .base import AgentExecutor
@@ -99,13 +99,13 @@ class ContinuousExecutor:
             return False
         return self.total_cost >= max_cost
     
-    async def run_iteration(self, iteration: int, prompt: str, completion_signal: Optional[str] = None) -> Dict[str, Any]:
+    async def run_iteration(self, iteration: int, prompt: Union[str, tuple[str, List[str]]], completion_signal: Optional[str] = None) -> Dict[str, Any]:
         """
         Run a single iteration.
         
         Args:
             iteration: Current iteration number
-            prompt: Task prompt
+            prompt: Task prompt (string or multimodal content list)
             completion_signal: Signal phrase that indicates completion
             
         Returns:
@@ -115,12 +115,13 @@ class ContinuousExecutor:
         
         try:
             # Run the agent task
-            self.console.print(f"[dim]🤖 ({iteration}) Running agent...[/dim]")
+            session_id = getattr(self.agent_executor, 'session_id', 'unknown')
+            self.console.print(f"[dim]🤖 ({iteration}) Running agent... [session: {session_id}][/dim]")
             response = await self.agent_executor.chat(prompt)
             
-            # Check for completion signal
+            # Check for completion signal (only check if response is string)
             is_complete = False
-            if completion_signal and completion_signal.lower() in response.lower():
+            if completion_signal and isinstance(response, str) and completion_signal.lower() in response.lower():
                 is_complete = True
                 self.console.print(f"[green]✅ ({iteration}) Completion signal detected![/green]")
             
@@ -150,7 +151,7 @@ class ContinuousExecutor:
     
     async def run_continuous(
         self,
-        prompt: str,
+        prompt: Union[str, tuple[str, List[str]]],
         agent_name: str,
         max_runs: Optional[int] = None,
         max_cost: Optional[float] = None,
@@ -163,7 +164,7 @@ class ContinuousExecutor:
         Run agent tasks continuously with various limits.
         
         Args:
-            prompt: Task prompt for the agent
+            prompt: Task prompt for the agent (string or tuple of (text, image_urls) for multimodal)
             agent_name: Name of the agent
             max_runs: Maximum number of iterations (0 for infinite)
             max_cost: Maximum cost in USD
@@ -186,11 +187,21 @@ class ContinuousExecutor:
         self.start_time = datetime.now()
         self.total_cost = 0.0
         
+        # Format prompt for display
+        if isinstance(prompt, tuple):
+            prompt_text, image_urls = prompt
+            image_count = len(image_urls) if image_urls else 0
+            prompt_display = prompt_text
+            if image_count > 0:
+                prompt_display += f" [📷 {image_count} image(s)]"
+        else:
+            prompt_display = prompt
+        
         # Display start banner
         self.console.print(Panel(
             f"[bold]Continuous Execution Mode[/bold]\n"
             f"Agent: [cyan]{agent_name}[/cyan]\n"
-            f"Prompt: [yellow]{prompt}[/yellow]\n"
+            f"Prompt: [yellow]{prompt_display}[/yellow]\n"
             f"Max Runs: {max_runs if max_runs else '∞'}\n"
             f"Max Cost: ${max_cost if max_cost else '∞'}\n"
             f"Max Duration: {max_duration if max_duration else '∞'}",

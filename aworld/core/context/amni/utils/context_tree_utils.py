@@ -8,6 +8,63 @@ showing the relationship between parent and child contexts including subtasks.
 """
 
 
+def format_task_content(task_content) -> str:
+    """
+    Format task content, handling both string and list formats (with images).
+    
+    When task_content is a list containing images, formats as "text [📷 x image(s)]"
+    to avoid printing long base64 strings.
+    
+    Args:
+        task_content: Task content, can be str or list of dicts
+        
+    Returns:
+        Formatted string representation
+        
+    Example:
+        >>> format_task_content("simple text")
+        "simple text"
+        >>> format_task_content([{'text': 'hello', 'type': 'text'}, {'image_url': {'url': 'data:image/png;base64,...'}, 'type': 'image_url'}])
+        "hello [📷 1 image(s)]"
+    """
+    if not task_content:
+        return ""
+    
+    if isinstance(task_content, str):
+        return task_content
+    
+    if isinstance(task_content, list):
+        text_parts = []
+        image_count = 0
+        
+        for item in task_content:
+            if not isinstance(item, dict):
+                continue
+            
+            item_type = item.get('type')
+            if item_type == 'text':
+                text = item.get('text', '')
+                if text:
+                    text_parts.append(text)
+            elif item_type == 'image_url':
+                image_count += 1
+        
+        # Combine text parts
+        text_content = ' '.join(text_parts).strip()
+        
+        # Format: "text [📷 x image(s)]" or just "[📷 x image(s)]" if no text
+        if text_content and image_count > 0:
+            return f"{text_content} [📷 {image_count} image(s)]"
+        elif image_count > 0:
+            return f"[📷 {image_count} image(s)]"
+        elif text_content:
+            return text_content
+        else:
+            return ""
+    
+    return str(task_content)
+
+
 def build_context_tree(context: "ApplicationContext") -> str:
     """
     Generate a tree representation showing the current context's position in the context hierarchy.
@@ -50,12 +107,14 @@ def build_context_tree(context: "ApplicationContext") -> str:
         # Get context identifier
         context_id = getattr(context_node, 'task_id', None) or getattr(context_node, 'session_id', 'unknown')
         task_content = getattr(context_node, 'task_input', '')
-        if isinstance(task_content, list):
-            task_content = task_content[0]['text']
+        # Format task content (handles images)
+        formatted_task_content = format_task_content(task_content)
 
         # Build description
         swarm_desc = ':'.join([agent.name() for agent in context_node.swarm.ordered_agents])
-        context_desc = f"[T]{context_id}: [R]{task_content} : [O]{context_node.task_input_object.origin_user_input}" if task_content else str(context_id)
+        origin_input = getattr(context_node, 'task_input_object', None)
+        origin_user_input = format_task_content(origin_input.origin_user_input) if origin_input and hasattr(origin_input, 'origin_user_input') else ""
+        context_desc = f"[T]{context_id}: [R]{formatted_task_content} : [O]{origin_user_input}" if formatted_task_content else str(context_id)
 
         # Check if current context and not yet marked
         is_current = context_node is context and not current_task_marked
@@ -105,9 +164,9 @@ def build_context_tree(context: "ApplicationContext") -> str:
             # Get sub-task content
             subtask_content = ""
             if hasattr(sub_task, 'input') and sub_task.input:
-                subtask_content = getattr(sub_task.input, 'task_content', str(sub_task.input))
-                if isinstance(subtask_content, list):
-                    subtask_content = subtask_content[0]['text']
+                raw_content = getattr(sub_task.input, 'task_content', str(sub_task.input))
+                # Format task content (handles images)
+                subtask_content = format_task_content(raw_content)
             else:
                 subtask_content = str(sub_task)
 
