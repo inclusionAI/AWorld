@@ -81,7 +81,8 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     params = {}
                 
                 # format in framework
-                agent_info = AgentFactory.agent_instance(agent_id)
+                #agent_info = AgentFactory.agent_instance(agent_id)
+                agent_info = kwargs.get("agent")
                 original_name = full_name
                 if (not full_name.startswith("mcp__") and agent_info and agent_info.sandbox and
                         agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers):
@@ -648,6 +649,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     else:
                         agent_result = await self.output_converter.parse(llm_response,
                                                                          agent_id=self.id(),
+                                                                         agent=self,
                                                                          use_tools_in_prompt=self.use_tools_in_prompt)
                     # skip summary on final round
                     await self._add_message_to_memory(payload=llm_response,
