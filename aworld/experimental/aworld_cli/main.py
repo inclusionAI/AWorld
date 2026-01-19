@@ -143,6 +143,22 @@ Server Mode:
   
   # Start server with custom agent directory
   aworld-cli serve --http --agent-dir ./agents
+
+Plugin Management:
+  # Install a plugin from GitHub
+  aworld-cli plugin install my-plugin --url https://github.com/user/repo
+  
+  # Install a plugin from local path
+  aworld-cli plugin install local-plugin --local-path ./local/plugin
+  
+  # Install with force (overwrite existing)
+  aworld-cli plugin install my-plugin --url https://github.com/user/repo --force
+  
+  # List installed plugins
+  aworld-cli plugin list
+  
+  # Remove a plugin
+  aworld-cli plugin remove my-plugin
 """
     
     # Chinese help text
@@ -265,7 +281,104 @@ Agent 文件：
         action='store_true',
         help='Show usage examples / 显示使用示例'
     )
+# First, create a minimal parser to check if command is 'plugin'
+    minimal_parser = argparse.ArgumentParser(add_help=False)
+    minimal_parser.add_argument('command', nargs='?', default='interactive')
+    minimal_args, _ = minimal_parser.parse_known_args()
 
+    # Handle plugin command specially
+    if minimal_args.command == "plugin":
+        plugin_parser = argparse.ArgumentParser(description="Plugin management commands", prog="aworld-cli plugin")
+        plugin_subparsers = plugin_parser.add_subparsers(dest='plugin_action', help='Plugin action to perform', required=True)
+
+        # install subcommand
+        install_parser = plugin_subparsers.add_parser('install', help='Install a plugin')
+        install_parser.add_argument('plugin_name', help='Name of the plugin to install')
+        install_parser.add_argument('--url', type=str, help='Plugin repository URL (GitHub or other git URL)')
+        install_parser.add_argument('--local-path', type=str, help='Local plugin path')
+        install_parser.add_argument('--force', action='store_true', help='Force reinstall/overwrite existing plugin')
+
+        # remove subcommand
+        remove_parser = plugin_subparsers.add_parser('remove', help='Remove a plugin')
+        remove_parser.add_argument('plugin_name', help='Name of the plugin to remove')
+
+        # list subcommand
+        list_parser = plugin_subparsers.add_parser('list', help='List installed plugins')
+
+        # Parse plugin subcommand arguments
+        try:
+            plugin_args = plugin_parser.parse_args()
+        except SystemExit:
+            return
+
+        # Handle plugin commands
+        from .core.plugin_manager import PluginManager
+
+        manager = PluginManager()
+
+        if plugin_args.plugin_action == "install":
+            if not plugin_args.url and not plugin_args.local_path:
+                print("❌ Error: Either --url or --local-path must be provided")
+                install_parser.print_help()
+                return
+
+            try:
+                success = manager.install(
+                    plugin_name=plugin_args.plugin_name,
+                    url=plugin_args.url,
+                    local_path=plugin_args.local_path,
+                    force=plugin_args.force
+                )
+                if success:
+                    print(f"✅ Plugin '{plugin_args.plugin_name}' installed successfully")
+                    print(f"📍 Location: {manager.plugin_dir / plugin_args.plugin_name}")
+                else:
+                    print(f"❌ Failed to install plugin '{plugin_args.plugin_name}'")
+            except Exception as e:
+                print(f"❌ Error installing plugin: {e}")
+                return
+
+        elif plugin_args.plugin_action == "remove":
+            success = manager.remove(plugin_args.plugin_name)
+            if not success:
+                return
+
+        elif plugin_args.plugin_action == "list":
+            plugins = manager.list_plugins()
+
+            if not plugins:
+                print("📦 No plugins installed")
+                print(f"📍 Plugin directory: {manager.plugin_dir}")
+                return
+
+            print(f"📦 Installed plugins ({len(plugins)}):")
+            print(f"📍 Plugin directory: {manager.plugin_dir}\n")
+
+            from rich.console import Console
+            from rich.table import Table
+
+            console = Console()
+            table = Table(show_header=True, header_style="bold magenta")
+            table.add_column("Name", style="cyan")
+            table.add_column("Source", style="green")
+            table.add_column("Has Agents", justify="center")
+            table.add_column("Has Skills", justify="center")
+            table.add_column("Path", style="dim")
+
+            for plugin in plugins:
+                table.add_row(
+                    plugin['name'],
+                    plugin['source'],
+                    "✅" if plugin['has_agents'] else "❌",
+                    "✅" if plugin['has_skills'] else "❌",
+                    plugin['path']
+                )
+
+            console.print(table)
+
+        return
+
+    # Continue with normal argument parsing for other commands
     parser.add_argument(
         'command',
         nargs='?',
@@ -414,7 +527,7 @@ Agent 文件：
         help='MCP server port for SSE/streamable-http transport (default: 8001)'
     )
     
-    # Parse arguments
+    # Parse arguments normally
     args = parser.parse_args()
     
     # Handle --examples flag: show examples and exit
@@ -467,7 +580,7 @@ Agent 文件：
     # This ensures skill registry is ready before agents are loaded
     from ._globals import console
     from .core.skill_registry import get_skill_registry
-    
+
     if args.skill_path:
         # Initialize registry with command-line skill paths (these take precedence)
         registry = get_skill_registry(skill_paths=args.skill_path)
@@ -735,7 +848,7 @@ async def _run_direct_mode(
         agent_files: Optional list of individual agent file paths
     """
     from ._globals import console
-    
+
     # Load individual agent files first if provided
     if agent_files:
         from .core.loader import init_agent_file
@@ -754,7 +867,7 @@ async def _run_direct_mode(
         console.print(f"[dim]📋 Loaded Python files ({len(runtime._loaded_python_files)}):[/dim]")
         for py_file in runtime._loaded_python_files:
             console.print(f"[dim]  - {py_file}[/dim]")
-    
+
     # Find the requested agent
     selected_agent = None
     for agent in all_agents:
@@ -768,7 +881,7 @@ async def _run_direct_mode(
     
     # Create agent executor using MixedRuntime
     agent_executor = await runtime._create_executor(selected_agent)
-    
+
     if not agent_executor:
         print(f"❌ Error: Failed to create executor for agent '{agent_name}'")
         return
@@ -782,13 +895,13 @@ async def _run_direct_mode(
     # For direct mode, we still need to handle the format for backward compatibility
     # but FileParseHook will do the actual parsing
     multimodal_prompt = prompt
-    
+
     # Create continuous executor and run
     # Use global console to ensure consistent output across all components
     # Ensure agent_executor uses the global console for output rendering
     if hasattr(agent_executor, 'console'):
         agent_executor.console = console
-    
+
     continuous_executor = ContinuousExecutor(agent_executor, console=console)
     
     # Run task execution

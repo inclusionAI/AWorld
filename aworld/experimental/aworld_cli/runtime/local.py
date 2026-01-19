@@ -33,11 +33,39 @@ class LocalRuntime(BaseAgentRuntime):
             agent_name: The name of the agent to interact with. If None, user will be prompted to select.
         """
         super().__init__(agent_name)
+        # Get the inner_plugins directory path (relative to this file)
+        import pathlib
+        current_dir = pathlib.Path(__file__).parent.parent
+        inner_plugins_dir = current_dir / "inner_plugins"
+        
+        # Scan inner_plugins for agents directories (e.g., inner_plugins/*/agents)
+        self.inner_plugins_agent_dirs = []
+        if inner_plugins_dir.exists() and inner_plugins_dir.is_dir():
+            for plugin_dir in inner_plugins_dir.iterdir():
+                if plugin_dir.is_dir():
+                    agents_dir = plugin_dir / "agents"
+                    if agents_dir.exists() and agents_dir.is_dir():
+                        self.inner_plugins_agent_dirs.append(agents_dir)
+        
         self.local_agents_dir = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR")
     
     async def _load_agents(self) -> List[AgentInfo]:
         """Load agents from local directory."""
-        # Load agents from local directory
+        all_agents_info = []
+        
+        # First, load agents from inner_plugins agents directories (if exist)
+        for agents_dir in self.inner_plugins_agent_dirs:
+            try:
+                self.cli.console.print(f"📦 Loading built-in agents from: {agents_dir}")
+                init_agents(str(agents_dir))
+                inner_agents = LocalAgentRegistry.list_agents()
+                for agent in inner_agents:
+                    agent_info = AgentInfo.from_source(agent, source_location=str(agents_dir))
+                    all_agents_info.append(agent_info)
+            except Exception as e:
+                self.cli.console.print(f"[dim]⚠️ Failed to load built-in agents from {agents_dir}: {e}[/dim]")
+        
+        # Then, load agents from configured directory
         if self.local_agents_dir:
             self.cli.console.print(f"[dim]📂 Loading local agents from: {self.local_agents_dir}[/dim]")
             init_agents(self.local_agents_dir)
@@ -48,14 +76,22 @@ class LocalRuntime(BaseAgentRuntime):
             init_agents(default_dir)
             self.local_agents_dir = default_dir
         
+        # Get all agents from registry (including both inner_plugins and local_agents_dir)
         agents = LocalAgentRegistry.list_agents()
         if not agents:
             self.cli.console.print("[red]❌ No agents registered.[/red]")
             self.cli.console.print("Please configure LOCAL_AGENTS_DIR in .env or ensure agents are defined correctly.")
             return []
         
+        # For agents not already in all_agents_info, add them with configured location
+        existing_names = {agent_info.name for agent_info in all_agents_info}
         source_location = self.local_agents_dir or os.getcwd()
-        return [AgentInfo.from_source(agent, source_location=source_location) for agent in agents]
+        for agent in agents:
+            if agent.name not in existing_names:
+                agent_info = AgentInfo.from_source(agent, source_location=source_location)
+                all_agents_info.append(agent_info)
+        
+        return all_agents_info
     
     async def _create_executor(self, agent: AgentInfo) -> Optional[AgentExecutor]:
         """Create executor for local agent."""
