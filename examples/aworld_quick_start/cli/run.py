@@ -50,7 +50,7 @@ async def debug_main_async():
     from aworld.experimental.aworld_cli.executors.continuous import ContinuousExecutor
     from aworld.experimental.aworld_cli.runtime.mixed import MixedRuntime
     from aworld.experimental.aworld_cli.core.loader import init_agents
-    from aworld.experimental.aworld_cli.core.registry import LocalAgentRegistry
+    from aworld.experimental.aworld_cli.core.agent_registry import LocalAgentRegistry
     
     parser = argparse.ArgumentParser(
         description="AWorld Agent CLI - Debug Mode",

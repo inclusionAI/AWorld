@@ -78,6 +78,35 @@ class LocalAgent(BaseModel):
 
     metadata: dict = None
     """Additional metadata dictionary for agent information (e.g., version, creator, etc.)."""
+    
+    hooks: Optional[List[str]] = Field(default=None, description="Executor hooks configuration")
+    """Executor hooks configuration.
+    
+    List of hook names (registered with HookFactory). Each hook class must:
+    1. Inherit from ExecutorHook (or its subclasses like PostBuildContextHook)
+    2. Implement the point() method to return its hook point
+    3. Be registered with HookFactory using @HookFactory.register(name="HookName")
+    
+    Hooks are automatically grouped by their hook point (returned by hook.point() method).
+    
+    Hook points available:
+    - pre_input_parse: Before parsing user input
+    - post_input_parse: After parsing user input (e.g., image processing)
+    - pre_build_context: Before building context
+    - post_build_context: After building context
+    - pre_build_task: Before building Task
+    - post_build_task: After building Task
+    - pre_run_task: Before running task
+    - post_run_task: After running task
+    - on_task_error: When task execution fails
+    
+    Example:
+        >>> agent = LocalAgent(
+        ...     name="MyAgent",
+        ...     hooks=["ImageParseHook"],  # Hook name registered with HookFactory
+        ...     ...
+        ... )
+    """
 
     async def get_swarm(self, context: Context = None) -> Swarm:
         """Get the Swarm instance, initializing if necessary.
@@ -420,7 +449,8 @@ def agent(
     name: Optional[str] = None,
     desc: Optional[str] = None,
     context_config: Optional[AmniContextConfig] = None,
-    metadata: Optional[dict] = None
+    metadata: Optional[dict] = None,
+    hooks: Optional[List[str]] = None
 ) -> Callable:
     """Decorator for registering LocalAgent instances.
     
@@ -535,7 +565,8 @@ def agent(
             desc=desc,
             swarm=swarm_wrapper,  # Use the wrapper function as swarm factory
             context_config=context_config or AmniConfigFactory.create(),
-            metadata=metadata or {"creator": "aworld-cli", "version": "1.0.0"}
+            metadata=metadata or {"creator": "aworld-cli", "version": "1.0.0"},
+            hooks=hooks
         )
         LocalAgentRegistry.register(local_agent)
         

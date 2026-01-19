@@ -10,6 +10,39 @@ __all__ = ["AgentExecutor", "BaseAgentExecutor"]
 from .local import LocalAgentExecutor
 from .remote import RemoteAgentExecutor
 from .continuous import ContinuousExecutor
+from .hooks import (
+    ExecutorHookPoint,
+    ExecutorHook,
+    PreInputParseHook,
+    PostInputParseHook,
+    PreBuildContextHook,
+    PostBuildContextHook,
+    PreBuildTaskHook,
+    PostBuildTaskHook,
+    PreRunTaskHook,
+    PostRunTaskHook,
+    OnTaskErrorHook
+)
 
-__all__.extend(["LocalAgentExecutor", "RemoteAgentExecutor", "ContinuousExecutor"])
+# Import FileParseHook to ensure it's registered with HookFactory
+# This is a default hook that is automatically enabled
+from .file_parse_hook import FileParseHook  # noqa: F401
+
+__all__.extend([
+    "LocalAgentExecutor", 
+    "RemoteAgentExecutor", 
+    "ContinuousExecutor",
+    "ExecutorHookPoint",
+    "ExecutorHook",
+    "PreInputParseHook",
+    "PostInputParseHook",
+    "PreBuildContextHook",
+    "PostBuildContextHook",
+    "PreBuildTaskHook",
+    "PostBuildTaskHook",
+    "PreRunTaskHook",
+    "PostRunTaskHook",
+    "OnTaskErrorHook",
+    "FileParseHook"
+])
 

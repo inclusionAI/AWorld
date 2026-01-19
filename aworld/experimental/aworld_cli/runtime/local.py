@@ -39,12 +39,12 @@ class LocalRuntime(BaseAgentRuntime):
         """Load agents from local directory."""
         # Load agents from local directory
         if self.local_agents_dir:
-            self.cli.console.print(f"📂 Loading local agents from: {self.local_agents_dir}")
+            self.cli.console.print(f"[dim]📂 Loading local agents from: {self.local_agents_dir}[/dim]")
             init_agents(self.local_agents_dir)
         else:
             # Use current working directory as default
             default_dir = os.getcwd()
-            self.cli.console.print(f"📂 LOCAL_AGENTS_DIR not set. Using current directory: {default_dir}")
+            self.cli.console.print(f"[dim]📂 LOCAL_AGENTS_DIR not set. Using current directory: {default_dir}[/dim]")
             init_agents(default_dir)
             self.local_agents_dir = default_dir
         
@@ -69,6 +69,16 @@ class LocalRuntime(BaseAgentRuntime):
             # Get context config from agent if available
             context_config = local_agent.context_config if hasattr(local_agent, 'context_config') else AmniConfigFactory.create()
             
+            # Get hooks from agent if available (support both LocalAgent and AgentTeam)
+            hooks = None
+            if hasattr(local_agent, 'hooks') and local_agent.hooks:
+                hooks = local_agent.hooks
+            # Also check if source is AgentTeam (from aworld-app-infra)
+            elif hasattr(agent, 'source') and agent.source:
+                source = agent.source
+                if hasattr(source, 'hooks') and source.hooks:
+                    hooks = source.hooks
+            
             # Try to get swarm without context first (for swarm instances or functions that don't need context)
             try:
                 swarm = await local_agent.get_swarm(None)
@@ -90,7 +100,7 @@ class LocalRuntime(BaseAgentRuntime):
                 # Get swarm with context
                 swarm = await local_agent.get_swarm(temp_context)
             
-            return LocalAgentExecutor(swarm, context_config=context_config, console=self.cli.console)
+            return LocalAgentExecutor(swarm, context_config=context_config, console=self.cli.console, hooks=hooks)
             
         except Exception as e:
             self.cli.console.print(f"[red]❌ Failed to initialize agent session: {e}[/red]")
