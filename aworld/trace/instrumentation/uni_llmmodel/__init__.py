@@ -1,3 +1,5 @@
+import json
+
 import wrapt
 import time
 import traceback
@@ -197,16 +199,26 @@ def record_completion(span,
     prompt_tokens = -1
     completion_tokens = -1
     total_tokens = -1
+    tokens_details = ""
     if usage:
-        prompt_tokens = usage.get("prompt_tokens")
-        completion_tokens = usage.get("completion_tokens")
-        total_tokens = usage.get("total_tokens")
+        tokens_details_dict = {}
+        for key, value in usage.items():
+            if key == "prompt_tokens":
+                prompt_tokens = value
+            elif key == "completion_tokens":
+                completion_tokens = value
+            elif key == "total_tokens":
+                total_tokens = value
+            else:
+                tokens_details_dict[key] = value
+        tokens_details = json.dumps(tokens_details_dict)
 
     span_attributes = {
         **attributes,
         semconv.GEN_AI_USAGE_INPUT_TOKENS: prompt_tokens,
         semconv.GEN_AI_USAGE_OUTPUT_TOKENS: completion_tokens,
         semconv.GEN_AI_USAGE_TOTAL_TOKENS: total_tokens,
+        semconv.GEN_AI_USAGE_TOKENS_DETAILS: tokens_details,
         semconv.GEN_AI_DURATION: duration,
         semconv.GEN_AI_COMPLETION_CONTENT: content,
         semconv.GEN_AI_COMPLETION_REASONING_CONTENT: reasoning_content

@@ -220,10 +220,12 @@ def nest_dict_counter(usage: Dict[str, Union[int, Dict[str, int]]],
             res = nest_dict_counter(usage[elem], other.get(elem, {}))
             result[elem] = res
             continue
-
-        newcount = count + other.get(elem, 0)
-        if not ignore_zero or newcount > 0:
-            result[elem] = newcount
+        try:
+            newcount = (count or 0) + (other.get(elem) or 0)
+            if not ignore_zero or newcount > 0:
+                result[elem] = newcount
+        except Exception as e:
+            logger.warning(f"Failed to calculate newcount: {count} + {other.get(elem) or 0}. {e}")
 
     for elem, count in other.items():
         if elem not in usage and not ignore_zero:

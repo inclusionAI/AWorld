@@ -250,6 +250,13 @@ class ModelResponse:
                 "prompt_tokens": cls._get_item_from_openai_message(response.usage, 'prompt_tokens', 0),
                 "total_tokens": cls._get_item_from_openai_message(response.usage, 'total_tokens', 0)
             }
+            if hasattr(response.usage, 'model_dump'):
+                try:
+                    usage_json = response.usage.model_dump()
+                    if usage_json:
+                        usage.update(usage_json)
+                except Exception as e:
+                    logger.warning(f"parse response.usage error: {e}")
         elif isinstance(response, dict) and response.get('usage'):
             usage = response['usage']
 
