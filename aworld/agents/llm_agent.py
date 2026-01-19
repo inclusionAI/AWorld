@@ -515,16 +515,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 headers=self._update_headers(input_message))
         elif agents:
             payload = actions
+            receiver = actions[0].tool_name
             if self.wait_tool_result and any(action.params.get('is_tool_result', False) for action in actions):
                 content = ''
-                content += ''.join(action.policy_info for action in actions)
+                content += '\n\n'.join(action.policy_info for action in actions)
                 action_result = [ActionResult(content=action.policy_info) for action in actions]
                 payload = Observation(content=content, action_result=action_result)
+                if self.feedback_tool_result:
+                    # wait tool result and need feedback tool result, will be back to the agent
+                    receiver = self.id()
 
             return AgentMessage(payload=payload,
                                 caller=caller,
                                 sender=self.id(),
-                                receiver=actions[0].tool_name,
+                                receiver=receiver,
                                 session_id=input_message.context.session_id if input_message.context else "",
                                 headers=self._update_headers(input_message))
 
