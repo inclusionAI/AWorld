@@ -409,7 +409,7 @@ class DefaultAgentHandler(AgentHandler):
         agent = self.swarm.agents.get(action.agent_name)
 
         # must be an interactive call
-        if len(self.agent_calls) > 2:
+        if len(self.agent_calls) > self.swarm.min_call_num:
             if ((not caller or caller == self.swarm.communicate_agent.id())
                     and (self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished or
                          (agent.id() == self.swarm.agent_graph.root_agent.id() and agent.finished))):
@@ -422,6 +422,7 @@ class DefaultAgentHandler(AgentHandler):
                     topic=TopicType.FINISHED,
                     headers={"context": message.context}
                 )
+                return
 
         caller = self.swarm.agent_graph.root_agent.id() or message.caller
         if agent.id() != self.swarm.agent_graph.root_agent.id():
@@ -434,7 +435,8 @@ class DefaultAgentHandler(AgentHandler):
                 headers=message.headers
             )
         else:
-            text = "self to self" if len(self.agent_calls) > 2 else "at the first"
+            # Team mode does not recommend leader to directly call itself without tools
+            text = "self to self" if len(self.agent_calls) > self.swarm.min_call_num else "at the first"
             yield Message(
                 category=Constants.TASK,
                 payload=TaskItem(msg=f"Team leader complete the task {text} decision.",

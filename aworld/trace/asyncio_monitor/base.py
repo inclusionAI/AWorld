@@ -1,9 +1,12 @@
+# coding: utf-8
+# Copyright (c) inclusionAI.
 import asyncio
+import contextvars
+import inspect
 import os
 import threading
-import contextvars
 import time
-import inspect
+
 from concurrent.futures import ThreadPoolExecutor
 from typing import Coroutine, Generator, TypeVar, Any, List, Dict
 from aworld.trace.asyncio_monitor.detectors import MonitorDetector, TaskCountDetector, PendingReasonDetector, \
@@ -15,9 +18,7 @@ T_co = TypeVar("T_co", covariant=True)
 
 
 class MonitoredTask(asyncio.Task):
-    '''
-    A monitored task that records the start time and termination time.
-    '''
+    """A monitored task that records the start time and termination time."""
 
     def __init__(self, *args, slow_task_ms: int = 1000, **kwargs,):
         super().__init__(*args, **kwargs)
@@ -54,6 +55,7 @@ class AsyncioMonitor:
                  shot_file_name: bool = True,
                  report_table_width: int = 100,
                  slow_task_ms: int = 1000,
+                 check_interval: int = 5
                  ):
         self._monitored_loop = loop or asyncio.get_event_loop()
         self._monitored_loop.set_debug(True)
@@ -63,6 +65,7 @@ class AsyncioMonitor:
         self.shot_file_name = shot_file_name
         self.report_table_width = report_table_width
         self.slow_task_ms = slow_task_ms
+        self.check_interval = check_interval
 
         self._pid = os.getpid()
         self._thread = None
@@ -151,7 +154,7 @@ class AsyncioMonitor:
                 self._loop.close()
 
     async def _monitor_task_func(self):
-        check_interval = 0.1
+        check_interval = self.check_interval
         report_interval = self.detect_duration_second
         last_report_time = time.time()
 

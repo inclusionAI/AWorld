@@ -54,13 +54,13 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             custom_env_tools: Custom environment tools. Optional parameter.
             agents: Custom environment agents. Optional parameter.
                 Supports two formats (mixed mode):
-                
+
                 Simple format (auto-detected):
                 {
                     "local_agent": "/path/to/agent.py",
                     "remote_agent": "https://github.com/..."
                 }
-                
+
                 Extended format (with additional config):
                 {
                     "advanced_agent": {
@@ -71,7 +71,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                         # ... other optional config
                     }
                 }
-                
+
                 Note: If "type" is provided, it will be used directly (case-insensitive).
                       If "type" is not provided, the function will auto-detect based on location.
             env_content_name: Parameter name for environment content in tool schemas. Defaults to "env_content".
@@ -79,6 +79,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 Note that task_id and session_id are added dynamically from context during tool calls.
             **kwargs: Additional parameters for specific sandbox types.
         """
+        # Extract reuse from kwargs if present
+        reuse = kwargs.pop('reuse', False)
         super().__init__(
             sandbox_id=sandbox_id,
             env_type=SandboxEnvType.LOCAL,
@@ -94,7 +96,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             agents=agents,
             streaming=kwargs.get('streaming', False),
             env_content_name=env_content_name,
-            env_content=env_content
+            env_content=env_content,
+            reuse=reuse
         )
 
         # Initialize properties
@@ -143,7 +146,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         """
         Initialize sandbox with MCP configuration.
         This method can be called during __init__ or later for lazy initialization.
-        
+
         Args:
             mcp_servers: List of MCP servers to use.
             mcp_config: Configuration for MCP servers.
@@ -269,7 +272,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             skill_configs=self._skill_configs,
             tool_actions=tools
         )
-        
+
         # Mark as initialized
         self._initialized = True
 
@@ -285,7 +288,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             # Reinitialize only MCP servers part
             final_mcp_servers = self._mcp_servers
             final_mcp_config = copy.deepcopy(self._mcp_config) if self._mcp_config else {}
-            
+
             # Handle custom_env_tools: convert and merge into mcp_config
             if self._custom_env_tools:
                 custom_mcp_config = self._convert_custom_env_tools_to_mcp_config(self._custom_env_tools)
@@ -297,7 +300,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                         if server_name not in final_mcp_config.get("mcpServers", {}):
                             final_mcp_servers.append(server_name)
                         final_mcp_config["mcpServers"][server_name] = server_config
-            
+
             # Handle agents: convert and merge into mcp_config
             if self._agents:
                 agents_mcp_config = self._convert_agents_to_mcp_config(self._agents)
@@ -309,7 +312,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                         if server_name not in final_mcp_config.get("mcpServers", {}):
                             final_mcp_servers.append(server_name)
                         final_mcp_config["mcpServers"][server_name] = server_config
-            
+
             # Clean up existing instance (async cleanup in sync context)
             if hasattr(self, '_mcpservers') and self._mcpservers:
                 try:
@@ -767,17 +770,17 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
     ) -> Optional[Dict[str, Any]]:
         """
         Convert a remote agent to MCP streamable-http configuration.
-        
+
         This method follows the same logic as _convert_custom_env_tools_to_mcp_config:
         - Uses environment variables (CUSTOM_ENV_URL, CUSTOM_ENV_TOKEN, CUSTOM_ENV_IMAGE_VERSION)
         - Builds server_config with the location (URL) and extra_config
         - Converts to streamable-http MCP server config
-        
+
         Args:
             agent_name: Name of the agent
             location: Remote URL (e.g., "https://github.com/..." or "git@github.com:...")
             extra_config: Additional configuration (env, args, etc.)
-        
+
         Returns:
             Dict with structure: {
                 "type": "streamable-http",
@@ -789,21 +792,21 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             Returns None if environment variables are not set.
         """
         import os
-        
+
         # Get environment variables (same as _convert_custom_env_tools_to_mcp_config)
         url = os.getenv("CUSTOM_ENV_URL", "")
         token = os.getenv("CUSTOM_ENV_TOKEN", "")
         image_version = os.getenv("CUSTOM_ENV_IMAGE_VERSION", "")
-        
+
         # Check if any environment variable is empty
         if not url or not token or not image_version:
             logger.warning(f"Remote agent '{agent_name}' requires CUSTOM_ENV_URL, CUSTOM_ENV_TOKEN, and CUSTOM_ENV_IMAGE_VERSION environment variables")
             return None
-        
+
         # Extract headers from extra_config if present (for streamable-http headers)
         # Headers should be merged into streamable_config headers, not server_config
         extra_headers = extra_config.pop("headers", {}) if isinstance(extra_config.get("headers"), dict) else {}
-        
+
         # Build server_config with location and extra_config (excluding headers)
         # The location (URL) will be passed as repo_url in the server_config
         # If extra_config already has repo_url, it will be used; otherwise use location
@@ -814,11 +817,11 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         # Set repo_url: use location if not already set in extra_config
         if "repo_url" not in server_config:
             server_config["repo_url"] = location
-        
+
         # Convert server_config to JSON string for MCP_CONFIG header (include key)
         # Format: {"mcpServers": {agent_name: server_config}}
         server_config_str = json.dumps({"mcpServers": {agent_name: server_config}}, ensure_ascii=False)
-        
+
         # Build streamable-http configuration (same as _convert_custom_env_tools_to_mcp_config)
         # Merge extra_headers into default headers (extra_headers take precedence)
         streamable_config = {
@@ -834,7 +837,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             "sse_read_timeout": 6000,
             "client_session_timeout_seconds": 6000
         }
-        
+
         return streamable_config
 
 
@@ -846,15 +849,15 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
     ) -> Dict[str, Any]:
         """
         Convert a local agent to MCP stdio configuration using aworld-cli.
-        
+
         This method generates a stdio MCP configuration that executes aworld-cli
         to start an MCP stdio server. The location should be an agents directory path.
-        
+
         Args:
             agent_name: Name of the agent
             location: Agents directory path (e.g., "/path/to/agents")
             extra_config: Additional configuration (env, cwd, etc.)
-        
+
         Returns:
             Dict with structure: {
                 "type": "stdio",
@@ -868,15 +871,15 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             }
         """
         from pathlib import Path
-        
+
         # Resolve location to absolute path (agents directory)
         agents_dir_path = Path(location).resolve()
         if not agents_dir_path.exists():
             logger.warning(f"Agent '{agent_name}' agents directory does not exist: {agents_dir_path}")
-        
+
         # Use aworld-cli command
         command = "aworld-cli"
-        
+
         # Build args: serve --mcp --agent-dir <agents_dir>
         agents_dir_str = str(agents_dir_path)
         args = [
@@ -885,25 +888,25 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             "--agent-dir",
             agents_dir_str
         ]
-        
+
         # Build stdio configuration
         stdio_config = {
             "type": "stdio",
             "command": command,
             "args": args
         }
-        
+
         # Handle environment variables
         # Merge with existing env if provided, or create new dict
         env = extra_config.get("env", {})
         if not isinstance(env, dict):
             env = {}
-        
+
         # Auto-set AGENTS_DIR environment variable
         # This is used by aworld-cli as fallback if not provided as argument
         if "AGENTS_DIR" not in env:
             env["AGENTS_DIR"] = agents_dir_str
-        
+
         # Handle headers: extract SANDBOX_ENV from headers and merge into env
         # This allows passing sandbox environment variables through headers
         headers = extra_config.get("headers", {})
@@ -918,11 +921,11 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                         env = {**sandbox_env, **env}
             except (json.JSONDecodeError, TypeError) as e:
                 logger.warning(f"Failed to parse SANDBOX_ENV from headers for agent '{agent_name}': {e}")
-        
+
         # Set env if we have any environment variables
         if env:
             stdio_config["env"] = env
-        
+
         # Handle working directory (cwd)
         # If not specified, default to agents directory's parent for better path resolution
         if "cwd" in extra_config:
@@ -930,17 +933,17 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         else:
             # Auto-set cwd to agents directory's parent
             stdio_config["cwd"] = str(agents_dir_path.parent.resolve())
-        
+
         # Add optional fields from extra_config
         if "encoding" in extra_config:
             stdio_config["encoding"] = extra_config.get("encoding")
-        
+
         if "encoding_error_handler" in extra_config:
             stdio_config["encoding_error_handler"] = extra_config.get("encoding_error_handler")
-        
+
         if "client_session_timeout_seconds" in extra_config:
             stdio_config["client_session_timeout_seconds"] = extra_config.get("client_session_timeout_seconds")
-        
+
         return stdio_config
 
     def _convert_agents_to_mcp_config(
@@ -949,11 +952,11 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
     ) -> Optional[Dict[str, Any]]:
         """
         Convert agents to MCP configuration.
-        
+
         This method supports two formats (mixed mode):
         1. Simple format: Direct string value (auto-detected as local path or remote URL)
         2. Extended format: Dictionary with 'location' field and optional additional config
-        
+
         Args:
             agents: Dictionary mapping agent names to their configurations.
                 Simple format (auto-detected):
@@ -961,7 +964,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                     "local_agent": "/path/to/agent.py",
                     "remote_agent": "https://github.com/..."
                 }
-                
+
                 Extended format (with additional config):
                 {
                     "advanced_agent": {
@@ -972,10 +975,10 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                         # ... other optional config
                     }
                 }
-                
+
                 Note: If "type" is provided, it will be used directly (case-insensitive).
                       If "type" is not provided, the function will auto-detect based on location.
-        
+
         Returns:
             Dict with structure: {
                 "mcpServers": {
@@ -993,22 +996,22 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         """
         if not agents or not isinstance(agents, dict):
             return None
-        
+
         result_config = {
             "mcpServers": {}
         }
-        
+
         # Process each agent in agents
         for agent_name, agent_config in agents.items():
             location = None
             is_remote = False
             extra_config = {}
-            
+
             # Handle simple format: string value
             if isinstance(agent_config, str):
                 location = agent_config
                 is_remote = is_remote_url(location)
-            
+
             # Handle extended format: dictionary
             elif isinstance(agent_config, dict):
                 # Get location from 'location' field
@@ -1016,11 +1019,11 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 if not location:
                     logger.warning(f"Agent '{agent_name}' missing 'location' field in config")
                     continue
-                
+
                 if not isinstance(location, str):
                     logger.warning(f"Agent '{agent_name}' has invalid 'location' field (expected string, got {type(location)})")
                     continue
-                
+
                 # Check if run_mode is explicitly provided
                 if "run_mode" in agent_config:
                     # Use explicit run_mode field (case-insensitive)
@@ -1040,18 +1043,18 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 else:
                     # Run mode not provided, auto-detect based on location
                     is_remote = is_remote_url(location)
-                
+
                 # Extract extra config (excluding 'location' and 'run_mode')
                 extra_config = {k: v for k, v in agent_config.items() if k not in ("location", "run_mode")}
-            
+
             else:
                 logger.warning(f"Invalid agent config for '{agent_name}': expected string or dict, got {type(agent_config)}")
                 continue
-            
+
             if not location:
                 logger.warning(f"Agent '{agent_name}' has empty location")
                 continue
-            
+
             # Process based on detected type
             if is_remote:
                 # Handle remote agent
@@ -1064,7 +1067,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 # Handle local agent
                 mcp_config = self._convert_local_agent_to_mcp_config(agent_name, location, extra_config)
                 result_config["mcpServers"][agent_name] = mcp_config
-        
+
         return result_config if result_config["mcpServers"] else None
 
     async def remove(self) -> None:

@@ -81,7 +81,8 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     params = {}
                 
                 # format in framework
-                agent_info = AgentFactory.agent_instance(agent_id)
+                #agent_info = AgentFactory.agent_instance(agent_id)
+                agent_info = kwargs.get("agent")
                 original_name = full_name
                 if (not full_name.startswith("mcp__") and agent_info and agent_info.sandbox and
                         agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers):
@@ -527,16 +528,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 headers=self._update_headers(input_message))
         elif agents:
             payload = actions
+            receiver = actions[0].tool_name
             if self.wait_tool_result and any(action.params.get('is_tool_result', False) for action in actions):
                 content = ''
-                content += ''.join(action.policy_info for action in actions)
+                content += '\n\n'.join(action.policy_info for action in actions)
                 action_result = [ActionResult(content=action.policy_info) for action in actions]
                 payload = Observation(content=content, action_result=action_result)
+                if self.feedback_tool_result:
+                    # wait tool result and need feedback tool result, will be back to the agent
+                    receiver = self.id()
 
             return AgentMessage(payload=payload,
                                 caller=caller,
                                 sender=self.id(),
-                                receiver=actions[0].tool_name,
+                                receiver=receiver,
                                 session_id=input_message.context.session_id if input_message.context else "",
                                 headers=self._update_headers(input_message))
 
@@ -666,6 +671,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     else:
                         agent_result = await self.output_converter.parse(llm_response,
                                                                          agent_id=self.id(),
+                                                                         agent=self,
                                                                          use_tools_in_prompt=self.use_tools_in_prompt)
                     # skip summary on final round
                     await self._add_message_to_memory(payload=llm_response,

@@ -22,6 +22,7 @@ SKILLS_PROMPT = """
     - Offload skills when no longer needed
     - Skills are scoped to current agent namespace
     - only support skills_info internal skills
+    - do not repeat activate or load skills if active status is True
   </skill_guide>
   <skills_info>
   {skills}
@@ -42,10 +43,10 @@ class SkillsNeuron(Neuron):
         for skill_id, skill in total_skills.items():
             skill_usage = f"    <skill_usage>{skill.get('usage', '')}</skill_usage>\n"  if skill.get("active", False) and skill.get("type") != "agent" else ""
             items.append(
-                f"  <skill id=\"{skill_id}\" status=\"{skill.get('active', False)}\">\n"
+                f"  <skill id=\"{skill_id}\" active_status=\"{skill.get('active', False)}\">\n"
                 f"    <skill_name>{skill.get('name')}</skill_name>\n"
                 f"    <skill_desc>{skill.get('description', skill.get('desc'))}</skill_desc>\n"
-                f"    {skill_usage}"
+                f"    {skill_usage}\n"
                 f"  </skill>")
 
         return items

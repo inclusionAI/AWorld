@@ -29,6 +29,7 @@ def create_sandbox(
     black_tool_actions: Optional[Dict[str, List[str]]] = None,
     skill_configs: Optional[Any] = None,
     custom_env_tools: Optional[Any] = None,
+    reuse: bool = False,
     **kwargs
 ) -> Sandbox:
     """
@@ -44,6 +45,7 @@ def create_sandbox(
         black_tool_actions: Black list of tool actions.
         skill_configs: Skill configurations.
         custom_env_tools: Custom environment tools. Optional parameter.
+        reuse: Whether to reuse MCP server connections. Default is False.
         **kwargs: Additional parameters for specific sandbox types.
         
     Returns:
@@ -64,6 +66,7 @@ def create_sandbox(
             black_tool_actions=black_tool_actions,
             skill_configs=skill_configs,
             custom_env_tools=custom_env_tools,
+            reuse=reuse,
             **kwargs
         )
     elif env_type == SandboxEnvType.K8S:
