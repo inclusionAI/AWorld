@@ -1,16 +1,10 @@
-from email import message
 import json
 import traceback
-
-import time
-from aworld.logs.util import logger
 import os
-import asyncio
 import uuid
 
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
-# from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 
 from aworld.utils.common import sync_exec
@@ -22,7 +16,7 @@ from typing_extensions import Optional, List, Dict, Any
 from typing import TYPE_CHECKING
 
 from aworld.mcp_client.utils import mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
-    call_function_tool, mcp_tool_desc_transform_v2
+    call_function_tool, mcp_tool_desc_transform_v2, mcp_tool_desc_transform_v2_reuse, call_mcp_tool_with_exit_stack, call_mcp_tool_with_reuse
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult, Observation
@@ -61,6 +55,10 @@ class McpServers:
         # Format: {"server_name__tool_name": "env_content"}
         self._env_content_param_mapping: Dict[str, str] = {}
 
+    def _should_reuse(self) -> bool:
+        """Check if server connections should be reused based on sandbox.reuse."""
+        return bool(self.sandbox and hasattr(self.sandbox, 'reuse') and self.sandbox.reuse)
+
     async def list_tools(self, context: Context = None) -> List[Dict[str, Any]]:
         if self.tool_list:
             return self.tool_list
@@ -68,28 +66,35 @@ class McpServers:
             return []
         try:
             sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
-            # Generate tool list schema from mcp_tool_desc_transform_v2
-            self.tool_list = await mcp_tool_desc_transform_v2(
-                tools=self.mcp_servers,
-                mcp_config=self.mcp_config,
-                context=context,
-                server_instances=self.server_instances,
-                black_tool_actions=self.black_tool_actions,
-                sandbox_id=sandbox_id,
-                tool_actions=self.tool_actions,
-                server_instances_session = self.server_instances_session
-            )
-
-            # Process env_content parameters: remove from schema and save mapping
-            # This must be done immediately after generating tool_list to ensure
-            # the mapping is saved and schema is cleaned before returning
+            if self._should_reuse():
+                self.tool_list = await mcp_tool_desc_transform_v2_reuse(
+                    tools=self.mcp_servers,
+                    mcp_config=self.mcp_config,
+                    context=context,
+                    server_instances=self.server_instances,
+                    black_tool_actions=self.black_tool_actions,
+                    sandbox_id=sandbox_id,
+                    tool_actions=self.tool_actions,
+                    server_instances_session=self.server_instances_session
+                )
+            else:
+                self.tool_list = await mcp_tool_desc_transform_v2(
+                    tools=self.mcp_servers,
+                    mcp_config=self.mcp_config,
+                    context=context,
+                    server_instances=self.server_instances,
+                    black_tool_actions=self.black_tool_actions,
+                    sandbox_id=sandbox_id,
+                    tool_actions=self.tool_actions
+                )
             if self.sandbox and self.tool_list:
                 self._process_and_save_env_content_mapping()
 
             return self.tool_list
         except Exception as e:
-            logger.warning(f"Failed to list tools: {traceback.print_exc()}")
+            logger.warning(f"Failed to list tools: {traceback.format_exc()}")
             return []
+
 
     async def check_tool_params(self, context: Context, server_name: str, tool_name: str,
                                 parameter: Dict[str, Any]) -> Any:
@@ -221,28 +226,35 @@ class McpServers:
                         self._update_metadata(result_key, {"error": str(e)}, operation_info)
                     continue
 
-                # Prioritize using existing server instances
-                server = self.server_instances.get(server_name)
-                env_session_id = self.server_instances_session.get(server_name)
-                if server is None:
-                    # If it doesn't exist, create a new instance and save it
-                    sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
-                    server, env_session_id = await get_server_instance(server_name=server_name,
-                                                                       mcp_config=self.mcp_config, context=context,
-                                                                       sandbox_id=sandbox_id)
-                    if server:
-                        self.server_instances[server_name] = server
-                        if env_session_id:
-                            self.server_instances_session[server_name] = env_session_id
-                        logger.info(f"Created and cached new server instance for {server_name}")
-                    else:
-                        logger.warning(
-                            f"Created new server failed: {server_name}, env_session_id: {env_session_id}, tool_name: {tool_name}")
+                # Define progress callback for this tool call
+                async def progress_callback(
+                        progress: float, total: float | None, message: str | None
+                ):
+                    # for debug vnc
+                    message_str = message.replace('\n', '\\n') if message else message
+                    logger.info(f"McpServers|progress_callback|{progress}|{total}|{message_str}")
+                    try:
+                        output = Output()
+                        output.data = message
+                        tool_output_message = Message(
+                            category=Constants.OUTPUT,
+                            payload=output,
+                            sender=f"{server_name}__{tool_name}",
+                            session_id=context.session_id if context else "",
+                            headers={"context": context}
+                        )
+                        sync_exec(send_message, tool_output_message)
+                    except BaseException as e:
+                        logger.warning(f"Error calling progress callback: {e}")
 
-                        self._update_metadata(result_key, {"error": "Failed to create server instance"}, operation_info)
-                        continue
+                # Check and supplement tool parameters
+                await self.check_tool_params(
+                    context=context,
+                    server_name=server_name,
+                    tool_name=tool_name,
+                    parameter=parameter
+                )
 
-                # Use server instance to call the tool
                 call_result_raw = None
                 action_result = ActionResult(
                     tool_name=server_name,
@@ -250,54 +262,49 @@ class McpServers:
                     content="",
                     keep=True
                 )
-
                 call_mcp_e = None
-                max_retry = 3
-                for i in range(max_retry):
-                    # Initialize subscription (only once) - check inside loop but only execute once
-                    if self.sandbox and self.sandbox.streaming:
-                        if not hasattr(self, '_tool_result_handler'):
-                            self._init_tool_result_subscription(env_session_id=env_session_id, context=context, result_key=result_key)
-                    try:
-                        async def progress_callback(
-                                progress: float, total: float | None, message: str | None
-                        ):
-                            # for debug vnc
-                            message_str = message.replace('\n', '\\n') if message else message
-                            logger.info(f"McpServers|progress_callback|{progress}|{total}|{message_str}")
-                            try:
-                                output = Output()
-                                output.data = message
-                                tool_output_message = Message(
-                                    category=Constants.OUTPUT,
-                                    payload=output,
-                                    sender=f"{server_name}__{tool_name}",
-                                    session_id=context.session_id if context else "",
-                                    headers={"context": context}
-                                )
-                                sync_exec(send_message, tool_output_message)
-                            except BaseException as e:
-                                logger.warning(f"Error calling progress callback: {e}")
 
-                        await self.check_tool_params(context=context, server_name=server_name, tool_name=tool_name,
-                                                     parameter=parameter)
-                        call_result_raw = await asyncio.wait_for(
-                            server.call_tool(tool_name=tool_name, arguments=parameter,
-                                             progress_callback=progress_callback),
-                            timeout=120
-                        )
+                sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
 
-                        break
-                    except BaseException as e:
-                        call_mcp_e = e
-                        logger.warning(
-                            f"Error calling tool error: {e}. Extra info: session_id = {session_id}, tool_name = {tool_name}."
-                            f"Traceback:\n{traceback.format_exc()}"
-                        )
+                if self._should_reuse():
+                    # Reuse mode: use cached server instances (delegated to utils.py)
+                    call_result_raw = await call_mcp_tool_with_reuse(
+                        server_name=server_name,
+                        tool_name=tool_name,
+                        parameter=parameter,
+                        server_instances=self.server_instances,
+                        mcp_config=self.mcp_config,
+                        context=context,
+                        sandbox_id=sandbox_id,
+                        progress_callback=progress_callback,
+                        max_retry=3,
+                        timeout=120.0
+                    )
+
+                    if not call_result_raw:
+                        call_mcp_e = Exception("Failed to call tool after all retry attempts")
+                else:
+                    # Non-reuse mode: use AsyncExitStack (delegated to utils.py)
+                    call_result_raw = await call_mcp_tool_with_exit_stack(
+                        server_name=server_name,
+                        tool_name=tool_name,
+                        parameter=parameter,
+                        mcp_config=self.mcp_config,
+                        context=context,
+                        sandbox_id=sandbox_id,
+                        progress_callback=progress_callback,
+                        max_retry=3,
+                        timeout=120.0
+                    )
+
+                    if not call_result_raw:
+                        call_mcp_e = Exception("Failed to call tool after all retry attempts")
+
                 logger.info(f"tool_name:{server_name},action_name:{tool_name} finished.")
                 logger.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
+
                 if not call_result_raw:
-                    logger.warning(f"Error calling tool with cached server")
+                    logger.warning(f"Error calling tool: {server_name}__{tool_name}")
                     action_result = ActionResult(
                         tool_name=server_name,
                         action_name=tool_name,
@@ -307,18 +314,7 @@ class McpServers:
                         parameter=parameter
                     )
                     results.append(action_result)
-
                     self._update_metadata(result_key, {"error": call_mcp_e}, operation_info)
-
-                    # If using cached server instance fails, try to clean up and recreate
-                    if server_name in self.server_instances:
-                        try:
-                            await cleanup_server(self.server_instances[server_name])
-                            del self.server_instances[server_name]
-                            if server_name in self.server_instances_session:
-                                del self.server_instances_session[server_name]
-                        except Exception as e:
-                            logger.warning(f"Failed to cleanup server {server_name}: {e}")
                 else:
                     if call_result_raw and call_result_raw.content:
                         metadata = call_result_raw.content[0].model_extra.get("metadata", {})
@@ -370,7 +366,7 @@ class McpServers:
         Process env_content parameters in tool schemas.
         Removes env_content parameters from tool schemas and saves mapping relationships.
         This ensures LLM doesn't see these parameters, but they will be injected during tool calls.
-        
+
         This method should be called immediately after mcp_tool_desc_transform_v2 generates tool_list
         to ensure the mapping is saved before the schema is returned.
         """
@@ -419,13 +415,13 @@ class McpServers:
                                       event_message: Message = None):
         """
         Inject env_content parameter into tool call parameters.
-        
+
         This method:
         1. Checks if the tool needs env_content injection (based on mapping)
         2. Builds env_content value from sandbox.env_content (user-defined)
         3. Dynamically adds task_id and session_id from context
         4. Merges into parameter (user-provided values take priority)
-        
+
         Args:
             tool_key: Tool identifier in format "server_name__tool_name"
             parameter: Tool call parameters dictionary (will be modified)
@@ -512,7 +508,7 @@ class McpServers:
 
     def _init_tool_result_subscription(self, env_session_id: Optional[str] = None, context: Context = None, result_key: Optional[str] = None):
         """Initialize subscription for tool results.
-        
+
         Args:
             env_session_id: Environment session ID for WebSocket connection
             context: Context object containing task_id and session_id
@@ -544,7 +540,7 @@ class McpServers:
                 parent_task_id = None
                 if context and hasattr(context, 'task_id') and context.task_id:
                     parent_task_id = context.task_id
-                
+
                 bg_msg = BackgroundTaskMessage(
                         background_task_id=f"bg_{uuid.uuid4().hex}",
                         parent_task_id=parent_task_id,
@@ -565,7 +561,10 @@ class McpServers:
 
     # Add cleanup method, called when Sandbox is destroyed
     async def cleanup(self):
-        """Clean up all server connections"""
+        """Clean up all server connections (only needed when reuse=True)"""
+        if not self._should_reuse():
+            return
+
         for server_name, server in list(self.server_instances.items()):
             try:
                 await cleanup_server(server)

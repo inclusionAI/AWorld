@@ -30,6 +30,7 @@ class BaseSandbox(Sandbox):
             streaming: bool = False,
             env_content_name: Optional[str] = None,
             env_content: Optional[Dict[str, Any]] = None,
+            reuse: bool = False,
     ):
         """
         Initialize a new BaseSandbox instance.
@@ -48,13 +49,13 @@ class BaseSandbox(Sandbox):
             custom_env_tools: Custom environment tools. Optional parameter.
             agents: Custom environment agents. Optional parameter.
                 Supports two formats (mixed mode):
-                
+
                 Simple format (auto-detected):
                 {
                     "local_agent": "/path/to/agent.py",
                     "remote_agent": "https://github.com/..."
                 }
-                
+
                 Extended format (with additional config):
                 {
                     "advanced_agent": {
@@ -65,13 +66,14 @@ class BaseSandbox(Sandbox):
                         # ... other optional config
                     }
                 }
-                
+
                 Note: If "type" is provided, it will be used directly (case-insensitive).
                       If "type" is not provided, the function will auto-detect based on location.
             streaming: Whether to enable streaming for tool responses. Defaults to False.
             env_content_name: Parameter name for environment content in tool schemas. Defaults to "env_content".
             env_content: User-defined context values to be automatically injected into tool calls.
                 Note that task_id and session_id are added dynamically from context during tool calls.
+            reuse: Whether to reuse MCP server connections. Default is False.
         """
         super().__init__(
             sandbox_id=sandbox_id,
@@ -88,16 +90,17 @@ class BaseSandbox(Sandbox):
             agents=agents,
             streaming=streaming,
             env_content_name=env_content_name,
-            env_content=env_content
+            env_content=env_content,
+            reuse=reuse
         )
         self._logger = self._setup_logger()
         # Track if sandbox has been initialized (for lazy initialization support)
         self._initialized = False
-    
+
     def _trigger_reinitialize(self, reinit_type: str = "mcpservers", attribute_name: str = ""):
         """
         Helper method to trigger reinitialization based on type.
-        
+
         Args:
             reinit_type: Type of reinitialization - "mcpservers" (lightweight) or "full" (complete)
             attribute_name: Name of the attribute being changed (for error messages)
@@ -114,7 +117,7 @@ class BaseSandbox(Sandbox):
                     self._initialize_sandbox()
                 except Exception as e:
                     logger.warning(f"Failed to reinitialize sandbox after {attribute_name} change: {e}")
-        
+
     def _setup_logger(self):
         """
         Set up a logger for the sandbox instance.
@@ -144,7 +147,7 @@ class BaseSandbox(Sandbox):
         Module for running MCP servers in the sandbox.
         This property provides access to the MCP servers instance.
         If sandbox is not initialized yet, it will attempt to initialize automatically.
-        
+
         Returns:
             McpServers: The MCP servers instance, or None if not initialized.
         """
@@ -164,119 +167,119 @@ class BaseSandbox(Sandbox):
     def mcp_config(self) -> Any:
         """Returns the MCP configuration."""
         return self._mcp_config
-    
+
     @mcp_config.setter
     def mcp_config(self, value: Any):
         """Set MCP configuration and reinitialize if needed."""
         self._mcp_config = value or {}
         self._trigger_reinitialize("mcpservers", "mcp_config")
-    
+
     @property
     def black_tool_actions(self) -> Dict[str, List[str]]:
         """Returns the list of black-listed tools."""
         return self._black_tool_actions
-    
+
     @black_tool_actions.setter
     def black_tool_actions(self, value: Dict[str, List[str]]):
         """Set black tool actions and reinitialize if needed."""
         self._black_tool_actions = value or {}
         self._trigger_reinitialize("mcpservers", "black_tool_actions")
-    
+
     @property
     def mcp_servers(self) -> List[str]:
         """Returns the list of MCP servers."""
         return self._mcp_servers
-    
+
     @mcp_servers.setter
     def mcp_servers(self, value: List[str]):
         """Set MCP servers list and reinitialize if needed."""
         self._mcp_servers = value or []
         self._trigger_reinitialize("mcpservers", "mcp_servers")
-    
+
     @property
     def skill_configs(self) -> Any:
         """Returns the skill configurations."""
         return self._skill_configs
-    
+
     @skill_configs.setter
     def skill_configs(self, value: Any):
         """Set skill configurations and reinitialize if needed."""
         self._skill_configs = value or {}
         self._trigger_reinitialize("mcpservers", "skill_configs")
-    
+
     @property
     def tools(self) -> List[str]:
         """Returns the list of tools."""
         return self._tools
-    
+
     @tools.setter
     def tools(self, value: List[str]):
         """Set tools list. May trigger reinitialization if sandbox is already initialized."""
         self._tools = value or []
         self._trigger_reinitialize("full", "tools")
-    
+
     @property
     def registry_url(self) -> str:
         """Returns the environment registry URL."""
         return self._registry_url
-    
+
     @registry_url.setter
     def registry_url(self, value: str):
         """Set registry URL. May trigger reinitialization if sandbox is already initialized."""
         self._registry_url = value or ""
         self._trigger_reinitialize("full", "registry_url")
-    
+
     @property
     def custom_env_tools(self) -> Optional[Any]:
         """Returns the custom environment tools."""
         return self._custom_env_tools
-    
+
     @custom_env_tools.setter
     def custom_env_tools(self, value: Optional[Any]):
         """Set custom environment tools. May trigger reinitialization if sandbox is already initialized."""
         self._custom_env_tools = value
         self._trigger_reinitialize("mcpservers", "custom_env_tools")
-    
+
     @property
     def agents(self) -> Optional[Dict[str, Any]]:
         """Returns the custom environment agents."""
         return self._agents
-    
+
     @agents.setter
     def agents(self, value: Optional[Dict[str, Any]]):
         """Set custom environment agents. May trigger reinitialization if sandbox is already initialized."""
         self._agents = value
         self._trigger_reinitialize("mcpservers", "agents")
-    
+
     @property
     def metadata(self) -> Dict[str, Any]:
         """Returns the sandbox metadata."""
         return self._metadata
-    
+
     @metadata.setter
     def metadata(self, value: Dict[str, Any]):
         """Set sandbox metadata."""
         self._metadata = value or {}
-    
+
     @property
     def timeout(self) -> int:
         """Returns the timeout value for sandbox operations."""
         return self._timeout
-    
+
     @timeout.setter
     def timeout(self, value: int):
         """Set timeout value for sandbox operations."""
         self._timeout = value or self.default_sandbox_timeout
-    
+
     @property
     def env_content_name(self) -> str:
         """Returns the environment content parameter name used in tool schemas."""
         return self._env_content_name
-    
+
     @env_content_name.setter
     def env_content_name(self, value: str):
         """Set environment content parameter name and reinitialize if needed.
-        
+
         Changing env_content_name requires reprocessing tool schemas to remove
         the old parameter name and handle the new one.
         """
@@ -286,21 +289,21 @@ class BaseSandbox(Sandbox):
         # to reprocess tool schemas with the new parameter name
         if old_value != self._env_content_name and self._initialized:
             self._trigger_reinitialize("mcpservers", "env_content_name")
-    
+
     @property
     def env_content(self) -> Dict[str, Any]:
         """Returns the environment content values (user-defined context)."""
         return self._env_content
-    
+
     @env_content.setter
     def env_content(self, value: Dict[str, Any]):
         """Set environment content values.
-        
+
         Changing env_content only affects the values injected during tool calls,
         it does not affect tool schemas, so no reinitialization is needed.
         """
         self._env_content = value or {}
-    
+
     @abc.abstractmethod
     def get_skill_list(self) -> Optional[Any]:
         """

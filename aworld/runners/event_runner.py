@@ -364,7 +364,8 @@ class TaskEventRunner(TaskRunner):
                     for agent_name, agent in self.swarm.agents.items():
                         try:
                             if hasattr(agent, 'sandbox') and agent.sandbox:
-                                await agent.sandbox.cleanup()
+                                pass
+                                #await agent.sandbox.cleanup()
                         except Exception as e:
                             logger.warning(f"Failed to cleanup sandbox for agent {agent_name}: {e}")
 
