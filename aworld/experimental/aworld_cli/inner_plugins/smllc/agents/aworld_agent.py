@@ -412,39 +412,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
         system_prompt=aworld_system_prompt,
-        human_tools=[HUMAN],
-        mcp_servers=["filesystem-server", "terminal-server"],
-        ptc_tools=["read_file", "write_file", "edit_file"],
-        mcp_config={
-            "mcpServers": {
-                "filesystem-server": {
-                    "type": "stdio",
-                    "command": "npx",
-                    "args": [
-                        "-y",
-                        "@modelcontextprotocol/server-filesystem",
-                        current_working_dir
-                    ],
-                    "env": {
-                        # Suppress npx and filesystem-server output
-                        "NODE_ENV": "production",
-                        "NPX_QUIET": "1"
-                    }
-                },
-                "terminal-server": {
-                    "type": "stdio",
-                    "command": "python",
-                    "args": [
-                        "-m",
-                        "aworld.experimental.aworld_cli.mcptools.terminal_server"
-                    ],
-                    "env": {
-                        # Suppress Python warnings and info logs
-                        "PYTHONWARNINGS": "ignore"
-                    }
-                }
-            }
-        }
+        human_tools=[HUMAN]
     )
 
     # Load all registered agents as sub-agents
