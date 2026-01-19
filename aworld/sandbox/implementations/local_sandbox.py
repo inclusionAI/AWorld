@@ -51,6 +51,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             custom_env_tools: Custom environment tools. Optional parameter.
             **kwargs: Additional parameters for specific sandbox types.
         """
+        # Extract reuse from kwargs if present
+        reuse = kwargs.pop('reuse', False)
         super().__init__(
             sandbox_id=sandbox_id,
             env_type=SandboxEnvType.LOCAL,
@@ -62,7 +64,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             skill_configs=skill_configs,
             tools=tools,
             registry_url=registry_url,
-            custom_env_tools=custom_env_tools
+            custom_env_tools=custom_env_tools,
+            reuse=reuse
         )
 
         # Initialize properties

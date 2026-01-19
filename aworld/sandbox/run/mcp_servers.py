@@ -1,15 +1,8 @@
 import json
 import traceback
-from contextlib import AsyncExitStack
-
-import time
-from aworld.logs.util import logger
-import os
-import asyncio
 
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
-# from fastmcp.server.middleware import Middleware, MiddlewareContext
 
 
 from aworld.utils.common import sync_exec
@@ -20,7 +13,7 @@ from aworld.core.event.base import Message, Constants
 from typing_extensions import Optional, List, Dict, Any
 
 from aworld.mcp_client.utils import mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
-    call_function_tool, mcp_tool_desc_transform_v2, call_mcp_tool_with_exit_stack
+    call_function_tool, mcp_tool_desc_transform_v2, mcp_tool_desc_transform_v2_reuse, call_mcp_tool_with_exit_stack, call_mcp_tool_with_reuse
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult
@@ -48,6 +41,10 @@ class McpServers:
         self.black_tool_actions = black_tool_actions or {}
         self.map_tool_list = {}
         self.tool_actions = tool_actions or []
+    
+    def _should_reuse(self) -> bool:
+        """Check if server connections should be reused based on sandbox.reuse."""
+        return bool(self.sandbox and hasattr(self.sandbox, 'reuse') and self.sandbox.reuse)
 
     async def list_tools(self, context: Context = None) -> List[Dict[str, Any]]:
         if self.tool_list:
@@ -56,20 +53,32 @@ class McpServers:
             return []
         try:
             sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
-            self.tool_list = await mcp_tool_desc_transform_v2(
-                tools=self.mcp_servers,
-                mcp_config=self.mcp_config,
-                context=context,
-                server_instances=self.server_instances,
-                black_tool_actions=self.black_tool_actions,
-                sandbox_id=sandbox_id,
-                tool_actions=self.tool_actions
-            )
+            if self._should_reuse():
+                self.tool_list = await mcp_tool_desc_transform_v2_reuse(
+                    tools=self.mcp_servers,
+                    mcp_config=self.mcp_config,
+                    context=context,
+                    server_instances=self.server_instances,
+                    black_tool_actions=self.black_tool_actions,
+                    sandbox_id=sandbox_id,
+                    tool_actions=self.tool_actions
+                )
+            else:
+                self.tool_list = await mcp_tool_desc_transform_v2(
+                    tools=self.mcp_servers,
+                    mcp_config=self.mcp_config,
+                    context=context,
+                    server_instances=self.server_instances,
+                    black_tool_actions=self.black_tool_actions,
+                    sandbox_id=sandbox_id,
+                    tool_actions=self.tool_actions
+                )
             return self.tool_list
         except Exception as e:
-            logger.warning(f"Failed to list tools: {traceback.print_exc()}")
+            logger.warning(f"Failed to list tools: {traceback.format_exc()}")
             return []
 
+    
     async def check_tool_params(self, context: Context, server_name: str, tool_name: str,
                                 parameter: Dict[str, Any]) -> Any:
         """
@@ -196,18 +205,6 @@ class McpServers:
                         self._update_metadata(result_key, {"error": str(e)}, operation_info)
                     continue
 
-                # Use AsyncExitStack to manage server connection (no caching)
-                # Each call creates a new connection and cleans up after use
-                # Delegate to call_mcp_tool_with_exit_stack in utils.py for cleaner code
-                call_result_raw = None
-                action_result = ActionResult(
-                    tool_name=server_name,
-                    action_name=tool_name,
-                    content="",
-                    keep=True
-                )
-                call_mcp_e = None
-                
                 # Define progress callback for this tool call
                 async def progress_callback(
                         progress: float, total: float | None, message: str | None
@@ -237,22 +234,50 @@ class McpServers:
                     parameter=parameter
                 )
                 
-                # Call tool using AsyncExitStack (delegated to utils.py)
-                sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
-                call_result_raw = await call_mcp_tool_with_exit_stack(
-                    server_name=server_name,
-                    tool_name=tool_name,
-                    parameter=parameter,
-                    mcp_config=self.mcp_config,
-                    context=context,
-                    sandbox_id=sandbox_id,
-                    progress_callback=progress_callback,
-                    max_retry=3,
-                    timeout=120.0
+                call_result_raw = None
+                action_result = ActionResult(
+                    tool_name=server_name,
+                    action_name=tool_name,
+                    content="",
+                    keep=True
                 )
+                call_mcp_e = None
                 
-                if not call_result_raw:
-                    call_mcp_e = Exception("Failed to call tool after all retry attempts")
+                sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
+                
+                if self._should_reuse():
+                    # Reuse mode: use cached server instances (delegated to utils.py)
+                    call_result_raw = await call_mcp_tool_with_reuse(
+                        server_name=server_name,
+                        tool_name=tool_name,
+                        parameter=parameter,
+                        server_instances=self.server_instances,
+                        mcp_config=self.mcp_config,
+                        context=context,
+                        sandbox_id=sandbox_id,
+                        progress_callback=progress_callback,
+                        max_retry=3,
+                        timeout=120.0
+                    )
+                    
+                    if not call_result_raw:
+                        call_mcp_e = Exception("Failed to call tool after all retry attempts")
+                else:
+                    # Non-reuse mode: use AsyncExitStack (delegated to utils.py)
+                    call_result_raw = await call_mcp_tool_with_exit_stack(
+                        server_name=server_name,
+                        tool_name=tool_name,
+                        parameter=parameter,
+                        mcp_config=self.mcp_config,
+                        context=context,
+                        sandbox_id=sandbox_id,
+                        progress_callback=progress_callback,
+                        max_retry=3,
+                        timeout=120.0
+                    )
+                    
+                    if not call_result_raw:
+                        call_mcp_e = Exception("Failed to call tool after all retry attempts")
                 
                 logger.info(f"tool_name:{server_name},action_name:{tool_name} finished.")
                 logger.debug(f"tool_name:{server_name},action_name:{tool_name} call-mcp-tool-result: {call_result_raw}")
@@ -351,7 +376,10 @@ class McpServers:
 
     # Add cleanup method, called when Sandbox is destroyed
     async def cleanup(self):
-        """Clean up all server connections"""
+        """Clean up all server connections (only needed when reuse=True)"""
+        if not self._should_reuse():
+            return
+        
         for server_name, server in list(self.server_instances.items()):
             try:
                 await cleanup_server(server)
