@@ -168,6 +168,12 @@ Server Mode:
   
   # 带时长限制运行
   aworld-cli --task "add features" --agent MyAgent --max-duration 2h
+  
+  # 使用本地图片文件运行
+  aworld-cli --task "分析这张图片 @photo.jpg" --agent MyAgent
+  
+  # 使用远程图片 URL 运行
+  aworld-cli --task "分析这张图片 @https://example.com/image.png" --agent MyAgent
 
 远程后端：
   # 使用远程后端
@@ -718,7 +724,7 @@ async def _run_direct_mode(
     Run agent in direct mode (non-interactive).
     
     Args:
-        prompt: User prompt (may contain @ file references for images)
+        prompt: User prompt (may contain @ file references for images, supports both local files and remote URLs)
         agent_name: Agent name
         max_runs: Maximum number of runs (default: 1 if not specified)
         max_cost: Maximum cost in USD
