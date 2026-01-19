@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, List
 
 from aworld.utils.skill_loader import SkillRegistry, DEFAULT_CACHE_DIR
+
 from aworld.logs.util import logger
 
 # Global SkillRegistry instance
@@ -93,12 +94,14 @@ def get_skill_registry(
             # Register default skills directory if it exists
             if default_skills_dir.exists() and default_skills_dir.is_dir():
                 try:
+                    from .._globals import console
+                    
                     count = _global_registry.register_source(
                         str(default_skills_dir),
                         source_name="default_skills"
                     )
                     if count > 0:
-                        print(f"📚 Registered default skills directory: {default_skills_dir} ({count} skills)")
+                        console.print(f"[dim]📚 Registered default skills directory: {default_skills_dir} ({count} skills)[/dim]")
                     logger.info(f"📚 Auto-registered default skills directory: {default_skills_dir} ({count} skills)")
                 except Exception as e:
                     logger.debug(f"ℹ️ Default skills directory already registered or failed: {default_skills_dir}: {e}")

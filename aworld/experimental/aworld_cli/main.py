@@ -2,19 +2,18 @@
 Command-line entry point for aworld-cli.
 Provides CLI interface without requiring aworldappinfra.
 """
-
-
 import argparse
 import os
 import sys
+import time
+import asyncio
+from typing import Optional
 
 # Set environment variable to disable console logging before importing aworld modules
 # This ensures all AWorldLogger instances will disable console output
 os.environ['AWORLD_DISABLE_CONSOLE_LOG'] = 'true'
-import asyncio
-from typing import Optional
 
-# Now import aworld modules (they will respect the environment variable)
+# Import aworld modules (they will respect the environment variable)
 from .runtime.mixed import MixedRuntime
 from .console import AWorldCLI
 from .models import AgentInfo
@@ -63,8 +62,6 @@ async def load_all_agents(
 
 
 def main():
-    from dotenv import load_dotenv
-
     """
     Entry point for the AWorld CLI.
     Supports both interactive and non-interactive (direct run) modes.
@@ -417,7 +414,7 @@ Agent 文件：
         help='MCP server port for SSE/streamable-http transport (default: 8001)'
     )
     
-    # Parse arguments normally
+    # Parse arguments
     args = parser.parse_args()
     
     # Handle --examples flag: show examples and exit
@@ -463,11 +460,14 @@ Agent 文件：
         return
     
     # Load environment variables
+    from dotenv import load_dotenv
     load_dotenv(args.env_file)
     
     # Initialize skill registry early with command-line arguments (overrides env vars)
     # This ensures skill registry is ready before agents are loaded
+    from ._globals import console
     from .core.skill_registry import get_skill_registry
+    
     if args.skill_path:
         # Initialize registry with command-line skill paths (these take precedence)
         registry = get_skill_registry(skill_paths=args.skill_path)
@@ -479,9 +479,7 @@ Agent 文件：
     all_skills = registry.get_all_skills()
     if all_skills:
         skill_names = list(all_skills.keys())
-        print(f"📚 Loaded {len(skill_names)} global skill(s): {', '.join(skill_names)}")
-    else:
-        print("📚 No global skills loaded")
+        console.print(f"[dim]📚 Loaded {len(skill_names)} global skill(s): {', '.join(skill_names)}[/dim]")
 
     # Handle 'list' command separately before setting up the full app loop if possible
     if args.command == "list":
@@ -736,6 +734,8 @@ async def _run_direct_mode(
         local_dirs: Optional list of local agent directories
         agent_files: Optional list of individual agent file paths
     """
+    from ._globals import console
+    
     # Load individual agent files first if provided
     if agent_files:
         from .core.loader import init_agent_file
@@ -748,6 +748,12 @@ async def _run_direct_mode(
     # Use MixedRuntime to load agents and create executor
     runtime = MixedRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
     all_agents = await runtime._load_agents()
+    
+    # Temporary: Print all loaded Python files
+    if hasattr(runtime, '_loaded_python_files') and runtime._loaded_python_files:
+        console.print(f"[dim]📋 Loaded Python files ({len(runtime._loaded_python_files)}):[/dim]")
+        for py_file in runtime._loaded_python_files:
+            console.print(f"[dim]  - {py_file}[/dim]")
     
     # Find the requested agent
     selected_agent = None
@@ -762,6 +768,7 @@ async def _run_direct_mode(
     
     # Create agent executor using MixedRuntime
     agent_executor = await runtime._create_executor(selected_agent)
+    
     if not agent_executor:
         print(f"❌ Error: Failed to create executor for agent '{agent_name}'")
         return
@@ -770,28 +777,21 @@ async def _run_direct_mode(
     if max_runs is None:
         max_runs = 1
     
-    # Parse @ file references for multimodal support
-    from .utils import parse_file_references
-    cleaned_prompt, image_urls = parse_file_references(prompt)
-    
-    # Prepare prompt for continuous executor
-    if image_urls:
-        print(f"📷 Found {len(image_urls)} image(s) in prompt")
-        # Pass as tuple (text, image_urls) for multimodal support
-        multimodal_prompt = (cleaned_prompt, image_urls)
-    else:
-        multimodal_prompt = cleaned_prompt
+    # File parsing is now handled by FileParseHook automatically
+    # Just pass the prompt as-is, the hook will process @filename references
+    # For direct mode, we still need to handle the format for backward compatibility
+    # but FileParseHook will do the actual parsing
+    multimodal_prompt = prompt
     
     # Create continuous executor and run
     # Use global console to ensure consistent output across all components
-    from ._globals import console
-    
     # Ensure agent_executor uses the global console for output rendering
     if hasattr(agent_executor, 'console'):
         agent_executor.console = console
     
     continuous_executor = ContinuousExecutor(agent_executor, console=console)
     
+    # Run task execution
     await continuous_executor.run_continuous(
         prompt=multimodal_prompt,
         agent_name=agent_name,

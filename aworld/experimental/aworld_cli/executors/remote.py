@@ -262,6 +262,10 @@ class RemoteAgentExecutor(BaseAgentExecutor):
         # Update session last used time (inherited from BaseAgentExecutor)
         self._update_session_last_used(self.session_id)
         
+        # Process @filename file references before sending to remote server
+        # For remote executor, we need to process files on client side
+        message = await self._process_file_references(message)
+        
         async with httpx.AsyncClient(timeout=300.0) as client:
             url = f"{self.backend_url}/chat/completions"
             
@@ -385,6 +389,52 @@ class RemoteAgentExecutor(BaseAgentExecutor):
                 error_msg = f"Connection Error: {str(e)}"
                 self.console.print(f"[red]{error_msg}[/red]")
                 return error_msg
+    
+    async def _process_file_references(self, message: Union[str, tuple[str, List[str]]]) -> Union[str, tuple[str, List[str]]]:
+        """
+        Process @filename file references in message.
+        
+        For remote executor, files must be processed on client side before sending to server.
+        This method handles:
+        - Text files: Reads content and merges into message text
+        - Image files: Converts to base64 data URLs and adds to image_urls
+        
+        Args:
+            message: Original message (string or tuple)
+            
+        Returns:
+            Processed message with files resolved (string or tuple)
+        """
+        # Import file parsing utility
+        from ..utils import parse_file_references
+        
+        # Extract text and image_urls
+        if isinstance(message, tuple):
+            text, existing_image_urls = message
+        else:
+            text = message
+            existing_image_urls = []
+        
+        # Parse file references
+        cleaned_text, image_urls, text_file_content = parse_file_references(text)
+        
+        # Merge text file content into cleaned text
+        if text_file_content:
+            if cleaned_text:
+                final_text = cleaned_text + text_file_content
+            else:
+                final_text = text_file_content.strip()
+        else:
+            final_text = cleaned_text
+        
+        # Combine existing image_urls with newly parsed ones
+        all_image_urls = existing_image_urls + image_urls
+        
+        # Return in appropriate format
+        if all_image_urls:
+            return (final_text, all_image_urls)
+        else:
+            return final_text
 
 __all__ = ["RemoteAgentExecutor"]
 

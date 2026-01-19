@@ -166,6 +166,7 @@ class AWorldCLI:
             table.add_row(str(idx), agent.name, desc, agent_source_type, agent_source_location)
 
         self.console.print(table)
+        self.console.print("[dim]Type 'exit' to cancel selection.[/dim]")
 
         # Check if we're in a real terminal
         is_terminal = sys.stdin.isatty()
@@ -177,6 +178,12 @@ class AWorldCLI:
                 # Fallback for non-terminal environments
                 self.console.print("Select an agent number [default: 1]: ", end="")
                 choice = input().strip() or "1"
+            
+            # Check for exit command
+            if choice.lower() in ("exit", "quit", "q"):
+                self.console.print("[yellow]Selection cancelled.[/yellow]")
+                return None
+            
             try:
                 idx = int(choice) - 1
                 if 0 <= idx < len(agents):
@@ -186,7 +193,7 @@ class AWorldCLI:
                 else:
                     self.console.print("[red]Invalid selection. Please try again.[/red]")
             except ValueError:
-                self.console.print("[red]Please enter a valid number.[/red]")
+                self.console.print("[red]Please enter a valid number or 'exit' to cancel.[/red]")
     
     def select_team(self, teams: List[AgentInfo], source_type: str = "LOCAL", source_location: str = "") -> Optional[AgentInfo]:
         """
@@ -266,7 +273,8 @@ class AWorldCLI:
             f"Type 'exit' to quit.\n"
             f"Type '/switch [agent_name]' to switch agent.\n"
             f"Type '/new' to create a new session.\n"
-            f"Type '/restore' or '/latest' to restore to the latest session."
+            f"Type '/restore' or '/latest' to restore to the latest session.\n"
+            f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
         self.console.print(Panel(help_text, style="blue"))
         
@@ -356,17 +364,10 @@ class AWorldCLI:
                 self.console.print(f"[bold green]{agent_name}[/bold green]:")
                 
                 try:
-                    # Parse @ file references for multimodal support
-                    from .utils import parse_file_references
-                    cleaned_text, image_urls = parse_file_references(user_input)
-                    
-                    # Execute the task/chat with text and images
-                    if image_urls:
-                        # Pass as tuple (text, image_urls) for multimodal support
-                        response = await executor((cleaned_text, image_urls))
-                    else:
-                        # Execute the task/chat with text only
-                        response = await executor(cleaned_text)
+                    # File parsing is now handled by FileParseHook automatically
+                    # Just pass the user input as-is, the hook will process @filename references
+                    # Execute the task/chat (FileParseHook will handle file parsing)
+                    response = await executor(user_input)
                     # Response is returned for potential future use, but content is already printed by executor
                 except Exception as e:
                     self.console.print(f"[bold red]Error executing task:[/bold red] {e}")

@@ -9,41 +9,48 @@ from urllib.parse import urlparse
 import httpx
 
 
-def parse_file_references(text: str) -> Tuple[str, List[str]]:
+def parse_file_references(text: str) -> Tuple[str, List[str], str]:
     """
     Parse @ file references from text and extract file paths or remote URLs.
+    Supports both image files (as data URLs) and text files (content merged into text).
     
     Supports patterns like:
-    - @filename.jpg (local file)
-    - @path/to/file.png (local file)
-    - @./relative/path/image.gif (local file)
-    - @https://example.com/image.jpg (remote URL)
-    - @http://example.com/image.png (remote URL)
+    - @filename.jpg (local image file)
+    - @path/to/file.png (local image file)
+    - @./relative/path/image.gif (local image file)
+    - @https://example.com/image.jpg (remote image URL)
+    - @http://example.com/image.png (remote image URL)
+    - @document.txt (local text file - content will be merged)
+    - @./path/to/file.md (local text file - content will be merged)
     
     Args:
         text: Input text that may contain @ file references
         
     Returns:
-        Tuple of (cleaned_text, image_urls) where:
+        Tuple of (cleaned_text, image_urls, text_file_content) where:
         - cleaned_text: Text with @ references removed
         - image_urls: List of image data URLs (base64 encoded)
+        - text_file_content: Merged content from all text files referenced
         
     Example:
         >>> text = "Analyze this image @photo.jpg"
-        >>> cleaned, urls = parse_file_references(text)
+        >>> cleaned, urls, text_content = parse_file_references(text)
         >>> # cleaned = "Analyze this image"
         >>> # urls = ["data:image/jpeg;base64,..."]
+        >>> # text_content = ""
         
-        >>> text = "Check this @https://example.com/image.png"
-        >>> cleaned, urls = parse_file_references(text)
-        >>> # cleaned = "Check this"
-        >>> # urls = ["data:image/png;base64,..."]
+        >>> text = "Review this @document.txt"
+        >>> cleaned, urls, text_content = parse_file_references(text)
+        >>> # cleaned = "Review this"
+        >>> # urls = []
+        >>> # text_content = "Content from document.txt..."
     """
     # Pattern to match @ followed by a file path or URL
     # Matches: @filename, @path/to/file, @./relative/path, @https://...
     pattern = r'@([^\s@]+)'
     
     image_urls: List[str] = []
+    text_file_contents: List[str] = []
     cleaned_text = text
     
     # Find all matches
@@ -114,8 +121,37 @@ def parse_file_references(text: str) -> Tuple[str, List[str]]:
                         # If file read fails, keep the reference in text
                         print(f"⚠️ Failed to read file {file_path}: {e}")
                 else:
-                    # Not an image file, keep the reference in text
-                    print(f"⚠️ File {file_path} is not a supported image format")
+                    # Try to read as text file
+                    try:
+                        # Try UTF-8 first
+                        try:
+                            with open(file_path, 'r', encoding='utf-8') as f:
+                                file_content = f.read()
+                        except UnicodeDecodeError:
+                            # Try other common encodings
+                            for encoding in ['gbk', 'gb2312', 'latin-1']:
+                                try:
+                                    with open(file_path, 'r', encoding=encoding) as f:
+                                        file_content = f.read()
+                                    break
+                                except UnicodeDecodeError:
+                                    continue
+                            else:
+                                # If all encodings fail, skip this file
+                                print(f"⚠️ Failed to decode text file {file_path} with common encodings")
+                                continue
+                        
+                        # Add file content with filename header
+                        file_name = file_path.name
+                        text_file_contents.insert(0, f"\n\n--- Content from {file_name} ---\n{file_content}\n--- End of {file_name} ---\n")
+                        
+                        # Remove the @ reference from text
+                        start, end = match.span()
+                        cleaned_text = cleaned_text[:start] + cleaned_text[end:]
+                        
+                    except Exception as e:
+                        # If file read fails, keep the reference in text
+                        print(f"⚠️ Failed to read text file {file_path}: {e}")
             else:
                 # File doesn't exist, keep the reference in text
                 print(f"⚠️ File not found: {file_path}")
@@ -123,7 +159,10 @@ def parse_file_references(text: str) -> Tuple[str, List[str]]:
     # Clean up extra whitespace
     cleaned_text = re.sub(r'\s+', ' ', cleaned_text).strip()
     
-    return cleaned_text, image_urls
+    # Merge all text file contents
+    text_file_content = ''.join(text_file_contents)
+    
+    return cleaned_text, image_urls, text_file_content
 
 
 def _download_remote_image(url: str) -> Tuple[Optional[bytes], Optional[str]]:
