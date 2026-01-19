@@ -30,7 +30,6 @@ class McpServers:
             black_tool_actions: Dict[str, List[str]] = None,
             skill_configs: Dict[str, Any] = None,
             tool_actions: Optional[List[str]] = None,
-            reuse: bool = False,
     ) -> None:
         self.mcp_servers = mcp_servers
         self.mcp_config = mcp_config
@@ -42,8 +41,10 @@ class McpServers:
         self.black_tool_actions = black_tool_actions or {}
         self.map_tool_list = {}
         self.tool_actions = tool_actions or []
-        # Whether to reuse server connections
-        self.reuse = reuse if sandbox is None else (sandbox.reuse if hasattr(sandbox, 'reuse') else False)
+    
+    def _should_reuse(self) -> bool:
+        """Check if server connections should be reused based on sandbox.reuse."""
+        return bool(self.sandbox and hasattr(self.sandbox, 'reuse') and self.sandbox.reuse)
 
     async def list_tools(self, context: Context = None) -> List[Dict[str, Any]]:
         if self.tool_list:
@@ -52,7 +53,7 @@ class McpServers:
             return []
         try:
             sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
-            if self.reuse:
+            if self._should_reuse():
                 self.tool_list = await mcp_tool_desc_transform_v2_reuse(
                     tools=self.mcp_servers,
                     mcp_config=self.mcp_config,
@@ -244,7 +245,7 @@ class McpServers:
                 
                 sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
                 
-                if self.reuse:
+                if self._should_reuse():
                     # Reuse mode: use cached server instances (delegated to utils.py)
                     call_result_raw = await call_mcp_tool_with_reuse(
                         server_name=server_name,
@@ -376,7 +377,7 @@ class McpServers:
     # Add cleanup method, called when Sandbox is destroyed
     async def cleanup(self):
         """Clean up all server connections (only needed when reuse=True)"""
-        if not self.reuse:
+        if not self._should_reuse():
             return
         
         for server_name, server in list(self.server_instances.items()):
