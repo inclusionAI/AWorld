@@ -105,6 +105,11 @@ class Sandbox(SandboxSetup):
     def reuse(self) -> bool:
         """Returns whether to reuse MCP server connections."""
         return self._reuse
+    
+    @reuse.setter
+    def reuse(self, value: bool) -> None:
+        """Set whether to reuse MCP server connections."""
+        self._reuse = value
 
     @property
     @abc.abstractmethod
