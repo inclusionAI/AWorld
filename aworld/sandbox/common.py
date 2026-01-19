@@ -26,6 +26,7 @@ class BaseSandbox(Sandbox):
             tools: Optional[List[str]] = None,
             registry_url: Optional[str] = None,
             custom_env_tools: Optional[Any] = None,
+            reuse: bool = False,
     ):
         """
         Initialize a new BaseSandbox instance.
@@ -42,6 +43,7 @@ class BaseSandbox(Sandbox):
             tools: List of tools. Optional parameter.
             registry_url: Environment registry URL. Optional parameter, reads from environment variable "ENV_REGISTRY_URL" if not provided, defaults to empty string.
             custom_env_tools: Custom environment tools. Optional parameter.
+            reuse: Whether to reuse MCP server connections. Default is False.
         """
         super().__init__(
             sandbox_id=sandbox_id,
@@ -54,7 +56,8 @@ class BaseSandbox(Sandbox):
             skill_configs=skill_configs,
             tools=tools,
             registry_url=registry_url,
-            custom_env_tools=custom_env_tools
+            custom_env_tools=custom_env_tools,
+            reuse=reuse
         )
         self._logger = self._setup_logger()
         
