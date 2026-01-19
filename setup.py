@@ -270,7 +270,6 @@ setup(
     entry_points={
         "console_scripts": [
             "aworld = aworld.__main__:main",
-            "aworld-cli = aworld.experimental.aworld_cli.main:main",
         ]
     },
 )
