@@ -41,13 +41,13 @@ except ImportError:
 class LocalAgentExecutor(BaseAgentExecutor):
     """
     Executor for local agents.
-    
+
     Only responsible for:
     - Building Task objects
     - Executing tasks locally
     - Workspace management (local-specific)
     - Skill status query (local-specific)
-    
+
     All other capabilities (session management, output rendering, logging) are inherited from BaseAgentExecutor.
     """
     
@@ -68,14 +68,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
             console: Optional Rich console for output
             session_id: Optional session ID. If None, will generate one automatically.
             hooks: Optional list of hook names (registered with HookFactory)
-            
+
         Example:
             >>> executor = LocalAgentExecutor(swarm)
             >>> response = await executor.chat("Hello")
         """
         # Initialize base executor (handles session management, logging, etc.)
         super().__init__(console=console, session_id=session_id)
-        
+
         # Local-specific initialization
         self.swarm = swarm
         self.context_config = context_config
@@ -85,11 +85,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
     def _load_hooks(self) -> Dict[str, List[ExecutorHook]]:
         """
         Load hooks from configuration.
-        
+
         Hooks are provided as a list of hook names (registered with HookFactory).
         Each hook is retrieved by name, instantiated, and grouped by its hook point
         (returned by hook.point() method).
-        
+
         FileParseHook is automatically registered as a default hook for file parsing.
         
         Returns:
@@ -106,21 +106,21 @@ class LocalAgentExecutor(BaseAgentExecutor):
         # Automatically register FileParseHook as default hook
         try:
             from .file_parse_hook import FileParseHook
-            
+
             file_parse_hook = FileParseHook()
             hook_point = file_parse_hook.point()
             if hook_point not in hooks:
                 hooks[hook_point] = []
             hooks[hook_point].append(file_parse_hook)
-            
+
             # Silently register, no console output needed
         except Exception as e:
             if self.console:
                 self.console.print(f"[yellow]⚠️ [Executor] Failed to auto-register FileParseHook: {e}[/yellow]")
-        
+
         if not self._hooks_config:
             return hooks
-        
+
         for hook_name in self._hooks_config:
             try:
                 # Get hook class from HookFactory by name
@@ -129,40 +129,40 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     if self.console:
                         self.console.print(f"[yellow]⚠️ [Executor] Hook '{hook_name}' not found in HookFactory[/yellow]")
                     continue
-                
+
                 # Instantiate hook class
                 hook_instance = hook_cls()
-                
+
                 # Get hook point from the instance
                 hook_point = hook_instance.point()
-                
+
                 # Group hooks by their point
                 if hook_point not in hooks:
                     hooks[hook_point] = []
                 hooks[hook_point].append(hook_instance)
-                
+
                 if self.console:
                     self.console.print(f"[dim]✅ [Executor] Loaded hook '{hook_name}' for point '{hook_point}'[/dim]")
             except Exception as e:
                 if self.console:
                     self.console.print(f"[red]❌ [Executor] Failed to load hook '{hook_name}': {e}[/red]")
-        
+
         return hooks
-    
+
     async def _execute_hooks(self, hook_point: str, **kwargs) -> Any:
         """
         Execute hooks for a specific hook point.
-        
+
         This method follows the same pattern as runner hooks, using Message objects
         to pass parameters, but extracts results from message for executor use.
         
         After each hook execution, updates kwargs with any modified values from message.headers,
         so subsequent hooks and the caller can see the updates.
-        
+
         Args:
             hook_point: Hook point name from ExecutorHookPoint
             **kwargs: Parameters to pass to hooks (will be in message.headers)
-            
+
         Returns:
             Result extracted from message.payload or message.headers, or None if no hooks executed
             
@@ -205,10 +205,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     session_id=context.session_id if context and hasattr(context, 'session_id') else None,
                     headers=message_headers
                 )
-                
+
                 # Execute hook
                 result_message = await hook.exec(message, context)
-                
+
                 # Update kwargs with any modifications from message.headers
                 # This ensures subsequent hooks and the caller see the updates
                 if result_message and result_message.headers:
@@ -218,7 +218,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                             # Update context variable if it's the context that was modified
                             if key == 'context' and isinstance(value, ApplicationContext):
                                 context = value
-                    
+
                     # Extract result - prioritize specific keys, then payload
                     if 'context' in result_message.headers:
                         result = result_message.headers['context']
@@ -230,11 +230,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         result = result_message.headers['result']
                     elif result_message.payload and result_message.payload != kwargs.get('payload'):
                         result = result_message.payload
-                    
+
             except Exception as e:
                 if self.console:
                     self.console.print(f"[red]❌ [Executor] Hook '{hook.__class__.__name__}' failed at '{hook_point}': {e}[/red]")
-        
+
         return result
     
     async def _build_task(
@@ -252,10 +252,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
             session_id: Optional session ID. If None, will use the executor's current session_id.
             task_id: Optional task ID. If None, will generate one.
             image_urls: Optional list of image data URLs (base64 encoded) for multimodal support
-            
+
         Returns:
             Task instance
-            
+
         Example:
             >>> # Text only
             >>> task = await executor._build_task("Hello")
@@ -283,7 +283,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         task_content = hook_kwargs.get('task_content', task_content) or hook_kwargs.get('user_message', task_content)
         # Get updated image_urls from kwargs (FileParseHook may have added images)
         image_urls = hook_kwargs.get('image_urls', image_urls) or []
-        
+
         # 1. Build task input
         task_input = TaskInput(
             user_id="user",
@@ -292,7 +292,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             task_content=task_content,
             origin_user_input=original_task_content
         )
-        
+
         # 🔥 Hook: PRE_BUILD_CONTEXT
         hook_kwargs = {
             'task_input': task_input,
@@ -302,7 +302,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         hook_result = await self._execute_hooks(ExecutorHookPoint.PRE_BUILD_CONTEXT, **hook_kwargs)
         # Get updated task_input from kwargs
         task_input = hook_kwargs.get('task_input', task_input)
-        
+
         # 2. Build context config if not provided
         if not self.context_config:
             self.context_config = AmniConfigFactory.create(
@@ -335,7 +335,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         hook_result = await self._execute_hooks(ExecutorHookPoint.POST_BUILD_CONTEXT, **hook_kwargs)
         # Get updated context from kwargs
         context = hook_kwargs.get('context', context)
-        
+
         # 🔥 Hook: POST_INPUT_PARSE (after context is ready)
         # FileParseHook processes @filename references here
         hook_kwargs = {
@@ -352,7 +352,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         context = hook_kwargs.get('context', context)
         task_input = hook_kwargs.get('task_input', task_input)
         image_urls = hook_kwargs.get('image_urls', image_urls) or []
-        
+
         # 5. Build observation with images if provided
         # Use task_input.task_content (which may have been updated by FileParseHook) instead of old task_content
         observation = None
@@ -361,7 +361,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 images=image_urls,
                 content=task_input.task_content
             )
-        
+
         # 🔥 Hook: PRE_BUILD_TASK
         hook_kwargs = {
             'task_input': task_input,
@@ -373,7 +373,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         task_input = hook_kwargs.get('task_input', task_input)
         if 'task_content' in hook_kwargs:
             task_input.task_content = hook_kwargs['task_content']
-        
+
         # 6. Build task with context and observation
         task = Task(
             id=context.task_id,
@@ -390,7 +390,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             timeout=60 * 60,
             observation=observation
         )
-        
+
         # 🔥 Hook: POST_BUILD_TASK
         hook_kwargs = {
             'task': task
@@ -398,9 +398,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
         hook_result = await self._execute_hooks(ExecutorHookPoint.POST_BUILD_TASK, **hook_kwargs)
         # Get updated task from kwargs
         task = hook_kwargs.get('task', task)
-        
+
         return task
-    
+
     async def chat(self, message: Union[str, tuple[str, List[str]]]) -> str:
             """
             Execute chat with local agent using Task/Runners pattern.
@@ -426,14 +426,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
             if not self.console:
                 from .._globals import console as global_console
                 self.console = global_console
-            
+
             # 2. Parse message - handle both string and tuple format
             if isinstance(message, tuple):
                 task_content, image_urls = message
             else:
                 task_content = message
                 image_urls = None
-            
+
             # 3. Build task (will use current session_id)
             # Update session last used time
             self._update_session_last_used(self.session_id)
@@ -448,7 +448,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             hook_result = await self._execute_hooks(ExecutorHookPoint.PRE_RUN_TASK, **hook_kwargs)
             # Get updated task from kwargs
             task = hook_kwargs.get('task', task)
-            
+
             # 4. Run task with streaming
             try:
                 # Ensure console is set before running task
@@ -456,7 +456,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 if not self.console:
                     from .._globals import console as global_console
                     self.console = global_console
-                
+
                 if self.console:
                     self.console.print(f"[dim]🔄 Running task: {task.id}[/dim]")
                 
@@ -540,7 +540,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                             if not self.console:
                                 from .._globals import console as global_console
                                 self.console = global_console
-                            
+
                             async for output in outputs.stream_events():
                                 if not self.console:
                                     continue
@@ -659,7 +659,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 hook_result = await self._execute_hooks(ExecutorHookPoint.POST_RUN_TASK, **hook_kwargs)
                 # Get updated result from kwargs
                 answer = hook_kwargs.get('result', answer)
-                
+
                 # Try to get final result if task is still running
                 # Note: After stream_events() completes, the task may be cancelled, so we handle CancelledError
                 if hasattr(outputs, '_run_impl_task') and outputs._run_impl_task and not outputs.is_complete:
@@ -721,13 +721,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     # Don't let hook errors mask the original error
                     if self.console:
                         self.console.print(f"[yellow]⚠️ Hook error: {hook_err}[/yellow]")
-                
+
                 error_msg = f"Error: {err}, traceback: {traceback.format_exc()}"
                 if self.console:
                     self.console.print(f"[red]❌ {error_msg}[/red]")
                 raise
     
-    # Note: _format_tool_call, _format_tool_calls, _render_message_output, 
+    # Note: _format_tool_call, _format_tool_calls, _render_message_output,
     # _render_tool_result_output, _extract_answer_from_output are now inherited from BaseAgentExecutor
     
     async def _create_workspace(self, session_id: str):
