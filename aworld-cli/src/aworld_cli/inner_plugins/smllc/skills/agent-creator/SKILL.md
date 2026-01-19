@@ -144,7 +144,7 @@ Create `swarm.py` that:
 - Imports config and prompt from agent subdirectories (or defines them inline)
 - Instantiates Agent instances directly with config and prompt
 - Initializes the appropriate Swarm type (TeamSwarm or Swarm)
-- Registers the team with `@agent` decorator from `aworld.experimental.aworld_cli.core`
+- Registers the team with `@agent` decorator from `aworld_cli.core`
 
 ## Quick Start Examples
 
@@ -156,7 +156,7 @@ Create `swarm.py` that:
 # agents/swarm.py
 from aworld.core.agent.swarm import TeamSwarm
 from aworld.core.context.amni.config import AmniConfigFactory
-from aworld.experimental.aworld_cli.core import agent
+from aworld_cli.core import agent
 from aworld.agents.llm_agent import Agent
 from .orchestrator.config import orchestrator_config
 from .orchestrator.prompt import orchestrator_prompt
@@ -204,7 +204,7 @@ def build_swarm() -> TeamSwarm:
 # agents/swarm.py
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni.config import AmniConfigFactory
-from aworld.experimental.aworld_cli.core import agent
+from aworld_cli.core import agent
 from aworld.agents.llm_agent import Agent
 
 @agent(

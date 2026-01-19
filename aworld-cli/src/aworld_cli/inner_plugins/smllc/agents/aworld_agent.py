@@ -20,9 +20,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import TeamSwarm, Swarm
 from aworld.core.agent.base import BaseAgent
-from aworld.experimental.aworld_cli.core import agent
-from aworld.experimental.aworld_cli.core.agent_registry import LocalAgentRegistry
-from aworld.experimental.aworld_cli.core.loader import init_agents
+from aworld_cli.core import agent
+from aworld_cli.core.agent_registry import LocalAgentRegistry
+from aworld_cli.core.loader import init_agents
 from aworld.config import AgentConfig, ModelConfig
 from aworld.utils.skill_loader import collect_skill_docs
 
