@@ -45,7 +45,7 @@ class ContextExecuteAction(ToolAction):
             "file_path": ParamInfo(name="file_path",
                                   type="str",
                                   required=True,
-                                  desc="relative file path within the skill directory, e.g., 'forms/style_map.json' or 'sub_skills/tech-modern-style/color_palette.md'")
+                                  desc="relative file path within the skill directory")
         },
         desc="read a file associated with a skill")
 
@@ -69,7 +69,7 @@ class ContextExecuteAction(ToolAction):
             "dir_path": ParamInfo(name="dir_path",
                                  type="str",
                                  required=False,
-                                 desc="relative directory path within the skill directory, defaults to root if not specified, e.g., 'sub_skills' or 'forms'")
+                                 desc="relative directory path within the skill directory, defaults to root if not specified")
         },
         desc="list files and subdirectories in a specified directory of a skill")
 
