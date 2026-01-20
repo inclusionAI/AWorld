@@ -8,7 +8,7 @@ from ..models import AgentInfo
 from ..executors import AgentExecutor
 
 
-class BaseAgentRuntime:
+class BaseCliRuntime:
     """
     Base runtime for CLI protocols that interact with agents.
     Provides common functionality for agent selection and chat session management.
@@ -20,7 +20,7 @@ class BaseAgentRuntime:
     - _get_source_location(): Return source location string
     
     Example:
-        class CustomRuntime(BaseAgentRuntime):
+        class CustomRuntime(BaseCliRuntime):
             async def _load_agents(self) -> List[AgentInfo]:
                 # Load agents from custom source
                 pass
