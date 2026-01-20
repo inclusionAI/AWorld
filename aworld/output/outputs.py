@@ -134,7 +134,7 @@ class StreamingOutputs(AsyncOutputs):
         Args:
             output (Output): The output to be added to the queue
         """
-        logger.info(f"StreamingOutputs|add_output|{self.task_id}|{output}")
+        logger.debug(f"StreamingOutputs|add_output|{self.task_id}|{output}")
         # if different task take same Output instance, they will output to the same queue
         # if self.task_id != output.task_id:
         #     logger.warning(f"{self.task_id} unequals {output.task_id}, add ignored.")
