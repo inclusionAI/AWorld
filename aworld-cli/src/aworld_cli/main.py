@@ -14,7 +14,7 @@ from typing import Optional
 os.environ['AWORLD_DISABLE_CONSOLE_LOG'] = 'true'
 
 # Import aworld modules (they will respect the environment variable)
-from .runtime.mixed import MixedRuntime
+from .runtime.cli import CliRuntime
 from .console import AWorldCLI
 from .models import AgentInfo
 from .executors.continuous import ContinuousExecutor
@@ -28,7 +28,7 @@ async def load_all_agents(
     """
     Load all agents from local directories, agent files, and remote backends.
     
-    This function uses MixedRuntime to load agents from:
+    This function uses CliRuntime to load agents from:
     1. Local directories (configured via LOCAL_AGENTS_DIR or AGENTS_DIR, or provided as parameter)
     2. Individual agent files (Python .py or Markdown .md files)
     3. Remote backends (configured via REMOTE_AGENT_BACKEND or REMOTE_AGENTS_BACKEND, or provided as parameter)
@@ -55,9 +55,9 @@ async def load_all_agents(
             except Exception as e:
                 print(f"⚠️ Failed to load agent file {agent_file}: {e}")
     
-    # Use MixedRuntime to load agents (it handles all sources and backward compatibility)
+    # Use CliRuntime to load agents (it handles all sources)
     # Create a temporary runtime instance just for loading agents
-    runtime = MixedRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
+    runtime = CliRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
     return await runtime._load_agents()
 
 
@@ -674,7 +674,7 @@ Agent 文件：
         ))
         return
 
-    # Interactive mode (default) - use MixedRuntime directly without AWorldApp
+    # Interactive mode (default) - use AgentRuntime directly without AWorldApp
     asyncio.run(_run_interactive_mode(
         remote_backends=args.remote_backend,
         local_dirs=args.agent_dir,
@@ -688,7 +688,7 @@ async def _run_interactive_mode(
     agent_files: Optional[list[str]] = None
 ):
     """
-    Run interactive mode using MixedRuntime directly.
+    Run interactive mode using CliRuntime directly.
     
     Args:
         remote_backends: Optional list of remote backend URLs
@@ -704,7 +704,7 @@ async def _run_interactive_mode(
             except Exception as e:
                 print(f"⚠️ Failed to load agent file {agent_file}: {e}")
     
-    runtime = MixedRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
+    runtime = CliRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
     try:
         await runtime.start()
     except KeyboardInterrupt:
@@ -858,15 +858,9 @@ async def _run_direct_mode(
             except Exception as e:
                 print(f"⚠️ Failed to load agent file {agent_file}: {e}")
     
-    # Use MixedRuntime to load agents and create executor
-    runtime = MixedRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
+    # Use CliRuntime to load agents and create executor
+    runtime = CliRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
     all_agents = await runtime._load_agents()
-    
-    # Temporary: Print all loaded Python files
-    if hasattr(runtime, '_loaded_python_files') and runtime._loaded_python_files:
-        console.print(f"[dim]📋 Loaded Python files ({len(runtime._loaded_python_files)}):[/dim]")
-        for py_file in runtime._loaded_python_files:
-            console.print(f"[dim]  - {py_file}[/dim]")
 
     # Find the requested agent
     selected_agent = None
@@ -879,7 +873,7 @@ async def _run_direct_mode(
         print(f"❌ Error: Agent '{agent_name}' not found")
         return
     
-    # Create agent executor using MixedRuntime
+    # Create agent executor using CliRuntime
     agent_executor = await runtime._create_executor(selected_agent)
 
     if not agent_executor:
