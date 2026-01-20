@@ -940,7 +940,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def is_agent_finished(self, llm_response: ModelResponse, agent_result: AgentResult) -> bool:
         if not agent_result.is_call_tool:
             self._finished = True
-        return self._finished
+        return self.finished
 
     async def _filter_tools(self, context: Context) -> List[Dict[str, Any]]:
         from aworld.core.context.amni import AmniContext
