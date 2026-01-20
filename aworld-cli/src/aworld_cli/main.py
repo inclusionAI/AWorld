@@ -229,6 +229,14 @@ Agent 文件：
   # 组合所有选项
   aworld-cli --agent-dir ./agents --agent-file ./custom_agent.py --remote-backend http://localhost:8000 --skill-path ./skills list
 
+批量任务：
+  # 使用 YAML 配置运行批量任务
+  aworld-cli batch-job batch.yaml
+
+Batch Jobs:
+  # Run batch job with YAML config
+  aworld-cli batch-job batch.yaml
+
 服务器模式：
   # 启动 HTTP 服务器
   aworld-cli serve --http --http-port 8000
@@ -281,7 +289,8 @@ Agent 文件：
         action='store_true',
         help='Show usage examples / 显示使用示例'
     )
-# First, create a minimal parser to check if command is 'plugin'
+
+    # Create a minimal parser to check if command is 'plugin'
     minimal_parser = argparse.ArgumentParser(add_help=False)
     minimal_parser.add_argument('command', nargs='?', default='interactive')
     minimal_args, _ = minimal_parser.parse_known_args()
@@ -383,8 +392,9 @@ Agent 文件：
         'command',
         nargs='?',
         default='interactive',
-        choices=['interactive', 'list', 'serve'],
-        help='Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers.'
+        choices=['interactive', 'list', 'serve', 'batch', 'batch-job'],
+        help='Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers, '
+             '"batch-job" to run batch jobs.'
     )
     
     parser.add_argument(
@@ -527,8 +537,8 @@ Agent 文件：
         help='MCP server port for SSE/streamable-http transport (default: 8001)'
     )
     
-    # Parse arguments normally
-    args = parser.parse_args()
+    # Parse arguments normally, but keep unknown args for inner plugin commands
+    args, remaining_argv = parser.parse_known_args()
     
     # Handle --examples flag: show examples and exit
     if args.examples:
@@ -547,7 +557,7 @@ Agent 文件：
         )
         parser_zh.add_argument('-zh', '--zh', action='store_true', help='显示中文帮助')
         parser_zh.add_argument('--examples', action='store_true', help='显示使用示例')
-        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'plugin'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "plugin" 管理插件。')
+        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugin'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugin" 管理插件。')
         parser_zh.add_argument('--task', type=str, help='发送给 agent 的任务（非交互模式）')
         parser_zh.add_argument('--agent', type=str, help='要使用的 agent 名称（直接运行模式必需）')
         parser_zh.add_argument('--max-runs', type=int, help='最大运行次数（直接运行模式）')
@@ -630,6 +640,18 @@ Agent 文件：
             local_dirs=args.agent_dir,
             agent_files=args.agent_file
         ))
+        return
+
+    # Handle inner plugin commands (e.g. 'batch-job', 'batch')
+    from .inner_plugins.batch import get_commands as get_batch_commands
+    batch_commands = get_batch_commands()
+    if args.command in batch_commands:
+        handler = batch_commands[args.command]
+        # remaining_argv already contains arguments that were not parsed by the main parser
+        exit_code = handler(remaining_argv)
+        # Ensure consistent process exit code behavior
+        if exit_code != 0:
+            sys.exit(exit_code)
         return
 
     # Handle direct run mode (参考 continuous-claude)
