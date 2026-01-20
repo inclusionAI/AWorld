@@ -129,6 +129,12 @@ class PromptLogger:
         start_time = context.start_time
 
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        task_input = context.task_input
+        input_content = str(task_input)
+        if isinstance(task_input, str):
+            input_content = task_input
+        elif isinstance(task_input, list) and isinstance(task_input[0], dict):
+            input_content = task_input[0].get("text")
         # Use more beautiful separators and format
         prompt_logger.info(_generate_top_border())
         prompt_logger.info(f"│{'🚀 AGENT EXECUTION START':^{BORDER_WIDTH}}│")
@@ -138,7 +144,7 @@ class PromptLogger:
         prompt_logger.info(f"│ 🤖 Agent ID: {agent.id():<{BORDER_WIDTH - 12}} │")
         prompt_logger.info(f"│ 📋 Task ID:  {context.task_id:<{BORDER_WIDTH - 12}} │")
         # only support stringable information
-        prompt_logger.info(f"│ 📝 Task Input: {context.task_input if isinstance(context.task_input, str) else str(context.task_input)}  │")
+        prompt_logger.info(f"│ 📝 Task Input: {input_content:<{BORDER_WIDTH - 13}}  │")
         prompt_logger.info(f"│ 👨🏻 User ID:  {getattr(context, 'id', ''):<{BORDER_WIDTH - 12}} │")
         prompt_logger.info(f"│ 💬 Session ID:  {context.session_id:<{BORDER_WIDTH - 14}} │")
         prompt_logger.info(
