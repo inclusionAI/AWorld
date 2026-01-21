@@ -441,6 +441,14 @@ Batch Jobs:
     )
     
     parser.add_argument(
+        '--session_id',
+        '--session-id',
+        type=str,
+        dest='session_id',
+        help='Session ID to use for this task (for direct run mode)'
+    )
+    
+    parser.add_argument(
         '--non-interactive',
         action='store_true',
         help='Run in non-interactive mode (no user input)'
@@ -565,6 +573,7 @@ Batch Jobs:
         parser_zh.add_argument('--max-duration', type=str, help='最大时长（例如："1h", "30m", "2h30m"）（直接运行模式）')
         parser_zh.add_argument('--completion-signal', type=str, help='查找的完成信号字符串（直接运行模式）')
         parser_zh.add_argument('--completion-threshold', type=int, default=3, help='需要的连续完成信号数量（默认：3）')
+        parser_zh.add_argument('--session_id', '--session-id', type=str, dest='session_id', help='要使用的会话 ID（直接运行模式）')
         parser_zh.add_argument('--non-interactive', action='store_true', help='以非交互模式运行（无用户输入）')
         parser_zh.add_argument('--env-file', type=str, default='.env', help='.env 文件路径（默认：.env）')
         parser_zh.add_argument('--remote-backend', type=str, action='append', help='远程后端 URL（可指定多次）。覆盖 REMOTE_AGENT_BACKEND 环境变量。')
@@ -690,6 +699,7 @@ Batch Jobs:
             completion_signal=args.completion_signal,
             completion_threshold=args.completion_threshold,
             non_interactive=args.non_interactive,
+            session_id=args.session_id,
             remote_backends=args.remote_backend,
             local_dirs=args.agent_dir,
             agent_files=args.agent_file
@@ -849,6 +859,7 @@ async def _run_direct_mode(
     completion_signal: Optional[str] = None,
     completion_threshold: int = 3,
     non_interactive: bool = False,
+    session_id: Optional[str] = None,
     remote_backends: Optional[list[str]] = None,
     local_dirs: Optional[list[str]] = None,
     agent_files: Optional[list[str]] = None
@@ -865,6 +876,8 @@ async def _run_direct_mode(
         completion_signal: Completion signal string
         completion_threshold: Number of consecutive completion signals needed
         non_interactive: Whether to run in non-interactive mode
+        session_id: Optional session ID to use for this direct run. If provided, the executor will
+            restore or create this session before running.
         remote_backends: Optional list of remote backend URLs
         local_dirs: Optional list of local agent directories
         agent_files: Optional list of individual agent file paths
@@ -881,7 +894,11 @@ async def _run_direct_mode(
                 print(f"⚠️ Failed to load agent file {agent_file}: {e}")
     
     # Use CliRuntime to load agents and create executor
-    runtime = CliRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
+    runtime = CliRuntime(
+        remote_backends=remote_backends, 
+        local_dirs=local_dirs,
+        session_id=session_id
+    )
     all_agents = await runtime._load_agents()
 
     # Find the requested agent
@@ -895,12 +912,21 @@ async def _run_direct_mode(
         print(f"❌ Error: Agent '{agent_name}' not found")
         return
     
-    # Create agent executor using CliRuntime
+    # Create agent executor using CliRuntime (session_id is already passed to runtime)
     agent_executor = await runtime._create_executor(selected_agent)
 
     if not agent_executor:
         print(f"❌ Error: Failed to create executor for agent '{agent_name}'")
         return
+    
+    # If session_id was provided, ensure it's properly restored (for session history management)
+    if session_id and hasattr(agent_executor, 'restore_session'):
+        try:
+            # Restore session to ensure it's added to history if needed
+            agent_executor.restore_session(session_id)
+        except Exception:
+            # If restore fails, session_id was already set during executor creation
+            pass
     
     # Default to 1 run if max_runs is not specified
     if max_runs is None:
