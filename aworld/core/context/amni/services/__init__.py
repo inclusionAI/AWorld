@@ -7,6 +7,7 @@ from .task_state_service import TaskStateService, ITaskStateService
 from .memory_service import MemoryService, IMemoryService
 from .prompt_service import PromptService, IPromptService
 from .freedom_space_service import FreedomSpaceService, IFreedomSpaceService
+from ..cvcs import AgentVersionControlRegistry, SwarmVersionControlRegistry, VersionControlRegistry
 
 __all__ = [
     'KnowledgeService',
@@ -21,5 +22,8 @@ __all__ = [
     'IPromptService',
     'FreedomSpaceService',
     'IFreedomSpaceService',
+    'AgentVersionControlRegistry',
+    'SwarmVersionControlRegistry',
+    'VersionControlRegistry',
 ]
 
