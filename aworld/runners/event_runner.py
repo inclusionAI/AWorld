@@ -17,13 +17,14 @@ from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse, TaskStatusValue
 from aworld.dataset.trajectory_dataset import TrajectoryDataset
 from aworld.events.manager import EventManager
-from aworld.logs.util import logger
+from aworld.logs.util import logger, trajectory_logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.runners.task_runner import TaskRunner
 from aworld.trace.base import get_trace_id
 from aworld.utils.common import override_in_subclass, new_instance
+from aworld.utils.serialized_util import to_serializable
 
 
 class TaskEventRunner(TaskRunner):
@@ -411,8 +412,16 @@ class TaskEventRunner(TaskRunner):
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
             if traj:
                 self._task_response.trajectory = [step.to_dict() for step in traj]
-                logger.debug(f"{self.task.id}|{self.task.is_sub_task}#_task_response.trajectory: {json.dumps(self._task_response.trajectory, ensure_ascii=False)}")
 
+                token_id_traj = None
+                if self.context.token_id_traj:
+                    token_id_traj = json.dumps(to_serializable(self.context.token_id_traj))
+
+                res = {"task_id": self.task.id,
+                       "is_sub_task": self.task.is_sub_task,
+                       "trajectory": json.dumps(self._task_response.trajectory, ensure_ascii=False),
+                       "token_id_trajectory": token_id_traj}
+                trajectory_logger.info(f"{res}")
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
 

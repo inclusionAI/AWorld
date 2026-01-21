@@ -182,6 +182,10 @@ class Context:
         return self._task
 
     @property
+    def token_id_traj(self):
+        return self._agent_token_id_traj
+
+    @property
     def trace_id(self):
         return self._trace_id
 
