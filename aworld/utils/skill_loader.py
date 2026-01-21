@@ -372,7 +372,7 @@ def collect_skill_docs(
                     "tool_list": tool_list,
                     "usage": usage,
                     "type": front_matter.get("type", ""),
-                    "active": front_matter.get("active", "False").lower() == "true",
+                    "active": str(front_matter.get("active", "False")).lower() == "true",
                     "skill_path": skill_file.as_posix(),
                 }
                 logger.debug(f"✅ Collected skill: {skill_name}")
