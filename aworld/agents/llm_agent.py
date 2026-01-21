@@ -391,9 +391,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         filters = self._build_memory_filters(message.context)
         # load pending message
         try:
-            filters = self._build_memory_filters(self.context)
-            filters['memory_type'] = 'pending'
-            pending_items = memory.memory_store.get_all(filters)
+            pending_filters = self._build_memory_filters(message.context)
+            pending_filters['memory_type'] = 'pending'
+            pending_items = memory.memory_store.get_all(pending_filters)
             if pending_items:
                 for pending_item in pending_items:
                     pending_item.created_at = datetime.now().isoformat()
@@ -565,7 +565,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         # Check for pending messages in memory store
         memory = MemoryFactory.instance()
-        filters = self._build_memory_filters(self.context)
+        filters = self._build_memory_filters(message.context)
         filters['memory_type'] = 'pending'
         pending_items = memory.memory_store.get_all(filters)
         if pending_items:
