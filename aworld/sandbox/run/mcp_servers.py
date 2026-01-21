@@ -23,7 +23,7 @@ from aworld.core.common import ActionResult, Observation
 from aworld.output import Output
 
 # Import env_channel for subscription
-from env_channel import EnvChannelMessage, env_channel_sub
+# from env_channel import EnvChannelMessage, env_channel_sub
 
 if TYPE_CHECKING:
     from aworld.sandbox.base import Sandbox
@@ -506,58 +506,58 @@ class McpServers:
         except Exception as e:
             logger.debug(f"Failed to update sandbox metadata: {e}")
 
-    def _init_tool_result_subscription(self, env_session_id: Optional[str] = None, context: Context = None, result_key: Optional[str] = None):
-        """Initialize subscription for tool results.
-
-        Args:
-            env_session_id: Environment session ID for WebSocket connection
-            context: Context object containing task_id and session_id
-            result_key: Tool identifier in format "server_name__tool_name"
-        """
-        # Only initialize once
-        if hasattr(self, '_tool_result_handler'):
-            return
-        if not env_session_id:
-            logger.warning("env_session_id is not provided")
-            return
-
-        try:
-            token = os.getenv("ENV_CHANNEL_TOKEN", "")
-            _ws_headers = {"Authorization": f"Bearer {token}"}
-
-            server_url = f"ws://mcp.aworldagents.com/vpc-pre/stream/{env_session_id}/channel"
-
-            @env_channel_sub(
-                server_url=server_url,
-                topics=["env-tool-message-topic"],
-                auto_connect=True,
-                auto_reconnect=True,
-                reconnect_interval=10.0,
-                headers=_ws_headers,
-                auto_start=True
-            )
-            async def handle_tool_result(msg: EnvChannelMessage):
-                parent_task_id = None
-                if context and hasattr(context, 'task_id') and context.task_id:
-                    parent_task_id = context.task_id
-
-                bg_msg = BackgroundTaskMessage(
-                        background_task_id=f"bg_{uuid.uuid4().hex}",
-                        parent_task_id=parent_task_id,
-                        payload=msg.message,
-                        sender=result_key,
-                        topic=TopicType.BACKGROUND_TOOL_COMPLETE,
-                        headers={"context": context}
-                    )
-                await send_message(bg_msg)
-                logger.debug(f"tool:sender: {result_key},result-logging: {msg.message}")
-
-            # Store the handler to keep reference
-            self._tool_result_handler = handle_tool_result
-            logger.info(
-                f"Initialized tool result subscription for env_session_id: {env_session_id}, server_url: {server_url}")
-        except Exception as e:
-            logger.warning(f"Failed to initialize tool result subscription: {e}")
+    # def _init_tool_result_subscription(self, env_session_id: Optional[str] = None, context: Context = None, result_key: Optional[str] = None):
+    #     """Initialize subscription for tool results.
+    #
+    #     Args:
+    #         env_session_id: Environment session ID for WebSocket connection
+    #         context: Context object containing task_id and session_id
+    #         result_key: Tool identifier in format "server_name__tool_name"
+    #     """
+    #     # Only initialize once
+    #     if hasattr(self, '_tool_result_handler'):
+    #         return
+    #     if not env_session_id:
+    #         logger.warning("env_session_id is not provided")
+    #         return
+    #
+    #     try:
+    #         token = os.getenv("ENV_CHANNEL_TOKEN", "")
+    #         _ws_headers = {"Authorization": f"Bearer {token}"}
+    #
+    #         server_url = f"ws://mcp.aworldagents.com/vpc-pre/stream/{env_session_id}/channel"
+    #
+    #         @env_channel_sub(
+    #             server_url=server_url,
+    #             topics=["env-tool-message-topic"],
+    #             auto_connect=True,
+    #             auto_reconnect=True,
+    #             reconnect_interval=10.0,
+    #             headers=_ws_headers,
+    #             auto_start=True
+    #         )
+    #         async def handle_tool_result(msg: EnvChannelMessage):
+    #             parent_task_id = None
+    #             if context and hasattr(context, 'task_id') and context.task_id:
+    #                 parent_task_id = context.task_id
+    #
+    #             bg_msg = BackgroundTaskMessage(
+    #                     background_task_id=f"bg_{uuid.uuid4().hex}",
+    #                     parent_task_id=parent_task_id,
+    #                     payload=msg.message,
+    #                     sender=result_key,
+    #                     topic=TopicType.BACKGROUND_TOOL_COMPLETE,
+    #                     headers={"context": context}
+    #                 )
+    #             await send_message(bg_msg)
+    #             logger.debug(f"tool:sender: {result_key},result-logging: {msg.message}")
+    #
+    #         # Store the handler to keep reference
+    #         self._tool_result_handler = handle_tool_result
+    #         logger.info(
+    #             f"Initialized tool result subscription for env_session_id: {env_session_id}, server_url: {server_url}")
+    #     except Exception as e:
+    #         logger.warning(f"Failed to initialize tool result subscription: {e}")
 
     # Add cleanup method, called when Sandbox is destroyed
     async def cleanup(self):
