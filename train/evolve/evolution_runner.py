@@ -4,7 +4,7 @@ import asyncio
 import json
 import os
 from typing import Any, List, Tuple, Dict, Union
-
+import pandas as pd
 import yaml
 
 from aworld.agents.llm_agent import Agent
@@ -12,14 +12,18 @@ from aworld.config import AgentConfig, load_config, ModelConfig
 from aworld.config.agent_loader import load_agents_from_dict
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.base import Context
-from aworld.core.task import Runner, TaskResponse
+from aworld.core.task import Runner, TaskResponse, Task
 from aworld.logs.util import logger
+from aworld.output import StreamingOutputs
+from aworld.output.base import Output
+from aworld.output.outputs import DefaultOutputs, Outputs
 from aworld.runner import Runners
 from aworld.runners.runtime_engine import RuntimeEngine
 from aworld.runners.utils import runtime_engine
 from aworld.tools.human.human import HUMAN
 from aworld.utils import import_package, import_packages
 from aworld.utils.run_util import exec_tool
+from train.evolve.util import evolution_plan_render
 
 from train.integration.verl.reward_func import verl_default_reward_func
 from train.data_gen.data_synthesis_runner import DataSynthesisRunner
@@ -33,6 +37,10 @@ from train.trainer.utils import TRAIN_DEFAULT_CONFIG
 class EvolutionRunner(Runner):
     def __init__(self, task: Any, config: EvolutionConfig):
         self.task = task
+        if hasattr(task, "outputs") and isinstance(task.outputs, Outputs):
+            self.outputs = task.outputs
+        else:
+            self.outputs = StreamingOutputs()
         self.conf = config
         self.tool_repository = None
         self.event = asyncio.Event()
@@ -66,9 +74,11 @@ class EvolutionRunner(Runner):
                 os.environ['LLM_MODEL_NAME'] = model_conf.llm_model_name
 
     async def do_run(self):
+        # supported text2training pipeline only now
         #### Plan: tool_synthesis -> tool_verify -> sample_synthesis -> sample_verify -> train -> evaluate
         # Create evolve yaml
         logger.info(f"Evolution plan start...")
+        await self.outputs.add_output(Output(data="Evolution start...", metadata={"title": "Evolution"}))
         res = await Runners.run(input=self.task, agent=EvolutionPipelineAgent(conf=AgentConfig(**self.conf.to_dict())))
         plan = res.answer
 
@@ -84,20 +94,30 @@ class EvolutionRunner(Runner):
         # todo: in agent and auto modify
         await self.human_confirm(
             content=f"Please confirm the generated plan and configuration `evolve_config.yaml` in {os.path.abspath(dir_name)}."
-                    f"It may be necessary to modify the model path, etc",
+                    f"\nIt may be necessary to modify the model path, etc",
             hitl=self.conf.hitl_plan
         )
 
         config = load_config("evolve_config.yaml", dir_name=dir_name)
         logger.info(f"Evolution plan finished, result: {plan}")
+        process_tasks = config.get("process_tasks", ["sample_synthesis", "train"])
+
+        render_config = await self._render_config(plan, process_tasks)
+
+        render_con = evolution_plan_render(render_config)
+        logger.info(f"Evolution plan: \n{render_con}")
+        await self.outputs.add_output(
+            Output(data=f"Evolution plan finished.\n {render_con}",
+                   metadata={"print_all": True, "title": "Evolution Plan"}))
 
         # default minimum workflow
-        process_tasks = config.get("process_tasks", ["sample_synthesis", "train"])
+
         epoches = config.get("max_epoches", 1)
         for epoch in range(epoches):
             #### Data Synthesis
             logger.info(f"Epoch {epoch} start dataset synthesis...")
-            train_synthesis_data, test_synthesis_data = await self.data_synthesis(task=task,
+            train_synthesis_data, test_synthesis_data = await self.data_synthesis(epoch=epoch,
+                                                                                  task=task,
                                                                                   dir_name=dir_name,
                                                                                   process_tasks=process_tasks)
             # Keep tools for next epoch
@@ -109,20 +129,23 @@ class EvolutionRunner(Runner):
             # TODO: train agent create train.yaml with some parameters
 
             # train can not skip
-            await self.train(evolve_config=config,
+            await self.train(epoch=epoch,
+                             evolve_config=config,
                              train_dataset_file=train_synthesis_data,
                              test_dataset_file=test_synthesis_data)
-
             #### Evaluation
             if "evaluate" in process_tasks:
                 logger.info(f"Epoch {epoch} start evaluating...")
-                await self.evaluation(dir_name=dir_name, test_dataset_file=test_synthesis_data)
+                await self.evaluation(epoch=epoch, dir_name=dir_name, test_dataset_file=test_synthesis_data)
 
             logger.info(f"Epoch {epoch} finished")
         logger.info(f"Evolution pipeline finished!")
+        await self.outputs.add_output(Output(data=f"Evolution pipeline finished! \n"
+                                                  f"Please check dir: {os.path.abspath(dir_name)}",
+                                             metadata={"print_all": True, "title": "Evolution"}))
         return TaskResponse(answer=f"Evolution pipeline finished, please check dir: {os.path.abspath(dir_name)}")
 
-    async def evaluation(self, dir_name: str, test_dataset_file: str):
+    async def evaluation(self, epoch: int, dir_name: str, test_dataset_file: str):
         """Run evaluation on the test dataset and save results."""
         if not test_dataset_file or not os.path.exists(test_dataset_file):
             logger.warning(f"Test dataset file not found: {test_dataset_file}")
@@ -131,6 +154,9 @@ class EvolutionRunner(Runner):
         if not hasattr(self, "trainer"):
             logger.warning(f"Need to complete the training first!")
             return
+
+        await self.outputs.add_output(Output(data=f"Start epoch {epoch} evaluation...",
+                                             metadata={"title": "Evaluation"}))
 
         metrics = await self.trainer.inference()
 
@@ -143,7 +169,10 @@ class EvolutionRunner(Runner):
         except Exception as e:
             logger.error(f"Failed to save evaluation result: {e}")
 
-    async def train(self, evolve_config: Dict[str, Any], train_dataset_file: str, test_dataset_file: str):
+        await self.outputs.add_output(Output(data=f"Finished epoch {epoch} evaluation. \nResults: {metrics}",
+                                             metadata={"title": "Evaluation"}))
+
+    async def train(self, epoch: int, evolve_config: Dict[str, Any], train_dataset_file: str, test_dataset_file: str):
         """Train process.
 
         Args:
@@ -151,6 +180,10 @@ class EvolutionRunner(Runner):
             train_dataset_file: Train dataset file path.
             test_dataset_file: Test dataset file path.
         """
+
+        await self.outputs.add_output(Output(data=f"Start epoch {epoch} training...",
+                                             metadata={"title": "Training"}))
+
         dir_name = evolve_config.get("workspace", "spec")
         # todo: create train.yaml by agent
         configs = load_config(dir_name=dir_name, file_name='train.yaml')
@@ -192,10 +225,11 @@ class EvolutionRunner(Runner):
                                run_path=dir_name)
         trainer.train()
         self.trainer = trainer
+        await self.outputs.add_output(Output(data=f"Finished epoch {epoch} training. ",
+                                             metadata={"title": "Training"}))
 
     async def _convert_dataset(self, input_file: str, train_framework: str):
         import jsonlines
-        import pandas as pd
 
         if train_framework == 'verl':
             datas = []
@@ -236,7 +270,8 @@ class EvolutionRunner(Runner):
         """
         train_configs = TRAIN_DEFAULT_CONFIG.get(train_framework)
         if train_framework == 'verl':
-            logger.info("VeRL relies on multiple modules, please confirm in advance that the relevant dependencies have been installed")
+            logger.info(
+                "VeRL relies on multiple modules, please confirm in advance that the relevant dependencies have been installed")
 
             train_configs['reward_model']['model']['path'] = configs.get('reward_model')
             train_configs['trainer']['default_local_dir'] = configs.get('dir_name')
@@ -280,7 +315,9 @@ class EvolutionRunner(Runner):
         else:
             return verl_default_reward_func
 
-    async def data_synthesis(self, task: Any, dir_name: str, process_tasks: List[str]):
+    async def data_synthesis(self, epoch: int, task: Any, dir_name: str, process_tasks: List[str]):
+        await self.outputs.add_output(Output(data=f"Start epoch {epoch} dataset synthesis...",
+                                             metadata={"title": "Data Synthesis"}))
         # tool synthesis
         tool_data_file = None
         if "tool_synthesis" in process_tasks:
@@ -296,7 +333,10 @@ class EvolutionRunner(Runner):
                 tool_synthesis_config.dir_name = dir_name
             if not tool_synthesis_config.llm_config:
                 tool_synthesis_config.llm_config = self.conf.llm_config
-            task = task or self.task
+
+            if not isinstance(task, Task):
+                task = Task(input=task, context=getattr(self.task, "context", Context()))
+
             runner = DataSynthesisRunner(task=task, conf=tool_synthesis_config)
             # choose special runtime engine
             engine: RuntimeEngine = await runtime_engine(self.conf.run_conf)
@@ -335,7 +375,58 @@ class EvolutionRunner(Runner):
             await self.human_confirm(
                 content=f"Please confirm the dataset in {train_synthesis_data}, {test_synthesis_data}"
             )
+        df = pd.read_json(train_synthesis_data, lines=True)
+        await self.outputs.add_output(Output(data=f"Finished epoch {epoch} dataset synthesis. "
+                                                  f"Data examples: \n{df.loc[:, ['task', 'answer']].head()}",
+                                             metadata={"title": "Data Synthesis"}))
         return train_synthesis_data, test_synthesis_data
+
+    async def _render_config(self, config: dict, process_tasks: List[str]):
+        render_config = {
+            "goal": hasattr(self.task, "input") and self.task.input or str(self.task),
+            "agent_loop": " → ".join(process_tasks),
+            "subagents": [
+
+            ],
+            "skills": [
+
+            ],
+            "tools": {
+                "built_in": [],
+                "mcp": [''],
+                "custom": [],
+            },
+            "model": [],
+            "plan_output": [],
+        }
+        if "tool_synthesis" in process_tasks or "sample_synthesis" in process_tasks:
+            render_config["skills"].append("data_synthesis")
+            render_config["tools"]["custom"].append("imitation_tool")
+            render_config["subagents"].extend(["tool_generator_agent", "tool_select_agent", "task_generator_agent"])
+        if self.conf.hitl_plan or self.conf.hitl_all:
+            render_config["tools"]["built_in"].append("human-in-the-loop")
+        render_config["model"].append(f'training model: {config.get("config", {}).get("model", "")}')
+        render_config["model"].append(f'evaluation model: {config.get("config", {}).get("eval_model", "")}')
+
+        render_config['plan_output'].append("{")
+        for k, v in config.items():
+            if k != 'config':
+                con = f"  {k}: {v}"
+                if len(con) > 120:
+                    con = con[0:120] + "\n" + con[120:]
+                    render_config['plan_output'].append(con[0:120])
+                    render_config['plan_output'].append(con[120:])
+                else:
+                    render_config['plan_output'].append(con)
+            else:
+                con = f"  config: {os.path.abspath(config.get('config', {}).get('dir_name', '.'))}/evolve_config.yaml"
+                if len(con) > 120:
+                    render_config['plan_output'].append(con[0:120])
+                    render_config['plan_output'].append(con[120:])
+                else:
+                    render_config['plan_output'].append(con)
+        render_config['plan_output'].append("}")
+        return render_config
 
     async def human_confirm(self, content: str, hitl: bool = None):
         """Human confirm.
@@ -347,6 +438,8 @@ class EvolutionRunner(Runner):
             hitl = self.conf.hitl_all
         if hitl:
             logger.info("Waiting for confirmation...\nContinue only after receiving confirmed input")
+            await self.outputs.add_output(Output(data=f"Waiting for confirmation...\n"
+                                                      f"Continue only after receiving confirmed input"))
             await exec_tool(tool_name=HUMAN,
                             action_name="HUMAN_CONFIRM",
                             params={"confirm_content": content},

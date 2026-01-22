@@ -29,6 +29,7 @@ class Constants:
     CONTEXT = "context"
     CONTEXT_RESPONSE = "context_response"
     CHUNK = "chunk"
+    BACKGROUND_TASK = "background_task"
 
 
 class TopicType:
@@ -49,6 +50,8 @@ class TopicType:
     SYSTEM_PROMPT = "__system_prompt"
     TOOL_RESULT = "__tool_result"
     TASK_RESPONSE = "__task_response"
+    BACKGROUND_TOOL_COMPLETE = "__background_tool_complete"
+    BACKGROUND_TASK_COMPLETE = "__background_task_complete"
 
 
 DataType = TypeVar('DataType')
@@ -120,7 +123,7 @@ class Message(Generic[DataType]):
 
     @property
     def task_id(self):
-        return self.context.get_task().id
+        return self.context.get_task().id if self.context.get_task() else self.context.task_id
 
     @property
     def context(self) -> Context:
@@ -220,6 +223,23 @@ class ChunkMessage(Message[Any]):
 @dataclass
 class ContextMessage(Message[Any]):
     category: str = 'context'
+
+
+@dataclass
+class BackgroundTaskMessage(Message[Any]):
+    """Background task message for background task completion notification.
+    
+    This message type is used when a task running in the background completes
+    and needs to notify the main task or parent context about its completion.
+    The payload typically contains the TaskResponse from the completed background task.
+    """
+    category: str = 'background_task'
+    # The ID of the parent task that spawned this background task
+    parent_task_id: str = field(default=None)
+    # The ID of the completed background task
+    background_task_id: str = field(default=None)
+    agent_id: str = field(default=None)
+    agent_name: str = field(default=None)
 
 
 class Messageable(object):

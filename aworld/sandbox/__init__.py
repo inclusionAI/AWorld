@@ -4,6 +4,7 @@ from aworld.sandbox.base import Sandbox
 from aworld.sandbox.common import BaseSandbox
 from aworld.sandbox.models import SandboxEnvType
 from aworld.sandbox.implementations import LocalSandbox, KubernetesSandbox, SuperSandbox
+from aworld.sandbox.builder import SandboxBuilder
 
 
 # For backward compatibility, use LocalSandbox as the default Sandbox implementation
@@ -28,6 +29,7 @@ def create_sandbox(
     black_tool_actions: Optional[Dict[str, List[str]]] = None,
     skill_configs: Optional[Any] = None,
     custom_env_tools: Optional[Any] = None,
+    reuse: bool = False,
     **kwargs
 ) -> Sandbox:
     """
@@ -43,6 +45,7 @@ def create_sandbox(
         black_tool_actions: Black list of tool actions.
         skill_configs: Skill configurations.
         custom_env_tools: Custom environment tools. Optional parameter.
+        reuse: Whether to reuse MCP server connections. Default is False.
         **kwargs: Additional parameters for specific sandbox types.
         
     Returns:
@@ -63,6 +66,7 @@ def create_sandbox(
             black_tool_actions=black_tool_actions,
             skill_configs=skill_configs,
             custom_env_tools=custom_env_tools,
+            reuse=reuse,
             **kwargs
         )
     elif env_type == SandboxEnvType.K8S:
@@ -110,6 +114,10 @@ original_new = object.__new__
 # Create a new __new__ method that intercepts Sandbox instantiation
 def _sandbox_new(cls, *args, **kwargs):
     if cls is Sandbox:
+        # If no arguments provided, return a Builder instance for fluent API
+        if not args and not kwargs:
+            return SandboxBuilder()
+        
         # If trying to instantiate Sandbox directly, determine target class and 
         # return an uninitialized instance. Python will then call __init__ on it ONCE.
         env_type = kwargs.get('env_type') or SandboxEnvType.LOCAL
@@ -137,5 +145,6 @@ __all__ = [
     'SuperSandbox',
     'DefaultSandbox',
     'SandboxEnvType',
-    'create_sandbox'
+    'create_sandbox',
+    'SandboxBuilder'
 ]

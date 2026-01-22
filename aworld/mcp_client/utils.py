@@ -131,7 +131,7 @@ def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
             f"server_name-get_function_tool:{sever_name} translate failed: {e}"
         )
         return []
-    
+
     return openai_tools
 
 
@@ -397,7 +397,8 @@ async def mcp_tool_desc_transform_v2(
         server_instances: Dict[str, Any] = None,
         black_tool_actions: Dict[str, List[str]] = None,
         sandbox_id: Optional[str] = None,
-        tool_actions: Optional[List[str]] = None
+        tool_actions: Optional[List[str]] = None,
+        server_instances_session: Optional[Dict[str, Any]] = None
 ) -> List[Dict[str, Any]]:
     # todo sandbox mcp_config get from registry
 
@@ -584,6 +585,176 @@ async def mcp_tool_desc_transform_v2(
     # async with AsyncExitStack() as stack:
 
     # mcp_openai_tools = await run(servers)
+
+    if mcp_openai_tools:
+        openai_tools.extend(mcp_openai_tools)
+
+    return openai_tools
+
+
+async def mcp_tool_desc_transform_v2_reuse(
+        tools: List[str] = None, mcp_config: Dict[str, Any] = None, context: Context = None,
+        server_instances: Dict[str, Any] = None,
+        black_tool_actions: Dict[str, List[str]] = None,
+        sandbox_id: Optional[str] = None,
+        tool_actions: Optional[List[str]] = None,
+        server_instances_session: Optional[Dict[str, Any]] = None
+) -> List[Dict[str, Any]]:
+    # todo sandbox mcp_config get from registry
+
+    if not mcp_config:
+        return []
+    config = mcp_config
+    global MCP_SERVERS_CONFIG
+    MCP_SERVERS_CONFIG = config
+    mcp_servers_config = config.get("mcpServers", {})
+    server_configs = []
+    openai_tools = []
+    mcp_openai_tools = []
+
+    for server_name, server_config in mcp_servers_config.items():
+        # Skip disabled servers
+        if server_config.get("disabled", False):
+            continue
+
+        if tools and server_name in tools:
+            # Handle SSE server
+            if "function_tool" == server_config.get("type", ""):
+                try:
+                    tmp_function_tool = get_function_tool(server_name)
+                    openai_tools.extend(tmp_function_tool)
+                except Exception as e:
+                    logger.warning(f"server_name:{server_name} translate failed: {e}")
+            elif "api" == server_config.get("type", ""):
+                api_result = requests.get(server_config["url"] + "/list_tools")
+                try:
+                    if not api_result or not api_result.text:
+                        continue
+                        # return None
+                    data = json.loads(api_result.text)
+                    if not data or not data.get("tools"):
+                        continue
+                    for item in data.get("tools"):
+                        tmp_function = {
+                            "type": "function",
+                            "function": {
+                                # "name": "mcp__" + server_name + "__" + item["name"],
+                                "name": server_name + "__" + item["name"],
+                                "description": item["description"],
+                                "parameters": {
+                                    **item["parameters"],
+                                    "properties": {
+                                        k: v
+                                        for k, v in item["parameters"]
+                                        .get("properties", {})
+                                        .items()
+                                        if "default" not in v
+                                    },
+                                },
+                            },
+                        }
+                        openai_tools.append(tmp_function)
+                except Exception as e:
+                    logger.warning(f"server_name:{server_name} translate failed: {e}")
+            elif "sse" == server_config.get("type", ""):
+                server_configs.append(
+                    {
+                        # "name": "mcp__" + server_name,
+                        "name": server_name,
+                        "type": "sse",
+                        "params": {
+                            "url": server_config["url"],
+                            "headers": server_config.get("headers"),
+                            "timeout": server_config.get("timeout"),
+                            "sse_read_timeout": server_config.get("sse_read_timeout"),
+                            "client_session_timeout_seconds": server_config.get("client_session_timeout_seconds")
+                        },
+                    }
+                )
+
+            elif "streamable-http" == server_config.get("type", ""):
+                server_configs.append(
+                    {
+                        # "name": "mcp__" + server_name,
+                        "name": server_name,
+                        "type": "streamable-http",
+                        "params": {
+                            "url": server_config["url"],
+                            "headers": server_config.get("headers"),
+                            "timeout": server_config.get("timeout"),
+                            "sse_read_timeout": server_config.get("sse_read_timeout"),
+                            "client_session_timeout_seconds": server_config.get("client_session_timeout_seconds")
+                        },
+                    }
+                )
+            # Handle stdio server
+            else:
+                # elif "stdio" == server_config.get("type", ""):
+                server_configs.append(
+                    {
+                        # "name": "mcp__" + server_name,
+                        "name": server_name,
+                        "type": "stdio",
+                        "params": {
+                            "command": server_config["command"],
+                            "args": server_config.get("args", []),
+                            "env": server_config.get("env", {}),
+                            "cwd": server_config.get("cwd"),
+                            "encoding": server_config.get("encoding", "utf-8"),
+                            "encoding_error_handler": server_config.get(
+                                "encoding_error_handler", "strict"
+                            ),
+                            "client_session_timeout_seconds": server_config.get("client_session_timeout_seconds")
+                        },
+                    }
+                )
+
+    if not server_configs:
+        return openai_tools
+
+    # Reuse mode: use cached server instances
+    for server_config in server_configs:
+        try:
+            server = None
+            env_session_id = None
+            server_name = server_config["name"]
+            # Check if server instance exists in cache
+            if server_instances and server_name in server_instances:
+                server = server_instances.get(server_name)
+                env_session_id = server_instances_session.get(server_name)
+
+            if not server:
+                # Create new instance if not in cache
+                server, env_session_id = await get_server_instance(
+                    server_name=server_name,
+                    mcp_config=mcp_config,
+                    context=context,
+                    sandbox_id=sandbox_id
+                )
+                if server and server_instances is not None:
+                    server_instances[server_name] = server
+                if env_session_id:
+                    server_instances_session[server_name] = env_session_id
+
+            if not server:
+                logger.warning(f"Failed to get server instance for {server_name}")
+                continue
+
+            # Get tools from server
+            _mcp_openai_tools = await run(
+                mcp_servers=[server],
+                black_tool_actions=black_tool_actions,
+                tool_actions=tool_actions
+            )
+            if _mcp_openai_tools:
+                mcp_openai_tools.extend(_mcp_openai_tools)
+            logger.info(f"✅ server ({server_name}) connected success")
+        except BaseException as err:
+            logger.warning(
+                f"❌ server ({server_name}) connect fail: {err}\n"
+                f"Traceback:\n{traceback.format_exc()}"
+            )
+            continue
 
     if mcp_openai_tools:
         openai_tools.extend(mcp_openai_tools)
@@ -897,22 +1068,24 @@ async def get_server_instance(
         server_name: str, mcp_config: Dict[str, Any] = None,
         context: Context = None,
         sandbox_id: Optional[str] = None
-) -> Any:
+) -> Tuple[Any, Optional[str]]:
     """Get server instance, create a new one if it doesn't exist
 
     Args:
         server_name: Server name
         mcp_config: MCP configuration
+        context: Context object
+        sandbox_id: Sandbox ID
 
     Returns:
-        Server instance or None (if creation fails)
+        Tuple of (Server instance or None, _SESSION_ID or None)
     """
     if not mcp_config or mcp_config.get("mcpServers") is None:
-        return None
+        return None, None
 
     mcp_servers = mcp_config.get("mcpServers")
     if not mcp_servers.get(server_name):
-        return None
+        return None, None
 
     server_config = mcp_servers.get(server_name)
     try:
@@ -921,7 +1094,7 @@ async def get_server_instance(
         # Here we don't return None, but let the caller handle it
         if "api" == server_config.get("type", ""):
             logger.info(f"API server {server_name} doesn't need persistent connection")
-            return None
+            return None, None
         elif "sse" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
             env_name = headers.get("env_name")
@@ -945,7 +1118,7 @@ async def get_server_instance(
             )
             await server.connect()
             logger.info(f"Successfully connected to SSE server: {server_name}")
-            return server
+            return server, _SESSION_ID
         elif "streamable-http" == server_config.get("type", ""):
             headers = server_config.get("headers") or {}
             env_name = headers.get("env_name")
@@ -968,7 +1141,7 @@ async def get_server_instance(
             )
             await server.connect()
             logger.info(f"Successfully connected to STREAMABLE-HTTP server: {server_name}")
-            return server
+            return server, _SESSION_ID
         else:  # stdio type
             params = {
                 "command": server_config["command"],
@@ -984,10 +1157,10 @@ async def get_server_instance(
             server = MCPServerStdio(name=server_name, params=params)
             await server.connect()
             logger.info(f"Successfully connected to stdio server: {server_name}")
-            return server
+            return server, None
     except Exception as e:
         logger.warning(f"Failed to create server instance for {server_name}: {e}")
-        return None
+        return None, None
 
 
 async def cleanup_server(server):
@@ -1004,6 +1177,17 @@ async def cleanup_server(server):
         logger.info(
             f"Successfully cleaned up server: {getattr(server, 'name', 'unknown')}"
         )
+    except RuntimeError as e:
+        # RuntimeError about cancel scope usually means cleanup is being called
+        # from a different task context. Log it but don't fail.
+        if "cancel scope" in str(e).lower() or "different task" in str(e).lower():
+            logger.warning(
+                f"Cleanup called from different task context for server "
+                f"{getattr(server, 'name', 'unknown')}: {e}. "
+                f"This may indicate a resource leak."
+            )
+        else:
+            logger.warning(f"Failed to cleanup server: {e}")
     except Exception as e:
         logger.warning(f"Failed to cleanup server: {e}")
 
@@ -1020,10 +1204,10 @@ async def call_mcp_tool_with_exit_stack(
     timeout: float = 120.0
 ) -> Any:
     """Call MCP tool using AsyncExitStack to manage connection lifecycle.
-    
+
     This method creates a new server connection for each call and automatically
     cleans it up after use, similar to how list_tools works.
-    
+
     Args:
         server_name: Name of the MCP server
         tool_name: Name of the tool to call
@@ -1034,24 +1218,24 @@ async def call_mcp_tool_with_exit_stack(
         progress_callback: Optional progress callback function
         max_retry: Maximum number of retry attempts (default: 3)
         timeout: Timeout in seconds (default: 120.0)
-    
+
     Returns:
         CallToolResult or None if all attempts fail
     """
     call_result_raw = None
     last_exception = None
-    
+
     for attempt in range(max_retry):
         try:
             # Create a new server instance for each call using AsyncExitStack
             async with AsyncExitStack() as stack:
-                server = await get_server_instance(
+                server, env_session_id = await get_server_instance(
                     server_name=server_name,
                     mcp_config=mcp_config,
                     context=context,
                     sandbox_id=sandbox_id
                 )
-                
+
                 if not server:
                     logger.warning(
                         f"Failed to create server instance: {server_name}, "
@@ -1060,18 +1244,18 @@ async def call_mcp_tool_with_exit_stack(
                     if attempt == max_retry - 1:
                         return None
                     continue
-                
+
                 # Register cleanup callback since server is already connected
                 # get_server_instance already called connect(), so we just need cleanup
                 async def cleanup_server_on_exit(exc_type, exc_val, exc_tb):
                     await server.cleanup()
                 stack.push_async_exit(cleanup_server_on_exit)
-                
+
                 logger.info(
                     f"Created new server instance for {server_name} "
                     f"(attempt {attempt + 1}/{max_retry})"
                 )
-                
+
                 # Call the tool with timeout
                 call_result_raw = await asyncio.wait_for(
                     server.call_tool(
@@ -1081,14 +1265,14 @@ async def call_mcp_tool_with_exit_stack(
                     ),
                     timeout=timeout
                 )
-                
+
                 # Success, break out of retry loop
                 logger.info(
                     f"Successfully called tool {server_name}__{tool_name} "
                     f"(attempt {attempt + 1})"
                 )
                 break
-                
+
         except asyncio.TimeoutError as e:
             last_exception = e
             logger.warning(
@@ -1111,7 +1295,80 @@ async def call_mcp_tool_with_exit_stack(
                 logger.error(
                     f"All {max_retry} attempts failed for {server_name}__{tool_name}"
                 )
-    
+
+    return call_result_raw
+
+
+async def call_mcp_tool_with_reuse(
+    server_name: str,
+    tool_name: str,
+    parameter: Dict[str, Any],
+    server_instances: Dict[str, MCPServer],
+    mcp_config: Dict[str, Any],
+    context: Context = None,
+    sandbox_id: Optional[str] = None,
+    progress_callback=None,
+    max_retry: int = 3,
+    timeout: float = 120.0
+) -> Any:
+    """Call MCP tool using cached server instances (reuse mode).
+
+    This method uses cached server instances and includes retry logic similar to
+    call_mcp_tool_with_exit_stack, but without creating new connections each time.
+
+    Args:
+        server_name: Name of the MCP server
+        tool_name: Name of the tool to call
+        parameter: Tool parameters
+        server_instances: Dictionary to cache server instances {server_name: server_instance}
+        mcp_config: MCP configuration
+        context: Context object (optional)
+        sandbox_id: Sandbox ID (optional)
+        progress_callback: Optional progress callback function
+        max_retry: Maximum number of retry attempts (default: 3)
+        timeout: Timeout in seconds (default: 120.0)
+
+    Returns:
+        CallToolResult or None if all attempts fail
+    """
+    # Get or create server instance before retry loop
+    server = server_instances.get(server_name)
+    if not server:
+        server, env_session_id = await get_server_instance(
+            server_name=server_name,
+            mcp_config=mcp_config,
+            context=context,
+            sandbox_id=sandbox_id
+        )
+        if server:
+            server_instances[server_name] = server
+
+    if not server:
+        logger.warning(f"Failed to get server instance: {server_name}, tool_name: {tool_name}")
+        return None
+
+    call_result_raw = None
+
+    for attempt in range(max_retry):
+        try:
+            # Call the tool with timeout
+            call_result_raw = await asyncio.wait_for(
+                server.call_tool(
+                    tool_name=tool_name,
+                    arguments=parameter,
+                    progress_callback=progress_callback
+                ),
+                timeout=timeout
+            )
+            # Success, break out of retry loop
+            break
+
+        except (asyncio.TimeoutError, BaseException) as e:
+            logger.warning(
+                f"Error calling tool {server_name}__{tool_name} "
+                f"(attempt {attempt + 1}/{max_retry}): {e}"
+            )
+
     return call_result_raw
 
 # Helper: extract mcp_servers from mcp_config if current_servers is empty

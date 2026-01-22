@@ -83,6 +83,7 @@ class ActionModel(BaseModel):
     action_name: Optional[str] = None
     params: Optional[Dict[str, Any]] = {}
     policy_info: Optional[Any] = None
+    action_type: Literal["normal", "background"] = 'normal'
 
 
 class TaskItem(BaseModel):
