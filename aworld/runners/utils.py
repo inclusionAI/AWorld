@@ -24,12 +24,13 @@ async def runtime_engine(run_conf: RunConfig = None):
     return runtime_backend.build_engine()
 
 
-async def choose_runners(tasks: List[Task], agent_oriented: bool = True) -> List[Runner]:
+async def choose_runners(tasks: List[Task], agent_oriented: bool = True, run_conf: RunConfig = None) -> List[Runner]:
     """Choose the correct runner to run the task.
 
     Args:
         tasks: A list of tasks that contains agents, tools and datas.
         agent_oriented: Whether the runner is agent-oriented.
+        run_conf: Runtime config, can choose the special computing engine to execute the runner.
 
     Returns:
         Runner instance or exception.
@@ -39,7 +40,7 @@ async def choose_runners(tasks: List[Task], agent_oriented: bool = True) -> List
         # user custom runner class
         runner_cls = task.runner_cls
         if runner_cls:
-            return new_instance(runner_cls, task)
+            return new_instance(runner_cls, task=task, run_conf=run_conf)
         else:
             # user runner class in the framework
             if task.swarm:
