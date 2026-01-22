@@ -3,9 +3,6 @@
 import atexit
 import os
 
-from aworld.config import ConfigDict
-from aworld.logs.util import update_logger_level
-
 PROJECT_CONFIG = {"debug_mode": os.environ.get('AWORLD_DEBUG_MODE', 'false').lower() in ('true', '1', 't')}
 
 # Try to load .env file if python-dotenv is available
@@ -23,6 +20,8 @@ except Exception as e:
 
 def configure(log_level="INFO", use_trace: bool = False, debug_mode=True):
     from aworld import trace
+    from aworld.config import ConfigDict
+    from aworld.logs.util import update_logger_level
 
     # update all loggers level in console
     update_logger_level(log_level)
