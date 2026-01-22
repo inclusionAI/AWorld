@@ -10,6 +10,7 @@ from typing import List, Callable, Any
 import aworld.trace as trace
 from aworld.core.agent.base import BaseAgent, is_agent_by_name
 from aworld.core.common import TaskItem, ActionModel
+from aworld.core.context.amni import AmniContext, ApplicationContext
 from aworld.core.context.base import Context
 from aworld.dataset.trajectory_storage import get_storage_instance
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
@@ -17,13 +18,14 @@ from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse, TaskStatusValue
 from aworld.dataset.trajectory_dataset import TrajectoryDataset
 from aworld.events.manager import EventManager
-from aworld.logs.util import logger
+from aworld.logs.util import logger, trajectory_logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.runners.task_runner import TaskRunner
 from aworld.trace.base import get_trace_id
 from aworld.utils.common import override_in_subclass, new_instance
+from aworld.utils.serialized_util import to_serializable
 
 
 class TaskEventRunner(TaskRunner):
@@ -311,6 +313,8 @@ class TaskEventRunner(TaskRunner):
                 if should_stop_task:
                     logger.warn(f"Runner {self.task.id} task should stop.")
                     await self.stop()
+                else:
+                    self._stopped.clear()
                 if await self.is_stopped():
                     logger.info(f"{task_flag} task {self.task.id} stoped and will break snap")
                     await self.event_mng.done()
@@ -411,8 +415,16 @@ class TaskEventRunner(TaskRunner):
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
             if traj:
                 self._task_response.trajectory = [step.to_dict() for step in traj]
-                logger.debug(f"{self.task.id}|{self.task.is_sub_task}#_task_response.trajectory: {json.dumps(self._task_response.trajectory, ensure_ascii=False)}")
 
+                token_id_traj = None
+                if self.context.token_id_traj:
+                    token_id_traj = json.dumps(to_serializable(self.context.token_id_traj))
+
+                res = {"task_id": self.task.id,
+                       "is_sub_task": self.task.is_sub_task,
+                       "trajectory": json.dumps(self._task_response.trajectory, ensure_ascii=False),
+                       "token_id_trajectory": token_id_traj}
+                trajectory_logger.info(f"{res}")
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
 
@@ -452,4 +464,13 @@ class TaskEventRunner(TaskRunner):
                 status=task_status
             )
             return True
-        return False
+
+        # Check if all background tasks are done
+        if isinstance(self.context, ApplicationContext):
+            need_pending = self.context.has_pending_background_tasks(
+                agent_id=self.context.agent_info.current_agent_id if self.context.agent_info and hasattr(self.context.agent_info, 'current_agent_id') else "",
+                parent_task_id=self.context.task_id)
+            if need_pending:
+                return False
+
+        return await self.is_stopped()

@@ -81,7 +81,8 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     params = {}
                 
                 # format in framework
-                agent_info = AgentFactory.agent_instance(agent_id)
+                #agent_info = AgentFactory.agent_instance(agent_id)
+                agent_info = kwargs.get("agent")
                 original_name = full_name
                 if (not full_name.startswith("mcp__") and agent_info and agent_info.sandbox and
                         agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers):
@@ -388,6 +389,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         memory = MemoryFactory.instance()
         # from memory get last n messages
         filters = self._build_memory_filters(message.context)
+        # load pending message
+        try:
+            pending_filters = self._build_memory_filters(message.context)
+            pending_filters['memory_type'] = 'pending'
+            pending_items = memory.memory_store.get_all(pending_filters)
+            if pending_items:
+                for pending_item in pending_items:
+                    pending_item.created_at = datetime.now().isoformat()
+                    pending_item.memory_type = 'message'
+        except Exception as e:
+            logger.warning(f"Agent {self.id()} load pending message error: {e}")
+
         agent_memory_config = self.memory_config
         if self._is_amni_context(message.context):
             agent_context_config = message.context.get_config().get_agent_context_config(self.id())
@@ -549,6 +562,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
     async def async_post_run(self, policy_result: List[ActionModel], policy_input: Observation,
                              message: Message = None) -> Message:
+
+        # Check for pending messages in memory store
+        memory = MemoryFactory.instance()
+        filters = self._build_memory_filters(message.context)
+        filters['memory_type'] = 'pending'
+        pending_items = memory.memory_store.get_all(filters)
+        if pending_items:
+            logger.info(f"🧠 [Agent:{self.id()}] Found {len(pending_items)} pending memory items, "
+                        f"holding task execution. Pending content: {pending_items[0]}...")
+            self._finished = False
         return self._agent_result(
             policy_result,
             policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer,
@@ -648,6 +671,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     else:
                         agent_result = await self.output_converter.parse(llm_response,
                                                                          agent_id=self.id(),
+                                                                         agent=self,
                                                                          use_tools_in_prompt=self.use_tools_in_prompt)
                     # skip summary on final round
                     await self._add_message_to_memory(payload=llm_response,

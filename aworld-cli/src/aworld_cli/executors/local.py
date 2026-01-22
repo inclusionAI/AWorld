@@ -620,9 +620,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     if hasattr(output, 'data') and output.data:
                                         data_str = str(output.data)
                                         if data_str.strip() and len(data_str) > 10:
+                                            idx = -1 if output.metadata.get("print_all", False) else 500
+                                            title = output.metadata.get("title")
+                                            title = title if title else type(output).__name__
                                             generic_panel = Panel(
-                                                data_str[:500],
-                                                title=f"[dim]📦 {type(output).__name__}[/dim]",
+                                                data_str[:idx],
+                                                title=f"[dim]📦 {title}[/dim]",
                                                 border_style="dim",
                                                 padding=(1, 2)
                                             )
