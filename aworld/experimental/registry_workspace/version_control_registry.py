@@ -35,29 +35,7 @@ class VersionControlRegistry(abc.ABC):
 
     def _get_storage_type(self) -> str:
         """Get storage type, 'local' or 'oss'"""
-        config = self._context.get_config() if hasattr(self._context, 'get_config') else None
-        if config and hasattr(config, 'env_config') and config.env_config:
-            registry_config = config.env_config.agent_registry_config
-            if registry_config and hasattr(registry_config, 'storage_type') and registry_config.storage_type:
-                storage_type = registry_config.storage_type.lower()
-                if storage_type == 'oss':
-                    return 'oss'
         return 'local'
-
-    def _get_storage_base_path(self) -> str:
-        """Get storage base path"""
-        config = self._context.get_config() if hasattr(self._context, 'get_config') else None
-
-        base_path = None
-        if config and hasattr(config, 'env_config') and config.env_config:
-            registry_config = config.env_config.agent_registry_config
-            if registry_config and hasattr(registry_config, 'storage_base_path') and registry_config.storage_base_path:
-                base_path = registry_config.storage_base_path
-
-        if not base_path:
-            base_path = os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry')
-
-        return base_path
 
     def _get_oss_config(self) -> Optional[Dict[str, str]]:
         """
@@ -102,7 +80,7 @@ class VersionControlRegistry(abc.ABC):
             DirArtifact instance configured for the current storage type
         """
         storage_type = self._get_storage_type()
-        base_path = self._get_storage_base_path()
+        base_path = os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry')
 
         if storage_type == 'oss':
             # Get OSS configuration
@@ -345,7 +323,7 @@ class VersionControlRegistry(abc.ABC):
                 return content
             else:
                 # For other suffixes (e.g., .yaml), read directly from filesystem
-                base_path = self._get_storage_base_path()
+                base_path = os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry')
                 path = os.path.join(base_path, relative_path)
                 
                 if not os.path.exists(path):

@@ -1,16 +1,16 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import re
+import os
 from pathlib import Path
 from threading import RLock
 from typing import Optional, Dict, List
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.context.amni import DirArtifact
-from aworld.core.context.amni.cvcs.version_control_registry import VersionControlRegistry
-from aworld.experimental.aworld_cli.core.agent_registry import LocalAgent
-from aworld.experimental.aworld_cli.core.markdown_agent_loader import parse_markdown_agent
+from aworld.experimental.registry_workspace.version_control_registry import VersionControlRegistry
 from aworld.logs.util import logger
+from aworld_cli.core import LocalAgent
+from aworld_cli.core.markdown_agent_loader import parse_markdown_agent
 
 
 class AgentVersionControlRegistry(VersionControlRegistry):
@@ -164,7 +164,7 @@ class AgentVersionControlRegistry(VersionControlRegistry):
             version = versions[-1]
 
         # Get base_path and storage configuration
-        base_path = self._get_storage_base_path()
+        base_path = os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry')
         storage_type = self._get_storage_type()
         
         # Prepare OSS configuration (if needed)
@@ -199,3 +199,14 @@ class AgentVersionControlRegistry(VersionControlRegistry):
             suffix=".md",
             session_id=session_id
         )
+
+
+class DefaultContext:
+    """Default context for AgentVersionControlRegistry when no context is provided."""
+    def __init__(self, session_id: str = "default"):
+        self.session_id = session_id
+
+
+# Default instance of AgentVersionControlRegistry
+_default_agent_registry = AgentVersionControlRegistry(DefaultContext())
+

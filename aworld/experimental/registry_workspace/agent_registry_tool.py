@@ -12,11 +12,11 @@ from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
 from aworld.tools.utils import build_observation
 
-CONTEXT_SWARM_REGISTRY = "CONTEXT_SWARM_REGISTRY"
+CONTEXT_AGENT_REGISTRY = "CONTEXT_AGENT_REGISTRY"
 
 
-class ContextSwarmRegistryAction(ToolAction):
-    """Swarm Registry Support. Definition of Context swarm registry operations."""
+class ContextAgentRegistryAction(ToolAction):
+    """Agent Registry Support. Definition of Context agent registry operations."""
 
     SAVE_AS_SOURCE = ToolActionInfo(
         name="save_as_source",
@@ -25,52 +25,59 @@ class ContextSwarmRegistryAction(ToolAction):
                 name="content",
                 type="string",
                 required=True,
-                desc="The yaml configuration content to save"
+                desc="The markdown configuration content to save"
             ),
             "name": ParamInfo(
                 name="name",
                 type="string",
                 required=True,
-                desc="The name of the swarm resource to save"
+                desc="The name of the resource to save"
             )
         },
-        desc="Save configuration as yaml file to the registry"
+        desc="Save configuration as markdown file to the registry"
     )
 
     LOAD_AS_SOURCE = ToolActionInfo(
         name="load_as_source",
         input_params={
-            "swarm_name": ParamInfo(
-                name="swarm_name",
+            "agent_name": ParamInfo(
+                name="agent_name",
                 type="string",
                 required=True,
-                desc="The name of the swarm to retrieve"
+                desc="The name of the agent to retrieve"
             ),
             "version": ParamInfo(
                 name="version",
                 type="string",
                 required=False,
-                desc="The version of the swarm to retrieve (optional, defaults to latest)"
+                desc="The version of the agent to retrieve (optional, defaults to latest)"
             )
         },
-        desc="Retrieve swarm configuration as yaml content from the registry"
+        desc="Retrieve agent configuration as markdown content from the registry"
     )
 
     LIST_AS_SOURCE = ToolActionInfo(
         name="list_as_source",
         input_params={},
-        desc="List all available swarm resources in the registry"
+        desc="List all available resources in the registry"
+    )
+
+    LIST_DESC = ToolActionInfo(
+        name="list_desc",
+        input_params={},
+        desc="List all available resources with their descriptions in the registry"
     )
 
 
-@ToolFactory.register(name=CONTEXT_SWARM_REGISTRY,
-                      desc=CONTEXT_SWARM_REGISTRY,
-                      supported_action=ContextSwarmRegistryAction)
-class ContextSwarmRegistryTool(AsyncTool):
+@ToolFactory.register(name=CONTEXT_AGENT_REGISTRY,
+                      desc=CONTEXT_AGENT_REGISTRY,
+                      supported_action=ContextAgentRegistryAction)
+class ContextAgentRegistryTool(AsyncTool):
     def __init__(self, conf: ToolConfig, **kwargs) -> None:
-        super(ContextSwarmRegistryTool, self).__init__(conf, **kwargs)
+        super(ContextAgentRegistryTool, self).__init__(conf, **kwargs)
         self.cur_observation = None
         self.content = None
+        self.keyframes = []
         self.init()
         self.step_finished = True
 
@@ -81,7 +88,7 @@ class ContextSwarmRegistryTool(AsyncTool):
         await self.close()
         self.step_finished = True
         return build_observation(observer=self.name(),
-                                 ability=ContextSwarmRegistryAction.LIST_AS_SOURCE.value.name), {}
+                                 ability=ContextAgentRegistryAction.LIST_AS_SOURCE.value.name), {}
 
     def init(self) -> None:
         self.initialized = True
@@ -99,7 +106,6 @@ class ContextSwarmRegistryTool(AsyncTool):
         fail_error = ""
         action_results = []
         info = {}
-        action_name = ""
 
         try:
             if not actions:
@@ -107,20 +113,20 @@ class ContextSwarmRegistryTool(AsyncTool):
             if not isinstance(message.context, AmniContext):
                 raise ValueError("context is not AmniContext")
 
-            # Get swarm registry service from context
-            from aworld.core.context.amni.cvcs import SwarmVersionControlRegistry
+            # Get agent registry service from context
+            from aworld.experimental.registry_workspace.agent_version_control_registry import AgentVersionControlRegistry
 
-            def get_swarm_registry_service() -> SwarmVersionControlRegistry:
+            def get_agent_registry_service() -> AgentVersionControlRegistry:
                 context = message.context._context if hasattr(message.context, '_context') else message.context
-                return SwarmVersionControlRegistry(context)
+                return AgentVersionControlRegistry(context)
 
             for action in actions:
-                logger.info(f"ContextSwarmRegistryTool|do_step: {action}")
+                logger.info(f"ContextAgentRegistryTool|do_step: {action}")
                 action_name = action.action_name
                 action_result = ActionResult(action_name=action_name, tool_name=self.name())
 
                 try:
-                    if action_name == ContextSwarmRegistryAction.SAVE_AS_SOURCE.value.name:
+                    if action_name == ContextAgentRegistryAction.SAVE_AS_SOURCE.value.name:
                         content = action.params.get("content", "")
                         name = action.params.get("name", "")
 
@@ -129,37 +135,48 @@ class ContextSwarmRegistryTool(AsyncTool):
                         if not name:
                             raise ValueError("name is required")
 
-                        service = get_swarm_registry_service()
+                        service = get_agent_registry_service()
                         success = await service.save_as_source(content=content, name=name)
 
                         if success:
                             action_result.success = True
-                            action_result.content = f"Successfully saved swarm resource '{name}' as yaml"
+                            action_result.content = f"Successfully saved resource '{name}' as markdown"
                         else:
-                            raise ValueError(f"Failed to save swarm resource '{name}'")
+                            raise ValueError(f"Failed to save resource '{name}'")
 
-                    elif action_name == ContextSwarmRegistryAction.LOAD_AS_SOURCE.value.name:
-                        swarm_name = action.params.get("swarm_name", "")
+                    elif action_name == ContextAgentRegistryAction.LOAD_AS_SOURCE.value.name:
+                        agent_name = action.params.get("agent_name", "")
                         version = action.params.get("version")
 
-                        if not swarm_name:
-                            raise ValueError("swarm_name is required")
+                        if not agent_name:
+                            raise ValueError("agent_name is required")
 
-                        service = get_swarm_registry_service()
-                        content = await service.load_as_source(name=swarm_name, version=version)
+                        service = get_agent_registry_service()
+                        content = await service.load_as_source(name=agent_name, version=version)
 
                         if content:
                             action_result.success = True
                             action_result.content = f"Content: {content}"
                         else:
-                            raise ValueError(f"Swarm '{swarm_name}' not found or no content available")
+                            raise ValueError(f"Agent '{agent_name}' not found or no content available")
 
-                    elif action_name == ContextSwarmRegistryAction.LIST_AS_SOURCE.value.name:
-                        service = get_swarm_registry_service()
+                    elif action_name == ContextAgentRegistryAction.LIST_AS_SOURCE.value.name:
+                        service = get_agent_registry_service()
                         resources = await service.list_as_source()
 
                         action_result.success = True
-                        action_result.content = f"Available swarm resources: {', '.join(resources)}" if resources else "No swarm resources found"
+                        action_result.content = f"Available resources: {', '.join(resources)}" if resources else "No resources found"
+
+                    elif action_name == ContextAgentRegistryAction.LIST_DESC.value.name:
+                        service = get_agent_registry_service()
+                        resources_with_desc = await service.list_desc()
+
+                        action_result.success = True
+                        if resources_with_desc:
+                            desc_lines = [f"- {name}: {desc}" for name, desc in resources_with_desc]
+                            action_result.content = "Available resources with descriptions:\n" + "\n".join(desc_lines)
+                        else:
+                            action_result.content = "No resources found"
 
                     else:
                         raise ValueError(f"Unknown action: {action_name}")
@@ -173,7 +190,7 @@ class ContextSwarmRegistryTool(AsyncTool):
                 action_results.append(action_result)
 
         except Exception as e:
-            logger.error(f"ContextSwarmRegistryTool|do_step error: {traceback.format_exc()}")
+            logger.error(f"ContextAgentRegistryTool|do_step error: {traceback.format_exc()}")
             fail_error = str(e)
             reward = -1.0
             # Create failed action results for all actions

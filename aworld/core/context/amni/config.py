@@ -229,12 +229,6 @@ class ContextEnvConfig(BaseModel):
         description="OSS configuration for working directory. Priority: config > WORKING_DIR_OSS_* > OSS_* environment variables"
     )
 
-    # Agent registry configuration
-    agent_registry_config: Optional[AgentRegistryConfig] = Field(
-        default_factory=AgentRegistryConfig,
-        description="Agent registry configuration for managing agent registration, versioning, storage, and discovery"
-    )
-
 class AmniContextConfig(BaseConfig):
     """AmniContext configs"""
 

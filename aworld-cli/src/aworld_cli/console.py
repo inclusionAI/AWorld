@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
@@ -12,7 +13,8 @@ from rich.table import Table
 
 from .models import AgentInfo
 from ._globals import console
-
+from .core.skill_registry import get_skill_registry
+        
 # ... existing imports ...
 
 from rich.text import Text
@@ -84,26 +86,16 @@ class AWorldCLI:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
             return
             
-        table = Table(title="Available Agents", box=box.ROUNDED)
+        table = Table(title="Available Agents", box=box.ROUNDED, width=None)
         table.add_column("Name", style="magenta")
         table.add_column("Description", style="green")
-        table.add_column("SourceType", style="cyan")
         table.add_column("Address", style="blue")
 
         for agent in agents:
             desc = getattr(agent, "desc", "No description") or "No description"
-            # Always use agent's own source_type and source_location if they exist and are valid
-            # Fallback to provided parameters only if agent doesn't have these attributes
-            agent_source_type = getattr(agent, "source_type", None)
+            # Always use agent's own source_location if it exists and is valid
+            # Fallback to provided parameters only if agent doesn't have this attribute
             agent_source_location = getattr(agent, "source_location", None)
-            
-            # Use agent's source_type if it exists and is valid, otherwise use fallback
-            if agent_source_type and agent_source_type != "UNKNOWN" and agent_source_type.strip() != "":
-                # Use agent's own source_type
-                pass
-            else:
-                # Use fallback
-                agent_source_type = source_type
             
             # Use agent's source_location if it exists and is valid, otherwise use fallback
             if agent_source_location and agent_source_location.strip() != "":
@@ -113,7 +105,7 @@ class AWorldCLI:
                 # Use fallback
                 agent_source_location = source_location
             
-            table.add_row(agent.name, desc, agent_source_type, agent_source_location)
+            table.add_row(agent.name, desc, agent_source_location)
 
         self.console.print(table)
 
@@ -133,7 +125,7 @@ class AWorldCLI:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
             return None
         
-        table = Table(title="Available Agents", box=box.ROUNDED)
+        table = Table(title="Available Agents", box=box.ROUNDED, width=None)
         table.add_column("No.", style="cyan", justify="right")
         table.add_column("Name", style="magenta")
         table.add_column("Description", style="green")
@@ -274,9 +266,40 @@ class AWorldCLI:
             f"Type '/switch [agent_name]' to switch agent.\n"
             f"Type '/new' to create a new session.\n"
             f"Type '/restore' or '/latest' to restore to the latest session.\n"
+            f"Type '/skills' to list all available skills.\n"
+            f"Type '/agents' to list all available agents.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
         self.console.print(Panel(help_text, style="blue"))
+
+        # # Get agent-dir from environment variables
+        # agent_dirs = []
+        # local_agents_dir = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or ""
+        # if local_agents_dir:
+        #     agent_dirs = [d.strip() for d in local_agents_dir.split(";") if d.strip()]
+        
+        # # Get skill-path from skill registry
+        # skill_paths = []
+        # try:
+        #     registry = get_skill_registry()
+        #     skill_paths = registry.list_sources()
+        # except Exception:
+        #     pass
+        
+        # # Display agent-dir and skill-path
+        # if agent_dirs or skill_paths:
+        #     info_lines = []
+        #     if agent_dirs:
+        #         agent_dirs_str = ", ".join(agent_dirs)
+        #         info_lines.append(f"Agent Dirs: [dim]{agent_dirs_str}[/dim]")
+        #     if skill_paths:
+        #         skill_paths_str = ", ".join(skill_paths)
+        #         info_lines.append(f"Skill Paths: [dim]{skill_paths_str}[/dim]")
+            
+        #     if info_lines:
+        #         self.console.print("\n".join(info_lines))
+        
+        self.console.print()
         
         # Check if we're in a real terminal (not IDE debugger or redirected input)
         is_terminal = sys.stdin.isatty()
@@ -291,10 +314,13 @@ class AWorldCLI:
                 '/new': None,
                 '/restore': None,
                 '/latest': None,
+                '/skills': None,
+                '/agents': None,
                 '/exit': None,
                 '/quit': None,
                 'exit': None,
                 'quit': None
+                
             })
             session = PromptSession(completer=completer)
 
@@ -359,6 +385,149 @@ class AWorldCLI:
                              continue
                     else:
                         return True # Return True to switch agent (show list)
+                
+                # Handle skills command
+                if user_input.lower() in ("/skills", "skills"):
+                    try:
+                        # First, load skills from plugin directories
+                        from .runtime.cli import CliRuntime
+                        from pathlib import Path
+
+                        runtime = CliRuntime()
+                        runtime.cli = self  # Set cli reference for console output
+                        loaded_skills = await runtime._load_skills()
+                        
+                        # Display loading results from plugins
+                        if loaded_skills:
+                            total_loaded = sum(loaded_skills.values())
+                            if total_loaded > 0:
+                                self.console.print(f"[green]✅ Loaded {total_loaded} skill(s) from {len([k for k, v in loaded_skills.items() if v > 0])} plugin(s)[/green]")
+                            else:
+                                self.console.print("[dim]No new skills loaded from plugins.[/dim]")
+                        
+                        # Get all skills from registry (including newly loaded ones)
+                        registry = get_skill_registry()
+                        all_skills = registry.get_all_skills()
+                        
+                        if not all_skills:
+                            self.console.print("[yellow]No skills available.[/yellow]")
+                            continue
+                        
+                        # Separate skills into plugin and user skills
+                        plugin_skills = {}
+                        user_skills = {}
+                        
+                        for skill_name, skill_data in all_skills.items():
+                            skill_path = skill_data.get("skill_path", "")
+                            # Determine if skill is from plugin or user
+                            # Plugin skills: from inner_plugins or .aworld directories
+                            if skill_path and ("inner_plugins" in skill_path or ".aworld" in skill_path):
+                                plugin_skills[skill_name] = skill_data
+                            else:
+                                user_skills[skill_name] = skill_data
+                        
+                        # Helper function to create and display a skills table
+                        def display_skills_table(skills_dict, title):
+                            if not skills_dict:
+                                return
+                            
+                            table = Table(title=title, box=box.ROUNDED, width=None)
+                            table.add_column("Name", style="magenta", width=30)
+                            table.add_column("Description", style="green")
+                            
+                            for skill_name, skill_data in sorted(skills_dict.items()):
+                                desc = skill_data.get("description") or skill_data.get("desc") or "No description"
+                                # Truncate description if too long
+                                if len(desc) > 60:
+                                    desc = desc[:57] + "..."
+                                
+                                table.add_row(skill_name, desc)
+                            
+                            self.console.print(table)
+                            self.console.print(f"[dim]Total: {len(skills_dict)} skill(s)[/dim]")
+                        
+                        # Display User skills first
+                        if user_skills:
+                            display_skills_table(user_skills, "User Skills")
+                            self.console.print()  # Add spacing between tables
+                        
+                        # Display Plugin skills
+                        if plugin_skills:
+                            display_skills_table(plugin_skills, "Plugin Skills")
+                        
+                        # Display overall total
+                        if plugin_skills and user_skills:
+                            self.console.print(f"[dim]Overall Total: {len(all_skills)} skill(s)[/dim]")
+                    except Exception as e:
+                        self.console.print(f"[red]Error loading skills: {e}[/red]")
+                    continue
+                
+                # Handle agents command
+                if user_input.lower() in ("/agents", "agents"):
+                    try:
+                        from .runtime.cli import CliRuntime
+                        from .runtime.loaders import PluginLoader
+                        from pathlib import Path
+                        from aworld.experimental.registry_workspace.agent_version_control_registry import _default_agent_registry
+                        import os
+
+                        built_in_agents = []
+                        user_agents = []
+                        base_path = os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry')
+                        
+                        # Load Built-in agents from plugins using PluginLoader
+                        try:
+                            # Get built-in plugin directories
+                            runtime = CliRuntime()
+                            plugin_dirs = runtime.plugin_dirs
+                            
+                            # Load agents from each plugin using PluginLoader
+                            for plugin_dir in plugin_dirs:
+                                try:
+                                    loader = PluginLoader(plugin_dir, console=self.console)
+                                    # Load agents from plugin (this also loads skills internally)
+                                    plugin_agents = await loader.load_agents()
+                                    # Mark as Built-in agents
+                                    for agent in plugin_agents:
+                                        if not hasattr(agent, 'source_type') or not agent.source_type:
+                                            agent.source_type = "BUILT-IN"
+                                    built_in_agents.extend(plugin_agents)
+                                except Exception as e:
+                                    self.console.print(f"[yellow]⚠️ Failed to load Built-in agents from plugin {plugin_dir.name}: {e}[/yellow]")
+                        except Exception as e:
+                            self.console.print(f"[yellow]⚠️ Failed to load Built-in agents from plugins: {e}[/yellow]")
+                        
+                        # Load User agents from AgentVersionControlRegistry default instance
+                        try:
+                            agent_list = await _default_agent_registry.list_desc()
+                            for name, desc in agent_list:
+                                agent_info = AgentInfo(
+                                    name=name,
+                                    desc=desc,
+                                    source_type="USER",
+                                    source_location=base_path
+                                )
+                                user_agents.append(agent_info)
+                        except Exception as e:
+                            self.console.print(f"[yellow]⚠️ Failed to load User agents from registry: {e}[/yellow]")
+                        
+                        # Display Built-in agents in a separate table
+                        if built_in_agents:
+                            self.display_agents(built_in_agents, source_type="BUILT-IN")
+                        else:
+                            self.console.print("[dim]No Built-in agents available.[/dim]")
+                        
+                        # Display User agents in a separate table
+                        if user_agents:
+                            self.display_agents(user_agents, source_type="USER", source_location=base_path)
+                        else:
+                            self.console.print("[dim]No User agents available.[/dim]")
+                        
+                        if not built_in_agents and not user_agents:
+                            self.console.print("[yellow]No agents available.[/yellow]")
+                    except Exception as e:
+                        self.console.print(f"[red]Error loading agents: {e}[/red]")
+                    continue
 
                 # Print agent name before response
                 self.console.print(f"[bold green]{agent_name}[/bold green]:")
