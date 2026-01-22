@@ -111,7 +111,6 @@ def _async_run_class_wrapper(tracer: Tracer):
         message = args[0] or kwargs.get("message")
         attributes = get_agent_span_attributes(instance, message)
         if tracer:
-            attributes[semconv.TRACE_ID] = message.context.trace_id
             span = tracer.start_span(
                 name=trace_constants.SPAN_NAME_PREFIX_AGENT + "async_run",
                 span_type=SpanType.SERVER,
