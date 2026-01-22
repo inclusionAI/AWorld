@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
 from typing import AsyncGenerator, Tuple
 
 from aworld.agents.loop_llm_agent import LoopableAgent
@@ -335,14 +336,41 @@ class DefaultAgentHandler(AgentHandler):
                     )
                 else:
                     logger.warn(f"{agent_name} has no successor, but not finished, will be rerun itself: {agent_name}")
-                    yield Message(
-                        category=Constants.AGENT,
-                        payload=Observation(content=action.policy_info, observer=agent_name),
-                        sender=agent_name,
-                        receiver=agent_name,
-                        session_id=session_id,
-                        headers=message.headers
-                    )
+                    if not message.context.has_pending_background_tasks(agent_id=agent_name,
+                                                                        parent_task_id=message.context.task_id):
+                        yield Message(
+                            category=Constants.AGENT,
+                            payload=Observation(content=action.policy_info, observer=agent_name),
+                            sender=agent_name,
+                            receiver=agent_name,
+                            session_id=session_id,
+                            headers=message.headers
+                        )
+                    else:
+                        yield Message(
+                            category="mock",
+                            payload=action.policy_info,
+                            sender=agent.id(),
+                            session_id=session_id,
+                            topic=TopicType.RERUN,
+                            headers=message.headers
+                        )
+                        i = 0
+                        while message.context.has_pending_background_tasks(agent_id=agent_name,
+                                                                           parent_task_id=message.context.task_id):
+                            await asyncio.sleep(1)
+                            i += 1
+                            logger.info(f"{agent_name} is waiting pending background_tasks#{i}")
+                        yield Message(
+                            category=Constants.AGENT,
+                            # default use string as content
+                            payload=Observation(content="Task is not finished, keep working on it."),
+                            sender=agent_name,
+                            session_id=session_id,
+                            receiver=agent_name,
+                            headers=message.headers
+                        )
+                        return
                 return
 
             for k, _ in successor.items():
@@ -355,6 +383,7 @@ class DefaultAgentHandler(AgentHandler):
                 for pre_k, _ in predecessor.items():
                     if pre_k == agent_name:
                         all_input[agent_name] = action.policy_info
+                        pre_finished = agent.finished
                         continue
                     # check all predecessor agent finished
                     run_node: RunNode = self.runner.state_manager.query_by_task(
