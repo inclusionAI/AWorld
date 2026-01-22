@@ -28,6 +28,7 @@ from aworld.trace.msg_format import (
     warn_fstring_await
 )
 from aworld.trace.function_trace import trace_func
+from .instrumentation import semconv
 from .opentelemetry.opentelemetry_adapter import configure_otlp_provider
 from aworld.logs.util import logger
 
@@ -194,9 +195,11 @@ class ContextSpan(Span):
                  span_name: str,
                  tracer: Tracer,
                  attributes: dict[str, AttributeValueType] = None) -> None:
+        trace_id = None if not attributes else attributes.get(semconv.TRACE_ID)
+        super().__init__(trace_id)
         self._span_name = span_name
         self._tracer = tracer
-        self._attributes = attributes
+        self._attributes = attributes or {}
         self._span: Span = None
         self._coro_context = None
 
@@ -279,8 +282,10 @@ class ContextSpan(Span):
                 exception, attributes, timestamp, escaped)
 
     def get_trace_id(self) -> str:
+        trace_id = self._attributes.get("trace_id") or self._trace_id
         if self._span:
-            return self._span.get_trace_id()
+            return trace_id or self._span.get_trace_id()
+        return trace_id
 
     def get_span_id(self) -> str:
         if self._span:
