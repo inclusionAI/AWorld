@@ -8,8 +8,8 @@ import yaml
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm, GraphBuildType
 from aworld.core.context.amni import DirArtifact
-from aworld.core.context.amni.cvcs.agent_version_control_registry import AgentVersionControlRegistry
-from aworld.core.context.amni.cvcs.version_control_registry import VersionControlRegistry
+from aworld.experimental.registry_workspace.agent_version_control_registry import AgentVersionControlRegistry
+from aworld.experimental.registry_workspace.version_control_registry import VersionControlRegistry
 from aworld.logs.util import logger
 
 
@@ -352,7 +352,7 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
         session_id = self._get_session_id(session_id)
         
         # Get base_path and storage configuration
-        base_path = self._get_storage_base_path()
+        base_path = os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry')
         storage_type = self._get_storage_type()
         
         # Prepare OSS configuration (if needed)
@@ -382,7 +382,7 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
         session_id = self._get_session_id(session_id)
 
         # Get base_path and storage configuration
-        base_path = self._get_storage_base_path()
+        base_path = os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry')
         storage_type = self._get_storage_type()
         
         # Prepare OSS configuration (if needed)

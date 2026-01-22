@@ -19,7 +19,7 @@ from aworld.core.context.amni.config import AmniConfigLevel
 from aworld.core.context.amni.services.trajectory_service import TrajectoryService, TrajType, \
     save_context_artifact
 from aworld.core.context.amni.tool import CONTEXT_AGENT_REGISTRY
-from aworld.core.context.amni.tool.context_swarm_registry_tool import CONTEXT_SWARM_REGISTRY
+from aworld.experimental.registry_workspace.swarm_registry_tool import CONTEXT_SWARM_REGISTRY
 from aworld.core.context.amni.utils.base import _convert_to_json_serializable
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
