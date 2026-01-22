@@ -6,9 +6,7 @@ import os
 from aworld.config import ConfigDict
 from aworld.logs.util import update_logger_level
 
-PROJECT_CONFIG = ConfigDict({
-    "debug_mode": os.environ.get('AWORLD_DEBUG_MODE', 'false').lower() in ('true', '1', 't')
-})
+PROJECT_CONFIG = {"debug_mode": os.environ.get('AWORLD_DEBUG_MODE', 'false').lower() in ('true', '1', 't')}
 
 # Try to load .env file if python-dotenv is available
 # This is optional and should not fail if the package is not installed yet (e.g., during pip install)
@@ -28,10 +26,15 @@ def configure(log_level="INFO", use_trace: bool = False, debug_mode=True):
 
     # update all loggers level in console
     update_logger_level(log_level)
-    PROJECT_CONFIG["debug_mode"] = debug_mode
     if use_trace:
         # default trace configure, can customize call
         trace.configure()
+
+    global PROJECT_CONFIG
+    PROJECT_CONFIG = ConfigDict(PROJECT_CONFIG)
+    PROJECT_CONFIG["debug_mode"] = debug_mode
+    PROJECT_CONFIG["log_level"] = log_level
+    PROJECT_CONFIG["use_trace"] = use_trace
 
 
 def cleanup():
