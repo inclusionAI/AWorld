@@ -47,7 +47,9 @@ class TaskEventRunner(TaskRunner):
         if not self.init_messages:
             raise AWorldRuntimeException("no question event to solve.")
 
-        async with trace.task_span(self.init_messages[0].session_id, self.task):
+        async with trace.task_span(self.init_messages[0].session_id,
+                                   task=self.task,
+                                   attributes={"aworld.trace.id": self.context.trace_id}):
             try:
                 for msg in self.init_messages:
                     await self.event_mng.emit_message(msg)
@@ -173,7 +175,7 @@ class TaskEventRunner(TaskRunner):
         results = []
         handlers = self.event_mng.get_handlers(key)
         inner_handlers = [handler.name() for handler in self.handlers]
-        async with trace.message_span(message=message):
+        async with trace.message_span(message=message, attributes={"aworld.trace.id": self.context.trace_id}):
             logger.debug(f"start_message_node message id: {message.id} of task {self.task.id}")
             self.state_manager.start_message_node(message)
             asyncio.create_task(self._update_trajectory(message))
@@ -221,7 +223,9 @@ class TaskEventRunner(TaskRunner):
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
         con = message
-        async with trace.handler_span(message=message, handler=handler):
+        async with trace.handler_span(message=message,
+                                      handler=handler,
+                                      attributes={"aworld.trace.id": self.context.trace_id}):
             try:
                 logger.info(f"process start message id: {message.id} of task {self.task.id}")
                 if asyncio.iscoroutinefunction(handler):
