@@ -325,7 +325,7 @@ class DefaultAgentHandler(AgentHandler):
             # next
             successor = agent_graph.successor.get(agent_name)
             if not successor:
-                if agent.finished:
+                if self.swarm.finished:
                     yield Message(
                         category=Constants.TASK,
                         payload=action.policy_info,
@@ -335,30 +335,42 @@ class DefaultAgentHandler(AgentHandler):
                         headers=message.headers
                     )
                 else:
-                    logger.warn(f"{agent_name} not finished, will wait background_task finish and loop it.")
-                    yield Message(
-                        category="mock",
-                        payload=action.policy_info,
-                        sender=agent.id(),
-                        session_id=session_id,
-                        topic=TopicType.RERUN,
-                        headers=message.headers
-                    )
-                    i = 0
-                    while message.context.has_pending_background_tasks(agent_id=agent_name, parent_task_id=message.context.task_id):
-                        await asyncio.sleep(1)
-                        i += 1
-                        logger.info(f"{agent_name} is waiting pending background_tasks#{i}")
-                    yield Message(
-                        category=Constants.AGENT,
-                        # default use string as content
-                        payload=Observation(content="Task is not finished, keep working on it."),
-                        sender=agent_name,
-                        session_id=session_id,
-                        receiver=agent_name,
-                        headers=message.headers
-                    )
-                    return
+                    logger.warn(f"{agent_name} has no successor, but not finished, will be rerun itself: {agent_name}")
+                    if not message.context.has_pending_background_tasks(agent_id=agent_name,
+                                                                        parent_task_id=message.context.task_id):
+                        yield Message(
+                            category=Constants.AGENT,
+                            payload=Observation(content=action.policy_info, observer=agent_name),
+                            sender=agent_name,
+                            receiver=agent_name,
+                            session_id=session_id,
+                            headers=message.headers
+                        )
+                    else:
+                        yield Message(
+                            category="mock",
+                            payload=action.policy_info,
+                            sender=agent.id(),
+                            session_id=session_id,
+                            topic=TopicType.RERUN,
+                            headers=message.headers
+                        )
+                        i = 0
+                        while message.context.has_pending_background_tasks(agent_id=agent_name,
+                                                                           parent_task_id=message.context.task_id):
+                            await asyncio.sleep(1)
+                            i += 1
+                            logger.info(f"{agent_name} is waiting pending background_tasks#{i}")
+                        yield Message(
+                            category=Constants.AGENT,
+                            # default use string as content
+                            payload=Observation(content="Task is not finished, keep working on it."),
+                            sender=agent_name,
+                            session_id=session_id,
+                            receiver=agent_name,
+                            headers=message.headers
+                        )
+                        return
                 return
 
             for k, _ in successor.items():
@@ -396,7 +408,9 @@ class DefaultAgentHandler(AgentHandler):
                     yield Message(
                         category=Constants.AGENT,
                         # default use string as content
-                        payload=Observation(content=str(all_input) if len(all_input) > 1 else all_input.get(agent_name)),
+                        payload=Observation(
+                            content=str(all_input) if len(all_input) > 1 else all_input.get(agent_name)
+                        ),
                         sender=agent.id(),
                         session_id=session_id,
                         receiver=k,
@@ -470,7 +484,8 @@ class DefaultAgentHandler(AgentHandler):
 
         if not caller or caller == self.swarm.communicate_agent.id():
             if self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished:
-                logger.info(f"Handoff swarm {self.swarm} finished {self.swarm.finished}, run step: {self.swarm.cur_step}")
+                logger.info(f"Handoff swarm {self.swarm} finished {self.swarm.finished}, "
+                            f"run step: {self.swarm.cur_step}")
                 yield Message(
                     category=Constants.TASK,
                     payload=action.policy_info,

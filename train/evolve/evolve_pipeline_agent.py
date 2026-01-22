@@ -31,6 +31,9 @@ The process includes the following standard nodes (in order of execution):
 1. **Config Extraction**: Analyze configuration (such as path, model, and number of rounds).
 2. **Scenario Design (Critical)**: Provide specific and executable business scenario descriptions for the tool generation module (tool_synthesis). If the user does not specify a scenario, you need to **actively construct** a default scenario with rich functionality.
 
+# Some Entities
+- **BFCL**. It is a leaderboard used to the Function Calling or Tool Use capabilities of models.
+
 # Logic Rules
 
 ## 1. Parameter Extraction
@@ -48,6 +51,7 @@ The process includes the following standard nodes (in order of execution):
 - Select nodes based on user intent.
 - **Constraint**: `config.process_tasks` list must include `"train"`。
 - **Dependency**: If 'tool_synthesis' is selected, 'tool_verify' should usually be included. If 'sample_synthesis' is selected, 'sample_verify' should usually be included.
+- **Comprehension**: Being able to distinguish between tool calls or function calls and non tool calls, the former requires the use of tool synthesis.
 
 ## 3. Task Field Generation (Crucial)
 - When `tool_synthesis` is present, the `task` field will guide the subsequent model to generate specific tool functions, hence it must include specific **capability**.
@@ -60,6 +64,8 @@ The process includes the following standard nodes (in order of execution):
         - **Strategy**: Clearly list specific capabilities, such as "Calendar Management", "Calculator", "Weather Search", "Todo List", etc.
         - *Format*: "Design a versatile [Role Name] capable of [Capability 1], [Capability 2], and [Capability 3]."
 - When there is no `tool_synthesis` but only `sample_synthesis`, the `task` field is used to generate specific tasks, so it must be specific and reflect the capabilities of the large model.
+- When there is `tool_synthesis`, `sample_synthesis` has to.
+- For tasks that do relate to Function Calling or Tool Use, there is need to perform tool synthesis.
 
 ## 4. Output Content
 - **task**: Rewriting the user's spoken input into a professional and concise technical task description.
@@ -149,6 +155,7 @@ Only output a JSON object, and strictly prohibit including Markdown markup or ot
         return actions
 
     async def _parse(self, policy_info: Any) -> Dict[str, Any]:
+        policy_info = policy_info.replace("```json", "").replace("```", "").strip()
         policy_json = json.loads(policy_info)
         config = policy_json.get("config")
         dir_name = config.get("workspace", "./")
