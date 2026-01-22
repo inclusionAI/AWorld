@@ -10,7 +10,7 @@ This example is suitable for:
 - Interactive Q&A and consultation tasks
 - Operations that need human judgment or authorization
 """
-from aworld.experimental.aworld_cli.core import agent
+from aworld_cli.core import agent
 from aworld.core.agent.swarm import Swarm
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ModelConfig

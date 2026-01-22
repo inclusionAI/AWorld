@@ -71,8 +71,13 @@ else:
 # Process in code - extract only error patterns
 errors = []
 for line in log_text.split('\\n'):
-    if "ERROR" in line:
-        errors.append(extract_error_info(line))
+    if "ERROR" in line or "error" in line.lower():
+        # Extract error line with timestamp if available
+        error_info = {
+            "line": line.strip(),
+            "timestamp": line.split()[0] if line.split() else None
+        }
+        errors.append(error_info)
 
 # Return only the summary, not the entire log
 result = {
@@ -108,12 +113,90 @@ else:
 - **Use explicit logic**: Write clear conditional logic and loops
 - **Handle errors**: Include error handling for robust execution
 
+### 🚨 CRITICAL: File Writing Indentation Issue
+
+**IMPORTANT**: When using `write_file` in PTC code, you **MUST** handle indentation correctly!
+
+**The Problem**: PTC tool automatically indents your code by 4 spaces to wrap it in an async function. This means multi-line strings (like file content) will also be indented, causing written files to have incorrect indentation.
+
+**The Solution**: **ALWAYS use `textwrap.dedent()`** on file content strings before passing to `write_file`.
+
+**❌ WRONG - Will create indented file:**
+```python
+# This will create a file with 4-space indentation on every line!
+file_content = """
+from aworld.core.agent.swarm import TeamSwarm
+from aworld.agents.llm_agent import Agent
+
+# @decorator_example
+def build_swarm():
+    return TeamSwarm(...)
+"""
+await write_file(path="./agents/swarm.py", contents=file_content)
+```
+
+**✅ CORRECT - Use dedent():**
+```python
+from textwrap import dedent
+
+# Use dedent() to remove indentation from multi-line strings
+file_content = dedent("""
+from aworld.core.agent.swarm import TeamSwarm
+from aworld.agents.llm_agent import Agent
+
+# @decorator_example
+def build_swarm():
+    return TeamSwarm(...)
+""").strip()  # strip() removes leading/trailing newlines
+
+await write_file(path="./agents/swarm.py", contents=file_content)
+```
+
+**MANDATORY Rule**: 
+- ✅ **ALWAYS** import `textwrap` and use `dedent()` when creating file content strings
+- ✅ **ALWAYS** call `.strip()` after `dedent()` to remove extra newlines
+- ✅ **ALWAYS** verify files after creation using `read_file` to check indentation
+
+**Example for creating Python files:**
+```python
+from textwrap import dedent
+
+# Create multiple files with correct indentation
+# Note: The strings inside dedent() should start with common leading whitespace
+files_to_create = {
+    "./agents/swarm.py": dedent('''
+        from aworld.core.agent.swarm import TeamSwarm
+        from aworld.agents.llm_agent import Agent
+        
+        def build_swarm():
+            return TeamSwarm(...)
+    ''').strip(),
+    
+    "./agents/config.py": dedent('''
+        from aworld.core.agent.config import AgentConfig
+        
+        agent_config = AgentConfig(...)
+    ''').strip()
+}
+
+for file_path, content in files_to_create.items():
+    await write_file(path=file_path, contents=content)
+    # Verify after creation
+    created_content = await read_file(path=file_path)
+    # Check first line doesn't have leading spaces
+    if created_content and created_content.strip().startswith(" "):
+        # Fix if needed
+        fixed_content = dedent(created_content)
+        await write_file(path=file_path, contents=fixed_content.strip())
+```
+
 ### Common Pitfalls to Avoid
 
 1. **Assuming return types**: Don't write `snapshot.get('content')` without first checking if `browser_snapshot()` returns a dict or list
 2. **Skipping exploration**: Don't write PTC code for websites you haven't actually visited and inspected
 3. **Hardcoding selectors**: Don't assume CSS selectors work without testing them first
 4. **Ignoring data structure**: Always normalize tool results - they might be list, dict, or string
+5. **🚨 File indentation**: **NEVER** pass multi-line strings directly to `write_file` without `textwrap.dedent()` - this will create files with incorrect indentation!
 </ptc_guide>
 """
 PTC_NEURON_NAME = "ptc"

@@ -5,7 +5,7 @@ This demonstrates how to create a Multi-Agent System (MAS) using the PE (Plan-Ex
 where multiple specialized agents collaborate to handle complex tasks through a structured workflow.
 This is a true multi-agent system with distinct agents working together, not a single agent with multiple skills.
 """
-from aworld.experimental.aworld_cli.core import agent
+from aworld_cli.core import agent
 from aworld.core.agent.swarm import Swarm, TeamSwarm
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ModelConfig

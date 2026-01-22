@@ -265,7 +265,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             logger.warning(f"{self.id()} get agent desc fail, no agent as tool to use. error: {traceback.format_exc()}")
         # MCP servers are tools
         try:
-            if self.sandbox:
+            if self.sandbox and hasattr(self.sandbox, 'mcpservers') and self.sandbox.mcpservers:
                 mcp_tools = await self.sandbox.mcpservers.list_tools(context)
                 processed_tools, tool_mapping = await process_mcp_tools(mcp_tools)
                 self.sandbox.mcpservers.map_tool_list = tool_mapping

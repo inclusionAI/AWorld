@@ -365,11 +365,17 @@ class Evaluator(Generic[EvalCaseDataType]):
         """Check if we should skip this case because it has already passed.
 
         Args:
-            input: the input data.
+            input: the input data (EvalDataCase object or dict).
 
         Returns:
             True if we should skip this case, False otherwise.
         """
+        # Handle both EvalDataCase object and dict input
+        if isinstance(input, dict):
+            eval_case_id = input.get('eval_case_id', '')
+        else:
+            eval_case_id = getattr(input, 'eval_case_id', '')
+        
         should_skip = False
         if self.skip_passed_cases:
             # If skip_passed_on_metrics is empty, we need to check all metrics have passed
@@ -378,16 +384,16 @@ class Evaluator(Generic[EvalCaseDataType]):
             if not metrics_to_check:
                 for scorer in self.scorers:
                     metrics_to_check.extend(scorer.list_eval_metrics())
-            logger.info(f"metrics check: {metrics_to_check}, passed:{self._passed_cases}, id={input.eval_case_id}")
+            logger.info(f"metrics check: {metrics_to_check}, passed:{self._passed_cases}, id={eval_case_id}")
             async with self._passed_cases_lock:
                 # If there are metrics to check, verify if all of them have passed for this case
                 if metrics_to_check:
                     # Check if all metrics_to_check have passed
-                    if all(input.eval_case_id in self._passed_cases.get(metric_name, set()) for metric_name in
+                    if all(eval_case_id in self._passed_cases.get(metric_name, set()) for metric_name in
                            metrics_to_check):
                         should_skip = True
                         logger.warning(
-                            f"Skipping case {input.eval_case_id} which has already passed all required metrics")
+                            f"Skipping case {eval_case_id} which has already passed all required metrics")
         return should_skip
 
     async def run_single_case(self, index: int, eval_target: EvalTarget[EvalCaseDataType],
@@ -396,19 +402,27 @@ class Evaluator(Generic[EvalCaseDataType]):
 
         Args:
             eval_target: the evaluated object.
-            input: the input data.
+            input: the input data (EvalDataCase object or dict).
 
         Returns:
             execute result
         """
+        # Handle both EvalDataCase object and dict input for robustness
+        if isinstance(input, dict):
+            eval_case_id = input.get('eval_case_id', str(index))
+            eval_dataset_id = input.get('eval_dataset_id', '')
+        else:
+            eval_case_id = getattr(input, 'eval_case_id', str(index))
+            eval_dataset_id = getattr(input, 'eval_dataset_id', '')
+        
         # Check if we should skip this case because it has already passed
 
         if await self._should_skip_predict(input):
             # Return an empty result with the same case ID
             return EvalCaseResult(index=index,
                                   input=input,
-                                  eval_case_id=input.eval_case_id,
-                                  eval_dataset_id=input.eval_dataset_id,
+                                  eval_case_id=eval_case_id,
+                                  eval_dataset_id=eval_dataset_id,
                                   output={},
                                   score_rows={})
 
@@ -430,12 +444,12 @@ class Evaluator(Generic[EvalCaseDataType]):
                     if metric_result.get('eval_status') == EvalStatus.PASSED:
                         # Add to passed cases if it passed on this metric
                         async with self._passed_cases_lock:
-                            self._passed_cases.setdefault(metric_name, set()).add(input.eval_case_id)
+                            self._passed_cases.setdefault(metric_name, set()).add(eval_case_id)
 
         return EvalCaseResult(index=index,
                               input=input,
-                              eval_case_id=input.eval_case_id,
-                              eval_dataset_id=input.eval_dataset_id,
+                              eval_case_id=eval_case_id,
+                              eval_dataset_id=eval_dataset_id,
                               output=output,
                               score_rows=score_rows)
 
