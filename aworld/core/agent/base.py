@@ -256,6 +256,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         await self.async_pre_run()
         result = await self.async_policy(observation, message=message, **kwargs)
         final_result = await self.async_post_run(result, observation, message)
+        if message.context and message.context.has_pending_background_tasks(self.id(), message.context.task_id):
+            self._finished = False
         return final_result
 
     def policy(

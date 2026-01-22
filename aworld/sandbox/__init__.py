@@ -4,6 +4,7 @@ from aworld.sandbox.base import Sandbox
 from aworld.sandbox.common import BaseSandbox
 from aworld.sandbox.models import SandboxEnvType
 from aworld.sandbox.implementations import LocalSandbox, KubernetesSandbox, SuperSandbox
+from aworld.sandbox.builder import SandboxBuilder
 
 
 # For backward compatibility, use LocalSandbox as the default Sandbox implementation
@@ -113,6 +114,10 @@ original_new = object.__new__
 # Create a new __new__ method that intercepts Sandbox instantiation
 def _sandbox_new(cls, *args, **kwargs):
     if cls is Sandbox:
+        # If no arguments provided, return a Builder instance for fluent API
+        if not args and not kwargs:
+            return SandboxBuilder()
+        
         # If trying to instantiate Sandbox directly, determine target class and 
         # return an uninitialized instance. Python will then call __init__ on it ONCE.
         env_type = kwargs.get('env_type') or SandboxEnvType.LOCAL
@@ -140,5 +145,6 @@ __all__ = [
     'SuperSandbox',
     'DefaultSandbox',
     'SandboxEnvType',
-    'create_sandbox'
+    'create_sandbox',
+    'SandboxBuilder'
 ]
