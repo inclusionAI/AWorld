@@ -9,6 +9,7 @@ from typing import Callable, Any
 from pydantic import BaseModel
 
 import aworld.tools
+from aworld import trace
 from aworld.config import ConfigDict
 from aworld.config.conf import ToolConfig, TaskRunMode
 from aworld.core.agent.swarm import Swarm
@@ -16,10 +17,11 @@ from aworld.core.common import Observation
 from aworld.core.context.amni import AmniConfigFactory
 from aworld.core.context.base import Context
 from aworld.core.context.session import Session
-from aworld.core.tool.base import Tool, AsyncTool
 from aworld.core.task import Task, TaskResponse, Runner
+from aworld.core.tool.base import Tool, AsyncTool
 from aworld.logs.util import logger
-from aworld import trace
+from aworld.runners.hook.hooks import HookPoint
+from aworld.runners.hook.utils import run_hooks
 from aworld.utils.common import load_module_by_path
 
 
@@ -203,7 +205,20 @@ class TaskRunner(Runner):
         return context
 
     async def post_run(self):
-        pass
+        """Execute post-run hooks after task completion."""
+        # Lazy import to avoid circular import
+        # This registers MetaLearningTrajectoryRecordHook to HookFactory
+        import aworld.experimental.metalearning.traj.meta_learning_traj_record_hook  # noqa: F401
+        try:
+            async for _ in run_hooks(
+                context=self.context,
+                hook_point=HookPoint.POST_TASK_CALL,
+                hook_from=self.task.id,
+                payload=self.task
+            ):
+                pass
+        except Exception as e:
+            logger.warning(f"POST_TASK_CALL hook execution failed: {e}")
 
     @abc.abstractmethod
     async def do_run(self, context: Context = None) -> TaskResponse:
