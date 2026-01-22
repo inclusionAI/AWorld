@@ -65,7 +65,7 @@ def message_span(message: 'aworld.core.event.base.Message' = None, attributes: d
             "event.id": message.id,
             "event.header": str(message.headers),
             semconv.SESSION_ID: message.session_id,
-            semconv.TRACE_ID: message.context.get_task().trace_id
+            semconv.TRACE_ID: message.context.trace_id
         }
         message_span_attribute.update(attributes or {})
         return GLOBAL_TRACE_MANAGER.span(
@@ -80,7 +80,7 @@ def message_span(message: 'aworld.core.event.base.Message' = None, attributes: d
 def handler_span(message: 'aworld.core.event.base.Message' = None, handler: Callable[..., Any] = None, attributes: dict = None):
     from aworld.core.event.base import Constants
     attributes = attributes or {}
-    attributes[semconv.TRACE_ID] = message.context.get_task().trace_id
+    attributes[semconv.TRACE_ID] = message.context.trace_id
     span_name = handler.__name__
     if message:
         run_type = RunType.OTHER
