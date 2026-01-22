@@ -195,6 +195,7 @@ class AWorldLogger:
                                                 **file_log_config)
             AWorldLogger._added_handlers.add(error_handler_key)
 
+        self.formater = console_formatter
         self.file_log_config = file_log_config
         self._logger = base_logger.bind(name=tag)
 
@@ -208,9 +209,12 @@ class AWorldLogger:
         # Clear error log handler record to ensure it can be added correctly when reinitializing
         error_handler_key = f'{self.name}_{self.tag}_error'
         AWorldLogger._added_handlers.discard(error_handler_key)
-        file_log_config = self.file_log_config or {}
-        file_log_config["level"] = level
-        self.__init__(tag=self.tag, name=self.name, console_level=level, file_log_config=file_log_config)
+        self.__init__(tag=self.tag,
+                      name=self.name,
+                      formatter=self.formater,
+                      console_level=level,
+                      disable_console=self.disable_console,
+                      file_log_config=self.file_log_config)
 
     def reset_format(self, format_str: str):
         from aworld.logs.instrument.loguru_instrument import _get_handlers
@@ -222,8 +226,12 @@ class AWorldLogger:
         # Clear error log handler record to ensure it can be added correctly when reinitializing
         error_handler_key = f'{self.name}_{self.tag}_error'
         AWorldLogger._added_handlers.discard(error_handler_key)
-        self.__init__(tag=self.tag, name=self.name, console_level=self.console_level,
-                      formatter=format_str, disable_console=self.disable_console, file_log_config=self.file_log_config)
+        self.__init__(tag=self.tag,
+                      name=self.name,
+                      console_level=self.console_level,
+                      formatter=format_str,
+                      disable_console=self.disable_console,
+                      file_log_config=self.file_log_config)
 
     def __getattr__(self, name: str):
         from aworld.trace.base import get_trace_id
@@ -270,9 +278,9 @@ trace_logger = AWorldLogger(tag='Trace', name='AWorld')
 trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld')
 
 prompt_logger = AWorldLogger(tag='prompt_logger', name='AWorld',
-                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | prompt | {level} |</black> <level>{message}</level>")
+                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | prompt | {extra[trace_id]} |</black> <level>{message}</level>")
 digest_logger = AWorldLogger(tag='digest_logger', name='AWorld',
-                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | digest | {level} |</black> <level>{message}</level>")
+                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | digest | {extra[trace_id]} |</black> <level>{message}</level>")
 
 asyncio_monitor_logger = AWorldLogger(tag='asyncio_monitor', name='AWorld',
                                       formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | </black> <level>{message}</level>")
