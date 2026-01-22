@@ -25,6 +25,7 @@ class Task:
     name: str = field(default_factory=lambda: uuid.uuid1().hex)
     user_id: str = field(default=None)
     session_id: str = field(default=None)
+    trace_id: str = field(default=None)
     input: Any = field(default=None)
     # task config
     conf: Config = field(default=None)
@@ -54,7 +55,7 @@ class Task:
     group_id: str = field(default=None)
     # parent task reference
     parent_task: Optional['Task'] = field(default=None, repr=False)
-    max_retry_count: int = 0
+    max_retry_count: int = field(default=0)
     timeout: int = field(default=0)
     observation: Optional[Observation] = field(default=None)
     task_status: TaskStatus = field(default=TaskStatusValue.INIT)
@@ -91,7 +92,7 @@ class Task:
             "max_retry_count": self.max_retry_count,
             "timeout": self.timeout,
             "parent_task_id": self.parent_task.id if self.parent_task else None,
-            "task_status": self.task_status.value,
+            "task_status": self.task_status,
             # Streaming-related fields (serializable)
             "streaming_mode": self.streaming_mode,
         }
