@@ -3,6 +3,13 @@
 import atexit
 import os
 
+from aworld.config import ConfigDict
+from aworld.logs.util import update_logger_level
+
+PROJECT_CONFIG = ConfigDict({
+    "debug_mode": os.environ.get('AWORLD_DEBUG_MODE', 'false').lower() in ('true', '1', 't')
+})
+
 # Try to load .env file if python-dotenv is available
 # This is optional and should not fail if the package is not installed yet (e.g., during pip install)
 try:
@@ -14,6 +21,12 @@ try:
 except Exception as e:
     # Log other errors but don't fail initialization
     print(f"Warning: Failed to load .env file: {e}")
+
+
+def configure(log_level="INFO", debug_mode=True):
+    # update all loggers level
+    update_logger_level(log_level)
+    PROJECT_CONFIG["debug_mode"] = debug_mode
 
 
 def cleanup():
