@@ -23,10 +23,15 @@ except Exception as e:
     print(f"Warning: Failed to load .env file: {e}")
 
 
-def configure(log_level="INFO", debug_mode=True):
-    # update all loggers level
+def configure(log_level="INFO", use_trace: bool = False, debug_mode=True):
+    from aworld import trace
+
+    # update all loggers level in console
     update_logger_level(log_level)
     PROJECT_CONFIG["debug_mode"] = debug_mode
+    if use_trace:
+        # default trace configure, can customize call
+        trace.configure()
 
 
 def cleanup():
