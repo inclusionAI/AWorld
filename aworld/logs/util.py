@@ -256,6 +256,15 @@ class AWorldLogger:
         raise AttributeError(f"'AWorldLogger' object has no attribute '{name}'")
 
 
+def update_logger_level(level: str):
+    logger.reset_level(level)
+    prompt_logger.reset_level(level)
+    trajectory_logger.reset_level(level)
+    trace_logger.reset_level(level)
+    digest_logger.reset_level(level)
+    asyncio_monitor_logger.reset_level(level)
+
+
 logger = AWorldLogger(tag='AWorld', name='AWorld')
 trace_logger = AWorldLogger(tag='Trace', name='AWorld')
 trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld')
