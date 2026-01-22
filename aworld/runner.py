@@ -3,6 +3,7 @@
 import asyncio
 from typing import List, Dict, Union, AsyncGenerator, Tuple, Any
 
+from aworld import trace
 from aworld.config import RunConfig, EvaluationConfig, TaskRunMode
 from aworld.config.conf import TaskConfig
 from aworld.agents.llm_agent import Agent
@@ -25,22 +26,26 @@ class Runners:
     @staticmethod
     def streamed_run_task(task: Task, run_conf: RunConfig = None) -> StreamingOutputs:
         """Run the task in stream output."""
-        if not task.conf:
-            task.conf = TaskConfig()
 
-        streamed_result = StreamingOutputs(
-            input=task.input,
-            usage={},
-            is_complete=False
-        )
-        task.outputs = streamed_result
-        streamed_result.task_id = task.id
+        with trace.task_span("streamed_run_task",
+                                   task=task,
+                                   attributes={"aworld.trace.id": task.context.trace_id}):
+            if not task.conf:
+                task.conf = TaskConfig()
 
-        logger.info(f"start task_id={task.id}, agent={task.agent}, swarm = {task.swarm} ")
-        streamed_result._run_impl_task = asyncio.create_task(
-            Runners.run_task(task, run_conf=run_conf)
-        )
-        return streamed_result
+            streamed_result = StreamingOutputs(
+                input=task.input,
+                usage={},
+                is_complete=False
+            )
+            task.outputs = streamed_result
+            streamed_result.task_id = task.id
+
+            logger.info(f"start task_id={task.id}, agent={task.agent}, swarm = {task.swarm} ")
+            streamed_result._run_impl_task = asyncio.create_task(
+                Runners.run_task(task, run_conf=run_conf)
+            )
+            return streamed_result
 
     @staticmethod
     async def run_task(task: Union[Task, List[Task]], run_conf: RunConfig = None) -> Dict[str, TaskResponse]:
