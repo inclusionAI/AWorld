@@ -534,3 +534,9 @@ class WorkSpace(BaseModel):
         Rebuild the artifact_id_index mapping artifact_id to its index in self.artifacts.
         """
         self.artifact_id_index = {artifact.artifact_id: idx for idx, artifact in enumerate(self.artifacts)}
+
+    async def search_artifact_chunks(self, user_query: str, search_filter: dict =None, top_k: int = None)-> Any:
+        if search_filter is None:
+            search_filter = {}
+        result =  await self.retriever.async_search(self.workspace_id, user_query, search_filter, top_k)
+        return result

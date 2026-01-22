@@ -7,7 +7,7 @@ task planning, and knowledge management.
 """
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import TeamSwarm
-from aworld.experimental.aworld_cli.core import agent
+from aworld_cli.core import agent
 
 orchestrator_agent_system_prompt = """
 You are a versatile AI assistant designed to solve any task presented by users.
