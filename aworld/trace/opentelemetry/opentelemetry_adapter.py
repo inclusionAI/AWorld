@@ -43,10 +43,10 @@ from aworld.trace.span_cosumer import SpanConsumer
 from aworld.trace.propagator import get_global_trace_context
 from aworld.trace.baggage.sofa_tracer import SofaSpanHelper
 from aworld.logs.util import logger
-from aworld.utils.common import get_local_ip
 from .memory_storage import InMemorySpanExporter, InMemoryStorage
 from ..constants import ATTRIBUTES_MESSAGE_KEY
-from .export import FileSpanExporter, NoOpSpanExporter, SpanConsumerExporter
+from .export import FileSpanExporter, SpanConsumerExporter
+from ..instrumentation import semconv
 from ..server import set_trace_server
 
 
@@ -225,7 +225,8 @@ class OTLPSpan(Span, ReadableSpan):
     """A Span represents a single operation within a trace.
     """
 
-    def __init__(self, span: SDKSpan, is_new_span=True):
+    def __init__(self, span: SDKSpan, is_new_span=True, trace_id: str = None):
+        super().__init__(trace_id=trace_id)
         self._span = span
         self._token: Optional[Token[OTLPContext]] = None
         if is_new_span:
@@ -297,7 +298,9 @@ class OTLPSpan(Span, ReadableSpan):
         """
         if not self._span or not self._span.get_span_context() or not self.is_recording():
             return None
-        return f"{self._span.get_span_context().trace_id:032x}"
+
+        trace_id = self._span._attributes.get(semconv.TRACE_ID)
+        return trace_id or self._trace_id or f"{self._span.get_span_context().trace_id:032x}"
 
     def get_span_id(self) -> str:
         """Get the span ID of the span.

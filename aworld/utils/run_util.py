@@ -200,7 +200,7 @@ async def exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()) -> Di
         if not task.group_id:
             task.group_id = uuid.uuid4().hex
         final_tasks.append(task)
-    runners = await choose_runners(final_tasks)
+    runners = await choose_runners(final_tasks, run_conf=run_conf)
     return await execute_runner(runners, run_conf)
 
 
