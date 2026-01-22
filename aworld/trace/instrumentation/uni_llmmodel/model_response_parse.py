@@ -51,6 +51,9 @@ async def handle_request(span: Span, kwargs, instance):
         filterd_attri = {k: v for k, v in attributes.items()
                          if (v and v != "")}
 
+        context = kwargs.get("context", None)
+        if context:
+            filterd_attri[semconv.TRACE_ID] = context.trace_id
         span.set_attributes(filterd_attri)
     except Exception as e:
         logger.warning(f"trace handle openai request error: {e}")

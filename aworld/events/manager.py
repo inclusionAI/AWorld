@@ -113,6 +113,15 @@ class EventManager:
                 results.append(res)
         return results
 
+    async def messages_by_caller(self, caller: str, key: str) -> List[Message]:
+        # key is task_id
+        results = []
+        reses = await self.messages_by_key(key)
+        for res in reses:
+            if caller and res.caller == caller:
+                results.append(res)
+        return results
+
     async def messages_by_topic(self, topic: str, key: str):
         # key is task_id
         results = []

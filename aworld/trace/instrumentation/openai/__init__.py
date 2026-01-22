@@ -40,6 +40,9 @@ def _chat_wrapper(tracer: Tracer):
         span_attributes = {}
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
+        context = kwargs.get("context", None)
+        if context:
+            span_attributes[semconv.TRACE_ID] = context.trace_id
         span = tracer.start_span(
             name=model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
@@ -84,6 +87,9 @@ def _achat_class_wrapper(tracer: Tracer):
         span_attributes = {}
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
+        context = kwargs.get("context", None)
+        if context:
+            span_attributes[semconv.TRACE_ID] = context.trace_id
         span = tracer.start_span(
             name=model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
