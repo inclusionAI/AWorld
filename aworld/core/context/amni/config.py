@@ -2,18 +2,22 @@
 # Copyright (c) 2025 inclusionAI.
 import os
 from enum import Enum
-from typing import Optional, List, Union, Dict
+from typing import Optional, List, Union, Dict, Any
 
 from pydantic import BaseModel, Field
 
 from aworld.config import ModelConfig
-from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy
+from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy, MetaLearningConfig
 from aworld.core.memory import MemoryConfig
 from aworld.memory.db.sqlite import SQLiteMemoryStore
 # from aworld.memory.db import SQLiteMemoryStore  # Temporarily commented out to avoid import errors
 from aworld.memory.main import MemoryFactory
 from .retrieval.base import RetrieverFactory
 from ...event.base import TopicType
+
+
+def get_env_mode() -> str:
+    return os.environ.get("ENV_MODE", "dev")
 
 
 class EventSubscriptionConfig(BaseModel):
@@ -131,6 +135,10 @@ class AgentContextConfig(BaseConfig):
     automated_memory_recall: bool = Field(default=False,
                                          description="Enable automated memory recall. The agent automatically retrieves relevant memories from past experiences based on current context and task requirements, without manual intervention. This enables proactive context awareness and intelligent decision-making by leveraging historical knowledge.")
 
+    # Meta learning configuration
+    meta_learning: MetaLearningConfig = Field(default_factory=MetaLearningConfig, description="Meta-learning configuration")
+
+
     def to_memory_config(self) -> AgentMemoryConfig:
         return AgentMemoryConfig(
             history_rounds=self.history_rounds,
@@ -166,6 +174,35 @@ class WorkingDirOssConfig(BaseModel):
         description="OSS bucket name. Priority: config > WORKING_DIR_OSS_BUCKET_NAME > OSS_BUCKET_NAME"
     )
 
+class AgentRegistryConfig(BaseModel):
+    """Configuration for agent registry service.
+    
+    A registry service for managing agents and swarms with version control, storage, and discovery.
+    Supports both agent and swarm configurations:
+    - Agent config: Dictionary mapping agent names to AgentConfig
+    - Swarm config: Dictionary with swarm topology definition (type, order, edges, etc.)
+    """
+    storage_type: str = Field(default="local", description="Storage type: local|oss")
+    storage_base_path: Optional[str] = Field(
+        default=None,
+        description="Base path for agent registry storage and scanning. "
+                    "This path is used for both storing agent configurations and scanning for agent definitions. "
+                    "Priority: config > AGENT_REGISTRY_STORAGE_PATH > default (./data/agent_registry)"
+    )
+    
+    # Agent configurations: Dict[str, AgentConfig] or Dict[str, Dict] (will be converted to AgentConfig)
+    agent_configs: Optional[Dict[str, Union[Dict[str, Any], Any]]] = Field(
+        default_factory=dict,
+        description="Agent configurations dictionary. Key is agent name, value is AgentConfig or dict that can be converted to AgentConfig"
+    )
+    
+    # Swarm configuration: supports workflow, handoff, team types
+    swarm_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Swarm topology configuration. Supports: "
+                    "type (workflow/handoff/team), order (for workflow), edges (for handoff), root/members (for team)"
+    )
+
 class ContextEnvConfig(BaseModel):
     """Represents environment configuration for an agent team."""
     isolate: bool = Field(default=False, description="One Task, One Isolate Env")
@@ -190,6 +227,12 @@ class ContextEnvConfig(BaseModel):
     working_dir_oss_config: Optional[WorkingDirOssConfig] = Field(
         default=None,
         description="OSS configuration for working directory. Priority: config > WORKING_DIR_OSS_* > OSS_* environment variables"
+    )
+
+    # Agent registry configuration
+    agent_registry_config: Optional[AgentRegistryConfig] = Field(
+        default_factory=AgentRegistryConfig,
+        description="Agent registry configuration for managing agent registration, versioning, storage, and discovery"
     )
 
 class AmniContextConfig(BaseConfig):

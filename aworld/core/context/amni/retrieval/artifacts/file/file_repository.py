@@ -150,6 +150,12 @@ class LocalFileRepository(FileRepository):
                         'modified_time': stat.st_mtime,
                         'is_file': True
                     })
+                elif os.path.isdir(item_path):
+                    # recursively list sub-files
+                    sub_files = self.list_files(item_path)
+
+                    # Add all sub-files to the files list
+                    files.extend(sub_files)
             return files
         except Exception as e:
             logger.error(f"❌ Error listing files in local directory {search_path}: {e}")
