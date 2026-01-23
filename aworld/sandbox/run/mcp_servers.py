@@ -168,6 +168,10 @@ class McpServers:
         if not action_list:
             return None
 
+        # Lazy initialization: ensure tool_list is loaded before calling tools
+        if not self.tool_list:
+            await self.list_tools(context=context)
+
         try:
             for action in action_list:
                 if not isinstance(action, dict):
