@@ -414,6 +414,10 @@ Our mission: AWorld handles the complexity, you focus on innovation. This sectio
 1. **FunReason-MT Technical Report: Overcoming the Complexity Barrier in Multi-Turn Function Calling** arxiv, 2025. [paper](https://arxiv.org/abs/2510.24645), [code](https://github.com/inclusionAI/AWorld-RL), [model](https://huggingface.co/Bingguang/FunReason-MT), [dataset](https://huggingface.co/datasets/Bingguang/FunReason-MT)
 
     *Zengzhuang Xu, Bingguang Hao, Zechuan Wang, Yuntao Wen, Maolin Wang, etc.*
+   
+2. **From Failure to Mastery: Generating Hard Samples for Tool-use Agents** arxiv, 2026. [paper](https://arxiv.org/abs/2601.01498), [code](https://github.com/inclusionAI/AWorld-RL), [model](https://huggingface.co/Bingguang/FunReason-MT), [dataset](https://huggingface.co/datasets/Bingguang/FunReason-MT)
+
+    *Bingguang Hao, Zengzhuang Xu, Yuntao Wen, Xinyi Xu, Yang Liu, etc.*
 
 
 #### Model Training
@@ -496,7 +500,7 @@ For academic citations or wish to contact us, please use the following BibTeX en
 [license-url]: https://opensource.org/licenses/MIT
 [twitter-url]: https://x.com/AWorldAgents
 [wechat-url]: https://raw.githubusercontent.com/inclusionAI/AWorld/main/readme_assets/aworld_wechat.png
-[arxiv-url]: https://arxiv.org/abs/2508.
+[arxiv-url]: https://arxiv.org/abs/2508.20404?
 [tutorial-url]: https://inclusionai.github.io/AWorld/
 [playground-url]: https://playground.aworldagents.com/
 
