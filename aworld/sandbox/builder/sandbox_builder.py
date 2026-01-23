@@ -158,7 +158,49 @@ class SandboxBuilder:
         if self._agents is None:
             self._agents = {}
         self._agents[name] = config
-    
+
+    # ==================== Builtin tools proxies (for IDE completion) ====================
+
+    async def read_file(self, path: str, head: Optional[int] = None, tail: Optional[int] = None) -> str:
+        """Proxy to Sandbox.read_file for IDE completion."""
+        instance = self.build()
+        return await instance.read_file(path=path, head=head, tail=tail)
+
+    async def write_file(self, path: str, content: str) -> str:
+        """Proxy to Sandbox.write_file for IDE completion."""
+        instance = self.build()
+        return await instance.write_file(path=path, content=content)
+
+    async def edit_file(self, path: str, edits: List[dict], dryRun: bool = False) -> str:
+        """Proxy to Sandbox.edit_file for IDE completion."""
+        instance = self.build()
+        return await instance.edit_file(path=path, edits=edits, dryRun=dryRun)
+
+    async def create_directory(self, path: str) -> str:
+        """Proxy to Sandbox.create_directory for IDE completion."""
+        instance = self.build()
+        return await instance.create_directory(path=path)
+
+    async def list_directory(self, path: str) -> str:
+        """Proxy to Sandbox.list_directory for IDE completion."""
+        instance = self.build()
+        return await instance.list_directory(path=path)
+
+    async def move_file(self, source: str, destination: str) -> str:
+        """Proxy to Sandbox.move_file for IDE completion."""
+        instance = self.build()
+        return await instance.move_file(source=source, destination=destination)
+
+    async def list_allowed_directories(self) -> str:
+        """Proxy to Sandbox.list_allowed_directories for IDE completion."""
+        instance = self.build()
+        return await instance.list_allowed_directories()
+
+    async def run_code(self, code: str, timeout: int = 30, output_format: str = "markdown") -> str:
+        """Proxy to Sandbox.run_code for IDE completion."""
+        instance = self.build()
+        return await instance.run_code(code=code, timeout=timeout, output_format=output_format)
+
     def build(self) -> 'Sandbox':
         """Build and return the Sandbox instance.
         This is the only build() call needed - all agent configurations are auto-committed.
@@ -202,5 +244,39 @@ class SandboxBuilder:
         if self._env_content is not None:
             kwargs['env_content'] = self._env_content
         
+        # Ensure at least mcp_config is provided to avoid Sandbox() returning Builder
+        # mcp_config defaults to {} in Sandbox.__init__ if not provided
+        if 'mcp_config' not in kwargs:
+            kwargs['mcp_config'] = {}
+        
         return Sandbox(**kwargs)
+    
+    def __getattr__(self, name: str):
+        """Auto-build and forward attribute access to Sandbox instance.
+        
+        This allows Sandbox() to be used directly without calling .build(),
+        while still supporting the Builder pattern for chain calls.
+        
+        Args:
+            name: Attribute name to access
+            
+        Returns:
+            Attribute from built Sandbox instance
+        """
+        # Builder methods - return them normally
+        builder_methods = {
+            'build', 'sandbox_id', 'env_type', 'metadata', 'timeout',
+            'mcp_servers', 'mcp_config', 'black_tool_actions', 'skill_configs',
+            'tools', 'registry_url', 'custom_env_tools', 'agents', 'streaming',
+            'env_content_name', 'env_content', '_auto_commit_current_agent',
+            '_add_agent', '_agents_builder'
+        }
+        
+        # If it's a Builder method or private attribute, use normal attribute access
+        if name.startswith('_') or name in builder_methods:
+            return object.__getattribute__(self, name)
+        
+        # For any other attribute/method (Sandbox methods), auto-build and forward
+        instance = self.build()
+        return getattr(instance, name)
 
