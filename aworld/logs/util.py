@@ -158,12 +158,9 @@ class AWorldLogger:
                                           level=console_level)
 
         # Before using aworld, including imports!
-        log_path = os.environ.get('AWORLD_LOG_PATH')
-        if log_path:
-            log_file = f'{log_path}/{tag}.log'
-        else:
-            log_file = f'{os.getcwd()}/logs/{tag}.log'
-        error_log_file = f'{os.getcwd()}/logs/AWorld_error.log'
+        log_path = os.environ.get('AWORLD_LOG_PATH', os.getcwd())
+        log_file = f'{log_path}/{tag}.log'
+        error_log_file = f'{log_path}/aworld_error.log'
         handler_key = f'{name}_{tag}'
         error_handler_key = f'{name}_{tag}_error'
 
