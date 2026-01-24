@@ -60,7 +60,8 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         content = '' if resp.content is None else resp.content
 
         # Log parsing start
-        logger.debug(f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(resp.tool_calls)}, content_length={len(content)}")
+        logger.debug(
+            f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(resp.tool_calls)}, content_length={len(content)}")
 
         if resp.tool_calls:
             is_call_tool = True
@@ -68,20 +69,23 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
             for idx, tool_call in enumerate(resp.tool_calls):
                 full_name: str = tool_call.function.name
                 if not full_name:
-                    logger.warning(f"⚠️ [Agent:{agent_id}] Tool call #{idx+1} has no tool name, skipping.")
+                    logger.warning(f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} has no tool name, skipping.")
                     continue
-                
-                logger.info(f"🔧 [Agent:{agent_id}] Processing tool call #{idx+1}: {full_name}, call_id={tool_call.id}")
-                
+
+                logger.info(
+                    f"🔧 [Agent:{agent_id}] Processing tool call #{idx + 1}: {full_name}, call_id={tool_call.id}")
+
                 try:
                     params = json.loads(tool_call.function.arguments)
-                    logger.debug(f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)")
+                    logger.debug(
+                        f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)")
                 except Exception as e:
-                    logger.warning(f"⚠️ [Agent:{agent_id}] Failed to parse tool arguments for {full_name}: {tool_call.function.arguments}, error={str(e)}")
+                    logger.warning(
+                        f"⚠️ [Agent:{agent_id}] Failed to parse tool arguments for {full_name}: {tool_call.function.arguments}, error={str(e)}")
                     params = {}
-                
+
                 # format in framework
-                #agent_info = AgentFactory.agent_instance(agent_id)
+                # agent_info = AgentFactory.agent_instance(agent_id)
                 agent_info = kwargs.get("agent")
                 original_name = full_name
                 if (not full_name.startswith("mcp__") and agent_info and agent_info.sandbox and
@@ -90,14 +94,16 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                         _server_name = agent_info.sandbox.mcpservers.map_tool_list.get(full_name)
                         if _server_name:
                             full_name = f"mcp__{_server_name}__{full_name}"
-                            logger.info(f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via map_tool_list)")
+                            logger.info(
+                                f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via map_tool_list)")
                     else:
                         tmp_names = full_name.split("__")
                         tmp_tool_name = tmp_names[0]
                         if tmp_tool_name in agent_info.sandbox.mcpservers.mcp_servers:
                             full_name = f"mcp__{full_name}"
-                            logger.info(f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via mcp_servers)")
-                
+                            logger.info(
+                                f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via mcp_servers)")
+
                 names = full_name.split("__")
                 tool_name = names[0]
                 if is_agent_by_name(full_name):
@@ -119,7 +125,8 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     logger.info(f"🔨 [Agent:{agent_id}] Added tool action: {tool_name}_{action_name}")
         else:
             results.append(ActionModel(agent_name=agent_id, policy_info=content))
-            logger.debug(f"💬 [Agent:{agent_id}] No tool calls, added text response action (content_length={len(content)})")
+            logger.debug(
+                f"💬 [Agent:{agent_id}] No tool calls, added text response action (content_length={len(content)})")
 
         logger.info(f"✅ [Agent:{agent_id}] Parse completed: {len(results)} action(s), is_call_tool={is_call_tool}")
         return AgentResult(actions=results, current_state=None, is_call_tool=is_call_tool)
@@ -1000,31 +1007,34 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                             resp_tool_call_ids=tool_call_ids,
                                             agent_id=self.id())
 
-    @staticmethod
-    async def to_dict(agent, override: Dict[str, Any] = None):
-        """Agent attribute dict."""
-        attr_dict = {
-            "name": agent.name(),
-            "conf": agent.conf,
-            "desc": agent.desc(),
-            "task": agent.task,
-            "tool_names": agent.tool_names,
-            "agent_names": agent.handoffs,
-            "mcp_servers": agent.mcp_servers,
-            "mcp_config": agent.mcp_config,
-            "feedback_tool_result": agent.feedback_tool_result,
-            "wait_tool_result": agent.wait_tool_result,
-            "system_prompt": agent.system_prompt,
-            "need_reset": agent.need_reset,
-            "step_reset": agent.step_reset,
-            "use_tools_in_prompt": agent.use_tools_in_prompt,
-            "black_tool_actions": agent.black_tool_actions,
-            "model_output_parser": agent.model_output_parser,
-            "tool_aggregate_func": agent.tools_aggregate_func,
-            "event_handler_name": agent.event_handler_name,
-            "event_driven": agent.event_driven,
-            "skill_configs": agent.skill_configs
+    def to_dict(self):
+        return {
+            "name": self.name(),
+            "conf": self.conf,
+            "desc": self.desc(),
+            "task": self.task,
+            "tool_names": self.tool_names,
+            "agent_names": self.handoffs,
+            "mcp_servers": self.mcp_servers,
+            "mcp_config": self.mcp_config,
+            "feedback_tool_result": self.feedback_tool_result,
+            "wait_tool_result": self.wait_tool_result,
+            "system_prompt": self.system_prompt,
+            "need_reset": self.need_reset,
+            "step_reset": self.step_reset,
+            "use_tools_in_prompt": self.use_tools_in_prompt,
+            "black_tool_actions": self.black_tool_actions,
+            "output_converter": self.output_converter,
+            "tool_aggregate_func": self.tools_aggregate_func,
+            "event_handler_name": self.event_handler_name,
+            "event_driven": self.event_driven,
+            "skill_configs": self.skill_configs
         }
+
+    @staticmethod
+    async def agent_to_dict(agent: 'LLMAgent', override: Dict[str, Any] = None):
+        """Agent attribute dict."""
+        attr_dict = agent.to_dict()
         if override:
             attr_dict.update(override)
         return attr_dict

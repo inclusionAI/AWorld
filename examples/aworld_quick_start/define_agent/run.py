@@ -3,6 +3,7 @@
 import asyncio
 import os
 
+import aworld
 from aworld import trace
 from aworld.core.task import Task
 from aworld.trace import ObservabilityConfig
@@ -15,12 +16,10 @@ from aworld.logs.util import logger
 from aworld.runner import Runners
 from examples.aworld_quick_start.common import agent_config
 
-trace.configure(ObservabilityConfig())
-
 
 async def main():
     # reset show DEBUG log level
-    logger.reset_level("DEBUG")
+    aworld.configure(log_level="DEBUG", use_trace=True)
     # reset log format, one line log style
     logger.reset_format("<black>{time:YYYY-MM-DD HH:mm:ss.SSS}/ {extra[trace_id]} | {level} | \
 {extra[name]} PID: {process}, TID:{thread} |</black> <bold>{name}.{function}:{line}</bold> \

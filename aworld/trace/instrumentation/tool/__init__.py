@@ -62,6 +62,7 @@ def get_tool_span_attributes(instance, message: 'Message'):
         semconv.TASK_ID: message.context.task_id if (message.context and message.context.task_id) else "",
         semconv.SESSION_ID: message.context.session_id if (message.context and message.context.session_id) else "",
         semconv.USER_ID: message.context.user if (message.context and message.context.user) else "",
+        semconv.TRACE_ID: message.context.trace_id if (message.context and message.context.trace_id) else "",
         trace_constants.ATTRIBUTES_MESSAGE_RUN_TYPE_KEY: run_type.value
     }
 

@@ -24,6 +24,7 @@ from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.runners.task_runner import TaskRunner
 from aworld.trace.base import get_trace_id
+from aworld.trace.instrumentation import semconv
 from aworld.utils.common import override_in_subclass, new_instance
 from aworld.utils.serialized_util import to_serializable
 
@@ -49,7 +50,7 @@ class TaskEventRunner(TaskRunner):
 
         async with trace.task_span(self.init_messages[0].session_id,
                                    task=self.task,
-                                   attributes={"aworld.trace.id": self.context.trace_id}):
+                                   attributes={semconv.TRACE_ID: self.context.trace_id}):
             try:
                 for msg in self.init_messages:
                     await self.event_mng.emit_message(msg)
@@ -175,7 +176,7 @@ class TaskEventRunner(TaskRunner):
         results = []
         handlers = self.event_mng.get_handlers(key)
         inner_handlers = [handler.name() for handler in self.handlers]
-        async with trace.message_span(message=message, attributes={"aworld.trace.id": self.context.trace_id}):
+        async with trace.message_span(message=message, attributes={semconv.TRACE_ID: self.context.trace_id}):
             logger.debug(f"start_message_node message id: {message.id} of task {self.task.id}")
             self.state_manager.start_message_node(message)
             asyncio.create_task(self._update_trajectory(message))
@@ -225,7 +226,7 @@ class TaskEventRunner(TaskRunner):
         con = message
         async with trace.handler_span(message=message,
                                       handler=handler,
-                                      attributes={"aworld.trace.id": self.context.trace_id}):
+                                      attributes={semconv.TRACE_ID: self.context.trace_id}):
             try:
                 logger.info(f"process start message id: {message.id} of task {self.task.id}")
                 if asyncio.iscoroutinefunction(handler):
