@@ -160,9 +160,9 @@ class AWorldLogger:
         # Before using aworld, including imports!
         log_path = os.environ.get('AWORLD_LOG_PATH')
         if log_path:
-            log_file = f'{log_path}/{tag}-{{time:YYYY-MM-DD}}.log'
+            log_file = f'{log_path}/{tag}.log'
         else:
-            log_file = f'{os.getcwd()}/logs/{tag}-{{time:YYYY-MM-DD}}.log'
+            log_file = f'{os.getcwd()}/logs/{tag}.log'
         error_log_file = f'{os.getcwd()}/logs/AWorld_error.log'
         handler_key = f'{name}_{tag}'
         error_handler_key = f'{name}_{tag}_error'
@@ -273,24 +273,24 @@ def update_logger_level(level: str):
     asyncio_monitor_logger.reset_level(level)
 
 
-logger = AWorldLogger(tag='AWorld', name='AWorld')
-trace_logger = AWorldLogger(tag='Trace', name='AWorld')
-trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld')
+logger = AWorldLogger(tag='aworld', name='AWorld', formatter=os.getenv('AWORLD_LOG_FORMAT'))
+trace_logger = AWorldLogger(tag='trace', name='AWorld', formatter=os.getenv('AWORLD_LOG_FORMAT'))
+trajectory_logger = AWorldLogger(tag='trajectory', name='AWorld', formatter=os.getenv('AWORLD_LOG_FORMAT'))
 
 prompt_logger = AWorldLogger(tag='prompt_logger', name='AWorld',
-                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | prompt | {extra[trace_id]} |</black> <level>{message}</level>")
+                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS}|prompt|{extra[trace_id]}|</black><level>{message}</level>")
 digest_logger = AWorldLogger(tag='digest_logger', name='AWorld',
-                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | digest | {extra[trace_id]} |</black> <level>{message}</level>")
-
+                             formatter=os.getenv('AWORLD_LOG_FORMAT', "{time:YYYY-MM-DD HH:mm:ss.SSS}| digest | {extra[trace_id]} |<level>{message}</level>"))
 asyncio_monitor_logger = AWorldLogger(tag='asyncio_monitor', name='AWorld',
                                       formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | </black> <level>{message}</level>")
 
-monkey_logger(logger)
-monkey_logger(trace_logger)
-monkey_logger(trajectory_logger)
-monkey_logger(prompt_logger)
-# monkey_logger(digest_logger)
-monkey_logger(asyncio_monitor_logger)
+if os.getenv('AWORLD_LOG_ENDABLE_MONKEY', 'true') == 'true':
+    monkey_logger(logger)
+    monkey_logger(trace_logger)
+    monkey_logger(trajectory_logger)
+    monkey_logger(prompt_logger)
+    # monkey_logger(digest_logger)
+    monkey_logger(asyncio_monitor_logger)
 
 # log examples:
 # the same as debug, warn, error, fatal
