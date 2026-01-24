@@ -27,7 +27,7 @@ from opentelemetry.sdk.trace import (
 )
 from opentelemetry.context import Context as OTLPContext
 from opentelemetry.semconv.trace import SpanAttributes
-from opentelemetry.sdk.trace.export     import BatchSpanProcessor, SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 
 from aworld.trace.base import (
     AttributeValueType,
