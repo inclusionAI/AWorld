@@ -39,6 +39,9 @@ def _completion_class_wrapper(tracer: Tracer):
         span_attributes = {}
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
+        context = kwargs.get("context", None)
+        if context:
+            span_attributes[semconv.TRACE_ID] = context.trace_id
         span = tracer.start_span(
             name=SPAN_NAME_PREFIX_LLM + model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
@@ -85,6 +88,9 @@ def _stream_completion_class_wrapper(tracer: Tracer):
         span_attributes = {}
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
+        context = kwargs.get("context", None)
+        if context:
+            span_attributes[semconv.TRACE_ID] = context.trace_id
         span = tracer.start_span(
             name=SPAN_NAME_PREFIX_LLM + model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
@@ -127,6 +133,9 @@ def _acompletion_class_wrapper(tracer: Tracer):
         span_attributes = {}
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
+        context = kwargs.get("context", None)
+        if context:
+            span_attributes[semconv.TRACE_ID] = context.trace_id
         span = tracer.start_span(
             name=SPAN_NAME_PREFIX_LLM + model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
@@ -201,6 +210,10 @@ def record_completion(span,
         prompt_tokens = usage.get("prompt_tokens")
         completion_tokens = usage.get("completion_tokens")
         total_tokens = usage.get("total_tokens")
+
+    context = request_kwargs.get("context", None)
+    if context:
+        attributes[semconv.TRACE_ID] = context.trace_id
 
     span_attributes = {
         **attributes,
