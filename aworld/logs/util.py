@@ -163,7 +163,7 @@ class AWorldLogger:
             log_file = f'{log_path}/{tag}.log'
         else:
             log_file = f'{os.getcwd()}/logs/{tag}.log'
-        error_log_file = f'{os.getcwd()}/logs/AWorld_error.log'
+        error_log_file = f'{log_path}/aworld_error.log'
         handler_key = f'{name}_{tag}'
         error_handler_key = f'{name}_{tag}_error'
 
