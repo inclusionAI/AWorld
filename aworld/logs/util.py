@@ -280,7 +280,7 @@ trajectory_logger = AWorldLogger(tag='trajectory', name='AWorld', formatter=os.g
 prompt_logger = AWorldLogger(tag='prompt_logger', name='AWorld',
                              formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS}|prompt|{extra[trace_id]}|</black><level>{message}</level>")
 digest_logger = AWorldLogger(tag='digest_logger', name='AWorld',
-                             formatter=os.getenv('AWORLD_LOG_FORMAT', "{time:YYYY-MM-DD HH:mm:ss.SSS} | digest | {extra[trace_id]} |<level>{message}</level>"))
+                             formatter=os.getenv('AWORLD_LOG_FORMAT', "{time:YYYY-MM-DD HH:mm:ss.SSS}| digest | {extra[trace_id]} |<level>{message}</level>"))
 asyncio_monitor_logger = AWorldLogger(tag='asyncio_monitor', name='AWorld',
                                       formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | </black> <level>{message}</level>")
 
