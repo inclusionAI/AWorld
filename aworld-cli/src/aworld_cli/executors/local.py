@@ -620,11 +620,15 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     if hasattr(output, 'data') and output.data:
                                         data_str = str(output.data)
                                         if data_str.strip() and len(data_str) > 10:
-                                            idx = -1 if output.metadata.get("print_all", False) else 500
-                                            title = output.metadata.get("title")
-                                            title = title if title else type(output).__name__
+                                            meta = getattr(output, "metadata", None) or {}
+                                            print_all = meta.get("print_all", False)
+                                            max_len = int(os.environ.get("AWORLD_CLI_MAX_RESULT_DISPLAY_LENGTH", "20000"))
+                                            display_str = data_str if print_all else data_str[:max_len]
+                                            if not print_all and len(data_str) > max_len:
+                                                display_str += f"\n\n[dim]... ({len(data_str) - max_len} more characters) ...[/dim]"
+                                            title = meta.get("title") or type(output).__name__
                                             generic_panel = Panel(
-                                                data_str[:idx],
+                                                display_str,
                                                 title=f"[dim]📦 {title}[/dim]",
                                                 border_style="dim",
                                                 padding=(1, 2)
