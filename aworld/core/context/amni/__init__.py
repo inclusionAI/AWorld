@@ -1409,13 +1409,13 @@ class ApplicationContext(AmniContext):
         return self.freedom_space_service.get_abs_file_path(filename)
 
     async def add_file(self, filename: Optional[str], content: Optional[Any], mime_type: Optional[str] = "text",
-                       namespace: str = "default", origin_type: str = None, origin_path : str = None) -> Tuple[bool, Optional[str], Optional[str]]:
+                       namespace: str = "default", origin_type: str = None, origin_path : str = None, refresh_workspace: bool = True) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Add a file to freedom space.
 
         Delegates to FreedomSpaceService.add_file().
         """
-        return await self.freedom_space_service.add_file(filename, content, mime_type, namespace, origin_type, origin_path)
+        return await self.freedom_space_service.add_file(filename, content, mime_type, namespace, origin_type, origin_path, refresh_workspace)
 
     async def init_working_dir(self) -> DirArtifact:
         """
