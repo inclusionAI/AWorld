@@ -195,6 +195,13 @@ class TaskEventRunner(TaskRunner):
                     for t, _ in handle_map.items():
                         t.add_done_callback(partial(self._task_done_callback, group=handle_map, message=message))
                         await asyncio.sleep(0)
+            else:
+                logger.info(f"Task {self.task.id} with key {key} cannot get handlers: {handlers}, use inner_handlers")
+                if message.receiver and message.receiver not in inner_handlers:
+                    logger.warning(
+                        f"Task {self.task.id} {message.receiver} no handler, ignore."
+                        f"current subscriber: {self.event_mng.event_bus._subscribers}"
+                    )
             if not handlers or message.receiver in inner_handlers:
                 # not handler, return raw message
                 # if key == Constants.OUTPUT:
@@ -316,7 +323,7 @@ class TaskEventRunner(TaskRunner):
                 # External control - Check task status before processing each message
                 should_stop_task = await self.should_stop_task(message)
                 if should_stop_task:
-                    logger.warn(f"Runner {self.task.id} task should stop.")
+                    logger.warn(f"Runner {message.context.get_task().id if message else self.task.id} task should stop.")
                     await self.stop()
                 else:
                     self._stopped.clear()

@@ -9,6 +9,7 @@ import aworld.events
 from aworld.core.event.base import Constants, Message, TopicType
 from aworld.core.storage.data import Data
 from aworld.core.storage.inmemory_store import InmemoryStorage, InmemoryConfig
+from aworld.logs.util import logger
 
 
 class EventManager:
@@ -88,7 +89,10 @@ class EventManager:
         await self.event_bus.unsubscribe(self.context._task_id, event_type, topic, handler, transformer=True, **kwargs)
 
     def get_handlers(self, event_type: str) -> Dict[str, List[Callable[..., Any]]]:
-        return self.event_bus.get_handlers(self.context._task_id, event_type)
+        handlers = self.event_bus.get_handlers(self.context._task_id, event_type)
+        if not handlers:
+            logger.info(f"Task {self.context._task_id} has no registered handlers with {event_type} event_type.")
+        return handlers
 
     def get_transform_handler(self, key: str) -> Callable[..., Any]:
         return self.event_bus.get_transform_handler(self.context.task_id, key)
