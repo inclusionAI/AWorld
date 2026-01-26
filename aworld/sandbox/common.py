@@ -39,6 +39,7 @@ class BaseSandbox(Sandbox):
             env_content_name: Optional[str] = None,
             env_content: Optional[Dict[str, Any]] = None,
             reuse: bool = False,
+            workspace: Optional[List[str]] = None,
     ):
         """
         Initialize a new BaseSandbox instance.
@@ -82,6 +83,9 @@ class BaseSandbox(Sandbox):
             env_content: User-defined context values to be automatically injected into tool calls.
                 Note that task_id and session_id are added dynamically from context during tool calls.
             reuse: Whether to reuse MCP server connections. Default is False.
+            workspace: List of allowed workspace directories for filesystem tool. If None, uses default workspaces 
+                (~/workspace, ~/aworld_workspace). Can also be set via environment variable AWORLD_WORKSPACE_PATH 
+                (comma-separated paths).
         """
         super().__init__(
             sandbox_id=sandbox_id,
@@ -99,14 +103,16 @@ class BaseSandbox(Sandbox):
             streaming=streaming,
             env_content_name=env_content_name,
             env_content=env_content,
-            reuse=reuse
+            reuse=reuse,
+            workspace=workspace
         )
         self._logger = self._setup_logger()
         # Track if sandbox has been initialized (for lazy initialization support)
         self._initialized = False
         
-        # Initialize builtin tools
-        self._builtin_filesystem = FilesystemTool()
+        # Initialize builtin tools with workspace configuration
+        self._builtin_filesystem = FilesystemTool(allowed_directories=self._workspace)
+        logger.debug(f"Initialized FilesystemTool with workspace: {self._workspace} (will use defaults if None)")
         self._builtin_terminal = TerminalTool()
         self._tool_router = BuiltinToolRouter(self)
         
@@ -319,6 +325,40 @@ class BaseSandbox(Sandbox):
         it does not affect tool schemas, so no reinitialization is needed.
         """
         self._env_content = value or {}
+
+    @property
+    def workspace(self) -> Optional[List[str]]:
+        """Returns the workspace directories for filesystem tool."""
+        return self._workspace
+
+    @workspace.setter
+    def workspace(self, value):
+        """Set workspace directories for filesystem tool and reinitialize if needed.
+        
+        Changing workspace requires reinitializing FilesystemTool to update allowed directories.
+        
+        Args:
+            value: List of allowed workspace directory paths, or a single string path.
+                   If None, uses default workspaces.
+        """
+        # Convert string to list for convenience
+        if isinstance(value, str):
+            value = [value]
+        elif value is not None and not isinstance(value, list):
+            raise TypeError(f"workspace must be a list of strings or a single string, got {type(value)}")
+        
+        old_value = self._workspace
+        self._workspace = value
+        # If workspace changed and sandbox is initialized, update FilesystemTool
+        if old_value != self._workspace:
+            if hasattr(self, '_builtin_filesystem') and self._builtin_filesystem:
+                # Update existing FilesystemTool instance instead of recreating
+                self._builtin_filesystem.update_allowed_directories(self._workspace)
+                logger.info(f"Updated FilesystemTool workspace to: {self._workspace}")
+            elif self._initialized:
+                # If FilesystemTool doesn't exist yet but sandbox is initialized, create it
+                self._builtin_filesystem = FilesystemTool(allowed_directories=self._workspace)
+                logger.info(f"Initialized FilesystemTool with workspace: {self._workspace}")
 
     @abc.abstractmethod
     def get_skill_list(self) -> Optional[Any]:

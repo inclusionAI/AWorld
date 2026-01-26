@@ -81,6 +81,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         """
         # Extract reuse from kwargs if present
         reuse = kwargs.pop('reuse', False)
+        workspace = kwargs.pop('workspace', None)
         super().__init__(
             sandbox_id=sandbox_id,
             env_type=SandboxEnvType.LOCAL,
@@ -97,7 +98,8 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             streaming=kwargs.get('streaming', False),
             env_content_name=env_content_name,
             env_content=env_content,
-            reuse=reuse
+            reuse=reuse,
+            workspace=workspace
         )
 
         # Initialize properties

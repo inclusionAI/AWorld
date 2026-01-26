@@ -27,6 +27,7 @@ class SandboxBuilder:
         self._streaming: bool = False
         self._env_content_name: Optional[str] = None
         self._env_content: Optional[Dict[str, Any]] = None
+        self._workspace: Optional[List[str]] = None
         self._agents_builder = AgentsBuilder(self)
     
     def sandbox_id(self, sandbox_id: str) -> 'SandboxBuilder':
@@ -153,6 +154,28 @@ class SandboxBuilder:
         self._env_content = env_content
         return self
     
+    def workspace(self, workspace: List[str]) -> 'SandboxBuilder':
+        """Set workspace directories for filesystem tool.
+        
+        Args:
+            workspace: List of allowed workspace directory paths. If None, uses default workspaces 
+                (~/workspace, ~/aworld_workspace). Can also be set via environment variable 
+                AWORLD_WORKSPACE_PATH (comma-separated paths).
+        
+        Returns:
+            SandboxBuilder: Self for method chaining.
+        
+        Examples:
+            # Single workspace
+            builder.workspace(["~/workspace"])
+            
+            # Multiple workspaces
+            builder.workspace(["~/workspace", "~/projects", "/custom/path"])
+        """
+        self._auto_commit_current_agent()
+        self._workspace = workspace
+        return self
+    
     def _add_agent(self, name: str, config: Dict[str, Any]):
         """Internal method to add an agent configuration."""
         if self._agents is None:
@@ -243,6 +266,8 @@ class SandboxBuilder:
             kwargs['env_content_name'] = self._env_content_name
         if self._env_content is not None:
             kwargs['env_content'] = self._env_content
+        if self._workspace is not None:
+            kwargs['workspace'] = self._workspace
         
         # Ensure at least mcp_config is provided to avoid Sandbox() returning Builder
         # mcp_config defaults to {} in Sandbox.__init__ if not provided
@@ -268,7 +293,7 @@ class SandboxBuilder:
             'build', 'sandbox_id', 'env_type', 'metadata', 'timeout',
             'mcp_servers', 'mcp_config', 'black_tool_actions', 'skill_configs',
             'tools', 'registry_url', 'custom_env_tools', 'agents', 'streaming',
-            'env_content_name', 'env_content', '_auto_commit_current_agent',
+            'env_content_name', 'env_content', 'workspace', '_auto_commit_current_agent',
             '_add_agent', '_agents_builder'
         }
         
