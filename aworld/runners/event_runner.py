@@ -196,12 +196,13 @@ class TaskEventRunner(TaskRunner):
                         t.add_done_callback(partial(self._task_done_callback, group=handle_map, message=message))
                         await asyncio.sleep(0)
             else:
-                logger.info(f"Task {self.task.id} with key {key} cannot get handlers: {handlers}, use inner_handlers")
-                if message.receiver and message.receiver not in inner_handlers:
-                    logger.warning(
-                        f"Task {self.task.id} {message.receiver} no handler, ignore."
-                        f"current subscriber: {self.event_mng.event_bus._subscribers}"
-                    )
+                if message.category in [Constants.TOOL, Constants.AGENT]:
+                    logger.info(f"Task {self.task.id} with key {key} cannot get handlers, use inner_handlers. message: {message}")
+                    if message.receiver and message.receiver not in inner_handlers:
+                        logger.warning(
+                            f"Task {self.task.id} {message.receiver} no handler, ignore."
+                            f"current subscriber: {self.event_mng.event_bus._subscribers}"
+                        )
             if not handlers or message.receiver in inner_handlers:
                 # not handler, return raw message
                 # if key == Constants.OUTPUT:
