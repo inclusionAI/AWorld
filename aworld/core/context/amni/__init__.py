@@ -1,3 +1,5 @@
+import os
+
 import abc
 import asyncio
 import copy
@@ -931,8 +933,9 @@ class ApplicationContext(AmniContext):
             else:
                 self.task_output = task_response.msg
 
-        self.task_output_object.actions_info = await self.get_actions_info()
-        self.task_output_object.todo_info = await self.get_todo_info()
+        if os.getenv("ENABLE_AUTO_UPDATE_TASK_OUTPUT_INFO", "false") == "true":
+            self.task_output_object.actions_info = await self.get_actions_info()
+            self.task_output_object.todo_info = await self.get_todo_info()
 
         if self.parent:
             self.parent.merge_sub_context(self)
