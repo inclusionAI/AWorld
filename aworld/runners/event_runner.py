@@ -199,7 +199,7 @@ class TaskEventRunner(TaskRunner):
                 logger.info(f"Task {self.task.id} with key {key} cannot get handlers: {handlers}, use inner_handlers")
                 if message.category in [Constants.TOOL, Constants.AGENT] and message.receiver and message.receiver not in inner_handlers:
                     logger.warning(
-                        f"Task{self.task.id} {message.receiver} no handler, ignore."
+                        f"Task {self.task.id} {message.receiver} no handler, ignore."
                         f"current subscriber: {self.event_mng.event_bus._subscribers}"
                     )
             if not handlers or message.receiver in inner_handlers:
@@ -323,7 +323,7 @@ class TaskEventRunner(TaskRunner):
                 # External control - Check task status before processing each message
                 should_stop_task = await self.should_stop_task(message)
                 if should_stop_task:
-                    logger.warn(f"Runner {message.context.get_task().id} task should stop.")
+                    logger.warn(f"Runner {message.context.get_task().id if message else self.task.id} task should stop.")
                     await self.stop()
                 else:
                     self._stopped.clear()
