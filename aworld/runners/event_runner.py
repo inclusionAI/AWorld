@@ -199,7 +199,7 @@ class TaskEventRunner(TaskRunner):
                 logger.info(f"Task {self.task.id} with key {key} cannot get handlers: {handlers}, use inner_handlers")
                 if message.receiver and message.receiver not in inner_handlers:
                     logger.warning(
-                        f"Task{self.task.id} {message.receiver} no handler, ignore."
+                        f"Task {self.task.id} {message.receiver} no handler, ignore."
                         f"current subscriber: {self.event_mng.event_bus._subscribers}"
                     )
             if not handlers or message.receiver in inner_handlers:
