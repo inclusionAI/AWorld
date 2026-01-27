@@ -353,7 +353,35 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
             if extracted_servers:
                 mcp_servers = extracted_servers
                 logger.info(f"✅ Auto-extracted mcp_servers from mcp_config: {mcp_servers}")
-        
+
+        # Get model config
+        model_config = front_matter.get("model_config")
+        if isinstance(model_config, str):
+            # First, try to parse as inline JSON
+            try:
+                model_config = json.loads(model_config)
+                logger.debug(f"✅ Parsed model_config as inline JSON")
+            except json.JSONDecodeError:
+                # If not valid JSON, check if it's a file path
+                # File paths typically contain .json or .py extension, or look like paths
+                if (".json" in model_config.lower() or
+                    ".py" in model_config.lower() or
+                    "/" in model_config or
+                    "\\" in model_config):
+                    # Try to load from file
+                    base_dir = md_file_path.parent
+                    loaded_config = _load_mcp_config_from_file(model_config, base_dir)
+                    if loaded_config is not None:
+                        model_config = loaded_config
+                    else:
+                        logger.warning(f"⚠️ Failed to load model_config from file '{model_config}' in {md_file_path}, using None")
+                        model_config = None
+                else:
+                    # Not a file path and not valid JSON, treat as None
+                    logger.warning(f"⚠️ model_config value '{model_config}' is neither valid JSON nor a file path, using None")
+        elif model_config is None or (isinstance(model_config, dict) and not model_config):
+            model_config = None
+
         # Get PTC tools (Programmatic Tool Calling)
         ptc_tools = front_matter.get("ptc_tools")
         if isinstance(ptc_tools, str):
@@ -516,16 +544,28 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
         # Create a factory function that builds the Swarm
         def build_swarm() -> Swarm:
             # Create agent configuration
-            agent_config = AgentConfig(
-                llm_config=ModelConfig(
+            if model_config:
+                # Use model_config from markdown file
+                llm_config = ModelConfig(**model_config)
+                logger.info(f"✅ Using model_config from markdown: {model_config}")
+            else:
+                # Fallback to environment variables
+                llm_config = ModelConfig(
                     llm_model_name=os.environ.get("LLM_MODEL_NAME", "gpt-4"),
                     llm_provider=os.environ.get("LLM_PROVIDER", "openai"),
                     llm_api_key=os.environ.get("LLM_API_KEY"),
                     llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
-                    llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+                    llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
+                    params={"max_completion_tokens": 40960}
                 )
+                logger.info(f"✅ Using default model config from environment variables")
+
+            agent_config = AgentConfig(
+                llm_config=llm_config,
+                skill_configs=skill_configs if skill_configs else {}
             )
             """Build Swarm from markdown agent definition."""
+
             agent = Agent(
                 name=agent_name,
                 desc=description,
@@ -534,8 +574,7 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
                 tool_names=tool_names if tool_names else None,
                 mcp_servers=mcp_servers if mcp_servers else None,
                 mcp_config=mcp_config,
-                ptc_tools=ptc_tools if ptc_tools else [],
-                skill_configs=skill_configs if skill_configs else None
+                ptc_tools=ptc_tools if ptc_tools else []
             )
             return Swarm(agent)
         
@@ -550,6 +589,7 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
                 "tool_list": tool_list,
                 "mcp_servers": mcp_servers,
                 "mcp_config": mcp_config,
+                "model_config": model_config,
                 "ptc_tools": ptc_tools,
                 "skills_path": skills_path,
                 "skill_names": skill_names_str,
@@ -589,10 +629,12 @@ def load_markdown_agents(agents_dir: Path) -> List[LocalAgent]:
         logger.warning(f"⚠️ Agents directory not found: {agents_dir}")
         return agents
     
-    # Find all markdown files recursively, excluding private files
+    # Find all markdown files recursively, excluding private files and plugin_manager
     markdown_files = [
         f for f in agents_dir.rglob("*.md")
-        if not f.name.startswith("_") and not f.name.startswith(".")
+        if not f.name.startswith("_") 
+        and not f.name.startswith(".")
+        and "plugin_manager" not in str(f.relative_to(agents_dir))
     ]
     
     if not markdown_files:

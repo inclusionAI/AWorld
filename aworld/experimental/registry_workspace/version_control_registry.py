@@ -7,8 +7,8 @@ import re
 from typing import Optional, Dict, List
 
 from aworld.core.context.amni.retrieval.artifacts.file.dir_artifact import DirArtifact
-from aworld.output.artifact import ArtifactAttachment
 from aworld.logs.util import logger
+from aworld.output.artifact import ArtifactAttachment
 
 
 class VersionControlRegistry(abc.ABC):
@@ -19,19 +19,9 @@ class VersionControlRegistry(abc.ABC):
     
     def __init__(self, context):
         self._context = context
-        # Cache for version lists per session
-        self._version_cache: Dict[str, Dict[str, List[str]]] = {}
-        # Cache for source content per session
-        self._md_cache: Dict[str, Dict[str, Dict[str, str]]] = {}
         
         # Initialize DirArtifact for storage
         self._dir_artifact = self._create_dir_artifact()
-
-    def _get_session_id(self, session_id: str = None) -> str:
-        """Get session_id with fallback to context's session_id."""
-        if session_id is None:
-            session_id = self._context.session_id if hasattr(self._context, 'session_id') else "default"
-        return session_id
 
     def _get_storage_type(self) -> str:
         """Get storage type, 'local' or 'oss'"""
@@ -80,7 +70,7 @@ class VersionControlRegistry(abc.ABC):
             DirArtifact instance configured for the current storage type
         """
         storage_type = self._get_storage_type()
-        base_path = os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry')
+        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
 
         if storage_type == 'oss':
             # Get OSS configuration
@@ -119,9 +109,33 @@ class VersionControlRegistry(abc.ABC):
             # Local storage
             return DirArtifact.with_local_repository(base_path)
 
+    def _matches_file(self, attachment: ArtifactAttachment, name: str, suffix: str, base_path: str = None) -> bool:
+        """
+        Check if an attachment matches the resource name and suffix.
+        Default implementation uses filename matching.
+        Subclasses can override this to implement custom matching logic (e.g., content-based matching).
+        
+        Args:
+            attachment: The attachment to check
+            name: Resource name
+            suffix: File suffix
+            base_path: Base path for file access (optional, for content-based matching)
+        
+        Returns:
+            True if the file matches, False otherwise
+        """
+        # Default implementation: filename-based matching
+        # Check if filename matches the pattern
+        if attachment.filename == f"{name}{suffix}":
+            return True
+        # Check if filename matches versioned pattern
+        pattern = re.compile(rf"^{re.escape(name)}_v\d+{re.escape(suffix)}$")
+        return bool(pattern.match(attachment.filename))
+
     def _scan_files_by_suffix(self, suffix: str) -> List[str]:
         """
         Scan files by suffix and extract resource names.
+        Version management is now directory-based: scans version directories for files with specified suffix.
         
         Args:
             suffix: File suffix (e.g., ".md")
@@ -131,114 +145,148 @@ class VersionControlRegistry(abc.ABC):
         """
         self._dir_artifact.reload_working_files()
         resource_names = set()
+        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
 
         if self._dir_artifact.attachments:
-            # Match root files (resource_name.md), exclude versioned files
-            pattern_root = re.compile(rf"^(.+){re.escape(suffix)}$")
+            # Pattern to match version directories: {resource_name}_v{N}/{filename} or {resource_name}/{filename} (v0)
+            # Extract resource name from directory path
+            version_dir_pattern = re.compile(rf"^([^_]+)_v\d+/")
+            # Pattern to match directories without version suffix (v0): {resource_name}/{filename}
+            v0_dir_pattern = re.compile(rf"^([^/]+)/([^/]+)$")
+            
             for attachment in self._dir_artifact.attachments:
-                match = pattern_root.match(attachment.filename)
-                if match:
-                    resource_name = match.group(1)
-                    # Exclude versioned files (resource_name_vN.md), i.e., resource_name cannot end with _v followed by digits
-                    if not re.match(r".+_v\d+$", resource_name):
-                        resource_names.add(resource_name)
-
-            # Match versioned files (resource_name_vN.md), extract resource_name
-            pattern_versioned = re.compile(rf"^(.+)_v\d+{re.escape(suffix)}$")
-            for attachment in self._dir_artifact.attachments:
-                match = pattern_versioned.match(attachment.filename)
-                if match:
-                    resource_names.add(match.group(1))
+                if attachment.filename.endswith(suffix):
+                    resource_name = None
+                    # Check if file is in a versioned directory: {resource_name}_v{N}/
+                    match = version_dir_pattern.match(attachment.path)
+                    if match:
+                        resource_name = match.group(1)
+                    else:
+                        # Check if file is in a directory without version suffix (v0): {resource_name}/{filename}
+                        match_v0 = v0_dir_pattern.match(attachment.path)
+                        if match_v0:
+                            resource_name = match_v0.group(1)
+                    
+                    if resource_name:
+                        # Extract base filename without suffix for matching
+                        file_base_name = attachment.filename[:-len(suffix)] if attachment.filename.endswith(suffix) else attachment.filename
+                        # Use _matches_file to check if file matches (allows content-based matching in subclasses)
+                        if self._matches_file(attachment, file_base_name, suffix, base_path):
+                            resource_names.add(resource_name)
 
         return sorted(list(resource_names))
 
-    def _list_versions_by_suffix(self, name: str, suffix: str, session_id: str) -> List[str]:
-        """
-        List all versions of a resource by suffix.
-        
-        Scanning rules:
-        - v0 version: in top-level directory {name}/{name}{suffix}
-        - v1+ versions: in session directory {name}/{session_id}/{name}_vN{suffix}
-        
-        Args:
-            name: Resource name
-            suffix: File suffix (e.g., ".md")
-            session_id: Session ID
-        
-        Returns:
-            Sorted list of versions
-        """
+    def _list_versions_by_suffix(self, name: str, suffix: str) -> List[str]:
+        """List all versions of a resource by suffix."""
         versions = []
         self._dir_artifact.reload_working_files()
-
-        # Check for attachments matching the resource name
+        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+        
+        # Pattern to match version directories: {name}_v{N}/ or {name}/ (v0)
+        version_dir_pattern = re.compile(rf"^{re.escape(name)}(?:_v(\d+))?/")
+        
+        # Track which version directories we've seen
+        seen_versions = set()
+        
         if self._dir_artifact.attachments:
-            # Check for root v0 file (name.md) in top-level directory
-            v0_filename = f"{name}{suffix}"
-            v0_path_prefix = f"{name}/"
             for attachment in self._dir_artifact.attachments:
-                if (attachment.filename == v0_filename and 
-                    attachment.path.startswith(v0_path_prefix) and 
-                    session_id not in attachment.path):
-                    versions.append("v0")
-                    break
-
-            # Check for versioned files (name_vN.md) in session directory
-            pattern = re.compile(rf"^{re.escape(name)}_v(\d+){re.escape(suffix)}$")
-            for attachment in self._dir_artifact.attachments:
-                match = pattern.match(attachment.filename)
-                if match and session_id in attachment.path:
-                    version = f"v{match.group(1)}"
-                    if version not in versions:  # Avoid duplicates
-                        versions.append(version)
+                if attachment.filename.endswith(suffix):
+                    version = None
+                    # Check if this file is in a versioned directory: {name}_v{N}/ or {name}/ (v0)
+                    match = version_dir_pattern.match(attachment.path)
+                    if match:
+                        version_num = match.group(1)
+                        if version_num is None:
+                            # No _v suffix, treat as v0
+                            version = "v0"
+                        else:
+                            version = f"v{version_num}"
+                    
+                    # Check if this directory contains a matching file
+                    if version and version not in seen_versions:
+                        # Extract the base name from filename (remove suffix)
+                        file_base_name = attachment.filename[:-len(suffix)] if attachment.filename.endswith(suffix) else attachment.filename
+                        # Use _matches_file to check if file matches (allows content-based matching in subclasses)
+                        # This checks both filename pattern and optionally content (for Python files with @agent decorator)
+                        if self._matches_file(attachment, file_base_name, suffix, base_path):
+                            versions.append(version)
+                            seen_versions.add(version)
 
         # Sort versions by version number
         versions.sort(key=self._extract_version_number)
         return versions
 
-    async def _save_file_by_suffix(
+    async def apply_patch(
         self, 
-        content: str, 
+        patch_content: str, 
         name: str, 
         suffix: str, 
-        session_id: str = None,
         mime_type: str = None
     ) -> bool:
-        """
-        Save file to storage by suffix.
-        
-        First save (v0): save to top-level directory {name}/{name}{suffix}
-        Subsequent saves (v1+): save to session directory {name}/{session_id}/{name}_vN{suffix}
-        
-        Args:
-            content: File content
-            name: Resource name
-            suffix: File suffix (e.g., ".md")
-            session_id: Optional session ID
-            mime_type: MIME type, if None will be auto-detected based on suffix
-        
-        Returns:
-            True if save successful, False otherwise
-        """
+        """Apply patch to create a new version directory."""
         try:
+            import shutil
+            from pathlib import Path
             from aworld.output.artifact import ArtifactAttachment
 
-            session_id = self._get_session_id(session_id)
+            base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
 
             # Generate new version number
-            new_version = await self.generate_new_version(name=name, session_id=session_id)
-
-            # Create filename and path based on version
+            new_version = await self.generate_new_version(name=name)
+            
+            # Get source and target directory paths
+            # v0: {name}/, v1+: {name}_v{N}/
             if new_version == "v0":
-                # First save: save to top-level directory
-                filename = f"{name}{suffix}"
-                file_path = f"{name}/{filename}"
+                target_dir = Path(base_path) / name
             else:
-                # Subsequent saves: save to session directory
-                filename = f"{name}_{new_version}{suffix}"
-                file_path = f"{name}/{session_id}/{filename}"
+                version_num = self._extract_version_number(new_version)
+                target_dir = Path(base_path) / f"{name}_v{version_num}"
+            
+            # If not v0, copy from latest version
+            if new_version != "v0":
+                # Get latest version (which should be the one before new_version)
+                versions = await self.list_versions(name)
+                if versions and len(versions) > 0:
+                    # Get the latest version (last in sorted list)
+                    latest_version = versions[-1]
+                    if latest_version == "v0":
+                        source_dir = Path(base_path) / name
+                    else:
+                        latest_version_num = self._extract_version_number(latest_version)
+                        source_dir = Path(base_path) / f"{name}_v{latest_version_num}"
+                    
+                    # Copy directory
+                    if source_dir.exists():
+                        if target_dir.exists():
+                            shutil.rmtree(target_dir)
+                        shutil.copytree(source_dir, target_dir)
+                        logger.info(f"Copied directory from {source_dir.name} to {target_dir.name}")
+                    else:
+                        # Source directory doesn't exist, create new directory
+                        target_dir.mkdir(parents=True, exist_ok=True)
+                else:
+                    # No versions exist, create new directory
+                    target_dir.mkdir(parents=True, exist_ok=True)
+            else:
+                # v0: create new directory (without version suffix)
+                target_dir.mkdir(parents=True, exist_ok=True)
 
-            # Auto-detect mime type if not provided
+            # Apply patch: update the file with specified suffix
+            filename = f"{name}{suffix}"
+            file_path = target_dir / filename
+            
+            # Write the patch content (or new content) to the file
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(patch_content)
+            
+            logger.info(f"Applied patch to {file_path} (version: {new_version})")
+            
+            # Also add to DirArtifact for consistency
+            if new_version == "v0":
+                relative_path = f"{name}/{filename}"
+            else:
+                version_num = self._extract_version_number(new_version)
+                relative_path = f"{name}_v{version_num}/{filename}"
             if mime_type is None:
                 if suffix == ".md":
                     mime_type = 'text/markdown'
@@ -246,74 +294,57 @@ class VersionControlRegistry(abc.ABC):
                     mime_type = 'text/yaml'
                 else:
                     mime_type = 'text/plain'
-
+            
             attachment = ArtifactAttachment(
                 filename=filename,
-                content=content,
+                content=patch_content,
                 mime_type=mime_type,
-                path=file_path
+                path=relative_path
             )
-
-            success, saved_path, _ = await self._dir_artifact.add_file(attachment)
-
-            if success:
-                logger.info(f"Saved file: {saved_path} (version: {new_version})")
-                # Clear cache to force reload
-                if session_id in self._version_cache and name in self._version_cache[session_id]:
-                    del self._version_cache[session_id][name]
-                return True
-            else:
-                logger.error(f"Failed to save file: {name}")
-                return False
+            
+            # Reload to include the new file
+            self._dir_artifact.reload_working_files()
+            
+            return True
 
         except Exception as e:
-            logger.error(f"Failed to save file: {e}")
+            logger.error(f"Failed to apply patch: {e}")
             return False
 
-    async def _load_content(self, name: str, version: str, session_id: str) -> Optional[str]:
-        """
-        Load resource content from storage (default uses .md suffix).
-        
-        Args:
-            name: Resource name
-            version: Version number
-            session_id: Session ID
-        
-        Returns:
-            Resource content string, or None if not found
-        """
-        return await self._load_content_by_suffix(name=name, suffix=".md", version=version, session_id=session_id)
+    async def _save_file_by_suffix(
+        self, 
+        content: str, 
+        name: str, 
+        suffix: str, 
+        mime_type: str = None
+    ) -> bool:
+        """Save file to storage by suffix."""
+        return await self.apply_patch(
+            patch_content=content,
+            name=name,
+            suffix=suffix,
+            mime_type=mime_type
+        )
 
-    async def _load_content_by_suffix(self, name: str, suffix: str, version: str, session_id: str) -> Optional[str]:
-        """
-        Load resource content from storage by suffix.
-        
-        Loading rules:
-        - v0 version: from top-level directory {name}/{name}{suffix}
-        - v1+ versions: from session directory {name}/{session_id}/{name}_vN{suffix}
-        
-        Args:
-            name: Resource name
-            suffix: File suffix (e.g., ".md" or ".yaml")
-            version: Version number
-            session_id: Session ID
-        
-        Returns:
-            Resource content string, or None if not found
-        """
+    async def _load_content(self, name: str, version: str) -> Optional[str]:
+        """Load resource content from storage (default uses .md suffix)."""
+        return await self._load_content_by_suffix(name=name, suffix=".md", version=version)
+
+    async def _load_content_by_suffix(self, name: str, suffix: str, version: str) -> Optional[str]:
+        """Load resource content from storage by suffix."""
         try:
-            # Build filename and relative path
+            # Build filename and relative path for directory-based structure
+            filename = f"{name}{suffix}"
             if version == "v0":
-                filename = f"{name}{suffix}"
                 relative_path = f"{name}/{filename}"
             else:
-                filename = f"{name}_{version}{suffix}"
-                relative_path = f"{name}/{session_id}/{filename}"
+                version_num = self._extract_version_number(version)
+                relative_path = f"{name}_v{version_num}/{filename}"
             
             # For .md files, use DirArtifact
             if suffix == ".md":
                 self._dir_artifact.reload_working_files()
-                attachment = self._dir_artifact.get_file(filename)
+                attachment = self._dir_artifact.get_file(relative_path)
                 if not attachment:
                     return None
                 
@@ -323,7 +354,7 @@ class VersionControlRegistry(abc.ABC):
                 return content
             else:
                 # For other suffixes (e.g., .yaml), read directly from filesystem
-                base_path = os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry')
+                base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
                 path = os.path.join(base_path, relative_path)
                 
                 if not os.path.exists(path):
@@ -343,55 +374,21 @@ class VersionControlRegistry(abc.ABC):
             return int(match.group(1))
         return 0
 
-    async def _list_versions_with_cache(self, name: str, session_id: str = None) -> List[str]:
-        """List all versions of a resource with caching."""
-        session_id = self._get_session_id(session_id)
-
-        # Check cache
-        if session_id in self._version_cache:
-            if name in self._version_cache[session_id]:
-                versions = self._version_cache[session_id][name]
-                return versions if versions else ["v0"]
-
-        # Load from storage - call the abstract method
-        versions = await self.list_versions(name, session_id)
-
-        # Default to v0 if no versions found
-        if not versions:
-            versions = []
-
-        # Update cache
-        if session_id not in self._version_cache:
-            self._version_cache[session_id] = {}
-        self._version_cache[session_id][name] = versions
-
-        return versions
 
     @abc.abstractmethod
-    async def list_versions(self, name: str, session_id: str) -> List[str]:
-        """
-        List all versions from storage (implemented by subclasses).
-        
-        Args:
-            name: Resource name
-            session_id: Session ID
-        
-        Returns:
-            List of versions
-        """
+    async def list_versions(self, name: str) -> List[str]:
+        """List all versions from storage (implemented by subclasses)."""
         pass
 
-    async def get_latest_version(self, name: str, session_id: str = None) -> Optional[str]:
+    async def get_latest_version(self, name: str) -> Optional[str]:
         """Get the latest version string for a resource."""
-        versions = await self._list_versions_with_cache(name, session_id)
+        versions = await self.list_versions(name)
         return versions[-1] if versions else None
 
-    async def generate_new_version(self, name: str, session_id: str = None) -> str:
+    async def generate_new_version(self, name: str) -> str:
         """Generate a new version number by incrementing the latest existing version."""
-        session_id = self._get_session_id(session_id)
-
         # Get latest version number and increment by 1
-        versions = await self._list_versions_with_cache(name, session_id)
+        versions = await self.list_versions(name)
         if versions:
             latest_version = versions[-1]
             latest_version_num = self._extract_version_number(latest_version)
@@ -403,23 +400,10 @@ class VersionControlRegistry(abc.ABC):
 
         return new_version
 
-    async def compare_versions(self, name: str, session_id: str = None, 
-                               format: str = "unified") -> Optional[str]:
-        """
-        Compare the latest version with the previous version of a resource's source content.
-        
-        Args:
-            name: The name of the resource to compare
-            session_id: Optional session ID
-            format: Diff format, either "unified" (default, like git diff) or "context"
-        
-        Returns:
-            A string containing the diff, or None if there are less than 2 versions
-        """
-        session_id = self._get_session_id(session_id)
-        
+    async def compare_versions(self, name: str, format: str = "unified") -> Optional[str]:
+        """Compare the latest version with the previous version of a resource's source content."""
         # Get all versions
-        versions = await self._list_versions_with_cache(name, session_id)
+        versions = await self.list_versions(name)
         
         if len(versions) < 2:
             logger.debug(f"Resource '{name}' has less than 2 versions, cannot compare")
@@ -430,8 +414,8 @@ class VersionControlRegistry(abc.ABC):
         previous_version = versions[-2]
         
         # Get source content for both versions
-        latest_content = await self.load_as_source(name, session_id, latest_version)
-        previous_content = await self.load_as_source(name, session_id, previous_version)
+        latest_content = await self.load_as_source(name, latest_version)
+        previous_content = await self.load_as_source(name, previous_version)
         
         # Convert bytes to string if needed
         if isinstance(latest_content, bytes):
@@ -463,52 +447,34 @@ class VersionControlRegistry(abc.ABC):
         dir_artifact: DirArtifact,
         name: str,
         suffix: str,
-        session_id: str = None,
         version: str = None
     ) -> Optional[ArtifactAttachment]:
-        """
-        Find resource in DirArtifact.
-        If version is None, automatically find the latest version.
-        
-        Scanning rules:
-        - v0 version: in top-level directory {name}/{name}{suffix}
-        - v1+ versions: in session directory {name}/{session_id}/{name}_vN{suffix}
-        
-        Args:
-            dir_artifact: Directory artifact object
-            name: Resource name
-            suffix: File suffix
-            session_id: Session ID
-            version: Version number
-            
-        Returns:
-            ArtifactAttachment object, or None if not found
-        """
+        """Find resource in DirArtifact."""
         dir_artifact.reload_working_files()
         
-        # 1. Find latest version
+        # 1. Find latest version if not specified
         if not version:
             versions = []
+            # Pattern to match version directories: {name}_v{N}/ or {name}/ (v0)
+            version_dir_pattern = re.compile(rf"^{re.escape(name)}(?:_v(\d+))?/")
+            filename = f"{name}{suffix}"
+            
             if dir_artifact.attachments:
-                # Find v0 (in top-level directory)
-                v0_filename = f"{name}{suffix}"
-                v0_path_prefix = f"{name}/"
+                seen_versions = set()
                 for attachment in dir_artifact.attachments:
-                    if (attachment.filename == v0_filename and 
-                        attachment.path.startswith(v0_path_prefix) and 
-                        session_id not in attachment.path):
-                        versions.append("v0")
-                        break
-                
-                # Find versioned files (in session directory)
-                pattern = re.compile(rf"^{re.escape(name)}_v(\d+){re.escape(suffix)}$")
-                for attachment in dir_artifact.attachments:
-                    match = pattern.match(attachment.filename)
-                    if match and session_id in attachment.path:
-                        version = f"v{match.group(1)}"
-                        if version not in versions:  # Avoid duplicates
-                            versions.append(version)
-
+                    if attachment.filename == filename:
+                        # Check if this file is in a versioned directory: {name}_v{N}/ or {name}/ (v0)
+                        match = version_dir_pattern.match(attachment.path)
+                        if match:
+                            version_num = match.group(1)
+                            if version_num is None:
+                                # No _v suffix, treat as v0
+                                version_str = "v0"
+                            else:
+                                version_str = f"v{version_num}"
+                            if version_str not in seen_versions:
+                                versions.append(version_str)
+                                seen_versions.add(version_str)
             
             if not versions:
                 return None
@@ -521,72 +487,32 @@ class VersionControlRegistry(abc.ABC):
             versions.sort(key=extract_version_number)
             version = versions[-1]
             
-        # 2. Get file
-        filename = f"{name}{suffix}" if version == "v0" else f"{name}_{version}{suffix}"
-        return dir_artifact.get_file(filename)
+        # 2. Get file from version directory
+        filename = f"{name}{suffix}"
+        if version == "v0":
+            path = f"{name}/{filename}"
+        else:
+            version_num = int(re.match(r'v(\d+)', version).group(1)) if re.match(r'v(\d+)', version) else 0
+            path = f"{name}_v{version_num}/{filename}"
+        return dir_artifact.get_file(path)
 
     async def _load_as_source_by_suffix(
         self, 
         name: str, 
         suffix: str, 
-        session_id: str = None, 
         version: str = None
     ) -> Optional[str]:
-        """
-        Load resource as source content by suffix.
-        
-        Args:
-            name: Resource name
-            suffix: File suffix (e.g., ".md" or ".yaml")
-            session_id: Optional session ID
-            version: Optional version number, if None uses latest version
-        
-        Returns:
-            Resource content string, or None if not found
-        """
-        session_id = self._get_session_id(session_id)
-
-        # Check md cache first
-        if session_id in self._md_cache:
-            if name in self._md_cache[session_id]:
-                if version:
-                    if version in self._md_cache[session_id][name]:
-                        return self._md_cache[session_id][name][version]
-                else:
-                    # If version not specified, we can still parse latest version from Artifact, or rely on cache?
-                    # For simplicity, if cache has data, we can assume it's the latest?
-                    # But for correctness, we should still go through resolve process, or list versions first
-                    pass 
-
+        """Load resource as source content by suffix."""
         # For .md files, use resolve_resource_from_artifact
         if suffix == ".md":
             attachment = await self.resolve_resource_from_artifact(
-                self._dir_artifact, name, suffix, session_id, version
+                self._dir_artifact, name, suffix, version
             )
             
             if attachment:
                 content = attachment.content
                 if isinstance(content, bytes):
                     content = content.decode('utf-8')
-                
-                # Try to parse version number to update cache
-                resolved_version = version
-                if not resolved_version:
-                    # Infer version from filename
-                    if attachment.filename == f"{name}{suffix}":
-                        resolved_version = "v0"
-                    else:
-                        match = re.match(rf"^{re.escape(name)}_v(\d+){re.escape(suffix)}$", attachment.filename)
-                        if match:
-                            resolved_version = f"v{match.group(1)}"
-                
-                if resolved_version:
-                    if session_id not in self._md_cache:
-                        self._md_cache[session_id] = {}
-                    if name not in self._md_cache[session_id]:
-                        self._md_cache[session_id][name] = {}
-                    self._md_cache[session_id][name][resolved_version] = content
-                
                 return content
             return None
 
@@ -594,35 +520,17 @@ class VersionControlRegistry(abc.ABC):
         # Or directly use _load_content_by_suffix, as it also handles file reading
         
         if not version:
-            versions = await self.list_versions(name=name, session_id=session_id)
+            versions = await self.list_versions(name=name)
             if not versions:
                 return None
             version = versions[-1]
 
-        # Load content and cache it
-        content = await self._load_content_by_suffix(name=name, suffix=suffix, version=version, session_id=session_id)
-        
-        if content is not None:
-            # Cache the content
-            if session_id not in self._md_cache:
-                self._md_cache[session_id] = {}
-            if name not in self._md_cache[session_id]:
-                self._md_cache[session_id][name] = {}
-            self._md_cache[session_id][name][version] = content
+        # Load content
+        content = await self._load_content_by_suffix(name=name, suffix=suffix, version=version)
 
         return content
 
-    async def load_as_source(self, name: str, session_id: str = None, version: str = None) -> Optional[str]:
-        """
-        Load resource as source content (default implementation, subclasses should override to specify suffix).
-        
-        Args:
-            name: Resource name
-            session_id: Optional session ID
-            version: Optional version number, if None uses latest version
-        
-        Returns:
-            Resource content string, or None if not found
-        """
+    async def load_as_source(self, name: str, version: str = None) -> Optional[str]:
+        """Load resource as source content (default implementation, subclasses should override to specify suffix)."""
         # Default implementation, subclasses should override this method and call _load_as_source_by_suffix with specified suffix
         raise NotImplementedError("Subclasses must implement load_as_source")

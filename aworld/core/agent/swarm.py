@@ -422,6 +422,16 @@ class TeamSwarm(Swarm):
                          builder_cls=builder_cls,
                          event_driven=event_driven, **kwargs)
 
+    def add_agents(self, agents: List[BaseAgent]):
+        super().add_agents(agents)
+        for agent in agents:
+            self.agent_graph.add_node(agent)
+            root_agent = self.agent_graph.root_agent
+            self.agent_graph.add_edge(root_agent, agent)
+            root_agent.handoffs.append(agent.id())
+            self.topology.append(agent)
+            if isinstance(agent, BaseAgent) and agent.id() in agent.handoffs:
+                agent.handoffs.remove(agent.id())
 
 # Alias for TeamSwarm
 Team = TeamSwarm

@@ -3,22 +3,29 @@
 
 import abc
 import os
+import traceback
 import uuid
 from typing import Any, Dict, Generic, List, Tuple, TypeVar, Union
 
 from pydantic import BaseModel
 
 from aworld.config.conf import AgentConfig, ConfigDict, load_config, TaskRunMode
+from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.common import ActionModel
+from aworld.core.context.base import Context
+from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events import eventbus
 from aworld.core.event.base import Constants, Message, AgentMessage
 from aworld.core.factory import Factory
 from aworld.events.util import send_message
 from aworld.logs.util import logger
+from aworld.models.llm import get_llm_model, ModelResponseParser
+from aworld.models.utils import tool_desc_transform, agent_desc_transform
 from aworld.output.base import StepOutput
 from aworld.sandbox.base import Sandbox
 from aworld.utils.common import convert_to_snake, replace_env_variables, sync_exec
-from aworld.mcp_client.utils import replace_mcp_servers_variables, extract_mcp_servers_from_config
+from aworld.mcp_client.utils import replace_mcp_servers_variables, extract_mcp_servers_from_config, process_mcp_tools, \
+    mcp_tool_desc_transform
 
 INPUT = TypeVar("INPUT")
 OUTPUT = TypeVar("OUTPUT")
@@ -164,6 +171,74 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             )
         self.loop_step = 0
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
+
+        # 设置默认的llm_response_parser，这是必需的
+        if self.conf and self.conf.llm_config and not hasattr(self.conf.llm_config, 'llm_response_parser'):
+            self.conf.llm_response_parser = ModelResponseParser()
+        elif self.conf and self.conf.llm_config and getattr(self.conf.llm_config, 'llm_response_parser', None) is None:
+            self.conf.llm_response_parser = ModelResponseParser()
+
+
+    async def async_desc_transform(self, context: Context) -> None:
+        """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
+
+        # Stateless tool
+        try:
+            tool_names = self.tool_names or []
+            if getattr(context.get_agent_context_config(self.id()), "automated_reasoning_orchestrator", None):
+                from aworld.core.context.amni.tool.context_planning_tool import CONTEXT_PLANNING
+                if CONTEXT_PLANNING not in tool_names:
+                    tool_names.extend([CONTEXT_PLANNING])
+
+            if getattr(context.get_agent_context_config(self.id()), "automated_cognitive_ingestion", None):
+                from aworld.core.context.amni.tool.context_knowledge_tool import CONTEXT_KNOWLEDGE
+                if CONTEXT_KNOWLEDGE not in tool_names:
+                    tool_names.extend([CONTEXT_KNOWLEDGE])
+            self.tools = tool_desc_transform(get_tool_desc(),
+                                             tools=tool_names,
+                                             black_tool_actions=self.black_tool_actions)
+        except:
+            logger.warning(f"{self.id()} get tools desc fail, no tool to use. error: {traceback.format_exc()}")
+        # Agents as tool
+        try:
+            self.tools.extend(agent_desc_transform(get_agent_desc(),
+                                                   agents=self.handoffs if self.handoffs else []))
+        except:
+            logger.warning(f"{self.id()} get agent desc fail, no agent as tool to use. error: {traceback.format_exc()}")
+        # MCP servers are tools
+        try:
+            if self.sandbox:
+                mcp_tools = await self.sandbox.mcpservers.list_tools(context)
+                processed_tools, tool_mapping = await process_mcp_tools(mcp_tools)
+                self.sandbox.mcpservers.map_tool_list = tool_mapping
+                self.tools.extend(processed_tools)
+                self.tool_mapping = tool_mapping
+            else:
+                self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
+        except:
+            logger.warning(f"{self.id()} get MCP desc fail, no MCP to use. error: {traceback.format_exc()}")
+
+        await self.process_by_ptc(self.tools, context)
+
+    async def process_by_ptc(self, tools, context: Context):
+        if not hasattr(self, "ptc_tools") or not self.ptc_tools:
+            return
+        ptc_tools = self.ptc_tools
+
+        for tool in tools:
+            if tool["function"]["name"] in ptc_tools:
+                tool["function"]["description"] = "[allow_code_execution]" + tool["function"]["description"]
+                logger.debug(f"ptc augmented tool: {tool['function']['description']}")
+
+    @property
+    def llm(self):
+        # lazy
+        if self._llm is None:
+            llm_config = self.conf.llm_config or None
+            conf = llm_config if llm_config and (
+                    llm_config.llm_provider or llm_config.llm_base_url or llm_config.llm_api_key or llm_config.llm_model_name) else self.conf
+            self._llm = get_llm_model(conf)
+        return self._llm
 
     def _init_id_name(self, name: str, agent_id: str = None):
         self._name = name if name else convert_to_snake(self.__class__.__name__)

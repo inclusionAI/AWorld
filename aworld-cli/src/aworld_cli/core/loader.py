@@ -4,6 +4,7 @@ Agent loader for scanning and loading agents from local directories.
 import os
 import sys
 import importlib.util
+import traceback
 from pathlib import Path
 from typing import Union, List, Optional
 
@@ -71,15 +72,20 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
         try:
             LocalAgentRegistry.register(agent)
             markdown_loaded_count += 1
-            console.print(f"[dim]✅ Loaded markdown agent: {agent.name}[/dim]")
+            # Get file path from metadata if available
+            file_path = agent.metadata.get("file_path", "unknown") if agent.metadata else "unknown"
+            console.print(f"[dim]✅ Loaded markdown agent: {agent.name} from {file_path}[/dim]")
         except Exception as e:
             markdown_failed_count += 1
             console.print(f"[dim]❌ Failed to register markdown agent {agent.name}: {e}[/dim]")
     
-    # Find all Python files recursively, excluding __init__.py and private modules
+    # Find all Python files recursively, excluding __init__.py, private modules, and plugin_manager
     all_python_files = [
         f for f in agents_dir.rglob("*.py")
-        if f.name != "__init__.py" and not f.name.startswith("_")
+        if f.name != "__init__.py" 
+        and not f.name.startswith("_")
+        and "plugin_manager" not in str(f.relative_to(agents_dir))
+        and f.name != "plugin_manager.py"
     ]
     
     # Filter files that contain @agent decorator
@@ -133,45 +139,49 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
                 except ValueError:
                     # If file is not relative to project root, use absolute path
                     rel_path = py_file
-                
+
                 # Convert path to module name (e.g., agents/my_agent.py -> agents.my_agent)
                 module_parts = list(rel_path.parts[:-1]) + [rel_path.stem]
                 module_name = '.'.join(module_parts)
-                
+
                 # Skip if module name starts with a number (invalid Python module name)
                 if module_name and module_name[0].isdigit():
                     console.print(f"[dim]⚠️ Skipping invalid module name: {module_name}[/dim]")
                     continue
-                
+
                 # Use importlib to load the module
                 spec = importlib.util.spec_from_file_location(module_name, py_file)
                 if spec is None or spec.loader is None:
-                    console.print(f"[dim]⚠️ Could not create spec for {py_file}[/dim]")
+                    file_path = str(py_file.resolve())
+                    console.print(f"[dim]⚠️ Could not create spec for {file_path}[/dim]")
                     failed_count += 1
                     failed_files.append((str(py_file), "Could not create module spec"))
                     continue
-                
+
                 module = importlib.util.module_from_spec(spec)
-                
+
                 # Execute the module to trigger decorator registration
                 # Note: We don't use Status here because the module execution might create its own Status
                 # which would conflict with "Only one live display may be active at once"
                 try:
                     spec.loader.exec_module(module)
                     loaded_count += 1
-                    console.print(f"[dim]✅ Loaded agent from: {py_file.name}[/dim]")
+                    file_path = str(py_file.resolve())
+                    console.print(f"[dim]✅ Loaded agent from: {file_path}[/dim]")
                 except Exception as import_error:
                     failed_count += 1
                     error_msg = str(import_error)
                     failed_files.append((str(py_file), error_msg))
-                    console.print(f"[dim]❌ Failed to load {py_file.name}: {error_msg}[/dim]")
+                    file_path = str(py_file.resolve())
+                    console.print(f"[dim]❌ Failed to load {file_path}: {error_msg}[/dim]")
                     continue
-                    
+
             except Exception as e:
                 failed_count += 1
                 error_msg = str(e)
                 failed_files.append((str(py_file), error_msg))
-                console.print(f"[dim]❌ Error processing {py_file}: {error_msg}[/dim]")
+                file_path = str(py_file.resolve())
+                console.print(f"[dim]❌ Error processing {file_path}: {error_msg}[/dim]")
                 continue
     
     # Summary
@@ -179,7 +189,7 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
     total_loaded = loaded_count + markdown_loaded_count
     total_failed = failed_count + markdown_failed_count
     console.print(f"[dim]📊 Summary: Loaded {total_loaded} file(s) ({loaded_count} Python, {markdown_loaded_count} markdown), {total_failed} failed, {total_registered} agent(s) registered[/dim]")
-    
+
     # Return loaded Python files for debugging
     return python_files
     
@@ -212,20 +222,21 @@ def init_agent_file(agent_file: Union[str, Path]) -> Optional[str]:
     agent_file = Path(agent_file) if isinstance(agent_file, str) else agent_file
     
     from .._globals import console
-    
+
     if not agent_file.exists():
         console.print(f"[yellow]⚠️ Agent file not found: {agent_file}[/yellow]")
         return None
     
     console.print("[dim]📂 Loading agent file...[/dim]")
-    
+
     if agent_file.suffix == '.md':
         # Load markdown agent
         try:
             agent = parse_markdown_agent(agent_file)
             if agent:
                 LocalAgentRegistry.register(agent)
-                console.print(f"[dim]✅ Loaded markdown agent: {agent.name}[/dim]")
+                file_path = str(agent_file.resolve())
+                console.print(f"[dim]✅ Loaded markdown agent: {agent.name} from {file_path}[/dim]")
                 return agent.name
             else:
                 console.print(f"[yellow]⚠️ Failed to parse markdown agent from: {agent_file}[/yellow]")
@@ -262,7 +273,8 @@ def init_agent_file(agent_file: Union[str, Path]) -> Optional[str]:
             # Execute the module to trigger decorator registration
             # Note: We don't use Status here because the module execution might create its own Status
             spec.loader.exec_module(module)
-            console.print(f"[dim]✅ Loaded agent from: {agent_file.name}[/dim]")
+            file_path = str(agent_file.resolve())
+            console.print(f"[dim]✅ Loaded agent from: {file_path}[/dim]")
             
             # Try to get the agent name from registry (get the most recently registered agent)
             # This works because the decorator registers the agent when the module is executed
@@ -272,7 +284,8 @@ def init_agent_file(agent_file: Union[str, Path]) -> Optional[str]:
                 return agents[-1].name
             return None
         except Exception as e:
-            console.print(f"[red]❌ Failed to load Python agent from {agent_file}: {e}[/red]")
+            file_path = str(agent_file.resolve())
+            console.print(f"[red]❌ Failed to load Python agent from {file_path}: {e}[/red]")
             return None
     else:
         console.print(f"[yellow]⚠️ Unsupported file type: {agent_file.suffix}. Only .py and .md files are supported.[/yellow]")
