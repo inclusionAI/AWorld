@@ -139,7 +139,7 @@ class AgentDslVersionControlRegistry(VersionControlRegistry):
             version = versions[-1]
 
         # Get base_path and storage configuration
-        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
         storage_type = self._get_storage_type()
         
         # Prepare OSS configuration (if needed)
@@ -407,7 +407,7 @@ class AgentCodeVersionControlRegistry(VersionControlRegistry):
             version = versions[-1]
 
         # Get base_path and storage configuration
-        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
         storage_type = self._get_storage_type()
         
         # Prepare OSS configuration (if needed)

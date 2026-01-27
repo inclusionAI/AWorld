@@ -885,7 +885,7 @@ class AWorldCLI:
                         built_in_agents = []
                         user_agents = []
                         base_path = os.path.expanduser(
-                            os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+                            os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
 
                         # Load Built-in agents from plugins using PluginLoader
                         try:

@@ -145,7 +145,7 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
                 return content
             else:
                 # For other suffixes (e.g., .yaml), read directly from filesystem
-                base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+                base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
                 path = os.path.join(base_path, relative_path)
                 
                 if not os.path.exists(path):
@@ -493,7 +493,7 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
     async def load_swarm_and_agents_as_source(self, name: str, version: str = None) -> Tuple[Optional[str], Dict[str, str]]:
         """Load swarm configuration as source content (YAML format)."""
         # Get base_path and storage configuration
-        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
         storage_type = self._get_storage_type()
         
         # Prepare OSS configuration (if needed)
@@ -510,7 +510,7 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
     async def load_swarm_and_agents(self, team_name: str) -> Tuple[Swarm, Dict[str, Agent]]:
         """Load swarm configuration from YAML file."""
         # Get base_path and storage configuration
-        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
         storage_type = self._get_storage_type()
         
         # Prepare OSS configuration (if needed)
