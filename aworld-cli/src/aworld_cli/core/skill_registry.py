@@ -131,6 +131,19 @@ def _register_from_env(registry: SkillRegistry) -> None:
             except Exception as e:
                 print(f"⚠️ Failed to register skill source from env '{source}': {e}")
                 logger.warning(f"⚠️ Failed to register skill source from env '{source}': {e}")
+    else:
+        # Default to ~/.aworld/skills if ENV_SKILLS_PATH is not set
+        default_skills_path = Path.home() / ".aworld" / "skills"
+        try:
+            # Create directory if it doesn't exist
+            default_skills_path.mkdir(parents=True, exist_ok=True)
+            # Register the default directory
+            count = registry.register_source(str(default_skills_path), source_name=str(default_skills_path))
+            if count > 0:
+                print(f"📚 Registered default skill source: {default_skills_path} ({count} skills)")
+            logger.info(f"📚 Registered default skill source: {default_skills_path} ({count} skills)")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register default skill source '{default_skills_path}': {e}")
     
     # Register from SKILLS_DIR (legacy, single directory for backward compatibility)
     skills_dir_env = os.getenv(ENV_SKILLS_DIR)

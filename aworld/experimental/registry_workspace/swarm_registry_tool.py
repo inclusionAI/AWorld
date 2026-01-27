@@ -107,12 +107,11 @@ class ContextSwarmRegistryTool(AsyncTool):
             if not isinstance(message.context, AmniContext):
                 raise ValueError("context is not AmniContext")
 
-            # Get swarm registry service from context
-            from aworld.experimental.registry_workspace.swarm_version_control_registry import SwarmVersionControlRegistry
+            # Get swarm registry service from global instance
+            from aworld.experimental.registry_workspace.swarm_version_control_registry import _default_swarm_registry
 
-            def get_swarm_registry_service() -> SwarmVersionControlRegistry:
-                context = message.context._context if hasattr(message.context, '_context') else message.context
-                return SwarmVersionControlRegistry(context)
+            def get_swarm_registry_service():
+                return _default_swarm_registry
 
             for action in actions:
                 logger.info(f"ContextSwarmRegistryTool|do_step: {action}")

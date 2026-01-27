@@ -492,8 +492,6 @@ class ApplicationContext(AmniContext):
         self._memory_service = None
         self._prompt_service = None
         self._freedom_space_service = None
-        self._agent_registry_service = None
-        self._swarm_registry_service = None
         self._traj_service = None
 
     def get_config(self) -> AmniContextConfig:
@@ -554,22 +552,6 @@ class ApplicationContext(AmniContext):
             from .services import FreedomSpaceService
             self._freedom_space_service = FreedomSpaceService(self)
         return self._freedom_space_service
-
-    @property
-    def agent_registry_service(self):
-        """Get AgentVersionControlRegistry instance (lazy initialization)."""
-        if self._agent_registry_service is None:
-            from .cvcs import AgentVersionControlRegistry
-            self._agent_registry_service = AgentVersionControlRegistry(self)
-        return self._agent_registry_service
-
-    @property
-    def swarm_registry_service(self):
-        """Get SwarmVersionControlRegistry instance (lazy initialization)."""
-        if self._swarm_registry_service is None:
-            from .cvcs import SwarmVersionControlRegistry
-            self._swarm_registry_service = SwarmVersionControlRegistry(self)
-        return self._swarm_registry_service
 
     # @property
     # def traj_service(self) -> TrajectoryService:

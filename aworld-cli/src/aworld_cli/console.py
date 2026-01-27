@@ -1,30 +1,29 @@
 import asyncio
 import sys
-from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import NestedCompleter
 from prompt_toolkit.formatted_text import HTML
 from rich import box
+from rich.color import Color
 from rich.panel import Panel
-from rich.prompt import Prompt, Confirm
+from rich.prompt import Prompt
 from rich.table import Table
+from rich.text import Text
 
-from .models import AgentInfo
 from ._globals import console
 from .core.skill_registry import get_skill_registry
-        
-# ... existing imports ...
+from .models import AgentInfo
+from .user_input import UserInputHandler
 
-from rich.text import Text
-from rich.color import Color
 
 # ... existing imports ...
 
 class AWorldCLI:
     def __init__(self):
         self.console = console
+        self.user_input = UserInputHandler(console)
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -86,7 +85,7 @@ class AWorldCLI:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
             return
             
-        table = Table(title="Available Agents", box=box.ROUNDED, width=None)
+        table = Table(title="Available Agents", box=box.ROUNDED, width=180)
         table.add_column("Name", style="magenta")
         table.add_column("Description", style="green")
         table.add_column("Address", style="blue")
@@ -96,7 +95,7 @@ class AWorldCLI:
             # Always use agent's own source_location if it exists and is valid
             # Fallback to provided parameters only if agent doesn't have this attribute
             agent_source_location = getattr(agent, "source_location", None)
-            
+
             # Use agent's source_location if it exists and is valid, otherwise use fallback
             if agent_source_location and agent_source_location.strip() != "":
                 # Use agent's own source_location
@@ -125,12 +124,12 @@ class AWorldCLI:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
             return None
         
-        table = Table(title="Available Agents", box=box.ROUNDED, width=None)
+        table = Table(title="Available Agents", box=box.ROUNDED, width=180)
         table.add_column("No.", style="cyan", justify="right")
         table.add_column("Name", style="magenta")
         table.add_column("Description", style="green")
         table.add_column("SourceType", style="cyan")
-        table.add_column("Address", style="blue")
+        table.add_column("Address", style="blue", overflow="wrap")
 
         for idx, agent in enumerate(agents, 1):
             desc = getattr(agent, "desc", "No description") or "No description"
@@ -170,12 +169,12 @@ class AWorldCLI:
                 # Fallback for non-terminal environments
                 self.console.print("Select an agent number [default: 1]: ", end="")
                 choice = input().strip() or "1"
-            
+
             # Check for exit command
             if choice.lower() in ("exit", "quit", "q"):
                 self.console.print("[yellow]Selection cancelled.[/yellow]")
                 return None
-            
+
             try:
                 idx = int(choice) - 1
                 if 0 <= idx < len(agents):
@@ -193,6 +192,239 @@ class AWorldCLI:
         Use select_agent instead.
         """
         return self.select_agent(teams, source_type, source_location)
+
+    def _visualize_team(self, executor_instance: Any):
+        """Visualize the structure of the current team in a full-width split-screen layout."""
+        from rich.columns import Columns
+        from rich.console import Group
+        from rich.layout import Layout
+        from rich.panel import Panel
+        from rich.align import Align
+        from rich import box
+
+        # 1. Get swarm from executor
+        swarm = getattr(executor_instance, "swarm", None)
+        if not swarm:
+            self.console.print("[yellow]Current agent does not support visualization (not a swarm).[/yellow]")
+            return
+
+        # 2. Get agent graph
+        graph = getattr(swarm, "agent_graph", None)
+        if not graph:
+            self.console.print("[yellow]No agent graph found in swarm.[/yellow]")
+            return
+
+        # --- Gather Data ---
+
+        # Goal
+        goal_text = "Run task"
+        if hasattr(executor_instance, "task"):
+            task = executor_instance.task
+            if hasattr(task, "input") and task.input:
+                 goal_text = str(task.input)
+            elif hasattr(task, "name") and task.name:
+                 goal_text = task.name
+
+        if goal_text == "Run task" and hasattr(swarm, "task") and swarm.task:
+             goal_text = str(swarm.task)
+
+        if len(goal_text) > 100:
+            goal_text = goal_text[:97] + "..."
+
+        # Active skills
+        active_skill_names = set()
+        if hasattr(executor_instance, 'get_skill_status'):
+             try:
+                 status = executor_instance.get_skill_status()
+                 active_names = status.get('active_names', [])
+                 if active_names:
+                     active_skill_names = set(active_names)
+             except:
+                 pass
+
+        # Build Agent Panels
+        agent_panels = []
+        if graph and graph.agents:
+            for agent in graph.agents.values():
+                agent_skills = set()
+                if hasattr(agent, "skill_configs") and agent.skill_configs:
+                     for skill_name in agent.skill_configs.keys():
+                         agent_skills.add(skill_name)
+
+                agent_tools = set()
+                mcp_tools = set()
+                if hasattr(agent, "tools") and agent.tools:
+                    for tool in agent.tools:
+                        if isinstance(tool, dict) and "function" in tool:
+                            agent_tools.add(tool["function"].get("name", "unknown"))
+                        elif hasattr(tool, "name"):
+                             agent_tools.add(tool.name)
+
+                if hasattr(agent, "mcp_servers") and agent.mcp_servers:
+                    for s in agent.mcp_servers:
+                         mcp_tools.add(s)
+
+                content_parts = []
+                if agent_skills:
+                    skills_list = []
+                    for s in list(agent_skills)[:5]:
+                        if s in active_skill_names:
+                             skills_list.append(f"[bold green]• {s}[/bold green]")
+                        else:
+                             skills_list.append(f"• {s}")
+                    if len(agent_skills) > 5:
+                        skills_list.append(f"[dim]...({len(agent_skills)-5})[/dim]")
+                    content_parts.append(f"[bold cyan]Skills:[/bold cyan]\n" + "\n".join(skills_list))
+
+                tools_list = []
+                built_in_list = ["Read", "Write", "Bash", "Grep"]
+                has_builtins = any(t in agent_tools for t in built_in_list)
+                if has_builtins:
+                     tools_list.append("Built-in")
+                if mcp_tools:
+                     tools_list.append(f"MCP: {len(mcp_tools)}")
+                custom_tools = [t for t in agent_tools if t not in built_in_list]
+                if custom_tools:
+                     tools_list.append(f"Custom: {len(custom_tools)}")
+
+                if tools_list:
+                    content_parts.append(f"[bold yellow]Tools:[/bold yellow]\n" + ", ".join(tools_list))
+
+                agent_content = "\n".join(content_parts) if content_parts else "[dim]-[/dim]"
+
+                agent_panel = Panel(
+                    agent_content,
+                    title=f"[bold]{agent.name()}[/bold]",
+                    box=box.ROUNDED,
+                    border_style="blue",
+                    padding=(0, 1),
+                    expand=True
+                )
+                agent_panels.append(agent_panel)
+
+        # --- Build Layout ---
+
+        layout = Layout()
+        layout.split_row(
+            Layout(name="process", ratio=1),
+            Layout(name="team", ratio=1)
+        )
+
+        # --- Process Column (Left) ---
+
+        goal_panel = Panel(
+            Align.center(f"[bold]GOAL[/bold]\n\"{goal_text}\""),
+            box=box.ROUNDED,
+            style="white",
+            border_style="green"
+        )
+
+        loop_panel = Panel(
+             Align.center("[bold]AGENT LOOP[/bold]\n[dim]observe → think → act → learn → repeat[/dim]"),
+             box=box.ROUNDED,
+             style="white"
+        )
+
+        hooks_panel = Panel(
+             Align.center("[bold]HOOKS[/bold]\n[dim]guard rails, logging, human-in-the-loop[/dim]"),
+             box=box.ROUNDED,
+             style="white"
+        )
+
+        output_panel = Panel(
+             Align.center("[bold]STRUCTURED OUTPUT[/bold]\n[dim]validated JSON matching your schema[/dim]"),
+             box=box.ROUNDED,
+             style="white",
+             border_style="green"
+        )
+
+        arrow_down = Align.center("│\n▼")
+
+        process_content = Group(
+            goal_panel,
+            arrow_down,
+            loop_panel,
+            arrow_down,
+            hooks_panel,
+            arrow_down,
+            output_panel
+        )
+
+        layout["process"].update(Panel(process_content, title="Process Flow", box=box.ROUNDED))
+
+        # --- Team Column (Right) ---
+
+        swarm_label = Align.center("[bold]SWARM[/bold]")
+
+        # Use Columns for agents if there are many, or Stack if few
+        # Using Columns with expand=True to fill width
+        if len(agent_panels) > 1:
+             agents_display = Columns(agent_panels, expand=True, equal=True, width=30)
+        else:
+             agents_display = Group(*[Align.center(p) for p in agent_panels])
+
+        team_content = Group(
+            swarm_label,
+            Align.center("│\n▼"),
+            agents_display
+        )
+
+        layout["team"].update(Panel(team_content, title="Team Structure", box=box.ROUNDED))
+
+        # Print layout full width
+        self.console.print(layout)
+    
+    async def _esc_key_listener(self):
+        """
+        后台监听 Esc 键，用于中断当前执行的任务。
+        这个函数在后台运行，持续监听键盘输入。
+        """
+        try:
+            from prompt_toolkit import Application
+            from prompt_toolkit.key_binding import KeyBindings
+            from prompt_toolkit.layout import Layout
+            from prompt_toolkit.layout.containers import Window
+            from prompt_toolkit.layout.controls import FormattedTextControl
+            from prompt_toolkit.formatted_text import FormattedText
+            
+            # 创建一个隐藏的窗口来捕获 Esc 键
+            kb = KeyBindings()
+            
+            # 存储当前执行任务的引用
+            if not hasattr(self, '_current_executor_task'):
+                self._current_executor_task = None
+            
+            def handle_esc(event):
+                """处理 Esc 键按下"""
+                if hasattr(self, '_current_executor_task') and self._current_executor_task:
+                    if not self._current_executor_task.done():
+                        self._current_executor_task.cancel()
+                        self.console.print("\n[yellow]⚠️ 任务已被 Esc 键中断[/yellow]")
+            
+            kb.add("escape")(handle_esc)
+            
+            # 创建一个不可见的控件
+            control = FormattedTextControl(
+                text=FormattedText([("", "")]),
+                focusable=True
+            )
+            
+            window = Window(content=control, height=0, width=0)
+            layout = Layout(window)
+            
+            # 创建一个隐藏的应用来监听键盘
+            app = Application(
+                layout=layout,
+                key_bindings=kb,
+                full_screen=False,
+                mouse_support=False
+            )
+            
+            # 在后台运行应用
+            await asyncio.to_thread(app.run)
+        except Exception:
+            # 如果 prompt_toolkit 不可用或出错，静默失败
+            pass
 
     async def run_chat_session(self, agent_name: str, executor: Callable[[str], Any], available_agents: List[AgentInfo] = None, executor_instance: Any = None) -> Union[bool, str]:
         """
@@ -268,6 +500,7 @@ class AWorldCLI:
             f"Type '/restore' or '/latest' to restore to the latest session.\n"
             f"Type '/skills' to list all available skills.\n"
             f"Type '/agents' to list all available agents.\n"
+            f"Type '/test' to test user input functionality.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
         self.console.print(Panel(help_text, style="blue"))
@@ -316,11 +549,12 @@ class AWorldCLI:
                 '/latest': None,
                 '/skills': None,
                 '/agents': None,
+                '/test': None,
                 '/exit': None,
                 '/quit': None,
                 'exit': None,
                 'quit': None
-                
+
             })
             session = PromptSession(completer=completer)
 
@@ -401,7 +635,8 @@ class AWorldCLI:
                         if loaded_skills:
                             total_loaded = sum(loaded_skills.values())
                             if total_loaded > 0:
-                                self.console.print(f"[green]✅ Loaded {total_loaded} skill(s) from {len([k for k, v in loaded_skills.items() if v > 0])} plugin(s)[/green]")
+                                self.console.print(
+                                    f"[green]✅ Loaded {total_loaded} skill(s) from {len([k for k, v in loaded_skills.items() if v > 0])} plugin(s)[/green]")
                             else:
                                 self.console.print("[dim]No new skills loaded from plugins.[/dim]")
                         
@@ -430,9 +665,9 @@ class AWorldCLI:
                         def display_skills_table(skills_dict, title):
                             if not skills_dict:
                                 return
-                            
-                            table = Table(title=title, box=box.ROUNDED, width=None)
-                            table.add_column("Name", style="magenta", width=30)
+
+                            table = Table(title=title, box=box.ROUNDED, width=180)
+                            table.add_column("Name", style="magenta")
                             table.add_column("Description", style="green")
                             
                             for skill_name, skill_data in sorted(skills_dict.items()):
@@ -461,26 +696,203 @@ class AWorldCLI:
                     except Exception as e:
                         self.console.print(f"[red]Error loading skills: {e}[/red]")
                     continue
-                
+
+                # Handle test command
+                if user_input.lower() in ("/test", "test"):
+                    try:
+                        self.console.print("[bold cyan]🧪 用户输入测试功能[/bold cyan]")
+                        self.console.print()
+
+                        # 测试选项
+                        test_options = [
+                            "1. 测试文本输入",
+                            "2. 测试多选输入",
+                            "3. 测试确认输入",
+                            "4. 测试复合菜单",
+                            "5. 测试单选列表",
+                            "6. 退出测试"
+                        ]
+
+                        self.console.print("[bold]请选择要测试的功能：[/bold]")
+                        for option in test_options:
+                            self.console.print(f"  {option}")
+                        self.console.print()
+
+                        test_choice = await asyncio.to_thread(
+                            Prompt.ask,
+                            "[cyan]请输入选项编号 (1-6)[/cyan]",
+                            default="1",
+                            console=self.console
+                        )
+
+                        test_choice = test_choice.strip()
+
+                        if test_choice == "1":
+                            # 测试文本输入
+                            self.console.print()
+                            self.console.print("[bold green]📝 测试文本输入[/bold green]")
+                            self.console.print("[dim]请输入一些文本进行测试...[/dim]")
+                            text_input = await asyncio.to_thread(
+                                self.user_input.text_input,
+                                "[cyan]请输入文本[/cyan]"
+                            )
+                            self.console.print(f"[green]✅ 您输入的文本是: {text_input}[/green]")
+
+                        elif test_choice == "2":
+                            # 测试多选输入
+                            self.console.print()
+                            self.console.print("[bold green]☑️  测试多选输入[/bold green]")
+                            test_items = ["苹果", "香蕉", "橙子", "葡萄", "草莓"]
+                            selected_indices = await asyncio.to_thread(
+                                self.user_input.select_multiple,
+                                options=test_items,
+                                title="请选择您喜欢的水果（可多选）",
+                                prompt="输入选项编号（用逗号分隔，如：1,3,5）"
+                            )
+                            if selected_indices:
+                                selected_items = [test_items[i] for i in selected_indices]
+                                self.console.print(f"[green]✅ 您选择了: {', '.join(selected_items)}[/green]")
+                            else:
+                                self.console.print("[yellow]⚠️ 未选择任何选项[/yellow]")
+
+                        elif test_choice == "3":
+                            # 测试确认输入
+                            self.console.print()
+                            self.console.print("[bold green]❓ 测试确认输入[/bold green]")
+                            from rich.prompt import Confirm
+                            confirmed = await asyncio.to_thread(
+                                Confirm.ask,
+                                "[cyan]您确定要继续吗？[/cyan]",
+                                default=True,
+                                console=self.console
+                            )
+                            if confirmed:
+                                self.console.print("[green]✅ 您选择了确认[/green]")
+                            else:
+                                self.console.print("[yellow]⚠️ 您选择了取消[/yellow]")
+
+                        elif test_choice == "4":
+                            # 测试复合菜单
+                            self.console.print()
+                            self.console.print("[bold green]📋 测试复合菜单[/bold green]")
+
+                            # 创建测试用的 tabs
+                            test_tabs = [
+                                {
+                                    'type': 'multi_select',
+                                    'name': 'product_type',
+                                    'title': '你的产品类型是什么？',
+                                    'options': [
+                                        {'label': '软件/应用产品',
+                                         'description': '移动应用、网页应用、桌面软件等数字产品'},
+                                        {'label': '硬件设备', 'description': '电子设备、智能硬件、物联网产品等'},
+                                        {'label': '服务平台', 'description': 'SaaS服务、在线平台、云服务等'},
+                                        {'label': '实体产品', 'description': '消费品、工业产品、日用品等'},
+                                    ]
+                                },
+                                {
+                                    'type': 'text_input',
+                                    'name': 'product_name',
+                                    'title': '产品名称',
+                                    'prompt': '请输入产品名称',
+                                    'default': '',
+                                    'placeholder': 'Search...'
+                                },
+                                {
+                                    'type': 'submit',
+                                    'name': 'confirm',
+                                    'title': 'Review your answers',
+                                    'message': 'Ready to submit your answers?',
+                                    'default': True
+                                }
+                            ]
+
+                            try:
+                                results = await asyncio.to_thread(
+                                    self.user_input.composite_menu,
+                                    tabs=test_tabs,
+                                    title="创建产品介绍PPT"
+                                )
+
+                                if results:
+                                    self.console.print()
+                                    self.console.print("[green]✅ 复合菜单测试完成[/green]")
+                                    self.console.print("[bold]返回结果：[/bold]")
+                                    for tab_name, value in results.items():
+                                        self.console.print(f"  [cyan]{tab_name}[/cyan]: {value}")
+                                else:
+                                    self.console.print("[yellow]⚠️ 用户取消了操作[/yellow]")
+                            except Exception as e:
+                                self.console.print(f"[red]测试过程中出错: {e}[/red]")
+                                import traceback
+                                self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
+
+                        elif test_choice == "5":
+                            # 测试单选列表
+                            self.console.print()
+                            self.console.print("[bold green]📋 测试单选列表[/bold green]")
+
+                            # 创建测试用的导航栏项目
+                            nav_items = [
+                                {'label': 'PPT主题', 'type': 'checkbox', 'checked': False, 'highlight': False},
+                                {'label': '模板风格', 'type': 'checkbox', 'checked': False, 'highlight': False},
+                                {'label': 'Submit', 'type': 'button', 'highlight': True}
+                            ]
+
+                            # 创建测试选项
+                            test_options = [
+                                {'label': 'Submit answers', 'description': ''},
+                                {'label': 'Cancel', 'description': ''}
+                            ]
+
+                            selected_index = await asyncio.to_thread(
+                                self.user_input.single_select,
+                                options=test_options,
+                                title="Review your answers",
+                                warning="You have not answered all questions",
+                                question="Ready to submit your answers?",
+                                nav_items=nav_items
+                            )
+
+                            if selected_index is not None:
+                                selected_option = test_options[selected_index]['label']
+                                self.console.print(f"[green]✅ 您选择了: {selected_option}[/green]")
+                            else:
+                                self.console.print("[yellow]⚠️ 用户取消了选择[/yellow]")
+
+                        elif test_choice == "6":
+                            self.console.print("[dim]退出测试[/dim]")
+                        else:
+                            self.console.print(f"[red]无效的选项: {test_choice}[/red]")
+
+                        self.console.print()
+                    except KeyboardInterrupt:
+                        self.console.print("\n[yellow]测试已取消[/yellow]")
+                    except Exception as e:
+                        # logger.error(f"测试过程中出错: {e} {traceback.format_exc()}")
+                        self.console.print(f"[red]测试过程中出错: {e}[/red]\n{traceback.format_exc()}")
+                    continue
+
                 # Handle agents command
                 if user_input.lower() in ("/agents", "agents"):
                     try:
                         from .runtime.cli import CliRuntime
                         from .runtime.loaders import PluginLoader
+                        from aworld.experimental.registry_workspace.agent_version_control_registry import global_agent_registry
                         from pathlib import Path
-                        from aworld.experimental.registry_workspace.agent_version_control_registry import _default_agent_registry
                         import os
 
                         built_in_agents = []
                         user_agents = []
-                        base_path = os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry')
-                        
+                        base_path = os.path.expanduser(
+                            os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+
                         # Load Built-in agents from plugins using PluginLoader
                         try:
                             # Get built-in plugin directories
                             runtime = CliRuntime()
                             plugin_dirs = runtime.plugin_dirs
-                            
+
                             # Load agents from each plugin using PluginLoader
                             for plugin_dir in plugin_dirs:
                                 try:
@@ -493,13 +905,14 @@ class AWorldCLI:
                                             agent.source_type = "BUILT-IN"
                                     built_in_agents.extend(plugin_agents)
                                 except Exception as e:
-                                    self.console.print(f"[yellow]⚠️ Failed to load Built-in agents from plugin {plugin_dir.name}: {e}[/yellow]")
+                                    self.console.print(
+                                        f"[yellow]⚠️ Failed to load Built-in agents from plugin {plugin_dir.name}: {e}[/yellow]")
                         except Exception as e:
                             self.console.print(f"[yellow]⚠️ Failed to load Built-in agents from plugins: {e}[/yellow]")
                         
                         # Load User agents from AgentVersionControlRegistry default instance
                         try:
-                            agent_list = await _default_agent_registry.list_desc()
+                            agent_list = await global_agent_registry.list_desc()
                             for name, desc in agent_list:
                                 agent_info = AgentInfo(
                                     name=name,
@@ -529,6 +942,28 @@ class AWorldCLI:
                         self.console.print(f"[red]Error loading agents: {e}[/red]")
                     continue
 
+                # Handle visualize command
+                if user_input.lower() in ("/visualize_trajectory", "visualize_trajectory"):
+                    self._visualize_team(executor_instance)
+                    continue
+
+                # Handle sessions command
+                if user_input.lower() in ("/sessions", "sessions"):
+                    if executor_instance:
+                        # Debug: Print session related attributes
+                        session_attrs = {k: v for k, v in executor_instance.__dict__.items() if 'session' in k.lower()}
+                        # Also check if context has session info
+                        if hasattr(executor_instance, 'context') and executor_instance.context:
+                            context_session_attrs = {k: v for k, v in executor_instance.context.__dict__.items() if
+                                                     'session' in k.lower()}
+                            session_attrs.update({f"context.{k}": v for k, v in context_session_attrs.items()})
+
+                        if session_attrs:
+                            self.console.print(f"[dim]Session Info: {session_attrs}[/dim]")
+                    else:
+                        self.console.print("[yellow]No executor instance available.[/yellow]")
+                    continue
+
                 # Print agent name before response
                 self.console.print(f"[bold green]{agent_name}[/bold green]:")
                 
@@ -546,7 +981,7 @@ class AWorldCLI:
                 self.console.print("\n[yellow]Session interrupted.[/yellow]")
                 break
             except Exception as e:
-                self.console.print(f"[red]An unexpected error occurred:[/red] {e}")
+                self.console.print(f"[red]An unexpected error occurred:[/red] {e}\n{traceback.format_exc()}")
 
         return False
 

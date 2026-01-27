@@ -20,6 +20,7 @@ from aworld.core.agent.base import AgentFactory
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.base import Context
 from aworld.dataset.types import TrajectoryItem
+from aworld.experimental.registry_workspace.agent_version_control_registry import global_agent_registry
 from aworld.logs.util import logger
 from aworld.output import ArtifactType
 from aworld.output.utils import load_workspace as load_workspace_util
@@ -663,9 +664,9 @@ class TrajectoryService:
         # Extract agent_id
         agent = AgentFactory.agent_instance(item.meta.agent_id)
         # Get class source code and instance member variable values, and code file path
-        definition = await context.agent_registry_service.load_as_source(name=agent.name(),
+        definition = await global_agent_registry.load_as_source(name=agent.name(),
                                                                           session_id=context.session_id)
-        diffs = await context.agent_registry_service.compare_versions(name=agent.name(),
+        diffs = await global_agent_registry.compare_versions(name=agent.name(),
                                                                       session_id=context.session_id,
                                                                       format="context")
         agents_config[item.meta.agent_id] = AgentSnapshot(

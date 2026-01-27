@@ -11,39 +11,225 @@ from aworld.core.context.amni import DirArtifact
 from aworld.experimental.registry_workspace.agent_version_control_registry import AgentVersionControlRegistry
 from aworld.experimental.registry_workspace.version_control_registry import VersionControlRegistry
 from aworld.logs.util import logger
+from aworld.output.artifact import ArtifactAttachment
 
 
 class SwarmVersionControlRegistry(VersionControlRegistry):
-    """
-    Swarm registry service, responsible for loading and managing swarm configurations.
-    """
+    """Swarm registry service, responsible for loading and managing swarm configurations."""
 
+    def _list_versions_by_suffix(self, name: str, suffix: str) -> List[str]:
+        """
+        List all versions of a resource by suffix.
+        
+        Scanning rules:
+        - v0 version: in top-level directory {name}/{name}{suffix}
+        - v1+ versions: in top-level directory {name}/{name}_vN{suffix}
+        """
+        import re
+        versions = []
+        self._dir_artifact.reload_working_files()
 
+        # Check for attachments matching the resource name
+        if self._dir_artifact.attachments:
+            # Check for root v0 file (name.yaml) in top-level directory
+            v0_filename = f"{name}{suffix}"
+            v0_path_prefix = f"{name}/"
+            for attachment in self._dir_artifact.attachments:
+                if (attachment.filename == v0_filename and 
+                    attachment.path.startswith(v0_path_prefix) and
+                    "/" not in attachment.path[len(v0_path_prefix):]):  # No subdirectory
+                    versions.append("v0")
+                    break
+
+            # Check for versioned files (name_vN.yaml) in top-level directory (no session_id subdirectory)
+            pattern = re.compile(rf"^{re.escape(name)}_v(\d+){re.escape(suffix)}$")
+            for attachment in self._dir_artifact.attachments:
+                match = pattern.match(attachment.filename)
+                if match and attachment.path.startswith(v0_path_prefix):
+                    # Check that there's no subdirectory (no session_id)
+                    path_after_prefix = attachment.path[len(v0_path_prefix):]
+                    if "/" not in path_after_prefix:  # No subdirectory means no session_id
+                        version = f"v{match.group(1)}"
+                        if version not in versions:  # Avoid duplicates
+                            versions.append(version)
+
+        # Sort versions by version number
+        versions.sort(key=self._extract_version_number)
+        return versions
+
+    async def _save_file_by_suffix(
+        self, 
+        content: str, 
+        name: str, 
+        suffix: str, 
+        mime_type: str = None
+    ) -> bool:
+        """
+        Save file to storage by suffix.
+        
+        First save (v0): save to top-level directory {name}/{name}{suffix}
+        Subsequent saves (v1+): save to top-level directory {name}/{name}_vN{suffix}
+        """
+        try:
+            from aworld.output.artifact import ArtifactAttachment
+
+            # Generate new version number
+            new_version = await self.generate_new_version(name=name)
+
+            # Create filename and path based on version (no session_id in path)
+            if new_version == "v0":
+                # First save: save to top-level directory
+                filename = f"{name}{suffix}"
+                file_path = f"{name}/{filename}"
+            else:
+                # Subsequent saves: save to top-level directory (no session_id subdirectory)
+                filename = f"{name}_{new_version}{suffix}"
+                file_path = f"{name}/{filename}"
+
+            # Auto-detect mime type if not provided
+            if mime_type is None:
+                if suffix == ".md":
+                    mime_type = 'text/markdown'
+                elif suffix == ".yaml" or suffix == ".yml":
+                    mime_type = 'text/yaml'
+                else:
+                    mime_type = 'text/plain'
+
+            attachment = ArtifactAttachment(
+                filename=filename,
+                content=content,
+                mime_type=mime_type,
+                path=file_path
+            )
+
+            success, saved_path, _ = await self._dir_artifact.add_file(attachment)
+
+            if success:
+                logger.info(f"Saved file: {saved_path} (version: {new_version})")
+                return True
+            else:
+                logger.error(f"Failed to save file: {name}")
+                return False
+
+        except Exception as e:
+            logger.error(f"Failed to save file: {e}")
+            return False
+
+    async def _load_content_by_suffix(self, name: str, suffix: str, version: str) -> Optional[str]:
+        """
+        Load resource content from storage by suffix.
+        
+        Loading rules:
+        - v0 version: from top-level directory {name}/{name}{suffix}
+        - v1+ versions: from top-level directory {name}/{name}_vN{suffix}
+        """
+        try:
+            # Build filename and relative path (no session_id in path)
+            if version == "v0":
+                filename = f"{name}{suffix}"
+                relative_path = f"{name}/{filename}"
+            else:
+                filename = f"{name}_{version}{suffix}"
+                relative_path = f"{name}/{filename}"
+            
+            # For .md files, use DirArtifact
+            if suffix == ".md":
+                self._dir_artifact.reload_working_files()
+                attachment = self._dir_artifact.get_file(relative_path)
+                if not attachment:
+                    return None
+                
+                content = attachment.content
+                if isinstance(content, bytes):
+                    content = content.decode('utf-8')
+                return content
+            else:
+                # For other suffixes (e.g., .yaml), read directly from filesystem
+                base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+                path = os.path.join(base_path, relative_path)
+                
+                if not os.path.exists(path):
+                    return None
+                
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read()
+
+        except Exception as e:
+            logger.error(f"Failed to load content using suffix {suffix}: {e}")
+            return None
+
+    @staticmethod
+    async def resolve_resource_from_artifact(
+        dir_artifact: DirArtifact,
+        name: str,
+        suffix: str,
+        version: str = None
+    ) -> Optional[ArtifactAttachment]:
+        """
+        Find resource in DirArtifact.
+        If version is None, automatically find the latest version.
+        
+        Scanning rules:
+        - v0 version: in top-level directory {name}/{name}{suffix}
+        - v1+ versions: in top-level directory {name}/{name}_vN{suffix}
+        """
+        import re
+        
+        dir_artifact.reload_working_files()
+        path_prefix = f"{name}/"
+
+        # 1. Find latest version
+        if not version:
+            versions = []
+            if dir_artifact.attachments:
+                # Find v0 (in top-level directory)
+                v0_filename = f"{name}{suffix}"
+                for attachment in dir_artifact.attachments:
+                    if (attachment.filename.endswith(v0_filename) and
+                        attachment.path.startswith(path_prefix)):
+                        path_after_prefix = attachment.path[len(path_prefix):]
+                        if "/" not in path_after_prefix:  # No subdirectory
+                            versions.append("v0")
+                            break
+                
+                # Find versioned files (in top-level directory, no session_id subdirectory)
+                pattern = re.compile(rf"^{re.escape(name)}_v(\d+){re.escape(suffix)}$")
+                for attachment in dir_artifact.attachments:
+                    match = pattern.match(attachment.filename)
+                    if match and attachment.path.startswith(path_prefix):
+                        path_after_prefix = attachment.path[len(path_prefix):]
+                        if "/" not in path_after_prefix:  # No subdirectory means no session_id
+                            version_str = f"v{match.group(1)}"
+                            if version_str not in versions:  # Avoid duplicates
+                                versions.append(version_str)
+
+            
+            if not versions:
+                return None
+            
+            # Sort versions
+            def extract_version_number(v: str) -> int:
+                match = re.match(r'v(\d+)', v)
+                return int(match.group(1)) if match else 0
+            
+            versions.sort(key=extract_version_number)
+            version = versions[-1]
+            
+        # 2. Get file (no session_id in path)
+        filename = f"{name}{suffix}" if version == "v0" else f"{name}_{version}{suffix}"
+        path = path_prefix + filename
+        return dir_artifact.get_file(path)
 
     @staticmethod
     async def load_swarm_source_from_base_path(
         base_path: str,
         team_name: str,
-        session_id: str = "default",
         storage_type: str = "local",
         oss_config: Optional[Dict[str, str]] = None,
         version: str = None
     ) -> Tuple[Optional[str], Dict[str, str]]:
         """
         Static method to load swarm configuration source code from base_path.
-        
-        Args:
-            base_path: Base path of the agent registry
-            team_name: Team name, corresponding YAML file name is {team_name}.yaml
-            session_id: Session ID, defaults to "default"
-            storage_type: Storage type, "local" or "oss", defaults to "local"
-            oss_config: OSS configuration dictionary containing access_key_id, access_key_secret, endpoint, bucket_name
-            version: Optional version number
-        
-        Returns:
-            Tuple of (swarm_content, agents_content)
-            swarm_content: Swarm configuration YAML content string, or None if not found
-            agents_content: Dictionary containing all related Agent source code {agent_name: source_content}
         """
         # Create DirArtifact
         if storage_type == 'oss' and oss_config:
@@ -62,7 +248,6 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
             dir_artifact=dir_artifact,
             name=team_name,
             suffix=".yaml",
-            session_id=session_id,
             version=version
         )
         
@@ -115,7 +300,6 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
                         dir_artifact=dir_artifact,
                         name=agent_name,
                         suffix=".md",
-                        session_id=session_id,
                         version=None
                     )
                     if agent_att:
@@ -133,23 +317,11 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
     async def load_swarm_from_base_path(
         base_path: str,
         team_name: str,
-        session_id: str = "default",
         storage_type: str = "local",
         oss_config: Optional[Dict[str, str]] = None
     ) -> Tuple[Swarm, Dict[str, Agent]]:
         """
         Static method to load swarm configuration from base_path.
-        
-        Args:
-            base_path: Base path of the agent registry
-            team_name: Team name, corresponding YAML file name is {team_name}.yaml
-            session_id: Session ID, defaults to "default"
-            storage_type: Storage type, "local" or "oss", defaults to "local"
-            oss_config: OSS configuration dictionary containing access_key_id, access_key_secret, endpoint, bucket_name
-        
-        Returns:
-            Tuple of (swarm, agents_dict)
-            If `swarm` section is missing, builds a default workflow based on agent names in YAML.
         """
         # Create DirArtifact
         if storage_type == 'oss' and oss_config:
@@ -168,7 +340,6 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
             dir_artifact=dir_artifact,
             name=team_name,
             suffix=".yaml",
-            session_id=session_id,
             version=None
         )
         
@@ -197,7 +368,6 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
                 agent = await AgentVersionControlRegistry.get_agent_from_base_path(
                     base_path=base_path,
                     agent_name=name,
-                    session_id=session_id,
                     storage_type=storage_type,
                     oss_config=oss_config
                 )
@@ -225,7 +395,6 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
                 agent = await AgentVersionControlRegistry.get_agent_from_base_path(
                     base_path=base_path,
                     agent_name=name,
-                    session_id=session_id,
                     storage_type=storage_type,
                     oss_config=oss_config
                 )
@@ -254,7 +423,6 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
                 agent = await AgentVersionControlRegistry.get_agent_from_base_path(
                     base_path=base_path,
                     agent_name=name,
-                    session_id=session_id,
                     storage_type=storage_type,
                     oss_config=oss_config
                 )
@@ -288,7 +456,6 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
             agent = await AgentVersionControlRegistry.get_agent_from_base_path(
                 base_path=base_path,
                 agent_name=name,
-                session_id=session_id,
                 storage_type=storage_type,
                 oss_config=oss_config
             )
@@ -299,60 +466,34 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
         ordered = [agents[root]] + [agents[m] for m in members if m != root]
         return Swarm(*ordered, build_type=GraphBuildType.TEAM), agents
     
-    async def list_versions(self, name: str, session_id: str) -> List[str]:
+    async def list_versions(self, name: str) -> List[str]:
         """List all versions of a resource by scanning .yaml files."""
-        return self._list_versions_by_suffix(name=name, suffix=".yaml", session_id=session_id)
+        return self._list_versions_by_suffix(name=name, suffix=".yaml")
     
-    async def list_as_source(self, session_id: str = None) -> List[str]:
+    async def list_as_source(self) -> List[str]:
         """List all available swarm resources by scanning .yaml files."""
         return self._scan_files_by_suffix(".yaml")
 
-    async def save_as_source(self, content: str, name: str, session_id: str = None) -> bool:
+    async def save_as_source(self, content: str, name: str) -> bool:
         """Save configuration content as YAML file to storage base path."""
         return await self._save_file_by_suffix(
             content=content,
             name=name,
-            suffix=".yaml",
-            session_id=session_id
+            suffix=".yaml"
         )
 
-    async def load_as_source(self, name: str, session_id: str = None, version: str = None) -> Optional[str]:
-        """
-        Load swarm configuration as source content (YAML format).
-
-        Args:
-            name: Team name, corresponding YAML file name is {name}.yaml
-            session_id: Optional session ID (currently unused, reserved for future extension)
-            version: Optional version number (currently unused, reserved for future extension)
-
-        Returns:
-            Swarm configuration YAML content, or None if not found
-        """
+    async def load_as_source(self, name: str, version: str = None) -> Optional[str]:
+        """Load swarm configuration as source content (YAML format)."""
         return await self._load_as_source_by_suffix(
             name=name,
             suffix=".yaml",
-            session_id=session_id,
             version=version
         )
 
-    async def load_swarm_and_agents_as_source(self, name: str, session_id: str = None, version: str = None) -> Tuple[Optional[str], Dict[str, str]]:
-        """
-        Load swarm configuration as source content (YAML format).
-        
-        Args:
-            name: Team name, corresponding YAML file name is {name}.yaml
-            session_id: Optional session ID
-            version: Optional version number
-        
-        Returns:
-            Tuple of (swarm_content, agents_content)
-            swarm_content: Swarm configuration YAML content, or None if not found
-            agents_content: Dictionary containing all related Agent source code {agent_name: source_content}
-        """
-        session_id = self._get_session_id(session_id)
-        
+    async def load_swarm_and_agents_as_source(self, name: str, version: str = None) -> Tuple[Optional[str], Dict[str, str]]:
+        """Load swarm configuration as source content (YAML format)."""
         # Get base_path and storage configuration
-        base_path = os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry')
+        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
         storage_type = self._get_storage_type()
         
         # Prepare OSS configuration (if needed)
@@ -361,28 +502,15 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
         return await SwarmVersionControlRegistry.load_swarm_source_from_base_path(
             base_path=base_path,
             team_name=name,
-            session_id=session_id,
             storage_type=storage_type,
             oss_config=oss_config,
             version=version
         )
     
-    async def load_swarm_and_agents(self, team_name: str, session_id: str = None) -> Tuple[Swarm, Dict[str, Agent]]:
-        """
-        Load swarm configuration from YAML file, using get_agent_from_base_path method to load agents.
-
-        Args:
-            team_name: Team name, corresponding YAML file name is {team_name}.yaml
-            session_id: Optional session ID
-
-        Returns:
-            Tuple of (swarm, agents_dict)
-            If `swarm` section is missing, builds a default workflow based on agent names in YAML.
-        """
-        session_id = self._get_session_id(session_id)
-
+    async def load_swarm_and_agents(self, team_name: str) -> Tuple[Swarm, Dict[str, Agent]]:
+        """Load swarm configuration from YAML file."""
         # Get base_path and storage configuration
-        base_path = os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry')
+        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
         storage_type = self._get_storage_type()
         
         # Prepare OSS configuration (if needed)
@@ -392,7 +520,16 @@ class SwarmVersionControlRegistry(VersionControlRegistry):
         return await SwarmVersionControlRegistry.load_swarm_from_base_path(
             base_path=base_path,
             team_name=team_name,
-            session_id=session_id,
             storage_type=storage_type,
             oss_config=oss_config
         )
+
+
+class DefaultContext:
+    """Default context for SwarmVersionControlRegistry when no context is provided."""
+    def __init__(self, session_id: str = "default"):
+        self.session_id = session_id
+
+
+# Default instance of SwarmVersionControlRegistry
+_default_swarm_registry = SwarmVersionControlRegistry(DefaultContext())

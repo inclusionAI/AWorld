@@ -57,7 +57,8 @@ class MetaLearningAgent(Agent):
 
         return action_model_list
 
-AGENT_REGISTRY_STORAGE_PATH = Path(f"{os.getenv('AGENT_REGISTRY_STORAGE_PATH')}/optimization/skill.md")
+_agent_registry_storage_path = os.getenv('AGENT_REGISTRY_STORAGE_PATH')
+AGENT_REGISTRY_STORAGE_PATH = Path(os.path.expanduser(f"{_agent_registry_storage_path}/optimization/skill.md")) if _agent_registry_storage_path else None
 
 def load_skill_from_md(file_path: Path):
     """
@@ -160,10 +161,7 @@ async def build_meta_swarm(context: Context, tmp_file_path: str, reward_function
                 model_name=os.getenv("LLM_MODEL_NAME"),
                 api_key=os.getenv("LLM_API_KEY"),
                 base_url=os.getenv("LLM_BASE_URL"),
-                params={"max_completion_tokens": 40960},
-                ext_config={
-                    "max_tokens": 40960
-                }
+                params={"max_completion_tokens": 40960}
             ),
             use_vision=False,
             # skill_configs=skills
@@ -379,10 +377,7 @@ model_config: {{
    "llm_temperature": 0.6,
    "llm_base_url": "https://agi.alipay.com/api",
    "llm_api_key": "sk-ec93f5148ee64b11a75e82b41716ced1",
-   "params": {{"max_completion_tokens": 40960}},
-   "ext_config": {{
-     "max_tokens": 40960
-   }}
+   "params": {{"max_completion_tokens": 40960}}
 }}
 ---
 ```

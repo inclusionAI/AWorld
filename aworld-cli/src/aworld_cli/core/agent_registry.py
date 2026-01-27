@@ -3,14 +3,15 @@ Local agent registry for aworld-cli.
 Independent registry system that doesn't depend on aworldappinfra.
 """
 import inspect
-from typing import Dict, Iterable, Callable, Optional, List, Union, ClassVar, Awaitable, TYPE_CHECKING
 from threading import RLock
+from typing import Dict, Iterable, Callable, Optional, List, Union, ClassVar, Awaitable, TYPE_CHECKING
 
 from pydantic import BaseModel, PrivateAttr, Field
 
 from aworld.core.agent.swarm import Swarm
 from aworld.core.context.amni import AmniContextConfig, AmniConfigFactory
 from aworld.core.context.base import Context
+from aworld.logs.util import logger
 
 if TYPE_CHECKING:
     from aworld.core.agent.base import BaseAgent
@@ -121,22 +122,30 @@ class LocalAgent(BaseModel):
         - If the function has no parameters, it will be called without arguments
         - If context is None and function requires it, it will still be passed (may cause error)
         
+        The created Swarm instance is cached in self.swarm after first initialization,
+        so subsequent calls will return the cached instance directly.
+        
         Returns:
             The Swarm instance for this agent.
             
         Example:
             >>> agent = LocalAgent(swarm=lambda: Swarm(agent1, agent2))
-            >>> swarm = await agent.get_swarm()  # Swarm is created here
+            >>> swarm = await agent.get_swarm()  # Swarm is created here and cached
+            >>> swarm2 = await agent.get_swarm()  # Returns cached swarm
             
             >>> async def build_swarm(ctx: Context) -> Swarm:
             ...     return Swarm(agent1, agent2)
             >>> agent = LocalAgent(swarm=build_swarm)
-            >>> swarm = await agent.get_swarm(context)
+            >>> swarm = await agent.get_swarm(context)  # Created and cached
         """
         if isinstance(self.swarm, Swarm):
+            logger.info(f"Using existing swarm for agent {self.name}")
             return self.swarm
         if callable(self.swarm):
+            logger.info(f"Initializing swarm for agent {self.name}")
             swarm_func = self.swarm
+            swarm_instance = None
+            
             if inspect.iscoroutinefunction(swarm_func):
                 # Async callable
                 sig = inspect.signature(swarm_func)
@@ -145,13 +154,13 @@ class LocalAgent(BaseModel):
                 # Try to call with context if function has parameters
                 if param_count > 0:
                     try:
-                        return await swarm_func(context)
+                        swarm_instance = await swarm_func(context)
                     except TypeError as e:
                         # If context is None and function requires it, try without arguments
                         if "required" in str(e).lower() or "missing" in str(e).lower():
                             if context is None:
                                 try:
-                                    return await swarm_func()
+                                    swarm_instance = await swarm_func()
                                 except Exception as fallback_error:
                                     raise
                             else:
@@ -163,7 +172,7 @@ class LocalAgent(BaseModel):
                 else:
                     # Function has no parameters, call without arguments
                     try:
-                        return await swarm_func()
+                        swarm_instance = await swarm_func()
                     except Exception as e:
                         raise
             else:
@@ -174,13 +183,13 @@ class LocalAgent(BaseModel):
                 # Try to call with context if function has parameters
                 if param_count > 0:
                     try:
-                        return swarm_func(context)
+                        swarm_instance = swarm_func(context)
                     except TypeError as e:
                         # If context is None and function requires it, try without arguments
                         if "required" in str(e).lower() or "missing" in str(e).lower():
                             if context is None:
                                 try:
-                                    return swarm_func()
+                                    swarm_instance = swarm_func()
                                 except Exception as fallback_error:
                                     raise
                             else:
@@ -192,9 +201,16 @@ class LocalAgent(BaseModel):
                 else:
                     # Function has no parameters, call without arguments
                     try:
-                        return swarm_func()
+                        swarm_instance = swarm_func()
                     except Exception as e:
                         raise
+            
+            # Cache the created swarm instance
+            if swarm_instance is not None:
+                self.swarm = swarm_instance
+                logger.info(f"Cached swarm instance for agent {self.name}")
+                return swarm_instance
+        
         return self.swarm
 
     model_config = {"arbitrary_types_allowed": True}
@@ -522,6 +538,7 @@ def agent(
             async def async_wrapper(*args, **kwargs):
                 result = await func(*args, **kwargs)
                 if isinstance(result, LocalAgent):
+                    logger.info(f"Registering agent: {result.name}")
                     LocalAgentRegistry.register(result)
                 return result
             return async_wrapper
@@ -529,6 +546,7 @@ def agent(
             def sync_wrapper(*args, **kwargs):
                 result = func(*args, **kwargs)
                 if isinstance(result, LocalAgent):
+                    logger.info(f"Registering agent: {result.name}")
                     LocalAgentRegistry.register(result)
                 return result
             return sync_wrapper
@@ -569,6 +587,9 @@ def agent(
             metadata=metadata or {"creator": "aworld-cli", "version": "1.0.0"},
             hooks=hooks
         )
+
+        logger.info(f"Registering agent: {local_agent.name}")
+
         LocalAgentRegistry.register(local_agent)
         
         # Return the wrapper function
