@@ -1,5 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import time
+
 import asyncio
 import json
 import os
@@ -24,7 +26,7 @@ from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.prompt_log import PromptLogger
-from aworld.logs.util import logger, Color
+from aworld.logs.util import logger, Color, digest_logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
@@ -579,6 +581,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             logger.info(f"🧠 [Agent:{self.id()}] Found {len(pending_items)} pending memory items, "
                         f"holding task execution. Pending content: {pending_items[0]}...")
             self._finished = False
+        if self._finished:
+            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{round(time.time() - message.context._start,2)}")
         return self._agent_result(
             policy_result,
             policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer,

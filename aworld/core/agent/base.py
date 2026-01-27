@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import time
 
 import abc
 import os
@@ -14,7 +15,7 @@ from aworld.events import eventbus
 from aworld.core.event.base import Constants, Message, AgentMessage
 from aworld.core.factory import Factory
 from aworld.events.util import send_message
-from aworld.logs.util import logger
+from aworld.logs.util import logger, digest_logger
 from aworld.output.base import StepOutput
 from aworld.sandbox.base import Sandbox
 from aworld.utils.common import convert_to_snake, replace_env_variables, sync_exec
@@ -322,6 +323,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 # ActionModel agent_name
                 if hasattr(action, "agent_name") and not getattr(action, "agent_name", None):
                     action.agent_name = self.id()
+        if self._finished:
+            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{round(time.time() - message.context._start,2)}")
         return AgentMessage(payload=policy_result, sender=self.id(), headers=message.headers)
 
     def sync_should_terminate_loop(self, message: Message) -> bool:

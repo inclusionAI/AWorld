@@ -1,3 +1,5 @@
+import os
+
 import abc
 import asyncio
 import copy
@@ -931,8 +933,9 @@ class ApplicationContext(AmniContext):
             else:
                 self.task_output = task_response.msg
 
-        self.task_output_object.actions_info = await self.get_actions_info()
-        self.task_output_object.todo_info = await self.get_todo_info()
+        if os.getenv("ENABLE_AUTO_UPDATE_TASK_OUTPUT_INFO", "false") == "true":
+            self.task_output_object.actions_info = await self.get_actions_info()
+            self.task_output_object.todo_info = await self.get_todo_info()
 
         if self.parent:
             self.parent.merge_sub_context(self)
@@ -1409,13 +1412,13 @@ class ApplicationContext(AmniContext):
         return self.freedom_space_service.get_abs_file_path(filename)
 
     async def add_file(self, filename: Optional[str], content: Optional[Any], mime_type: Optional[str] = "text",
-                       namespace: str = "default", origin_type: str = None, origin_path : str = None) -> Tuple[bool, Optional[str], Optional[str]]:
+                       namespace: str = "default", origin_type: str = None, origin_path : str = None, refresh_workspace: bool = True) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Add a file to freedom space.
 
         Delegates to FreedomSpaceService.add_file().
         """
-        return await self.freedom_space_service.add_file(filename, content, mime_type, namespace, origin_type, origin_path)
+        return await self.freedom_space_service.add_file(filename, content, mime_type, namespace, origin_type, origin_path, refresh_workspace)
 
     async def init_working_dir(self) -> DirArtifact:
         """

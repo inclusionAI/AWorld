@@ -236,7 +236,7 @@ def record_completion(span,
         agent_id = "unknown"
         if request_kwargs.get('response_parse_args') and isinstance(request_kwargs.get('response_parse_args'), dict):
             agent_id = request_kwargs.get('response_parse_args').get('agent_id')
-        digest_logger.info(f"llm_call|{agent_id}|{instance.provider.model_name}|{getattr(context, 'user', 'default')}|{context.session_id}|{context.task_id}|{total_tokens}|{completion_tokens}|{total_tokens}|{round(duration,2)}")
+        digest_logger.info(f"llm_call|{agent_id}|{instance.provider.model_name}|{getattr(context, 'user', 'default')}|{context.session_id}|{context.task_id}|{total_tokens}|{prompt_tokens}|{completion_tokens}|{round(duration,2)}")
     except Exception:
         pass
 
