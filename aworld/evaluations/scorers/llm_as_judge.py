@@ -37,29 +37,6 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
         )
 
     @abc.abstractmethod
-    def build_judge_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
-        """Builds a prompt for the judge model to evaluate the response.
-           This method should be implemented by subclasses to create a context-rich prompt
-           that enables the judge model to assess the quality of the output against the given input case. 
-           The prompt template can be defined either in self.eval_criterias[metric_name].prompt or directly within the subclass implementation.
-
-        Args:
-            index: The index of the evaluation example within the dataset.
-            input: The example data,.
-            output: The agent's generated output/response to be judged.
-
-        Returns:
-            A formatted prompt string that will be sent to the judge model.
-
-        Example:
-            '''
-            Please based on the correct answer given below, determine whether the answer to the original question is correct.
-            Here is the task: {data_to_judge}
-            '''
-        """
-        raise NotImplementedError("build_judge_prompt must be implemented in subclasses")
-
-    @abc.abstractmethod
     def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
         """Builds the input for the judge agent task.
 
@@ -101,9 +78,9 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
         Returns:
             ScorerResult: Scorer result.
         """
-        score_agent = Agent(conf=self.agent_config, name='score_agent',
-                            system_prompt=self._build_judge_system_prompt(),
-                            agent_prompt=self.build_judge_prompt(index=index, input=input, output=output))
+        score_agent = Agent(conf=self.agent_config,
+                            name='score_agent',
+                            system_prompt=self._build_judge_system_prompt())
 
         task_input = self.build_judge_data(index=index, input=input, output=output)
         response = await exec_agent(task_input, agent=score_agent, context=Context())

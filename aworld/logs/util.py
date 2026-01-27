@@ -13,6 +13,9 @@ CONSOLE_LEVEL = 'INFO'
 STORAGE_LEVEL = 'INFO'
 SUPPORTED_FUNC = ['info', 'debug', 'warning', 'error', 'critical', 'exception', 'trace', 'success', 'log', 'catch',
                   'opt', 'bind', 'unbind', 'contextualize', 'patch']
+DEFAULT_FORMAT = """<black>{extra[trace_id]} | {time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | \
+{extra[name]} PID: {process}, TID:{thread} |</black> <bold>{name}.{function}:{line}</bold> \
+- \n<level>{message}</level> {exception} """
 
 
 class Color:
@@ -115,9 +118,7 @@ class AWorldLogger:
         file_formatter = formatter
         console_formatter = formatter
         if not formatter:
-            format = """<black>{extra[trace_id]} | {time:YYYY-MM-DD HH:mm:ss.SSS} | {level} | \
-{extra[name]} PID: {process}, TID:{thread} |</black> <bold>{name}.{function}:{line}</bold> \
-- \n<level>{message}</level> {exception} """
+            format = DEFAULT_FORMAT
 
             def _formatter(record):
                 if record['extra'].get('name') == 'AWorld':
@@ -160,9 +161,9 @@ class AWorldLogger:
         # Before using aworld, including imports!
         log_path = os.environ.get('AWORLD_LOG_PATH')
         if log_path:
-            log_file = f'{log_path}/{tag}-{{time:YYYY-MM-DD}}.log'
+            log_file = f'{log_path}/{tag}.log'
         else:
-            log_file = f'{os.getcwd()}/logs/{tag}-{{time:YYYY-MM-DD}}.log'
+            log_file = f'{os.getcwd()}/logs/{tag}.log'
         error_log_file = f'{os.getcwd()}/logs/AWorld_error.log'
         handler_key = f'{name}_{tag}'
         error_handler_key = f'{name}_{tag}_error'
@@ -275,7 +276,8 @@ def update_logger_level(level: str):
 
 logger = AWorldLogger(tag='AWorld', name='AWorld')
 trace_logger = AWorldLogger(tag='Trace', name='AWorld')
-trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld')
+trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld',
+                                 formatter=DEFAULT_FORMAT.replace("\n", ""))
 
 prompt_logger = AWorldLogger(tag='prompt_logger', name='AWorld',
                              formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | prompt | {extra[trace_id]} |</black> <level>{message}</level>")
