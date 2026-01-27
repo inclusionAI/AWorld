@@ -254,7 +254,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                     headers={"context": message.context},
                 )
             )
-        await self.async_pre_run()
+        await self.async_pre_run(message)
         result = await self.async_policy(observation, message=message, **kwargs)
         final_result = await self.async_post_run(result, observation, message)
         if message.context and message.context.has_pending_background_tasks(self.id(), message.context.task_id):
@@ -312,8 +312,15 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     ) -> Message:
         return sync_exec(self.async_post_run, policy_result, input, message)
 
-    async def async_pre_run(self):
-        pass
+    async def async_pre_run(self, message: Message):
+        from aworld.core.context.amni import AmniContext
+        if isinstance(message.context, AmniContext):
+            message.context.put("start", self.id())
+            agent_start_times = message.context.get("agent_start_times") or {}
+            if not isinstance(agent_start_times, dict):
+                agent_start_times = {}
+            agent_start_times[self.id()] = time.time()
+            message.context.put("agent_start_times", agent_start_times)
 
     async def async_post_run(
             self, policy_result: OUTPUT, input: INPUT, message: Message = None
@@ -324,7 +331,17 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 if hasattr(action, "agent_name") and not getattr(action, "agent_name", None):
                     action.agent_name = self.id()
         if self._finished:
-            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{round(time.time() - message.context._start,2)}")
+            from aworld.core.context.amni import AmniContext
+            duration = None
+            if isinstance(message.context, AmniContext):
+                agent_start_times = message.context.get("agent_start_times") or {}
+                if isinstance(agent_start_times, dict):
+                    start_time = agent_start_times.get(self.id())
+                    if isinstance(start_time, (int, float)):
+                        duration = round(time.time() - start_time, 2)
+            if duration is None:
+                duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
+            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}")
         return AgentMessage(payload=policy_result, sender=self.id(), headers=message.headers)
 
     def sync_should_terminate_loop(self, message: Message) -> bool:

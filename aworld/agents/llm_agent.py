@@ -582,7 +582,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         f"holding task execution. Pending content: {pending_items[0]}...")
             self._finished = False
         if self._finished:
-            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{round(time.time() - message.context._start,2)}")
+            from aworld.core.context.amni import AmniContext
+            duration = None
+            if isinstance(message.context, AmniContext):
+                agent_start_times = message.context.get("agent_start_times") or {}
+                if isinstance(agent_start_times, dict):
+                    start_time = agent_start_times.get(self.id())
+                    if isinstance(start_time, (int, float)):
+                        duration = round(time.time() - start_time, 2)
+            if duration is None:
+                duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
+            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}")
         return self._agent_result(
             policy_result,
             policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer,
