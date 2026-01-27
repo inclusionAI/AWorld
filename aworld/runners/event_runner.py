@@ -184,7 +184,7 @@ class TaskEventRunner(TaskRunner):
                 handler_list = handlers.get(message.topic) or handlers.get(message.receiver)
                 if not handler_list:
                     logger.warning(f"{message.topic}/{message.receiver} no handler, ignore.")
-                    handlers.clear()
+                    handlers = []
                 else:
                     handle_map = {}
 
