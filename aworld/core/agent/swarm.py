@@ -432,6 +432,7 @@ class TeamSwarm(Swarm):
             self.topology.append(agent)
             if isinstance(agent, BaseAgent) and agent.id() in agent.handoffs:
                 agent.handoffs.remove(agent.id())
+        logger.info(f"add agents {agents} to team swarm.agents: {self.agents}")
 
 # Alias for TeamSwarm
 Team = TeamSwarm
