@@ -68,11 +68,11 @@ class DefaultTaskHandler(TaskHandler):
                             await self.runner.event_mng.register(Constants.TOOL, name, tool.handler)
                         else:
                             await self.runner.event_mng.register(Constants.TOOL, name, tool.step)
-                        logger.info(f"dynamic register {name} tool.")
+                        logger.info(f"Task {self.runner.task.id} dynamic register {name} tool.")
                     else:
-                        logger.warning(f"Unknown tool instance: {tool}")
+                        logger.warning(f"Task {self.runner.task.id}#Unknown tool instance: {tool}")
                 except Exception as e:
-                    logger.warn(f"Failed to register new tool {name}: {str(e)}. {traceback.format_exc()}")
+                    logger.warn(f"Task {self.runner.task.id}#Failed to register new tool {name}: {str(e)}. {traceback.format_exc()}")
             return
         elif topic == TopicType.SUBSCRIBE_AGENT:
             return

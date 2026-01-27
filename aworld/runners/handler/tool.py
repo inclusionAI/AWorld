@@ -72,7 +72,7 @@ class DefaultToolHandler(ToolHandler):
                 logger.warning(f"somethings wrong, {act} is an agent.")
                 continue
 
-            if not self.tools or (self.tools and act.tool_name not in self.tools):
+            if self.tool_need_registered(act.tool_name, message):
                 # dynamic only use default config in module.
                 conf = self.tools_conf.get(act.tool_name)
                 if isinstance(conf, dict):
@@ -154,6 +154,12 @@ class DefaultToolHandler(ToolHandler):
                 receiver=tool_name,
                 headers=message.headers
             )
+
+    def tool_need_registered(self, tool_name: str, message: Message):
+        tool_handlers = self.runner.event_mng.get_handlers(Constants.TOOL)
+        if tool_handlers and tool_handlers.get(tool_name):
+            return False
+        return True
 
     async def post_handle(self, input:Message, output: Message) -> Message:
         new_context = output.context.deep_copy()
