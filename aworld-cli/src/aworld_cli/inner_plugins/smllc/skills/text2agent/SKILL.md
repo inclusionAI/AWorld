@@ -94,7 +94,7 @@ Use this skill when you need to analyze user requirements and automatically gene
 This skill performs the following workflow automatically:
 1. **Analyze Requirements**: Parse user input and identify required agent structure (FIRST PRIORITY)
 2. **Clarify Uncertainties**: If there are unclear or ambiguous aspects in the requirements, use `human` tool to confirm critical details BEFORE proceeding
-3. **Get Storage Path**: Retrieve `AGENT_REGISTRY_STORAGE_PATH` from environment variable (default: `./data/agent_registry`)
+3. **Get Storage Path**: Retrieve `AGENT_REGISTRY_STORAGE_PATH` from environment variable (default: `~/.aworld/agents`)
 4. **Create Agent Directory**: Use terminal to create agent folder in the storage path
 5. **Generate Agent Code Files**: Create Python code files (agent implementation and mcp_config if needed)
 6. **Verify All Files**: Confirm all creation operations completed successfully
@@ -286,7 +286,7 @@ Analyze the user's input to understand (be thorough and detailed, not superficia
 
 **⚠️ CRITICAL: After analyzing requirements, get the storage path and create the agent directory.**
 
-1. **Get Storage Path**: Use terminal to get `AGENT_REGISTRY_STORAGE_PATH` environment variable (default: `./data/agent_registry`)
+1. **Get Storage Path**: Use terminal to get `AGENT_REGISTRY_STORAGE_PATH` environment variable (default: `~/.aworld/agents`)
    ```bash
    echo ${AGENT_REGISTRY_STORAGE_PATH}
    ```

@@ -70,7 +70,7 @@ class VersionControlRegistry(abc.ABC):
             DirArtifact instance configured for the current storage type
         """
         storage_type = self._get_storage_type()
-        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
 
         if storage_type == 'oss':
             # Get OSS configuration
@@ -145,7 +145,7 @@ class VersionControlRegistry(abc.ABC):
         """
         self._dir_artifact.reload_working_files()
         resource_names = set()
-        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
 
         if self._dir_artifact.attachments:
             # Pattern to match version directories: {resource_name}_v{N}/{filename} or {resource_name}/{filename} (v0)
@@ -180,7 +180,7 @@ class VersionControlRegistry(abc.ABC):
         """List all versions of a resource by suffix."""
         versions = []
         self._dir_artifact.reload_working_files()
-        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+        base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
         
         # Pattern to match version directories: {name}_v{N}/ or {name}/ (v0)
         version_dir_pattern = re.compile(rf"^{re.escape(name)}(?:_v(\d+))?/")
@@ -229,7 +229,7 @@ class VersionControlRegistry(abc.ABC):
             from pathlib import Path
             from aworld.output.artifact import ArtifactAttachment
 
-            base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+            base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
 
             # Generate new version number
             new_version = await self.generate_new_version(name=name)
@@ -354,7 +354,7 @@ class VersionControlRegistry(abc.ABC):
                 return content
             else:
                 # For other suffixes (e.g., .yaml), read directly from filesystem
-                base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', './data/agent_registry'))
+                base_path = os.path.expanduser(os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
                 path = os.path.join(base_path, relative_path)
                 
                 if not os.path.exists(path):
