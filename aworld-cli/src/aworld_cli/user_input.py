@@ -218,6 +218,7 @@ class UserInputHandler:
                 event.app.invalidate()
         
         def toggle_selection(event):
+            """切换选择状态"""
             if state['current_index'] in state['selected_indices']:
                 state['selected_indices'].remove(state['current_index'])
             else:
@@ -239,8 +240,9 @@ class UserInputHandler:
         kb.add("j")(move_down)  # vim 风格
         kb.add("left")(move_up)  # 左箭头也支持
         kb.add("right")(move_down)  # 右箭头也支持
-        kb.add(" ")(toggle_selection)  # 空格键
-        kb.add("enter")(toggle_selection)  # 回车键选择/取消
+        kb.add(" ")(toggle_selection)  # 空格键切换选择
+        kb.add("enter")(toggle_selection)  # 回车键切换选择
+        kb.add("c-m")(toggle_selection)  # Ctrl+M 也是回车键
         kb.add("tab")(confirm_selection)  # Tab 键完成选择
         kb.add("c-c")(cancel_selection)  # Ctrl+C 取消
         kb.add("escape")(cancel_selection)  # ESC 取消
@@ -872,10 +874,6 @@ class UserInputHandler:
                 current_value = state['tab_states'].get(f'{tab_name}_value', default)
                 is_editing = state['tab_states'].get(f'{tab_name}_editing', False)
                 
-                # 显示标题和计数（如果有）
-                fragments.append(("class:input-title", f"{tab_title}\n"))
-                fragments.append(("", "\n"))
-                
                 # 搜索框样式 - 圆角边框，浅紫色（类似图片中的样式）
                 box_width = 60
                 
@@ -1089,6 +1087,26 @@ class UserInputHandler:
                     selected_indices.add(current_index)
                 state['tab_states'][tab_name] = selected_indices
                 event.app.invalidate()
+        
+        def handle_enter(event):
+            """处理回车键：多选时切换选择，其他情况确认"""
+            all_tabs = state.get('all_tabs', [])
+            if not all_tabs:
+                return
+            
+            current_tab_idx = state['current_tab_index']
+            if current_tab_idx >= len(all_tabs):
+                return
+            
+            current_tab = all_tabs[current_tab_idx]
+            tab_type = current_tab.get('type')
+            
+            # 如果是多选类型，回车键切换选择
+            if tab_type == 'multi_select':
+                toggle_selection(event)
+            else:
+                # 其他类型，回车键确认
+                confirm_selection(event)
         
         def confirm_selection(event):
             all_tabs = state.get('all_tabs', [])
@@ -1304,7 +1322,8 @@ class UserInputHandler:
         kb.add("left")(move_left)
         kb.add("right")(move_right)
         kb.add(" ")(toggle_selection)
-        kb.add("enter")(confirm_selection)
+        kb.add("enter")(handle_enter)
+        kb.add("c-m")(handle_enter)  # Ctrl+M 也是回车键
         kb.add("tab")(confirm_selection)
         kb.add("c-c")(cancel_selection)
         kb.add("escape")(cancel_selection)
@@ -1397,7 +1416,7 @@ class UserInputHandler:
             ("title", "bold #ffffff"),
             ("nav", "#888888"),
             ("nav-current", "bold #9d4edd"),
-            ("nav-completed", "#00ff00"),
+            ("nav-completed", "#888888"),
             ("nav-pending", "#888888"),
             ("separator", "#444444"),
             ("number", "#888888"),
