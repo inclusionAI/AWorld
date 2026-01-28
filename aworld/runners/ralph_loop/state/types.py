@@ -5,18 +5,12 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
-class LoopStatus:
-    INIT = "INIT"
-    RUNNING = "RUNNING"
-    COMPLETED = "COMPLETED"
-    FAILED = "FAILED"
-    PAUSED = "PAUSED"
-    TERMINATED = "TERMINATED"
+from aworld.core.context.base import Context
 
 
 @dataclass
 class LoopState:
+    """LoopState records the overall information during the task process, mainly used for stoping detection."""
     iteration: int = 0
     start_time: float = field(default_factory=time.time)
     cumulative_cost: float = 0.0
@@ -27,13 +21,14 @@ class LoopState:
         return time.time() - self.start_time
 
 
-@dataclass
-class LoopContext:
-    """Loop context."""
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    workspace: str = field(default=".")
-    repo_root: str = field(default=".")
-    is_primary: bool = field(default=True)
+class LoopContext(Context):
+    """Loop context records the global information of the entire process, primarily aimed at intermediate connections."""
+
+    def __init__(self, workspace: str = ".", repo_root=".", **kwargs):
+        super().__init__()
+        self._id = uuid.uuid4().hex
+        self.workspace = workspace
+        self.repo_root = repo_root
 
     def loop_dir(self) -> Path:
         return Path(self.workspace) / "loop"

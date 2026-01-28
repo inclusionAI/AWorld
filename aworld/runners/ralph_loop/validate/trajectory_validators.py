@@ -8,7 +8,7 @@ from aworld.evaluations.base import Scorer, ScorerResult, EvalStatus, MetricResu
 from aworld.evaluations.scorers import scorer_register
 
 from aworld.evaluations.scorers.llm_as_judge import LLMAsJudgeScorer
-from aworld.experimental.ralph_loop.validate.types import ValidationMetrics
+from aworld.runners.ralph_loop.validate.types import ValidationMetrics
 from aworld.logs.util import logger
 
 

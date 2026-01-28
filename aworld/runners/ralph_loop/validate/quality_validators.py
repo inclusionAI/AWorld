@@ -3,7 +3,7 @@
 from aworld.config import EvaluationConfig
 from aworld.evaluations.base import Scorer, EvalDataCase, ScorerResult, MetricResult, EvalCaseDataType
 from aworld.evaluations.scorers import scorer_register
-from aworld.experimental.ralph_loop.validate.types import ValidationMetrics
+from aworld.runners.ralph_loop.validate.types import ValidationMetrics
 
 
 @scorer_register(ValidationMetrics.READABILITY)

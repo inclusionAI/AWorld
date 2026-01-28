@@ -7,23 +7,20 @@ from typing import Optional, Generic
 from aworld.core.context.base import Context
 from aworld.evaluations.base import MetricResult, Scorer, EvalDataCase, EvalCaseDataType, ScorerResult
 from aworld.agents.llm_agent import Agent
-from aworld.config.conf import ModelConfig, AgentConfig
+from aworld.config.conf import ModelConfig, AgentConfig, EvaluationConfig
 from aworld.logs.util import logger
 from aworld.utils.run_util import exec_agent
 
 
 class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
-    """Scorer that uses an LLM agent as a judge to evaluate the quality of the response.
+    """Scorer that uses an LLM agent as a judge to evaluate the quality of the response."""
 
-    Args:
-        model_config (ModelConfig): Model configuration.
-    """
+    def __init__(self, name: str = None, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
+        super().__init__(name=name, eval_config=eval_config)
 
-    def __init__(self, model_config: ModelConfig = None):
-        super().__init__()
         self.model_config = model_config or ModelConfig(
             llm_provider=os.getenv('LLM_PROVIDER', 'openai'),
-            llm_model_name=os.getenv('LLM_MODEL_NAME', 'gpt-3.5-turbo'),
+            llm_model_name=os.getenv('LLM_MODEL_NAME'),
             llm_temperature=float(os.getenv('LLM_TEMPERATURE', 0.3)),
             llm_base_url=os.getenv('LLM_BASE_URL', None),
             llm_api_key=os.getenv('LLM_API_KEY', None),
@@ -89,7 +86,7 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
             return ScorerResult(scorer_name=self.name, metric_results=metric_results)
         return ScorerResult(scorer_name=self.name, metric_results={})
 
-    def fetch_json_from_result(self, input_str):
+    def fetch_json_from_result(self, input_str) -> dict:
         json_match = re.search(r'\{[^{}]*\}', input_str, re.DOTALL)
         if json_match:
             json_str = json_match.group(0)
@@ -97,7 +94,7 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
                 return json.loads(json_str)
             except json.JSONDecodeError as e:
                 logger.warning(f"_fetch_json_from_result json_str: {json_str} error: {e}")
-        return ""
+        return {}
 
     def _build_judge_system_prompt(self) -> str:
         """Get system prompt for judge model.

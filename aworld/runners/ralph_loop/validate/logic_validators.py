@@ -4,7 +4,7 @@ from aworld.evaluations.base import MetricResult, EvalDataCase
 from aworld.evaluations.scorers import scorer_register
 from aworld.config.conf import ModelConfig, EvaluationConfig
 from aworld.evaluations.scorers.llm_as_judge import LLMAsJudgeScorer
-from aworld.experimental.ralph_loop.validate.types import ValidationMetrics
+from aworld.runners.ralph_loop.validate.types import ValidationMetrics
 
 
 class LogicValidator(LLMAsJudgeScorer):
