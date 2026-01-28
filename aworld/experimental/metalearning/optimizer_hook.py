@@ -11,11 +11,11 @@ from aworld.runners.hook.hooks import PostTaskCallHook
 from aworldspace.backgroundtask.backgroundtask import execute_background_task
 
 # Add pipelines directory to Python path to enable aworldspace imports
-_pipelines_path = Path(__file__).parent.parent.parent
-if _pipelines_path.exists() and str(_pipelines_path) not in sys.path:
-    sys.path.insert(0, str(_pipelines_path))
+# _pipelines_path = Path(__file__).parent.parent.parent
+# if _pipelines_path.exists() and str(_pipelines_path) not in sys.path:
+#     sys.path.insert(0, str(_pipelines_path))
 
-from aworld.experimental.metalearning.learning.meta_learning_strategy import meta_learning_strategy
+from aworld.experimental.metalearning.optimizer.meta_learning_strategy import meta_learning_strategy
 from aworld.experimental.metalearning.reward.gaia_reward import gaia_match_reward
 
 

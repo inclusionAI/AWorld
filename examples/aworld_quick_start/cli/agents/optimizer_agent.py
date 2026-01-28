@@ -8,10 +8,9 @@ from aworld.core.common import Observation, ActionModel
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.amni import TaskInput, workspace_repo, \
     AmniContextConfig
-from aworld.core.context.amni.services.trajectory_service import TrajType
-from aworld.core.context.amni.services.trajectory_service import get_artifact_data
+from aworld.experimental.metalearning.knowledge.knowledge import TrajType, get_artifact_data
 from aworld.core.event.base import Message
-from aworld.experimental.metalearning.learning.meta_learning_strategy import meta_learning_strategy
+from aworld.experimental.metalearning.optimizer.meta_learning_strategy import meta_learning_strategy
 from aworld.experimental.metalearning.reward.gaia_reward import gen_simple_message_reward_function
 from aworld.logs.util import logger
 

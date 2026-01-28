@@ -108,6 +108,13 @@ class LocalAgent(BaseModel):
         ...     ...
         ... )
     """
+    
+    register_dir: Optional[str] = Field(default=None, description="Directory where agent is registered")
+    """Directory path where the agent is registered from.
+    
+    This is automatically set by the @agent decorator based on the file location
+    where the agent is defined. Used for filtering agents by source directory.
+    """
 
     async def get_swarm(self, context: Context = None) -> Swarm:
         """Get the Swarm instance, initializing if necessary.
@@ -467,7 +474,8 @@ def agent(
     desc: Optional[str] = None,
     context_config: Optional[AmniContextConfig] = None,
     metadata: Optional[dict] = None,
-    hooks: Optional[List[str]] = None
+    hooks: Optional[List[str]] = None,
+    register_dir: Optional[str] = None
 ) -> Callable:
     """Decorator for registering LocalAgent instances.
     
@@ -506,6 +514,9 @@ def agent(
         desc: Agent description or purpose.
         context_config: Configuration for application context management.
         metadata: Additional metadata dictionary for agent information.
+        hooks: Optional list of hook names (registered with HookFactory).
+        register_dir: Optional directory path where agent is registered. If not provided,
+                     will be automatically detected from the function's source file location.
     
     Returns:
         A decorator function that registers the LocalAgent.
@@ -534,10 +545,23 @@ def agent(
     if callable(name):
         func = name
         # Function decorator: @agent (without parameters)
+        # Try to get register_dir from function's source file
+        func_register_dir = None
+        try:
+            source_file = inspect.getsourcefile(func)
+            if source_file:
+                from pathlib import Path
+                func_register_dir = str(Path(source_file).parent.resolve())
+        except Exception:
+            pass
+        
         if inspect.iscoroutinefunction(func):
             async def async_wrapper(*args, **kwargs):
                 result = await func(*args, **kwargs)
                 if isinstance(result, LocalAgent):
+                    # Set register_dir if not already set
+                    if not result.register_dir and func_register_dir:
+                        result.register_dir = func_register_dir
                     logger.info(f"Registering agent: {result.name}")
                     LocalAgentRegistry.register(result)
                 return result
@@ -546,6 +570,9 @@ def agent(
             def sync_wrapper(*args, **kwargs):
                 result = func(*args, **kwargs)
                 if isinstance(result, LocalAgent):
+                    # Set register_dir if not already set
+                    if not result.register_dir and func_register_dir:
+                        result.register_dir = func_register_dir
                     logger.info(f"Registering agent: {result.name}")
                     LocalAgentRegistry.register(result)
                 return result
@@ -555,6 +582,17 @@ def agent(
     def decorator(func: Callable) -> Callable:
         if not name:
             raise ValueError("name is required when using @agent decorator with parameters")
+        
+        # Get register_dir from function's source file if not explicitly provided
+        func_register_dir = register_dir
+        if not func_register_dir:
+            try:
+                source_file = inspect.getsourcefile(func)
+                if source_file:
+                    from pathlib import Path
+                    func_register_dir = str(Path(source_file).parent.resolve())
+            except Exception:
+                pass
         
         # Create a wrapper function that checks return type and wraps Agent to Swarm if needed
         # Preserve the original function signature using functools.wraps
@@ -585,7 +623,8 @@ def agent(
             swarm=swarm_wrapper,  # Use the wrapper function as swarm factory
             context_config=context_config or AmniConfigFactory.create(),
             metadata=metadata or {"creator": "aworld-cli", "version": "1.0.0"},
-            hooks=hooks
+            hooks=hooks,
+            register_dir=func_register_dir
         )
 
         logger.info(f"Registering agent: {local_agent.name}")

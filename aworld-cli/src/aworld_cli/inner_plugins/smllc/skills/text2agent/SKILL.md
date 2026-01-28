@@ -628,7 +628,7 @@ from aworld.core.event.base import Message
 from aworld.logs.util import logger
 from aworld.models.llm import acall_llm_model
 from aworld_cli.core import agent
-from mcp_config import mcp_config
+from gaia_agent.mcp_config import mcp_config
 
 
 class SimpleAgent(BaseAgent[Observation, List[ActionModel]]):

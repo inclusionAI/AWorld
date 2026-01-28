@@ -93,6 +93,10 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
     
     if all_python_files:
         console.print(f"[dim]🔍 Found {len(all_python_files)} Python file(s), {len(python_files)} with @agent decorator[/dim]")
+        if python_files:
+            console.print(f"[dim]  Files with @agent decorator:[/dim]")
+            for py_file in python_files:
+                console.print(f"[dim]    • {py_file.relative_to(agents_dir) if agents_dir.exists() else py_file}[/dim]")
     elif markdown_agents:
         console.print(f"[dim]🔍 Found {len(markdown_agents)} markdown agent file(s)[/dim]")
     
@@ -164,10 +168,24 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
                 # Note: We don't use Status here because the module execution might create its own Status
                 # which would conflict with "Only one live display may be active at once"
                 try:
+                    # Get agent count before loading
+                    agents_before = len(LocalAgentRegistry.list_agents())
                     spec.loader.exec_module(module)
                     loaded_count += 1
+                    # Get agent count after loading
+                    agents_after = len(LocalAgentRegistry.list_agents())
+                    agents_registered = agents_after - agents_before
                     file_path = str(py_file.resolve())
-                    console.print(f"[dim]✅ Loaded agent from: {file_path}[/dim]")
+                    if agents_registered > 0:
+                        # Get the names of newly registered agents
+                        all_agents = LocalAgentRegistry.list_agents()
+                        new_agents = all_agents[-agents_registered:] if agents_registered > 0 else []
+                        agent_names = [a.name for a in new_agents]
+                        console.print(f"[dim]✅ Loaded {agents_registered} agent(s) from: {file_path}[/dim]")
+                        for agent_name in agent_names:
+                            console.print(f"[dim]    • Registered agent: {agent_name}[/dim]")
+                    else:
+                        console.print(f"[dim]✅ Loaded module (no new agents registered): {file_path}[/dim]")
                 except Exception as import_error:
                     failed_count += 1
                     error_msg = str(import_error)
