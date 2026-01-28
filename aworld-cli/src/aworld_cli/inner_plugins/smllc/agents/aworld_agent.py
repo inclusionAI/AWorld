@@ -12,10 +12,7 @@ import os
 import sys
 from typing import Optional, List
 
-from aworld.core.context.amni.config import AgentContextConfig, get_default_config, ContextEnvConfig
-from aworld.experimental.registry_workspace import CONTEXT_AGENT_REGISTRY
 from aworld.logs.util import logger
-from aworld.tools.human.human import HUMAN
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -24,7 +21,7 @@ from aworld.core.agent.swarm import TeamSwarm, Swarm
 from aworld.core.agent.base import BaseAgent
 from aworld_cli.core import agent, LocalAgentRegistry
 from aworld_cli.core.loader import init_agents
-from aworld.experimental.registry_workspace.agent_version_control_registry import global_agent_registry
+from aworld.experimental.loaders.agent_version_control_registry import global_agent_registry
 import asyncio
 from aworld.config import AgentConfig, ModelConfig
 from aworld.utils.skill_loader import collect_skill_docs
@@ -551,7 +548,19 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         name="Aworld",
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
-        system_prompt=aworld_system_prompt
+        system_prompt=aworld_system_prompt,
+        mcp_servers=["terminal-server"],
+        mcp_config={
+           "mcpServers": {
+              "terminal-server": {
+                 "command": "python",
+                 "args": [
+                    "-m",
+                    "aworld_cli.inner_plugins.smllc.agents.mcp_tool.terminal_server"
+                 ]
+              }
+           }
+        }
     )
 
     # Load all registered agents as sub-agents

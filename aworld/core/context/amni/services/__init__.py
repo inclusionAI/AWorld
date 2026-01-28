@@ -7,9 +7,9 @@ from .task_state_service import TaskStateService, ITaskStateService
 from .memory_service import MemoryService, IMemoryService
 from .prompt_service import PromptService, IPromptService
 from .freedom_space_service import FreedomSpaceService, IFreedomSpaceService
-from aworld.experimental.registry_workspace.agent_version_control_registry import AgentVersionControlRegistry
-from aworld.experimental.registry_workspace.swarm_version_control_registry import SwarmVersionControlRegistry
-from aworld.experimental.registry_workspace.version_control_registry import VersionControlRegistry
+from aworld.experimental.loaders.agent_version_control_registry import AgentVersionControlRegistry
+from aworld.experimental.loaders.swarm_version_control_registry import SwarmVersionControlRegistry
+from aworld.experimental.loaders.version_control_registry import VersionControlRegistry
 
 __all__ = [
     'KnowledgeService',

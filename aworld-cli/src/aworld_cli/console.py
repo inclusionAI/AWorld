@@ -876,9 +876,10 @@ class AWorldCLI:
                 # Handle agents command
                 if user_input.lower() in ("/agents", "agents"):
                     try:
+                        self.console.print("[bold cyan]📋 Loading agents...[/bold cyan]")
                         from .runtime.cli import CliRuntime
                         from .runtime.loaders import PluginLoader
-                        from aworld.experimental.registry_workspace.agent_version_control_registry import global_agent_registry
+                        from aworld.experimental.loaders.agent_version_control_registry import global_agent_registry
                         from pathlib import Path
                         import os
 
@@ -886,16 +887,22 @@ class AWorldCLI:
                         user_agents = []
                         base_path = os.path.expanduser(
                             os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
+                        self.console.print(f"[dim]User agents storage path: {base_path}[/dim]")
 
                         # Load Built-in agents from plugins using PluginLoader
+                        self.console.print("[dim]→ Loading Built-in agents from plugins...[/dim]")
                         try:
                             # Get built-in plugin directories
                             runtime = CliRuntime()
                             plugin_dirs = runtime.plugin_dirs
+                            self.console.print(f"[dim]  Found {len(plugin_dirs)} plugin directory(ies)[/dim]")
 
                             # Load agents from each plugin using PluginLoader
                             for plugin_dir in plugin_dirs:
                                 try:
+                                    self.console.print(f"[dim]  Loading from plugin: {plugin_dir.name}[/dim]")
+                                    self.console.print(f"[dim]    Plugin path: {plugin_dir}[/dim]")
+                                    self.console.print(f"[dim]    Agents directory: {plugin_dir / 'agents'}[/dim]")
                                     loader = PluginLoader(plugin_dir, console=self.console)
                                     # Load agents from plugin (this also loads skills internally)
                                     plugin_agents = await loader.load_agents()
@@ -904,15 +911,29 @@ class AWorldCLI:
                                         if not hasattr(agent, 'source_type') or not agent.source_type:
                                             agent.source_type = "BUILT-IN"
                                     built_in_agents.extend(plugin_agents)
+                                    # Show detailed agent information
+                                    if plugin_agents:
+                                        self.console.print(f"[green]  ✓ Loaded {len(plugin_agents)} agent(s) from {plugin_dir.name}:[/green]")
+                                        for agent in plugin_agents:
+                                            source = getattr(agent, 'source_location', 'unknown')
+                                            self.console.print(f"[dim]    • {agent.name} (from: {source})[/dim]")
+                                    else:
+                                        self.console.print(f"[dim]  ℹ️  No agents found in {plugin_dir.name}[/dim]")
                                 except Exception as e:
                                     self.console.print(
-                                        f"[yellow]⚠️ Failed to load Built-in agents from plugin {plugin_dir.name}: {e}[/yellow]")
+                                        f"[yellow]⚠️  Failed to load Built-in agents from plugin {plugin_dir.name}: {e}[/yellow]")
+                                    import traceback
+                                    self.console.print(f"[dim]    {traceback.format_exc()}[/dim]")
+                            if built_in_agents:
+                                self.console.print(f"[green]✓ Successfully loaded {len(built_in_agents)} Built-in agent(s) total[/green]")
                         except Exception as e:
-                            self.console.print(f"[yellow]⚠️ Failed to load Built-in agents from plugins: {e}[/yellow]")
+                            self.console.print(f"[yellow]⚠️  Failed to load Built-in agents from plugins: {e}[/yellow]")
                         
                         # Load User agents from AgentVersionControlRegistry default instance
+                        self.console.print(f"[dim]→ Loading User agents from registry ({base_path})...[/dim]")
                         try:
                             agent_list = await global_agent_registry.list_desc()
+                            self.console.print(f"[dim]  Found {len(agent_list)} agent(s) in registry[/dim]")
                             for name, desc in agent_list:
                                 agent_info = AgentInfo(
                                     name=name,
@@ -921,25 +942,36 @@ class AWorldCLI:
                                     source_location=base_path
                                 )
                                 user_agents.append(agent_info)
+                            if user_agents:
+                                self.console.print(f"[green]✓ Successfully loaded {len(user_agents)} User agent(s)[/green]")
                         except Exception as e:
-                            self.console.print(f"[yellow]⚠️ Failed to load User agents from registry: {e}[/yellow]")
+                            self.console.print(f"[yellow]⚠️  Failed to load User agents from registry: {e}[/yellow]")
+                            self.console.print(f"[dim]  Registry path: {base_path}[/dim]")
+                        
+                        # Display summary
+                        total_agents = len(built_in_agents) + len(user_agents)
+                        self.console.print(f"\n[bold]Summary:[/bold] {total_agents} agent(s) found ({len(built_in_agents)} Built-in, {len(user_agents)} User)")
                         
                         # Display Built-in agents in a separate table
                         if built_in_agents:
+                            self.console.print("\n[bold cyan]Built-in Agents:[/bold cyan]")
                             self.display_agents(built_in_agents, source_type="BUILT-IN")
                         else:
                             self.console.print("[dim]No Built-in agents available.[/dim]")
                         
                         # Display User agents in a separate table
                         if user_agents:
+                            self.console.print("\n[bold cyan]User Agents:[/bold cyan]")
                             self.display_agents(user_agents, source_type="USER", source_location=base_path)
                         else:
                             self.console.print("[dim]No User agents available.[/dim]")
                         
                         if not built_in_agents and not user_agents:
-                            self.console.print("[yellow]No agents available.[/yellow]")
+                            self.console.print("[yellow]⚠️  No agents available.[/yellow]")
                     except Exception as e:
-                        self.console.print(f"[red]Error loading agents: {e}[/red]")
+                        self.console.print(f"[bold red]❌ Error loading agents:[/bold red] {e}")
+                        import traceback
+                        self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
                     continue
 
                 # Handle visualize command

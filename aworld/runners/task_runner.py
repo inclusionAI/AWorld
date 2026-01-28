@@ -208,7 +208,7 @@ class TaskRunner(Runner):
         """Execute post-run hooks after task completion."""
         # Lazy import to avoid circular import
         # This registers MetaLearningTrajectoryRecordHook to HookFactory
-        import aworld.experimental.metalearning.traj.meta_learning_traj_record_hook  # noqa: F401
+        import aworld.experimental.metalearning.knowledge.meta_learning_traj_record_hook  # noqa: F401
         try:
             async for _ in run_hooks(
                 context=self.context,

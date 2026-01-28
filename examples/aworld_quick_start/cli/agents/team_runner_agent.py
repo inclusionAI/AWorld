@@ -12,7 +12,7 @@ from aworld.config import TaskConfig
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.amni import ApplicationContext, workspace_repo, AmniContextConfig, TaskInput
 from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
-from aworld.core.context.amni.services.trajectory_service import TrajectoryService
+from aworld.experimental.metalearning.knowledge.knowledge import TrajectoryService
 from aworld.core.context.amni.utils.storage import FileTrajectoryStorage
 from aworld.core.event.base import Message
 from aworld.core.task import Task
