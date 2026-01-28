@@ -1,5 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import time
+
 import asyncio
 import json
 import os
@@ -24,7 +26,7 @@ from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.prompt_log import PromptLogger
-from aworld.logs.util import logger, Color
+from aworld.logs.util import logger, Color, digest_logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
@@ -579,6 +581,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             logger.info(f"🧠 [Agent:{self.id()}] Found {len(pending_items)} pending memory items, "
                         f"holding task execution. Pending content: {pending_items[0]}...")
             self._finished = False
+        if self._finished:
+            from aworld.core.context.amni import AmniContext
+            duration = None
+            if isinstance(message.context, AmniContext):
+                agent_start_times = message.context.get("agent_start_times") or {}
+                if isinstance(agent_start_times, dict):
+                    start_time = agent_start_times.get(self.id())
+                    if isinstance(start_time, (int, float)):
+                        duration = round(time.time() - start_time, 2)
+            if duration is None:
+                duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
+            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}")
         return self._agent_result(
             policy_result,
             policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer,
