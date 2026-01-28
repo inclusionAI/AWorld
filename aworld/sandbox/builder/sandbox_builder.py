@@ -16,6 +16,7 @@ class SandboxBuilder:
         self._env_type: Optional[int] = None
         self._metadata: Optional[Dict[str, str]] = None
         self._timeout: Optional[int] = None
+        self._mode: Optional[str] = None
         self._mcp_servers: Optional[List[str]] = None
         self._mcp_config: Optional[Any] = None
         self._black_tool_actions: Optional[Dict[str, List[str]]] = None
@@ -59,6 +60,19 @@ class SandboxBuilder:
         """Set timeout."""
         self._auto_commit_current_agent()
         self._timeout = timeout
+        return self
+
+    def mode(self, mode: str) -> 'SandboxBuilder':
+        """Set sandbox execution mode.
+
+        Args:
+            mode: Execution mode, supports "local" or "remote". Defaults to "local".
+
+        Returns:
+            SandboxBuilder: Self for method chaining.
+        """
+        self._auto_commit_current_agent()
+        self._mode = mode
         return self
     
     def mcp_servers(self, mcp_servers: List[str]) -> 'SandboxBuilder':
@@ -244,6 +258,8 @@ class SandboxBuilder:
             kwargs['metadata'] = self._metadata
         if self._timeout is not None:
             kwargs['timeout'] = self._timeout
+        if self._mode is not None:
+            kwargs['mode'] = self._mode
         if self._mcp_servers is not None:
             kwargs['mcp_servers'] = self._mcp_servers
         if self._mcp_config is not None:

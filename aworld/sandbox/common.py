@@ -22,24 +22,25 @@ class BaseSandbox(Sandbox):
     """
 
     def __init__(
-            self,
-            sandbox_id: Optional[str] = None,
-            env_type: Optional[int] = None,
-            metadata: Optional[Dict[str, str]] = None,
-            timeout: Optional[int] = None,
-            mcp_servers: Optional[List[str]] = None,
-            mcp_config: Optional[Any] = None,
-            black_tool_actions: Optional[Dict[str, List[str]]] = None,
-            skill_configs: Optional[Any] = None,
-            tools: Optional[List[str]] = None,
-            registry_url: Optional[str] = None,
-            custom_env_tools: Optional[Any] = None,
-            agents: Optional[Dict[str, Any]] = None,
-            streaming: bool = False,
-            env_content_name: Optional[str] = None,
-            env_content: Optional[Dict[str, Any]] = None,
-            reuse: bool = False,
-            workspace: Optional[List[str]] = None,
+        self,
+        sandbox_id: Optional[str] = None,
+        env_type: Optional[int] = None,
+        metadata: Optional[Dict[str, str]] = None,
+        timeout: Optional[int] = None,
+        mcp_servers: Optional[List[str]] = None,
+        mcp_config: Optional[Any] = None,
+        black_tool_actions: Optional[Dict[str, List[str]]] = None,
+        skill_configs: Optional[Any] = None,
+        tools: Optional[List[str]] = None,
+        registry_url: Optional[str] = None,
+        custom_env_tools: Optional[Any] = None,
+        agents: Optional[Dict[str, Any]] = None,
+        streaming: bool = False,
+        env_content_name: Optional[str] = None,
+        env_content: Optional[Dict[str, Any]] = None,
+        reuse: bool = False,
+        workspace: Optional[List[str]] = None,
+        mode: str = "local",
     ):
         """
         Initialize a new BaseSandbox instance.
@@ -104,7 +105,8 @@ class BaseSandbox(Sandbox):
             env_content_name=env_content_name,
             env_content=env_content,
             reuse=reuse,
-            workspace=workspace
+            workspace=workspace,
+            mode=mode,
         )
         self._logger = self._setup_logger()
         # Track if sandbox has been initialized (for lazy initialization support)
