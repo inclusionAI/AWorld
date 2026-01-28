@@ -230,6 +230,8 @@ class McpServers:
                 async def progress_callback(
                         progress: float, total: float | None, message: str | None
                 ):
+                    if not context:
+                        return
                     # for debug vnc
                     message_str = message.replace('\n', '\\n') if message else message
                     logger.info(f"McpServers|progress_callback|{progress}|{total}|{message_str}")

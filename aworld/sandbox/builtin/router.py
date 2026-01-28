@@ -7,8 +7,6 @@ import json
 from typing import Dict, Any, Optional, List, TYPE_CHECKING
 
 from aworld.logs.util import logger
-from aworld.sandbox.builtin.base import SERVICE_TOOL_MAPPING
-from aworld.sandbox.builtin.exceptions import ToolNotAvailableError, ToolNotConfiguredError
 from aworld.sandbox.builtin.validator import BuiltinToolValidator
 
 if TYPE_CHECKING:
@@ -143,6 +141,64 @@ class BuiltinToolRouter:
         
         return str(result)
     
+    def _normalize_result(
+        self,
+        service_name: str,
+        tool_name: str,
+        source: str,
+        raw: Any,
+    ) -> Dict[str, Any]:
+        """Normalize local/remote raw result to a minimal unified schema.
+
+        Final schema (three core fields):
+            {
+                "success": bool,
+                "data": Any,
+                "error": str | None,
+            }
+        """
+        # Convention: error strings start with "Error:"
+        if isinstance(raw, str) and raw.startswith("Error:"):
+            msg = raw
+            err = raw[len("Error:"):].strip() or raw
+            return {
+                "success": False,
+                "data": None,
+                "error": err or msg,
+            }
+
+        # Remote terminal/other tools may return structured JSON (already parsed to dict)
+        if isinstance(raw, dict):
+            success = raw.get("success")
+            message = raw.get("message")
+
+            # If remote result already has a success field, respect it
+            if success is not None:
+                success_bool = bool(success)
+                data = raw.get("data", raw)
+                error = raw.get("error")
+                if not success_bool and not error and isinstance(message, str):
+                    error = message
+                return {
+                    "success": success_bool,
+                    "data": data,
+                    "error": error,
+                }
+
+            # If there is no success field, treat the whole dict as successful data
+            return {
+                "success": True,
+                "data": raw,
+                "error": None,
+            }
+
+        # Other types (plain string/list/etc.) are treated as successful data
+        return {
+            "success": True,
+            "data": raw,
+            "error": None,
+        }
+    
     async def route_call(
         self,
         service_name: str,
@@ -150,59 +206,75 @@ class BuiltinToolRouter:
         builtin_impl: Any,
         **kwargs
     ) -> Any:
-        """Route tool call to MCP server or builtin implementation.
+        """Route tool call by sandbox.mode: local -> builtin, remote -> MCP.
+        
+        - mode=local: Always use local FilesystemTool/TerminalTool (local workspace/bash).
+        - mode=remote: Use MCP servers for filesystem/terminal; if service not configured
+          or tool call fails, returns an error result.
         
         Args:
             service_name: Service name (filesystem/terminal)
             tool_name: Tool name to call
             builtin_impl: Builtin tool implementation instance
-            *args: Method arguments
             **kwargs: Method keyword arguments
             
         Returns:
-            Tool execution result
-            
-        Raises:
-            ToolNotAvailableError: If user configured service but tool doesn't exist
-            ToolNotConfiguredError: If service not configured and no fallback
+            Dict with unified schema:
+                {
+                    "success": bool,
+                    "data": Any,
+                    "error": str | None,
+                }
         """
-        # Check if user has configured this service
-        if await self._has_user_config(service_name):
-            # User has configured the service, validate tool exists
-            available_tools = None
-            if hasattr(self.sandbox, 'mcpservers') and self.sandbox.mcpservers:
-                # Try cache first
-                available_tools = self.sandbox.mcpservers.tool_list
-            
-            if not await self._validate_tool_exists(service_name, tool_name, available_tools):
-                # Tool not found in user configuration
-                raise ToolNotAvailableError(service_name, tool_name)
-            
-            # Tool exists, use MCP call
-            logger.info(f"Using MCP server for {service_name}.{tool_name}")
-            
-            # Convert arguments to tool parameters
+        mode = getattr(self.sandbox, "mode", "local") or "local"
+        mode = str(mode).lower().strip()
+
+        # mode=local: always use local implementation (workspace / bash)
+        if mode == "local":
+            logger.info(f"Mode=local: using builtin implementation for {service_name}.{tool_name}")
+            raw = await builtin_impl.execute(tool_name, **kwargs)
+            return self._normalize_result(service_name, tool_name, "local", raw)
+
+        # mode=remote: always use sandbox.call_tool to reach remote services.
+        # Before calling, ensure that the corresponding service (filesystem/terminal)
+        # is configured in mcp_config.
+        if mode == "remote":
+            # In remote mode, the target service must exist, otherwise return an error
+            if not await self._has_user_config(service_name):
+                msg = (
+                    f"In remote mode but no '{service_name}' service configured in mcp_config. "
+                    f"Add mcp_config['mcpServers']['{service_name}'] to use remote {service_name}."
+                )
+                logger.warning(msg)
+                return self._normalize_result(service_name, tool_name, "remote", f"Error: {msg}")
+
+            logger.info(f"Mode=remote: using MCP server for {service_name}.{tool_name}")
             params = await self._convert_args_to_tool_params(service_name, tool_name, **kwargs)
-            
-            # Call MCP tool
-            # Context is optional for MCP calls
-            context = getattr(self.sandbox, '_current_context', None)
-            results = await self.sandbox.mcpservers.call_tool(
-                action_list=[{
-                    "tool_name": service_name,
-                    "action_name": tool_name,
-                    "params": params
-                }],
-                context=context
-            )
-            
-            # Parse and return result
-            return await self._parse_tool_result(results)
-        
-        else:
-            # User has not configured the service, use builtin implementation
-            logger.info(f"Using builtin implementation for {service_name}.{tool_name}")
-            
-            # Call builtin implementation
-            return await builtin_impl.execute(tool_name, **kwargs)
+            try:
+                results = await self.sandbox.call_tool(
+                    action_list=[{
+                        "tool_name": service_name,
+                        "action_name": tool_name,
+                        "params": params,
+                    }],
+                )
+                parsed = await self._parse_tool_result(results)
+                if parsed is None:
+                    return self._normalize_result(
+                        service_name, tool_name, "remote", "Error: Remote tool returned no result."
+                    )
+                return self._normalize_result(service_name, tool_name, "remote", parsed)
+            except Exception as e:
+                logger.warning(f"Remote {service_name}.{tool_name} failed: {e}")
+                return self._normalize_result(
+                    service_name,
+                    tool_name,
+                    "remote",
+                    f"Error: Remote tool call failed: {str(e)}",
+                )
+
+        # Unknown mode: treat as local
+        logger.info(f"Unknown mode={mode!r}, using builtin implementation for {service_name}.{tool_name}")
+        raw = await builtin_impl.execute(tool_name, **kwargs)
+        return self._normalize_result(service_name, tool_name, "local", raw)
 
