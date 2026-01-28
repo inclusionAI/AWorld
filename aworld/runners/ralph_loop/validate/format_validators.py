@@ -7,7 +7,7 @@ from typing import Any, Dict
 from aworld.config import EvaluationConfig
 from aworld.evaluations.base import Scorer, EvalDataCase, ScorerResult, MetricResult
 from aworld.evaluations.scorers import scorer_register
-from aworld.experimental.ralph_loop.validate.types import ValidationMetrics
+from aworld.runners.ralph_loop.validate.types import ValidationMetrics
 
 
 @scorer_register(ValidationMetrics.FORMAT_CORRECTNESS)
@@ -29,7 +29,6 @@ class FormatValidationScorer(Scorer):
         score = 1.0 if is_valid else 0.0
         metric_result: MetricResult = {
             "value": score,
-
             "metadata": {
                 "format_type": format_type,
                 "error": error_msg,
@@ -147,7 +146,6 @@ class SchemaValidationScorer(Scorer):
         if not schema:
             metric_result: MetricResult = {
                 "value": 1.0,
-
                 "metadata": {"skipped": True, "reason": "No schema provided"}
             }
             return ScorerResult(

@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
+import os
 import re
 from typing import Any, Dict, List, Optional
 
@@ -7,7 +8,7 @@ from aworld.config import EvaluationConfig, ModelConfig
 from aworld.evaluations.base import Scorer, ScorerResult, EvalStatus, MetricResult, EvalDataCase, EvalCaseDataType
 from aworld.evaluations.scorers import scorer_register
 from aworld.evaluations.scorers.llm_as_judge import LLMAsJudgeScorer
-from aworld.experimental.ralph_loop.validate.types import ValidationMetrics
+from aworld.runners.ralph_loop.validate.types import ValidationMetrics
 
 
 @scorer_register(ValidationMetrics.OUTPUT_CORRECTNESS)
@@ -195,7 +196,16 @@ class OutputLlmScore(LLMAsJudgeScorer):
         return None
 
 
-@scorer_register(ValidationMetrics.OUTPUT_RELEVANCE)
+@scorer_register(
+    ValidationMetrics.OUTPUT_RELEVANCE,
+    model_config=ModelConfig(
+        llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER")),
+        llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
+        llm_temperature=float(os.getenv("VALIDATE_LLM_TEMPERATURE", os.getenv("LLM_TEMPERATURE", "0.7"))),
+        llm_base_url=os.getenv("VALIDATE_LLM_BASE_URL", os.getenv("LLM_BASE_URL")),
+        llm_api_key=os.getenv("VALIDATE_LLM_API_KEY", os.getenv("LLM_API_KEY")),
+    )
+)
 class OutputRelevanceScorer(OutputLlmScore):
     """Verify the correlation between the answer and the question
 
@@ -204,6 +214,7 @@ class OutputRelevanceScorer(OutputLlmScore):
         The answer deviate from the topic.
         The answer contain irrelevant content.
     """
+
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
         super().__init__(name=ValidationMetrics.OUTPUT_RELEVANCE, eval_config=eval_config, model_config=model_config)
 
@@ -263,7 +274,16 @@ Please strictly output in the following JSON format:
 """
 
 
-@scorer_register(ValidationMetrics.OUTPUT_COMPLETENESS)
+@scorer_register(
+    ValidationMetrics.OUTPUT_COMPLETENESS,
+    model_config=ModelConfig(
+        llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER")),
+        llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
+        llm_temperature=float(os.getenv("VALIDATE_LLM_TEMPERATURE", os.getenv("LLM_TEMPERATURE", "0.7"))),
+        llm_base_url=os.getenv("VALIDATE_LLM_BASE_URL", os.getenv("LLM_BASE_URL")),
+        llm_api_key=os.getenv("VALIDATE_LLM_API_KEY", os.getenv("LLM_API_KEY")),
+    )
+)
 class OutputCompletenessScorer(OutputLlmScore):
     """Verify the completeness of the answer
 
@@ -272,6 +292,7 @@ class OutputCompletenessScorer(OutputLlmScore):
         Miss any key information
         Covered all aspects of the problem
     """
+
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
         super().__init__(name=ValidationMetrics.OUTPUT_COMPLETENESS, eval_config=eval_config, model_config=model_config)
 
@@ -343,7 +364,16 @@ Please strictly output in the following JSON format:
         return prompt
 
 
-@scorer_register(ValidationMetrics.OUTPUT_QUALITY)
+@scorer_register(
+    ValidationMetrics.OUTPUT_QUALITY,
+    model_config=ModelConfig(
+        llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER")),
+        llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
+        llm_temperature=float(os.getenv("VALIDATE_LLM_TEMPERATURE", os.getenv("LLM_TEMPERATURE", "0.7"))),
+        llm_base_url=os.getenv("VALIDATE_LLM_BASE_URL", os.getenv("LLM_BASE_URL")),
+        llm_api_key=os.getenv("VALIDATE_LLM_API_KEY", os.getenv("LLM_API_KEY")),
+    )
+)
 class OutputQualityScorer(OutputLlmScore):
     """Comprehensive evaluation of answer quality
 
@@ -354,6 +384,7 @@ class OutputQualityScorer(OutputLlmScore):
         Clarity
         Professionalism
     """
+
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
         super().__init__(name=ValidationMetrics.OUTPUT_QUALITY, eval_config=eval_config, model_config=model_config)
 

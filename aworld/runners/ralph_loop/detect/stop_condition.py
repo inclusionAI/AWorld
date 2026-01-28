@@ -7,8 +7,8 @@ from abc import ABC, abstractmethod
 from typing import Optional, List
 
 import aworld
-from aworld.experimental.ralph_loop.detect.types import StopState, StopDecision, StopType
 from aworld.logs.util import logger
+from aworld.runners.ralph_loop.detect.types import StopState, StopDecision, StopType
 
 
 class StopCondition(ABC):
@@ -267,7 +267,7 @@ class SystemErrorCondition(ErrorCondition):
 
 
 class ResourceExhaustedCondition(ErrorCondition):
-    def __init__(self, memory_threshold_mb: int = 1024, disk_threshold_mb: int = 10000):
+    def __init__(self, memory_threshold_mb: int = 1024, disk_threshold_mb: int = 1000):
         super().__init__()
         self.memory_threshold = memory_threshold_mb * 1024 * 1024
         self.disk_threshold = disk_threshold_mb * 1024 * 1024
