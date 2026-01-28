@@ -17,7 +17,7 @@ class StopCondition(ABC):
     Ensure atomic detection as much as possible and avoid logical coupling.
     """
 
-    def __init__(self, priority: int = 10):
+    def __init__(self, priority: int = 5):
         self.priority = priority
         self.enabled = True
 
@@ -30,8 +30,10 @@ class StopCondition(ABC):
 
         Returns:
             StopDecision: Terminate Decision
+
+        Errors:
+            May throw exceptions, call `safe_check` can be used more safely.
         """
-        pass
 
     async def safe_check(self, state: StopState) -> StopDecision:
         if not self.enabled:
@@ -53,7 +55,7 @@ class CompletionCondition(StopCondition):
     """Complete Condition Detector - Check if the task has been successfully completed."""
 
     def __init__(self, confirmation_threshold: int = 1):
-        super().__init__(priority=10)
+        super().__init__(priority=3)
         self.confirmation_threshold = confirmation_threshold
 
     async def should_stop(self, state: StopState) -> StopDecision:
@@ -73,7 +75,7 @@ class CompletionCondition(StopCondition):
 
 class CustomStopCondition(StopCondition):
     def __init__(self):
-        super().__init__(priority=8)
+        super().__init__(priority=3)
 
     async def should_stop(self, state: StopState) -> StopDecision:
         custom_stop_fn = state.completion_criteria.custom_stop
@@ -97,7 +99,7 @@ class CustomStopCondition(StopCondition):
 
 class MaxIterationsCondition(StopCondition):
     def __init__(self):
-        super().__init__(priority=20)
+        super().__init__(priority=4)
 
     async def should_stop(self, state: StopState) -> StopDecision:
         max_iters = state.completion_criteria.max_iterations
@@ -116,7 +118,7 @@ class MaxIterationsCondition(StopCondition):
 
 class TimeoutCondition(StopCondition):
     def __init__(self):
-        super().__init__(priority=20)
+        super().__init__(priority=4)
 
     async def should_stop(self, state: StopState) -> StopDecision:
         timeout = state.completion_criteria.timeout
@@ -135,7 +137,7 @@ class TimeoutCondition(StopCondition):
 
 class MaxCostCondition(StopCondition):
     def __init__(self):
-        super().__init__(priority=20)
+        super().__init__(priority=4)
 
     async def should_stop(self, state: StopState) -> StopDecision:
         max_cost = state.completion_criteria.max_cost
@@ -154,7 +156,7 @@ class MaxCostCondition(StopCondition):
 
 class MaxEndlessCondition(StopCondition):
     def __init__(self):
-        super().__init__(priority=20)
+        super().__init__(priority=4)
 
     async def should_stop(self, state: StopState) -> StopDecision:
         """Check if there is a progression free loop."""
@@ -166,7 +168,7 @@ class MaxEndlessCondition(StopCondition):
 
 class ConsecutiveFailuresCondition(StopCondition):
     def __init__(self):
-        super().__init__(priority=10)
+        super().__init__(priority=2)
 
     async def should_stop(self, state: StopState) -> StopDecision:
         max_failures = state.completion_criteria.max_consecutive_failures
@@ -185,7 +187,7 @@ class ConsecutiveFailuresCondition(StopCondition):
 
 class ValidationFailureCondition(StopCondition):
     def __init__(self):
-        super().__init__(priority=10)
+        super().__init__(priority=2)
 
     async def should_stop(self, state: StopState) -> StopDecision:
         # TODO
@@ -194,7 +196,7 @@ class ValidationFailureCondition(StopCondition):
 
 class InterruptCondition(StopCondition):
     def __init__(self):
-        super().__init__(priority=5)  # 最高优先级
+        super().__init__(priority=1)
 
 
 class UserInterruptCondition(InterruptCondition):
@@ -247,7 +249,7 @@ class ExternalSignalCondition(InterruptCondition):
 
 class ErrorCondition(StopCondition):
     def __init__(self):
-        super().__init__(priority=5)  # 最高优先级
+        super().__init__(priority=0)
 
 
 class SystemErrorCondition(ErrorCondition):
@@ -265,7 +267,7 @@ class SystemErrorCondition(ErrorCondition):
 
 
 class ResourceExhaustedCondition(ErrorCondition):
-    def __init__(self, memory_threshold_mb: int = 1024, disk_threshold_mb: int = 1000):
+    def __init__(self, memory_threshold_mb: int = 1024, disk_threshold_mb: int = 10000):
         super().__init__()
         self.memory_threshold = memory_threshold_mb * 1024 * 1024
         self.disk_threshold = disk_threshold_mb * 1024 * 1024
@@ -311,6 +313,7 @@ class CompositeStopDetector:
     async def should_stop(self, state: StopState) -> StopDecision:
         for detector in self.detectors:
             decision = await detector.safe_check(state)
+            # Logic circuit breaker
             if decision.should_stop:
                 logger.info(
                     f"Terminate detector trigger: {detector.__class__.__name__} | "
