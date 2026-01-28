@@ -184,7 +184,7 @@ class FreedomSpaceService(IFreedomSpaceService):
     
     async def add_file(self, filename: Optional[str], content: Optional[Any], 
                       mime_type: Optional[str] = "text", namespace: str = "default",
-                      origin_type: str = None, origin_path: str = None) -> Tuple[bool, Optional[str], Optional[str]]:
+                      origin_type: str = None, origin_path: str = None, refresh_workspace: bool = True) -> Tuple[bool, Optional[str], Optional[str]]:
         """Add a file to freedom space."""
         from aworld.output.artifact import ArtifactAttachment
         
@@ -202,7 +202,8 @@ class FreedomSpaceService(IFreedomSpaceService):
         if not success:
             return False, None, None
         # Refresh directory index
-        await self._context.knowledge_service.add_knowledge(dir_artifact, namespace, index=False)
+        if refresh_workspace:
+            await self._context.knowledge_service.add_knowledge(dir_artifact, namespace, index=False)
         return True, self.get_abs_file_path(filename), content
     
     def _build_freedom_space_base_path(self) -> str:
