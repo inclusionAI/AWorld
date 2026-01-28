@@ -36,6 +36,9 @@ class OSSArtifactRepository(ArtifactRepository):
         self.index_key = f"{self.prefix}index.json"
         self.index = self.load_index()
 
+    def super_path(self) -> str:
+        return str(self.prefix)
+
     def load_index(self) -> Dict[str, Any]:
         """
         Load or create index file from OSS
