@@ -1,0 +1,110 @@
+# coding: utf-8
+# Copyright (c) inclusionAI.
+from dataclasses import dataclass, field
+from typing import Optional, List, Dict, Any, Union
+
+from aworld.agents.ralph_pattern import StopCondition
+from aworld.config import ModelConfig, TaskConfig
+from aworld.evaluations.base import EvalCriteria, Scorer
+from aworld.ralph_loop.reflect import Reflector
+from aworld.ralph_loop.strategic_plan.types import PlanningStrategy
+from aworld.ralph_loop.types import ConflictStrategy
+
+
+@dataclass
+class ValidationConfig:
+    """Configuration for validation module."""
+
+    validators: List[Union[str, EvalCriteria, Scorer]] = field(default_factory=lambda: [])
+    conflict_strategy: str = ConflictStrategy.MERGE
+    model_config: ModelConfig = None
+    parallel: int = 1
+    timeout: float = 30.0
+    min_score_threshold: float = 0.6
+
+
+@dataclass
+class ReflectionConfig:
+    """Configuration for reflection module."""
+
+    reflectors: List[Union[str, Reflector]] = field(default_factory=list)
+    conflict_strategy: str = ConflictStrategy.MERGE
+    model_config: ModelConfig = None
+    reflection_level: str = "MEDIUM"
+
+
+@dataclass
+class StopConditionConfig:
+    """Configuration for stop detection."""
+
+    stop_detectors: List[StopCondition] = field(default_factory=list)
+    conflict_strategy: str = ConflictStrategy.MERGE
+    max_iterations: int = 1
+    timeout: Optional[float] = 3600.0
+    max_consecutive_failures: int = 3
+    max_cost: Optional[float] = 100.0
+    enable_user_interrupt: bool = True
+    custom_conditions: List[str] = field(default_factory=list)
+
+
+@dataclass
+class MissionConfig:
+    """Configuration for mission processing."""
+
+    enabled: bool = False
+    auto_detect_input_type: bool = True
+    enable_analysis: bool = False
+    model_config: ModelConfig = field(default_factory=ModelConfig)
+
+
+@dataclass
+class PlanningConfig:
+    """Configuration for strategic planning module."""
+
+    enabled: bool = False
+    strategy: PlanningStrategy = PlanningStrategy.HIERARCHICAL
+    model_config: Optional[ModelConfig] = None
+    validate_plan: bool = True
+    optimize_plan: bool = True
+
+
+@dataclass
+class StateConfig:
+    """Configuration for state management."""
+
+    enable_history: bool = True
+    max_history_size: int = 1000
+    enable_metrics: bool = True
+
+
+@dataclass
+class RalphConfig:
+    """Unified configuration for Ralph Loop.
+
+    This configuration class combines all component configurations and provides sensible defaults for different use cases.
+    """
+    mission: MissionConfig = field(default_factory=MissionConfig)
+    planning: PlanningConfig = field(default_factory=PlanningConfig)
+    validation: ValidationConfig = field(default_factory=ValidationConfig)
+    reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
+    stop_condition: StopConditionConfig = field(default_factory=StopConditionConfig)
+    state: StateConfig = field(default_factory=StateConfig)
+
+    workspace: str = "."
+    # Global settings
+    model_config: ModelConfig = field(default_factory=ModelConfig)
+    task_config: Optional[TaskConfig] = None
+
+    @classmethod
+    def create(cls, model_config: Optional[ModelConfig] = None) -> 'RalphConfig':
+        """Create default configuration with all features."""
+        config = cls()
+
+        if model_config:
+            config.default_model_config = model_config
+            config.mission.llm_model_config = model_config
+            config.planning.llm_model_config = model_config
+            config.validation.model_config = model_config
+            config.reflection.llm_model_config = model_config
+
+        return config

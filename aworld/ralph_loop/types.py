@@ -4,11 +4,19 @@ from dataclasses import dataclass, field
 from typing import Callable, Any
 
 
+class ConflictStrategy:
+    """Component conflict strategy."""
+    MERGE: str = "merge"
+    OVERWRITE: str = "overwrite"
+    APPEND: str = "append"
+    UPDATE: str = "update"
+
+
 @dataclass
 class CompletionCriteria:
     """Mission completion criteria are multi-dimension, and meeting one of them is considered complete."""
     max_iterations: int = field(default=10000)
-    timeout: int = field(default=0)
+    timeout: float = field(default=0)
     max_tokens: int = field(default=0)
     max_cost: float = field(default=0)
     max_endless: int = field(default=20)

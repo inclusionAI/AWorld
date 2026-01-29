@@ -2,26 +2,26 @@
 # Copyright (c) inclusionAI.
 import os
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from aworld.config import EvaluationConfig, ModelConfig
-from aworld.evaluations.base import Scorer, ScorerResult, EvalStatus, MetricResult, EvalDataCase, EvalCaseDataType
+from aworld.evaluations.base import Scorer, ScorerResult, EvalStatus, MetricResult, EvalDataCase
 from aworld.evaluations.scorers import scorer_register
-from aworld.evaluations.scorers.llm_as_judge import LLMAsJudgeScorer
-from aworld.runners.ralph_loop.validate.types import ValidationMetrics
+from aworld.ralph_loop.validate.base_validator import LlmValidator, RuleValidator
+from aworld.ralph_loop.validate.types import ValidationMetrics
 
 
 @scorer_register(ValidationMetrics.OUTPUT_CORRECTNESS)
-class OutputCorrectnessScorer(Scorer):
+class OutputCorrectnessScorer(RuleValidator):
     def __init__(self, eval_config: EvaluationConfig = None):
         super().__init__(name=ValidationMetrics.OUTPUT_CORRECTNESS, eval_config=eval_config)
 
-    async def score(self, index: int, input: Any, output: Any) -> ScorerResult:
+    async def score(self, index: int, input: EvalDataCase, output: Any) -> ScorerResult:
         try:
-            ground_truth = input.get("ground_truth")
-            expected_keywords = input.get("expected_keywords", [])
+            ground_truth = input.case_data.get("ground_truth")
+            expected_keywords = input.case_data.get("expected_keywords", [])
 
-            answer = self._extract_answer(output)
+            answer = self._extract(output, key="answer")
 
             if not answer:
                 return self._failed_result("Empty answer")
@@ -44,14 +44,6 @@ class OutputCorrectnessScorer(Scorer):
 
         except Exception as e:
             return self._failed_result(f"Validation failed: {str(e)}")
-
-    def _extract_answer(self, output: Any) -> str:
-        if isinstance(output, dict):
-            return output.get("answer", output.get("content", ""))
-        elif isinstance(output, str):
-            return output
-        else:
-            return str(output)
 
     def _match_ground_truth(self, answer: str, ground_truth: str) -> tuple[float, str]:
         answer_lower = answer.lower().strip()
@@ -131,7 +123,7 @@ class OutputCorrectnessScorer(Scorer):
 
 
 @scorer_register(ValidationMetrics.OUTPUT_LENGTH)
-class OutputLengthScorer(OutputCorrectnessScorer):
+class OutputLengthScorer(OutputCorrectnessScorer, RuleValidator):
     def __init__(self, eval_config: EvaluationConfig = None, min_length: int = 10, max_length: int = 1000, **kwargs):
         super().__init__(eval_config=eval_config)
         self.name = ValidationMetrics.OUTPUT_LENGTH
@@ -140,7 +132,7 @@ class OutputLengthScorer(OutputCorrectnessScorer):
 
     async def score(self, index: int, input: Any, output: Any) -> ScorerResult:
         try:
-            answer = self._extract_answer(output)
+            answer = self._extract(output, key="answer")
 
             min_len = input.get("min_length", self.min_length)
             max_len = input.get("max_length", self.max_length)
@@ -170,7 +162,7 @@ class OutputLengthScorer(OutputCorrectnessScorer):
             return self._failed_result(f"verification failed: {str(e)}")
 
 
-class OutputLlmScore(LLMAsJudgeScorer):
+class OutputLlmScore(LlmValidator):
     def build_judge_data(self, index: int, input: Any, output: Any) -> str:
         question = input.get("question", "Unknown")
         context = input.get("context", "")
@@ -183,17 +175,6 @@ class OutputLlmScore(LLMAsJudgeScorer):
     Model Response: {answer}
     """
         return prompt
-
-    def convert_judge_response_to_score(self, judge_response: str) -> Optional[dict[str, MetricResult]]:
-        json_output = self.fetch_json_from_result(judge_response)
-        if json_output:
-            return {
-                ValidationMetrics.OUTPUT_RELEVANCE: MetricResult(
-                    value=json_output.get('score', 0),
-                    metadata=json_output
-                )
-            }
-        return None
 
 
 @scorer_register(

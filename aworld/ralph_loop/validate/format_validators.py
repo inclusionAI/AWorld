@@ -7,11 +7,12 @@ from typing import Any, Dict
 from aworld.config import EvaluationConfig
 from aworld.evaluations.base import Scorer, EvalDataCase, ScorerResult, MetricResult
 from aworld.evaluations.scorers import scorer_register
-from aworld.runners.ralph_loop.validate.types import ValidationMetrics
+from aworld.ralph_loop.validate.base_validator import RuleValidator
+from aworld.ralph_loop.validate.types import ValidationMetrics
 
 
 @scorer_register(ValidationMetrics.FORMAT_CORRECTNESS)
-class FormatValidationScorer(Scorer):
+class FormatValidationScorer(RuleValidator):
     def __init__(self, eval_config: EvaluationConfig = None):
         super().__init__(name=ValidationMetrics.FORMAT_CORRECTNESS, eval_config=eval_config)
 
@@ -22,7 +23,7 @@ class FormatValidationScorer(Scorer):
             output: dict
     ) -> ScorerResult:
         format_type = input.case_data.get("format_type", "json")
-        content = self._extract_content(output)
+        content = self._extract(output)
 
         is_valid, error_msg, details = self._validate_format(content, format_type)
 
@@ -40,14 +41,6 @@ class FormatValidationScorer(Scorer):
             scorer_name=self.name,
             metric_results={"format_correctness": metric_result}
         )
-
-    def _extract_content(self, output: Any) -> str:
-        if isinstance(output, str):
-            return output
-        elif isinstance(output, dict):
-            return output.get("content", output.get("text", str(output)))
-        else:
-            return str(output)
 
     def _validate_format(self, content: str, format_type: str) -> tuple:
         validators = {
@@ -129,7 +122,7 @@ class FormatValidationScorer(Scorer):
 
 
 @scorer_register(ValidationMetrics.SCHEMA_COMPLIANCE)
-class SchemaValidationScorer(Scorer):
+class SchemaValidationScorer(RuleValidator):
     """structure_validity, hierarchy_correctness, field_presence, field_type_match."""
     def __init__(self, eval_config: EvaluationConfig = None):
         super().__init__(name=ValidationMetrics.SCHEMA_COMPLIANCE, eval_config=eval_config)
@@ -153,7 +146,7 @@ class SchemaValidationScorer(Scorer):
                 metric_results={"schema_compliance": metric_result}
             )
 
-        content = self._extract_content(output)
+        content = self._extract(output)
         data = self._parse_content(content, format_type)
 
         if data is None:

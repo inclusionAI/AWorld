@@ -25,7 +25,7 @@ Priority Levels (lower value = higher priority):
 - 4: Limit conditions (lowest priority)
 
 Usage:
-    from aworld.runners.ralph_loop.detect import (
+    from aworld.ralph_loop.detect import (
         create_stop_detector,
         build_stop_detectors,
         StopCondition,

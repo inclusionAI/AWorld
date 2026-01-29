@@ -1,20 +1,21 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
 from aworld.config import EvaluationConfig
-from aworld.evaluations.base import Scorer, EvalDataCase, ScorerResult, MetricResult, EvalCaseDataType
+from aworld.evaluations.base import Scorer, EvalDataCase, ScorerResult, MetricResult
 from aworld.evaluations.scorers import scorer_register
-from aworld.runners.ralph_loop.validate.types import ValidationMetrics
+from aworld.ralph_loop.validate.base_validator import RuleValidator
+from aworld.ralph_loop.validate.types import ValidationMetrics
 
 
 @scorer_register(ValidationMetrics.READABILITY)
-class ReadabilityScorer(Scorer):
+class ReadabilityScorer(RuleValidator):
     """Rule based readability evaluation."""
 
     def __init__(self, eval_config: EvaluationConfig = None):
         super().__init__(name=ValidationMetrics.PROFILE, eval_config=eval_config)
 
     async def score(self, index, input: EvalDataCase[dict], output: dict) -> ScorerResult:
-        content = output.get("content", output.get("text", str(output)))
+        content = self._extract(output)
 
         avg_sentence_length = self._calculate_avg_sentence_length(content)
         avg_word_length = self._calculate_avg_word_length(content)
@@ -68,7 +69,7 @@ class ReadabilityScorer(Scorer):
 
 
 @scorer_register(ValidationMetrics.PROFILE)
-class ProfileScorer(Scorer):
+class ProfileScorer(RuleValidator):
     """Rule based profile evaluation."""
 
     def __init__(self, eval_config: EvaluationConfig = None):
