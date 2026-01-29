@@ -183,6 +183,7 @@ def record_exception(span, start_time, exception):
         if span.is_recording:
             span.record_exception(exception=exception)
         record_exception_metric(exception=exception, duration=duration)
+        # digest_logger.info(f"llm_call|{agent_id}|{instance.provider.model_name}|{getattr(context, 'user', 'default')}|{context.session_id}|{context.task_id}|{total_tokens}|{prompt_tokens}|{completion_tokens}|{round(duration,2)}|{'N' if response.error else 'Y'}")
     except Exception as e:
         logger.warning(f"openai instrument record exception error.{e}")
 
@@ -236,7 +237,7 @@ def record_completion(span,
         agent_id = "unknown"
         if request_kwargs.get('response_parse_args') and isinstance(request_kwargs.get('response_parse_args'), dict):
             agent_id = request_kwargs.get('response_parse_args').get('agent_id')
-        digest_logger.info(f"llm_call|{agent_id}|{instance.provider.model_name}|{getattr(context, 'user', 'default')}|{context.session_id}|{context.task_id}|{total_tokens}|{prompt_tokens}|{completion_tokens}|{round(duration,2)}")
+        digest_logger.info(f"llm_call|{agent_id}|{instance.provider.model_name}|{getattr(context, 'user', 'default')}|{context.session_id}|{context.task_id}|{total_tokens}|{prompt_tokens}|{completion_tokens}|{round(duration,2)}|{'N' if response.error else 'Y'}")
     except Exception:
         pass
 
