@@ -3,7 +3,7 @@
 import inspect
 import os
 import sys
-from typing import Union, Callable
+from typing import Union, Callable, Dict, Any
 
 from loguru import logger as base_logger
 
@@ -85,9 +85,9 @@ class AWorldLogger:
     def __init__(self, tag='AWorld',
                  name: str = 'AWorld',
                  console_level: str = CONSOLE_LEVEL,
-                 file_level: str = STORAGE_LEVEL,
                  formatter: Union[str, Callable] = None,
-                 disable_console: bool = None):
+                 disable_console: bool = None,
+                 file_log_config: Dict[str, Any] = None):
         """
         Initialize AWorldLogger.
         
@@ -95,7 +95,7 @@ class AWorldLogger:
             tag: Logger tag
             name: Logger name
             console_level: Console log level
-            file_level: File log level
+            file_log_config: File log config
             formatter: Custom formatter
             disable_console: If True, disable console output. If None, check environment variable AWORLD_DISABLE_CONSOLE_LOG.
             
@@ -106,12 +106,11 @@ class AWorldLogger:
         self.tag = tag
         self.name = name
         self.console_level = console_level
-        self.file_level = file_level
-        
+
         # Check environment variable if disable_console is not explicitly set
         if disable_console is None:
             disable_console = os.getenv('AWORLD_DISABLE_CONSOLE_LOG', 'false').lower() in ('true', '1', 'yes')
-        
+
         self.disable_console = disable_console
         file_formatter = formatter
         console_formatter = formatter
@@ -152,48 +151,49 @@ class AWorldLogger:
 
         # Only add stderr handler if console output is not disabled
         if not disable_console:
-            base_logger.add(sys.stderr,
-                            filter=lambda record: record['extra'].get('name') == tag,
-                            colorize=True,
-                            format=console_formatter,
-                            level=console_level)
+            self.log_id = base_logger.add(sys.stderr,
+                                          filter=lambda record: record['extra'].get('name') == tag,
+                                          colorize=True,
+                                          format=console_formatter,
+                                          level=console_level)
 
         # Before using aworld, including imports!
-        log_path = os.environ.get('AWORLD_LOG_PATH')
-        if log_path:
-            log_file = f'{log_path}/{tag}-{{time:YYYY-MM-DD}}.log'
-        else:
-            log_file = f'{os.getcwd()}/logs/{tag}-{{time:YYYY-MM-DD}}.log'
-        error_log_file = f'{os.getcwd()}/logs/AWorld_error.log'
+        log_path = os.environ.get('AWORLD_LOG_PATH', f"{os.getcwd()}/logs" )
+        log_file = f'{log_path}/{tag}.log'
+        error_log_file = f'{log_path}/aworld_error.log'
         handler_key = f'{name}_{tag}'
         error_handler_key = f'{name}_{tag}_error'
 
+        file_log_config = file_log_config or {
+            "rotation": "32 MB",
+            "retention": "1 days",
+            "enqueue": False,
+            "backtrace": True,
+            "compression": "zip"
+        }
         if handler_key not in AWorldLogger._added_handlers:
-            base_logger.add(log_file,
-                            format=file_formatter,
-                            filter=lambda record: record['extra'].get('name') == tag,
-                            level=file_level,
-                            rotation='32 MB',
-                            retention='1 days',
-                            enqueue=False,
-                            backtrace=True,
-                            compression='zip')
+            if "level" not in file_log_config:
+                file_log_config["level"] = STORAGE_LEVEL
+            self.file_log_id = base_logger.add(log_file,
+                                               format=file_formatter,
+                                               filter=lambda record: record['extra'].get('name') == tag,
+                                               **file_log_config)
+            file_log_config.pop("level")
             AWorldLogger._added_handlers.add(handler_key)
 
         # Add error log handler, specifically for logging WARNING and ERROR level logs
         if error_handler_key not in AWorldLogger._added_handlers:
-            base_logger.add(error_log_file,
-                            format=file_formatter,
-                            filter=lambda record: (record['extra'].get('name') == tag and
-                                                 record['level'].name in ['WARNING', 'ERROR']),
-                            level='WARNING',
-                            rotation='32 MB',
-                            retention='7 days',
-                            enqueue=False,
-                            backtrace=True,
-                            compression='zip')
+            if "level" not in file_log_config and file_log_config.get('level') not in ['WARNING', 'ERROR', 'FATAL']:
+                file_log_config["level"] = 'WARNING'
+            self.error_log_id = base_logger.add(error_log_file,
+                                                format=file_formatter,
+                                                filter=lambda record: (record['extra'].get('name') == tag and
+                                                                       record['level'].name in ['WARNING', 'ERROR']),
+                                                **file_log_config)
             AWorldLogger._added_handlers.add(error_handler_key)
 
+        self.formater = console_formatter
+        self.file_log_config = file_log_config
         self._logger = base_logger.bind(name=tag)
 
     def reset_level(self, level: str):
@@ -201,25 +201,34 @@ class AWorldLogger:
 
         handlers = _get_handlers(self._logger)
         for handler in handlers:
-            self._logger.remove(handler._id)
-        self._logger.remove()
+            if handler._id == self.log_id or handler._id == self.file_log_id or handler._id == self.error_log_id:
+                self._logger.remove(handler._id)
         # Clear error log handler record to ensure it can be added correctly when reinitializing
         error_handler_key = f'{self.name}_{self.tag}_error'
         AWorldLogger._added_handlers.discard(error_handler_key)
-        self.__init__(tag=self.tag, name=self.name, console_level=level, file_level=level)
+        self.__init__(tag=self.tag,
+                      name=self.name,
+                      formatter=self.formater,
+                      console_level=level,
+                      disable_console=self.disable_console,
+                      file_log_config=self.file_log_config)
 
     def reset_format(self, format_str: str):
         from aworld.logs.instrument.loguru_instrument import _get_handlers
 
         handlers = _get_handlers(self._logger)
         for handler in handlers:
-            self._logger.remove(handler._id)
+            if handler._id == self.log_id or handler._id == self.file_log_id or handler._id == self.error_log_id:
+                self._logger.remove(handler._id)
         # Clear error log handler record to ensure it can be added correctly when reinitializing
         error_handler_key = f'{self.name}_{self.tag}_error'
         AWorldLogger._added_handlers.discard(error_handler_key)
-        self.__init__(tag=self.tag, name=self.name,
-                      console_level=self.console_level, file_level=self.file_level,
-                      formatter=format_str, disable_console=self.disable_console)
+        self.__init__(tag=self.tag,
+                      name=self.name,
+                      console_level=self.console_level,
+                      formatter=format_str,
+                      disable_console=self.disable_console,
+                      file_log_config=self.file_log_config)
 
     def __getattr__(self, name: str):
         from aworld.trace.base import get_trace_id
@@ -239,7 +248,8 @@ class AWorldLogger:
             func_name = getattr(frame.f_code, "co_qualname", frame.f_code.co_name).replace("<module>", "")
 
             trace_id = get_trace_id()
-            update = {"function": func_name, "line": line, "name": module, "extra": {"trace_id": trace_id, "logger_name": "Aworld"}}
+            update = {"function": func_name, "line": line, "name": module,
+                      "extra": {"trace_id": trace_id, "logger_name": "Aworld"}}
 
             def patch(record):
                 extra = update.pop("extra")
@@ -251,25 +261,33 @@ class AWorldLogger:
         raise AttributeError(f"'AWorldLogger' object has no attribute '{name}'")
 
 
-logger = AWorldLogger(tag='AWorld', name='AWorld')
-trace_logger = AWorldLogger(tag='Trace', name='AWorld')
-trajectory_logger = AWorldLogger(tag='Trajectory', name='AWorld')
+def update_logger_level(level: str):
+    logger.reset_level(level)
+    prompt_logger.reset_level(level)
+    trajectory_logger.reset_level(level)
+    trace_logger.reset_level(level)
+    digest_logger.reset_level(level)
+    asyncio_monitor_logger.reset_level(level)
+
+
+logger = AWorldLogger(tag='aworld', name='AWorld', formatter=os.getenv('AWORLD_LOG_FORMAT'))
+trace_logger = AWorldLogger(tag='trace', name='AWorld', formatter=os.getenv('AWORLD_LOG_FORMAT'))
+trajectory_logger = AWorldLogger(tag='trajectory', name='AWorld', formatter=os.getenv('AWORLD_LOG_FORMAT'))
 
 prompt_logger = AWorldLogger(tag='prompt_logger', name='AWorld',
-                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | prompt | {level} |</black> <level>{message}</level>")
+                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS}|prompt|{extra[trace_id]}|</black><level>{message}</level>")
 digest_logger = AWorldLogger(tag='digest_logger', name='AWorld',
-                             formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | digest | {level} |</black> <level>{message}</level>")
-
+                             formatter=os.getenv('AWORLD_LOG_FORMAT', "{time:YYYY-MM-DD HH:mm:ss.SSS}| digest | {extra[trace_id]} |<level>{message}</level>"))
 asyncio_monitor_logger = AWorldLogger(tag='asyncio_monitor', name='AWorld',
                                       formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | </black> <level>{message}</level>")
 
-monkey_logger(logger)
-monkey_logger(trace_logger)
-monkey_logger(trajectory_logger)
-monkey_logger(prompt_logger)
-# monkey_logger(digest_logger)
-monkey_logger(asyncio_monitor_logger)
-
+if os.getenv('AWORLD_LOG_ENDABLE_MONKEY', 'true') == 'true':
+    monkey_logger(logger)
+    monkey_logger(trace_logger)
+    monkey_logger(trajectory_logger)
+    monkey_logger(prompt_logger)
+    # monkey_logger(digest_logger)
+    monkey_logger(asyncio_monitor_logger)
 
 # log examples:
 # the same as debug, warn, error, fatal

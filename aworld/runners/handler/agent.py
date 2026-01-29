@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
+import asyncio
 from typing import AsyncGenerator, Tuple
 
 from aworld.agents.loop_llm_agent import LoopableAgent
@@ -324,14 +325,52 @@ class DefaultAgentHandler(AgentHandler):
             # next
             successor = agent_graph.successor.get(agent_name)
             if not successor:
-                yield Message(
-                    category=Constants.TASK,
-                    payload=action.policy_info,
-                    sender=agent.id(),
-                    session_id=session_id,
-                    topic=TopicType.FINISHED,
-                    headers=message.headers
-                )
+                if self.swarm.finished:
+                    yield Message(
+                        category=Constants.TASK,
+                        payload=action.policy_info,
+                        sender=agent.id(),
+                        session_id=session_id,
+                        topic=TopicType.FINISHED,
+                        headers=message.headers
+                    )
+                else:
+                    logger.warn(f"{agent_name} has no successor, but not finished, will be rerun itself: {agent_name}")
+                    if not message.context.has_pending_background_tasks(agent_id=agent_name,
+                                                                        parent_task_id=message.context.task_id):
+                        yield Message(
+                            category=Constants.AGENT,
+                            payload=Observation(content=action.policy_info, observer=agent_name),
+                            sender=agent_name,
+                            receiver=agent_name,
+                            session_id=session_id,
+                            headers=message.headers
+                        )
+                    else:
+                        yield Message(
+                            category="mock",
+                            payload=action.policy_info,
+                            sender=agent.id(),
+                            session_id=session_id,
+                            topic=TopicType.RERUN,
+                            headers=message.headers
+                        )
+                        i = 0
+                        while message.context.has_pending_background_tasks(agent_id=agent_name,
+                                                                           parent_task_id=message.context.task_id):
+                            await asyncio.sleep(1)
+                            i += 1
+                            logger.info(f"{agent_name} is waiting pending background_tasks#{i}")
+                        yield Message(
+                            category=Constants.AGENT,
+                            # default use string as content
+                            payload=Observation(content="Task is not finished, keep working on it."),
+                            sender=agent_name,
+                            session_id=session_id,
+                            receiver=agent_name,
+                            headers=message.headers
+                        )
+                        return
                 return
 
             for k, _ in successor.items():
@@ -344,6 +383,7 @@ class DefaultAgentHandler(AgentHandler):
                 for pre_k, _ in predecessor.items():
                     if pre_k == agent_name:
                         all_input[agent_name] = action.policy_info
+                        pre_finished = agent.finished
                         continue
                     # check all predecessor agent finished
                     run_node: RunNode = self.runner.state_manager.query_by_task(
@@ -368,7 +408,9 @@ class DefaultAgentHandler(AgentHandler):
                     yield Message(
                         category=Constants.AGENT,
                         # default use string as content
-                        payload=Observation(content=str(all_input) if len(all_input) > 1 else all_input.get(agent_name)),
+                        payload=Observation(
+                            content=str(all_input) if len(all_input) > 1 else all_input.get(agent_name)
+                        ),
                         sender=agent.id(),
                         session_id=session_id,
                         receiver=k,
@@ -381,7 +423,7 @@ class DefaultAgentHandler(AgentHandler):
         agent = self.swarm.agents.get(action.agent_name)
 
         # must be an interactive call
-        if len(self.agent_calls) > 2:
+        if len(self.agent_calls) > self.swarm.min_call_num:
             if ((not caller or caller == self.swarm.communicate_agent.id())
                     and (self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished or
                          (agent.id() == self.swarm.agent_graph.root_agent.id() and agent.finished))):
@@ -394,6 +436,7 @@ class DefaultAgentHandler(AgentHandler):
                     topic=TopicType.FINISHED,
                     headers={"context": message.context}
                 )
+                return
 
         caller = self.swarm.agent_graph.root_agent.id() or message.caller
         if agent.id() != self.swarm.agent_graph.root_agent.id():
@@ -406,7 +449,8 @@ class DefaultAgentHandler(AgentHandler):
                 headers=message.headers
             )
         else:
-            text = "self to self" if len(self.agent_calls) > 2 else "at the first"
+            # Team mode does not recommend leader to directly call itself without tools
+            text = "self to self" if len(self.agent_calls) > self.swarm.min_call_num else "at the first"
             yield Message(
                 category=Constants.TASK,
                 payload=TaskItem(msg=f"Team leader complete the task {text} decision.",
@@ -440,7 +484,8 @@ class DefaultAgentHandler(AgentHandler):
 
         if not caller or caller == self.swarm.communicate_agent.id():
             if self.swarm.cur_step >= self.swarm.max_steps or self.swarm.finished:
-                logger.info(f"Handoff swarm {self.swarm} finished {self.swarm.finished}, run step: {self.swarm.cur_step}")
+                logger.info(f"Handoff swarm {self.swarm} finished {self.swarm.finished}, "
+                            f"run step: {self.swarm.cur_step}")
                 yield Message(
                     category=Constants.TASK,
                     payload=action.policy_info,

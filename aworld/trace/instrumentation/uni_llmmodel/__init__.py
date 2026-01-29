@@ -27,7 +27,7 @@ from aworld.trace.instrumentation.uni_llmmodel.model_response_parse import (
 from aworld.trace.instrumentation.openai.inout_parse import run_async
 
 from aworld.models.model_response import ModelResponse
-from aworld.logs.util import logger
+from aworld.logs.util import logger, digest_logger
 
 
 def _completion_class_wrapper(tracer: Tracer):
@@ -39,6 +39,9 @@ def _completion_class_wrapper(tracer: Tracer):
         span_attributes = {}
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
+        context = kwargs.get("context", None)
+        if context:
+            span_attributes[semconv.TRACE_ID] = context.trace_id
         span = tracer.start_span(
             name=SPAN_NAME_PREFIX_LLM + model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
@@ -85,6 +88,9 @@ def _stream_completion_class_wrapper(tracer: Tracer):
         span_attributes = {}
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
+        context = kwargs.get("context", None)
+        if context:
+            span_attributes[semconv.TRACE_ID] = context.trace_id
         span = tracer.start_span(
             name=SPAN_NAME_PREFIX_LLM + model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
@@ -127,6 +133,9 @@ def _acompletion_class_wrapper(tracer: Tracer):
         span_attributes = {}
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
+        context = kwargs.get("context", None)
+        if context:
+            span_attributes[semconv.TRACE_ID] = context.trace_id
         span = tracer.start_span(
             name=SPAN_NAME_PREFIX_LLM + model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
 
@@ -202,6 +211,10 @@ def record_completion(span,
         completion_tokens = usage.get("completion_tokens")
         total_tokens = usage.get("total_tokens")
 
+    context = request_kwargs.get("context", None)
+    if context:
+        attributes[semconv.TRACE_ID] = context.trace_id
+
     span_attributes = {
         **attributes,
         semconv.GEN_AI_USAGE_INPUT_TOKENS: prompt_tokens,
@@ -218,6 +231,14 @@ def record_completion(span,
                                 completion_tokens=completion_tokens,
                                 duration=duration
                                 )
+
+    try:
+        agent_id = "unknown"
+        if request_kwargs.get('response_parse_args') and isinstance(request_kwargs.get('response_parse_args'), dict):
+            agent_id = request_kwargs.get('response_parse_args').get('agent_id')
+        digest_logger.info(f"llm_call|{agent_id}|{instance.provider.model_name}|{getattr(context, 'user', 'default')}|{context.session_id}|{context.task_id}|{total_tokens}|{prompt_tokens}|{completion_tokens}|{round(duration,2)}")
+    except Exception:
+        pass
 
 
 class WrappedGeneratorResponse():

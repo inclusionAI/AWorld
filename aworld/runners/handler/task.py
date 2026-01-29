@@ -3,6 +3,7 @@
 import abc
 import json
 import time
+import traceback
 from typing import AsyncGenerator, TYPE_CHECKING
 
 from aworld.core.common import TaskItem
@@ -60,11 +61,18 @@ class DefaultTaskHandler(TaskHandler):
         if topic == TopicType.SUBSCRIBE_TOOL:
             new_tools = message.payload.data
             for name, tool in new_tools.items():
-                if isinstance(tool, Tool) or isinstance(tool, AsyncTool):
-                    await self.runner.event_mng.register(Constants.TOOL, name, tool.step)
-                    logger.info(f"dynamic register {name} tool.")
-                else:
-                    logger.warning(f"Unknown tool instance: {tool}")
+                try:
+                    if isinstance(tool, Tool) or isinstance(tool, AsyncTool):
+                        # Prioritize using handlers
+                        if tool.handler:
+                            await self.runner.event_mng.register(Constants.TOOL, name, tool.handler)
+                        else:
+                            await self.runner.event_mng.register(Constants.TOOL, name, tool.step)
+                        logger.info(f"Task {self.runner.task.id} dynamic register {name} tool.")
+                    else:
+                        logger.warning(f"Task {self.runner.task.id}#Unknown tool instance: {tool}")
+                except Exception as e:
+                    logger.warn(f"Task {self.runner.task.id}#Failed to register new tool {name}: {str(e)}. {traceback.format_exc()}")
             return
         elif topic == TopicType.SUBSCRIBE_AGENT:
             return
@@ -90,8 +98,6 @@ class DefaultTaskHandler(TaskHandler):
                 yield event
 
             status = "running" if message.headers.get("step_interrupt", False) else "finished"
-            if status == "finished":
-                self._log_trajectory(message)
             self.runner._task_response = TaskResponse(answer=message.payload,
                                                       success=True,
                                                       context=message.context,
@@ -162,8 +168,3 @@ class DefaultTaskHandler(TaskHandler):
             await self.runner.stop()
             yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers,
                           topic=TopicType.TASK_RESPONSE)
-
-    def _log_trajectory(self, message: Message):
-        """Log the trajectory of the agent."""
-        trajectory_logger.info(
-            f"task_id:{message.context.get_task().id}, trajectorys:{json.dumps(to_serializable(message.context._agent_token_id_traj))}")

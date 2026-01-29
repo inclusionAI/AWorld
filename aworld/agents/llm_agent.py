@@ -1,5 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import time
+
 import asyncio
 import json
 import os
@@ -24,7 +26,7 @@ from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.prompt_log import PromptLogger
-from aworld.logs.util import logger, Color
+from aworld.logs.util import logger, Color, digest_logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
@@ -60,7 +62,8 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
         content = '' if resp.content is None else resp.content
 
         # Log parsing start
-        logger.debug(f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(resp.tool_calls)}, content_length={len(content)}")
+        logger.debug(
+            f"🔍 [Agent:{agent_id}] Starting to parse model response, has_tool_calls={bool(resp.tool_calls)}, content_length={len(content)}")
 
         if resp.tool_calls:
             is_call_tool = True
@@ -68,20 +71,24 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
             for idx, tool_call in enumerate(resp.tool_calls):
                 full_name: str = tool_call.function.name
                 if not full_name:
-                    logger.warning(f"⚠️ [Agent:{agent_id}] Tool call #{idx+1} has no tool name, skipping.")
+                    logger.warning(f"⚠️ [Agent:{agent_id}] Tool call #{idx + 1} has no tool name, skipping.")
                     continue
-                
-                logger.info(f"🔧 [Agent:{agent_id}] Processing tool call #{idx+1}: {full_name}, call_id={tool_call.id}")
-                
+
+                logger.info(
+                    f"🔧 [Agent:{agent_id}] Processing tool call #{idx + 1}: {full_name}, call_id={tool_call.id}")
+
                 try:
                     params = json.loads(tool_call.function.arguments)
-                    logger.debug(f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)")
+                    logger.debug(
+                        f"✅ [Agent:{agent_id}] Successfully parsed tool arguments for {full_name}: {len(params)} param(s)")
                 except Exception as e:
-                    logger.warning(f"⚠️ [Agent:{agent_id}] Failed to parse tool arguments for {full_name}: {tool_call.function.arguments}, error={str(e)}")
+                    logger.warning(
+                        f"⚠️ [Agent:{agent_id}] Failed to parse tool arguments for {full_name}: {tool_call.function.arguments}, error={str(e)}")
                     params = {}
-                
+
                 # format in framework
-                agent_info = AgentFactory.agent_instance(agent_id)
+                # agent_info = AgentFactory.agent_instance(agent_id)
+                agent_info = kwargs.get("agent")
                 original_name = full_name
                 if (not full_name.startswith("mcp__") and agent_info and agent_info.sandbox and
                         agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers):
@@ -89,14 +96,16 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                         _server_name = agent_info.sandbox.mcpservers.map_tool_list.get(full_name)
                         if _server_name:
                             full_name = f"mcp__{_server_name}__{full_name}"
-                            logger.info(f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via map_tool_list)")
+                            logger.info(
+                                f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via map_tool_list)")
                     else:
                         tmp_names = full_name.split("__")
                         tmp_tool_name = tmp_names[0]
                         if tmp_tool_name in agent_info.sandbox.mcpservers.mcp_servers:
                             full_name = f"mcp__{full_name}"
-                            logger.info(f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via mcp_servers)")
-                
+                            logger.info(
+                                f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via mcp_servers)")
+
                 names = full_name.split("__")
                 tool_name = names[0]
                 if is_agent_by_name(full_name):
@@ -118,7 +127,8 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                     logger.info(f"🔨 [Agent:{agent_id}] Added tool action: {tool_name}_{action_name}")
         else:
             results.append(ActionModel(agent_name=agent_id, policy_info=content))
-            logger.debug(f"💬 [Agent:{agent_id}] No tool calls, added text response action (content_length={len(content)})")
+            logger.debug(
+                f"💬 [Agent:{agent_id}] No tool calls, added text response action (content_length={len(content)})")
 
         logger.info(f"✅ [Agent:{agent_id}] Parse completed: {len(results)} action(s), is_call_tool={is_call_tool}")
         return AgentResult(actions=results, current_state=None, is_call_tool=is_call_tool)
@@ -264,7 +274,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             logger.warning(f"{self.id()} get agent desc fail, no agent as tool to use. error: {traceback.format_exc()}")
         # MCP servers are tools
         try:
-            if self.sandbox:
+            if self.sandbox and hasattr(self.sandbox, 'mcpservers') and self.sandbox.mcpservers:
                 mcp_tools = await self.sandbox.mcpservers.list_tools(context)
                 processed_tools, tool_mapping = await process_mcp_tools(mcp_tools)
                 self.sandbox.mcpservers.map_tool_list = tool_mapping
@@ -388,6 +398,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         memory = MemoryFactory.instance()
         # from memory get last n messages
         filters = self._build_memory_filters(message.context)
+        # load pending message
+        try:
+            pending_filters = self._build_memory_filters(message.context)
+            pending_filters['memory_type'] = 'pending'
+            pending_items = memory.memory_store.get_all(pending_filters)
+            if pending_items:
+                for pending_item in pending_items:
+                    pending_item.created_at = datetime.now().isoformat()
+                    pending_item.memory_type = 'message'
+        except Exception as e:
+            logger.warning(f"Agent {self.id()} load pending message error: {e}")
+
         agent_memory_config = self.memory_config
         if self._is_amni_context(message.context):
             agent_context_config = message.context.get_config().get_agent_context_config(self.id())
@@ -549,6 +571,28 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
     async def async_post_run(self, policy_result: List[ActionModel], policy_input: Observation,
                              message: Message = None) -> Message:
+
+        # Check for pending messages in memory store
+        memory = MemoryFactory.instance()
+        filters = self._build_memory_filters(message.context)
+        filters['memory_type'] = 'pending'
+        pending_items = memory.memory_store.get_all(filters)
+        if pending_items:
+            logger.info(f"🧠 [Agent:{self.id()}] Found {len(pending_items)} pending memory items, "
+                        f"holding task execution. Pending content: {pending_items[0]}...")
+            self._finished = False
+        if self._finished:
+            from aworld.core.context.amni import AmniContext
+            duration = None
+            if isinstance(message.context, AmniContext):
+                agent_start_times = message.context.get("agent_start_times") or {}
+                if isinstance(agent_start_times, dict):
+                    start_time = agent_start_times.get(self.id())
+                    if isinstance(start_time, (int, float)):
+                        duration = round(time.time() - start_time, 2)
+            if duration is None:
+                duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
+            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}")
         return self._agent_result(
             policy_result,
             policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer,
@@ -648,6 +692,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     else:
                         agent_result = await self.output_converter.parse(llm_response,
                                                                          agent_id=self.id(),
+                                                                         agent=self,
                                                                          use_tools_in_prompt=self.use_tools_in_prompt)
                     # skip summary on final round
                     await self._add_message_to_memory(payload=llm_response,
@@ -976,31 +1021,34 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                             resp_tool_call_ids=tool_call_ids,
                                             agent_id=self.id())
 
-    @staticmethod
-    async def to_dict(agent, override: Dict[str, Any] = None):
-        """Agent attribute dict."""
-        attr_dict = {
-            "name": agent.name(),
-            "conf": agent.conf,
-            "desc": agent.desc(),
-            "task": agent.task,
-            "tool_names": agent.tool_names,
-            "agent_names": agent.handoffs,
-            "mcp_servers": agent.mcp_servers,
-            "mcp_config": agent.mcp_config,
-            "feedback_tool_result": agent.feedback_tool_result,
-            "wait_tool_result": agent.wait_tool_result,
-            "system_prompt": agent.system_prompt,
-            "need_reset": agent.need_reset,
-            "step_reset": agent.step_reset,
-            "use_tools_in_prompt": agent.use_tools_in_prompt,
-            "black_tool_actions": agent.black_tool_actions,
-            "model_output_parser": agent.model_output_parser,
-            "tool_aggregate_func": agent.tools_aggregate_func,
-            "event_handler_name": agent.event_handler_name,
-            "event_driven": agent.event_driven,
-            "skill_configs": agent.skill_configs
+    def to_dict(self):
+        return {
+            "name": self.name(),
+            "conf": self.conf,
+            "desc": self.desc(),
+            "task": self.task,
+            "tool_names": self.tool_names,
+            "agent_names": self.handoffs,
+            "mcp_servers": self.mcp_servers,
+            "mcp_config": self.mcp_config,
+            "feedback_tool_result": self.feedback_tool_result,
+            "wait_tool_result": self.wait_tool_result,
+            "system_prompt": self.system_prompt,
+            "need_reset": self.need_reset,
+            "step_reset": self.step_reset,
+            "use_tools_in_prompt": self.use_tools_in_prompt,
+            "black_tool_actions": self.black_tool_actions,
+            "output_converter": self.output_converter,
+            "tool_aggregate_func": self.tools_aggregate_func,
+            "event_handler_name": self.event_handler_name,
+            "event_driven": self.event_driven,
+            "skill_configs": self.skill_configs
         }
+
+    @staticmethod
+    async def agent_to_dict(agent: 'LLMAgent', override: Dict[str, Any] = None):
+        """Agent attribute dict."""
+        attr_dict = agent.to_dict()
         if override:
             attr_dict.update(override)
         return attr_dict

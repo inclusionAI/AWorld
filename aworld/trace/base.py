@@ -184,6 +184,8 @@ class Tracer(ABC):
 class Span(ABC):
     """A Span represents a single operation within a trace.
     """
+    def __init__(self, trace_id: str = None):
+        self._trace_id = trace_id
 
     @abstractmethod
     def end(self, end_time: Optional[int] = None) -> None:
@@ -427,7 +429,7 @@ def get_trace_id():
             trace_id = span.get_trace_id()
         except:
             pass
-    return trace_id
+    return trace_id or ''
 
 
 def log_trace_error():

@@ -44,6 +44,7 @@ def get_agent_span_attributes(instance, message):
         semconv.TASK_ID: message.context.task_id if (message.context and message.context.task_id) else "",
         semconv.SESSION_ID: message.context.session_id if (message.context and message.context.session_id) else message.session_id,
         semconv.USER_ID: message.context.user if (message.context and message.context.user) else "",
+        semconv.TRACE_ID: message.context.trace_id if (message.context and message.context.trace_id) else "",
         trace_constants.ATTRIBUTES_MESSAGE_RUN_TYPE_KEY: trace_constants.RunType.AGNET.value
     }
 
@@ -152,7 +153,8 @@ def _call_llm_model_class_wrapper(tracer: Tracer):
             attributes.update({
                 semconv.TASK_ID: instance.context.task_id if (instance.context and instance.context.task_id) else "",
                 semconv.SESSION_ID: instance.context.session_id if (instance.context and instance.context.session_id) else "",
-                semconv.USER_ID: instance.context.user if (instance.context and instance.context.user) else ""
+                semconv.USER_ID: instance.context.user if (instance.context and instance.context.user) else "",
+                semconv.TRACE_ID: instance.context.trace_id if (instance.context and instance.context.trace_id) else ""
             })
         try:
             response = await wrapped(*args, **kwargs)
