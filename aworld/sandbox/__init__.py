@@ -1,6 +1,12 @@
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, TYPE_CHECKING
 
-from aworld.sandbox.base import Sandbox
+# 运行时用 base.Sandbox，类型检查 / IDE 推断时把 Sandbox 看成 BaseSandbox，
+# 这样像 write_file/read_file 这类在 BaseSandbox 里声明的方法可以被静态分析到。
+if TYPE_CHECKING:
+    from aworld.sandbox.common import BaseSandbox as Sandbox
+else:
+    from aworld.sandbox.base import Sandbox
+
 from aworld.sandbox.common import BaseSandbox
 from aworld.sandbox.models import SandboxEnvType
 from aworld.sandbox.implementations import LocalSandbox, KubernetesSandbox, SuperSandbox
