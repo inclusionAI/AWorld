@@ -72,7 +72,7 @@ class DefaultToolHandler(ToolHandler):
                 logger.warning(f"somethings wrong, {act} is an agent.")
                 continue
 
-            if self.tool_need_registered(act.tool_name, message):
+            if self.tool_need_registered(act.tool_name, message) and act.tool_name not in tool_mapping:
                 # dynamic only use default config in module.
                 conf = self.tools_conf.get(act.tool_name)
                 if isinstance(conf, dict):
