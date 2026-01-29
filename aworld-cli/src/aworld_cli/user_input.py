@@ -11,6 +11,8 @@ from rich.panel import Panel
 from rich.prompt import Prompt, Confirm
 from rich.table import Table
 
+from aworld.logs.util import logger
+
 try:
     from prompt_toolkit import Application
     from prompt_toolkit.key_binding import KeyBindings
@@ -47,61 +49,61 @@ class UserInputHandler:
         """
         self.console = console_instance or console
     
-    def select_multiple(self, options: List, title: str = "请选择（可多选）", prompt: str = "输入选项编号（用逗号分隔，如：1,3,5）") -> List[int]:
+    def select_multiple(self, options: List, title: str = "Select (Multiple)", prompt: str = "Enter option numbers (comma-separated, e.g., 1,3,5)") -> List[int]:
         """
-        展示多选框列表并支持勾选，返回选中的选项索引列表。
-        支持键盘上下箭头导航和回车键勾选/取消勾选。
-        现代化的界面设计，支持选项描述。
+        Display a multi-select list with checkboxes, return selected option indices.
+        Supports keyboard navigation with arrow keys and Enter to toggle selection.
+        Modern interface design with support for option descriptions.
         
         Args:
-            options: 选项列表，支持以下格式：
-                - List[str]: 简单字符串列表，如 ["选项1", "选项2"]
-                - List[dict]: 字典列表，每个字典包含 'label' 和 'description' 键
-                  如 [{"label": "选项1", "description": "这是选项1的描述"}, ...]
-                - List[tuple]: 元组列表，每个元组包含 (label, description)
-                  如 [("选项1", "这是选项1的描述"), ...]
-            title: 标题
-            prompt: 提示文本（当 prompt_toolkit 不可用时使用）
+            options: List of options, supports the following formats:
+                - List[str]: Simple string list, e.g., ["Option 1", "Option 2"]
+                - List[dict]: Dictionary list, each dict contains 'label' and 'description' keys
+                  e.g., [{"label": "Option 1", "description": "Description of option 1"}, ...]
+                - List[tuple]: Tuple list, each tuple contains (label, description)
+                  e.g., [("Option 1", "Description of option 1"), ...]
+            title: Title
+            prompt: Prompt text (used when prompt_toolkit is not available)
             
         Returns:
-            选中的选项索引列表（从0开始）
+            List of selected option indices (0-based)
         """
         if not options:
-            self.console.print("[red]没有可选项。[/red]")
+            self.console.print("[red]No options available.[/red]")
             return []
         
-        # 检查是否在真实终端且 prompt_toolkit 可用
+        # Check if in a real terminal and prompt_toolkit is available
         is_terminal = sys.stdin.isatty()
         
-        # 如果 prompt_toolkit 可用且在终端中，使用交互式界面
+        # If prompt_toolkit is available and in terminal, use interactive interface
         if PROMPT_TOOLKIT_AVAILABLE and is_terminal:
             return self._select_multiple_interactive(options, title)
         else:
-            # 回退到原来的文本输入方式
+            # Fallback to text input method
             return self._select_multiple_text_input(options, title, prompt)
     
     def _render_multi_select_options(self, parsed_options: List[tuple], selected_indices: Set[int], 
                                      current_index: int, fragments: List[tuple]) -> None:
         """
-        渲染多选列表的选项部分（共享代码）。
+        Render the options section of the multi-select list (shared code).
         
         Args:
-            parsed_options: 解析后的选项列表，每个元素为 (label, description) 元组
-            selected_indices: 选中的索引集合
-            current_index: 当前高亮的索引
-            fragments: 要追加到的 fragments 列表
+            parsed_options: Parsed option list, each element is a (label, description) tuple
+            selected_indices: Set of selected indices
+            current_index: Currently highlighted index
+            fragments: List of fragments to append to
         """
         for idx, (label, description) in enumerate(parsed_options):
-            # 判断是否选中
+            # Check if selected
             is_selected = idx in selected_indices
-            # 判断是否是当前高亮项
+            # Check if current highlighted item
             is_current = idx == current_index
             
-            # 构建每行的格式
-            # 序号
+            # Build format for each line
+            # Number
             number = f"{idx + 1}.  "
             
-            # 复选框和箭头
+            # Checkbox and arrow
             if is_current:
                 prefix = "> "
                 checkbox = "[✓]" if is_selected else "[ ]"
@@ -109,15 +111,15 @@ class UserInputHandler:
                 prefix = "  "
                 checkbox = "[✓]" if is_selected else "[ ]"
             
-            # 设置样式
+            # Set styles
             if is_current and is_selected:
                 item_style = "class:current-selected"
                 label_style = "class:current-selected-label"
-                desc_style = "class:normal-desc"  # 描述行始终使用普通样式
+                desc_style = "class:normal-desc"  # Description line always uses normal style
             elif is_current:
                 item_style = "class:current"
                 label_style = "class:current-label"
-                desc_style = "class:normal-desc"  # 描述行始终使用普通样式
+                desc_style = "class:normal-desc"  # Description line always uses normal style
             elif is_selected:
                 item_style = "class:selected"
                 label_style = "class:selected-label"
@@ -127,29 +129,29 @@ class UserInputHandler:
                 label_style = "class:normal-label"
                 desc_style = "class:normal-desc"
             
-            # 构建选项行
+            # Build option row
             fragments.append((item_style, prefix))
             fragments.append(("class:number", number))
             fragments.append(("class:checkbox", checkbox))
             fragments.append((label_style, f" {label}"))
             
-            # 如果有描述，添加描述
+            # Add description if available
             if description:
                 fragments.append(("", "\n"))
-                fragments.append((item_style, "     "))  # 缩进
+                fragments.append((item_style, "     "))  # Indent
                 fragments.append((desc_style, f"    {description}"))
             
             fragments.append(("", "\n"))
     
     def _select_multiple_interactive(self, options: List, title: str) -> List[int]:
         """
-        使用 prompt_toolkit 实现的交互式多选框。
-        支持上下箭头导航，回车键勾选/取消勾选。
-        现代化的界面设计，类似图片中的样式。
+        Interactive multi-select box implemented using prompt_toolkit.
+        Supports up/down arrow navigation, Enter to toggle selection.
+        Modern interface design, similar to the style in the image.
         """
-        # 解析选项：支持字符串或字典格式
+        # Parse options: supports string or dict format
         def parse_option(opt):
-            """解析选项，支持字符串或字典格式"""
+            """Parse option, supports string or dict format"""
             if isinstance(opt, dict):
                 return opt.get('label', ''), opt.get('description', '')
             elif isinstance(opt, (list, tuple)) and len(opt) >= 2:
@@ -159,21 +161,21 @@ class UserInputHandler:
         
         parsed_options = [parse_option(opt) for opt in options]
         
-        # 使用列表来存储状态，以便在闭包中修改
+        # Use list to store state for modification in closure
         state = {
             'selected_indices': set(),
             'current_index': 0
         }
         
         def get_formatted_text():
-            """生成格式化的文本内容"""
+            """Generate formatted text content"""
             fragments = []
             
-            # 标题 - 更现代化的样式
+            # Title - more modern style
             fragments.append(("class:title", f"● {title}\n"))
             fragments.append(("", "\n"))
             
-            # 选项列表 - 使用共享的渲染函数
+            # Option list - use shared render function
             self._render_multi_select_options(
                 parsed_options, 
                 state['selected_indices'], 
@@ -183,47 +185,47 @@ class UserInputHandler:
             
             fragments.append(("", "\n"))
             
-            # 底部提示 - 更清晰的格式
+            # Bottom hint - clearer format
             selected_count = len(state['selected_indices'])
             if selected_count > 0:
-                fragments.append(("class:footer", f"已选择 {selected_count} 项 · "))
-            fragments.append(("class:footer", "Enter 选择 · Tab/方向键 导航 · Esc 取消"))
+                fragments.append(("class:footer", f"Selected {selected_count} item(s) · "))
+            fragments.append(("class:footer", "Enter to select · Tab/Arrow keys to navigate · Esc to cancel"))
             
-            # 确保返回 FormattedText 对象
+            # Ensure FormattedText object is returned
             try:
                 if to_formatted_text:
                     return to_formatted_text(fragments)
                 else:
                     return FormattedText(fragments)
             except Exception:
-                # 如果 FormattedText 构造失败，尝试直接返回字符串
+                # If FormattedText construction fails, try returning string directly
                 text_lines = []
                 for style, text in fragments:
                     text_lines.append(text)
                 return "".join(text_lines)
         
-        # 创建键盘绑定
+        # Create keyboard bindings
         kb = KeyBindings()
         
         def move_up(event):
             if state['current_index'] > 0:
                 state['current_index'] -= 1
-                # 触发界面更新
+                # Trigger UI update
                 event.app.invalidate()
         
         def move_down(event):
             if state['current_index'] < len(options) - 1:
                 state['current_index'] += 1
-                # 触发界面更新
+                # Trigger UI update
                 event.app.invalidate()
         
         def toggle_selection(event):
-            """切换选择状态"""
+            """Toggle selection state"""
             if state['current_index'] in state['selected_indices']:
                 state['selected_indices'].remove(state['current_index'])
             else:
                 state['selected_indices'].add(state['current_index'])
-            # 触发界面更新
+            # Trigger UI update
             event.app.invalidate()
         
         def confirm_selection(event):
@@ -233,35 +235,35 @@ class UserInputHandler:
             state['selected_indices'].clear()
             event.app.exit()
         
-        # 绑定按键
+        # Bind keys
         kb.add("up")(move_up)
-        kb.add("k")(move_up)  # vim 风格
+        kb.add("k")(move_up)  # vim style
         kb.add("down")(move_down)
-        kb.add("j")(move_down)  # vim 风格
-        kb.add("left")(move_up)  # 左箭头也支持
-        kb.add("right")(move_down)  # 右箭头也支持
-        kb.add(" ")(toggle_selection)  # 空格键切换选择
-        kb.add("enter")(toggle_selection)  # 回车键切换选择
-        kb.add("c-m")(toggle_selection)  # Ctrl+M 也是回车键
-        kb.add("tab")(confirm_selection)  # Tab 键完成选择
-        kb.add("c-c")(cancel_selection)  # Ctrl+C 取消
-        kb.add("escape")(cancel_selection)  # ESC 取消
+        kb.add("j")(move_down)  # vim style
+        kb.add("left")(move_up)  # Left arrow also supported
+        kb.add("right")(move_down)  # Right arrow also supported
+        kb.add(" ")(toggle_selection)  # Space to toggle selection
+        kb.add("enter")(toggle_selection)  # Enter to toggle selection
+        kb.add("c-m")(toggle_selection)  # Ctrl+M is also Enter
+        kb.add("tab")(confirm_selection)  # Tab to complete selection
+        kb.add("c-c")(cancel_selection)  # Ctrl+C to cancel
+        kb.add("escape")(cancel_selection)  # ESC to cancel
         
-        # 创建控件 - 使用可调用对象来动态更新
-        # 注意：text 参数应该是一个返回 FormattedText 或字符串的可调用对象
-        # 包装函数以确保返回正确的类型
+        # Create control - use callable object for dynamic updates
+        # Note: text parameter should be a callable that returns FormattedText or string
+        # Wrap function to ensure correct return type
         def get_text():
             result = get_formatted_text()
-            # 确保返回的是 FormattedText 对象或字符串，而不是列表
+            # Ensure FormattedText object or string is returned, not list
             if isinstance(result, FormattedText):
                 return result
             elif isinstance(result, str):
                 return result
             elif isinstance(result, list):
-                # 如果返回的是列表，转换为 FormattedText
+                # If list is returned, convert to FormattedText
                 return FormattedText(result)
             else:
-                # 其他情况，尝试转换为字符串
+                # Other cases, try converting to string
                 return str(result)
         
         control = FormattedTextControl(
@@ -269,42 +271,42 @@ class UserInputHandler:
             focusable=True
         )
         
-        # 定义样式 - 使用列表格式，现代化的配色方案
-        # 类似图片中的紫色高亮和清晰的视觉层次
-        # prompt_toolkit 的 Style 接受 (class_name, style_string) 元组列表
-        # 注意：Style 构造函数期望的类名不带 "class:" 前缀
+        # Define styles - use list format, modern color scheme
+        # Similar to purple highlight and clear visual hierarchy in the image
+        # prompt_toolkit Style accepts list of (class_name, style_string) tuples
+        # Note: Style constructor expects class names without "class:" prefix
         style_list = [
-            ("title", "bold #ffffff"),  # 白色粗体标题
-            ("number", "#888888"),  # 灰色序号
-            ("checkbox", "#9d4edd"),  # 紫色复选框（类似图片中的紫色主题）
-            ("prefix", "#9d4edd"),  # 紫色箭头
-            # 当前选中项 - 紫色背景高亮（类似图片）
-            ("current", "bg:#9d4edd #ffffff"),  # 紫色背景，白色文字
-            ("current-label", "bg:#9d4edd bold #ffffff"),  # 粗体标签
-            ("current-desc", "bg:#9d4edd #e0e0e0"),  # 浅灰色描述
-            # 当前选中且已勾选
-            ("current-selected", "bg:#7b2cbf #ffffff"),  # 深紫色背景
+            ("title", "bold #ffffff"),  # White bold title
+            ("number", "#888888"),  # Gray number
+            ("checkbox", "#9d4edd"),  # Purple checkbox (similar to purple theme in image)
+            ("prefix", "#9d4edd"),  # Purple arrow
+            # Current selected item - purple background highlight (similar to image)
+            ("current", "bg:#9d4edd #ffffff"),  # Purple background, white text
+            ("current-label", "bg:#9d4edd bold #ffffff"),  # Bold label
+            ("current-desc", "bg:#9d4edd #e0e0e0"),  # Light gray description
+            # Current selected and checked
+            ("current-selected", "bg:#7b2cbf #ffffff"),  # Dark purple background
             ("current-selected-label", "bg:#7b2cbf bold #ffffff"),
             ("current-selected-desc", "bg:#7b2cbf #e0e0e0"),
-            # 已勾选但非当前项
-            ("selected", "#9d4edd"),  # 紫色文字
+            # Checked but not current item
+            ("selected", "#9d4edd"),  # Purple text
             ("selected-label", "#9d4edd"),
             ("selected-desc", "#888888"),
-            # 普通项
-            ("normal", "#ffffff"),  # 白色文字
+            # Normal item
+            ("normal", "#ffffff"),  # White text
             ("normal-label", "#ffffff"),
-            ("normal-desc", "#888888"),  # 灰色描述
-            # 底部提示
-            ("footer", "#888888"),  # 灰色提示文字
+            ("normal-desc", "#888888"),  # Gray description
+            # Bottom hint
+            ("footer", "#888888"),  # Gray hint text
         ]
         
-        # 创建 Style 对象 - 使用列表格式
-        # prompt_toolkit 会自动将 Style 中的类名与 FormattedText 中的 "class:xxx" 格式匹配
+        # Create Style object - use list format
+        # prompt_toolkit will automatically match class names in Style with "class:xxx" format in FormattedText
         if Style:
             try:
                 style = Style(style_list)
             except Exception:
-                # 如果 Style 构造失败，尝试使用 from_dict
+                # If Style construction fails, try using from_dict
                 style_dict = dict(style_list)
                 try:
                     style = Style.from_dict(style_dict)
@@ -313,18 +315,18 @@ class UserInputHandler:
         else:
             style = None
         
-        # 创建布局
+        # Create layout
         window = Window(content=control, wrap_lines=False)
         layout = Layout(window)
         
-        # 创建应用
+        # Create application
         app = Application(
             layout=layout,
             key_bindings=kb,
             style=style,
             full_screen=False,
             mouse_support=False,
-            refresh_interval=0.1  # 定期刷新以更新显示
+            refresh_interval=0.1  # Periodic refresh to update display
         )
         
         try:
@@ -332,25 +334,25 @@ class UserInputHandler:
         except KeyboardInterrupt:
             return []
         
-        # 返回选中的索引列表（排序）
+        # Return selected index list (sorted)
         return sorted(list(state['selected_indices']))
     
     def _select_multiple_text_input(self, options: List[str], title: str, prompt: str) -> List[int]:
         """
-        回退的文本输入方式（当 prompt_toolkit 不可用或不在终端时）。
+        Fallback text input method (when prompt_toolkit is not available or not in terminal).
         """
-        # 创建表格展示选项
+        # Create table to display options
         table = Table(title=title, box=box.ROUNDED, width=80)
-        table.add_column("编号", style="cyan", justify="right", width=8)
-        table.add_column("选项", style="magenta")
+        table.add_column("No.", style="cyan", justify="right", width=8)
+        table.add_column("Option", style="magenta")
         
         for idx, option in enumerate(options, 1):
             table.add_row(str(idx), option)
         
         self.console.print(table)
-        self.console.print("[dim]输入 'exit' 或 'cancel' 取消选择。[/dim]")
+        self.console.print("[dim]Enter 'exit' or 'cancel' to cancel selection.[/dim]")
         
-        # 检查是否在真实终端
+        # Check if in a real terminal
         is_terminal = sys.stdin.isatty()
         
         while True:
@@ -360,67 +362,67 @@ class UserInputHandler:
                 self.console.print(f"{prompt}: ", end="")
                 choice = input().strip()
             
-            # 检查取消命令
+            # Check cancel command
             if choice.lower() in ("exit", "quit", "q", "cancel"):
-                self.console.print("[yellow]选择已取消。[/yellow]")
+                self.console.print("[yellow]Selection cancelled.[/yellow]")
                 return []
             
             if not choice:
-                self.console.print("[red]请输入选项编号。[/red]")
+                self.console.print("[red]Please enter option number(s).[/red]")
                 continue
             
             try:
-                # 解析输入的编号（支持逗号分隔）
+                # Parse input numbers (supports comma-separated)
                 selected_indices = []
                 for part in choice.split(','):
                     part = part.strip()
                     if not part:
                         continue
-                    idx = int(part) - 1  # 转换为0-based索引
+                    idx = int(part) - 1  # Convert to 0-based index
                     if 0 <= idx < len(options):
                         selected_indices.append(idx)
                     else:
-                        self.console.print(f"[red]无效的选项编号: {part}。请重新输入。[/red]")
+                        self.console.print(f"[red]Invalid option number: {part}. Please try again.[/red]")
                         selected_indices = None
                         break
                 
                 if selected_indices is not None:
                     if selected_indices:
-                        # 显示选中的选项
+                        # Display selected options
                         selected_options = [options[i] for i in selected_indices]
-                        self.console.print(f"[green]已选择 {len(selected_indices)} 项：[/green]")
+                        self.console.print(f"[green]Selected {len(selected_indices)} item(s):[/green]")
                         for idx in selected_indices:
                             self.console.print(f"  [green]✓[/green] {options[idx]}")
                         return selected_indices
                     else:
-                        self.console.print("[red]请至少选择一个选项。[/red]")
+                        self.console.print("[red]Please select at least one option.[/red]")
             except ValueError:
-                self.console.print("[red]请输入有效的数字编号（用逗号分隔）。[/red]")
+                self.console.print("[red]Please enter valid number(s) (comma-separated).[/red]")
     
-    def text_input(self, prompt: str = "请输入", default: str = "", placeholder: Optional[str] = None) -> Optional[str]:
+    def text_input(self, prompt: str = "Please enter", default: str = "", placeholder: Optional[str] = None) -> Optional[str]:
         """
-        获取用户文本输入。
+        Get user text input.
         
         Args:
-            prompt: 提示文本
-            default: 默认值
-            placeholder: 占位符文本（用于显示提示）
+            prompt: Prompt text
+            default: Default value
+            placeholder: Placeholder text (for display hint)
             
         Returns:
-            用户输入的文本，如果取消则返回 None
+            User input text, returns None if cancelled
         """
-        # 检查是否在真实终端且 prompt_toolkit 可用
+        # Check if in a real terminal and prompt_toolkit is available
         is_terminal = sys.stdin.isatty()
         
         if not is_terminal or not PROMPT_TOOLKIT_AVAILABLE:
-            # 非终端环境或 prompt_toolkit 不可用，使用简单输入，并用蓝色 Panel 包裹
+            # Non-terminal environment or prompt_toolkit not available, use simple input wrapped in blue Panel
             try:
-                # 构建提示内容
+                # Build prompt content
                 panel_content = prompt
                 if placeholder:
                     panel_content = f"{prompt}\n[dim]{placeholder}[/dim]"
                 
-                # 显示蓝色边框的 Panel
+                # Display blue-bordered Panel
                 input_panel = Panel(
                     panel_content,
                     title="[bold cyan]📝 Text Input[/bold cyan]",
@@ -431,20 +433,20 @@ class UserInputHandler:
                 self.console.print(input_panel)
                 self.console.print()
                 
-                # 获取用户输入
+                # Get user input
                 user_input = input().strip() or default
                 return user_input.strip() if user_input else None
             except KeyboardInterrupt:
-                self.console.print("\n[yellow]输入已取消。[/yellow]")
+                self.console.print("\n[yellow]Input cancelled.[/yellow]")
                 return None
         
-        # 使用交互式输入框界面，先显示蓝色 Panel 提示
-        # 构建提示内容
+        # Use interactive input box interface, first display blue Panel hint
+        # Build prompt content
         panel_content = prompt
         if placeholder:
             panel_content = f"{prompt}\n[dim]{placeholder}[/dim]"
         
-        # 显示蓝色边框的 Panel
+        # Display blue-bordered Panel
         input_panel = Panel(
             panel_content,
             title="[bold cyan]📝 Text Input[/bold cyan]",
@@ -455,21 +457,21 @@ class UserInputHandler:
         self.console.print(input_panel)
         self.console.print()
         
-        # 调用交互式输入
+        # Call interactive input
         return self._text_input_interactive(prompt, default, placeholder)
     
     def _text_input_interactive(self, prompt: str, default: str, placeholder: Optional[str]) -> Optional[str]:
-        """使用交互式输入框获取文本输入"""
-        # 状态管理
+        """Get text input using interactive input box"""
+        # State management
         state = {
             'value': default,
             'editing': True,
             'result': None
         }
         
-        # 计算文本显示宽度（中文字符占2个宽度）
+        # Calculate text display width (Chinese characters take 2 widths)
         def get_display_width(text):
-            """计算文本在终端中的显示宽度"""
+            """Calculate text display width in terminal"""
             width = 0
             for char in text:
                 if ord(char) > 127:
@@ -478,31 +480,31 @@ class UserInputHandler:
                     width += 1
             return width
         
-        # 生成格式化文本
+        # Generate formatted text
         def get_formatted_text():
             fragments = []
             
-            # 显示提示
+            # Display prompt
             fragments.append(("class:input-title", f"{prompt}\n"))
             fragments.append(("", "\n"))
             
-            # 搜索框样式 - 圆角边框，浅紫色
+            # Search box style - rounded border, light purple
             box_width = 60
             
-            # 上边框 - 圆角
+            # Top border - rounded
             fragments.append(("class:search-box", "╭"))
             fragments.append(("class:search-box", "─" * (box_width - 2)))
             fragments.append(("class:search-box", "╮\n"))
             
-            # 中间行 - 包含图标、输入内容和光标
+            # Middle row - contains icon, input content and cursor
             fragments.append(("class:search-box", "│"))
             
-            # 放大镜图标
+            # Magnifying glass icon
             icon_text = ""
-            icon_display_width = 4  # 1空格 + 2(emoji) + 1空格
+            icon_display_width = 4  # 1 space + 2(emoji) + 1 space
             fragments.append(("class:search-icon", icon_text))
             
-            # 输入内容或占位符
+            # Input content or placeholder
             display_text = state['value'] if state['value'] else (placeholder or '')
             text_display_width = get_display_width(display_text)
             
@@ -511,28 +513,28 @@ class UserInputHandler:
             else:
                 fragments.append(("class:input-placeholder", display_text))
             
-            # 光标（如果正在编辑）
+            # Cursor (if editing)
             cursor_width = 0
             if state['editing']:
                 cursor_text = "▊"
                 cursor_width = 1
                 fragments.append(("class:input-cursor", cursor_text))
             
-            # 填充剩余空间
+            # Fill remaining space
             used_width = 1 + icon_display_width + text_display_width + cursor_width
-            remaining = box_width - used_width - 1  # 减去右边框
+            remaining = box_width - used_width - 1  # Subtract right border
             if remaining > 0:
                 fragments.append(("class:search-box", " " * remaining))
             
             fragments.append(("class:search-box", "│\n"))
             
-            # 下边框 - 圆角
+            # Bottom border - rounded
             fragments.append(("class:search-box", "╰"))
             fragments.append(("class:search-box", "─" * (box_width - 2)))
             fragments.append(("class:search-box", "╯\n"))
             
             fragments.append(("", "\n"))
-            fragments.append(("class:footer", "输入文本后按 Enter 确认 · Esc 取消"))
+            fragments.append(("class:footer", "Press Enter to confirm after entering text · Esc to cancel"))
             
             try:
                 if to_formatted_text:
@@ -545,20 +547,20 @@ class UserInputHandler:
                     text_lines.append(text)
                 return "".join(text_lines)
         
-        # 创建键盘绑定
+        # Create keyboard bindings
         kb = KeyBindings()
         
-        # 处理字符输入
+        # Handle character input
         @kb.add('<any>')
         def handle_any_key(event):
-            """处理任意键输入"""
+            """Handle any key input"""
             if not state['editing']:
                 return
             
             try:
                 key = event.key_sequence[0].key if event.key_sequence else None
                 if key:
-                    # 跳过特殊键
+                    # Skip special keys
                     if key in ('up', 'down', 'left', 'right', 'escape', 'c-c', 'tab', 'enter', 'backspace'):
                         return
                     
@@ -568,31 +570,31 @@ class UserInputHandler:
             except Exception:
                 pass
         
-        # 处理退格
+        # Handle backspace
         @kb.add('backspace')
         def handle_backspace(event):
-            """处理退格键"""
+            """Handle backspace key"""
             if state['editing'] and state['value']:
                 state['value'] = state['value'][:-1]
                 event.app.invalidate()
         
-        # 处理回车确认
+        # Handle Enter confirmation
         @kb.add('enter')
         def handle_enter(event):
-            """处理回车确认"""
+            """Handle Enter confirmation"""
             state['editing'] = False
             state['result'] = state['value'].strip()
             event.app.exit()
         
-        # 处理 Esc 取消
+        # Handle Esc cancellation
         @kb.add('escape')
         def handle_escape(event):
-            """处理 Esc 取消"""
+            """Handle Esc cancellation"""
             state['editing'] = False
             state['result'] = None
             event.app.exit()
         
-        # 创建控件
+        # Create control
         def get_text():
             result = get_formatted_text()
             if isinstance(result, FormattedText):
@@ -609,14 +611,14 @@ class UserInputHandler:
             focusable=True
         )
         
-        # 定义样式
+        # Define styles
         style_list = [
             ("input-title", "bold #ffffff"),
-            ("search-box", "#9d4edd"),  # 浅紫色边框
-            ("search-icon", "#9d4edd"),  # 放大镜图标
-            ("input-text", "#ffffff"),  # 输入文本颜色
-            ("input-placeholder", "#888888"),  # 占位符颜色
-            ("input-cursor", "#9d4edd"),  # 光标颜色
+            ("search-box", "#9d4edd"),  # Light purple border
+            ("search-icon", "#9d4edd"),  # Magnifying glass icon
+            ("input-text", "#ffffff"),  # Input text color
+            ("input-placeholder", "#888888"),  # Placeholder color
+            ("input-cursor", "#9d4edd"),  # Cursor color
             ("footer", "#888888"),
         ]
         
@@ -632,11 +634,11 @@ class UserInputHandler:
         else:
             style = None
         
-        # 创建布局
+        # Create layout
         window = Window(content=control, wrap_lines=False)
         layout = Layout(window)
         
-        # 创建应用
+        # Create application
         app = Application(
             layout=layout,
             key_bindings=kb,
@@ -654,25 +656,25 @@ class UserInputHandler:
         except Exception:
             return None
     
-    def submit(self, message: str = "请确认", default: bool = True) -> bool:
+    def submit(self, message: str = "Please confirm", default: bool = True) -> bool:
         """
-        获取用户确认/提交。
+        Get user confirmation/submission.
         
         Args:
-            message: 确认消息
-            default: 默认选择（True 为确认，False 为取消）
+            message: Confirmation message
+            default: Default choice (True for confirm, False for cancel)
             
         Returns:
-            True 表示确认/提交，False 表示取消
+            True means confirm/submit, False means cancel
         """
-        # 检查是否在真实终端
+        # Check if in a real terminal
         is_terminal = sys.stdin.isatty()
         
         try:
             if is_terminal:
                 confirmed = Confirm.ask(f"[cyan]{message}[/cyan]", default=default, console=self.console)
             else:
-                # 非终端环境，使用简单的输入
+                # Non-terminal environment, use simple input
                 self.console.print(f"{message} (y/n) [{'Y/n' if default else 'y/N'}]: ", end="")
                 response = input().strip().lower()
                 if not response:
@@ -682,78 +684,78 @@ class UserInputHandler:
             
             return confirmed
         except KeyboardInterrupt:
-            self.console.print("\n[yellow]操作已取消。[/yellow]")
+            self.console.print("\n[yellow]Operation cancelled.[/yellow]")
             return False
     
-    def composite_menu(self, tabs: List[Dict[str, Any]], title: str = "复合菜单") -> Dict[str, Any]:
+    def composite_menu(self, tabs: List[Dict[str, Any]], title: str = "Composite Menu") -> Dict[str, Any]:
         """
-        生成复合菜单，支持多个 tab，每个 tab 可以是多选、文本输入或提交。
+        Generate composite menu, supports multiple tabs, each tab can be multi-select, text input, or submit.
         
         Args:
-            tabs: Tab 配置列表，每个 tab 是一个字典，包含以下字段：
-                - type: Tab 类型，可选值：
-                    - 'multi_select': 多选
-                    - 'text_input': 文本输入
-                    - 'submit': 提交/确认
-                - name: Tab 名称（用于标识和显示）
-                - title: Tab 标题（显示给用户）
-                - 对于 'multi_select' 类型，还需要：
-                    - options: 选项列表（格式同 select_multiple）
-                    - prompt: 提示文本（可选）
-                - 对于 'text_input' 类型，还需要：
-                    - prompt: 提示文本
-                    - default: 默认值（可选）
-                    - placeholder: 占位符（可选）
-                - 对于 'submit' 类型，还需要：
-                    - message: 确认消息
-                    - default: 默认选择（可选，默认 True）
-            title: 整体标题
+            tabs: Tab configuration list, each tab is a dictionary containing the following fields:
+                - type: Tab type, optional values:
+                    - 'multi_select': Multi-select
+                    - 'text_input': Text input
+                    - 'submit': Submit/confirm
+                - name: Tab name (for identification and display)
+                - title: Tab title (displayed to user)
+                - For 'multi_select' type, also need:
+                    - options: Option list (same format as select_multiple)
+                    - prompt: Prompt text (optional)
+                - For 'text_input' type, also need:
+                    - prompt: Prompt text
+                    - default: Default value (optional)
+                    - placeholder: Placeholder (optional)
+                - For 'submit' type, also need:
+                    - message: Confirmation message
+                    - default: Default choice (optional, default True)
+            title: Overall title
             
         Returns:
-            字典，包含每个 tab 的答案：
-                - 对于 'multi_select': 返回选中的索引列表
-                - 对于 'text_input': 返回输入的文本
-                - 对于 'submit': 返回布尔值（True/False）
-            key 为 tab 的 name，value 为对应的答案
-            如果用户取消，返回 None
+            Dictionary containing answers for each tab:
+                - For 'multi_select': Returns selected index list
+                - For 'text_input': Returns input text
+                - For 'submit': Returns boolean (True/False)
+            key is tab's name, value is corresponding answer
+            Returns None if user cancels
         """
         if not tabs:
-            self.console.print("[red]没有配置任何 tab。[/red]")
+            self.console.print("[red]No tabs configured.[/red]")
             return {}
         
-        # 检查是否在真实终端且 prompt_toolkit 可用
+        # Check if in a real terminal and prompt_toolkit is available
         is_terminal = sys.stdin.isatty()
         
-        # 如果 prompt_toolkit 可用且在终端中，使用交互式界面
+        # If prompt_toolkit is available and in terminal, use interactive interface
         if PROMPT_TOOLKIT_AVAILABLE and is_terminal:
-            self.console.print("[red]交互式 tab。[/red]")
+            logger.info("[red]composite menu interactive tab.[/red]")
             return self._composite_menu_interactive(tabs, title)
         else:
-            # 回退到顺序执行方式
-            self.console.print("[red]顺序执行式 tab。[/red]")
+            # Fallback to sequential execution mode
+            self.console.print("[red]Sequential execution mode tab.[/red]")
             return self._composite_menu_sequential(tabs, title)
     
     def _composite_menu_interactive(self, tabs: List[Dict[str, Any]], title: str) -> Optional[Dict[str, Any]]:
         """
-        使用 prompt_toolkit 实现的交互式复合菜单。
-        所有 tabs（包括 text_input、multi_select、submit）都在交互式界面中处理。
+        Interactive composite menu implemented using prompt_toolkit.
+        All tabs (including text_input, multi_select, submit) are handled in the interactive interface.
         """
         results = {}
         current_tab_index = 0
         
-        # 状态管理
+        # State management
         state = {
             'current_tab_index': 0,
             'results': {},
-            'tab_states': {}  # 存储每个 tab 的状态（如多选的选中项）
+            'tab_states': {}  # Store state for each tab (e.g., selected items for multi-select)
         }
         
-        # 所有 tabs 都在交互式界面中处理
-        state['current_tab_index'] = 0  # 从第一个 tab 开始
+        # All tabs are handled in interactive interface
+        state['current_tab_index'] = 0  # Start from first tab
         state['results'] = results
-        state['all_tabs'] = tabs  # 存储所有 tabs
+        state['all_tabs'] = tabs  # Store all tabs
         
-        # 初始化第一个 tab 的状态
+        # Initialize first tab state
         if tabs:
             first_tab = tabs[0]
             first_tab_name = first_tab.get('name')
@@ -769,13 +771,13 @@ class UserInputHandler:
                 state['tab_states']['submit_current'] = 0
         
         def get_formatted_text():
-            """生成格式化的文本内容"""
+            """Generate formatted text content"""
             fragments = []
             all_tabs = state.get('all_tabs', [])
             if not all_tabs:
                 return FormattedText([("", "")])
             
-            # 当前tab索引（在所有tabs中的索引）
+            # Current tab index (index in all tabs)
             current_tab_idx = state['current_tab_index']
             if current_tab_idx >= len(all_tabs):
                 current_tab_idx = len(all_tabs) - 1
@@ -788,7 +790,7 @@ class UserInputHandler:
             tab_title = current_tab.get('title', tab_name)
             is_completed = tab_name in state['results']
             
-            # 顶部导航栏 - 显示所有 tabs
+            # Top navigation bar - display all tabs
             fragments.append(("class:nav", "← "))
             for idx, tab in enumerate(all_tabs):
                 tab_display_name = tab.get('name', f'Tab {idx+1}')
@@ -808,9 +810,9 @@ class UserInputHandler:
             fragments.append(("class:nav", " →\n"))
             fragments.append(("class:separator", "─" * 80 + "\n\n"))
             
-            # 如果tab已完成且是text_input，显示review模式
+            # If tab is completed and is text_input, show review mode
             if is_completed and tab_type == 'text_input':
-                # 显示问题和答案
+                # Display question and answer
                 question = current_tab.get('prompt', tab_title)
                 answer = state['results'].get(tab_name, '')
                 
@@ -819,8 +821,8 @@ class UserInputHandler:
                 fragments.append(("class:nav-completed", "  → "))
                 fragments.append(("class:normal-desc", f"{answer}\n\n"))
                 
-                fragments.append(("class:footer", "←→ 切换Tab · Esc 取消"))
-                # 直接返回，不执行后续的tab类型显示逻辑
+                fragments.append(("class:footer", "←→ Switch Tab · Esc to cancel"))
+                # Return directly, don't execute subsequent tab type display logic
                 try:
                     if to_formatted_text:
                         return to_formatted_text(fragments)
@@ -832,13 +834,13 @@ class UserInputHandler:
                         text_lines.append(text)
                     return "".join(text_lines)
             else:
-                # 主标题
+                # Main title
                 fragments.append(("class:title", f"{tab_title}\n\n"))
             
-            # 根据 tab 类型显示不同内容
+            # Display different content based on tab type
             if tab_type == 'multi_select':
                 options = current_tab.get('options', [])
-                # 解析选项
+                # Parse options
                 def parse_option(opt):
                     if isinstance(opt, dict):
                         return opt.get('label', ''), opt.get('description', '')
@@ -851,7 +853,7 @@ class UserInputHandler:
                 selected_indices = state['tab_states'].get(tab_name, set())
                 current_index = state['tab_states'].get(f'{tab_name}_current', 0)
                 
-                # 使用共享的渲染函数
+                # Use shared render function
                 self._render_multi_select_options(
                     parsed_options, 
                     selected_indices, 
@@ -862,11 +864,11 @@ class UserInputHandler:
                 fragments.append(("", "\n"))
                 selected_count = len(selected_indices)
                 if selected_count > 0:
-                    fragments.append(("class:footer", f"已选择 {selected_count} 项 · "))
-                fragments.append(("class:footer", "Enter 选择 · ↑↓ 导航 · ←→ 切换Tab · Esc 取消"))
+                    fragments.append(("class:footer", f"Selected {selected_count} item(s) · "))
+                fragments.append(("class:footer", "Enter to select · ↑↓ Navigate · ←→ Switch Tab · Esc to cancel"))
                 
             elif tab_type == 'text_input':
-                prompt = current_tab.get('prompt', '请输入')
+                prompt = current_tab.get('prompt', 'Please enter')
                 default = current_tab.get('default', ' ')
                 placeholder = current_tab.get('placeholder', 'Search...')
                 
@@ -874,35 +876,35 @@ class UserInputHandler:
                 current_value = state['tab_states'].get(f'{tab_name}_value', default)
                 is_editing = state['tab_states'].get(f'{tab_name}_editing', False)
                 
-                # 搜索框样式 - 圆角边框，浅紫色（类似图片中的样式）
+                # Search box style - rounded border, light purple (similar to style in image)
                 box_width = 60
                 
-                # 计算文本显示宽度（中文字符占2个宽度）
+                # Calculate text display width (Chinese characters take 2 widths)
                 def get_display_width(text):
-                    """计算文本在终端中的显示宽度"""
+                    """Calculate text display width in terminal"""
                     width = 0
                     for char in text:
-                        # 判断是否为中文字符或全角字符
+                        # Check if Chinese character or full-width character
                         if ord(char) > 127:
                             width += 2
                         else:
                             width += 1
                     return width
                 
-                # 上边框 - 圆角
+                # Top border - rounded
                 fragments.append(("class:search-box", "╭"))
                 fragments.append(("class:search-box", "─" * (box_width - 2)))
                 fragments.append(("class:search-box", "╮\n"))
                 
-                # 中间行 - 包含图标、输入内容和光标
+                # Middle row - contains icon, input content and cursor
                 fragments.append(("class:search-box", "│"))
                 
-                # 放大镜图标（占3个字符宽度：空格+emoji+空格，emoji可能占2个显示宽度）
+                # Magnifying glass icon (takes 3 character widths: space+emoji+space, emoji may take 2 display widths)
                 icon_text = ""
-                icon_display_width = 4  # 1空格 + 2(emoji) + 1空格
+                icon_display_width = 4  # 1 space + 2(emoji) + 1 space
                 fragments.append(("class:search-icon", icon_text))
                 
-                # 输入内容或占位符
+                # Input content or placeholder
                 display_text = current_value if current_value else placeholder
                 text_display_width = get_display_width(display_text)
                 
@@ -911,7 +913,7 @@ class UserInputHandler:
                 else:
                     fragments.append(("class:input-placeholder", display_text))
                 
-                # 光标（如果正在编辑）
+                # Cursor (if editing)
                 cursor_text = ""
                 cursor_width = 0
                 if is_editing:
@@ -919,22 +921,22 @@ class UserInputHandler:
                     cursor_width = 1
                     fragments.append(("class:input-cursor", cursor_text))
                 
-                # 填充剩余空间
-                # 已用宽度：左边框(1) + 图标(4) + 文本宽度 + 光标宽度
+                # Fill remaining space
+                # Used width: left border(1) + icon(4) + text width + cursor width
                 used_width = 1 + icon_display_width + text_display_width + cursor_width
-                remaining = box_width - used_width - 1  # 减去右边框
+                remaining = box_width - used_width - 1  # Subtract right border
                 if remaining > 0:
                     fragments.append(("class:search-box", " " * remaining))
                 
                 fragments.append(("class:search-box", "│\n"))
                 
-                # 下边框 - 圆角
+                # Bottom border - rounded
                 fragments.append(("class:search-box", "╰"))
                 fragments.append(("class:search-box", "─" * (box_width - 2)))
                 fragments.append(("class:search-box", "╯\n"))
                 
                 fragments.append(("", "\n"))
-                fragments.append(("class:footer", "Enter 确认 · ←→ 切换Tab · Esc 取消"))
+                fragments.append(("class:footer", "Enter to confirm · ←→ Switch Tab · Esc to cancel"))
                 
             elif tab_type == 'submit':
                 message = current_tab.get('message', 'Ready to submit your answers?')
@@ -942,7 +944,7 @@ class UserInputHandler:
                 
                 fragments.append(("class:submit-message", f"{message}\n\n"))
                 
-                # 显示所有已回答的问题和答案
+                # Display all answered questions and answers
                 all_tabs = state.get('all_tabs', [])
                 for tab in all_tabs:
                     tab_name = tab.get('name')
@@ -950,9 +952,9 @@ class UserInputHandler:
                         question = tab.get('prompt', tab.get('title', tab_name))
                         answer = state['results'][tab_name]
                         
-                        # 格式化答案
+                        # Format answer
                         if isinstance(answer, list):
-                            # 多选结果
+                            # Multi-select result
                             options = tab.get('options', [])
                             def parse_option(opt):
                                 if isinstance(opt, dict):
@@ -973,7 +975,7 @@ class UserInputHandler:
                 
                 fragments.append(("", "\n"))
                 
-                # 显示选项
+                # Display options
                 submit_options = [
                     ("Submit answers", True),
                     ("Cancel", False)
@@ -996,9 +998,9 @@ class UserInputHandler:
                     fragments.append((label_style, f"{label}\n"))
                 
                 fragments.append(("", "\n"))
-                fragments.append(("class:footer", "Enter 选择 · ↑↓ 导航 · ←→ 切换Tab · Esc 取消"))
+                fragments.append(("class:footer", "Enter to select · ↑↓ Navigate · ←→ Switch Tab · Esc to cancel"))
             
-            # 确保返回 FormattedText 对象
+            # Ensure FormattedText object is returned
             try:
                 if to_formatted_text:
                     return to_formatted_text(fragments)
@@ -1010,7 +1012,7 @@ class UserInputHandler:
                     text_lines.append(text)
                 return "".join(text_lines)
         
-        # 创建键盘绑定
+        # Create keyboard bindings
         kb = KeyBindings()
         
         def move_up(event):
@@ -1089,7 +1091,7 @@ class UserInputHandler:
                 event.app.invalidate()
         
         def handle_enter(event):
-            """处理回车键：多选时切换选择，其他情况确认"""
+            """Handle Enter key: toggle selection for multi-select, confirm for other cases"""
             all_tabs = state.get('all_tabs', [])
             if not all_tabs:
                 return
@@ -1101,11 +1103,11 @@ class UserInputHandler:
             current_tab = all_tabs[current_tab_idx]
             tab_type = current_tab.get('type')
             
-            # 如果是多选类型，回车键切换选择
+            # If multi-select type, Enter toggles selection
             if tab_type == 'multi_select':
                 toggle_selection(event)
             else:
-                # 其他类型，回车键确认
+                # Other types, Enter confirms
                 confirm_selection(event)
         
         def confirm_selection(event):
@@ -1150,22 +1152,22 @@ class UserInputHandler:
                             state['tab_states']['submit_current'] = 0
                         event.app.invalidate()
                     else:
-                        # 所有 tab 完成，退出
+                        # All tabs completed, exit
                         event.app.exit()
                 else:
-                    # 至少需要选择一个
+                    # At least one must be selected
                     pass
             elif tab_type == 'text_input':
-                # 结束编辑模式
+                # End editing mode
                 state['tab_states'][f'{tab_name}_editing'] = False
                 current_value = state['tab_states'].get(f'{tab_name}_value', '')
                 
                 if current_value.strip() or current_tab.get('allow_empty', False):
                     state['results'][tab_name] = current_value.strip()
-                    # 移动到下一个 tab
+                    # Move to next tab
                     if current_tab_idx < len(all_tabs) - 1:
                         state['current_tab_index'] = current_tab_idx + 1
-                        # 重置下一个 tab 的状态
+                        # Reset next tab state
                         next_tab = all_tabs[state['current_tab_index']]
                         next_tab_name = next_tab.get('name')
                         if next_tab.get('type') == 'multi_select':
@@ -1180,10 +1182,10 @@ class UserInputHandler:
                             state['tab_states']['submit_current'] = 0
                         event.app.invalidate()
                     else:
-                        # 所有 tab 完成，退出
+                        # All tabs completed, exit
                         event.app.exit()
                 else:
-                    # 如果为空且不允许空值，重新进入编辑模式
+                    # If empty and empty values not allowed, re-enter editing mode
                     state['tab_states'][f'{tab_name}_editing'] = True
                     event.app.invalidate()
             elif tab_type == 'submit':
@@ -1196,7 +1198,7 @@ class UserInputHandler:
                     event.app.exit()
         
         def move_left(event):
-            """移动到上一个 tab（所有tabs中）"""
+            """Move to previous tab (in all tabs)"""
             all_tabs = state.get('all_tabs', [])
             if not all_tabs:
                 return
@@ -1209,23 +1211,23 @@ class UserInputHandler:
             tab_type = current_tab.get('type')
             tab_name = current_tab.get('name')
             
-            # 保存当前 tab 的状态（如果是交互式tab）
+            # Save current tab state (if interactive tab)
             if tab_type == 'multi_select':
                 selected_indices = state['tab_states'].get(tab_name, set())
                 if selected_indices:
                     state['results'][tab_name] = sorted(list(selected_indices))
             elif tab_type == 'text_input':
-                # 保存文本输入的值
+                # Save text input value
                 current_value = state['tab_states'].get(f'{tab_name}_value', '')
                 if current_value:
                     state['results'][tab_name] = current_value
-                # 退出编辑模式
+                # Exit editing mode
                 state['tab_states'][f'{tab_name}_editing'] = False
             
-            # 切换到上一个 tab
+            # Switch to previous tab
             if current_tab_idx > 0:
                 state['current_tab_index'] = current_tab_idx - 1
-                # 初始化前一个 tab 的状态（如果是交互式tab）
+                # Initialize previous tab state (if interactive tab)
                 prev_tab = all_tabs[state['current_tab_index']]
                 prev_tab_name = prev_tab.get('name')
                 prev_tab_type = prev_tab.get('type')
@@ -1234,13 +1236,13 @@ class UserInputHandler:
                     if f'{prev_tab_name}_current' not in state['tab_states']:
                         state['tab_states'][f'{prev_tab_name}_current'] = 0
                     if prev_tab_name not in state['tab_states']:
-                        # 如果之前有结果，恢复选中状态
+                        # If previous result exists, restore selected state
                         if prev_tab_name in state['results']:
                             state['tab_states'][prev_tab_name] = set(state['results'][prev_tab_name])
                         else:
                             state['tab_states'][prev_tab_name] = set()
                 elif prev_tab_type == 'text_input':
-                    # 恢复文本输入的值（如果之前有输入）
+                    # Restore text input value (if previously entered)
                     if prev_tab_name in state['results']:
                         state['tab_states'][f'{prev_tab_name}_value'] = state['results'][prev_tab_name]
                     else:
@@ -1253,7 +1255,7 @@ class UserInputHandler:
                 event.app.invalidate()
         
         def move_right(event):
-            """移动到下一个 tab（所有tabs中）"""
+            """Move to next tab (in all tabs)"""
             all_tabs = state.get('all_tabs', [])
             if not all_tabs:
                 return
@@ -1311,10 +1313,10 @@ class UserInputHandler:
         
         
         def cancel_selection(event):
-            """取消操作"""
+            """Cancel operation"""
             event.app.exit(result=None)
         
-        # 绑定按键
+        # Bind keys
         kb.add("up")(move_up)
         kb.add("k")(move_up)
         kb.add("down")(move_down)
@@ -1328,7 +1330,7 @@ class UserInputHandler:
         kb.add("c-c")(cancel_selection)
         kb.add("escape")(cancel_selection)
         def handle_backspace(event):
-            """处理退格键（用于文本输入）"""
+            """Handle backspace key (for text input)"""
             all_tabs = state.get('all_tabs', [])
             if not all_tabs:
                 return
@@ -1341,7 +1343,7 @@ class UserInputHandler:
             tab_name = current_tab.get('name')
             is_completed = tab_name in state['results']
             
-            # 如果已完成，不允许编辑
+            # If completed, editing not allowed
             if is_completed:
                 return
             
@@ -1354,10 +1356,10 @@ class UserInputHandler:
         
         kb.add("backspace")(handle_backspace)
         
-        # 为文本输入绑定字符输入（使用 <any> 但需要检查 tab 类型）
+        # Bind character input for text input (use <any> but need to check tab type)
         @kb.add('<any>')
         def handle_any_key(event):
-            """处理任意键输入（用于文本输入）"""
+            """Handle any key input (for text input)"""
             all_tabs = state.get('all_tabs', [])
             if not all_tabs:
                 return
@@ -1370,20 +1372,20 @@ class UserInputHandler:
             tab_name = current_tab.get('name')
             is_completed = tab_name in state['results']
             
-            # 如果已完成，不允许编辑
+            # If completed, editing not allowed
             if is_completed:
                 return
             
             if current_tab.get('type') == 'text_input':
                 if not state['tab_states'].get(f'{tab_name}_editing', False):
-                    # 如果还没开始编辑，先开始编辑
+                    # If not started editing yet, start editing first
                     state['tab_states'][f'{tab_name}_editing'] = True
                 
-                # 处理字符输入
+                # Handle character input
                 try:
                     key = event.key_sequence[0].key if event.key_sequence else None
                     if key:
-                        # 跳过特殊键
+                        # Skip special keys
                         if key in ('up', 'down', 'left', 'right', 'escape', 'c-c', 'tab', 'enter', 'backspace'):
                             return
                         
@@ -1394,7 +1396,7 @@ class UserInputHandler:
                 except Exception:
                     pass
         
-        # 创建控件
+        # Create control
         def get_text():
             result = get_formatted_text()
             if isinstance(result, FormattedText):
@@ -1411,7 +1413,7 @@ class UserInputHandler:
             focusable=True
         )
         
-        # 定义样式
+        # Define styles
         style_list = [
             ("title", "bold #ffffff"),
             ("nav", "#888888"),
@@ -1439,11 +1441,11 @@ class UserInputHandler:
             ("input-prompt", "#ffffff"),
             ("input-value", "#9d4edd"),
             ("input-title", "bold #ffffff"),
-            ("search-box", "#9d4edd"),  # 浅紫色边框
-            ("search-icon", "#9d4edd"),  # 放大镜图标
-            ("input-text", "#ffffff"),  # 输入文本颜色
-            ("input-placeholder", "#888888"),  # 占位符颜色
-            ("input-cursor", "#9d4edd"),  # 光标颜色
+            ("search-box", "#9d4edd"),  # Light purple border
+            ("search-icon", "#9d4edd"),  # Magnifying glass icon
+            ("input-text", "#ffffff"),  # Input text color
+            ("input-placeholder", "#888888"),  # Placeholder color
+            ("input-cursor", "#9d4edd"),  # Cursor color
             ("submit-message", "#ffffff"),
         ]
         
@@ -1459,11 +1461,11 @@ class UserInputHandler:
         else:
             style = None
         
-        # 创建布局
+        # Create layout
         window = Window(content=control, wrap_lines=False)
         layout = Layout(window)
         
-        # 创建应用
+        # Create application
         app = Application(
             layout=layout,
             key_bindings=kb,
@@ -1476,14 +1478,14 @@ class UserInputHandler:
         try:
             app.run()
             
-            # 所有 tabs 都在交互式界面中处理完成，直接返回结果
+            # All tabs processed in interactive interface, return results directly
             return state['results'] if state['results'] else None
         except KeyboardInterrupt:
             return None
     
     def _composite_menu_sequential(self, tabs: List[Dict[str, Any]], title: str) -> Dict[str, Any]:
         """
-        顺序执行方式（非交互式，用于非终端环境）。
+        Sequential execution mode (non-interactive, for non-terminal environments).
         """
         results = {}
         
@@ -1494,81 +1496,81 @@ class UserInputHandler:
             tab_name = tab.get('name', f'tab_{idx}')
             tab_title = tab.get('title', tab_name)
             
-            self.console.print(f"\n[cyan]步骤 {idx + 1}/{len(tabs)}: {tab_title}[/cyan]")
+            self.console.print(f"\n[cyan]Step {idx + 1}/{len(tabs)}: {tab_title}[/cyan]")
             
             if tab_type == 'multi_select':
                 options = tab.get('options', [])
-                prompt = tab.get('prompt', '请选择（可多选）')
+                prompt = tab.get('prompt', 'Select (Multiple)')
                 selected_indices = self.select_multiple(options, tab_title, prompt)
                 results[tab_name] = selected_indices
                 
             elif tab_type == 'text_input':
-                prompt = tab.get('prompt', '请输入')
+                prompt = tab.get('prompt', 'Please enter')
                 default = tab.get('default', '')
                 placeholder = tab.get('placeholder')
                 user_input = self.text_input(prompt, default, placeholder)
                 if user_input is None:
-                    return None  # 用户取消
+                    return None  # User cancelled
                 results[tab_name] = user_input
                 
             elif tab_type == 'submit':
-                message = tab.get('message', '请确认')
+                message = tab.get('message', 'Please confirm')
                 default = tab.get('default', True)
                 confirmed = self.submit(message, default)
                 results[tab_name] = confirmed
                 if not confirmed:
-                    return None  # 用户取消
+                    return None  # User cancelled
         
         return results
 
-    def single_select(self, options: List, title: str = "请选择", warning: Optional[str] = None, question: Optional[str] = None, nav_items: Optional[List[Dict[str, Any]]] = None) -> Optional[int]:
+    def single_select(self, options: List, title: str = "Please select", warning: Optional[str] = None, question: Optional[str] = None, nav_items: Optional[List[Dict[str, Any]]] = None) -> Optional[int]:
         """
-        展示单选列表并支持选择，返回选中的选项索引。
-        支持键盘上下箭头导航和回车键选择。
-        现代化的界面设计，支持警告信息和导航栏。
+        Display single-select list with selection support, return selected option index.
+        Supports keyboard navigation with up/down arrows and Enter to select.
+        Modern interface design with support for warning messages and navigation bar.
         
         Args:
-            options: 选项列表，支持以下格式：
-                - List[str]: 简单字符串列表，如 ["选项1", "选项2"]
-                - List[dict]: 字典列表，每个字典包含 'label' 和 'description' 键
-                  如 [{"label": "选项1", "description": "这是选项1的描述"}, ...]
-                - List[tuple]: 元组列表，每个元组包含 (label, description)
-                  如 [("选项1", "这是选项1的描述"), ...]
-            title: 标题
-            warning: 可选的警告信息（会显示黄色警告图标）
-            question: 可选的问题文本（显示在警告下方）
-            nav_items: 可选的导航栏项目列表，每个项目包含：
-                - 'label': 标签文本
-                - 'checked': 是否选中（显示复选框）
-                - 'type': 类型（'checkbox' 或 'button'）
-                - 'highlight': 是否高亮（用于Submit按钮等）
+            options: Option list, supports the following formats:
+                - List[str]: Simple string list, e.g., ["Option 1", "Option 2"]
+                - List[dict]: Dictionary list, each dict contains 'label' and 'description' keys
+                  e.g., [{"label": "Option 1", "description": "Description of option 1"}, ...]
+                - List[tuple]: Tuple list, each tuple contains (label, description)
+                  e.g., [("Option 1", "Description of option 1"), ...]
+            title: Title
+            warning: Optional warning message (will display yellow warning icon)
+            question: Optional question text (displayed below warning)
+            nav_items: Optional navigation bar item list, each item contains:
+                - 'label': Label text
+                - 'checked': Whether selected (displays checkbox)
+                - 'type': Type ('checkbox' or 'button')
+                - 'highlight': Whether highlighted (for Submit button, etc.)
             
         Returns:
-            选中的选项索引（从0开始），如果取消则返回 None
+            Selected option index (0-based), returns None if cancelled
         """
         if not options:
-            self.console.print("[red]没有可选项。[/red]")
+            self.console.print("[red]No options available.[/red]")
             return None
         
-        # 检查是否在真实终端且 prompt_toolkit 可用
+        # Check if in a real terminal and prompt_toolkit is available
         is_terminal = sys.stdin.isatty()
         
-        # 如果 prompt_toolkit 可用且在终端中，使用交互式界面
+        # If prompt_toolkit is available and in terminal, use interactive interface
         if PROMPT_TOOLKIT_AVAILABLE and is_terminal:
             return self._single_select_interactive(options, title, warning, question, nav_items)
         else:
-            # 回退到简单的文本输入方式
+            # Fallback to simple text input method
             return self._single_select_text_input(options, title)
     
     def _single_select_interactive(self, options: List, title: str, warning: Optional[str], question: Optional[str], nav_items: Optional[List[Dict[str, Any]]]) -> Optional[int]:
         """
-        使用 prompt_toolkit 实现的交互式单选列表。
-        支持上下箭头导航，回车键选择。
-        现代化的界面设计，类似图片中的样式。
+        Interactive single-select list implemented using prompt_toolkit.
+        Supports up/down arrow navigation, Enter to select.
+        Modern interface design, similar to the style in the image.
         """
-        # 解析选项：支持字符串或字典格式
+        # Parse options: supports string or dict format
         def parse_option(opt):
-            """解析选项，支持字符串或字典格式"""
+            """Parse option, supports string or dict format"""
             if isinstance(opt, dict):
                 return opt.get('label', ''), opt.get('description', '')
             elif isinstance(opt, (list, tuple)) and len(opt) >= 2:
@@ -1719,7 +1721,7 @@ class UserInputHandler:
         kb.add("c-c")(cancel_selection)  # Ctrl+C 取消
         kb.add("escape")(cancel_selection)  # ESC 取消
         
-        # 创建控件 - 使用可调用对象来动态更新
+        # Create control - 使用可调用对象来动态更新
         def get_text():
             result = get_formatted_text()
             # 确保返回的是 FormattedText 对象或字符串
@@ -1780,11 +1782,11 @@ class UserInputHandler:
         else:
             style = None
         
-        # 创建布局
+        # Create layout
         window = Window(content=control, wrap_lines=False)
         layout = Layout(window)
         
-        # 创建应用
+        # Create application
         app = Application(
             layout=layout,
             key_bindings=kb,
@@ -1822,27 +1824,27 @@ class UserInputHandler:
         
         while True:
             if is_terminal:
-                choice = Prompt.ask(f"[cyan]请选择选项编号[/cyan]", default="", console=self.console)
+                choice = Prompt.ask(f"[cyan]Please select option number[/cyan]", default="", console=self.console)
             else:
-                self.console.print("请选择选项编号: ", end="")
+                self.console.print("Please select option number: ", end="")
                 choice = input().strip()
             
-            # 检查取消命令
+            # Check cancel command
             if choice.lower() in ("exit", "quit", "q", "cancel"):
-                self.console.print("[yellow]选择已取消。[/yellow]")
+                self.console.print("[yellow]Selection cancelled.[/yellow]")
                 return None
             
             if not choice:
-                self.console.print("[red]请输入选项编号。[/red]")
+                self.console.print("[red]Please enter option number.[/red]")
                 continue
             
             try:
-                idx = int(choice) - 1  # 转换为0-based索引
+                idx = int(choice) - 1  # Convert to 0-based index
                 if 0 <= idx < len(options):
-                    self.console.print(f"[green]已选择: {options[idx]}[/green]")
+                    self.console.print(f"[green]Selected: {options[idx]}[/green]")
                     return idx
                 else:
-                    self.console.print(f"[red]无效的选项编号: {choice}。请重新输入。[/red]")
+                    self.console.print(f"[red]Invalid option number: {choice}. Please try again.[/red]")
             except ValueError:
-                self.console.print("[red]请输入有效的数字编号。[/red]")
+                self.console.print("[red]Please enter a valid number.[/red]")
         
