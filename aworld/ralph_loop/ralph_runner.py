@@ -90,6 +90,7 @@ class RalphRunner(Runner):
 
         # Current strategic plan
         # self.current_plan: Optional[StrategicPlan] = None
+        self.current_plan = None
 
         # Initialize components
         self._init_mission_processor()
@@ -161,9 +162,6 @@ class RalphRunner(Runner):
                     success=execution_success
                 )
 
-                if reflection_results:
-                    await self._apply_reflection(reflection_results)
-
             # Replan if needed
             if self.need_plan and self.current_plan:
                 logger.info("\n[5/5] REPLAN - Checking if replanning needed...")
@@ -217,7 +215,7 @@ class RalphRunner(Runner):
             pass
         else:
             criterias = []
-            for metric_name in []:
+            for metric_name in [ValidationMetrics.OUTPUT_QUALITY, ValidationMetrics.TRAJECTORY_QUALITY]:
                 criteria = EvalCriteria(metric_name=metric_name)
                 criterias.append(criteria)
             scorers.extend(scorer_factory.get_scorer_instances_for_criterias(criterias))
@@ -315,35 +313,6 @@ class RalphRunner(Runner):
                 msg=str(e)
             )
             return error_response, False
-
-    def _create_validator(self, validators: List[Union[dict, Evaluator, EvalCriteria]] = None) -> Evaluator:
-        """Create validator from legacy configuration (for backwards compatibility)."""
-        scorers = []
-        if validators:
-            for validator in validators:
-                if isinstance(validator, Evaluator):
-                    if validator.scorers:
-                        scorers.extend(validator.scorers)
-                    continue
-
-                if isinstance(validator, dict):
-                    eval_criteria = EvalCriteria(**validator)
-                else:
-                    eval_criteria = validator
-                scorer = scorer_factory.get_scorer_instances_for_criterias(eval_criteria)
-                if scorer:
-                    scorers.extend(scorer)
-        else:
-            default_criteria = [
-                EvalCriteria(metric_name=ValidationMetrics.FORMAT_CORRECTNESS, threshold=1.0),
-                EvalCriteria(metric_name=ValidationMetrics.OUTPUT_CORRECTNESS, threshold=0.9),
-                EvalCriteria(metric_name=ValidationMetrics.OUTPUT_QUALITY, threshold=0.8)
-            ]
-
-            scorers = scorer_factory.get_scorer_instances_for_criterias(default_criteria)
-        evaluator = Evaluator(scorers=scorers, parallel_num=3)
-        logger.info(f"Legacy validator created with {len(scorers)} scorers")
-        return evaluator
 
     async def _validate(self, eval_target: EvalTarget) -> Dict[str, Any]:
         case = EvalDataCase(
