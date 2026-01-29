@@ -100,9 +100,9 @@ Analyze the user's input to understand:
 </details>
 
 ### **Step 3: Environment and Directory Setup**
-1.  **Get Storage Path**: Retrieve the `AGENT_REGISTRY_STORAGE_PATH`.
+1.  **Get Storage Path**: Retrieve the `AGENTS_PATH`.
     ```bash
-    STORAGE_PATH=$(echo ${AGENT_REGISTRY_STORAGE_PATH:-~/.aworld/agents})
+    STORAGE_PATH=$(echo ${AGENTS_PATH:-~/.aworld/agents})
     ```
 2.  **Create Agent Directory**: Use the determined agent name (in snake_case) to create its directory.
     ```bash
@@ -141,7 +141,10 @@ ls -la "$STORAGE_PATH/<agent_folder_name>/"
 *   **Action**: `dynamic_register`
 *   **Parameters**:
     *   `local_agent_name`: The name of the agent executing this workflow (e.g., "Aworld").
-    *   `register_agent_name`: The name of the newly generated agent (must match the `@agent` decorator name).
+    *   `register_agent_name`: The name of the newly generated agent (must match the `@agent` decorator name). 
+       - ⚠️ **CRITICAL**: Must be lowercase words connected by underscores (snake_case format)
+       - ✅ **CORRECT**: `"simple_agent"`, `"my_custom_agent"`, `"data_processor"`
+       - ❌ **WRONG**: `"SimpleAgent"`, `"my-agent"`, `"MyAgent"`, `"simpleAgent"`, `"simple agent"`
 
 **Example**: `CONTEXT_AGENT_REGISTRY` tool call with params `{"local_agent_name": "Aworld", "register_agent_name": "my_custom_agent"}`
 
@@ -168,6 +171,10 @@ All generated Python code must be valid, follow PEP 8, and adhere to the followi
     2.  Define an agent class inheriting from `BaseAgent[Observation, List[ActionModel]]`.
     3.  Implement `__init__` and the core `async_policy` logic.
     4.  Add the `@agent` decorator with a `name` and `desc`.
+       - ⚠️ **CRITICAL NAMING RULE**: The `name` parameter MUST be lowercase words connected by underscores (snake_case format)
+       - ✅ **CORRECT**: `"simple_agent"`, `"my_custom_agent"`, `"data_processor"`, `"file_handler"`
+       - ❌ **WRONG**: `"SimpleAgent"`, `"my-agent"`, `"MyAgent"`, `"simpleAgent"`, `"simple agent"`, `"Simple_Agent"`
+       - The name must be unique and should match the filename (without `.py` extension)
     5.  Include a `build_<agent_name>_swarm` function that configures and returns a `Swarm` instance containing the agent. It must load MCP servers from `mcp_config.py` if it exists.
 
 *   **MCP Config File (`mcp_config.py`)**:
@@ -259,7 +266,10 @@ class SimpleAgent(Agent):
 
 
 @agent(
-    # name和文件名一致，为simple_agent
+    # ⚠️ CRITICAL: name MUST be lowercase words connected by underscores (snake_case)
+    #   - ✅ CORRECT: "simple_agent", "my_custom_agent", "data_processor"
+    #   - ❌ WRONG: "SimpleAgent", "my-agent", "MyAgent", "simpleAgent", "simple agent"
+    #   - name should be unique and match the filename (without .py extension)
     name="simple_agent",
     desc="A minimal agent that can perform basic LLM calls"
 )
