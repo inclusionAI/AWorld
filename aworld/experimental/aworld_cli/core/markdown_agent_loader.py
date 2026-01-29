@@ -480,11 +480,9 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
                 
                 if found_skills:
                     skill_list_str = ", ".join(found_skills)
-                    print(f"📚 Loaded {len(found_skills)} skill(s) for agent '{agent_name}': {skill_list_str}")
                     logger.info(f"✅ Loaded {len(found_skills)} skill(s) from registry: {found_skills}")
                 if missing_skills:
                     missing_list_str = ", ".join(missing_skills)
-                    print(f"⚠️ Skill(s) not found for agent '{agent_name}': {missing_list_str}")
                     logger.warning(f"⚠️ Skill(s) not found in registry: {missing_skills}. Available skills: {list(all_registry_skills.keys())}")
             except Exception as e:
                 logger.error(f"❌ Failed to get skills from registry: {e}")

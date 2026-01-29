@@ -12,6 +12,8 @@ import os
 import sys
 from typing import Optional, List
 
+from aworld.core.context.amni import AgentContextConfig
+from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
 from aworld.logs.util import logger
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -474,9 +476,23 @@ def load_all_registered_agents(
     return all_agent_instances
 
 
+def build_context_config(debug_mode):
+    config = get_default_config()
+    config.debug_mode = debug_mode
+    config.agent_config = AgentContextConfig(
+        enable_system_prompt_augment=True,
+        neuron_names= ["skills"],
+        history_scope='session'
+    )
+    config.env_config = ContextEnvConfig()
+    return config
+
 @agent(
     name="Aworld",
-    desc="Aworld is a versatile AI assistant that can execute tasks directly or delegate to specialized agent teams. Use when you need: (1) General-purpose task execution, (2) Complex multi-step problem solving, (3) Coordination of specialized agent teams, (4) Adaptive task handling that switches between direct execution and team delegation"
+    desc="Aworld is a versatile AI assistant that can execute tasks directly or delegate to specialized agent teams. Use when you need: (1) General-purpose task execution, (2) Complex multi-step problem solving, (3) Coordination of specialized agent teams, (4) Adaptive task handling that switches between direct execution and team delegation",
+    context_config=build_context_config(
+        debug_mode=True,
+    )
 )
 def build_aworld_agent(include_skills: Optional[str] = None):
     """
@@ -514,14 +530,46 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     # Load custom skills from skills directory
     SKILLS_DIR = cur_dir / "skills"
 
-    print(f"agent_config: {cur_dir}")
+    logger.info(f"agent_config: {cur_dir}")
 
-
-    # Support skill filtering via parameter or environment variable
-    if include_skills is None:
-        include_skills = os.environ.get("INCLUDE_SKILLS")
-
+    # Load custom skills from skills directory
     CUSTOM_SKILLS = collect_skill_docs(SKILLS_DIR)
+    
+    # Load additional skills from SKILLS_PATH environment variable (single directory)
+    skills_path_env = os.environ.get("SKILLS_PATH")
+    if skills_path_env:
+        try:
+            logger.info(f"📚 Loading skills from SKILLS_PATH: {skills_path_env}")
+            additional_skills = collect_skill_docs(skills_path_env)
+            if additional_skills:
+                # Merge additional skills into CUSTOM_SKILLS
+                # If skill name already exists, log a warning but keep the first one found
+                for skill_name, skill_data in additional_skills.items():
+                    if skill_name in CUSTOM_SKILLS:
+                        logger.warning(f"⚠️ Duplicate skill name '{skill_name}' found in SKILLS_PATH '{skills_path_env}', skipping")
+                    else:
+                        CUSTOM_SKILLS[skill_name] = skill_data
+                logger.info(f"✅ Loaded {len(additional_skills)} skill(s) from SKILLS_PATH")
+            else:
+                logger.debug(f"ℹ️ No skills found in SKILLS_PATH: {skills_path_env}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load skills from SKILLS_PATH '{skills_path_env}': {e}")
+
+    # Ensure all skills have skill_path for context_skill_tool to work
+    # collect_skill_docs already includes skill_path, but we verify and add if missing
+    for skill_name, skill_config in CUSTOM_SKILLS.items():
+        if "skill_path" not in skill_config:
+            # Try to infer skill_path from skill name and SKILLS_DIR
+            potential_skill_path = SKILLS_DIR / skill_name / "SKILL.md"
+            if not potential_skill_path.exists():
+                potential_skill_path = SKILLS_DIR / skill_name / "skill.md"
+            if potential_skill_path.exists():
+                skill_config["skill_path"] = str(potential_skill_path.resolve())
+                logger.debug(f"✅ Added skill_path for skill '{skill_name}': {skill_config['skill_path']}")
+            else:
+                logger.warning(f"⚠️ Skill '{skill_name}' has no skill_path and cannot be found in {SKILLS_DIR}, context_skill_tool may not work for this skill")
+        else:
+            logger.debug(f"✅ Skill '{skill_name}' has skill_path: {skill_config['skill_path']}")
 
     # Combine all skills
     ALL_SKILLS = CUSTOM_SKILLS
@@ -549,18 +597,18 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
         system_prompt=aworld_system_prompt,
-        mcp_servers=["terminal-server"],
-        mcp_config={
-           "mcpServers": {
-              "terminal-server": {
-                 "command": "python",
-                 "args": [
-                    "-m",
-                    "aworld_cli.inner_plugins.smllc.agents.mcp_tool.terminal_server"
-                 ]
-              }
-           }
-        }
+        # mcp_servers=["terminal-server"],
+        # mcp_config={
+        #    "mcpServers": {
+        #       "terminal-server": {
+        #          "command": "python",
+        #          "args": [
+        #             "-m",
+        #             "aworld_cli.inner_plugins.smllc.agents.mcp_tool.terminal_server"
+        #          ]
+        #       }
+        #    }
+        # }
     )
 
     # Load all registered agents as sub-agents

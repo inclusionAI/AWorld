@@ -187,7 +187,7 @@ class AgentRegistryConfig(BaseModel):
         default=None,
         description="Base path for agent registry storage and scanning. "
                     "This path is used for both storing agent configurations and scanning for agent definitions. "
-                    "Priority: config > AGENT_REGISTRY_STORAGE_PATH > default (~/.aworld/agents)"
+                    "Priority: config > AGENTS_PATH > default (~/.aworld/agents)"
     )
     
     # Agent configurations: Dict[str, AgentConfig] or Dict[str, Dict] (will be converted to AgentConfig)
