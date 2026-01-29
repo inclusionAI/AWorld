@@ -1009,5 +1009,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def from_dict(attr_dict: Dict[str, Any]) -> 'Agent':
         return Agent(**attr_dict)
 
+    async def process_by_ptc(self, tools, context: Context):
+        if not hasattr(self, "ptc_tools") or not self.ptc_tools:
+            return
+        ptc_tools = self.ptc_tools
+
+        for tool in tools:
+            if tool["function"]["name"] in ptc_tools:
+                tool["function"]["description"] = "[allow_code_execution]" + tool["function"]["description"]
+                logger.debug(f"ptc augmented tool: {tool['function']['description']}")
+
+
 # Considering compatibility and current universality, we still use Agent to represent LLM Agent.
 Agent = LLMAgent

@@ -196,7 +196,21 @@ class AWorldCLI:
     def _visualize_team(self, executor_instance: Any):
         """Visualize the structure of the current team in a full-width split-screen layout."""
         from rich.columns import Columns
-        from rich.console import Group
+        try:
+            from rich.console import Group
+        except ImportError:
+            try:
+                from rich import Group
+            except ImportError:
+                # Fallback for older Rich versions
+                class Group:
+                    """Fallback Group class for older Rich versions."""
+                    def __init__(self, *renderables):
+                        self.renderables = renderables
+                    
+                    def __rich_console__(self, console, options):
+                        for renderable in self.renderables:
+                            yield renderable
         from rich.layout import Layout
         from rich.panel import Panel
         from rich.align import Align

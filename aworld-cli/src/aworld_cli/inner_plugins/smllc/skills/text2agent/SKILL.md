@@ -613,25 +613,67 @@ The following are complete reference examples that demonstrate the proper struct
 
 #### Example 1: Simple Agent with MCP Configuration
 
-**Agent File (`gaia_agent.py`)**:
+**Agent File (`simple_agent.py`)**:
 
 ```python
 import os
-import traceback
 from typing import Dict, Any, List
 
+from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ModelConfig
-from aworld.core.agent.base import BaseAgent
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation, ActionModel
+from aworld.core.context.base import Context
 from aworld.core.event.base import Message
+# use logger to log
 from aworld.logs.util import logger
-from aworld.models.llm import acall_llm_model
+from aworld.runners.hook.hook_factory import HookFactory
+from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
 from aworld_cli.core import agent
-from gaia_agent.mcp_config import mcp_config
+from simple_agent.mcp_config import mcp_config
+
+@HookFactory.register(name="pre_simple_agent_hook")
+class PreSimpleAgentHook(PreLLMCallHook):
+    """LLM调用前的钩子，用于监控、日志记录等，不应修改输入输出内容"""
+    
+    async def exec(self, message: Message, context: Context = None) -> Message:
+        # 重要：这个if判断不能去掉，且必须和当前agent的name一致（这里是'simple_agent'）
+        # 这样可以确保Hook只处理属于当前agent的消息，避免影响其他agent
+        if message.sender.startswith('simple_agent'):
+            # ⚠️ 重要提醒：Message对象（aworld.core.event.base.Message）是AWorld中agent之间通信的消息体，
+            # 它使用payload属性来承载实际数据，而不是content属性。
+            # 在PreLLMCallHook中，message.payload通常是Observation对象，要访问内容应使用message.payload.content
+            # 错误示例：message.content  # ❌ AttributeError: 'Message' object has no attribute 'content'
+            # 正确示例：message.payload.content if hasattr(message.payload, 'content') else None  # ✅
+            # 注意：不要在这里修改message.payload等输入输出内容
+            # Hook应该用于：
+            # - 记录日志和监控信息
+            # - 统计调用次数和性能指标
+            # - 进行权限检查或审计
+            # - 其他不影响输入输出的辅助功能
+            pass
+        return message
 
 
-class SimpleAgent(BaseAgent[Observation, List[ActionModel]]):
+@HookFactory.register(name="post_simple_agent_hook")
+class PostSimpleAgentHook(PostLLMCallHook):
+    """LLM调用后的钩子，用于监控、日志记录等，不应修改输入输出内容"""
+    
+    async def exec(self, message: Message, context: Context = None) -> Message:
+        # 重要：这个if判断不能去掉，且必须和当前agent的name一致（这里是'simple_agent'）
+        # 这样可以确保Hook只处理属于当前agent的消息，避免影响其他agent
+        if message.sender.startswith('simple_agent'):
+            # 注意：不要在这里修改message.content等输入输出内容
+            # Hook应该用于：
+            # - 记录日志和监控信息
+            # - 统计调用次数和性能指标
+            # - 进行结果审计或质量检查
+            # - 其他不影响输入输出的辅助功能
+            pass
+        return message
+
+
+class SimpleAgent(Agent):
     """最简单的可以执行大模型调用的Agent实现"""
 
     def __init__(self, name: str, conf: AgentConfig = None, desc: str = None,
@@ -642,52 +684,12 @@ class SimpleAgent(BaseAgent[Observation, List[ActionModel]]):
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
                            **kwargs) -> List[ActionModel]:
-        """执行大模型调用的核心逻辑"""
-        try:
-            # 初始化工具（参考 llm_agent.py 的 async_desc_transform）
-            try:
-                await self.async_desc_transform(context=message.context)
-            except Exception as e:
-                logger.warning(f"{self.name()} get tools desc fail, no tool to use. error: {traceback.format_exc()}")
-                self.tools = []
-
-            # 构建消息
-            messages = [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": observation.content}
-            ]
-
-            logger.info(f"SimpleAgent {self.name()} 开始调用LLM...")
-
-            # 调用LLM
-            tools = self.tools if self.tools else None
-
-            logger.info(f"工具列表tools: {tools}")
-            response = await acall_llm_model(
-                self.llm,
-                messages=messages,
-                model=self.model_name,
-                temperature=0.7,
-                tools=tools
-            )
-
-            # 解析响应
-            content = response.content or "无有效响应内容"
-
-            logger.info(f"SimpleAgent {self.name()} LLM调用完成")
-
-            # 返回ActionModel列表
-            return [ActionModel(
-                agent_name=self.name(),
-                policy_info=content
-            )]
-
-        except Exception as e:
-            logger.error(f"SimpleAgent {self.name()} LLM调用失败: {str(e)}")
-            return [ActionModel(
-                agent_name=self.name(),
-                policy_info=f"调用失败: {str(e)}"
-            )]
+        # 重要说明：
+        # 1. async_policy已经代表了模型调用，直接调用super().async_policy即可完成LLM调用
+        # 2. 不要在async_policy中修改observation对象，应该保持observation不变
+        # 3. Hook（PreSimpleAgentHook和PostSimpleAgentHook）仅用于监控、日志等辅助功能，
+        #    不应修改输入输出内容
+        return await super().async_policy(observation, info, message, **kwargs)
 
 
 @agent(
@@ -702,7 +704,8 @@ def build_simple_swarm():
             llm_provider=os.environ.get("LLM_PROVIDER", "openai"),
             llm_api_key=os.environ.get("LLM_API_KEY"),
             llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
-            llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.7"))
+            llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.7")),
+            params={"max_completion_tokens": 40960}
         )
     )
 
@@ -714,6 +717,8 @@ def build_simple_swarm():
         name="simple_agent",
         desc="一个可以进行基本LLM调用和工具调用的简单AI Agent",
         conf=agent_config,
+        # 注意：如果Agent中需要读写文件，在system_prompt中提醒agent必须使用绝对路径，不能使用相对路径
+        # 可以使用 os.path.abspath() 或 Path(__file__).parent 等方式获取绝对路径
         system_prompt="你是一个有用的AI助手。请根据用户的问题提供准确、有帮助的回答。",
         mcp_servers=mcp_servers,
         mcp_config=mcp_config

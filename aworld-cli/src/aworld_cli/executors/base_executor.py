@@ -18,12 +18,32 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 
-from rich.console import Console, Group
+from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.status import Status
+
+# Try to import Group from rich.console, with fallback for older Rich versions
+try:
+    from rich.console import Group
+except ImportError:
+    # Fallback for older Rich versions - try importing from rich directly
+    try:
+        from rich import Group
+    except ImportError:
+        # If Group is not available, create a simple wrapper class
+        # Group is used to combine multiple renderables
+        class Group:
+            """Fallback Group class for older Rich versions."""
+            def __init__(self, *renderables):
+                self.renderables = renderables
+            
+            def __rich_console__(self, console, options):
+                from rich.console import RenderableType
+                for renderable in self.renderables:
+                    yield renderable
 
 from .base import AgentExecutor
 
