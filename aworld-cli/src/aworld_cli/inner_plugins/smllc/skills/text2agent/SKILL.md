@@ -61,7 +61,7 @@ This is NOT optional. This is the FIRST thing you must do upon receiving any use
 - ✅ Focus on clarifying requirements that directly impact agent design and functionality
 
 **⚠️ What is REQUIRED:**
-- ✅ Use terminal commands to create directories and files in `AGENT_REGISTRY_STORAGE_PATH`
+- ✅ Use terminal commands to create directories and files in `AGENTS_PATH`
 - ✅ Infer ALL information from the user's initial request
 - ✅ Generate Python code files following the reference structure
 
@@ -94,7 +94,7 @@ Use this skill when you need to analyze user requirements and automatically gene
 This skill performs the following workflow automatically:
 1. **Analyze Requirements**: Parse user input and identify required agent structure (FIRST PRIORITY)
 2. **Clarify Uncertainties**: If there are unclear or ambiguous aspects in the requirements, use `human` tool to confirm critical details BEFORE proceeding
-3. **Get Storage Path**: Retrieve `AGENT_REGISTRY_STORAGE_PATH` from environment variable (default: `~/.aworld/agents`)
+3. **Get Storage Path**: Retrieve `AGENTS_PATH` from environment variable (default: `~/.aworld/agents`)
 4. **Create Agent Directory**: Use terminal to create agent folder in the storage path
 5. **Generate Agent Code Files**: Create Python code files (agent implementation and mcp_config if needed)
 6. **Verify All Files**: Confirm all creation operations completed successfully
@@ -286,16 +286,16 @@ Analyze the user's input to understand (be thorough and detailed, not superficia
 
 **⚠️ CRITICAL: After analyzing requirements, get the storage path and create the agent directory.**
 
-1. **Get Storage Path**: Use terminal to get `AGENT_REGISTRY_STORAGE_PATH` environment variable (default: `~/.aworld/agents`)
+1. **Get Storage Path**: Use terminal to get `AGENTS_PATH` environment variable (default: `~/.aworld/agents`)
    ```bash
-   echo ${AGENT_REGISTRY_STORAGE_PATH}
+   echo ${AGENTS_PATH}
    ```
 
 2. **Determine Agent Folder Name**: Based on requirement analysis, determine a suitable folder name (use snake_case, e.g., `my_custom_agent`)
 
 3. **Create Agent Directory**: Use terminal to create the directory
    ```bash
-   mkdir -p ${AGENT_REGISTRY_STORAGE_PATH}/<agent_folder_name>
+   mkdir -p ${AGENTS_PATH}/<agent_folder_name>
    ```
 
 ### Step 2: Generate Agent Code Files
@@ -333,7 +333,7 @@ Analyze the user's input to understand (be thorough and detailed, not superficia
    - Include proper error handling and logging
    - Use terminal to write the file:
      ```bash
-     cat > ${AGENT_REGISTRY_STORAGE_PATH}/<agent_folder_name>/<agent_name>.py << 'EOF'
+     cat > ${AGENTS_PATH}/<agent_folder_name>/<agent_name>.py << 'EOF'
      <generated_code_content>
      EOF
      ```
@@ -342,14 +342,14 @@ Analyze the user's input to understand (be thorough and detailed, not superficia
    - Create `mcp_config.py` with required MCP server configurations
    - Use terminal to write the file:
      ```bash
-     cat > ${AGENT_REGISTRY_STORAGE_PATH}/<agent_folder_name>/mcp_config.py << 'EOF'
+     cat > ${AGENTS_PATH}/<agent_folder_name>/mcp_config.py << 'EOF'
      <generated_mcp_config_content>
      EOF
      ```
 
 3. **Create __init__.py** (optional but recommended):
    ```bash
-     touch ${AGENT_REGISTRY_STORAGE_PATH}/<agent_folder_name>/__init__.py
+     touch ${AGENTS_PATH}/<agent_folder_name>/__init__.py
      ```
 
 ### Step 3: Verify All Files
@@ -358,12 +358,12 @@ Analyze the user's input to understand (be thorough and detailed, not superficia
 
 1. **List Created Files**: Use terminal to list files in the agent directory
    ```bash
-   ls -la ${AGENT_REGISTRY_STORAGE_PATH}/<agent_folder_name>/
+   ls -la ${AGENTS_PATH}/<agent_folder_name>/
    ```
 
 2. **Verify File Contents**: Optionally verify file contents are correct
    ```bash
-   head -20 ${AGENT_REGISTRY_STORAGE_PATH}/<agent_folder_name>/<agent_name>.py
+   head -20 ${AGENTS_PATH}/<agent_folder_name>/<agent_name>.py
    ```
 
 ### Step 4: Dynamic Registration to AWorld
@@ -469,7 +469,7 @@ Analyze the user's input to understand (be thorough and detailed, not superficia
 
 1. **Get Storage Path**: 
    ```bash
-   STORAGE_PATH=$(echo ${AGENT_REGISTRY_STORAGE_PATH})
+   STORAGE_PATH=$(echo ${AGENTS_PATH})
    echo "Storage path: $STORAGE_PATH"
    ```
 
@@ -537,7 +537,7 @@ Analyze the user's input to understand (be thorough and detailed, not superficia
 
 **Important Notes**:
 - The `register_agent_name` should match the agent name used in the `@agent` decorator in the generated Python file
-- The agent file must be in the `AGENT_REGISTRY_STORAGE_PATH` directory for AgentVersionControlRegistry to find it
+- The agent file must be in the `AGENTS_PATH` directory for AgentVersionControlRegistry to find it
 - If the current agent name is not explicitly known, you may need to:
   - Check LocalAgentRegistry for available agents
   - Use a default agent name (e.g., "Aworld") if it's the main agent
@@ -597,7 +597,7 @@ After generating all files:
 
 3. **Get Storage Path and Create Directory**: 
    ```bash
-   STORAGE_PATH=$(echo ${AGENT_REGISTRY_STORAGE_PATH})
+   STORAGE_PATH=$(echo ${AGENTS_PATH})
    mkdir -p "$STORAGE_PATH/simple_llm_agent"
    ```
 

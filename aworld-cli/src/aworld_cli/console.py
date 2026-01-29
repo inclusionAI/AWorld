@@ -12,6 +12,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 from rich.text import Text
 
+from aworld.logs.util import logger
 from ._globals import console
 from .core.skill_registry import get_skill_registry
 from .models import AgentInfo
@@ -519,35 +520,6 @@ class AWorldCLI:
         )
         self.console.print(Panel(help_text, style="blue"))
 
-        # # Get agent-dir from environment variables
-        # agent_dirs = []
-        # local_agents_dir = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or ""
-        # if local_agents_dir:
-        #     agent_dirs = [d.strip() for d in local_agents_dir.split(";") if d.strip()]
-        
-        # # Get skill-path from skill registry
-        # skill_paths = []
-        # try:
-        #     registry = get_skill_registry()
-        #     skill_paths = registry.list_sources()
-        # except Exception:
-        #     pass
-        
-        # # Display agent-dir and skill-path
-        # if agent_dirs or skill_paths:
-        #     info_lines = []
-        #     if agent_dirs:
-        #         agent_dirs_str = ", ".join(agent_dirs)
-        #         info_lines.append(f"Agent Dirs: [dim]{agent_dirs_str}[/dim]")
-        #     if skill_paths:
-        #         skill_paths_str = ", ".join(skill_paths)
-        #         info_lines.append(f"Skill Paths: [dim]{skill_paths_str}[/dim]")
-            
-        #     if info_lines:
-        #         self.console.print("\n".join(info_lines))
-        
-        self.console.print()
-        
         # Check if we're in a real terminal (not IDE debugger or redirected input)
         is_terminal = sys.stdin.isatty()
         
@@ -649,17 +621,16 @@ class AWorldCLI:
                         if loaded_skills:
                             total_loaded = sum(loaded_skills.values())
                             if total_loaded > 0:
-                                self.console.print(
-                                    f"[green]✅ Loaded {total_loaded} skill(s) from {len([k for k, v in loaded_skills.items() if v > 0])} plugin(s)[/green]")
+                                logger.info(f"[green]✅ Loaded {total_loaded} skill(s) from {len([k for k, v in loaded_skills.items() if v > 0])} plugin(s)[/green]")
                             else:
-                                self.console.print("[dim]No new skills loaded from plugins.[/dim]")
+                                logger.info("[dim]No new skills loaded from plugins.[/dim]")
                         
                         # Get all skills from registry (including newly loaded ones)
                         registry = get_skill_registry()
                         all_skills = registry.get_all_skills()
                         
                         if not all_skills:
-                            self.console.print("[yellow]No skills available.[/yellow]")
+                            logger.info("[yellow]No skills available.[/yellow]")
                             continue
                         
                         # Separate skills into plugin and user skills
@@ -691,7 +662,7 @@ class AWorldCLI:
                                     desc = desc[:57] + "..."
                                 
                                 table.add_row(skill_name, desc)
-                            
+
                             self.console.print(table)
                             self.console.print(f"[dim]Total: {len(skills_dict)} skill(s)[/dim]")
                         
@@ -890,7 +861,6 @@ class AWorldCLI:
                 # Handle agents command
                 if user_input.lower() in ("/agents", "agents"):
                     try:
-                        self.console.print("[bold cyan]📋 Loading agents...[/bold cyan]")
                         from .runtime.cli import CliRuntime
                         from .runtime.loaders import PluginLoader
                         from aworld.experimental.loaders.agent_version_control_registry import global_agent_registry
@@ -900,23 +870,17 @@ class AWorldCLI:
                         built_in_agents = []
                         user_agents = []
                         base_path = os.path.expanduser(
-                            os.environ.get('AGENT_REGISTRY_STORAGE_PATH', '~/.aworld/agents'))
-                        self.console.print(f"[dim]User agents storage path: {base_path}[/dim]")
+                            os.environ.get('AGENTS_PATH', '~/.aworld/agents'))
 
                         # Load Built-in agents from plugins using PluginLoader
-                        self.console.print("[dim]→ Loading Built-in agents from plugins...[/dim]")
                         try:
                             # Get built-in plugin directories
                             runtime = CliRuntime()
                             plugin_dirs = runtime.plugin_dirs
-                            self.console.print(f"[dim]  Found {len(plugin_dirs)} plugin directory(ies)[/dim]")
 
                             # Load agents from each plugin using PluginLoader
                             for plugin_dir in plugin_dirs:
                                 try:
-                                    self.console.print(f"[dim]  Loading from plugin: {plugin_dir.name}[/dim]")
-                                    self.console.print(f"[dim]    Plugin path: {plugin_dir}[/dim]")
-                                    self.console.print(f"[dim]    Agents directory: {plugin_dir / 'agents'}[/dim]")
                                     loader = PluginLoader(plugin_dir, console=self.console)
                                     # Load agents from plugin (this also loads skills internally)
                                     plugin_agents = await loader.load_agents()
@@ -925,29 +889,16 @@ class AWorldCLI:
                                         if not hasattr(agent, 'source_type') or not agent.source_type:
                                             agent.source_type = "BUILT-IN"
                                     built_in_agents.extend(plugin_agents)
-                                    # Show detailed agent information
-                                    if plugin_agents:
-                                        self.console.print(f"[green]  ✓ Loaded {len(plugin_agents)} agent(s) from {plugin_dir.name}:[/green]")
-                                        for agent in plugin_agents:
-                                            source = getattr(agent, 'source_location', 'unknown')
-                                            self.console.print(f"[dim]    • {agent.name} (from: {source})[/dim]")
-                                    else:
-                                        self.console.print(f"[dim]  ℹ️  No agents found in {plugin_dir.name}[/dim]")
                                 except Exception as e:
-                                    self.console.print(
-                                        f"[yellow]⚠️  Failed to load Built-in agents from plugin {plugin_dir.name}: {e}[/yellow]")
+                                    logger.info(f"Failed to load Built-in agents from plugin {plugin_dir.name}: {e}")
                                     import traceback
-                                    self.console.print(f"[dim]    {traceback.format_exc()}[/dim]")
-                            if built_in_agents:
-                                self.console.print(f"[green]✓ Successfully loaded {len(built_in_agents)} Built-in agent(s) total[/green]")
+                                    logger.debug(traceback.format_exc())
                         except Exception as e:
-                            self.console.print(f"[yellow]⚠️  Failed to load Built-in agents from plugins: {e}[/yellow]")
+                            logger.info(f"Failed to load Built-in agents from plugins: {e}")
                         
                         # Load User agents from AgentVersionControlRegistry default instance
-                        self.console.print(f"[dim]→ Loading User agents from registry ({base_path})...[/dim]")
                         try:
                             agent_list = await global_agent_registry.list_desc()
-                            self.console.print(f"[dim]  Found {len(agent_list)} agent(s) in registry[/dim]")
                             for name, desc in agent_list:
                                 agent_info = AgentInfo(
                                     name=name,
@@ -956,15 +907,12 @@ class AWorldCLI:
                                     source_location=base_path
                                 )
                                 user_agents.append(agent_info)
-                            if user_agents:
-                                self.console.print(f"[green]✓ Successfully loaded {len(user_agents)} User agent(s)[/green]")
                         except Exception as e:
-                            self.console.print(f"[yellow]⚠️  Failed to load User agents from registry: {e}[/yellow]")
-                            self.console.print(f"[dim]  Registry path: {base_path}[/dim]")
+                            logger.info(f"Failed to load User agents from registry: {e}")
                         
-                        # Display summary
+                        # Log summary
                         total_agents = len(built_in_agents) + len(user_agents)
-                        self.console.print(f"\n[bold]Summary:[/bold] {total_agents} agent(s) found ({len(built_in_agents)} Built-in, {len(user_agents)} User)")
+                        logger.info(f"Loaded {total_agents} agent(s): {len(built_in_agents)} from Built-in plugins, {len(user_agents)} from User registry ({base_path})")
                         
                         # Display Built-in agents in a separate table
                         if built_in_agents:
@@ -983,9 +931,9 @@ class AWorldCLI:
                         if not built_in_agents and not user_agents:
                             self.console.print("[yellow]⚠️  No agents available.[/yellow]")
                     except Exception as e:
-                        self.console.print(f"[bold red]❌ Error loading agents:[/bold red] {e}")
+                        logger.info(f"Error loading agents: {e}")
                         import traceback
-                        self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
+                        logger.debug(traceback.format_exc())
                     continue
 
                 # Handle visualize command

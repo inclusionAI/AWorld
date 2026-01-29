@@ -1,12 +1,12 @@
 """
 Agent loader for scanning and loading agents from local directories.
 """
+import importlib.util
 import os
 import sys
-import importlib.util
-import traceback
 from pathlib import Path
-from typing import Union, List, Optional
+from typing import Union, Optional
+from aworld.logs.util import logger
 
 
 def _has_agent_decorator(file_path: Path) -> bool:
@@ -74,7 +74,7 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
             markdown_loaded_count += 1
             # Get file path from metadata if available
             file_path = agent.metadata.get("file_path", "unknown") if agent.metadata else "unknown"
-            console.print(f"[dim]✅ Loaded markdown agent: {agent.name} from {file_path}[/dim]")
+            logger.info(f"[dim]✅ Loaded markdown agent: {agent.name} from {file_path}[/dim]")
         except Exception as e:
             markdown_failed_count += 1
             console.print(f"[dim]❌ Failed to register markdown agent {agent.name}: {e}[/dim]")
@@ -92,11 +92,11 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
     python_files = [f for f in all_python_files if _has_agent_decorator(f)] if all_python_files else []
     
     if all_python_files:
-        console.print(f"[dim]🔍 Found {len(all_python_files)} Python file(s), {len(python_files)} with @agent decorator[/dim]")
+        logger.info(f"[dim]🔍 Found {len(all_python_files)} Python file(s), {len(python_files)} with @agent decorator[/dim]")
         if python_files:
-            console.print(f"[dim]  Files with @agent decorator:[/dim]")
+            logger.info(f"[dim]  Files with @agent decorator:[/dim]")
             for py_file in python_files:
-                console.print(f"[dim]    • {py_file.relative_to(agents_dir) if agents_dir.exists() else py_file}[/dim]")
+                logger.info(f"[dim]    • {py_file.relative_to(agents_dir) if agents_dir.exists() else py_file}[/dim]")
     elif markdown_agents:
         console.print(f"[dim]🔍 Found {len(markdown_agents)} markdown agent file(s)[/dim]")
     
@@ -157,7 +157,7 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
                 spec = importlib.util.spec_from_file_location(module_name, py_file)
                 if spec is None or spec.loader is None:
                     file_path = str(py_file.resolve())
-                    console.print(f"[dim]⚠️ Could not create spec for {file_path}[/dim]")
+                    logger.info(f"[dim]⚠️ Could not create spec for {file_path}[/dim]")
                     failed_count += 1
                     failed_files.append((str(py_file), "Could not create module spec"))
                     continue
@@ -181,17 +181,17 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
                         all_agents = LocalAgentRegistry.list_agents()
                         new_agents = all_agents[-agents_registered:] if agents_registered > 0 else []
                         agent_names = [a.name for a in new_agents]
-                        console.print(f"[dim]✅ Loaded {agents_registered} agent(s) from: {file_path}[/dim]")
+                        logger.info(f"[dim]✅ Loaded {agents_registered} agent(s) from: {file_path}[/dim]")
                         for agent_name in agent_names:
-                            console.print(f"[dim]    • Registered agent: {agent_name}[/dim]")
+                            logger.info(f"[dim]    • Registered agent: {agent_name}[/dim]")
                     else:
-                        console.print(f"[dim]✅ Loaded module (no new agents registered): {file_path}[/dim]")
+                        logger.info(f"[dim]✅ Loaded module (no new agents registered): {file_path}[/dim]")
                 except Exception as import_error:
                     failed_count += 1
                     error_msg = str(import_error)
                     failed_files.append((str(py_file), error_msg))
                     file_path = str(py_file.resolve())
-                    console.print(f"[dim]❌ Failed to load {file_path}: {error_msg}[/dim]")
+                    logger.info(f"[dim]❌ Failed to load {file_path}: {error_msg}[/dim]")
                     continue
 
             except Exception as e:
@@ -199,7 +199,7 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
                 error_msg = str(e)
                 failed_files.append((str(py_file), error_msg))
                 file_path = str(py_file.resolve())
-                console.print(f"[dim]❌ Error processing {file_path}: {error_msg}[/dim]")
+                logger.info(f"[dim]❌ Error processing {file_path}: {error_msg}[/dim]")
                 continue
     
     # Summary
@@ -254,7 +254,7 @@ def init_agent_file(agent_file: Union[str, Path]) -> Optional[str]:
             if agent:
                 LocalAgentRegistry.register(agent)
                 file_path = str(agent_file.resolve())
-                console.print(f"[dim]✅ Loaded markdown agent: {agent.name} from {file_path}[/dim]")
+                logger.info(f"[dim]✅ Loaded markdown agent: {agent.name} from {file_path}[/dim]")
                 return agent.name
             else:
                 console.print(f"[yellow]⚠️ Failed to parse markdown agent from: {agent_file}[/yellow]")
@@ -292,7 +292,7 @@ def init_agent_file(agent_file: Union[str, Path]) -> Optional[str]:
             # Note: We don't use Status here because the module execution might create its own Status
             spec.loader.exec_module(module)
             file_path = str(agent_file.resolve())
-            console.print(f"[dim]✅ Loaded agent from: {file_path}[/dim]")
+            logger.info(f"[dim]✅ Loaded agent from: {file_path}[/dim]")
             
             # Try to get the agent name from registry (get the most recently registered agent)
             # This works because the decorator registers the agent when the module is executed
@@ -303,7 +303,7 @@ def init_agent_file(agent_file: Union[str, Path]) -> Optional[str]:
             return None
         except Exception as e:
             file_path = str(agent_file.resolve())
-            console.print(f"[red]❌ Failed to load Python agent from {file_path}: {e}[/red]")
+            logger.info(f"[red]❌ Failed to load Python agent from {file_path}: {e}[/red]")
             return None
     else:
         console.print(f"[yellow]⚠️ Unsupported file type: {agent_file.suffix}. Only .py and .md files are supported.[/yellow]")

@@ -64,24 +64,28 @@ def get_skill_registry(
         # Determine cache directory
         if cache_dir is None:
             env_cache_dir = os.getenv(ENV_SKILLS_CACHE_DIR)
-            cache_dir = Path(env_cache_dir) if env_cache_dir else DEFAULT_CACHE_DIR
+            if env_cache_dir:
+                # Expand ~ in path if present
+                cache_dir = Path(os.path.expanduser(env_cache_dir))
+            else:
+                cache_dir = DEFAULT_CACHE_DIR
         
         _global_registry = SkillRegistry(cache_dir=cache_dir)
         
         if auto_init:
             # Register skills from environment variables
             _register_from_env(_global_registry)
-            
+
             # Register skills from provided skill_paths parameter
             if skill_paths:
                 for skill_path in skill_paths:
                     try:
                         count = _global_registry.register_source(skill_path, source_name=skill_path)
                         if count > 0:
-                            print(f"📚 Registered skill source: {skill_path} ({count} skills)")
-                        logger.debug(f"📚 Registered skill source from parameter: {skill_path}")
+                            logger.info(f"📚 Registered skill source: {skill_path} ({count} skills)")
+                        logger.info(f"📚 Registered skill source from parameter: {skill_path}")
                     except Exception as e:
-                        print(f"⚠️ Failed to register skill source '{skill_path}': {e}")
+                        logger.error(f"⚠️ Failed to register skill source '{skill_path}': {e}")
                         logger.warning(f"⚠️ Failed to register skill source '{skill_path}': {e}")
             
             # Register default skills directory if provided or exists
@@ -149,7 +153,8 @@ def _register_from_env(registry: SkillRegistry) -> None:
     skills_dir_env = os.getenv(ENV_SKILLS_DIR)
     if skills_dir_env:
         try:
-            skills_dir_path = Path(skills_dir_env).resolve()
+            # Expand ~ in path if present
+            skills_dir_path = Path(os.path.expanduser(skills_dir_env)).resolve()
             if skills_dir_path.exists() and skills_dir_path.is_dir():
                 count = registry.register_source(str(skills_dir_path), source_name=str(skills_dir_path))
                 if count > 0:

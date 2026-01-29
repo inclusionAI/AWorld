@@ -160,7 +160,7 @@ class OptimizationConfig(BaseConfig):
 
 class MetaLearningConfig(BaseConfig):
     enabled: bool = Field(default=False, description="Whether to enable meta-learning. When enabled, task_id will be recorded to MULTI_TURN_TASK_ID_DATA upon task completion")
-    # AGENT_REGISTRY_STORAGE_PATH
+    # AGENTS_PATH
     # 去掉MIND_STREAM_DEBUG_MODE 修正TRAJ_STORAGE_BASE_PATH的逻辑
 
 class SummaryPromptConfig(BaseConfig):
