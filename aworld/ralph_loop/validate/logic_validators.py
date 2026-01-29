@@ -3,25 +3,12 @@
 from aworld.evaluations.base import MetricResult, EvalDataCase
 from aworld.evaluations.scorers import scorer_register
 from aworld.config.conf import ModelConfig, EvaluationConfig
-from aworld.evaluations.scorers.llm_as_judge import LLMAsJudgeScorer
-from aworld.runners.ralph_loop.validate.types import ValidationMetrics
-
-
-class LogicValidator(LLMAsJudgeScorer):
-    """Logic class validators, mainly evaluated using LLM."""
-    def convert_judge_response_to_score(self, judge_response: str):
-        data = self.fetch_json_from_result(judge_response)
-
-        score = float(data.get("score", 0.0))
-        metric_result: MetricResult = {
-            "value": score,
-            "metadata": data
-        }
-        return {self.name: metric_result}
+from aworld.ralph_loop.validate.base_validator import LlmValidator
+from aworld.ralph_loop.validate.types import ValidationMetrics
 
 
 @scorer_register(ValidationMetrics.LOGIC_CONSISTENCY)
-class LogicConsistencyScorer(LogicValidator):
+class LogicConsistencyScorer(LlmValidator):
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
         super().__init__(name=ValidationMetrics.LOGIC_CONSISTENCY, eval_config=eval_config, model_config=model_config)
 
@@ -113,7 +100,7 @@ Please analyze the logical consistency of the following text:
 
 
 @scorer_register(ValidationMetrics.REASONING_VALIDITY)
-class ReasoningValidityScorer(LogicValidator):
+class ReasoningValidityScorer(LlmValidator):
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
         super().__init__(name=ValidationMetrics.REASONING_VALIDITY, eval_config=eval_config, model_config=model_config)
 
@@ -210,7 +197,7 @@ Please analyze the reasoning validity of the following text:
 
 
 @scorer_register(ValidationMetrics.CONSTRAINT_SATISFACTION)
-class ConstraintSatisfactionScorer(LogicValidator):
+class ConstraintSatisfactionScorer(LlmValidator):
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
         super().__init__(name=ValidationMetrics.CONSTRAINT_SATISFACTION,
                          eval_config=eval_config,

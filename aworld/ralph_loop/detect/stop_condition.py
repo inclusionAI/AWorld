@@ -8,7 +8,7 @@ from typing import Optional, List
 
 import aworld
 from aworld.logs.util import logger
-from aworld.runners.ralph_loop.detect.types import StopState, StopDecision, StopType
+from aworld.ralph_loop.detect.types import StopState, StopDecision, StopType
 
 
 class StopCondition(ABC):

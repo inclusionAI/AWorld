@@ -16,7 +16,7 @@ Key Validators:
 - TrajectoryQualityScorer: Overall trajectory quality assessment using LLM
 
 Usage:
-    from aworld.runners.ralph_loop.validate import (
+    from aworld.ralph_loop.validate import (
         ValidationMetrics,
         FormatValidationScorer,
         LogicConsistencyScorer,

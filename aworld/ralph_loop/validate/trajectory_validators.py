@@ -4,12 +4,11 @@ import json
 from typing import Any, Dict, List, Optional
 
 from aworld.config import EvaluationConfig, ModelConfig
-from aworld.evaluations.base import Scorer, ScorerResult, EvalStatus, MetricResult, EvalDataCase, EvalCaseDataType
+from aworld.evaluations.base import Scorer, ScorerResult, EvalStatus, MetricResult
 from aworld.evaluations.scorers import scorer_register
-
-from aworld.evaluations.scorers.llm_as_judge import LLMAsJudgeScorer
-from aworld.runners.ralph_loop.validate.types import ValidationMetrics
 from aworld.logs.util import logger
+from aworld.ralph_loop.validate.base_validator import LlmValidator
+from aworld.ralph_loop.validate.types import ValidationMetrics
 
 
 class TrajectoryScore(Scorer):
@@ -280,7 +279,7 @@ class TrajectoryEfficiencyScorer(TrajectoryScore):
 
 
 @scorer_register(ValidationMetrics.TRAJECTORY_QUALITY)
-class TrajectoryQualityScorer(LLMAsJudgeScorer, TrajectoryScore):
+class TrajectoryQualityScorer(LlmValidator, TrajectoryScore):
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
         super().__init__(name=ValidationMetrics.TRAJECTORY_QUALITY, eval_config=eval_config, model_config=model_config)
 
@@ -383,14 +382,3 @@ Please evaluate the following Agent Trajectory:
             return prompt
         except Exception as e:
             return f"Verification failed: {str(e)}"
-
-    def convert_judge_response_to_score(self, judge_response: str) -> Optional[dict[str, MetricResult]]:
-        json_output = self.fetch_json_from_result(judge_response)
-        if json_output:
-            return {
-                ValidationMetrics.TRAJECTORY_QUALITY: MetricResult(
-                    value=json_output.get('score', 0),
-                    metadata=json_output
-                )
-            }
-        return None
