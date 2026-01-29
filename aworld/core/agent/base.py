@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import time
 
 import abc
 import os
@@ -14,7 +15,7 @@ from aworld.events import eventbus
 from aworld.core.event.base import Constants, Message, AgentMessage
 from aworld.core.factory import Factory
 from aworld.events.util import send_message
-from aworld.logs.util import logger
+from aworld.logs.util import logger, digest_logger
 from aworld.output.base import StepOutput
 from aworld.sandbox.base import Sandbox
 from aworld.utils.common import convert_to_snake, replace_env_variables, sync_exec
@@ -253,9 +254,11 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                     headers={"context": message.context},
                 )
             )
-        await self.async_pre_run()
+        await self.async_pre_run(message)
         result = await self.async_policy(observation, message=message, **kwargs)
         final_result = await self.async_post_run(result, observation, message)
+        if message.context and message.context.has_pending_background_tasks(self.id(), message.context.task_id):
+            self._finished = False
         return final_result
 
     def policy(
@@ -309,8 +312,15 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
     ) -> Message:
         return sync_exec(self.async_post_run, policy_result, input, message)
 
-    async def async_pre_run(self):
-        pass
+    async def async_pre_run(self, message: Message):
+        from aworld.core.context.amni import AmniContext
+        if isinstance(message.context, AmniContext):
+            message.context.put("start", self.id())
+            agent_start_times = message.context.get("agent_start_times") or {}
+            if not isinstance(agent_start_times, dict):
+                agent_start_times = {}
+            agent_start_times[self.id()] = time.time()
+            message.context.put("agent_start_times", agent_start_times)
 
     async def async_post_run(
             self, policy_result: OUTPUT, input: INPUT, message: Message = None
@@ -320,6 +330,18 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 # ActionModel agent_name
                 if hasattr(action, "agent_name") and not getattr(action, "agent_name", None):
                     action.agent_name = self.id()
+        if self._finished:
+            from aworld.core.context.amni import AmniContext
+            duration = None
+            if isinstance(message.context, AmniContext):
+                agent_start_times = message.context.get("agent_start_times") or {}
+                if isinstance(agent_start_times, dict):
+                    start_time = agent_start_times.get(self.id())
+                    if isinstance(start_time, (int, float)):
+                        duration = round(time.time() - start_time, 2)
+            if duration is None:
+                duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
+            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}")
         return AgentMessage(payload=policy_result, sender=self.id(), headers=message.headers)
 
     def sync_should_terminate_loop(self, message: Message) -> bool:

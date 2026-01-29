@@ -688,10 +688,10 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             self.console.print(f"[yellow]🔧 Tool: {tool_info}[/yellow]")
             return
         
-        # Render based on content length
+        # Render based on content length. Use env for limits so long results (e.g. PPT outline JSON) display fully.
         content_length = len(result_content)
-        max_preview_length = 500
-        max_preview_lines = 20
+        max_preview_length = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_MAX_CHARS", "20000"))
+        max_preview_lines = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_MAX_LINES", "200"))
         
         if content_length > max_preview_length:
             # Show preview for long content

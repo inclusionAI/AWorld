@@ -1,6 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import List, Dict, Optional
+from typing import List, Dict, Union
 import uuid
 
 from aworld.config import RunConfig, EngineName, ConfigDict, TaskConfig
@@ -24,12 +24,13 @@ async def runtime_engine(run_conf: RunConfig = None):
     return runtime_backend.build_engine()
 
 
-async def choose_runners(tasks: List[Task], agent_oriented: bool = True) -> List[Runner]:
+async def choose_runners(tasks: List[Task], agent_oriented: bool = True, run_conf: RunConfig = None) -> List[Runner]:
     """Choose the correct runner to run the task.
 
     Args:
         tasks: A list of tasks that contains agents, tools and datas.
         agent_oriented: Whether the runner is agent-oriented.
+        run_conf: Runtime config, can choose the special computing engine to execute the runner.
 
     Returns:
         Runner instance or exception.
@@ -39,7 +40,7 @@ async def choose_runners(tasks: List[Task], agent_oriented: bool = True) -> List
         # user custom runner class
         runner_cls = task.runner_cls
         if runner_cls:
-            return new_instance(runner_cls, task)
+            return new_instance(runner_cls, task=task, run_conf=run_conf)
         else:
             # user runner class in the framework
             if task.swarm:
@@ -61,7 +62,7 @@ async def choose_runners(tasks: List[Task], agent_oriented: bool = True) -> List
     return runners
 
 
-async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str, TaskResponse]:
+async def execute_runner(runners: Union[Runner, List[Runner]], run_conf: RunConfig) -> Dict[str, TaskResponse]:
     """Execute runner in the runtime engine.
 
     Args:
@@ -71,6 +72,8 @@ async def execute_runner(runners: List[Runner], run_conf: RunConfig) -> Dict[str
     engine = await runtime_engine(run_conf)
     run_conf = run_conf or RunConfig()
 
+    if isinstance(runners, Runner):
+        runners = [runners]
     if run_conf.engine_name != EngineName.LOCAL or run_conf.reuse_process == False:
         # distributed in AWorld, the `context` can't carry by response
         for runner in runners:

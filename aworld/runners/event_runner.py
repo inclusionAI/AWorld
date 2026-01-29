@@ -10,6 +10,7 @@ from typing import List, Callable, Any
 import aworld.trace as trace
 from aworld.core.agent.base import BaseAgent, is_agent_by_name
 from aworld.core.common import TaskItem, ActionModel
+from aworld.core.context.amni import AmniContext, ApplicationContext
 from aworld.core.context.base import Context
 from aworld.dataset.trajectory_storage import get_storage_instance
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
@@ -17,13 +18,15 @@ from aworld.core.exceptions import AWorldRuntimeException
 from aworld.core.task import Task, TaskResponse, TaskStatusValue
 from aworld.dataset.trajectory_dataset import TrajectoryDataset
 from aworld.events.manager import EventManager
-from aworld.logs.util import logger
+from aworld.logs.util import logger, trajectory_logger
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
 from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.runners.task_runner import TaskRunner
 from aworld.trace.base import get_trace_id
+from aworld.trace.instrumentation import semconv
 from aworld.utils.common import override_in_subclass, new_instance
+from aworld.utils.serialized_util import to_serializable
 
 
 class TaskEventRunner(TaskRunner):
@@ -45,7 +48,9 @@ class TaskEventRunner(TaskRunner):
         if not self.init_messages:
             raise AWorldRuntimeException("no question event to solve.")
 
-        async with trace.task_span(self.init_messages[0].session_id, self.task):
+        async with trace.task_span(self.init_messages[0].session_id,
+                                   task=self.task,
+                                   attributes={semconv.TRACE_ID: self.context.trace_id}):
             try:
                 for msg in self.init_messages:
                     await self.event_mng.emit_message(msg)
@@ -171,7 +176,7 @@ class TaskEventRunner(TaskRunner):
         results = []
         handlers = self.event_mng.get_handlers(key)
         inner_handlers = [handler.name() for handler in self.handlers]
-        async with trace.message_span(message=message):
+        async with trace.message_span(message=message, attributes={semconv.TRACE_ID: self.context.trace_id}):
             logger.debug(f"start_message_node message id: {message.id} of task {self.task.id}")
             self.state_manager.start_message_node(message)
             asyncio.create_task(self._update_trajectory(message))
@@ -179,7 +184,7 @@ class TaskEventRunner(TaskRunner):
                 handler_list = handlers.get(message.topic) or handlers.get(message.receiver)
                 if not handler_list:
                     logger.warning(f"{message.topic}/{message.receiver} no handler, ignore.")
-                    handlers.clear()
+                    handlers = []
                 else:
                     handle_map = {}
 
@@ -190,6 +195,14 @@ class TaskEventRunner(TaskRunner):
                     for t, _ in handle_map.items():
                         t.add_done_callback(partial(self._task_done_callback, group=handle_map, message=message))
                         await asyncio.sleep(0)
+            else:
+                if message.category in [Constants.TOOL, Constants.AGENT]:
+                    logger.info(f"Task {self.task.id} with key {key} cannot get handlers, use inner_handlers. message: {message}")
+                    if message.receiver and message.receiver not in inner_handlers:
+                        logger.warning(
+                            f"Task {self.task.id} {message.receiver} no handler, ignore."
+                            f"current subscriber: {self.event_mng.event_bus._subscribers}"
+                        )
             if not handlers or message.receiver in inner_handlers:
                 # not handler, return raw message
                 # if key == Constants.OUTPUT:
@@ -219,7 +232,9 @@ class TaskEventRunner(TaskRunner):
 
     async def _handle_task(self, message: Message, handler: Callable[..., Any]):
         con = message
-        async with trace.handler_span(message=message, handler=handler):
+        async with trace.handler_span(message=message,
+                                      handler=handler,
+                                      attributes={semconv.TRACE_ID: self.context.trace_id}):
             try:
                 logger.info(f"process start message id: {message.id} of task {self.task.id}")
                 if asyncio.iscoroutinefunction(handler):
@@ -309,8 +324,10 @@ class TaskEventRunner(TaskRunner):
                 # External control - Check task status before processing each message
                 should_stop_task = await self.should_stop_task(message)
                 if should_stop_task:
-                    logger.warn(f"Runner {self.task.id} task should stop.")
+                    logger.warn(f"Runner {message.context.get_task().id if message else self.task.id} task should stop.")
                     await self.stop()
+                else:
+                    self._stopped.clear()
                 if await self.is_stopped():
                     logger.info(f"{task_flag} task {self.task.id} stoped and will break snap")
                     await self.event_mng.done()
@@ -411,8 +428,16 @@ class TaskEventRunner(TaskRunner):
             logger.debug(f"{self.task.id}|{self.task.is_sub_task}#task_graph from context: {self.context._task_graph}")
             if traj:
                 self._task_response.trajectory = [step.to_dict() for step in traj]
-                logger.debug(f"{self.task.id}|{self.task.is_sub_task}#_task_response.trajectory: {json.dumps(self._task_response.trajectory, ensure_ascii=False)}")
 
+                token_id_traj = None
+                if self.context.token_id_traj:
+                    token_id_traj = json.dumps(to_serializable(self.context.token_id_traj))
+
+                res = {"task_id": self.task.id,
+                       "is_sub_task": self.task.is_sub_task,
+                       "trajectory": json.dumps(self._task_response.trajectory, ensure_ascii=False),
+                       "token_id_trajectory": token_id_traj}
+                trajectory_logger.info(f"{res}")
         except Exception as e:
             logger.error(f"Failed to get trajectories: {str(e)}.{traceback.format_exc()}")
 
@@ -452,4 +477,13 @@ class TaskEventRunner(TaskRunner):
                 status=task_status
             )
             return True
-        return False
+
+        # Check if all background tasks are done
+        if isinstance(self.context, ApplicationContext):
+            need_pending = self.context.has_pending_background_tasks(
+                agent_id=self.context.agent_info.current_agent_id if self.context.agent_info and hasattr(self.context.agent_info, 'current_agent_id') else "",
+                parent_task_id=self.context.task_id)
+            if need_pending:
+                return False
+
+        return await self.is_stopped()

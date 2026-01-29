@@ -3,6 +3,7 @@
 import typing
 from os import linesep
 from aworld.trace.base import Span
+from aworld.trace.instrumentation import semconv
 from aworld.trace.span_cosumer import SpanConsumer, get_span_consumers
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExportResult, SpanExporter
@@ -50,7 +51,8 @@ class ReadOnlySpan(Span, ReadableSpan):
         span: The span to wrap.
     """
 
-    def __init__(self, span: ReadableSpan):
+    def __init__(self, span: ReadableSpan, trace_id: str = None):
+        super().__init__(trace_id=trace_id)
         self._span = span
 
     if not typing.TYPE_CHECKING:
@@ -79,7 +81,8 @@ class ReadOnlySpan(Span, ReadableSpan):
         pass
 
     def get_trace_id(self) -> str:
-        return f"{self._span.get_span_context().trace_id:032x}"
+        trace_id = self._span._attributes.get(semconv.TRACE_ID)
+        return trace_id or self._trace_id or f"{self._span.get_span_context().trace_id:032x}"
 
     def get_span_id(self) -> str:
         return f"{self._span.get_span_context().span_id:016x}"

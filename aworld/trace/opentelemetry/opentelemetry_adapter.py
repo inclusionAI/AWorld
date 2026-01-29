@@ -43,10 +43,10 @@ from aworld.trace.span_cosumer import SpanConsumer
 from aworld.trace.propagator import get_global_trace_context
 from aworld.trace.baggage.sofa_tracer import SofaSpanHelper
 from aworld.logs.util import logger
-from aworld.utils.common import get_local_ip
 from .memory_storage import InMemorySpanExporter, InMemoryStorage
 from ..constants import ATTRIBUTES_MESSAGE_KEY
-from .export import FileSpanExporter, NoOpSpanExporter, SpanConsumerExporter
+from .export import FileSpanExporter, SpanConsumerExporter
+from ..instrumentation import semconv
 from ..server import set_trace_server
 
 
@@ -225,7 +225,8 @@ class OTLPSpan(Span, ReadableSpan):
     """A Span represents a single operation within a trace.
     """
 
-    def __init__(self, span: SDKSpan, is_new_span=True):
+    def __init__(self, span: SDKSpan, is_new_span=True, trace_id: str = None):
+        super().__init__(trace_id=trace_id)
         self._span = span
         self._token: Optional[Token[OTLPContext]] = None
         if is_new_span:
@@ -297,7 +298,9 @@ class OTLPSpan(Span, ReadableSpan):
         """
         if not self._span or not self._span.get_span_context() or not self.is_recording():
             return None
-        return f"{self._span.get_span_context().trace_id:032x}"
+
+        trace_id = self._span._attributes.get(semconv.TRACE_ID)
+        return trace_id or self._trace_id or f"{self._span.get_span_context().trace_id:032x}"
 
     def get_span_id(self) -> str:
         """Get the span ID of the span.
@@ -374,14 +377,44 @@ def configure_otlp_provider(
                 set_trace_server(storage=storage, port=int(
                     server_port), start_server=False)
         else:
+            logger.info(f"🔧 Configuring OTLP backend: {backend}, base_url={base_url}")
             span_exporter = _configure_otlp_exporter(
                 base_url=base_url, **kwargs)
-            processor.add_span_processor(BatchSpanProcessor(span_exporter))
+            
+            # Configure BatchSpanProcessor with custom parameters
+            # schedule_delay_millis: delay between batch exports (default: 5000ms)
+            # max_export_batch_size: max spans per batch (default: 512)
+            # export_timeout_millis: timeout for export (default: 30000ms)
+            schedule_delay_millis = kwargs.get("schedule_delay_millis") or int(
+                os.getenv("OTLP_BATCH_SCHEDULE_DELAY_MS", "5000")
+            )
+            max_export_batch_size = kwargs.get("max_export_batch_size") or int(
+                os.getenv("OTLP_MAX_EXPORT_BATCH_SIZE", "512")
+            )
+            export_timeout_millis = kwargs.get("export_timeout_millis") or int(
+                os.getenv("OTLP_EXPORT_TIMEOUT_MS", "30000")
+            )
+            
+            batch_processor = BatchSpanProcessor(
+                span_exporter,
+                schedule_delay_millis=schedule_delay_millis,
+                max_export_batch_size=max_export_batch_size,
+                export_timeout_millis=export_timeout_millis,
+            )
+            processor.add_span_processor(batch_processor)
+            logger.info(
+                f"✅ OTLP backend '{backend}' added to span processor "
+                f"(schedule_delay={schedule_delay_millis}ms, "
+                f"max_batch_size={max_export_batch_size}, "
+                f"timeout={export_timeout_millis}ms)"
+            )
 
     id_generator = kwargs.get("id_generator")
+    logger.info(f"🔧 Setting tracer provider with backends: {backends}, base_url={base_url}")
     set_tracer_provider(OTLPTraceProvider(SDKTracerProvider(active_span_processor=processor,
                                                             resource=build_otel_resource(),
                                                             id_generator=id_generator)))
+    logger.info(f"✅ OTLP tracer provider configured successfully with {len(backends)} backend(s)")
 
 
 def _configure_logfire_exporter(write_token: str, base_url: str = None, **kwargs) -> None:
@@ -405,6 +438,57 @@ def _configure_logfire_exporter(write_token: str, base_url: str = None, **kwargs
     )
 
 
+class LoggingOTLPSpanExporter:
+    """Wrapper around OTLPSpanExporter to add logging for debugging.
+
+    This wrapper adds logging to track span export operations for troubleshooting.
+    Enable it by setting environment variable OTLP_ENABLE_EXPORT_LOGGING=true.
+    """
+
+    def __init__(self, exporter, endpoint: str):
+        self._exporter = exporter
+        self._endpoint = endpoint
+
+    def export(self, spans):
+        """Export spans with logging."""
+        from opentelemetry.sdk.trace.export import SpanExportResult
+        span_count = len(spans) if spans else 0
+        if span_count > 0:
+            logger.info(f"📤 Exporting {span_count} span(s) to OTLP endpoint: {self._endpoint}")
+            try:
+                result = self._exporter.export(spans)
+                if result == SpanExportResult.SUCCESS:
+                    logger.info(f"✅ Successfully exported {span_count} span(s) to {self._endpoint}")
+                elif result == SpanExportResult.FAILURE:
+                    logger.warning(f"⚠️ Failed to export {span_count} span(s) to {self._endpoint}")
+                else:
+                    logger.warning(f"⚠️ Export result: {result} for {span_count} span(s) to {self._endpoint}")
+                return result
+            except Exception as e:
+                logger.error(f"❌ Error exporting spans to {self._endpoint}: {e}")
+                logger.debug(f"Export error traceback: {traceback.format_exc()}")
+                raise
+        return SpanExportResult.SUCCESS
+
+    def shutdown(self):
+        """Shutdown the exporter."""
+        logger.info(f"🛑 Shutting down OTLP exporter: {self._endpoint}")
+        try:
+            return self._exporter.shutdown()
+        except Exception as e:
+            logger.error(f"❌ Error shutting down OTLP exporter: {e}")
+            raise
+
+    def force_flush(self, timeout_millis: int = 30000):
+        """Force flush the exporter."""
+        logger.debug(f"🔄 Force flushing OTLP exporter: {self._endpoint}, timeout={timeout_millis}ms")
+        try:
+            return self._exporter.force_flush(timeout_millis)
+        except Exception as e:
+            logger.warning(f"⚠️ Error force flushing OTLP exporter: {e}")
+            return False
+
+
 def _configure_otlp_exporter(base_url: str = None, **kwargs) -> None:
     """Configure the OTLP exporter.
     Args:
@@ -412,18 +496,42 @@ def _configure_otlp_exporter(base_url: str = None, **kwargs) -> None:
         base_url: The base URL to use.
         **kwargs: Additional keyword arguments to pass to the exporter.
     """
-    import requests
-    from opentelemetry.exporter.otlp.proto.http import Compression
-    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    try:
+        import requests
+        from opentelemetry.exporter.otlp.proto.http import Compression
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
-    otlp_traces_endpoint = os.getenv("OTLP_TRACES_ENDPOINT")
-    base_url = base_url or otlp_traces_endpoint
-    session = requests.Session()
-    return OTLPSpanExporter(
-        endpoint=base_url,
-        session=session,
-        compression=Compression.Gzip,
-    )
+        otlp_traces_endpoint = os.getenv("OTLP_TRACES_ENDPOINT")
+        base_url = base_url or otlp_traces_endpoint
+        if not base_url:
+            logger.error("❌ OTLP exporter base_url is None, cannot configure OTLP exporter")
+            raise ValueError("OTLP exporter base_url is required")
+        
+        session = requests.Session()
+        logger.info(f"✅ Configuring OTLP exporter: endpoint={base_url}, compression=gzip")
+        logger.debug(f"OTLP_TRACES_ENDPOINT env var: {otlp_traces_endpoint}")
+        
+        exporter = OTLPSpanExporter(
+            endpoint=base_url,
+            session=session,
+            compression=Compression.Gzip,
+        )
+        
+        # Wrap exporter with logging wrapper for debugging
+        enable_otlp_logging = os.getenv("OTLP_ENABLE_EXPORT_LOGGING", "false").lower() == "true"
+        if enable_otlp_logging:
+            exporter = LoggingOTLPSpanExporter(exporter, base_url)
+            logger.info(f"✅ OTLP exporter created with logging enabled: endpoint={base_url}")
+        else:
+            logger.info(f"✅ OTLP exporter created successfully: endpoint={base_url}")
+            logger.debug(f"💡 To enable OTLP export logging, set OTLP_ENABLE_EXPORT_LOGGING=true")
+        
+        return exporter
+    except Exception as e:
+        logger.error(f"❌ Failed to configure OTLP exporter: {e}, traceback: {traceback.format_exc()}")
+        raise
+    except Exception as e:
+        logger.error(f"Failed to configure OTLP exporter: {e},  traceback is {traceback.format_exc()}")
 
 
 def is_valid_attribute_value(k, v):

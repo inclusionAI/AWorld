@@ -1,3 +1,5 @@
+import os
+
 import abc
 import asyncio
 import copy
@@ -940,8 +942,9 @@ class ApplicationContext(AmniContext):
             else:
                 self.task_output = task_response.msg
 
-        self.task_output_object.actions_info = await self.get_actions_info()
-        self.task_output_object.todo_info = await self.get_todo_info()
+        if os.getenv("ENABLE_AUTO_UPDATE_TASK_OUTPUT_INFO", "false") == "true":
+            self.task_output_object.actions_info = await self.get_actions_info()
+            self.task_output_object.todo_info = await self.get_todo_info()
 
         if self.parent:
             self.parent.merge_sub_context(self)
@@ -1431,13 +1434,13 @@ class ApplicationContext(AmniContext):
         return self.freedom_space_service.get_abs_file_path(filename)
 
     async def add_file(self, filename: Optional[str], content: Optional[Any], mime_type: Optional[str] = "text",
-                       namespace: str = "default", origin_type: str = None, origin_path : str = None) -> Tuple[bool, Optional[str], Optional[str]]:
+                       namespace: str = "default", origin_type: str = None, origin_path : str = None, refresh_workspace: bool = True) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Add a file to freedom space.
 
         Delegates to FreedomSpaceService.add_file().
         """
-        return await self.freedom_space_service.add_file(filename, content, mime_type, namespace, origin_type, origin_path)
+        return await self.freedom_space_service.add_file(filename, content, mime_type, namespace, origin_type, origin_path, refresh_workspace)
 
     async def init_working_dir(self) -> DirArtifact:
         """
@@ -1759,3 +1762,38 @@ class ApplicationContext(AmniContext):
             self.root.add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)
         else:
             super().add_task_node(child_task_id, parent_task_id, caller_agent_info=agent_info, **kwargs)
+
+    def add_background_task(self, task_id: str, agent_id: str, agent_name: str, parent_task_id: str = None):
+        """Add a background task as a sub-task in sub_task_list."""
+        from aworld.core.context.amni.state.common import TaskInput
+        sub_task_input = TaskInput(
+            user_id=self.user_id,
+            session_id=self.session_id,
+            task_id=task_id,
+            task_content=f"Background task: {agent_name}",
+            model=agent_id
+        )
+        self.task_state_service.add_sub_task(sub_task_input, task_type='background')
+        
+        # Also record in task graph for consistency
+        self.add_task_node(
+            child_task_id=task_id,
+            parent_task_id=parent_task_id or self.task_id,
+            caller_id=agent_id
+        )
+
+    def mark_background_task_completed(self, task_id: str):
+        """Mark a background task as completed in sub_task_list."""
+        sub_task_list = self.task_state_service.get_sub_task_list()
+        for sub_task in sub_task_list or []:
+            if sub_task.task_id == task_id:
+                sub_task.status = 'success'
+                break
+
+    def has_pending_background_tasks(self, agent_id: str, parent_task_id: str = None) -> bool:
+        """Check for pending background tasks in sub_task_list."""
+        sub_task_list = self.task_state_service.get_sub_task_list()
+        for sub_task in sub_task_list or []:
+            if sub_task.task_type == 'background' and sub_task.status in ['running', 'init']:
+                return True
+        return False

@@ -102,6 +102,71 @@ class Sandbox(SandboxSetup):
         return self._custom_env_tools
 
     @property
+    def reuse(self) -> bool:
+        """Returns whether to reuse MCP server connections."""
+        return self._reuse
+
+    @reuse.setter
+    def reuse(self, value: bool) -> None:
+        """Set whether to reuse MCP server connections."""
+        self._reuse = value
+
+    @property
+    def agents(self) -> Optional[Dict[str, Any]]:
+        """Returns the custom environment agents.
+        """
+        return self._agents
+
+    @property
+    def streaming(self) -> bool:
+        """Returns whether streaming is enabled for tool responses.
+
+        Returns:
+            bool: True if streaming is enabled, False otherwise.
+        """
+        return self._streaming
+
+    @property
+    def env_content_name(self) -> str:
+        """Returns the environment content parameter name used in tool schemas.
+
+        Returns:
+            str: The parameter name (default: "env_content").
+        """
+        return self._env_content_name
+
+    @env_content_name.setter
+    def env_content_name(self, value: str):
+        """Set environment content parameter name.
+
+        Args:
+            value: The parameter name to use in tool schemas.
+        """
+        self._env_content_name = value or "env_content"
+
+    @property
+    def env_content(self) -> Dict[str, Any]:
+        """Returns the environment content values (user-defined context).
+
+        This dictionary stores user-defined context parameters that will be
+        automatically injected into tool calls. Note that task_id and session_id
+        are added dynamically from context during tool calls.
+
+        Returns:
+            Dict[str, Any]: Dictionary of context values.
+        """
+        return self._env_content
+
+    @env_content.setter
+    def env_content(self, value: Dict[str, Any]):
+        """Set environment content values.
+
+        Args:
+            value: Dictionary of user-defined context parameters.
+        """
+        self._env_content = value or {}
+
+    @property
     @abc.abstractmethod
     def mcpservers(self) -> McpServers:
         """Module for running MCP in the sandbox.
@@ -124,6 +189,11 @@ class Sandbox(SandboxSetup):
             tools: Optional[List[str]] = None,
             registry_url: Optional[str] = None,
             custom_env_tools: Optional[Any] = None,
+            agents: Optional[Dict[str, Any]] = None,
+            streaming: bool = False,
+            env_content_name: Optional[str] = None,
+            env_content: Optional[Dict[str, Any]] = None,
+            reuse: bool = False,
     ):
         """Initialize a new Sandbox instance.
         
@@ -139,6 +209,33 @@ class Sandbox(SandboxSetup):
             tools: List of tools. Optional parameter.
             registry_url: Environment registry URL. Optional parameter, reads from environment variable "ENV_REGISTRY_URL" if not provided, defaults to empty string.
             custom_env_tools: Custom environment tools. Optional parameter.
+            reuse: Whether to reuse MCP server connections. Default is False (create new connection for each call).
+            agents: Custom environment agents. Optional parameter.
+                Supports two formats (mixed mode):
+
+                Simple format (auto-detected):
+                {
+                    "local_agent": "/path/to/agent.py",
+                    "remote_agent": "https://github.com/..."
+                }
+
+                Extended format (with additional config):
+                {
+                    "advanced_agent": {
+                        "location": "/path/to/agent.py",  # or "https://..."
+                        "run_mode": "local",  # optional: "local" or "remote" (case-insensitive), default is "local"
+                        "env": {"KEY": "value"},  # optional
+                        "args": ["--option"],  # optional
+                        # ... other optional config
+                    }
+                }
+
+                Note: If "type" is provided, it will be used directly (case-insensitive).
+                      If "type" is not provided, the function will auto-detect based on location.
+            streaming: Whether to enable streaming for tool responses. Defaults to False.
+            env_content_name: Parameter name for environment content in tool schemas. Defaults to "env_content".
+            env_content: User-defined context values to be automatically injected into tool calls.
+                Note that task_id and session_id are added dynamically from context during tool calls.
         """
         # Initialize basic attributes
         self._sandbox_id = sandbox_id or str(uuid.uuid4())
@@ -155,6 +252,12 @@ class Sandbox(SandboxSetup):
         default_registry_url = os.getenv("ENV_REGISTRY_URL", "~/workspace/registry.json")
         self._registry_url = registry_url or default_registry_url
         self._custom_env_tools = custom_env_tools
+        self._reuse = reuse
+        self._agents = agents
+        self._streaming = streaming
+        # Environment content context for tool parameters
+        self._env_content_name: str = env_content_name or "env_content"  # Parameter name in tool schema
+        self._env_content: Dict[str, Any] = env_content or {}  # User-defined context values
 
     @abc.abstractmethod
     def get_info(self) -> SandboxInfo:

@@ -421,6 +421,9 @@ class TeamSwarm(Swarm):
                          build_type=GraphBuildType.TEAM,
                          builder_cls=builder_cls,
                          event_driven=event_driven, **kwargs)
+        # team minimum interactive call number
+        # Default is 0, means calling at least once. Suggestion is 2, means at least interacting with one executor.
+        self.min_call_num = kwargs.get("min_call_num", 0)
 
     def add_agents(self, agents: List[BaseAgent]):
         super().add_agents(agents)

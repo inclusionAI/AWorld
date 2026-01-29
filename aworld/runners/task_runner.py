@@ -103,8 +103,8 @@ class TaskRunner(Runner):
             session = Session(session_id=task.session_id)
         else:
             session = Session(session_id=uuid.uuid4().hex)
-        trace_id = uuid.uuid1().hex if trace.get_current_span(
-        ) is None else trace.get_current_span().get_trace_id()
+        trace_id = task.trace_id or (uuid.uuid1().hex if trace.get_current_span(
+        ) is None else trace.get_current_span().get_trace_id())
 
         # copy context from parent_task(if exists)
         if task.is_sub_task:
@@ -165,7 +165,6 @@ class TaskRunner(Runner):
                     load_module_by_path(os.path.basename(val), val)
         except:
             logger.warning(f"{os.environ.get(aworld.tools.LOCAL_TOOLS_ENV_VAR, '')} tools load fail, can't use them!!")
-
 
     async def build_context(self, task: Task, **kwargs) -> 'ApplicationContext':
 
