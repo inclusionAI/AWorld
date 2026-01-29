@@ -693,7 +693,8 @@ class SimpleAgent(Agent):
 
 
 @agent(
-    name="SimpleAgent",
+    # name和文件名一致，为simple_agent
+    name="simple_agent",
     desc="A minimal agent that can perform basic LLM calls"
 )
 def build_simple_swarm():

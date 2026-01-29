@@ -86,7 +86,7 @@ class AWorldCLI:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
             return
             
-        table = Table(title="Available Agents", box=box.ROUNDED, width=180)
+        table = Table(title="Available Agents", box=box.ROUNDED)
         table.add_column("Name", style="magenta")
         table.add_column("Description", style="green")
         table.add_column("Address", style="blue")
@@ -125,7 +125,7 @@ class AWorldCLI:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
             return None
         
-        table = Table(title="Available Agents", box=box.ROUNDED, width=180)
+        table = Table(title="Available Agents", box=box.ROUNDED)
         table.add_column("No.", style="cyan", justify="right")
         table.add_column("Name", style="magenta")
         table.add_column("Description", style="green")
@@ -374,7 +374,7 @@ class AWorldCLI:
         # Use Columns for agents if there are many, or Stack if few
         # Using Columns with expand=True to fill width
         if len(agent_panels) > 1:
-             agents_display = Columns(agent_panels, expand=True, equal=True, width=30)
+             agents_display = Columns(agent_panels, expand=True, equal=True)
         else:
              agents_display = Group(*[Align.center(p) for p in agent_panels])
 
@@ -424,7 +424,7 @@ class AWorldCLI:
                 focusable=True
             )
             
-            window = Window(content=control, height=0, width=0)
+            window = Window(content=control, height=0)
             layout = Layout(window)
             
             # 创建一个隐藏的应用来监听键盘
@@ -651,7 +651,7 @@ class AWorldCLI:
                             if not skills_dict:
                                 return
 
-                            table = Table(title=title, box=box.ROUNDED, width=180)
+                            table = Table(title=title, box=box.ROUNDED)
                             table.add_column("Name", style="magenta")
                             table.add_column("Description", style="green")
                             
