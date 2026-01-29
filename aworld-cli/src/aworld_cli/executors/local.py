@@ -753,6 +753,22 @@ class LocalAgentExecutor(BaseAgentExecutor):
         from aworld.output.base import TopologyOutput
         from rich.table import Table
         from rich.box import ROUNDED
+        # Import Group with fallback for older Rich versions
+        try:
+            from rich.console import Group
+        except ImportError:
+            try:
+                from rich import Group
+            except ImportError:
+                # Fallback for older Rich versions
+                class Group:
+                    """Fallback Group class for older Rich versions."""
+                    def __init__(self, *renderables):
+                        self.renderables = renderables
+                    
+                    def __rich_console__(self, console, options):
+                        for renderable in self.renderables:
+                            yield renderable
 
         if not isinstance(output, TopologyOutput) or not self.console:
             return
