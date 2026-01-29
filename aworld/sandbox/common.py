@@ -5,6 +5,14 @@ from aworld.logs.util import logger
 from aworld.sandbox.base import Sandbox
 from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxInfo
 from aworld.sandbox.run.mcp_servers import McpServers
+from aworld.sandbox.builtin import (
+    FilesystemTool,
+    TerminalTool,
+    BuiltinToolRouter,
+    SERVICE_FILESYSTEM,
+    SERVICE_TERMINAL,
+    builtin_tool,
+)
 
 
 class BaseSandbox(Sandbox):
@@ -14,23 +22,25 @@ class BaseSandbox(Sandbox):
     """
 
     def __init__(
-            self,
-            sandbox_id: Optional[str] = None,
-            env_type: Optional[int] = None,
-            metadata: Optional[Dict[str, str]] = None,
-            timeout: Optional[int] = None,
-            mcp_servers: Optional[List[str]] = None,
-            mcp_config: Optional[Any] = None,
-            black_tool_actions: Optional[Dict[str, List[str]]] = None,
-            skill_configs: Optional[Any] = None,
-            tools: Optional[List[str]] = None,
-            registry_url: Optional[str] = None,
-            custom_env_tools: Optional[Any] = None,
-            agents: Optional[Dict[str, Any]] = None,
-            streaming: bool = False,
-            env_content_name: Optional[str] = None,
-            env_content: Optional[Dict[str, Any]] = None,
-            reuse: bool = False,
+        self,
+        sandbox_id: Optional[str] = None,
+        env_type: Optional[int] = None,
+        metadata: Optional[Dict[str, str]] = None,
+        timeout: Optional[int] = None,
+        mcp_servers: Optional[List[str]] = None,
+        mcp_config: Optional[Any] = None,
+        black_tool_actions: Optional[Dict[str, List[str]]] = None,
+        skill_configs: Optional[Any] = None,
+        tools: Optional[List[str]] = None,
+        registry_url: Optional[str] = None,
+        custom_env_tools: Optional[Any] = None,
+        agents: Optional[Dict[str, Any]] = None,
+        streaming: bool = False,
+        env_content_name: Optional[str] = None,
+        env_content: Optional[Dict[str, Any]] = None,
+        reuse: bool = False,
+        workspace: Optional[List[str]] = None,
+        mode: str = "local",
     ):
         """
         Initialize a new BaseSandbox instance.
@@ -74,6 +84,9 @@ class BaseSandbox(Sandbox):
             env_content: User-defined context values to be automatically injected into tool calls.
                 Note that task_id and session_id are added dynamically from context during tool calls.
             reuse: Whether to reuse MCP server connections. Default is False.
+            workspace: List of allowed workspace directories for filesystem tool. If None, uses default workspaces 
+                (~/workspace, ~/aworld_workspace). Can also be set via environment variable AWORLD_WORKSPACE_PATH 
+                (comma-separated paths).
         """
         super().__init__(
             sandbox_id=sandbox_id,
@@ -91,11 +104,22 @@ class BaseSandbox(Sandbox):
             streaming=streaming,
             env_content_name=env_content_name,
             env_content=env_content,
-            reuse=reuse
+            reuse=reuse,
+            workspace=workspace,
+            mode=mode,
         )
         self._logger = self._setup_logger()
         # Track if sandbox has been initialized (for lazy initialization support)
         self._initialized = False
+        
+        # Initialize builtin tools with workspace configuration
+        self._builtin_filesystem = FilesystemTool(allowed_directories=self._workspace)
+        logger.debug(f"Initialized FilesystemTool with workspace: {self._workspace} (will use defaults if None)")
+        self._builtin_terminal = TerminalTool()
+        self._tool_router = BuiltinToolRouter(self)
+        
+        # Register builtin tool methods
+        self._register_builtin_tools()
 
     def _trigger_reinitialize(self, reinit_type: str = "mcpservers", attribute_name: str = ""):
         """
@@ -304,6 +328,40 @@ class BaseSandbox(Sandbox):
         """
         self._env_content = value or {}
 
+    @property
+    def workspace(self) -> Optional[List[str]]:
+        """Returns the workspace directories for filesystem tool."""
+        return self._workspace
+
+    @workspace.setter
+    def workspace(self, value):
+        """Set workspace directories for filesystem tool and reinitialize if needed.
+        
+        Changing workspace requires reinitializing FilesystemTool to update allowed directories.
+        
+        Args:
+            value: List of allowed workspace directory paths, or a single string path.
+                   If None, uses default workspaces.
+        """
+        # Convert string to list for convenience
+        if isinstance(value, str):
+            value = [value]
+        elif value is not None and not isinstance(value, list):
+            raise TypeError(f"workspace must be a list of strings or a single string, got {type(value)}")
+        
+        old_value = self._workspace
+        self._workspace = value
+        # If workspace changed and sandbox is initialized, update FilesystemTool
+        if old_value != self._workspace:
+            if hasattr(self, '_builtin_filesystem') and self._builtin_filesystem:
+                # Update existing FilesystemTool instance instead of recreating
+                self._builtin_filesystem.update_allowed_directories(self._workspace)
+                logger.info(f"Updated FilesystemTool workspace to: {self._workspace}")
+            elif self._initialized:
+                # If FilesystemTool doesn't exist yet but sandbox is initialized, create it
+                self._builtin_filesystem = FilesystemTool(allowed_directories=self._workspace)
+                logger.info(f"Initialized FilesystemTool with workspace: {self._workspace}")
+
     @abc.abstractmethod
     def get_skill_list(self) -> Optional[Any]:
         """
@@ -323,6 +381,169 @@ class BaseSandbox(Sandbox):
         
         Returns:
             bool: True if cleanup was successful, False otherwise.
+        """
+        pass
+    
+    def _register_builtin_tools(self):
+        """Register builtin tool methods with routing support."""
+        # Wrap all builtin tool methods
+        for attr_name in dir(self):
+            if attr_name.startswith('_'):
+                continue
+            attr = getattr(self, attr_name)
+            if hasattr(attr, '_is_builtin_tool'):
+                # Replace with wrapped method
+                setattr(self, attr_name, self._create_tool_wrapper(attr))
+    
+    def _create_tool_wrapper(self, original_method):
+        """Create a wrapper for builtin tool methods that routes to MCP or builtin implementation."""
+        import inspect
+        
+        # Get method signature to convert *args to **kwargs
+        sig = inspect.signature(original_method)
+        param_names = list(sig.parameters.keys())
+        # Skip 'self' parameter
+        if param_names and param_names[0] == 'self':
+            param_names = param_names[1:]
+        
+        async def wrapper(*args, **kwargs):
+            service_name = original_method._service_name
+            tool_name = original_method._tool_name
+            
+            # Convert *args to **kwargs based on method signature
+            # This ensures positional arguments are properly passed to builtin_impl.execute
+            for i, arg_value in enumerate(args):
+                if i < len(param_names):
+                    param_name = param_names[i]
+                    if param_name not in kwargs:  # Don't override if already in kwargs
+                        kwargs[param_name] = arg_value
+            
+            # Get builtin implementation
+            if service_name == SERVICE_FILESYSTEM:
+                builtin_impl = self._builtin_filesystem
+            elif service_name == SERVICE_TERMINAL:
+                builtin_impl = self._builtin_terminal
+            else:
+                # Fallback to original method if service not recognized
+                return await original_method(self, *args, **kwargs)
+            
+            # Route the call (now all args are in kwargs)
+            return await self._tool_router.route_call(
+                service_name=service_name,
+                tool_name=tool_name,
+                builtin_impl=builtin_impl,
+                **kwargs
+            )
+        
+        # Copy metadata from original method
+        wrapper.__name__ = original_method.__name__
+        wrapper.__doc__ = original_method.__doc__
+        return wrapper
+    
+    # ==================== Filesystem Builtin Tools ====================
+    
+    @builtin_tool(service=SERVICE_FILESYSTEM, tool_name="read_file")
+    async def read_file(self, path: str, head: Optional[int] = None, tail: Optional[int] = None) -> str:
+        """Read text file content.
+        
+        Args:
+            path: File path to read
+            head: Return only first N lines
+            tail: Return only last N lines
+            
+        Returns:
+            File content as string
+        """
+        # This method will be wrapped by _create_tool_wrapper
+        # The actual implementation is in FilesystemTool
+        pass
+    
+    @builtin_tool(service=SERVICE_FILESYSTEM, tool_name="write_file")
+    async def write_file(self, path: str, content: str) -> str:
+        """Create or overwrite a file.
+        
+        Args:
+            path: File path to write
+            content: File content
+            
+        Returns:
+            Success message
+        """
+        pass
+    
+    @builtin_tool(service=SERVICE_FILESYSTEM, tool_name="edit_file")
+    async def edit_file(self, path: str, edits: List[dict], dryRun: bool = False) -> str:
+        """Edit file with text replacements.
+        
+        Args:
+            path: File path to edit
+            edits: List of edit operations with oldText and newText
+            dryRun: Preview changes without applying
+            
+        Returns:
+            Diff text showing changes
+        """
+        pass
+    
+    @builtin_tool(service=SERVICE_FILESYSTEM, tool_name="create_directory")
+    async def create_directory(self, path: str) -> str:
+        """Create directory.
+        
+        Args:
+            path: Directory path to create
+            
+        Returns:
+            Success message
+        """
+        pass
+    
+    @builtin_tool(service=SERVICE_FILESYSTEM, tool_name="list_directory")
+    async def list_directory(self, path: str) -> str:
+        """List directory contents.
+        
+        Args:
+            path: Directory path to list
+            
+        Returns:
+            Directory listing as string
+        """
+        pass
+    
+    @builtin_tool(service=SERVICE_FILESYSTEM, tool_name="move_file")
+    async def move_file(self, source: str, destination: str) -> str:
+        """Move or rename file.
+        
+        Args:
+            source: Source path
+            destination: Destination path
+            
+        Returns:
+            Success message
+        """
+        pass
+    
+    @builtin_tool(service=SERVICE_FILESYSTEM, tool_name="list_allowed_directories")
+    async def list_allowed_directories(self) -> str:
+        """List allowed directories.
+        
+        Returns:
+            List of allowed directories
+        """
+        pass
+    
+    # ==================== Terminal Builtin Tools ====================
+    
+    @builtin_tool(service=SERVICE_TERMINAL, tool_name="run_code")
+    async def run_code(self, code: str, timeout: int = 30, output_format: str = "markdown") -> str:
+        """Execute terminal command or code.
+        
+        Args:
+            code: Terminal command or code to execute
+            timeout: Command timeout in seconds (default: 30)
+            output_format: Output format: 'markdown', 'json', or 'text'
+            
+        Returns:
+            Formatted command execution result
         """
         pass
     
