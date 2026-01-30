@@ -3,9 +3,11 @@
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, Union
 
-from aworld.agents.ralph_pattern import StopCondition
-from aworld.config import ModelConfig, TaskConfig
+from pydantic import Field
+
+from aworld.config import ModelConfig, TaskConfig, BaseConfig
 from aworld.evaluations.base import EvalCriteria, Scorer
+from aworld.ralph_loop.detect.stop_condition import StopCondition
 from aworld.ralph_loop.reflect import Reflector
 from aworld.ralph_loop.strategic_plan.types import PlanningStrategy
 from aworld.ralph_loop.types import ConflictStrategy
@@ -77,22 +79,22 @@ class StateConfig:
     enable_metrics: bool = True
 
 
-@dataclass
-class RalphConfig:
+class RalphConfig(BaseConfig):
     """Unified configuration for Ralph Loop.
 
     This configuration class combines all component configurations and provides sensible defaults for different use cases.
     """
-    mission: MissionConfig = field(default_factory=MissionConfig)
-    planning: PlanningConfig = field(default_factory=PlanningConfig)
-    validation: ValidationConfig = field(default_factory=ValidationConfig)
-    reflection: ReflectionConfig = field(default_factory=ReflectionConfig)
-    stop_condition: StopConditionConfig = field(default_factory=StopConditionConfig)
-    state: StateConfig = field(default_factory=StateConfig)
+    model_config = {"arbitrary_types_allowed": True}
+    mission: MissionConfig = Field(default_factory=MissionConfig)
+    planning: PlanningConfig = Field(default_factory=PlanningConfig)
+    validation: ValidationConfig = Field(default_factory=ValidationConfig)
+    reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)
+    stop_condition: StopConditionConfig = Field(default_factory=StopConditionConfig)
+    state: StateConfig = Field(default_factory=StateConfig)
 
     workspace: str = "."
     # Global settings
-    model_config: ModelConfig = field(default_factory=ModelConfig)
+    llm_config: ModelConfig = Field(default_factory=ModelConfig)
     task_config: Optional[TaskConfig] = None
 
     @classmethod
@@ -101,10 +103,10 @@ class RalphConfig:
         config = cls()
 
         if model_config:
-            config.default_model_config = model_config
-            config.mission.llm_model_config = model_config
-            config.planning.llm_model_config = model_config
+            config.llm_config = model_config
+            config.mission.model_config = model_config
+            config.planning.model_config = model_config
             config.validation.model_config = model_config
-            config.reflection.llm_model_config = model_config
+            config.reflection.model_config = model_config
 
         return config

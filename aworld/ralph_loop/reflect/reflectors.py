@@ -53,8 +53,8 @@ class Reflector(ABC):
         )
 
         analysis = await self.analyze(reflect_input)
-        insights = await self.insight(reflect_input, analysis)
-        suggestions = await self.suggest(reflect_input, insights)
+        insights = await self.insight(reflect_input, analysis=analysis)
+        suggestions = await self.suggest(reflect_input, analysis=analysis, insights=insights)
 
         result.summary = analysis.get("summary", "")
         result.key_findings = analysis.get("key_findings", [])
@@ -92,17 +92,17 @@ class Reflector(ABC):
         """
         return analysis.get("insights", [])
 
-    async def suggest(self, reflect_input: ReflectionInput, insights: List[str]) -> List[str]:
+    async def suggest(self, reflect_input: ReflectionInput, analysis: Dict[str, Any], insights: List[str]) -> List[str]:
         """Generate suggestions based on insights and input, and guide what needs to be done next.
 
         Args:
             reflect_input: Input for reflect.
-            insights: Insight list.
+            analysis: Insight list.
 
         Returns:
             Suggestion list.
         """
-        return []
+        return analysis.get("suggestions", [])
 
 
 class GeneralReflector(Reflector):
@@ -129,7 +129,7 @@ class GeneralReflector(Reflector):
             self._llm = get_llm_model(self.model_config)
 
         analysis_input = self._build_analysis_input(reflection_input)
-        response = call_llm_model(self._llm, analysis_input)
+        response = call_llm_model(self._llm, messages=analysis_input)
         result = self._parse_response(response)
         return result
 
@@ -138,7 +138,7 @@ class GeneralReflector(Reflector):
 Your responsibility is not to evaluate the quality, but to extract valuable experiences, lessons, and systematic improvement plans through dissecting the entire process of task execution.
 
 # Goal
-Please read the given 'Input', 'Iteration', 'Previous Attempts', 'Output', 'Error' (possibly) for a thorough audit.
+Please read the given 'Input', 'Iteration', 'Previous Attempts', 'Output', 'Validation', 'Error' (possibly) for a thorough audit.
 You need to output a well structured review report, which must include the following 5 core sections:
 
 # 1. Reflection Summary
@@ -172,7 +172,7 @@ You need to output a well structured review report, which must include the follo
 -Thought guidance: Don't say 'optimize by improving accuracy', say 'add<Example>tag in Prompt to standardize output format'.
 
 # Requirement
-key_findings, root_cause,insights, suggestions do not necessarily have values, but if there are values, they must ensure correctness and authenticity.
+key_findings, root_cause,insights, suggestions do not necessarily have values, but if there are values, they must ensure logical, correctness and authenticity.
 
 # Output Format
 You must strictly output a **single valid JSON object**. Do not include markdown fencing (like ```json) or preamble text.
@@ -182,17 +182,21 @@ root_cause, insights, suggestions
 {
   "summary": "string: A concise executive summary of the execution.",
   "key_findings": [
+    optional
     "string: Observation 1",
     "string: Observation 2"
   ],
   "root_cause": [
+    optional
     "fundamental cause. The deep, underlying systemic reason."
   ],
   "insights": [
+    optional
     "string: Insight 1",
     "string: Insight 2"
   ],
   "suggestions": [
+    optional
     "immediate fix suggestion. Actionable step to resolve the current issue.",
   ]
 }
@@ -215,8 +219,13 @@ Input:
 {reflection_input.input_data}
 
 Output:
-{reflection_input.output_data}
+{reflection_input.output_data.answer}
+
+Validation:
+{reflection_input.validation_data.get("details")}
 """
+        if reflection_input.reference_data:
+            input_str += f"\nReference Output:\n{reflection_input.reference_data}"
 
         if not reflection_input.success and reflection_input.error_msg:
             input_str += f"\nError:\n{reflection_input.error_msg}"

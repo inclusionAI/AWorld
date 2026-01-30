@@ -19,8 +19,6 @@ class OutputCorrectnessScorer(RuleValidator):
     async def score(self, index: int, input: EvalDataCase, output: Any) -> ScorerResult:
         try:
             ground_truth = input.case_data.get("ground_truth")
-            expected_keywords = input.case_data.get("expected_keywords", [])
-
             answer = self._extract(output, key="answer")
 
             if not answer:
@@ -33,6 +31,7 @@ class OutputCorrectnessScorer(RuleValidator):
                 else:
                     return self._partial_result(score, f"Partial matching: {score:.2f}")
 
+            expected_keywords = input.case_data.get("expected_keywords", [])
             if expected_keywords:
                 score, reason = self._check_keywords(answer, expected_keywords)
                 if score >= 0.8:
@@ -41,7 +40,6 @@ class OutputCorrectnessScorer(RuleValidator):
                     return self._partial_result(score, reason)
 
             return self._success_result(1.0, "Unable to verify (missing standard answers or keywords)")
-
         except Exception as e:
             return self._failed_result(f"Validation failed: {str(e)}")
 
@@ -89,7 +87,7 @@ class OutputCorrectnessScorer(RuleValidator):
         return ScorerResult(
             scorer_name=self.name,
             metric_results={
-                "answer_correctness": MetricResult(
+                self.name: MetricResult(
                     value=score,
                     eval_status=EvalStatus.PASSED,
                     metadata={"message": message}
@@ -101,7 +99,7 @@ class OutputCorrectnessScorer(RuleValidator):
         return ScorerResult(
             scorer_name=self.name,
             metric_results={
-                "answer_correctness": MetricResult(
+                self.name: MetricResult(
                     value=score,
                     eval_status=EvalStatus.PASSED if score >= 0.5 else EvalStatus.FAILED,
                     metadata={"message": message}
@@ -113,7 +111,7 @@ class OutputCorrectnessScorer(RuleValidator):
         return ScorerResult(
             scorer_name=self.name,
             metric_results={
-                "answer_correctness": MetricResult(
+                self.name: MetricResult(
                     value=0.0,
                     eval_status=EvalStatus.FAILED,
                     metadata={"reason": reason}
@@ -130,12 +128,12 @@ class OutputLengthScorer(OutputCorrectnessScorer, RuleValidator):
         self.min_length = min_length
         self.max_length = max_length
 
-    async def score(self, index: int, input: Any, output: Any) -> ScorerResult:
+    async def score(self, index: int, input: EvalDataCase, output: Any) -> ScorerResult:
         try:
             answer = self._extract(output, key="answer")
 
-            min_len = input.get("min_length", self.min_length)
-            max_len = input.get("max_length", self.max_length)
+            min_len = input.case_data.get("min_length", self.min_length)
+            max_len = input.case_data.get("max_length", self.max_length)
 
             answer_length = len(answer)
 
@@ -180,7 +178,7 @@ class OutputLlmScore(LlmValidator):
 @scorer_register(
     ValidationMetrics.OUTPUT_RELEVANCE,
     model_config=ModelConfig(
-        llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER")),
+        llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER", "openai")),
         llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
         llm_temperature=float(os.getenv("VALIDATE_LLM_TEMPERATURE", os.getenv("LLM_TEMPERATURE", "0.7"))),
         llm_base_url=os.getenv("VALIDATE_LLM_BASE_URL", os.getenv("LLM_BASE_URL")),
@@ -258,7 +256,7 @@ Please strictly output in the following JSON format:
 @scorer_register(
     ValidationMetrics.OUTPUT_COMPLETENESS,
     model_config=ModelConfig(
-        llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER")),
+        llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER", "openai")),
         llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
         llm_temperature=float(os.getenv("VALIDATE_LLM_TEMPERATURE", os.getenv("LLM_TEMPERATURE", "0.7"))),
         llm_base_url=os.getenv("VALIDATE_LLM_BASE_URL", os.getenv("LLM_BASE_URL")),
@@ -333,10 +331,10 @@ Please strictly output in the following JSON format:
 }
 """
 
-    def build_judge_data(self, index: int, input: Any, output: Any) -> str:
+    def build_judge_data(self, index: int, input: EvalDataCase, output: Any) -> str:
         prompt = super().build_judge_data(index, input, output)
 
-        required_aspects = input.get("required_aspects", [])
+        required_aspects = input.case_data.get("required_aspects", [])
         aspects_text = ""
         if required_aspects:
             aspects_text = f"\nmust be covered:\n" + "\n".join([f"- {aspect}" for aspect in required_aspects])
@@ -348,7 +346,7 @@ Please strictly output in the following JSON format:
 @scorer_register(
     ValidationMetrics.OUTPUT_QUALITY,
     model_config=ModelConfig(
-        llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER")),
+        llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER", "openai")),
         llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
         llm_temperature=float(os.getenv("VALIDATE_LLM_TEMPERATURE", os.getenv("LLM_TEMPERATURE", "0.7"))),
         llm_base_url=os.getenv("VALIDATE_LLM_BASE_URL", os.getenv("LLM_BASE_URL")),
@@ -424,9 +422,9 @@ Please strictly output in the following JSON format:
 - In the "reason", explicitly state which dimension lowered the score if the result is not Excellent.
 """
 
-    def build_judge_data(self, index: int, input: Any, output: Any) -> str:
+    def build_judge_data(self, index: int, input: EvalDataCase, output: dict) -> str:
         prompt = super().build_judge_data(index, input, output)
-        ground_truth = input.get("ground_truth", "")
+        ground_truth = input.case_data.get("ground_truth", "")
 
         prompt += f"\nReference Answer: {ground_truth}"
         return prompt

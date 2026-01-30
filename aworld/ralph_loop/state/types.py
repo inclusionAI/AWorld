@@ -19,6 +19,7 @@ class LoopState:
     cumulative_cost: float = 0.0
     consecutive_failures: int = 0
     completion_confirmations: int = 0
+    confirmation_threshold: int = 1
 
     # Additional metrics
     successful_steps: int = 0

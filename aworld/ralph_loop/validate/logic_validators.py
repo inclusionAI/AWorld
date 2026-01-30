@@ -190,8 +190,8 @@ I saw three people in London today, and they were all rude. Therefore, everyone 
 Please analyze the reasoning validity of the following text:
 """
 
-    def build_judge_data(self, index, input, output) -> str:
-        content = output.get("content", output.get("text", str(output)))
+    def build_judge_data(self, index: int, input: EvalDataCase, output: dict) -> str:
+        content = output.get("answer", output.get("content", str(output)))
 
         return f"Content:\n{content}"
 
@@ -288,9 +288,9 @@ Output:
 }
 """
 
-    def build_judge_data(self, index, input, output) -> str:
+    def build_judge_data(self, index: int, input: EvalDataCase, output: dict) -> str:
         constraints = input.case_data.get("constraints", [])
-        content = output.get("content", output.get("text", str(output)))
+        content = output.get("answer", output.get("content", str(output)))
 
         return f"""
 Constraints:

@@ -29,14 +29,19 @@ class ReflectionLevel(Enum):
 
 @dataclass
 class ReflectionInput:
+    task_id: str = None
     iteration: int = 0
     input_data: Any = None
+    # llm answer
     output_data: Any = None
+    # reference answer
+    reference_data: Any = None
     execution_time: float = 0.0
 
     success: bool = False
     error_msg: Optional[str] = None
 
+    validation_data: Dict[str, Any] = field(default_factory=dict)
     previous_attempts: List[Dict[str, Any]] = field(default_factory=list)
     historical_reflections: List[Dict[str, Any]] = field(default_factory=list)
 
