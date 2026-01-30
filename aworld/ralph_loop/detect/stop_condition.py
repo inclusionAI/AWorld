@@ -54,19 +54,19 @@ class StopCondition(ABC):
 class CompletionCondition(StopCondition):
     """Complete Condition Detector - Check if the task has been successfully completed."""
 
-    def __init__(self, confirmation_threshold: int = 1):
+    def __init__(self):
         super().__init__(priority=3)
-        self.confirmation_threshold = confirmation_threshold
 
     async def should_stop(self, state: StopState) -> StopDecision:
         confirmations = state.loop_state.completion_confirmations
+        confirmation_threshold = state.loop_state.confirmation_threshold
 
-        if confirmations >= self.confirmation_threshold:
+        if confirmations >= confirmation_threshold:
             return StopDecision(
                 should_stop=True,
                 stop_type=StopType.COMPLETION,
                 reason=f"Mission completed (confirm: {confirmations})",
-                confidence=min(1.0, confirmations / self.confirmation_threshold),
+                confidence=min(1.0, confirmations / confirmation_threshold),
                 metadata={"confirmations": confirmations}
             )
 

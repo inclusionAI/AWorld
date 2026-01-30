@@ -4,17 +4,19 @@ import json
 from typing import Any, Dict, List, Optional
 
 from aworld.config import EvaluationConfig, ModelConfig
-from aworld.evaluations.base import Scorer, ScorerResult, EvalStatus, MetricResult
+from aworld.evaluations.base import Scorer, ScorerResult, EvalStatus, MetricResult, EvalDataCase
 from aworld.evaluations.scorers import scorer_register
 from aworld.logs.util import logger
-from aworld.ralph_loop.validate.base_validator import LlmValidator
+from aworld.ralph_loop.validate.base_validator import LlmValidator, RuleValidator
 from aworld.ralph_loop.validate.types import ValidationMetrics
 
 
-class TrajectoryScore(Scorer):
+class TrajectoryValidator(RuleValidator):
     def _parse_trajectory(self, output: Any) -> Dict:
         if isinstance(output, dict):
-            return output.get("content", output)
+            if "trajectory" in output:
+                output = output["trajectory"]
+            return output
         elif isinstance(output, str):
             return json.loads(output)
         else:
@@ -40,34 +42,19 @@ class TrajectoryScore(Scorer):
 
 
 @scorer_register(ValidationMetrics.TRAJECTORY_STRUCTURE)
-class TrajectoryStructureScorer(TrajectoryScore):
+class TrajectoryStructureScorer(TrajectoryValidator):
     def __init__(self, eval_config: EvaluationConfig = None):
         super().__init__(name=ValidationMetrics.TRAJECTORY_STRUCTURE, eval_config=eval_config)
         self.required_fields = {
-            "trajectory_level": ["task_id", "trajectory"],
             "step_level": ["id", "meta", "state", "action", "reward"],
             "meta_level": ["session_id", "task_id", "agent_id", "step", "execute_time"],
             "state_level": ["input", "messages", "context"],
             "action_level": ["content", "tool_calls", "is_agent_finished"],
         }
 
-    async def score(self, index: int, input: Any, output: Any) -> ScorerResult:
+    async def score(self, index: int, input: EvalDataCase, output: Any) -> ScorerResult:
         try:
-            # parse
-            trajectory_data = self._parse_trajectory(output)
-
-            missing_fields = []
-            for field in self.required_fields["trajectory_level"]:
-                if field not in trajectory_data:
-                    missing_fields.append(f"trajectory.{field}")
-
-            if missing_fields:
-                return self._failed_result(
-                    f"Missing required fields: {', '.join(missing_fields)}"
-                )
-
-            # Structure verification
-            trajectory = trajectory_data.get("trajectory", [])
+            trajectory = self._parse_trajectory(output)
             if isinstance(trajectory, str):
                 trajectory = json.loads(trajectory)
 
@@ -110,7 +97,7 @@ class TrajectoryStructureScorer(TrajectoryScore):
 
 
 @scorer_register(ValidationMetrics.TRAJECTORY_TOOL_CALLS)
-class TrajectoryToolCallsScorer(TrajectoryScore):
+class TrajectoryToolCallsScorer(TrajectoryValidator):
     """Verify the validity of tool calls in the trajectory."""
 
     def __init__(self, eval_config: EvaluationConfig = None):
@@ -118,11 +105,7 @@ class TrajectoryToolCallsScorer(TrajectoryScore):
 
     async def score(self, index: int, input: Any, output: Any) -> ScorerResult:
         try:
-            trajectory_data = self._parse_trajectory(output)
-            trajectory = trajectory_data.get("trajectory", [])
-
-            if isinstance(trajectory, str):
-                trajectory = json.loads(trajectory)
+            trajectory = self._parse_trajectory(output)
 
             issues = []
             tool_call_count = 0
@@ -182,20 +165,13 @@ class TrajectoryToolCallsScorer(TrajectoryScore):
 
 
 @scorer_register(ValidationMetrics.TRAJECTORY_COMPLETENESS)
-class TrajectoryCompletenessScorer(TrajectoryScore):
+class TrajectoryCompletenessScorer(TrajectoryValidator):
     def __init__(self, eval_config: EvaluationConfig = None):
         super().__init__(name=ValidationMetrics.TRAJECTORY_COMPLETENESS, eval_config=eval_config)
 
     async def score(self, index: int, input: Any, output: Any) -> ScorerResult:
         try:
-            trajectory_data = self._parse_trajectory(output)
-            trajectory = trajectory_data.get("trajectory", [])
-
-            if isinstance(trajectory, str):
-                trajectory = json.loads(trajectory)
-
-            if not trajectory:
-                return self._failed_result("empty trajectory")
+            trajectory = self._parse_trajectory(output)
 
             last_step = trajectory[-1]
             action = last_step.get("action", {})
@@ -231,23 +207,15 @@ class TrajectoryCompletenessScorer(TrajectoryScore):
 
 
 @scorer_register(ValidationMetrics.TRAJECTORY_EFFICIENCY)
-class TrajectoryEfficiencyScorer(TrajectoryScore):
+class TrajectoryEfficiencyScorer(TrajectoryValidator):
     def __init__(self, eval_config: EvaluationConfig = None, max_steps: int = 10, max_time: float = 60.0):
         super().__init__(name=ValidationMetrics.TRAJECTORY_EFFICIENCY, eval_config=eval_config)
         self.max_steps = max_steps
         self.max_time = max_time
 
-    async def score(self, index: int, input: Any, output: Any) -> ScorerResult:
+    async def score(self, index: int, input: EvalDataCase, output: Any) -> ScorerResult:
         try:
-            trajectory_data = self._parse_trajectory(output)
-            trajectory = trajectory_data.get("trajectory", [])
-
-            if isinstance(trajectory, str):
-                trajectory = json.loads(trajectory)
-
-            if not trajectory:
-                return self._failed_result("empty trajectory")
-
+            trajectory = self._parse_trajectory(output)
             step_count = len(trajectory)
             first_step = trajectory[0]
             last_step = trajectory[-1]
@@ -279,7 +247,7 @@ class TrajectoryEfficiencyScorer(TrajectoryScore):
 
 
 @scorer_register(ValidationMetrics.TRAJECTORY_QUALITY)
-class TrajectoryQualityScorer(LlmValidator, TrajectoryScore):
+class TrajectoryQualityScorer(LlmValidator, TrajectoryValidator):
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
         super().__init__(name=ValidationMetrics.TRAJECTORY_QUALITY, eval_config=eval_config, model_config=model_config)
 
@@ -341,16 +309,12 @@ Please strictly output in the following JSON format:
 Please evaluate the following Agent Trajectory:
 """
 
-    def build_judge_data(self, index: int, input: Any, output: Any) -> str:
+    def build_judge_data(self, index: int, input: EvalDataCase, output: Any) -> str:
         try:
-            trajectory_data = self._parse_trajectory(output)
-            trajectory = trajectory_data.get("trajectory", [])
+            trajectory = self._parse_trajectory(output)
 
-            if isinstance(trajectory, str):
-                trajectory = json.loads(trajectory)
-
-            user_goal = input.get("user_input", "Unknown")
-            available_tools = input.get("available_tools", [])
+            user_goal = input.case_data.get("user_input", "Unknown")
+            available_tools = input.case_data.get("available_tools", [])
             steps_summary = []
 
             for i, step in enumerate(trajectory):

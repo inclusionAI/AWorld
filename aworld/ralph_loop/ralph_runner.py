@@ -1,20 +1,23 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
+import os
 import time
 import traceback
+from collections import OrderedDict
 
 import yaml
-from dataclasses import asdict
-from typing import Dict, Any, Optional, Union, List, Tuple
+from typing import Dict, Any, Optional, Union, List, Tuple, Set
 
 from pydantic import BaseModel
 
 import aworld
+from aworld.config import ModelConfig
 from aworld.core.task import Runner, Task, TaskResponse
 from aworld.evaluations.base import Evaluator, EvalCriteria, EvalDataCase, EvalDataset, EvalTarget, Scorer
 from aworld.evaluations.scorers import scorer_factory
 from aworld.logs.util import logger
-from aworld.runners.state_manager import EventRuntimeStateManager
+from aworld.ralph_loop.reflect.types import ReflectionInput, ReflectionResult
+from aworld.runners.state_manager import EventRuntimeStateManager, RunNode
 from aworld.utils.run_util import exec_tasks
 
 from aworld.ralph_loop.config import RalphConfig
@@ -44,28 +47,42 @@ class RalphRunner(Runner):
         super().__init__(**kwargs)
         self.task = task
 
+        # todo: task manager
+        self.tasks: Dict[str, Task] = OrderedDict()
+        self.completed_tasks: Set[str] = set()
         # critical task record
-        self.critical_tasks: Dict[str, Task] = {}
+        self.critical_tasks: Set[str] = set()
         # record primitive user goal
         self.original_input = task.input
 
         # init config
         task_config = task.conf
-        if not task_config:
-            self.ralph_config = RalphConfig.create()
+        if isinstance(task_config, RalphConfig):
+            self.ralph_config = task_config
         else:
-            if isinstance(task_config, BaseModel):
-                task_config = task_config.model_dump()
-            ralph_config_path = task_config.get("ralph_config_path")
-            if not ralph_config_path:
-                self.ralph_config = RalphConfig.create()
+            # LLM is necessary
+            model_config = ModelConfig(
+                llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+                llm_model_name=os.getenv("LLM_MODEL_NAME"),
+                llm_temperature=float(os.getenv("LLM_TEMPERATURE", "0.7")),
+                llm_base_url=os.getenv("LLM_BASE_URL"),
+                llm_api_key=os.getenv("LLM_API_KEY"),
+            )
+            if not task_config:
+                self.ralph_config = RalphConfig.create(model_config)
             else:
-                with open(ralph_config_path, "r") as file:
-                    yaml_data = yaml.safe_load(file)
+                if isinstance(task_config, BaseModel):
+                    task_config = task_config.model_dump()
+                ralph_config_path = task_config.get("ralph_config_path")
+                if not ralph_config_path:
+                    self.ralph_config = RalphConfig.create(model_config)
+                else:
+                    with open(ralph_config_path, "r") as file:
+                        yaml_data = yaml.safe_load(file)
 
-                conf_dict = asdict(RalphConfig.create())
-                conf_dict.update(yaml_data)
-                self.ralph_config = RalphConfig(**conf_dict)
+                    conf_dict = RalphConfig.create(model_config).model_dump()
+                    conf_dict.update(yaml_data)
+                    self.ralph_config = RalphConfig(**conf_dict)
 
         # init completion criteria
         if not completion_criteria:
@@ -79,7 +96,8 @@ class RalphRunner(Runner):
         self.need_plan = True
         if task.agent or not task.swarm:
             self.need_plan = False
-            self.critical_tasks[task.id] = task
+            self.tasks[task.id] = task
+            self.critical_tasks.add(task.id)
         else:
             self.need_plan = self.ralph_config.planning.enabled
 
@@ -104,55 +122,61 @@ class RalphRunner(Runner):
         """Preparation before loop execution."""
 
         self.loop_context.check_directories()
-
         # Process mission
         # Create initial plan
 
+        self.loop_state.confirmation_threshold = len(self.tasks)
+
     async def do_run(self):
-        cur_task = self.task
+        # todo: task schedule
+        cur_task = list(self.tasks.values())[0]
         loop_start_time = time.time()
 
+        execution_result = TaskResponse()
         while True:
             self.loop_state.iteration += 1
             iteration_start = time.time()
 
-            logger.info(f"Iteration #{self.loop_state.iteration}")
+            logger.info(f"Iteration {self.loop_state.iteration}")
 
             # 1. Check stop conditions
-            logger.info("\n[1/5] RUN - Stop condition check...")
+            logger.info("[1/5] CHECK - Stop condition check...")
             stop_decision = await self._check_stop_condition()
             if stop_decision.should_stop:
                 logger.info(f"Loop terminated: {stop_decision.stop_type}, Reason: {stop_decision.reason}")
                 break
 
             # 2. Schedule and Execute task
-            logger.info("\n[2/5] RUN - Executing task...")
+            logger.info("[2/5] EXECUTE - Executing task...")
             execution_result, execution_success = await self._execute_task(cur_task)
 
             if not execution_success:
                 self.loop_state.consecutive_failures += 1
                 logger.warning(f"Task execution failed (failures: {self.loop_state.consecutive_failures})")
             else:
-                logger.info(f"Task {cur_task.id} execution completed successfully")
+                logger.info(f"Iteration {self.loop_state.iteration} Task {cur_task.id} execution successfully")
 
             # 3. Validate output
-            validation_result = None
+            validation_result = {"passed": False}
             if self.validator and execution_success:
-                logger.info("\n[3/5] ANALYZE - Validating output...")
-                eval_target = DelegateEvalTarget(output=asdict(execution_result))
+                logger.info("[3/5] ANALYZE - Validating output...")
+                eval_target = DelegateEvalTarget(output=execution_result.to_dict())
                 validation_result = await self._validate(eval_target=eval_target)
 
                 if not validation_result.get("passed"):
-                    logger.warning(f"Validation failed: {validation_result.get('reason')}")
+                    logger.warning(f"Task {cur_task.id} validation failed: {validation_result.get('reason')}")
                     self.loop_state.consecutive_failures += 1
                     execution_success = False
                 else:
-                    logger.info(f"Validation passed (scores: {validation_result.get('scores')})")
+                    logger.info(f"Task {cur_task.id} validation passed (scores: {validation_result.get('scores')})")
                     self.loop_state.consecutive_failures = 0
+                    self.completed_tasks.add(cur_task.id)
+                    self.loop_state.completion_confirmations = len(self.completed_tasks)
 
             # 4. Reflect on execution
-            if self.reflector:
-                logger.info("\n[4/5] LEARN - Reflecting on execution...")
+            # validation did not pass or execution failed or task complex
+            if self.reflector and (not validation_result.get("passed") or not execution_success):
+                logger.info("[4/5] LEARN - Reflecting on execution...")
                 iteration_time = time.time() - iteration_start
 
                 reflection_results = await self._reflect(
@@ -164,7 +188,7 @@ class RalphRunner(Runner):
 
             # Replan if needed
             if self.need_plan and self.current_plan:
-                logger.info("\n[5/5] REPLAN - Checking if replanning needed...")
+                logger.info("[5/5] REPLAN - Checking if replanning needed...")
                 # todo
                 # Collect feedback for trigger detection
                 # Detect replanning triggers
@@ -178,8 +202,9 @@ class RalphRunner(Runner):
             logger.info(f"Total time: {self.loop_state.total_time:.2f}s")
 
         logger.info(f"Ralph Loop Runner - Execution Complete\n"
-                    f"Total iterations: {self.loop_state.iteration}\n"
+                    f"Total iterations: {self.loop_state.iteration - 1}\n"
                     f"Total time: {self.loop_state.total_time:.2f}s")
+        return execution_result
 
     def _init_mission_processor(self):
         """Initialize mission processor and analyzer."""
@@ -214,8 +239,12 @@ class RalphRunner(Runner):
         if strategy == ConflictStrategy.OVERWRITE or strategy == ConflictStrategy.UPDATE:
             pass
         else:
+            # defaults = [ValidationMetrics.TRAJECTORY_QUALITY]
+            defaults = []
+            if self.completion_criteria.answer:
+                defaults.append(ValidationMetrics.OUTPUT_CORRECTNESS)
             criterias = []
-            for metric_name in [ValidationMetrics.OUTPUT_QUALITY, ValidationMetrics.TRAJECTORY_QUALITY]:
+            for metric_name in defaults:
                 criteria = EvalCriteria(metric_name=metric_name)
                 criterias.append(criteria)
             scorers.extend(scorer_factory.get_scorer_instances_for_criterias(criterias))
@@ -237,7 +266,7 @@ class RalphRunner(Runner):
         if strategy == ConflictStrategy.OVERWRITE or strategy == ConflictStrategy.UPDATE:
             reflectors = reflectors
         elif strategy == ConflictStrategy.MERGE or strategy == ConflictStrategy.APPEND:
-            reflectors = reflectors.append(GeneralReflector(
+            reflectors.append(GeneralReflector(
                 model_config=self.ralph_config.reflection.model_config,
             ))
         else:
@@ -292,17 +321,25 @@ class RalphRunner(Runner):
 
     async def _execute_task(self, task: Task) -> Tuple[TaskResponse, bool]:
         """Execute a task and return result and success status."""
+
+        # todo: task context processing
+        file = self.loop_context.reflect_dir() / f"{task.id}.md"
+        content = ''
+        if os.path.exists(file):
+            with open(file, "r") as f:
+                content = f"{f.read()}\n"
+
+        task.input = f"{content}{task.input}"
         try:
             results = await exec_tasks(tasks=[task])
             execution_result: TaskResponse = results.get(task.id)
 
             if execution_result and execution_result.answer:
-                logger.info(f"Task output: {str(execution_result.answer)[:200]}...")
+                logger.info(f"Task output: {execution_result.answer}")
                 return execution_result, True
             else:
                 logger.warning("Task execution returned no result")
                 return execution_result, False
-
         except Exception as e:
             logger.error(f"Task execution failed with exception: {e}")
             if aworld.debug_mode:
@@ -318,13 +355,15 @@ class RalphRunner(Runner):
         case = EvalDataCase(
             case_data={
                 "format_type": "text",
-                "context": self.original_input,
-                "requirement": "The answer should be relevant, complete, and well-structured",
+                "ground_truth": self.completion_criteria.answer,
+                "user_input": self.original_input,
             }
         )
         dataset = EvalDataset(eval_cases=[case])
         result = await self.validator.evaluate(dataset=dataset, eval_target=eval_target)
         case_result = result.eval_case_results[0]
+
+        logger.info(f"Task {eval_target.output.get('id')} validate result: {case_result.score_rows}")
 
         passed = all(
             sr.metric_results[k]["eval_status"].value == 1
@@ -341,7 +380,7 @@ class RalphRunner(Runner):
         return {
             "passed": passed,
             "scores": scores,
-            "details": case_result,
+            "details": case_result.score_rows,
             "reason": "Validation failed" if not passed else "Validation passed",
         }
 
@@ -353,4 +392,56 @@ class RalphRunner(Runner):
             success: bool,
     ) -> Optional[List]:
         """Execute reflection on the iteration."""
-        # Build reflection input with enhanced metadata
+
+        reflect_input = ReflectionInput(
+            task_id=execution_result.id,
+            iteration=self.loop_state.iteration,
+            success=success,
+            error_msg=getattr(execution_result, 'error', None) if not success else None,
+            input_data=self.task.input,
+            output_data=execution_result,
+            reference_data=self.completion_criteria.answer,
+            validation_data=validation_result,
+            execution_time=iteration_time,
+            previous_attempts=self.loop_context.trajectories,
+        )
+
+        try:
+            reflections = await self.reflector.reflect(reflect_input)
+        except Exception as e:
+            logger.error(f"Reflection failed: {e}")
+            if aworld.debug_mode:
+                logger.debug(f"Reflection failed: {traceback.format_exc()}")
+            return None
+
+        await self._apply_reflections(reflections, task_id=reflect_input.task_id)
+
+        logger.info(f"Reflection completed: {len(reflections)} results")
+        for i, reflection in enumerate(reflections):
+            logger.info(f"Reflection {i + 1} ({reflection.reflection_type.value}):\n"
+                        f"    · Summary: {reflection.summary}\n"
+                        f"    · Findings: {', '.join(reflection.key_findings)}\n"
+                        f"    · Insights: {', '.join(reflection.insights)}\n"
+                        f"    · Suggestions: {', '.join(reflection.suggestions)}")
+        return reflections
+
+    async def _apply_reflections(self, reflections: List[ReflectionResult], task_id: str) -> None:
+        all_suggestions = []
+        for reflection in reflections:
+            if reflection.suggestions:
+                all_suggestions.extend(reflection.suggestions)
+
+        task = self.tasks.get(task_id)
+        if not task:
+            # something wrong, need rerun
+            pass
+
+        # todo workspace
+        self.loop_context.reflect_dir().mkdir(parents=True, exist_ok=True)
+        if all_suggestions:
+            # need version manager
+            reflection_path = self.loop_context.reflect_dir() / f"{task_id}.md"
+            reflection_path.write_text("\n- ".join(all_suggestions))
+            if not task.is_sub_task:
+                reflection_path = self.loop_context.reflect_dir() / "mission.md"
+                reflection_path.write_text("\n- ".join(all_suggestions))
