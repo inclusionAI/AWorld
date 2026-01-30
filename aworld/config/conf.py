@@ -158,6 +158,11 @@ class OptimizationConfig(BaseConfig):
     max_token_budget_ratio: float = 0.5  # Maximum context length ratio
 
 
+class MetaLearningConfig(BaseConfig):
+    enabled: bool = Field(default=False, description="Whether to enable meta-learning. When enabled, task_id will be recorded to MULTI_TURN_TASK_ID_DATA upon task completion")
+    # AGENTS_PATH
+    # 去掉MIND_STREAM_DEBUG_MODE 修正TRAJ_STORAGE_BASE_PATH的逻辑
+
 class SummaryPromptConfig(BaseConfig):
     """Configuration for summary prompt templates."""
     
@@ -248,6 +253,7 @@ class AgentConfig(BaseConfig):
     human_tools: List[str] = []
     skill_configs: Dict[str, Any] = None
     ptc_tools: List[str] = []
+    meta_learning: MetaLearningConfig = MetaLearningConfig()
     ext: dict = {}
 
     def __init__(self, **kwargs):

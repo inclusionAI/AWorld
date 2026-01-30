@@ -425,6 +425,51 @@ class TeamSwarm(Swarm):
         # Default is 0, means calling at least once. Suggestion is 2, means at least interacting with one executor.
         self.min_call_num = kwargs.get("min_call_num", 0)
 
+    def add_agents(self, agents: List[BaseAgent]):
+        root_agent = self.agent_graph.root_agent if self.agent_graph else None
+        
+        # Validate agents before adding (similar to TeamBuilder._valid_check)
+        if not root_agent:
+            raise AWorldRuntimeException("Cannot add agents: root_agent is not set in agent_graph.")
+        
+        # Filter out agents that already exist to avoid duplicate registration
+        agents_to_add = []
+        for agent in agents:
+            # Check if agent is already in the graph
+            if agent.id() in self.agent_graph.agents:
+                logger.warning(f"Agent {agent.id()} already exists in agent_graph, skipping.")
+                continue
+            
+            # Check if agent is the root_agent (should not add root_agent as sub-agent)
+            if agent.id() == root_agent.id():
+                logger.warning(f"Agent {agent.id()} is the root_agent, cannot add root_agent as sub-agent. Skipping.")
+                continue
+            
+            # Check if agent is already in topology
+            if agent in self.topology:
+                logger.warning(f"Agent {agent.id()} already exists in topology, skipping.")
+                continue
+            
+            agents_to_add.append(agent)
+        
+        # Only call super().add_agents for agents that don't exist yet
+        if agents_to_add:
+            super().add_agents(agents_to_add)
+            
+            for agent in agents_to_add:
+                # All checks passed, add the agent
+                self.agent_graph.add_node(agent)
+                # Follow TeamBuilder.build pattern: only add edge from root_agent to agent (one-way)
+                self.agent_graph.add_edge(root_agent, agent)
+                root_agent.handoffs.append(agent.id())
+                # Set feedback_tool_result to True so agent is properly recognized as agent_as_tool
+                agent.feedback_tool_result = True
+                # Remove agent from its own handoffs if present (same as TeamBuilder.build)
+                if isinstance(agent, BaseAgent) and agent.id() in agent.handoffs:
+                    agent.handoffs.remove(agent.id())
+                self.topology.append(agent)
+        
+        logger.info(f"add agents {agents} to team swarm.agents: {self.agents}")
 
 # Alias for TeamSwarm
 Team = TeamSwarm
@@ -1038,6 +1083,7 @@ class TeamBuilder(TopologyBuilder):
         return True
 
     def build(self):
+        logger.info(f"Building swarm with root_agent={self.root_agent}, topology_size={len(self.topology)}")
         agent_graph = AgentGraph(GraphBuildType.TEAM.value, root_agent=self.root_agent)
         valid_agents = []
         root_agent = self.topology[0]

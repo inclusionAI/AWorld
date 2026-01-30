@@ -149,6 +149,61 @@ class CliRuntime(BaseCliRuntime):
         
         return plugin_dirs
     
+    async def _load_skills(self) -> Dict[str, int]:
+        """
+        Load skills from all plugin directories.
+        
+        Searches for skills in plugin_dir/skills directory for each plugin.
+        Only directories containing SKILL.md file are considered as skills.
+        Skills are registered into the global skill registry.
+        
+        Returns:
+            Dictionary mapping plugin names to number of skills loaded
+        """
+        from ..core.skill_registry import get_skill_registry
+        
+        registry = get_skill_registry()
+        loaded_skills: Dict[str, int] = {}
+        
+        for plugin_dir in self.plugin_dirs:
+            skills_dir = plugin_dir / "skills"
+            
+            if not skills_dir.exists() or not skills_dir.is_dir():
+                continue
+            
+            try:
+                # Check for subdirectories containing SKILL.md files
+                skill_count = 0
+                for subdir in skills_dir.iterdir():
+                    if not subdir.is_dir():
+                        continue
+                    
+                    # Only consider directories that contain SKILL.md file
+                    skill_md_file = subdir / "SKILL.md"
+                    if skill_md_file.exists() and skill_md_file.is_file():
+                        skill_count += 1
+                
+                # Only register if there are valid skill directories (with SKILL.md)
+                if skill_count > 0:
+                    count = registry.register_source(str(skills_dir), source_name=str(skills_dir))
+                    plugin_name = plugin_dir.name
+                    loaded_skills[plugin_name] = count
+                    
+                    if hasattr(self, 'cli') and hasattr(self.cli, 'console') and self.cli.console:
+                        if count > 0:
+                            self.cli.console.print(f"[dim]📚 Loaded {count} skill(s) from plugin: {plugin_name}[/dim]")
+                else:
+                    # No valid skill directories found (no SKILL.md files)
+                    plugin_name = plugin_dir.name
+                    loaded_skills[plugin_name] = 0
+            except Exception as e:
+                plugin_name = plugin_dir.name
+                if hasattr(self, 'cli') and hasattr(self.cli, 'console') and self.cli.console:
+                    self.cli.console.print(f"[yellow]⚠️ Failed to load skills from plugin {plugin_name}: {e}[/yellow]")
+                loaded_skills[plugin_name] = 0
+        
+        return loaded_skills
+    
     async def _load_agents(self) -> List[AgentInfo]:
         """
         Load agents following unified lifecycle (Load phase):
@@ -190,12 +245,23 @@ class CliRuntime(BaseCliRuntime):
                 self.cli.console.print(f"[yellow]⚠️ Failed to load plugin {plugin_dir}: {e}[/yellow]")
         
         # ========== Lifecycle Step 2: Load Local Agents ==========
+        if self.local_dirs:
+            self.cli.console.print(f"[dim]📂 Loading local agents from {len(self.local_dirs)} directory(ies)...[/dim]")
+        
+        local_agents_count = 0
         for local_dir in self.local_dirs:
             try:
+                self.cli.console.print(f"[dim]  📁 Scanning local directory: {local_dir}[/dim]")
                 loader = LocalAgentLoader(local_dir, console=self.cli.console)
                 
                 # Load agents from local directory
                 local_agents = await loader.load_agents()
+                
+                if local_agents:
+                    self.cli.console.print(f"[dim]  ✅ Found {len(local_agents)} agent(s) in {local_dir}[/dim]")
+                    local_agents_count += len(local_agents)
+                else:
+                    self.cli.console.print(f"[dim]  ℹ️  No agents found in {local_dir}[/dim]")
                 
                 # Track source information (prioritize local over remote)
                 for agent in local_agents:
@@ -205,10 +271,11 @@ class CliRuntime(BaseCliRuntime):
                             "location": local_dir
                         }
                         all_agents.append(agent)
+                        self.cli.console.print(f"[dim]    ✓ Loaded agent: {agent.name} (local)[/dim]")
                     else:
                         existing_source = agent_sources_map[agent.name]
                         if existing_source["type"] == "local":
-                            self.cli.console.print(f"[dim]⚠️ Duplicate agent '{agent.name}' found, keeping first occurrence[/dim]")
+                            self.cli.console.print(f"[dim]    ⚠️ Duplicate agent '{agent.name}' found, keeping first occurrence[/dim]")
                         else:
                             # Replace remote/plugin with local (prioritize LOCAL)
                             agent_sources_map[agent.name] = {
@@ -220,18 +287,32 @@ class CliRuntime(BaseCliRuntime):
                                 if a.name == agent.name:
                                     all_agents[i] = agent
                                     break
-                            self.cli.console.print(f"[dim]⚠️ Duplicate agent '{agent.name}' found, replacing with local version[/dim]")
+                            self.cli.console.print(f"[dim]    ⚠️ Duplicate agent '{agent.name}' found, replacing {existing_source['type']} version with local[/dim]")
                         
             except Exception as e:
                 self.cli.console.print(f"[yellow]⚠️ Failed to load from {local_dir}: {e}[/yellow]")
         
+        if self.local_dirs and local_agents_count > 0:
+            self.cli.console.print(f"[dim]📊 Total local agents loaded: {local_agents_count}[/dim]")
+        
         # ========== Lifecycle Step 3: Load Remote Agents ==========
+        if self.remote_backends:
+            self.cli.console.print(f"[dim]🌐 Loading remote agents from {len(self.remote_backends)} backend(s)...[/dim]")
+        
+        remote_agents_count = 0
         for backend_url in self.remote_backends:
             try:
+                self.cli.console.print(f"[dim]  🔗 Connecting to remote backend: {backend_url}[/dim]")
                 loader = RemoteAgentLoader(backend_url, console=self.cli.console)
                 
                 # Load agents from remote backend
                 remote_agents = await loader.load_agents()
+                
+                if remote_agents:
+                    self.cli.console.print(f"[dim]  ✅ Found {len(remote_agents)} agent(s) from {backend_url}[/dim]")
+                    remote_agents_count += len(remote_agents)
+                else:
+                    self.cli.console.print(f"[dim]  ℹ️  No agents found from {backend_url}[/dim]")
                 
                 # Track source information (only if local doesn't exist)
                 for agent in remote_agents:
@@ -241,18 +322,31 @@ class CliRuntime(BaseCliRuntime):
                             "location": backend_url
                         }
                         all_agents.append(agent)
+                        self.cli.console.print(f"[dim]    ✓ Loaded agent: {agent.name} (remote)[/dim]")
                     else:
                         # Local/plugin source exists, skip remote duplicate
-                        self.cli.console.print(f"[dim]⚠️ Duplicate agent '{agent.name}' found (remote), keeping local/plugin version[/dim]")
+                        existing_source = agent_sources_map[agent.name]
+                        self.cli.console.print(f"[dim]    ⚠️ Duplicate agent '{agent.name}' found (remote), keeping {existing_source['type']} version[/dim]")
                         
             except Exception as e:
                 self.cli.console.print(f"[yellow]⚠️ Failed to load from {backend_url}: {e}[/yellow]")
+        
+        if self.remote_backends and remote_agents_count > 0:
+            self.cli.console.print(f"[dim]📊 Total remote agents loaded: {remote_agents_count}[/dim]")
         
         # Update _agent_sources based on final agents
         self._agent_sources.clear()
         for agent in all_agents:
             if agent.name in agent_sources_map:
                 self._agent_sources[agent.name] = agent_sources_map[agent.name]
+        
+        # Summary log
+        plugin_count = len([a for a in all_agents if agent_sources_map.get(a.name, {}).get("type") == "plugin"])
+        local_count = len([a for a in all_agents if agent_sources_map.get(a.name, {}).get("type") == "local"])
+        remote_count = len([a for a in all_agents if agent_sources_map.get(a.name, {}).get("type") == "remote"])
+        
+        if all_agents:
+            self.cli.console.print(f"[green]✅ Agent loading complete: {len(all_agents)} total agent(s) (plugin: {plugin_count}, local: {local_count}, remote: {remote_count})[/green]")
         
         if not all_agents:
             self.cli.console.print("[red]❌ No agents found from any source.[/red]")

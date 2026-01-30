@@ -7,6 +7,9 @@ from .task_state_service import TaskStateService, ITaskStateService
 from .memory_service import MemoryService, IMemoryService
 from .prompt_service import PromptService, IPromptService
 from .freedom_space_service import FreedomSpaceService, IFreedomSpaceService
+from aworld.experimental.loaders.agent_version_control_registry import AgentVersionControlRegistry
+from aworld.experimental.loaders.swarm_version_control_registry import SwarmVersionControlRegistry
+from aworld.experimental.loaders.version_control_registry import VersionControlRegistry
 
 __all__ = [
     'KnowledgeService',
@@ -21,5 +24,8 @@ __all__ = [
     'IPromptService',
     'FreedomSpaceService',
     'IFreedomSpaceService',
+    'AgentVersionControlRegistry',
+    'SwarmVersionControlRegistry',
+    'VersionControlRegistry',
 ]
 

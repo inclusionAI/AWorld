@@ -18,12 +18,32 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 
-from rich.console import Console, Group
+from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.status import Status
+
+# Try to import Group from rich.console, with fallback for older Rich versions
+try:
+    from rich.console import Group
+except ImportError:
+    # Fallback for older Rich versions - try importing from rich directly
+    try:
+        from rich import Group
+    except ImportError:
+        # If Group is not available, create a simple wrapper class
+        # Group is used to combine multiple renderables
+        class Group:
+            """Fallback Group class for older Rich versions."""
+            def __init__(self, *renderables):
+                self.renderables = renderables
+            
+            def __rich_console__(self, console, options):
+                from rich.console import RenderableType
+                for renderable in self.renderables:
+                    yield renderable
 
 from .base import AgentExecutor
 
@@ -619,7 +639,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
     
     def _render_tool_result_output(self, output) -> None:
         """
-        Render ToolResultOutput to console with collapsible content for long results.
+        Render ToolResultOutput to console with summary information by default.
         Skips rendering for human tools as their results are user input and don't need to be displayed.
         
         Args:
@@ -648,6 +668,11 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         if not tool_call_id and hasattr(output, 'origin_tool_call') and output.origin_tool_call:
             tool_call_id = getattr(output.origin_tool_call, 'id', '')
         
+        # Get summary from metadata first, fallback to generating a summary from data
+        summary = None
+        if hasattr(output, 'metadata') and output.metadata:
+            summary = output.metadata.get('summary')
+        
         # Get result content
         result_content = ""
         if hasattr(output, 'data') and output.data:
@@ -664,44 +689,42 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         if tool_call_id:
             tool_info += f" [ID: {tool_call_id}]"
         
-        if not result_content:
+        # Default to showing summary only
+        if summary:
+            # Use provided summary
+            display_content = summary
+        elif result_content:
+            # Generate a brief summary from content (first few lines or truncated)
+            max_summary_length = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_SUMMARY_MAX_CHARS", "500"))
+            max_summary_lines = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_SUMMARY_MAX_LINES", "5"))
+            
+            lines = result_content.split('\n')
+            if len(lines) > max_summary_lines:
+                # Show first few lines as summary
+                summary_lines = lines[:max_summary_lines]
+                display_content = '\n'.join(summary_lines)
+                content_length = len(result_content)
+                remaining_lines = len(lines) - max_summary_lines
+                display_content += f"\n\n[dim]... ({remaining_lines} more lines, {content_length} total characters) ...[/dim]"
+            elif len(result_content) > max_summary_length:
+                # Show truncated summary
+                display_content = result_content[:max_summary_length] + f"\n\n[dim]... ({len(result_content) - max_summary_length} more characters) ...[/dim]"
+            else:
+                # Short content, show as-is
+                display_content = result_content
+        else:
+            # No content, just show tool info
             self.console.print(f"[yellow]🔧 Tool: {tool_info}[/yellow]")
             return
         
-        # Render based on content length. Use env for limits so long results (e.g. PPT outline JSON) display fully.
-        content_length = len(result_content)
-        max_preview_length = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_MAX_CHARS", "20000"))
-        max_preview_lines = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_MAX_LINES", "200"))
-        
-        if content_length > max_preview_length:
-            # Show preview for long content
-            lines = result_content.split('\n')
-            if len(lines) > max_preview_lines:
-                # Show first few lines as preview
-                preview_lines = lines[:max_preview_lines]
-                preview_content = '\n'.join(preview_lines)
-                remaining_lines = len(lines) - max_preview_lines
-                preview_content += f"\n\n[dim]... ({remaining_lines} more lines, {content_length - len(preview_content)} more characters) ...[/dim]"
-            else:
-                # Show truncated preview
-                preview_content = result_content[:max_preview_length] + f"\n\n[dim]... ({content_length - max_preview_length} more characters) ...[/dim]"
-            
-            tool_panel = Panel(
-                preview_content,
-                title=f"[bold yellow]🔧 Tool Result: {tool_info}[/bold yellow]",
-                title_align="left",
-                border_style="yellow",
-                padding=(1, 2)
-            )
-        else:
-            # Short content, display directly
-            tool_panel = Panel(
-                result_content,
-                title=f"[bold yellow]🔧 Tool Result: {tool_info}[/bold yellow]",
-                title_align="left",
-                border_style="yellow",
-                padding=(1, 2)
-            )
+        # Render summary panel
+        tool_panel = Panel(
+            display_content,
+            title=f"[bold yellow]🔧 Tool Result: {tool_info}[/bold yellow]",
+            title_align="left",
+            border_style="yellow",
+            padding=(1, 2)
+        )
         
         self.console.print(tool_panel)
         self.console.print()
