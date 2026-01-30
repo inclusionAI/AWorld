@@ -149,6 +149,7 @@ class TaskRunner(Runner):
             self.swarm.event_driven = task.event_driven
             self.swarm.reset(observation.content,
                              context=self.context, tools=self.tool_names)
+            self.swarm.finished = False
 
         self._load_tool_module()
         logger.info(f'{"sub task: " if self.task.is_sub_task else "main task: "}{self.task.id} started...')
@@ -206,8 +207,8 @@ class TaskRunner(Runner):
     async def post_run(self):
         """Execute post-run hooks after task completion."""
         # Lazy import to avoid circular import
-        # This registers MetaLearningTrajectoryRecordHook to HookFactory
-        import aworld.experimental.metalearning.knowledge.meta_learning_traj_record_hook  # noqa: F401
+        # This registers LearningKnowledgeGenerationHook to HookFactory
+        import aworld.experimental.metalearning.knowledge.learning_knowledge_generation_hook  # noqa: F401
         try:
             async for _ in run_hooks(
                 context=self.context,

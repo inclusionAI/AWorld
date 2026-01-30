@@ -421,6 +421,26 @@ class DefaultAgentHandler(AgentHandler):
         caller = message.caller
         session_id = message.session_id
         agent = self.swarm.agents.get(action.agent_name)
+        root_agent = self.swarm.agent_graph.root_agent if self.swarm.agent_graph else None
+        root_agent_id = root_agent.id() if root_agent else None
+
+        logger.info(f"_team_stop_check: agent={action.agent_name}, message.caller={caller}, root_agent_id={root_agent_id}")
+
+        # If caller is not set, try to get it from context's caller_info (for sub_task scenarios)
+        if not caller and message.context:
+            task_id = message.context.task_id
+            task_graph = message.context.get_task_graph()
+            logger.info(f"_team_stop_check: task_id={task_id}, task_graph keys={list(task_graph.keys()) if task_graph else None}")
+            if task_id in task_graph:
+                caller_info = task_graph[task_id].get("caller_info", {})
+                logger.info(f"_team_stop_check: caller_info={caller_info}")
+                caller = caller_info.get("agent_id")
+                if caller:
+                    logger.info(f"Got caller from context caller_info: {caller} for task {task_id}")
+                else:
+                    logger.warning(f"caller_info found but agent_id is None for task {task_id}")
+            else:
+                logger.warning(f"task_id {task_id} not found in task_graph")
 
         # must be an interactive call
         if len(self.agent_calls) > self.swarm.min_call_num:
@@ -438,16 +458,23 @@ class DefaultAgentHandler(AgentHandler):
                 )
                 return
 
-        caller = self.swarm.agent_graph.root_agent.id() or message.caller
-        if agent.id() != self.swarm.agent_graph.root_agent.id():
-            yield Message(
-                category=Constants.AGENT,
-                payload=Observation(content=action.policy_info),
-                sender=agent.id(),
-                session_id=message.session_id,
-                receiver=caller,
-                headers=message.headers
-            )
+        # For agents that are not root_agent, always return to root_agent or caller
+        # Use root_agent.id() as fallback if caller is not set
+        receiver_id = caller or root_agent_id
+        logger.info(f"_team_stop_check: final caller={caller}, receiver_id={receiver_id}, agent.id()={agent.id()}, root_agent_id={root_agent_id}")
+        if agent.id() != root_agent_id:
+            if receiver_id:
+                logger.info(f"_team_stop_check: sending message from {agent.id()} to {receiver_id}")
+                yield Message(
+                    category=Constants.AGENT,
+                    payload=Observation(content=action.policy_info),
+                    sender=agent.id(),
+                    session_id=message.session_id,
+                    receiver=receiver_id,
+                    headers=message.headers
+                )
+            else:
+                logger.error(f"_team_stop_check: no receiver_id found for agent {agent.id()}, caller={caller}, root_agent_id={root_agent_id}")
         else:
             # Team mode does not recommend leader to directly call itself without tools
             text = "self to self" if len(self.agent_calls) > self.swarm.min_call_num else "at the first"

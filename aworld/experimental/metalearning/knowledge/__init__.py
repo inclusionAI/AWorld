@@ -1,5 +1,4 @@
 # coding: utf-8
-from .metalearning_traj_storage_hook import MindStreamHook
-from .meta_learning_traj_record_hook import MetaLearningTrajectoryRecordHook
+from .learning_knowledge_generation_hook import LearningKnowledgeGenerationHook
 
-__all__ = ["MindStreamHook", "MetaLearningTrajectoryRecordHook"]
+__all__ = ["LearningKnowledgeGenerationHook"]
