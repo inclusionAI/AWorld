@@ -622,7 +622,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         if sub_agents:
             logger.info(f"🤝 Adding {len(sub_agents)} sub-agent(s) to Aworld TeamSwarm")
             # Create TeamSwarm with Aworld as leader and all other agents as sub-agents
-            return TeamSwarm(aworld_agent, *sub_agents)
+            return TeamSwarm(aworld_agent, *sub_agents, max_steps=100)
         else:
             logger.info("ℹ️ No sub-agents found, creating Aworld TeamSwarm without sub-agents")
             return TeamSwarm(aworld_agent)

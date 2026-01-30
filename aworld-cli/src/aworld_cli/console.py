@@ -391,8 +391,8 @@ class AWorldCLI:
     
     async def _esc_key_listener(self):
         """
-        后台监听 Esc 键，用于中断当前执行的任务。
-        这个函数在后台运行，持续监听键盘输入。
+        Background listener for Esc key to interrupt currently executing tasks.
+        This function runs in the background, continuously listening for keyboard input.
         """
         try:
             from prompt_toolkit import Application
@@ -402,23 +402,23 @@ class AWorldCLI:
             from prompt_toolkit.layout.controls import FormattedTextControl
             from prompt_toolkit.formatted_text import FormattedText
             
-            # 创建一个隐藏的窗口来捕获 Esc 键
+            # Create a hidden window to capture Esc key
             kb = KeyBindings()
             
-            # 存储当前执行任务的引用
+            # Store reference to currently executing task
             if not hasattr(self, '_current_executor_task'):
                 self._current_executor_task = None
             
             def handle_esc(event):
-                """处理 Esc 键按下"""
+                """Handle Esc key press"""
                 if hasattr(self, '_current_executor_task') and self._current_executor_task:
                     if not self._current_executor_task.done():
                         self._current_executor_task.cancel()
-                        self.console.print("\n[yellow]⚠️ 任务已被 Esc 键中断[/yellow]")
+                        self.console.print("\n[yellow]⚠️ Task interrupted by Esc key[/yellow]")
             
             kb.add("escape")(handle_esc)
             
-            # 创建一个不可见的控件
+            # Create an invisible control
             control = FormattedTextControl(
                 text=FormattedText([("", "")]),
                 focusable=True
@@ -427,7 +427,7 @@ class AWorldCLI:
             window = Window(content=control, height=0)
             layout = Layout(window)
             
-            # 创建一个隐藏的应用来监听键盘
+            # Create a hidden application to listen for keyboard
             app = Application(
                 layout=layout,
                 key_bindings=kb,
@@ -435,10 +435,10 @@ class AWorldCLI:
                 mouse_support=False
             )
             
-            # 在后台运行应用
+            # Run application in background
             await asyncio.to_thread(app.run)
         except Exception:
-            # 如果 prompt_toolkit 不可用或出错，静默失败
+            # If prompt_toolkit is not available or error occurs, fail silently
             pass
 
     async def run_chat_session(self, agent_name: str, executor: Callable[[str], Any], available_agents: List[AgentInfo] = None, executor_instance: Any = None) -> Union[bool, str]:
@@ -685,27 +685,27 @@ class AWorldCLI:
                 # Handle test command
                 if user_input.lower() in ("/test", "test"):
                     try:
-                        self.console.print("[bold cyan]🧪 用户输入测试功能[/bold cyan]")
+                        self.console.print("[bold cyan]🧪 User Input Test Function[/bold cyan]")
                         self.console.print()
 
-                        # 测试选项
+                        # Test options
                         test_options = [
-                            "1. 测试文本输入",
-                            "2. 测试多选输入",
-                            "3. 测试确认输入",
-                            "4. 测试复合菜单",
-                            "5. 测试单选列表",
-                            "6. 退出测试"
+                            "1. Test text input",
+                            "2. Test multi-select input",
+                            "3. Test confirmation input",
+                            "4. Test composite menu",
+                            "5. Test single-select list",
+                            "6. Exit test"
                         ]
 
-                        self.console.print("[bold]请选择要测试的功能：[/bold]")
+                        self.console.print("[bold]Please select a function to test:[/bold]")
                         for option in test_options:
                             self.console.print(f"  {option}")
                         self.console.print()
 
                         test_choice = await asyncio.to_thread(
                             Prompt.ask,
-                            "[cyan]请输入选项编号 (1-6)[/cyan]",
+                            "[cyan]Please enter option number (1-6)[/cyan]",
                             default="1",
                             console=self.console
                         )
@@ -713,73 +713,73 @@ class AWorldCLI:
                         test_choice = test_choice.strip()
 
                         if test_choice == "1":
-                            # 测试文本输入
+                            # Test text input
                             self.console.print()
-                            self.console.print("[bold green]📝 测试文本输入[/bold green]")
-                            self.console.print("[dim]请输入一些文本进行测试...[/dim]")
+                            self.console.print("[bold green]📝 Test Text Input[/bold green]")
+                            self.console.print("[dim]Please enter some text for testing...[/dim]")
                             text_input = await asyncio.to_thread(
                                 self.user_input.text_input,
-                                "[cyan]请输入文本[/cyan]"
+                                "[cyan]Please enter text[/cyan]"
                             )
-                            self.console.print(f"[green]✅ 您输入的文本是: {text_input}[/green]")
+                            self.console.print(f"[green]✅ Your input text is: {text_input}[/green]")
 
                         elif test_choice == "2":
-                            # 测试多选输入
+                            # Test multi-select input
                             self.console.print()
-                            self.console.print("[bold green]☑️  测试多选输入[/bold green]")
-                            test_items = ["苹果", "香蕉", "橙子", "葡萄", "草莓"]
+                            self.console.print("[bold green]☑️  Test Multi-select Input[/bold green]")
+                            test_items = ["Apple", "Banana", "Orange", "Grape", "Strawberry"]
                             selected_indices = await asyncio.to_thread(
                                 self.user_input.select_multiple,
                                 options=test_items,
-                                title="请选择您喜欢的水果（可多选）",
-                                prompt="输入选项编号（用逗号分隔，如：1,3,5）"
+                                title="Please select your favorite fruits (multiple selection)",
+                                prompt="Enter option numbers (comma-separated, e.g., 1,3,5)"
                             )
                             if selected_indices:
                                 selected_items = [test_items[i] for i in selected_indices]
-                                self.console.print(f"[green]✅ 您选择了: {', '.join(selected_items)}[/green]")
+                                self.console.print(f"[green]✅ You selected: {', '.join(selected_items)}[/green]")
                             else:
-                                self.console.print("[yellow]⚠️ 未选择任何选项[/yellow]")
+                                self.console.print("[yellow]⚠️ No options selected[/yellow]")
 
                         elif test_choice == "3":
-                            # 测试确认输入
+                            # Test confirmation input
                             self.console.print()
-                            self.console.print("[bold green]❓ 测试确认输入[/bold green]")
+                            self.console.print("[bold green]❓ Test Confirmation Input[/bold green]")
                             from rich.prompt import Confirm
                             confirmed = await asyncio.to_thread(
                                 Confirm.ask,
-                                "[cyan]您确定要继续吗？[/cyan]",
+                                "[cyan]Are you sure you want to continue?[/cyan]",
                                 default=True,
                                 console=self.console
                             )
                             if confirmed:
-                                self.console.print("[green]✅ 您选择了确认[/green]")
+                                self.console.print("[green]✅ You chose to confirm[/green]")
                             else:
-                                self.console.print("[yellow]⚠️ 您选择了取消[/yellow]")
+                                self.console.print("[yellow]⚠️ You chose to cancel[/yellow]")
 
                         elif test_choice == "4":
-                            # 测试复合菜单
+                            # Test composite menu
                             self.console.print()
-                            self.console.print("[bold green]📋 测试复合菜单[/bold green]")
+                            self.console.print("[bold green]📋 Test Composite Menu[/bold green]")
 
-                            # 创建测试用的 tabs
+                            # Create test tabs
                             test_tabs = [
                                 {
                                     'type': 'multi_select',
                                     'name': 'product_type',
-                                    'title': '你的产品类型是什么？',
+                                    'title': 'What is your product type?',
                                     'options': [
-                                        {'label': '软件/应用产品',
-                                         'description': '移动应用、网页应用、桌面软件等数字产品'},
-                                        {'label': '硬件设备', 'description': '电子设备、智能硬件、物联网产品等'},
-                                        {'label': '服务平台', 'description': 'SaaS服务、在线平台、云服务等'},
-                                        {'label': '实体产品', 'description': '消费品、工业产品、日用品等'},
+                                        {'label': 'Software/Application Product',
+                                         'description': 'Mobile apps, web apps, desktop software and other digital products'},
+                                        {'label': 'Hardware Device', 'description': 'Electronic devices, smart hardware, IoT products, etc.'},
+                                        {'label': 'Service Platform', 'description': 'SaaS services, online platforms, cloud services, etc.'},
+                                        {'label': 'Physical Product', 'description': 'Consumer goods, industrial products, daily necessities, etc.'},
                                     ]
                                 },
                                 {
                                     'type': 'text_input',
                                     'name': 'product_name',
-                                    'title': '产品名称',
-                                    'prompt': '请输入产品名称',
+                                    'title': 'Product Name',
+                                    'prompt': 'Please enter product name',
                                     'default': '',
                                     'placeholder': 'Search...'
                                 },
@@ -796,35 +796,35 @@ class AWorldCLI:
                                 results = await asyncio.to_thread(
                                     self.user_input.composite_menu,
                                     tabs=test_tabs,
-                                    title="创建产品介绍PPT"
+                                    title="Create Product Introduction PPT"
                                 )
 
                                 if results:
                                     self.console.print()
-                                    self.console.print("[green]✅ 复合菜单测试完成[/green]")
-                                    self.console.print("[bold]返回结果：[/bold]")
+                                    self.console.print("[green]✅ Composite menu test completed[/green]")
+                                    self.console.print("[bold]Returned results:[/bold]")
                                     for tab_name, value in results.items():
                                         self.console.print(f"  [cyan]{tab_name}[/cyan]: {value}")
                                 else:
-                                    self.console.print("[yellow]⚠️ 用户取消了操作[/yellow]")
+                                    self.console.print("[yellow]⚠️ User cancelled the operation[/yellow]")
                             except Exception as e:
-                                self.console.print(f"[red]测试过程中出错: {e}[/red]")
+                                self.console.print(f"[red]Error during test: {e}[/red]")
                                 import traceback
                                 self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
                         elif test_choice == "5":
-                            # 测试单选列表
+                            # Test single-select list
                             self.console.print()
-                            self.console.print("[bold green]📋 测试单选列表[/bold green]")
+                            self.console.print("[bold green]📋 Test Single-select List[/bold green]")
 
-                            # 创建测试用的导航栏项目
+                            # Create test navigation bar items
                             nav_items = [
-                                {'label': 'PPT主题', 'type': 'checkbox', 'checked': False, 'highlight': False},
-                                {'label': '模板风格', 'type': 'checkbox', 'checked': False, 'highlight': False},
+                                {'label': 'PPT Theme', 'type': 'checkbox', 'checked': False, 'highlight': False},
+                                {'label': 'Template Style', 'type': 'checkbox', 'checked': False, 'highlight': False},
                                 {'label': 'Submit', 'type': 'button', 'highlight': True}
                             ]
 
-                            # 创建测试选项
+                            # Create test options
                             test_options = [
                                 {'label': 'Submit answers', 'description': ''},
                                 {'label': 'Cancel', 'description': ''}
@@ -841,21 +841,21 @@ class AWorldCLI:
 
                             if selected_index is not None:
                                 selected_option = test_options[selected_index]['label']
-                                self.console.print(f"[green]✅ 您选择了: {selected_option}[/green]")
+                                self.console.print(f"[green]✅ You selected: {selected_option}[/green]")
                             else:
-                                self.console.print("[yellow]⚠️ 用户取消了选择[/yellow]")
+                                self.console.print("[yellow]⚠️ User cancelled the selection[/yellow]")
 
                         elif test_choice == "6":
-                            self.console.print("[dim]退出测试[/dim]")
+                            self.console.print("[dim]Exit test[/dim]")
                         else:
-                            self.console.print(f"[red]无效的选项: {test_choice}[/red]")
+                            self.console.print(f"[red]Invalid option: {test_choice}[/red]")
 
                         self.console.print()
                     except KeyboardInterrupt:
-                        self.console.print("\n[yellow]测试已取消[/yellow]")
+                        self.console.print("\n[yellow]Test cancelled[/yellow]")
                     except Exception as e:
-                        # logger.error(f"测试过程中出错: {e} {traceback.format_exc()}")
-                        self.console.print(f"[red]测试过程中出错: {e}[/red]\n{traceback.format_exc()}")
+                        # logger.error(f"Error during test: {e} {traceback.format_exc()}")
+                        self.console.print(f"[red]Error during test: {e}[/red]\n{traceback.format_exc()}")
                     continue
 
                 # Handle agents command

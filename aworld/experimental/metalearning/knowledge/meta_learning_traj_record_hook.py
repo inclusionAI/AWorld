@@ -1,6 +1,6 @@
 # coding: utf-8
 from aworld.core.context.amni import ApplicationContext
-from aworld.experimental.metalearning.knowledge.knowledge import append_traj_id_to_session_artifact
+from aworld.experimental.metalearning.knowledge.learning_knowledge import append_traj_id_to_session_artifact
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.logs.util import logger

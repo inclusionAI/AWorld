@@ -16,11 +16,10 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.amni import ApplicationContext, AmniConfigFactory
 from aworld.core.context.amni.config import AmniConfigLevel
-from aworld.experimental.metalearning.knowledge.knowledge import TrajectoryService, TrajType, \
-    save_context_artifact
+from aworld.experimental.metalearning.knowledge.learning_knowledge import LearningKnowledge, TrajType, \
+    save_context_artifact, _convert_to_json_serializable
 from aworld.core.context.amni.tool import CONTEXT_AGENT_REGISTRY
 from aworld.experimental.loaders.swarm_registry_tool import CONTEXT_SWARM_REGISTRY
-from aworld.core.context.amni.utils.base import _convert_to_json_serializable
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.core.task import Task
@@ -852,9 +851,9 @@ class MetaLearningStrategy(LearningStrategy):
         last_task_id = task_id
         logger.info(f"加载轨迹数据: session_id={session_id}, task_id={last_task_id}")
 
-        # 1. 获取meta数据（使用TrajectoryService.get_meta）
+        # 1. 获取meta数据（使用LearningKnowledge.get_meta）
         try:
-            meta_data = await TrajectoryService.get_saved_meta(learning_context, task_id=last_task_id)
+            meta_data = await LearningKnowledge.get_saved_meta(learning_context, task_id=last_task_id)
 
             if meta_data:
                 # 保存meta数据到临时文件
@@ -872,7 +871,7 @@ class MetaLearningStrategy(LearningStrategy):
 
         # 2. 获取exp数据
         try:
-            exp_data = await TrajectoryService.get_saved_exp(context=learning_context, task_id=last_task_id)
+            exp_data = await LearningKnowledge.get_saved_exp(context=learning_context, task_id=last_task_id)
 
             if exp_data:
                 # 兼容处理：如果是字典且包含content字段，则取content，否则直接使用exp_data
@@ -899,7 +898,7 @@ class MetaLearningStrategy(LearningStrategy):
 
         # 3. 获取dag数据（从traj转换而来）
         try:
-            dag_data = TrajectoryService.parse_traj_to_graph(context, exp_data)
+            dag_data = LearningKnowledge.parse_traj_to_graph(context, exp_data)
 
             if dag_data:
                 # 兼容处理：如果是字典且包含content字段，则取content，否则直接使用dag_data

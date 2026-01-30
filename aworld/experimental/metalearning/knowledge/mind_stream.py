@@ -16,8 +16,8 @@ Main functional modules:
 from typing import Optional
 
 from aworld.core.context.amni import ApplicationContext
-from aworld.experimental.metalearning.knowledge.knowledge import (
-    TrajectoryService,
+from aworld.experimental.metalearning.knowledge.learning_knowledge import (
+    LearningKnowledge,
     save_context_artifact,
     TrajType,
 )
@@ -72,18 +72,18 @@ async def retrieve_traj_and_draw_mind_stream(context: Context):
         logger.warning("MindStreamHook: session_id is None, skip artifact creation")
         return
 
-    traj_data = await TrajectoryService.get_running_exp(context)
+    traj_data = await LearningKnowledge.get_running_exp(context)
     if traj_data is None:
         logger.info("MindStreamHook: traj_data is None, skip graph generation")
         return
 
-    graph_data = TrajectoryService.parse_traj_to_graph(context, traj_data)
+    graph_data = LearningKnowledge.parse_traj_to_graph(context, traj_data)
     logger.info(f"graph_data: {graph_data}")
 
     # Runtime information
-    meta_data = await TrajectoryService.get_running_meta(context, context.task_id)
+    meta_data = await LearningKnowledge.get_running_meta(context, context.task_id)
     meta_artifact_id = await save_context_artifact(context, TrajType.META_DATA, meta_data)
-    exp_artifact_id = await save_context_artifact(context, TrajType.EXP_DATA, TrajectoryService.convert_to_store_data(traj_data))
+    exp_artifact_id = await save_context_artifact(context, TrajType.EXP_DATA, LearningKnowledge.convert_to_store_data(traj_data))
     graph_data_artifact_id = await save_context_artifact(context, TrajType.GRAPH_DATA, graph_data)
 
     logger.info(f"MindStreamHook: Successfully created graph structure artifact, exp_data_artifact_id={exp_artifact_id}, "

@@ -1126,7 +1126,7 @@ class UserInputHandler:
             tab_name = current_tab.get('name')
             is_completed = tab_name in state['results']
             
-            # 如果已完成且是text_input，不做任何操作（review模式）
+            # If completed and is text_input, do nothing (review mode)
             if is_completed and tab_type == 'text_input':
                 return
             
@@ -1134,10 +1134,10 @@ class UserInputHandler:
                 selected_indices = state['tab_states'].get(tab_name, set())
                 if selected_indices:
                     state['results'][tab_name] = sorted(list(selected_indices))
-                    # 移动到下一个 tab
+                    # Move to next tab
                     if current_tab_idx < len(all_tabs) - 1:
                         state['current_tab_index'] = current_tab_idx + 1
-                        # 重置下一个 tab 的状态
+                        # Reset next tab state
                         next_tab = all_tabs[state['current_tab_index']]
                         next_tab_name = next_tab.get('name')
                         if next_tab.get('type') == 'multi_select':
@@ -1212,16 +1212,15 @@ class UserInputHandler:
             tab_name = current_tab.get('name')
             
             # Save current tab state (if interactive tab)
+            # Note: Don't save text_input to results here - only preserve in tab_states
+            # results should only be updated when user confirms with Enter
             if tab_type == 'multi_select':
                 selected_indices = state['tab_states'].get(tab_name, set())
                 if selected_indices:
                     state['results'][tab_name] = sorted(list(selected_indices))
             elif tab_type == 'text_input':
-                # Save text input value
-                current_value = state['tab_states'].get(f'{tab_name}_value', '')
-                if current_value:
-                    state['results'][tab_name] = current_value
-                # Exit editing mode
+                # Don't save to results here - only preserve in tab_states
+                # Exit editing mode temporarily (will be reactivated when switching back if not completed)
                 state['tab_states'][f'{tab_name}_editing'] = False
             
             # Switch to previous tab
@@ -1242,13 +1241,21 @@ class UserInputHandler:
                         else:
                             state['tab_states'][prev_tab_name] = set()
                 elif prev_tab_type == 'text_input':
-                    # Restore text input value (if previously entered)
+                    # Restore text input value
+                    # Priority: results (confirmed) > tab_states (unconfirmed) > default
                     if prev_tab_name in state['results']:
                         state['tab_states'][f'{prev_tab_name}_value'] = state['results'][prev_tab_name]
+                    elif f'{prev_tab_name}_value' in state['tab_states']:
+                        # Keep existing value from tab_states (user input but not confirmed)
+                        pass
                     else:
                         default = prev_tab.get('default', '')
                         state['tab_states'][f'{prev_tab_name}_value'] = default
-                    state['tab_states'][f'{prev_tab_name}_editing'] = False
+                    # Auto-activate editing mode when switching to text_input tab (if not completed)
+                    if prev_tab_name not in state['results']:
+                        state['tab_states'][f'{prev_tab_name}_editing'] = True
+                    else:
+                        state['tab_states'][f'{prev_tab_name}_editing'] = False
                 elif prev_tab_type == 'submit':
                     state['tab_states']['submit_current'] = 0
                 
@@ -1268,23 +1275,22 @@ class UserInputHandler:
             tab_type = current_tab.get('type')
             tab_name = current_tab.get('name')
             
-            # 保存当前 tab 的状态（如果是交互式tab）
+            # Save current tab state (if interactive tab)
+            # Note: Don't save text_input to results here - only preserve in tab_states
+            # results should only be updated when user confirms with Enter
             if tab_type == 'multi_select':
                 selected_indices = state['tab_states'].get(tab_name, set())
                 if selected_indices:
                     state['results'][tab_name] = sorted(list(selected_indices))
             elif tab_type == 'text_input':
-                # 保存文本输入的值
-                current_value = state['tab_states'].get(f'{tab_name}_value', '')
-                if current_value:
-                    state['results'][tab_name] = current_value
-                # 退出编辑模式
+                # Don't save to results here - only preserve in tab_states
+                # Exit editing mode temporarily (will be reactivated when switching back if not completed)
                 state['tab_states'][f'{tab_name}_editing'] = False
             
-            # 切换到下一个 tab
+            # Switch to next tab
             if current_tab_idx < len(all_tabs) - 1:
                 state['current_tab_index'] = current_tab_idx + 1
-                # 初始化下一个 tab 的状态（如果是交互式tab）
+                # Initialize next tab state (if interactive tab)
                 next_tab = all_tabs[state['current_tab_index']]
                 next_tab_name = next_tab.get('name')
                 next_tab_type = next_tab.get('type')
@@ -1293,19 +1299,27 @@ class UserInputHandler:
                     if f'{next_tab_name}_current' not in state['tab_states']:
                         state['tab_states'][f'{next_tab_name}_current'] = 0
                     if next_tab_name not in state['tab_states']:
-                        # 如果之前有结果，恢复选中状态
+                        # If previous result exists, restore selected state
                         if next_tab_name in state['results']:
                             state['tab_states'][next_tab_name] = set(state['results'][next_tab_name])
                         else:
                             state['tab_states'][next_tab_name] = set()
                 elif next_tab_type == 'text_input':
-                    # 恢复文本输入的值（如果之前有输入）
+                    # Restore text input value
+                    # Priority: results (confirmed) > tab_states (unconfirmed) > default
                     if next_tab_name in state['results']:
                         state['tab_states'][f'{next_tab_name}_value'] = state['results'][next_tab_name]
+                    elif f'{next_tab_name}_value' in state['tab_states']:
+                        # Keep existing value from tab_states (user input but not confirmed)
+                        pass
                     else:
                         default = next_tab.get('default', '')
                         state['tab_states'][f'{next_tab_name}_value'] = default
-                    state['tab_states'][f'{next_tab_name}_editing'] = False
+                    # Auto-activate editing mode when switching to text_input tab (if not completed)
+                    if next_tab_name not in state['results']:
+                        state['tab_states'][f'{next_tab_name}_editing'] = True
+                    else:
+                        state['tab_states'][f'{next_tab_name}_editing'] = False
                 elif next_tab_type == 'submit':
                     state['tab_states']['submit_current'] = 0
                 
@@ -1325,7 +1339,7 @@ class UserInputHandler:
         kb.add("right")(move_right)
         kb.add(" ")(toggle_selection)
         kb.add("enter")(handle_enter)
-        kb.add("c-m")(handle_enter)  # Ctrl+M 也是回车键
+        kb.add("c-m")(handle_enter)  # Ctrl+M is also Enter
         kb.add("tab")(confirm_selection)
         kb.add("c-c")(cancel_selection)
         kb.add("escape")(cancel_selection)
@@ -1580,17 +1594,17 @@ class UserInputHandler:
         
         parsed_options = [parse_option(opt) for opt in options]
         
-        # 使用列表来存储状态，以便在闭包中修改
+        # Use list to store state for modification in closure
         state = {
             'selected_index': None,
             'current_index': 0
         }
         
         def get_formatted_text():
-            """生成格式化的文本内容"""
+            """Generate formatted text content"""
             fragments = []
             
-            # 顶部导航栏
+            # Top navigation bar
             if nav_items:
                 fragments.append(("class:nav", "← "))
                 for idx, nav_item in enumerate(nav_items):
@@ -1600,7 +1614,7 @@ class UserInputHandler:
                     nav_highlight = nav_item.get('highlight', False)
                     
                     if nav_type == 'button' and nav_highlight:
-                        # Submit按钮样式（紫色背景，白色对勾）
+                        # Submit button style (purple background, white checkmark)
                         fragments.append(("class:nav-button-highlight", f"✓ {nav_label}"))
                     elif nav_type == 'checkbox':
                         checkbox = "[✓]" if nav_checked else "[ ]"
@@ -1616,37 +1630,37 @@ class UserInputHandler:
                 fragments.append(("class:nav", " →\n"))
                 fragments.append(("", "\n"))
             
-            # 标题
+            # Title
             fragments.append(("class:title", f"{title}\n"))
             fragments.append(("", "\n"))
             
-            # 警告信息
+            # Warning message
             if warning:
                 fragments.append(("class:warning-icon", "⚠ "))
                 fragments.append(("class:warning-text", f"{warning}\n"))
                 fragments.append(("", "\n"))
             
-            # 问题文本
+            # Question text
             if question:
                 fragments.append(("class:question", f"{question}\n"))
                 fragments.append(("", "\n"))
             
-            # 选项列表
+            # Option list
             for idx, (label, description) in enumerate(parsed_options):
-                # 判断是否是当前高亮项
+                # Check if current highlighted item
                 is_current = idx == state['current_index']
                 
-                # 构建每行的格式
-                # 序号
+                # Build format for each line
+                # Number
                 number = f"{idx + 1}. "
                 
-                # 箭头
+                # Arrow
                 if is_current:
                     prefix = "> "
                 else:
                     prefix = "  "
                 
-                # 设置样式
+                # Set styles
                 if is_current:
                     item_style = "class:current"
                     label_style = "class:current-label"
@@ -1656,50 +1670,50 @@ class UserInputHandler:
                     label_style = "class:normal-label"
                     desc_style = "class:normal-desc"
                 
-                # 构建选项行
+                # Build option row
                 fragments.append((item_style, prefix))
                 fragments.append(("class:number", number))
                 fragments.append((label_style, f"{label}"))
                 
-                # 如果有描述，添加描述
+                # Add description if available
                 if description:
                     fragments.append(("", "\n"))
-                    fragments.append((item_style, "     "))  # 缩进
+                    fragments.append((item_style, "     "))  # Indent
                     fragments.append((desc_style, f"    {description}"))
                 
                 fragments.append(("", "\n"))
             
             fragments.append(("", "\n"))
             
-            # 底部提示
-            fragments.append(("class:footer", "Enter 选择 · 方向键 导航 · Esc 取消"))
+            # Bottom hint
+            fragments.append(("class:footer", "Enter to select · Arrow keys to navigate · Esc to cancel"))
             
-            # 确保返回 FormattedText 对象
+            # Ensure FormattedText object is returned
             try:
                 if to_formatted_text:
                     return to_formatted_text(fragments)
                 else:
                     return FormattedText(fragments)
             except Exception:
-                # 如果 FormattedText 构造失败，尝试直接返回字符串
+                # If FormattedText construction fails, try returning string directly
                 text_lines = []
                 for style, text in fragments:
                     text_lines.append(text)
                 return "".join(text_lines)
         
-        # 创建键盘绑定
+        # Create keyboard bindings
         kb = KeyBindings()
         
         def move_up(event):
             if state['current_index'] > 0:
                 state['current_index'] -= 1
-                # 触发界面更新
+                # Trigger UI update
                 event.app.invalidate()
         
         def move_down(event):
             if state['current_index'] < len(options) - 1:
                 state['current_index'] += 1
-                # 触发界面更新
+                # Trigger UI update
                 event.app.invalidate()
         
         def confirm_selection(event):
@@ -1710,30 +1724,30 @@ class UserInputHandler:
             state['selected_index'] = None
             event.app.exit()
         
-        # 绑定按键
+        # Bind keys
         kb.add("up")(move_up)
-        kb.add("k")(move_up)  # vim 风格
+        kb.add("k")(move_up)  # vim style
         kb.add("down")(move_down)
-        kb.add("j")(move_down)  # vim 风格
-        kb.add("left")(move_up)  # 左箭头也支持
-        kb.add("right")(move_down)  # 右箭头也支持
-        kb.add("enter")(confirm_selection)  # 回车键确认
-        kb.add("c-c")(cancel_selection)  # Ctrl+C 取消
-        kb.add("escape")(cancel_selection)  # ESC 取消
+        kb.add("j")(move_down)  # vim style
+        kb.add("left")(move_up)  # Left arrow also supported
+        kb.add("right")(move_down)  # Right arrow also supported
+        kb.add("enter")(confirm_selection)  # Enter to confirm
+        kb.add("c-c")(cancel_selection)  # Ctrl+C to cancel
+        kb.add("escape")(cancel_selection)  # ESC to cancel
         
-        # Create control - 使用可调用对象来动态更新
+        # Create control - use callable object for dynamic updates
         def get_text():
             result = get_formatted_text()
-            # 确保返回的是 FormattedText 对象或字符串
+            # Ensure FormattedText object or string is returned
             if isinstance(result, FormattedText):
                 return result
             elif isinstance(result, str):
                 return result
             elif isinstance(result, list):
-                # 如果返回的是列表，转换为 FormattedText
+                # If list is returned, convert to FormattedText
                 return FormattedText(result)
             else:
-                # 其他情况，尝试转换为字符串
+                # Other cases, try converting to string
                 return str(result)
         
         control = FormattedTextControl(
@@ -1741,39 +1755,39 @@ class UserInputHandler:
             focusable=True
         )
         
-        # 定义样式 - 使用列表格式，现代化的配色方案
+        # Define styles - use list format, modern color scheme
         style_list = [
-            ("title", "bold #ffffff"),  # 白色粗体标题
-            ("number", "#888888"),  # 灰色序号
-            ("prefix", "#9d4edd"),  # 紫色箭头
-            # 导航栏样式
-            ("nav", "#888888"),  # 灰色导航文字
-            ("nav-checkbox", "#888888"),  # 灰色复选框
-            ("nav-checkbox-highlight", "#9d4edd"),  # 紫色高亮复选框
-            ("nav-button-highlight", "bg:#9d4edd #ffffff bold"),  # 紫色背景按钮
-            # 当前选中项 - 紫色高亮（类似图片）
-            ("current", "bg:#9d4edd #ffffff"),  # 紫色背景，白色文字
-            ("current-label", "bg:#9d4edd bold #ffffff"),  # 粗体标签
-            ("current-desc", "bg:#9d4edd #e0e0e0"),  # 浅灰色描述
-            # 普通项
-            ("normal", "#ffffff"),  # 白色文字
+            ("title", "bold #ffffff"),  # White bold title
+            ("number", "#888888"),  # Gray number
+            ("prefix", "#9d4edd"),  # Purple arrow
+            # Navigation bar styles
+            ("nav", "#888888"),  # Gray navigation text
+            ("nav-checkbox", "#888888"),  # Gray checkbox
+            ("nav-checkbox-highlight", "#9d4edd"),  # Purple highlighted checkbox
+            ("nav-button-highlight", "bg:#9d4edd #ffffff bold"),  # Purple background button
+            # Current selected item - purple highlight (similar to image)
+            ("current", "bg:#9d4edd #ffffff"),  # Purple background, white text
+            ("current-label", "bg:#9d4edd bold #ffffff"),  # Bold label
+            ("current-desc", "bg:#9d4edd #e0e0e0"),  # Light gray description
+            # Normal item
+            ("normal", "#ffffff"),  # White text
             ("normal-label", "#ffffff"),
-            ("normal-desc", "#888888"),  # 灰色描述
-            # 警告样式
-            ("warning-icon", "#ffd60a"),  # 黄色警告图标
-            ("warning-text", "#ffd60a"),  # 黄色警告文字
-            # 问题样式
-            ("question", "#e0e0e0"),  # 浅灰色问题文字
-            # 底部提示
-            ("footer", "#888888"),  # 灰色提示文字
+            ("normal-desc", "#888888"),  # Gray description
+            # Warning styles
+            ("warning-icon", "#ffd60a"),  # Yellow warning icon
+            ("warning-text", "#ffd60a"),  # Yellow warning text
+            # Question styles
+            ("question", "#e0e0e0"),  # Light gray question text
+            # Bottom hint
+            ("footer", "#888888"),  # Gray hint text
         ]
         
-        # 创建 Style 对象
+        # Create Style object
         if Style:
             try:
                 style = Style(style_list)
             except Exception:
-                # 如果 Style 构造失败，尝试使用 from_dict
+                # If Style construction fails, try using from_dict
                 style_dict = dict(style_list)
                 try:
                     style = Style.from_dict(style_dict)
@@ -1793,7 +1807,7 @@ class UserInputHandler:
             style=style,
             full_screen=False,
             mouse_support=False,
-            refresh_interval=0.1  # 定期刷新以更新显示
+            refresh_interval=0.1  # Periodic refresh to update display
         )
         
         try:
@@ -1801,25 +1815,25 @@ class UserInputHandler:
         except KeyboardInterrupt:
             return None
         
-        # 返回选中的索引
+        # Return selected index
         return state['selected_index']
     
     def _single_select_text_input(self, options: List[str], title: str) -> Optional[int]:
         """
-        回退的文本输入方式（当 prompt_toolkit 不可用或不在终端时）。
+        Fallback text input method (when prompt_toolkit is not available or not in terminal).
         """
-        # 创建表格展示选项
+        # Create table to display options
         table = Table(title=title, box=box.ROUNDED, width=80)
-        table.add_column("编号", style="cyan", justify="right", width=8)
-        table.add_column("选项", style="magenta")
+        table.add_column("No.", style="cyan", justify="right", width=8)
+        table.add_column("Option", style="magenta")
         
         for idx, option in enumerate(options, 1):
             table.add_row(str(idx), option)
         
         self.console.print(table)
-        self.console.print("[dim]输入 'exit' 或 'cancel' 取消选择。[/dim]")
+        self.console.print("[dim]Enter 'exit' or 'cancel' to cancel selection.[/dim]")
         
-        # 检查是否在真实终端
+        # Check if in a real terminal
         is_terminal = sys.stdin.isatty()
         
         while True:
