@@ -13,11 +13,12 @@ file_priority = {"Guides": ["Overview", "Quick Start", "Core Capabilities", "Par
                  "Agents": ["Build Agent", "Custom Agent", "Multi-Agent System(MAS)", "Workflow", "Context", "Memory", "Runtime", "Trace"],
                  "Runtime": ["Overview", "Custom Runner", "Hooks"],
                  "Environment": ["Overview", "Env Client", "Advanced Capabilities"],
-                 "Training": ["Evaluation", "Trainer"]}
+                 "Training": ["Evaluation", "Trainer"],
+                 "Deployment": ["OceanBase Setup"]}
 file_mapping = {"Hitl": "Human in the Loop (HITL)", "Get Start": "Guides",
                 "Build Multi-Agent System(Mas)": "Multi-Agent System(MAS)",
                 "Build Workflow": "Workflow"}
-dir_order = ["Get Start", "Agents", "Environment", "Training"]
+dir_order = ["Get Start", "Agents", "Environment", "Training", "Deployment"]
 
 
 def scan_path(path: str) -> List[dict]:
