@@ -56,10 +56,10 @@ USE aworld_db;
 CREATE TABLE IF NOT EXISTS aworld_memory_items (
     id VARCHAR(255) PRIMARY KEY,
     content TEXT NOT NULL,
-    created_at VARCHAR(255) NOT NULL,
-    updated_at VARCHAR(255) NOT NULL,
-    memory_meta TEXT NOT NULL,
-    tags TEXT NOT NULL,
+    created_at DATETIME(6) NOT NULL,
+    updated_at DATETIME(6) NOT NULL,
+    memory_meta JSON NOT NULL,
+    tags JSON NOT NULL,
     memory_type VARCHAR(50) NOT NULL,
     version INT NOT NULL DEFAULT 1,
     deleted TINYINT(1) NOT NULL DEFAULT 0
@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS aworld_memory_items (
 CREATE TABLE IF NOT EXISTS aworld_memory_histories (
     memory_id VARCHAR(255) NOT NULL,
     history_id VARCHAR(255) NOT NULL,
-    created_at VARCHAR(255) NOT NULL,
+    created_at DATETIME(6) NOT NULL,
     PRIMARY KEY (memory_id, history_id),
     FOREIGN KEY (memory_id) REFERENCES aworld_memory_items (id),
     FOREIGN KEY (history_id) REFERENCES aworld_memory_items (id)
@@ -116,49 +116,45 @@ connection_params = {
 def test_connection():
     """Test OceanBase connection and basic operations."""
     try:
-        # Connect to OceanBase
-        conn = pymysql.connect(**connection_params)
-        cursor = conn.cursor()
+        # Connect to OceanBase using context manager for automatic cleanup
+        with pymysql.connect(**connection_params) as conn:
+            with conn.cursor() as cursor:
+                print("Successfully connected to OceanBase!")
 
-        print("Successfully connected to OceanBase!")
+                # Insert a test record
+                test_id = "test-memory-001"
+                test_content = "This is a test memory entry"
+                test_meta = '{"source": "test"}'
+                test_tags = '["test", "demo"]'
 
-        # Insert a test record
-        test_id = "test-memory-001"
-        test_content = "This is a test memory entry"
-        test_meta = '{"source": "test"}'
-        test_tags = '["test", "demo"]'
+                cursor.execute("""
+                    INSERT INTO aworld_memory_items
+                    (id, content, created_at, updated_at, memory_meta, tags, memory_type, version, deleted)
+                    VALUES (%s, %s, NOW(6), NOW(6), %s, %s, 'test', 1, 0)
+                    ON DUPLICATE KEY UPDATE
+                    content = VALUES(content),
+                    updated_at = NOW(6)
+                """, (test_id, test_content, test_meta, test_tags,))
 
-        cursor.execute("""
-            INSERT INTO aworld_memory_items
-            (id, content, created_at, updated_at, memory_meta, tags, memory_type, version, deleted)
-            VALUES (%s, %s, NOW(), NOW(), %s, %s, 'test', 1, 0)
-            ON DUPLICATE KEY UPDATE
-            content = VALUES(content),
-            updated_at = NOW()
-        """, (test_id, test_content, test_meta, test_tags,))
+                conn.commit()
+                print(f"Inserted test record with ID: {test_id}")
 
-        conn.commit()
-        print(f"Inserted test record with ID: {test_id}")
+                # Verify the insertion
+                cursor.execute("SELECT * FROM aworld_memory_items WHERE id = %s", (test_id,))
+                result = cursor.fetchone()
 
-        # Verify the insertion
-        cursor.execute("SELECT * FROM aworld_memory_items WHERE id = %s", (test_id,))
-        result = cursor.fetchone()
+                if result:
+                    print("Verification successful!")
+                    print(f"  ID: {result[0]}")
+                    print(f"  Content: {result[1]}")
+                    print(f"  Type: {result[6]}")
 
-        if result:
-            print("Verification successful!")
-            print(f"  ID: {result[0]}")
-            print(f"  Content: {result[1]}")
-            print(f"  Type: {result[6]}")
+                # Clean up test data
+                cursor.execute("DELETE FROM aworld_memory_items WHERE id = %s", (test_id,))
+                conn.commit()
+                print("Test data cleaned up.")
 
-        # Clean up test data
-        cursor.execute("DELETE FROM aworld_memory_items WHERE id = %s", (test_id,))
-        conn.commit()
-        print("Test data cleaned up.")
-
-        cursor.close()
-        conn.close()
         print("Connection test completed successfully!")
-
         return True
 
     except pymysql.Error as e:
