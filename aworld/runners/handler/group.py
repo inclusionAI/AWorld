@@ -12,7 +12,7 @@ from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, GroupMessage, MemoryEventMessage, MemoryEventType
 from aworld.core.task import TaskResponse
-from aworld.events.util import send_message_with_future
+from aworld.events.util import send_message_with_future, send_message
 from aworld.logs.util import logger
 from aworld.output.base import StepOutput
 from aworld.runners import HandlerFactory
@@ -157,6 +157,16 @@ class DefaultGroupHandler(GroupHandler):
             for node_id, handle_res_list in group_results.items():
                 if not handle_res_list:
                     logger.warn(f"{self.name()} get group result with empty handle_res.")
+                    await send_message(Message(
+                        category=Constants.TASK,
+                        payload=TaskItem(msg=f"Empty handle_res_list for node: {node_id}.",
+                                         data=handle_res_list,
+                                         stop=True,),
+                        sender=self.name(),
+                        session_id=message.context.session_id,
+                        topic=TopicType.ERROR,
+                        headers={"context": message.context}
+                    ))
                     return
                 node = state_manager._find_node(node_id)
                 tool_call_id = node.metadata.get('root_tool_call_id')
