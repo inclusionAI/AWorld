@@ -43,8 +43,10 @@ class RalphRunner(Runner):
     TODO: agentic
     """
 
-    def __init__(self, task: Task, completion_criteria: Optional[CompletionCriteria] = None, **kwargs):
+    def __init__(self, task: Union[str, Task], completion_criteria: Optional[CompletionCriteria] = None, **kwargs):
         super().__init__(**kwargs)
+        if isinstance(task, str):
+            task = Task(input=task)
         self.task = task
 
         # todo: task manager

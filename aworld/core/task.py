@@ -113,6 +113,19 @@ class TaskResponse:
     # task final status, e.g. success/failed/cancelled
     status: TaskStatus | None = field(default=TaskStatusValue.SUCCESS)
 
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.id,
+            "trace_id": self.trace_id,
+            "answer": self.answer,
+            "usage": self.usage,
+            "time_cost": self.time_cost,
+            "success": self.success,
+            "msg": self.msg,
+            "trajectory": self.trajectory,
+            "status": self.status
+        }
+
 
 class Runner(object):
     __metaclass__ = abc.ABCMeta

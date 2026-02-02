@@ -182,7 +182,7 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
         """Judge the status."""
         scorer_result = await self.score(index, input, output)
         for metric_name, metric_result in scorer_result.metric_results.items():
-            if metric_name in self.eval_criterias:
+            if metric_result.get('eval_status', None) is None and metric_name in self.eval_criterias:
                 metric_result['eval_status'] = self.eval_criterias[metric_name].judge(metric_result['value'])
         return scorer_result
 

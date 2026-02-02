@@ -168,7 +168,10 @@ def report_results(entries):
 
     # Print overall statistics with colorful logging
     logger.info("Overall Statistics:")
-    overall_accuracy = (total_correct / total_entries) * 100
+    if total_entries > 0:
+        overall_accuracy = (total_correct / total_entries) * 100
+    else:
+        overall_accuracy = 0
 
     # Create overall statistics table
     overall_table = [
