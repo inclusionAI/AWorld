@@ -316,90 +316,146 @@ class DefaultGroupHandler(GroupHandler):
             for idx, act in enumerate(acts):
                 agent_message = act[2]
                 messages_ids.append(agent_message.id)
-                tasks[agent_message.id] = exec_agent(act[0], act[1], self.context, sub_task=True,
-                                                     outputs=self.context.outputs,
-                                                     tool_call_id=agent_message.headers.get('root_tool_call_id'))
+                tasks[agent_message.id] = {
+                    "metadata": {
+                        "root_agent_id": act[1].id(),
+                        "group_id": agent_message.group_id,
+                        "root_tool_call_id": agent_message.headers.get('root_tool_call_id')
+                    },
+                    "func": exec_agent(act[0], act[1], self.context, sub_task=True,
+                                       outputs=self.context.outputs,
+                                       tool_call_id=agent_message.headers.get('root_tool_call_id'))
+                }
         return messages_ids, tasks
 
-    async def process_agent_tasks(self, agent_tasks, input_message):
-        """Process agent async tasks
+    def _get_agent_batch_size(self, agent_id: str, message: Message) -> int | None:
+        """Get batch size for a specific agent with priority:
+        1. Message level override (message.headers['agent_batch_sizes'])
+        2. Agent's concurrent_batch_size config
+        3. None (no limit)
 
         Args:
-            agent_tasks: Agent async tasks
+            agent_id: The agent ID
+            message: The current message (may contain runtime overrides)
+
+        Returns:
+            Batch size (None means no limit, positive int means batch size)
         """
-        root_agent_set = set()
-        for node_id, task in agent_tasks.items():
-            res = await task
-            logger.info(f"{node_id} finished task: {res}")
-            state_manager = self.runner.state_manager
-            node = state_manager._find_node(node_id)
-            if not node:
-                logger.warn(f"DefaultGroupHandler|Can not find agent_task {node_id} in state_manager.")
-                return
-            root_agent_id = node.metadata.get('root_agent_id')
-            root_agent_set.add(root_agent_id)
-            self.context.merge_sub_context(res.context)
-            msg = Message(
-                category=Constants.AGENT,
-                payload=[ActionModel(policy_info=res.answer, agent_name=root_agent_id)],
-                sender=root_agent_id,
-                session_id=node.session_id,
-                headers={'context': self.context,
-                         'root_agent_id': root_agent_id,
-                         'root_tool_call_id': node.metadata.get('root_tool_call_id')}
-            )
-            finish_group_messages = []
-            async for event in self.runner._inner_handler_process(
-                    results=[msg],
-                    handlers=self.runner.handlers
-            ):
-                # Only AGENT and TASK messages
-                if isinstance(event, Message) and (
-                        event.category == Constants.AGENT or event.category == Constants.TASK):
-                    event.headers["sub_task_id"] = res.id
-                    await self.context.add_task_trajectory(res.id, res.trajectory)
-                    finish_group_messages.append(event)
-                    logger.debug(f"event context: {event.context},context.task: {event.context.get_task()}")
-            await state_manager.finish_sub_group(node.metadata.get('group_id'), node_id, finish_group_messages)
-        for agent_id in root_agent_set:
-            agent = self.swarm.agents.get(agent_id)
-            if agent:
-                agent._finished = True
+        # Priority 1: Message level override
+        if message.headers and 'agent_batch_sizes' in message.headers:
+            agent_batch_sizes = message.headers.get('agent_batch_sizes', {})
+            if agent_id in agent_batch_sizes:
+                batch_size = agent_batch_sizes[agent_id]
+                logger.debug(f"Using message-level batch_size={batch_size} for agent {agent_id}")
+                return batch_size
+
+        # Priority 2: Agent's concurrent_batch_size config
+        agent = self.swarm.agents.get(agent_id)
+        if agent and hasattr(agent, 'conf') and agent.conf:
+            agent_batch_size = getattr(agent.conf, 'concurrent_batch_size', None)
+            if agent_batch_size is not None:
+                logger.debug(f"Using agent config batch_size={agent_batch_size} for agent {agent_id}")
+                return agent_batch_size
+
+        # Priority 3: No limit
+        logger.debug(f"No batch_size limit for agent {agent_id}")
+        return None
+
+    async def _execute_tasks_in_batches(self, tasks: List, batch_size: int | None) -> List:
+        """Execute tasks in batches
+
+        Args:
+            tasks: List of async tasks (coroutines)
+            batch_size: Batch size (None means no limit, execute all in parallel)
+
+        Returns:
+            List of results in the same order as input tasks
+        """
+        if batch_size is None or batch_size <= 0:
+            # No limit, execute all in parallel
+            return await asyncio.gather(*tasks)
+
+        # Execute in batches
+        results = []
+        total_tasks = len(tasks)
+        for i in range(0, total_tasks, batch_size):
+            batch_end = min(i + batch_size, total_tasks)
+            batch = tasks[i:batch_end]
+            logger.info(f"Executing batch {i // batch_size + 1}: tasks {i + 1}-{batch_end}/{total_tasks}")
+            batch_results = await asyncio.gather(*batch)
+            results.extend(batch_results)
+
+        return results
 
     async def process_agent_task_parallel(self, agent_tasks, input_message):
-        """Process agent async tasks in parallel
+        """Process agent async tasks in parallel with per-agent batch control
+
+        This method groups tasks by agent and executes them with agent-specific
+        batch size limits. Different agent groups can run in parallel.
 
         Args:
             agent_tasks: Agent async tasks (dict mapping node_id to task)
+            input_message: Input message (may contain runtime batch size overrides)
         """
-        # Prepare for parallel execution - keep node_id and task correspondence
-        node_ids = list(agent_tasks.keys())
-        tasks = [agent_tasks[node_id] for node_id in node_ids]
+        state_manager = self.runner.state_manager
 
-        # Execute all tasks in parallel
-        results = await asyncio.gather(*tasks)
+        # Group tasks by root_agent_id
+        agent_groups = {}  # {agent_id: [(node_id, task), ...]}
+        for node_id, task_dict in agent_tasks.items():
+            task = task_dict["func"]
+            metadata = task_dict["metadata"]
+            root_agent_id = metadata.get("root_agent_id")
+            if root_agent_id not in agent_groups:
+                agent_groups[root_agent_id] = []
+            agent_groups[root_agent_id].append((node_id, task))
+
+        logger.info(f"Grouped {len(agent_tasks)} tasks into {len(agent_groups)} agent groups: "
+                   f"{[(aid, len(tasks)) for aid, tasks in agent_groups.items()]}")
+
+        # Execute each agent group with its own batch size
+        # Different agent groups can run in parallel
+        async def execute_agent_group(agent_id: str, node_task_pairs: List[Tuple[str, Any]]):
+            """Execute tasks for one agent group with batch control"""
+            batch_size = self._get_agent_batch_size(agent_id, input_message)
+            node_ids = [node_id for node_id, _ in node_task_pairs]
+            tasks = [task for _, task in node_task_pairs]
+
+            logger.info(f"Agent {agent_id}: executing {len(tasks)} tasks with batch_size={batch_size}")
+            results = await self._execute_tasks_in_batches(tasks, batch_size)
+            return list(zip(node_ids, results))
+
+        # Execute all agent groups in parallel
+        agent_group_tasks = [
+            execute_agent_group(agent_id, node_task_pairs)
+            for agent_id, node_task_pairs in agent_groups.items()
+        ]
+        all_agent_results = await asyncio.gather(*agent_group_tasks)
+
+        # Flatten results from all agent groups
+        all_results = []
+        for agent_results in all_agent_results:
+            all_results.extend(agent_results)
 
         # Process each result with its corresponding node_id
         root_agent_set = set()
-        state_manager = self.runner.state_manager
 
-        for node_id, res in zip(node_ids, results):
+        for node_id, res in all_results:
             logger.info(f"{node_id} finished task: {res}")
-            node = state_manager._find_node(node_id)
-            if not node:
-                logger.warn(f"DefaultGroupHandler|Can not find agent_task {node_id} in state_manager.")
-                return
-            root_agent_id = node.metadata.get('root_agent_id')
+            task_metadata = agent_tasks[node_id]["metadata"]
+            group_id = task_metadata.get("group_id")
+            root_agent_id = task_metadata.get("root_agent_id")
+            root_tool_call_id = task_metadata.get("root_tool_call_id")
+
             root_agent_set.add(root_agent_id)
             self.context.merge_sub_context(res.context)
             msg = Message(
                 category=Constants.AGENT,
                 payload=[ActionModel(policy_info=res.answer, agent_name=root_agent_id)],
                 sender=root_agent_id,
-                session_id=node.session_id,
+                session_id=input_message.session_id,
                 headers={'context': self.context,
                          'root_agent_id': root_agent_id,
-                         'root_tool_call_id': node.metadata.get('root_tool_call_id')}
+                         'root_tool_call_id': root_tool_call_id}
             )
             finish_group_messages = []
             async for event in self.runner._inner_handler_process(
@@ -412,7 +468,7 @@ class DefaultGroupHandler(GroupHandler):
                     finish_group_messages.append(event)
                     event.headers["sub_task_id"] = res.id
                     await input_message.context.add_task_trajectory(res.id, res.trajectory)
-            await state_manager.finish_sub_group(node.metadata.get('group_id'), node_id, finish_group_messages)
+            await state_manager.finish_sub_group(group_id, node_id, finish_group_messages)
 
         for agent_id in root_agent_set:
             agent = self.swarm.agents.get(agent_id)
