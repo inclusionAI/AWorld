@@ -467,7 +467,7 @@ class OpenAIProvider(LLMProviderBase):
         except Exception as e:
             if isinstance(e, LLMResponseError):
                 raise e
-            logger.warn(f"Error in acompletion: {e}\n\n\n {traceback.format_exc()}")
+            logger.warn(f"Error in acompletion: {e}\n")
             raise LLMResponseError(str(e), kwargs.get("model_name", self.model_name or "unknown"))
 
     def get_openai_params(self,
