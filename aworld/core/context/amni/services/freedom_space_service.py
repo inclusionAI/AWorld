@@ -6,11 +6,16 @@ Freedom Space Service - Manages agent's freedom space (working directory) operat
 This service provides a fancy interface for managing agent's isolated file system workspace,
 acting as a "freedom space" where agents can freely create, modify, and manage files.
 Supports both local and remote (OSS) storage with automatic configuration.
+
+Supports Hooks for three-layer file index:
+1. File list index (filename, summary) for agent to find files at each layer.
+2. File text index (full text per file).
+3. File code index (Tree-Sitter def/ref + PageRank) for precise code positioning.
 """
 import abc
 import hashlib
 import os
-from typing import Optional, Tuple, Any, Dict
+from typing import Any, Dict, List, Optional, Tuple
 
 from aworld.core.context.amni.retrieval.artifacts.file import DirArtifact
 from aworld.output.artifact import ArtifactAttachment
@@ -88,12 +93,12 @@ class IFreedomSpaceService(abc.ABC):
         pass
     
     @abc.abstractmethod
-    async def add_file(self, filename: Optional[str], content: Optional[Any], 
+    async def add_file(self, filename: Optional[str], content: Optional[Any],
                       mime_type: Optional[str] = "text", namespace: str = "default",
                       origin_type: str = None, origin_path: str = None) -> Tuple[bool, Optional[str], Optional[str]]:
         """
         Add a file to freedom space.
-        
+
         Args:
             filename: Name of the file
             content: File content
@@ -101,9 +106,35 @@ class IFreedomSpaceService(abc.ABC):
             namespace: Namespace for storage
             origin_type: Origin type of the file
             origin_path: Original path of the file
-            
+
         Returns:
             Tuple of (success, file_path, content)
+        """
+        pass
+
+    @abc.abstractmethod
+    async def add_files(
+        self,
+        files: List[Dict[str, Any]],
+        namespace: str = "default",
+        refresh_workspace: bool = True,
+        build_index: Optional[bool] = None,
+    ) -> List[Tuple[bool, Optional[str], Optional[str]]]:
+        """
+        Add multiple files to freedom space in batch; build index once at the end.
+
+        Each item in files: dict with keys filename, content, mime_type (optional),
+        origin_type (optional), origin_path (optional). Avoids repeated index build.
+
+        Args:
+            files: List of file dicts (filename, content, ...).
+            namespace: Namespace for storage.
+            refresh_workspace: Whether to add knowledge to workspace after batch.
+            build_index: Whether to run three-layer file index once after batch;
+                None to use env FREEDOM_SPACE_BUILD_INDEX.
+
+        Returns:
+            List of (success, file_path, content) per file, same order as files.
         """
         pass
 
@@ -156,16 +187,28 @@ class FreedomSpaceService(IFreedomSpaceService):
 
         return self._context._working_dir
     
-    async def load_freedom_space(self) -> DirArtifact:
-        """Load freedom space and reload files."""
+    async def load_freedom_space(self, build_index: Optional[bool] = None) -> DirArtifact:
+        """Load freedom space and reload files. Optionally run three-layer file index hooks.
+        When build_index is None, uses env FREEDOM_SPACE_BUILD_INDEX (1/true/yes=enabled, default enabled)."""
         await self.init_freedom_space()
         self._context._working_dir.reload_working_files()
+        if build_index is None:
+            from aworld.core.context.amni.indexing.env_config import is_build_index_enabled
+            build_index = is_build_index_enabled()
+        if build_index:
+            await self._build_file_indexes_via_hooks(self._context._working_dir)
         return self._context._working_dir
-    
-    async def refresh_freedom_space(self) -> None:
-        """Refresh freedom space and sync to workspace."""
+
+    async def refresh_freedom_space(self, build_index: Optional[bool] = None) -> None:
+        """Refresh freedom space and sync to workspace. Optionally run three-layer file index hooks.
+        When build_index is None, uses env FREEDOM_SPACE_BUILD_INDEX (1/true/yes=enabled, default enabled)."""
         await self.init_freedom_space()
         self._context._working_dir.reload_working_files()
+        if build_index is None:
+            from aworld.core.context.amni.indexing.env_config import is_build_index_enabled
+            build_index = is_build_index_enabled()
+        if build_index:
+            await self._build_file_indexes_via_hooks(self._context._working_dir)
         workspace = await self._context._ensure_workspace()
         # add_artifact will check if artifact exists and update it if needed, avoiding duplicate creation
         await workspace.add_artifact(self._context._working_dir, index=False)
@@ -182,29 +225,83 @@ class FreedomSpaceService(IFreedomSpaceService):
         """Get absolute file path in the environment."""
         return self.get_env_mounted_path() + "/" + filename
     
-    async def add_file(self, filename: Optional[str], content: Optional[Any], 
+    async def add_file(self, filename: Optional[str], content: Optional[Any],
                       mime_type: Optional[str] = "text", namespace: str = "default",
                       origin_type: str = None, origin_path: str = None, refresh_workspace: bool = True) -> Tuple[bool, Optional[str], Optional[str]]:
-        """Add a file to freedom space."""
-        from aworld.output.artifact import ArtifactAttachment
-        
-        # Save metadata
-        file = ArtifactAttachment(
-            filename=filename,
-            mime_type=mime_type,
-            content=content,
-            origin_type=origin_type,
-            origin_path=origin_path
+        """Add a single file to freedom space. For multiple files use add_files() to build index once."""
+        results = await self.add_files(
+            [{
+                "filename": filename,
+                "content": content,
+                "mime_type": mime_type,
+                "origin_type": origin_type,
+                "origin_path": origin_path,
+            }],
+            namespace=namespace,
+            refresh_workspace=refresh_workspace,
+            build_index=False,  # single file: skip index build; use add_files() for batch + index once
         )
-        dir_artifact: DirArtifact = await self.load_freedom_space()
-        # Persist the new file to the directory
-        success, file_path, content = await dir_artifact.add_file(file)
-        if not success:
-            return False, None, None
-        # Refresh directory index
+        return results[0] if results else (False, None, None)
+
+    async def add_files(
+        self,
+        files: List[Dict[str, Any]],
+        namespace: str = "default",
+        refresh_workspace: bool = True,
+        build_index: Optional[bool] = None,
+    ) -> List[Tuple[bool, Optional[str], Optional[str]]]:
+        """
+        Add multiple files in batch; build three-layer index once at the end.
+
+        Example:
+            results = await service.add_files([
+                {"filename": "a.py", "content": "print(1)"},
+                {"filename": "b.py", "content": "print(2)", "mime_type": "text"},
+            ], build_index=True)
+        """
+        from aworld.logs.util import logger
+        from aworld.output.artifact import ArtifactAttachment
+
+        if not files:
+            return []
+
+        # Load freedom space once without building index
+        await self.init_freedom_space()
+        self._context._working_dir.reload_working_files()
+        dir_artifact: DirArtifact = self._context._working_dir
+
+        results: List[Tuple[bool, Optional[str], Optional[str]]] = []
+        for item in files:
+            filename = item.get("filename")
+            content = item.get("content")
+            mime_type = item.get("mime_type", "text")
+            origin_type = item.get("origin_type")
+            origin_path = item.get("origin_path")
+            att = ArtifactAttachment(
+                filename=filename,
+                mime_type=mime_type,
+                content=content,
+                origin_type=origin_type,
+                origin_path=origin_path,
+            )
+            success, file_path, out_content = await dir_artifact.add_file(att)
+            if success:
+                results.append((True, self.get_abs_file_path(filename), out_content))
+            else:
+                results.append((False, None, None))
+                logger.warning(f"⚠️ add_files: failed to add file filename={filename or '?'}")
+
         if refresh_workspace:
             await self._context.knowledge_service.add_knowledge(dir_artifact, namespace, index=False)
-        return True, self.get_abs_file_path(filename), content
+
+        if build_index is None:
+            from aworld.core.context.amni.indexing.env_config import is_build_index_enabled
+            build_index = is_build_index_enabled()
+        if build_index:
+            await self._build_file_indexes_via_hooks(dir_artifact)
+
+        logger.info(f"📁 add_files: batch added {len(files)} files, index built={build_index}")
+        return results
     
     def _build_freedom_space_base_path(self) -> str:
         """
@@ -319,4 +416,78 @@ class FreedomSpaceService(IFreedomSpaceService):
             'endpoint': endpoint,
             'bucket_name': bucket_name
         }
+
+    async def _build_file_indexes_via_hooks(self, dir_artifact: DirArtifact) -> Dict[str, Any]:
+        """
+        Run Hooks for three-layer file index and merge results into dir_artifact.metadata.
+
+        Layer 1: file list index (filename, summary).
+        Layer 2: file text index (full text per file).
+        Layer 3: file code index (def/ref + PageRank).
+
+        Args:
+            dir_artifact: DirArtifact to index.
+
+        Returns:
+            Merged file_index dict stored in dir_artifact.metadata["file_index"].
+
+        Example:
+            await self._build_file_indexes_via_hooks(dir_artifact)
+            index = dir_artifact.metadata.get("file_index", {})
+        """
+        from aworld.logs.util import logger
+        from aworld.runners.hook.utils import run_hooks
+        from aworld.runners.hook.hooks import HookPoint
+
+        # Ensure default index hooks are registered (import side-effect)
+        try:
+            import aworld.core.context.amni.indexing.freedom_space_index_hooks  # noqa: F401
+        except Exception as e:
+            logger.debug(f"📁 Freedom space index hooks import: {e}")
+
+        merged: Dict[str, Any] = {
+            "file_list_index": [],
+            "file_text_index": {},
+            "file_code_index": None,
+            "semantic_index": None,
+        }
+        context = self._context
+        payload = {"dir_artifact": dir_artifact}
+        hook_from = "FreedomSpaceService"
+
+        for hook_point, key in [
+            (HookPoint.FREEDOM_SPACE_FILE_LIST_INDEX, "file_list_index"),
+            (HookPoint.FREEDOM_SPACE_FILE_TEXT_INDEX, "file_text_index"),
+            (HookPoint.FREEDOM_SPACE_FILE_CODE_INDEX, "file_code_index"),
+            (HookPoint.FREEDOM_SPACE_SEMANTIC_INDEX, "semantic_index"),
+        ]:
+            try:
+                async for msg in run_hooks(
+                    context=context,
+                    hook_point=hook_point,
+                    hook_from=hook_from,
+                    payload=payload,
+                ):
+                    if msg and msg.payload and isinstance(msg.payload, dict):
+                        val = msg.payload.get(key)
+                        if val is not None:
+                            if key == "file_text_index" and isinstance(val, dict):
+                                merged[key].update(val)
+                            elif key == "file_list_index" and isinstance(val, list):
+                                merged[key] = val
+                            elif key in ("file_code_index", "semantic_index"):
+                                merged[key] = val
+                            break
+            except Exception as e:
+                logger.warning(f"⚠️ Freedom space index hook {hook_point} failed: {e}")
+
+        if dir_artifact.metadata is None:
+            dir_artifact.metadata = {}
+        dir_artifact.metadata["file_index"] = merged
+        logger.info(
+            f"📁 Freedom space file index built: list={len(merged['file_list_index'])} "
+            f"text={len(merged['file_text_index'])} code={merged['file_code_index'] is not None} "
+            f"semantic={merged['semantic_index'] is not None}"
+        )
+        return merged
 

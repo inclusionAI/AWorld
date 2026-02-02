@@ -18,6 +18,12 @@ class HookPoint:
     POST_TOOL_CALL = "post_tool_call"
     PRE_TASK_CALL = "pre_task_call"
     POST_TASK_CALL = "post_task_call"
+    # Freedom space three-layer file index hooks (for agent to find files / text / code)
+    FREEDOM_SPACE_FILE_LIST_INDEX = "freedom_space_file_list_index"
+    FREEDOM_SPACE_FILE_TEXT_INDEX = "freedom_space_file_text_index"
+    FREEDOM_SPACE_FILE_CODE_INDEX = "freedom_space_file_code_index"
+    # Advanced: semantic index (embedding-based code search, optional model download)
+    FREEDOM_SPACE_SEMANTIC_INDEX = "freedom_space_semantic_index"
 
 class Hook:
     """Runner hook."""
@@ -123,4 +129,36 @@ class PostTaskCallHook(Hook):
 
     def point(self):
         return HookPoint.POST_TASK_CALL
+
+
+class FreedomSpaceFileListIndexHook(Hook):
+    """Hook for building file list index (filename, summary) for agent to find files at each layer."""
+    __metaclass__ = abc.ABCMeta
+
+    def point(self):
+        return HookPoint.FREEDOM_SPACE_FILE_LIST_INDEX
+
+
+class FreedomSpaceFileTextIndexHook(Hook):
+    """Hook for building file text index (full text per file)."""
+    __metaclass__ = abc.ABCMeta
+
+    def point(self):
+        return HookPoint.FREEDOM_SPACE_FILE_TEXT_INDEX
+
+
+class FreedomSpaceFileCodeIndexHook(Hook):
+    """Hook for building file code index (Tree-Sitter def/ref + PageRank) for precise code positioning."""
+    __metaclass__ = abc.ABCMeta
+
+    def point(self):
+        return HookPoint.FREEDOM_SPACE_FILE_CODE_INDEX
+
+
+class FreedomSpaceSemanticIndexHook(Hook):
+    """Hook for building semantic index (chunk + embedding) for meaning-based code search; optional model download."""
+    __metaclass__ = abc.ABCMeta
+
+    def point(self):
+        return HookPoint.FREEDOM_SPACE_SEMANTIC_INDEX
 
