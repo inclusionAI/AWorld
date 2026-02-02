@@ -1420,6 +1420,20 @@ class ApplicationContext(AmniContext):
         """
         return await self.freedom_space_service.add_file(filename, content, mime_type, namespace, origin_type, origin_path, refresh_workspace)
 
+    async def add_files(
+        self,
+        files: List[Dict[str, Any]],
+        namespace: str = "default",
+        refresh_workspace: bool = True,
+        build_index: Optional[bool] = None,
+    ) -> List[Tuple[bool, Optional[str], Optional[str]]]:
+        """
+        Add multiple files to freedom space in batch; build three-layer index once at the end.
+
+        Delegates to FreedomSpaceService.add_files().
+        """
+        return await self.freedom_space_service.add_files(files, namespace, refresh_workspace, build_index)
+
     async def init_working_dir(self) -> DirArtifact:
         """
         Initialize freedom space (working directory).

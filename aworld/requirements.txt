@@ -23,3 +23,12 @@ langchain-text-splitters~=0.3.8
 json_repair~=0.49.0
 rich~=14.0.0
 bs4~=0.0.2
+
+######### [optional] freedom space three-layer code index (Tree-Sitter) #########
+# tree-sitter>=0.20.0
+# tree-sitter-languages>=1.0.0
+# Install above for Tree-Sitter-based def/ref extraction in code index; otherwise regex fallback is used.
+
+######### [optional] freedom space semantic index (embedding, model download on first use) #########
+# sentence-transformers>=2.2.0
+# Set FREEDOM_SPACE_USE_SEMANTIC_INDEX=1 to enable; model (e.g. all-MiniLM-L6-v2) downloads on first use.
