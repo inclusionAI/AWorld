@@ -15,9 +15,9 @@ from aworld.evaluations.base import EvalTask
 from aworld.logs.util import logger
 from aworld.output import StreamingOutputs
 from aworld.runners.evaluate_runner import EvaluateRunner
-from aworld.runners.utils import execute_runner
+from aworld.runners.utils import execute_runner, choose_runners
 from aworld.utils.common import sync_exec
-from aworld.utils.run_util import exec_tasks, streaming_exec_task
+from aworld.utils.run_util import exec_tasks
 
 
 class Runners:
@@ -88,8 +88,12 @@ class Runners:
 
         # Set up task with streaming mode
         task.streaming_mode = streaming_mode
-        async for msg in streaming_exec_task(task, run_conf):
-            yield msg
+        runners = await choose_runners([task])
+        runner = runners[0]
+        asyncio.create_task(execute_runner(runners, run_conf))
+
+        async for event in runner.streaming():
+            yield event
 
     @staticmethod
     async def streaming_run(

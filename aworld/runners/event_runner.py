@@ -5,7 +5,7 @@ import json
 import time
 import traceback
 from functools import partial
-from typing import List, Callable, Any
+from typing import List, Callable, Any, AsyncGenerator
 
 import aworld.trace as trace
 from aworld.core.agent.base import BaseAgent, is_agent_by_name
@@ -40,6 +40,7 @@ class TaskEventRunner(TaskRunner):
         self.init_messages = []
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
+        self.inited = False
 
 
     async def do_run(self, context: Context = None):
@@ -129,6 +130,7 @@ class TaskEventRunner(TaskRunner):
                 self.handlers.append(handler_instance)
 
         self.task_flag = "sub" if self.task.is_sub_task else "main"
+        self.inited = True
         logger.debug(f"{self.task_flag} task: {self.task.id} pre run finish, will start to run...")
 
     def _build_first_message(self):
@@ -487,3 +489,33 @@ class TaskEventRunner(TaskRunner):
                 return False
 
         return await self.is_stopped()
+
+    async def streaming(self) -> AsyncGenerator[Message, None]:
+        if not self.task.streaming_mode:
+            logger.warning(f"Task {self.task.id} is not in streaming mode")
+            return
+
+        while not self.inited:
+            await asyncio.sleep(0)
+
+        streaming_eventbus = self.event_mng.streaming_eventbus
+        if not streaming_eventbus:
+            logger.warning(f"Task {self.task.id} has no streaming_eventbus configured")
+            return
+
+        def is_task_end_msg(msg: Message):
+            return msg and isinstance(msg, Message) and msg.topic == TopicType.TASK_RESPONSE
+
+        try:
+            while True:
+                msg = await streaming_eventbus.get(self.task.id)
+                yield msg
+                # End the loop when receiving end signal
+                if is_task_end_msg(msg):
+                    break
+        except asyncio.TimeoutError:
+            logger.warning(f"Streaming queue timeout for task {self.task.id}")
+        except Exception as e:
+            logger.error(f"Error reading from streaming queue: {e}")
+            raise
+

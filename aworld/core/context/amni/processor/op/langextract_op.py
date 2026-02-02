@@ -3,6 +3,7 @@ import traceback
 from abc import abstractmethod
 from typing import Any, Dict, List, TypeVar, Generic, Optional
 
+import aworld
 from aworld.logs.util import logger
 from ... import ApplicationContext
 from ...payload import ContextMessagePayload
@@ -47,7 +48,8 @@ class LangExtractOp(BaseOp, Generic[T]):
         
         # If langextract is unavailable, log warning and set default values
         if not LANGEXTRACT_AVAILABLE:
-            logger.warning("⚠️ langextract not available, skipping extraction")
+            if aworld.debug_mode:
+                logger.warning("⚠️ langextract not available, skipping extraction")
             self.lx = None
             self.prompt_template = None
             self.few_shots = []
