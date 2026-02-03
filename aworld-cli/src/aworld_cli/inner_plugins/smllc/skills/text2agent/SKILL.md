@@ -35,81 +35,19 @@ Analyze the user's input to understand:
 5.  **MCP Configuration**: Which MCP servers (e.g., `terminal`, `browser`, `pptx`) are required?
 6.  **Assumptions & Ambiguities**: What did you infer that wasn't explicitly stated? What details are missing or could be interpreted in multiple ways?
 
-**Checklist before proceeding:**
-- [ ] Have you identified the specific use case?
-- [ ] Have you listed all required capabilities and tools?
-- [ ] Have you determined the agent's name and description?
-- [ ] Have you outlined the system prompt's content?
-- [ ] Have you listed all necessary MCP servers?
-- [ ] **Have you identified every single assumption or ambiguity?**
+**After completing this analysis, you MUST proceed directly to execution. Make reasonable assumptions for any ambiguities.**
 
-**If any item in this checklist is based on an assumption, you MUST proceed to Step 2.**
-
-### **Step 2: Clarify Ambiguities (Default Action)**
-**CRITICAL RULE: If you made ANY assumptions or if ANY aspect of the requirement is not 100% explicit, you MUST use the `human` tool to ask for clarification BEFORE creating any files.**
-
-**When in doubt, ASK. It is better to confirm than to build incorrectly.** Do not skip this step unless the request is trivially simple (e.g., "create a hello world agent") with zero ambiguity.
-
-**How to Clarify:**
-1.  **State Your Assumptions**: Clearly list what you have inferred.
-2.  **Ask Specific Questions**: Use the `human` tool to ask focused questions. For multiple questions, use the composite menu (`input_type: 6`) for a better user experience.
-3.  **Await Response**: Do not proceed until you receive user input.
-
-<details>
-<summary>Human Tool Usage Guide (for clarification)</summary>
-*   **For user approval/confirmation:**
-    `{"input_type": "1", "message": "...", "default": true}`
-*   **For a single text question:**
-    `{"input_type": "2", "text": "Please specify the desired output format (e.g., JSON, plain text)."}`
-*   **For user file upload:** 
-    `{"input_type": "3", "message": "..."}`
-*   **For a single multiple-choice question:**
-    `{"input_type": "4", "options": ["Professional", "Casual", "Academic"], "title": "Select System Prompt Tone", "prompt": "Please choose the communication style for the agent."}`
-*   **For user single-select (single choice):** 
-    `{"input_type": "5", "title": "...", "options": ["option1", "option2", "option3"], "warning": "...", "question": "...", "nav_items": [...]}`
-*   **For multiple questions (PREFERRED METHOD):** 
-    Use a composite menu (`{"input_type": "6", "title": "...", "tabs": [...]}`). This is ideal for confirming multiple aspects like MCP servers, agent name, and features.
-    ```json
-    {
-      "input_type": "6",
-      "title": "Agent Requirement Confirmation",
-      "tabs": [
-        {
-          "type": "multi_select",
-          "name": "mcp_servers",
-          "title": "MCP Server Configuration",
-          "prompt": "Besides 'terminal', which other MCP servers are required?",
-          "options": ["browser", "search", "pptx", "pdf", "image", "other"]
-        },
-        {
-          "type": "text_input",
-          "name": "agent_name",
-          "title": "Agent Name",
-          "prompt": "Please confirm the agent name (or use the suggested default).",
-          "default": "my_custom_agent"
-        },
-        {
-          "type": "submit",
-          "name": "confirm",
-          "title": "Confirm & Generate",
-          "message": "Once you confirm, I will generate the complete agent code based on these specifications."
-        }
-      ]
-    }
-    ```
-</details>
-
-### **Step 3: Environment and Directory Setup**
-1.  **Get Storage Path**: Retrieve the `AGENTS_PATH`.
+### **Step 2: Environment and Directory Setup**
+1.  **Get Storage Path**: Retrieve the `AGENT_REGISTRY_STORAGE_PATH`.
     ```bash
-    STORAGE_PATH=$(echo ${AGENTS_PATH:-~/.aworld/agents})
+    STORAGE_PATH=$(echo ${AGENT_REGISTRY_STORAGE_PATH:-~/.aworld/agents})
     ```
 2.  **Create Agent Directory**: Use the determined agent name (in snake_case) to create its directory.
     ```bash
     mkdir -p "$STORAGE_PATH/<agent_folder_name>"
     ```
 
-### **Step 4: Code Generation (Execution Phase)**
+### **Step 3: Code Generation (Execution Phase)**
 **This is a mandatory execution step. You MUST use terminal commands to write ALL files. Do not output code in your response; write it directly to files.**
 
 1.  **Generate Main Agent File** (`<agent_name>.py`):
@@ -129,22 +67,19 @@ Analyze the user's input to understand:
     touch "$STORAGE_PATH/<agent_folder_name>/__init__.py"
     ```
 
-### **Step 5: Verification**
+### **Step 4: Verification**
 Confirm that all files were created successfully.
 ```bash
 ls -la "$STORAGE_PATH/<agent_folder_name>/"
 ```
 
-### **Step 6: Dynamic Registration**
+### **Step 5: Dynamic Registration**
 **MANDATORY FINAL STEP: Register the new agent with the current swarm.** Use the `CONTEXT_AGENT_REGISTRY` tool.
 
 *   **Action**: `dynamic_register`
 *   **Parameters**:
     *   `local_agent_name`: The name of the agent executing this workflow (e.g., "Aworld").
-    *   `register_agent_name`: The name of the newly generated agent (must match the `@agent` decorator name). 
-       - ⚠️ **CRITICAL**: Must be lowercase words connected by underscores (snake_case format)
-       - ✅ **CORRECT**: `"simple_agent"`, `"my_custom_agent"`, `"data_processor"`
-       - ❌ **WRONG**: `"SimpleAgent"`, `"my-agent"`, `"MyAgent"`, `"simpleAgent"`, `"simple agent"`
+    *   `register_agent_name`: The name of the newly generated agent (must match the @agent decorator name, which must be snake_case).
 
 **Example**: `CONTEXT_AGENT_REGISTRY` tool call with params `{"local_agent_name": "Aworld", "register_agent_name": "my_custom_agent"}`
 
@@ -152,7 +87,7 @@ ls -la "$STORAGE_PATH/<agent_folder_name>/"
 
 ## 🚫 Strict Prohibitions & Requirements 🚫
 *   **DO NOT** discuss, plan, or describe what you will do. **EXECUTE IT**.
-*   **DO NOT** make assumptions. Clarify them first.
+*   **DO NOT** ask users for more details about the agent to be built.
 *   **DO NOT** ask for confirmation of file names, paths, or generated code.
 *   **DO NOT** ask users to confirm plans, todo lists, or execution steps. Only clarify ambiguous requirements.
 *   **DO NOT** generate code without built-in error handling (try/except) and logging.
@@ -170,11 +105,7 @@ All generated Python code must be valid, follow PEP 8, and adhere to the followi
     1.  Import necessary modules (`BaseAgent`, `Observation`, `ActionModel`, `Swarm`, `AgentConfig`, `@agent`, etc.).
     2.  Define an agent class inheriting from `BaseAgent[Observation, List[ActionModel]]`.
     3.  Implement `__init__` and the core `async_policy` logic.
-    4.  Add the `@agent` decorator with a `name` and `desc`.
-       - ⚠️ **CRITICAL NAMING RULE**: The `name` parameter MUST be lowercase words connected by underscores (snake_case format)
-       - ✅ **CORRECT**: `"simple_agent"`, `"my_custom_agent"`, `"data_processor"`, `"file_handler"`
-       - ❌ **WRONG**: `"SimpleAgent"`, `"my-agent"`, `"MyAgent"`, `"simpleAgent"`, `"simple agent"`, `"Simple_Agent"`
-       - The name must be unique and should match the filename (without `.py` extension)
+    4. Add the @agent decorator with a name and desc. CRITICAL: The name argument MUST be strictly in snake_case (e.g., simple_agent, NOT SimpleAgent) and all lowercase. This is mandatory for successful registration.
     5.  Include a `build_<agent_name>_swarm` function that configures and returns a `Swarm` instance containing the agent. It must load MCP servers from `mcp_config.py` if it exists.
 
 *   **MCP Config File (`mcp_config.py`)**:
@@ -266,11 +197,7 @@ class SimpleAgent(Agent):
 
 
 @agent(
-    # ⚠️ CRITICAL: name MUST be lowercase words connected by underscores (snake_case)
-    #   - ✅ CORRECT: "simple_agent", "my_custom_agent", "data_processor"
-    #   - ❌ WRONG: "SimpleAgent", "my-agent", "MyAgent", "simpleAgent", "simple agent"
-    #   - name should be unique and match the filename (without .py extension)
-    name="simple_agent",
+    name="simple_agent",  # <--- CHANGED: Must be snake_case (lowercase with underscores)
     desc="A minimal agent that can perform basic LLM calls"
 )
 def build_simple_swarm():
@@ -315,7 +242,8 @@ def build_simple_swarm():
                             *   **During Execution:** Every response MUST contain exactly one tool call. Do not chat without acting until the task is done.
                             *   **Completion:** If the task is finished, your VERY NEXT and ONLY action is to provide the final answer in the `<answer>` tag. Do not call almost any tool once the task is solved.
                         2.  **Time Sensitivity:**
-                            *   Your internal knowledge cut-off is 2024. For questions regarding current dates, news, or rapidly evolving technology, YOU ENDEAVOR to use the `search` tool to fetch the latest information.
+                            * Today is datetime.now(ZoneInfo("Asia/Shanghai")).year (year)-datetime.now(ZoneInfo("Asia/Shanghai")).month (month)-datetime.now(ZoneInfo("Asia/Shanghai")).day(day).
+                            * Your internal knowledge cut-off is 2024. For questions regarding current dates, news, or rapidly evolving technology, YOU ENDEAVOR to use the `search` tool to fetch the latest information.
                         3.  **Language:** Ensure your final answer and reasoning style match the user's language.
                         """,
         mcp_servers=mcp_servers,
