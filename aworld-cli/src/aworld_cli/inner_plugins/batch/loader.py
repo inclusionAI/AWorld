@@ -4,7 +4,14 @@ Batch job configuration loader from YAML files.
 import yaml
 from pathlib import Path
 from typing import Optional
-from .config import BatchJobConfig, InputConfig, AgentConfig, OutputConfig, ExecutionConfig
+from .config import (
+    BatchJobConfig,
+    InputConfig,
+    AgentConfig,
+    OutputConfig,
+    ExecutionConfig,
+    DigestLogConfig,
+)
 
 
 def load_batch_config(config_path: str) -> BatchJobConfig:
@@ -83,12 +90,18 @@ def load_batch_config(config_path: str) -> BatchJobConfig:
     execution_config = ExecutionConfig(
         parallel=exec_data.get("parallel", 1),
         max_retries=exec_data.get("max_retries", 0),
-        timeout_per_task=exec_data.get("timeout_per_task")
+        timeout_per_task=exec_data.get("timeout_per_task"),
     )
+
+    digest_log_config = None
+    digest_data = data.get("digest_log", {})
+    if digest_data and digest_data.get("path"):
+        digest_log_config = DigestLogConfig(path=digest_data["path"])
 
     return BatchJobConfig(
         input=input_config,
         agent=agent_config,
         output=output_config,
-        execution=execution_config
+        execution=execution_config,
+        digest_log=digest_log_config,
     )

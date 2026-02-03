@@ -58,6 +58,20 @@ class ExecutionConfig:
 
 
 @dataclass
+class DigestLogConfig:
+    """
+    Digest logger statistics configuration for batch job.
+
+    When using remote backend, specify the path to digest_logger.log
+    (e.g. aworldapp/logs/digest_logger.log on the server's working directory).
+
+    Example:
+        >>> cfg = DigestLogConfig(path="aworldapp/logs/digest_logger.log")
+    """
+    path: Optional[str] = None  # Path to digest_logger.log
+
+
+@dataclass
 class BatchJobConfig:
     """
     Complete batch job configuration.
@@ -74,3 +88,4 @@ class BatchJobConfig:
     agent: AgentConfig
     output: OutputConfig
     execution: ExecutionConfig = field(default_factory=ExecutionConfig)
+    digest_log: Optional[DigestLogConfig] = None  # Optional digest logger stats

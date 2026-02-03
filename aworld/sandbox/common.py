@@ -391,7 +391,13 @@ class BaseSandbox(Sandbox):
             if attr_name.startswith('_'):
                 continue
             attr = getattr(self, attr_name)
-            if hasattr(attr, '_is_builtin_tool'):
+            # Use try/except: ConfigDict and similar objects use __getattr__ = dict.__getitem__,
+            # which raises KeyError (not AttributeError) for missing keys - hasattr only catches AttributeError
+            try:
+                is_builtin = bool(getattr(attr, '_is_builtin_tool', False))
+            except KeyError:
+                is_builtin = False
+            if attr and is_builtin:
                 # Replace with wrapped method
                 setattr(self, attr_name, self._create_tool_wrapper(attr))
     

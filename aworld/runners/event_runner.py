@@ -65,7 +65,7 @@ class TaskEventRunner(TaskRunner):
                 # the last step mark output finished
                 if not self.task.is_sub_task:
                     logger.info(f'main task {self.task.id} will mark outputs finished')
-                    await self.task.outputs.mark_completed()
+                    await self.task.outputs.mark_completed(resp)
 
     async def pre_run(self):
         logger.debug(f"task {self.task.id} pre run start...")
