@@ -40,7 +40,7 @@ class MemoryItemConvertor:
                     }
                 }
             ]
-            tool_memory_item= MemoryItemConvertor._convert_tool_result_to_memory(namespace, tool_call_id, tool_result, context)
+            tool_memory_item= await MemoryItemConvertor._convert_tool_result_to_memory(namespace, tool_call_id, tool_result, context)
             human_memory_item = await MemoryItemConvertor.convert_to_memory_human_message(tool_call_id, image_content, context, "message")
             return [tool_memory_item, human_memory_item]
         else:
