@@ -55,28 +55,32 @@ class CliRuntime(BaseCliRuntime):
     """
     
     def __init__(
-        self, 
-        agent_name: Optional[str] = None, 
+        self,
+        agent_name: Optional[str] = None,
         remote_backends: Optional[List[str]] = None,
         local_dirs: Optional[List[str]] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        disable_live_display: bool = False,
     ):
         """
         Initialize CLI Runtime.
-        
+
         Args:
             agent_name: The name of the agent to interact with. If None, user will be prompted to select.
             remote_backends: Optional list of remote backend URLs (overrides environment variables)
             local_dirs: Optional list of local agent directories (overrides environment variables)
             session_id: Optional session ID to use when creating executors
+            disable_live_display: If True, remote executors will not use Rich Status/Live
+                (for batch/concurrent mode to avoid "Only one live display may be active at once")
         """
         super().__init__(agent_name)
         self._parse_config(remote_backends, local_dirs)
-        
+
         # Track agent sources for executor creation: agent_name -> {type, location, ...}
         self._agent_sources: Dict[str, Dict] = {}
         # Store session_id for executor creation
         self._session_id = session_id
+        self._disable_live_display = disable_live_display
     
     def _parse_config(
         self, 
@@ -385,10 +389,11 @@ class CliRuntime(BaseCliRuntime):
         """
         backend_url = source_info["location"]
         return RemoteAgentExecutor(
-            backend_url, 
-            agent.name, 
+            backend_url,
+            agent.name,
             console=self.cli.console,
-            session_id=self._session_id
+            session_id=self._session_id,
+            disable_live_display=self._disable_live_display,
         )
     
     def _get_source_type(self) -> str:
