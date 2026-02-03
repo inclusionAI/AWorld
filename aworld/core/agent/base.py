@@ -221,45 +221,59 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
-        message.context.update_agent_step(self.id())
-        task = message.context.get_task()
-        if task.conf and task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
-            agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
-            message.context.new_trajectory_step(agent.id())
-        caller = message.caller
-        if caller and caller == self.id():
-            self.loop_step += 1
-        else:
-            self.loop_step = 0
-        should_term = await self.should_terminate_loop(message)
-        if should_term:
-            self.postprocess_terminate_loop(message)
-            return AgentMessage(
-                payload=message.payload,
-                caller=message.sender,
-                sender=self.id(),
-                session_id=message.context.session_id,
-                headers=message.headers
-            )
-        observation = message.payload
-        if eventbus is not None:
-            await send_message(
-                Message(
-                    category=Constants.OUTPUT,
-                    payload=StepOutput.build_start_output(
-                        name=f"{self.id()}", alias_name=self.name(), step_num=0
-                    ),
+        try:
+            message.context.update_agent_step(self.id())
+            task = message.context.get_task()
+            if task.conf and task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
+                agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
+                message.context.new_trajectory_step(agent.id())
+            caller = message.caller
+            if caller and caller == self.id():
+                self.loop_step += 1
+            else:
+                self.loop_step = 0
+            should_term = await self.should_terminate_loop(message)
+            if should_term:
+                self.postprocess_terminate_loop(message)
+                return AgentMessage(
+                    payload=message.payload,
+                    caller=message.sender,
                     sender=self.id(),
                     session_id=message.context.session_id,
-                    headers={"context": message.context},
+                    headers=message.headers
                 )
-            )
-        await self.async_pre_run(message)
-        result = await self.async_policy(observation, message=message, **kwargs)
-        final_result = await self.async_post_run(result, observation, message)
-        if message.context and message.context.has_pending_background_tasks(self.id(), message.context.task_id):
-            self._finished = False
-        return final_result
+            observation = message.payload
+            if eventbus is not None:
+                await send_message(
+                    Message(
+                        category=Constants.OUTPUT,
+                        payload=StepOutput.build_start_output(
+                            name=f"{self.id()}", alias_name=self.name(), step_num=0
+                        ),
+                        sender=self.id(),
+                        session_id=message.context.session_id,
+                        headers={"context": message.context},
+                    )
+                )
+            await self.async_pre_run(message)
+            result = await self.async_policy(observation, message=message, **kwargs)
+            final_result = await self.async_post_run(result, observation, message)
+            if message.context and message.context.has_pending_background_tasks(self.id(), message.context.task_id):
+                self._finished = False
+            return final_result
+        except Exception as e:
+            from aworld.core.context.amni import AmniContext
+            duration = None
+            if isinstance(message.context, AmniContext):
+                agent_start_times = message.context.get("agent_start_times") or {}
+                if isinstance(agent_start_times, dict):
+                    start_time = agent_start_times.get(self.id())
+                    if isinstance(start_time, (int, float)):
+                        duration = round(time.time() - start_time, 2)
+            if duration is None:
+                duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
+            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|failed")
+            raise e
 
     def policy(
             self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
@@ -341,7 +355,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                         duration = round(time.time() - start_time, 2)
             if duration is None:
                 duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
-            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}")
+            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|success")
         return AgentMessage(payload=policy_result, sender=self.id(), headers=message.headers)
 
     def sync_should_terminate_loop(self, message: Message) -> bool:

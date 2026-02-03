@@ -597,7 +597,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         duration = round(time.time() - start_time, 2)
             if duration is None:
                 duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
-            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}")
+            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|success")
         return self._agent_result(
             policy_result,
             policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer,
