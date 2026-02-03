@@ -32,7 +32,7 @@ Analyze the user's input to understand:
 2.  **Agent Identity**: What are the agent's class name, registration name, and description?
 3.  **Required Capabilities**: What specific tools, APIs, or data processing functions are needed?
 4.  **System Prompt**: What core instructions, personality, and tone should guide the agent's behavior?
-5.  **MCP Configuration**: Which MCP servers (e.g., `terminal`, `browser`, `pptx`) are required?
+5.  **MCP Configuration**: Which MCP servers (e.g., `pptx`, `google`) are required? Please keep in mind that `terminal` servers is the MUST HAVE one.
 6.  **Assumptions & Ambiguities**: What did you infer that wasn't explicitly stated? What details are missing or could be interpreted in multiple ways?
 
 **After completing this analysis, you MUST proceed directly to execution. Make reasonable assumptions for any ambiguities.**
@@ -56,7 +56,7 @@ Analyze the user's input to understand:
     # Complete Python agent code goes here...
     ENDOFFILE
     ```
-2.  **Generate MCP Config File** (`mcp_config.py` - if required):
+2.  **Generate MCP Config File** (`mcp_config.py` - if required): 
     ```bash
     cat > "$STORAGE_PATH/<agent_folder_name>/mcp_config.py" << 'ENDOFFILE'
     # MCP server configuration dictionary goes here...
@@ -230,7 +230,7 @@ def build_simple_swarm():
 
                         ## 2. Methodology & Workflow
                         Complex tasks must be solved step-by-step using a generic ReAct (Reasoning + Acting) approach:
-
+                        0.  ** Module Dependency Install:** If found relevant modules missing, please use the terminal tool to install the appropriate module.
                         1.  **Task Analysis:** Break down the user's request into sub-tasks.
                         2.  **Tool Execution:** Select and use the appropriate tool for the current sub-task.
                         3.  **Analysis:** Review the tool's output. If the result is insufficient, try a different approach or search query.
@@ -359,36 +359,6 @@ mcp_config = {
                 "-m",
                 "examples.gaia.mcp_collections.tools.terminal"
             ]
-        },
-        "video": {
-            "command": "python",
-            "args": [
-                "-m",
-                "examples.gaia.mcp_collections.media.video"
-            ],
-            "env": {
-            },
-            "client_session_timeout_seconds": 9999.0
-        },
-        "wayback": {
-            "command": "python",
-            "args": [
-                "-m",
-                "examples.gaia.mcp_collections.tools.wayback"
-            ],
-            "env": {
-            },
-            "client_session_timeout_seconds": 9999.0
-        },
-        "wikipedia": {
-            "command": "python",
-            "args": [
-                "-m",
-                "examples.gaia.mcp_collections.tools.wiki"
-            ],
-            "env": {
-            },
-            "client_session_timeout_seconds": 9999.0
         },
         "txt": {
             "command": "python",
