@@ -333,8 +333,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             agent_start_times = message.context.get("agent_start_times") or {}
             if not isinstance(agent_start_times, dict):
                 agent_start_times = {}
-            agent_start_times[self.id()] = time.time()
-            message.context.put("agent_start_times", agent_start_times)
+            if not agent_start_times.get(self.id()):
+                agent_start_times[self.id()] = time.time()
+                message.context.put("agent_start_times", agent_start_times)
 
     async def async_post_run(
             self, policy_result: OUTPUT, input: INPUT, message: Message = None
