@@ -1,0 +1,37 @@
+# Multi-Level Nested Swarm Example
+# Demonstrates multiple levels of swarm nesting
+
+swarm:
+  name: "multi_level_nested"
+  type: "workflow"
+  
+  agents:
+    - id: "entry"
+      next: "level1_swarm"
+    
+    # First level nested workflow
+    - id: "level1_swarm"
+      node_type: "swarm"
+      swarm_type: "workflow"
+      agents:
+        - id: "level1_start"
+          next: "level2_team"
+        
+        # Second level nested team swarm
+        - id: "level2_team"
+          node_type: "swarm"
+          swarm_type: "team"
+          root_agent: "team_leader"
+          agents:
+            - id: "team_leader"
+              next: ["worker_a", "worker_b"]
+            
+            - id: "worker_a"
+            
+            - id: "worker_b"
+          next: "level1_end"
+        
+        - id: "level1_end"
+      next: "final_agent"
+    
+    - id: "final_agent"
