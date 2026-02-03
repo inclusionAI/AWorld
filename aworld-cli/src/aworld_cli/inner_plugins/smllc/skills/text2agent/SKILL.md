@@ -32,7 +32,7 @@ Analyze the user's input to understand:
 2.  **Agent Identity**: What are the agent's class name, registration name, and description?
 3.  **Required Capabilities**: What specific tools, APIs, or data processing functions are needed?
 4.  **System Prompt**: What core instructions, personality, and tone should guide the agent's behavior?
-5.  **MCP Configuration**: Which MCP servers (e.g., `pptx`, `google`) are required? Please keep in mind that `terminal` servers is the MUST HAVE one.
+5.  **MCP Configuration**: Which MCP servers (e.g., `pptx`, `google`) are required? Please keep in mind that `terminal` servers is the MUST HAVE one, since this tool is necessary while facing the missing module so can be applied to pip install the missing one.
 6.  **Assumptions & Ambiguities**: What did you infer that wasn't explicitly stated? What details are missing or could be interpreted in multiple ways?
 
 **After completing this analysis, you MUST proceed directly to execution. Make reasonable assumptions for any ambiguities.**
@@ -83,6 +83,49 @@ ls -la "$STORAGE_PATH/<agent_folder_name>/"
 
 **Example**: `CONTEXT_AGENT_REGISTRY` tool call with params `{"local_agent_name": "Aworld", "register_agent_name": "my_custom_agent"}`
 
+
+### **Step 6: MCP Server Dependency Check and Installation (MANDATORY)**
+**After successfully registering the agent, you MUST verify and prepare the operational environment for the newly created agent's tools (MCP servers).** The goal is to ensure all MCP servers can be launched without dependency errors. You will use your terminal tool to perform this check.
+
+6.1  **Identify Target Modules**: First, parse the newly created mcp_config.py to get a list of all MCP server module paths. Use the following command block exactly as written to extract the paths.
+        ```STORAGE_PATH=$(echo ${AGENT_REGISTRY_STORAGE_PATH:-~/.aworld/agents})
+            PYTHON_SCRIPT="
+            import sys, os
+            agent_path = os.path.join('$STORAGE_PATH', '<agent_folder_name>')
+            if os.path.isdir(agent_path):
+                sys.path.insert(0, agent_path)
+            try:
+                from mcp_config import mcp_config
+                for server, config in mcp_config.get('mcpServers', {}).items():
+                    args = config.get('args', [])
+                    if '-m' in args:
+                        try:
+                            module_index = args.index('-m') + 1
+                            if module_index < len(args):
+                                print(args[module_index])
+                        except (ValueError, IndexError):
+                            pass
+            except (ImportError, ModuleNotFoundError):
+                # This handles cases where mcp_config.py doesn't exist or is empty.
+                # No output means no modules to check, which is a valid state.
+                pass
+            "
+            MODULE_PATHS=$(python -c "$PYTHON_SCRIPT")
+            echo "Modules to check: $MODULE_PATHS"
+(Reminder: You MUST replace <agent_folder_name> with the actual folder name from Step 2.)    ```
+
+6.2  **Iterate and Install Dependencies**: For each <module_path> identified in the $MODULE_PATHS list, you must perform the following check-and-install loop.
+*   **A. Attempt a Timed Launch:**: Execute the module using python -m but wrap it in a timeout command. This will attempt to start the server and kill it after 2 seconds. This is a "dry run" to trigger any ModuleNotFoundError.
+         timeout 2s python -m <module_path>
+*   **B. Analyze the Output**: Carefully inspect the stderr from the command's output. Your only concern is the specific error ModuleNotFoundError.
+        If stderr contains ModuleNotFoundError: No module named '<missing_package_name>': Proceed to C.
+        If the command completes (exits with code 0) or is killed by the timeout (exit code 124) WITHOUT a ModuleNotFoundError: The check for this module is considered SUCCESSFUL. You can move on to the next module in your list.
+        If any other error occurs: Ignore it for now. The goal of this step is solely to resolve Python package dependencies.
+6.3   **C. Install the Missing Package**: If a ModuleNotFoundError was detected, parse the <missing_package_name> from the error message and immediately install it using pip, with timeout 600.
+        pip install <missing_package_name>
+6.4  **Repeat the Check**: After a successful installation, you MUST return to Step 6.1 and re-run the timeout 2s python -m <module_path> command for the SAME module. This is to verify the installation was successful and to check if the module has other, different dependencies that need to be installed. Continue this loop until the launch attempt for the current module no longer produces a ModuleNotFoundError.
+
+After this loop has been successfully completed for all modules in $MODULE_PATHS, the new agent's environment is confirmed to be ready.
 
 
 ## 🚫 Strict Prohibitions & Requirements 🚫
@@ -258,19 +301,6 @@ def build_simple_swarm():
 ```python
 mcp_config = {
     "mcpServers": {
-        "browser": {
-            "command": "python",
-            "args": [
-                "-m",
-                "examples.gaia.mcp_collections.tools.browser"
-            ],
-            "env": {
-                "LLM_MODEL_NAME": "${LLM_MODEL_NAME}",
-                "LLM_API_KEY": "${LLM_API_KEY}",
-                "LLM_BASE_URL": "${LLM_BASE_URL}"
-            },
-            "client_session_timeout_seconds": 9999.0
-        },
         "csv": {
             "command": "python",
             "args": [
