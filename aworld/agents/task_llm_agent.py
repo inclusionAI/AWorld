@@ -49,9 +49,9 @@ class TaskAgent(Agent):
             # result is TaskResponse
             if result.success:
                 info = result.answer
+                res.append(ActionModel(agent_name=self.id(), policy_info=info))
             else:
-                info = result.msg
-            res.append(ActionModel(agent_name=self.id(), policy_info=info))
+                raise AWorldRuntimeException(result.msg)
 
         self._finished = True
         return res
