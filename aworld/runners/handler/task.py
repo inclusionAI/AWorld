@@ -87,7 +87,8 @@ class DefaultTaskHandler(TaskHandler):
                                                       success=False,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
-                                                      usage=self.runner.context.token_usage)
+                                                      usage=self.runner.context.token_usage,
+                                                      status=TaskStatusValue.FAILED)
             await self.runner.stop()
             yield Message(payload=self.runner._task_response,
                           session_id=message.session_id,

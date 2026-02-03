@@ -417,7 +417,8 @@ class TaskEventRunner(TaskRunner):
         if self._task_response is None:
             self._task_response = TaskResponse(id=self.context.task_id if self.context else "",
                                                success=False,
-                                               msg="Task return None.")
+                                               msg="Task return None.",
+                                               status=TaskStatusValue.FAILED)
         if self.context.get_task().conf and self.context.get_task().conf.resp_carry_raw_llm_resp == True:
             self._task_response.raw_llm_resp = self.context.context_info.get('llm_output')
         self._task_response.trace_id = get_trace_id()
