@@ -12,7 +12,7 @@ from PIL import Image, ImageEnhance, ImageFilter
 from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
-from aworld.config.conf import AgentConfig
+from aworld.config.conf import AgentConfig, ModelConfig
 from aworld.logs.util import Color
 from aworld.models.llm import call_llm_model, get_llm_model
 from aworld.models.model_response import ModelResponse
@@ -66,13 +66,23 @@ class ImageCollection(ActionCollection):
             ".ico",
             ".svg",
         }
-
-        self._llm_config = AgentConfig(
-            llm_provider="openai",
-            llm_model_name=os.getenv("IMAGE_LLM_MODEL_NAME", "gpt-4o"),
-            llm_api_key=os.getenv("IMAGE_LLM_API_KEY"),
-            llm_base_url=os.getenv("IMAGE_LLM_BASE_URL"),
-        )
+        
+        self._llm_config = ModelConfig(
+                llm_model_name=os.environ.get("IMAGE_LLM_MODEL_NAME", "gpt-4o"),
+                llm_api_key=os.environ.get("IMAGE_LLM_API_KEY"),
+                llm_base_url=os.environ.get("IMAGE_LLM_BASE_URL"),
+                llm_provider="openai",
+            )
+            # llm_provider="openai",
+            # llm_model_name=os.getenv("IMAGE_LLM_MODEL_NAME", "gpt-4o"),
+            # llm_api_key=os.getenv("IMAGE_LLM_API_KEY"),
+            # llm_base_url=os.getenv("IMAGE_LLM_BASE_URL"),
+            # llm_model_name=os.environ.get("IMAGE_LLM_MODEL_NAME", "gpt-4o"),
+            # llm_api_key=os.environ.get("IMAGE_LLM_API_KEY"),
+            # llm_base_url=os.environ.get("IMAGE_LLM_BASE_URL"),
+            # llm_model_name="google/gemini-2.5-pro",
+            # llm_api_key="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",
+            # llm_base_url="https://openrouter.ai/api/v1",
 
         self._color_log("Image Processing Service initialized", Color.green, "debug")
         self._color_log(f"Image output directory: {self._image_output_dir}", Color.blue, "debug")
