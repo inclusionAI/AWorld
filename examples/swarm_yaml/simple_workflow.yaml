@@ -1,0 +1,18 @@
+# Simple Workflow Example
+# A linear workflow with three agents executing sequentially
+
+swarm:
+  name: "simple_workflow"
+  type: "workflow"
+  max_steps: 10
+  event_driven: true
+  
+  agents:
+    - id: "agent1"
+      next: "agent2"
+    
+    - id: "agent2"
+      next: "agent3"
+    
+    - id: "agent3"
+      # No next means this is the end agent

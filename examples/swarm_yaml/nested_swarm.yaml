@@ -1,0 +1,32 @@
+# Nested Swarm Example
+# Demonstrates embedding a team swarm within a workflow
+
+swarm:
+  name: "nested_swarm_example"
+  type: "workflow"
+  
+  agents:
+    - id: "preprocessor"
+      next: "analysis_team"
+    
+    # Nested Team Swarm
+    - id: "analysis_team"
+      node_type: "swarm"
+      swarm_type: "team"
+      root_agent: "coordinator"
+      max_steps: 5
+      agents:
+        - id: "coordinator"
+          next: ["analyst1", "analyst2", "analyst3"]
+        
+        - id: "analyst1"
+        
+        - id: "analyst2"
+        
+        - id: "analyst3"
+      next: "summarizer"
+    
+    - id: "summarizer"
+      next: "reviewer"
+    
+    - id: "reviewer"

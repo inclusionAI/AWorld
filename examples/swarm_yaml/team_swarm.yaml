@@ -1,0 +1,23 @@
+# Team Swarm Example
+# A coordinator (master) agent managing multiple worker agents
+
+swarm:
+  name: "team_example"
+  type: "team"
+  root_agent: "coordinator"
+  min_call_num: 2
+  
+  agents:
+    - id: "coordinator"
+      next: ["worker1", "worker2", "worker3"]
+    
+    - id: "worker1"
+    
+    - id: "worker2"
+    
+    - id: "worker3"
+    
+  # Optional: explicit collaboration between workers
+  edges:
+    - from: "worker1"
+      to: "worker2"
