@@ -1,3 +1,5 @@
+# coding: utf-8
+# Copyright (c) inclusionAI.
 import abc
 import time
 import uuid
@@ -92,9 +94,6 @@ class EvalDataCase(Generic[EvalCaseDataType]):
 
 @dataclass
 class EvalDataset:
-    '''
-    Evaluation dataset.
-    '''
     eval_dataset_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     eval_dataset_name: Optional[str] = field(default_factory=str)
     run_id: Optional[str] = field(default_factory=str)
@@ -103,11 +102,9 @@ class EvalDataset:
 
 
 class MetricResult(TypedDict, total=False):
-    '''
-    Metric result.
-    '''
     value: MetricValueType
     eval_status: EvalStatus
+    metadata: dict
 
 
 @dataclass

@@ -1,3 +1,5 @@
+# coding: utf-8
+# Copyright (c) inclusionAI.
 from typing import Optional
 from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, MetricResult, MetricNames
 from aworld.evaluations.scorers import scorer_register
@@ -48,7 +50,7 @@ class SummarizeQualityScorer(LLMAsJudgeScorer):
         model_config (ModelConfig): Model configuration.
     """
 
-    def build_judge_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+    def _build_judge_system_prompt(self) -> str:
         return SUMMARIZE_QUALITY_EVAL_PROMPT
 
     def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
