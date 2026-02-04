@@ -1,6 +1,6 @@
 <div align="center">
 
-# AWorld: Agentic Craft for Your Worldk
+# AWorld: Agentic Craft for Your World
 
 </div>
 
@@ -43,11 +43,13 @@
 
 
 
-
 # The Next Frontier for AI is Your Expertise
+
+<p align="justify">
 For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. In scientific research, financial analysis, or complex engineering, generic models can't climb this wall. They can't speak your language.
 The AWorld Thesis is that the next leap in AI won't come from building bigger models, but from empowering experts like you to build a gate in that wall.
 We believe the true scaling of AI is achieved by enabling you to infuse your knowledge directly into its core. AWorld is the platform that makes this possible. We provide the tools for you, the expert, to craft your unique insights into fleets of autonomous agents that navigate your world with precision. It’s how we move beyond generic promise to specific, robust application in any industry.
+</p>
 
 
 # The First Step: Verified Skills as Your Foundation
@@ -79,7 +81,7 @@ You can inspect the trajectory_log.json to understand every decision the agent m
 This is where AWorld truly shines. If the agent's performance isn't perfect, you have a spectrum of powerful options for refinement.
 Option 1: The Direct Approach (Manual Tuning)
 You are the expert. Open the generated Python file and fine-tune the prompts, logic, or tool usage directly. You have full control.
-# check the generated agent file(s)
+## check the generated agent file(s)
 ```bash
 vim ~/agents/ppt_creator.py
 ```
