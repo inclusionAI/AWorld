@@ -12,32 +12,7 @@ from aworld.models.llm import get_llm_model, acall_llm_model
 from aworld.models.model_response import ModelResponse
 from aworld.ralph_loop.mission.types import Mission
 
-
-class Analyzer(ABC):
-    @abstractmethod
-    async def analyze(self, mission: Mission) -> Mission:
-        """Analyze user input intent, task complexity, and related entity etc."""
-
-
-class MissionAnalyzer(Analyzer):
-    """LLM-based mission analyzer, it can be transformed into a tool or agent in the future."""
-
-    def __init__(self, model_config: ModelConfig, system_prompt: str = None):
-        self.model_config = model_config
-        self.system_prompt = system_prompt or self._build_system_prompt()
-        self._llm = None
-
-    async def analyze(self, mission: Mission) -> Mission:
-        if not self._llm:
-            self._llm = get_llm_model(conf=self.model_config)
-
-        messages = self._build_analysis_input(mission)
-        response = await acall_llm_model(self._llm, messages=messages)
-        res_dict = self._parse_llm_response(response)
-        return mission.update(**res_dict)
-
-    def _build_system_prompt(self):
-        return """# Role
+mission_analyzer_system_prompt = """# Role
 You are an expert **Task Analysis Engine**. Your objective is to parse user natural language input into a structured JSON configuration containing **Intent**, **Entities**, and **Complexity**.
 
 # Analysis Rules
@@ -182,6 +157,30 @@ Please analyze the following user instruction:
 **Input**:
 
 """
+
+
+class Analyzer(ABC):
+    @abstractmethod
+    async def analyze(self, mission: Mission) -> Mission:
+        """Analyze user input intent, task complexity, and related entity etc."""
+
+
+class MissionAnalyzer(Analyzer):
+    """LLM-based mission analyzer, it can be transformed into a tool or agent in the future."""
+
+    def __init__(self, model_config: ModelConfig, system_prompt: str = mission_analyzer_system_prompt):
+        self.model_config = model_config
+        self.system_prompt = system_prompt
+        self._llm = None
+
+    async def analyze(self, mission: Mission) -> Mission:
+        if not self._llm:
+            self._llm = get_llm_model(conf=self.model_config)
+
+        messages = self._build_analysis_input(mission)
+        response = await acall_llm_model(self._llm, messages=messages)
+        res_dict = self._parse_llm_response(response)
+        return mission.update(**res_dict)
 
     def _build_analysis_input(self, mission: Mission) -> List[Dict[str, Any]]:
         return [

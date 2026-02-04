@@ -16,8 +16,16 @@ from aworld.core.task import Runner, Task, TaskResponse
 from aworld.evaluations.base import Evaluator, EvalCriteria, EvalDataCase, EvalDataset, EvalTarget, Scorer
 from aworld.evaluations.scorers import scorer_factory
 from aworld.logs.util import logger
+from aworld.ralph_loop.mission.analyzer import MissionAnalyzer
+from aworld.ralph_loop.mission.enhancer import DefaultContextEnhancer
+from aworld.ralph_loop.mission.processor import to_mission
+from aworld.ralph_loop.mission.types import Mission
+from aworld.ralph_loop.plan.utils import parse_plan_to_tasks
 from aworld.ralph_loop.reflect.types import ReflectionInput, ReflectionResult
-from aworld.runners.state_manager import EventRuntimeStateManager, RunNode
+from aworld.ralph_loop.schedule.types import ScheduledTask
+from aworld.ralph_loop.plan.planner import GeneralPlanner
+from aworld.ralph_loop.plan.types import StrategicPlan, PlanningInput
+from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.utils.run_util import exec_tasks
 
 from aworld.ralph_loop.config import RalphConfig
@@ -95,9 +103,11 @@ class RalphRunner(Runner):
             )
         self.completion_criteria = completion_criteria
 
-        self.need_plan = True
+        self.need_analyze = True
         if task.agent or not task.swarm:
+            # Special task don't need analysis and plan
             self.need_plan = False
+            self.need_analyze = False
             self.tasks[task.id] = task
             self.critical_tasks.add(task.id)
         else:
@@ -108,9 +118,9 @@ class RalphRunner(Runner):
         self.loop_state = LoopState()
         self.state_manager = EventRuntimeStateManager.instance()
 
+        self.mission: Optional[Mission] = None
         # Current strategic plan
-        # self.current_plan: Optional[StrategicPlan] = None
-        self.current_plan = None
+        self.current_plan: Optional[StrategicPlan] = None
 
         # Initialize components
         self._init_mission_processor()
@@ -125,9 +135,32 @@ class RalphRunner(Runner):
 
         self.loop_context.check_directories()
         # Process mission
+        if self.need_analyze:
+            mission = to_mission(user_input=self.original_input, mission_type=self.ralph_config.mission.input_type)
+            mission = await self.mission_analyzer.analyze(mission=mission)
+            mission = await self.context_enhancer.enhance(mission=mission, context=self.loop_context)
+            self.mission = mission
+
         # Create initial plan
+        if self.need_plan:
+            plan_input = PlanningInput(mission=self.mission, )
+            self.current_plan = await self.planner.plan(plan_input=plan_input)
+
+            # transform plan into tasks
+            await self._plan_to_tasks()
 
         self.loop_state.confirmation_threshold = len(self.tasks)
+
+    async def _plan_to_tasks(self):
+        steps = self.current_plan.steps
+        if not steps:
+            # use text to swarm
+            task = Task(input=self.original_input)
+            self.tasks[task.id] = task
+            return
+
+        tasks = await parse_plan_to_tasks(plan=self.current_plan)
+        self.tasks.update({task.id: task for task in tasks})
 
     async def do_run(self):
         # todo: task schedule
@@ -139,17 +172,15 @@ class RalphRunner(Runner):
             self.loop_state.iteration += 1
             iteration_start = time.time()
 
-            logger.info(f"Iteration {self.loop_state.iteration}")
-
             # 1. Check stop conditions
-            logger.info("[1/5] CHECK - Stop condition check...")
+            logger.info(f"Iteration {self.loop_state.iteration} [1/5] CHECK - Stop condition check...")
             stop_decision = await self._check_stop_condition()
             if stop_decision.should_stop:
                 logger.info(f"Loop terminated: {stop_decision.stop_type}, Reason: {stop_decision.reason}")
                 break
 
             # 2. Schedule and Execute task
-            logger.info("[2/5] EXECUTE - Executing task...")
+            logger.info(f"Iteration {self.loop_state.iteration} [2/5] EXECUTE - Executing task...")
             execution_result, execution_success = await self._execute_task(cur_task)
 
             if not execution_success:
@@ -161,7 +192,7 @@ class RalphRunner(Runner):
             # 3. Validate output
             validation_result = {"passed": False}
             if self.validator and execution_success:
-                logger.info("[3/5] ANALYZE - Validating output...")
+                logger.info(f"Iteration {self.loop_state.iteration} [3/5] ANALYZE - Validating output...")
                 eval_target = DelegateEvalTarget(output=execution_result.to_dict())
                 validation_result = await self._validate(eval_target=eval_target)
 
@@ -178,7 +209,7 @@ class RalphRunner(Runner):
             # 4. Reflect on execution
             # validation did not pass or execution failed or task complex
             if self.reflector and (not validation_result.get("passed") or not execution_success):
-                logger.info("[4/5] LEARN - Reflecting on execution...")
+                logger.info(f"Iteration {self.loop_state.iteration} [4/5] LEARN - Reflecting on execution...")
                 iteration_time = time.time() - iteration_start
 
                 reflection_results = await self._reflect(
@@ -190,7 +221,7 @@ class RalphRunner(Runner):
 
             # Replan if needed
             if self.need_plan and self.current_plan:
-                logger.info("[5/5] REPLAN - Checking if replanning needed...")
+                logger.info(f"Iteration {self.loop_state.iteration} [5/5] REPLAN - Checking if replanning needed...")
                 # todo
                 # Collect feedback for trigger detection
                 # Detect replanning triggers
@@ -211,11 +242,33 @@ class RalphRunner(Runner):
     def _init_mission_processor(self):
         """Initialize mission processor and analyzer."""
 
+        if self.need_analyze:
+            config = self.ralph_config.mission
+            if config.analyzer:
+                self.mission_analyzer = config.analyzer
+            else:
+                self.mission_analyzer = MissionAnalyzer(model_config=config.model_config)
+
+            if config.enhancer:
+                self.context_enhancer = config.enhancer
+            else:
+                self.context_enhancer = DefaultContextEnhancer()
+
         if aworld.debug_mode:
-            logger.info(f"Mission processor and analyzer initialized")
+            logger.info(f"Mission analyzer initialized")
 
     def _init_planner(self):
         """Initialize strategic planner."""
+
+        if self.need_plan:
+            config = self.ralph_config.planning
+            if config.planner:
+                self.planner = config.planner
+            else:
+                self.planner = GeneralPlanner(model_config=config.model_config,
+                                              system_prompt=config.system_prompt,
+                                              reviewer=config.reviewer,
+                                              optimizer=config.optimizer)
 
         if aworld.debug_mode:
             logger.info(f"Planner initialized")

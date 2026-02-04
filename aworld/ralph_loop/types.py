@@ -4,6 +4,20 @@ from dataclasses import dataclass, field
 from typing import Callable, Any
 
 
+class Complexity:
+    """complexity levels."""
+    # one step
+    TRIVIAL = "trivial"
+    # few steps
+    LOW = "low"
+    # need plan
+    MEDIUM = "medium"
+    # task decomposition
+    HIGH = "high"
+    # multi-stage
+    COMPLEX = "complex"
+
+
 class ConflictStrategy:
     """Component conflict strategy."""
     MERGE: str = "merge"

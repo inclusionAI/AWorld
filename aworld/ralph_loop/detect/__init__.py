@@ -1,6 +1,8 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
 
+# Moving forward, it will be consolidated into the `runners` package.
+
 """
 The detect module is used to detect stop conditions from different dimensions.
 The framework supports stop condition detection such as Completion, Limits (max iterations, timeout, cost),
@@ -24,29 +26,4 @@ Priority Levels (lower value = higher priority):
 - 3: Completion conditions
 - 4: Limit conditions (lowest priority)
 
-Usage:
-    from aworld.ralph_loop.detect import (
-        create_stop_detector,
-        build_stop_detectors,
-        StopCondition,
-        CompletionCondition,
-        MaxIterationsCondition,
-        CompositeStopDetector
-    )
-
-    # Create default detector with all built-in conditions
-    detector = create_stop_detector()
-
-    # Create custom detector with specific conditions
-    custom_detectors = [MyCustomCondition()]
-    detector = create_stop_detector(
-        enable_completion=True,
-        enable_limits=True,
-        custom_detectors=custom_detectors
-    )
-
-    # Check stop condition
-    decision = await detector.should_stop(stop_state)
-    if decision.should_stop:
-        print(f"Stop reason: {decision.reason}")
 """

@@ -1,6 +1,8 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
 
+# Moving forward, it will be consolidated into the `evaluations` package.
+
 """
 The validation module is mainly used to evaluate scores from different dimensions.
 The framework supports indicators of various dimension types such as Format, Logic, Output, Quality,
@@ -15,26 +17,4 @@ Key Validators:
 - TrajectoryStructureScorer: Validates trajectory data structure and required fields
 - TrajectoryQualityScorer: Overall trajectory quality assessment using LLM
 
-Usage:
-    from aworld.ralph_loop.validate import (
-        ValidationMetrics,
-        FormatValidationScorer,
-        LogicConsistencyScorer,
-        OutputCorrectnessScorer,
-        TrajectoryStructureScorer,
-        DelegateEvalTarget
-    )
-
-    # Create validators
-    format_validator = FormatValidationScorer()
-    logic_validator = LogicConsistencyScorer(model_config=model_config)
-
-    # Validate output
-    result = await format_validator.score(index=0, input=input_data, output=output_data)
-    if result.metric_results["format_correctness"]["value"] >= 0.8:
-        print("Format validation passed")
-
-    # Use DelegateEvalTarget to avoid re-prediction
-    target = DelegateEvalTarget(output={...})
-    eval_result = await target.predict(index=0, input=input_case)
 """
