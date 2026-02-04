@@ -42,11 +42,15 @@
 > 💡 Visit our [homepage](https://www.aworldagents.com/) for more details, or try our online [environments](https://www.aworldagents.com/environments) and [agents](https://playground.aworldagents.com/). 
 
 
-# Installation
+# Installation AWorld
 > [!TIP]
 > Python>=3.11
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
+
+conda create -n aworld_cli python=3.11 -y && conda activate aworld_cli 
+
+pip install -e . && cd aworld-cli 
 
 pip install -e .
 ```
