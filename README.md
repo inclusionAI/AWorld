@@ -1,6 +1,7 @@
 <div align="center">
 
-# AWorld: Rich Environments, Intelligent Agents, Continuous Evolution
+# AWorld: Agentic Craft for Your World
+Where Your Expertise Becomes Self-Evolving AI
 
 </div>
 
@@ -42,13 +43,13 @@
 > 💡 Visit our [homepage](https://www.aworldagents.com/) for more details, or try our online [environments](https://www.aworldagents.com/environments) and [agents](https://playground.aworldagents.com/). 
 
 
-# Installation AWorld
+# Installation AWorld & AWorld-CLI
 > [!TIP]
 > Python>=3.11
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
-conda create -n aworld_cli python=3.11 -y && conda activate aworld_cli 
+conda create -n aworld_env python=3.11 -y && conda activate aworld_env 
 
 pip install -e . && cd aworld-cli 
 
