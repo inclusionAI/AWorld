@@ -31,10 +31,21 @@ from aworld.utils.skill_loader import collect_skill_docs
 # for skills use
 CAST_ANALYSIS, CAST_PATCH
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+def _build_beijing_date_line() -> str:
+    """Return a line stating today's Beijing date in Chinese format."""
+    beijing_now = datetime.now(ZoneInfo("Asia/Shanghai"))
+
+    return f"Today is {beijing_now.year} (year)-{beijing_now.month} (month)-{beijing_now.day}(day)."
+
 
 # System prompt based on orchestrator_agent prompt
 aworld_system_prompt = """
 You are AWorld, a versatile AI assistant designed to solve any task presented by users.
+
+Today is {{current_date}}, {{current_datetime}} (Beijing time). Your own knowledge has a cutoff in 2024, please keep in mind!
 
 ## Role Identity:
 Your name is AWorld. You are an intelligent assistant capable of handling tasks through two primary modes:
