@@ -8,7 +8,7 @@ from typing import List, Dict, Any
 import aworld
 from aworld.config import ModelConfig
 from aworld.logs.util import logger
-from aworld.models.llm import get_llm_model, call_llm_model
+from aworld.models.llm import get_llm_model, acall_llm_model
 from aworld.models.model_response import ModelResponse
 from aworld.ralph_loop.reflect.types import (
     ReflectionInput,
@@ -140,7 +140,7 @@ class GeneralReflector(Reflector):
             self._llm = get_llm_model(self.model_config)
 
         analysis_input = self._build_analysis_input(reflection_input)
-        response = call_llm_model(self._llm, messages=analysis_input)
+        response = await acall_llm_model(self._llm, messages=analysis_input)
         result = self._parse_response(response)
         return result
 
