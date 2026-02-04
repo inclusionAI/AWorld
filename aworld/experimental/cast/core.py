@@ -1617,7 +1617,7 @@ class ACast:
               不再支持模糊匹配或空白字符灵活匹配。
         """
         try:
-            print('operation_json: ', operation_json)
+            logger.debug('operation_json: ', operation_json)
             operation_data = json.loads(operation_json)
         except json.JSONDecodeError as e:
             return {"success": False, "error": f"无效的JSON格式: {e}"}
