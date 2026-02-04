@@ -1,8 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
-import hashlib
-from datetime import datetime
 from pathlib import Path
 from typing import List, Dict, Union, AsyncGenerator, Tuple, Any, Optional, TYPE_CHECKING
 
@@ -25,7 +23,7 @@ from aworld.output import StreamingOutputs
 from aworld.runners.evaluate_runner import EvaluateRunner
 from aworld.runners.utils import execute_runner, choose_runners
 from aworld.utils.common import sync_exec
-from aworld.utils.run_util import exec_tasks
+from aworld.utils.run_util import exec_tasks, generate_yaml_path, create_default_meta_agent
 
 
 class Runners:
@@ -275,7 +273,7 @@ class Runners:
         
         # 1. Create or use provided MetaAgent
         if meta_agent is None:
-            meta_agent = _create_default_meta_agent()
+            meta_agent = create_default_meta_agent()
             logger.info("📝 Using default MetaAgent for task planning")
         else:
             logger.info(f"📝 Using custom MetaAgent: {meta_agent.name}")
@@ -295,7 +293,7 @@ class Runners:
         if auto_save:
             if not output_yaml:
                 # Auto-generate path by default: ~/.aworld/tasks/{timestamp}_{hash}.yaml
-                output_yaml = _generate_yaml_path(query)
+                output_yaml = generate_yaml_path(query)
             
             output_path = Path(output_yaml)
             output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -452,46 +450,3 @@ class Runners:
         
         logger.info("🎉 Auto-run task completed!")
         return results, yaml_path_or_str
-
-
-def _create_default_meta_agent() -> 'MetaAgent':
-    """Create default MetaAgent instance with environment-based configuration."""
-    from aworld.agents.meta_agent import MetaAgent
-    from aworld.config import AgentConfig, ModelConfig
-    import os
-    
-    model_name = os.getenv("LLM_MODEL_NAME", "gpt-4")
-    provider = os.getenv("LLM_PROVIDER", "openai")
-    api_key = os.getenv("LLM_API_KEY")
-    base_url = os.getenv("LLM_BASE_URL")
-    
-    if not api_key or not model_name:
-        raise ValueError(
-            "LLM_API_KEY and LLM_MODEL_NAME environment variables must be set to use default MetaAgent. "
-            "Alternatively, pass a custom meta_agent instance."
-        )
-    
-    return MetaAgent(
-        conf=AgentConfig(
-            llm_config=ModelConfig(
-                llm_model_name=model_name,
-                llm_provider=provider,
-                llm_api_key=api_key,
-                llm_base_url=base_url,
-                llm_temperature=0.0
-            )
-        )
-    )
-
-
-def _generate_yaml_path(query: str) -> str:
-    """Generate YAML file path based on query and timestamp."""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    query_hash = hashlib.md5(query.encode()).hexdigest()[:8]
-    filename = f"{timestamp}_{query_hash}.yaml"
-    
-    # Save to ~/.aworld/tasks/
-    base_dir = Path.home() / ".aworld" / "tasks"
-    base_dir.mkdir(parents=True, exist_ok=True)
-    
-    return str(base_dir / filename)
