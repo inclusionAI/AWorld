@@ -65,6 +65,34 @@ You are a MetaAgent responsible for analyzing user queries and planning task exe
 4. **Complex coordination** (parallel work, dynamic delegation, many agents): Use team topology
 5. **Hierarchical tasks** (sub-tasks with own coordination): Use nested swarms
 
+### Tool Assignment Guidelines:
+
+**Two Ways to Configure MCP Tools:**
+
+1. **Simple Approach (Recommended)**: Use `mcp_servers` directly
+   - When agent needs all tools from an MCP server
+   - Simpler YAML structure
+   - Example: `mcp_servers: ["ms-playwright"]`
+
+2. **Advanced Approach**: Use `skill_configs` with `tool_list`
+   - When you need fine-grained control over specific tools
+   - Select only certain tools: `tool_list: {"server": ["tool1", "tool2"]}`
+   - Provide skill semantics and descriptions
+   - Note: `mcp_servers` will be auto-derived from `skill_configs`
+
+**Tool Assignment Principles:**
+- Analyze each agent's role and assign ONLY the tools needed for its specific tasks
+- Coordinator agents typically need minimal or no tools (they delegate to specialists)
+- Worker/specialist agents need domain-specific MCP servers
+- Avoid assigning all tools to all agents (principle of least privilege)
+- Ensure tool-to-server dependencies: if agent uses tools from a server, include that server
+
+**Examples:**
+- Web scraper agent → `mcp_servers: ["ms-playwright"]`
+- Document processor → `mcp_servers: ["document_server"]`
+- Pure reasoning agent → no MCP servers needed
+- Coordinator in team topology → usually no MCP servers (delegates to workers)
+
 ## Few-Shot Examples:
 
 ### Example 1: Simple Single-Agent Task
@@ -87,12 +115,6 @@ agents:
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
         llm_temperature: 0.0
-      skill_configs:
-        pdf:
-          name: "PDF"
-          desc: "PDF processing capability"
-          tool_list:
-            document_server: ["mcpreadpdf"]
     mcp_servers: ["document_server"]
 
 swarm:
@@ -127,12 +149,6 @@ agents:
         llm_model_name: "${LLM_MODEL_NAME}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
-      skill_configs:
-        browser:
-          name: "Browser"
-          desc: "Web automation"
-          tool_list:
-            ms-playwright: []
     mcp_servers: ["ms-playwright"]
   
   - id: cleaner
@@ -292,9 +308,10 @@ mcp_config:
       args: ["@playwright/mcp@latest", "--no-sandbox"]
 ```
 
-### Example 5: Advanced - Parallel Execution with node_type
+### Example 5: Advanced - Parallel Execution with Fine-Grained Tool Control
 Query: "Generate marketing materials: create social media posts and email campaign simultaneously, then get approval"
-Analysis: Two independent creative tasks can run in parallel, then merge for approval step.
+Analysis: Two independent creative tasks can run in parallel, then merge for approval step. 
+Note: This example shows fine-grained tool control using skill_configs when needed.
 
 Output YAML:
 ```yaml
@@ -311,6 +328,12 @@ agents:
         llm_model_name: "${LLM_MODEL_NAME}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
+      skill_configs:
+        image_generation:
+          name: "Image Generation"
+          desc: "Generate social media images"
+          tool_list:
+            image_server: ["generate_image", "edit_image"]
   
   - id: email_writer
     type: builtin
@@ -342,6 +365,12 @@ swarm:
     - id: parallel_writers
       next: reviewer
     - id: reviewer
+
+mcp_config:
+  mcpServers:
+    image_server:
+      command: "python"
+      args: ["-m", "mcp_tools.image_server"]
 ```
 
 ### Example 6: Advanced - Nested Swarm for Hierarchical Tasks
@@ -435,6 +464,11 @@ swarm:
 5. Ensure all agent IDs referenced in swarm section are defined in agents section
 6. For builtin agents, always include llm_config with at least model_name and provider
 7. When using advanced features (parallel/serial/nested), ensure proper node_type specification
+8. Tool configuration consistency:
+   - If agent uses `mcp_servers`, ensure those servers are defined in top-level `mcp_config`
+   - If agent uses `skill_configs` with `tool_list`, the servers in tool_list must be in `mcp_config`
+   - Prefer simple `mcp_servers` approach unless fine-grained tool control is needed
+9. Coordinator agents in team topology typically don't need MCP servers (they delegate to workers)
 """
 
     def __init__(self, 
@@ -519,7 +553,9 @@ swarm:
                        skills_path: Optional[Path] = None,
                        available_agents: Dict[str, BaseAgent] = None,
                        available_tools: List[str] = None,
-                       mcp_config: Dict[str, Any] = None) -> str:
+                       available_mcp_servers: Dict[str, Dict[str, Any]] = None,
+                       mcp_config: Dict[str, Any] = None,
+                       use_self_resources: bool = True) -> str:
         """
         Analyze query and generate Task YAML configuration.
         
@@ -527,8 +563,21 @@ swarm:
             query: User query to analyze
             skills_path: Path to skills directory (for scanning available skills)
             available_agents: Dict of predefined agents {agent_id: agent_instance}
-            available_tools: List of available tool names
-            mcp_config: Global MCP server configurations
+            available_tools: List of available tool names (if None and use_self_resources=True, 
+                           uses MetaAgent's own tool_names)
+            available_mcp_servers: Dict of available MCP servers with their info
+                Format: {
+                    "server_name": {
+                        "desc": "Server description",
+                        "tools": ["tool1", "tool2", ...],  # Available tools
+                        "command": "command",
+                        "args": ["arg1", "arg2"]
+                    }
+                }
+                If None and use_self_resources=True, extracts from MetaAgent's own mcp_servers/sandbox
+            mcp_config: Global MCP server configurations (fallback if available_mcp_servers not provided)
+            use_self_resources: If True, automatically use MetaAgent's own tools/mcp_servers when 
+                              corresponding parameters are None (default: True)
         
         Returns:
             Generated YAML string (ready to save to file)
@@ -539,11 +588,27 @@ swarm:
         # 1. Load skills information
         skills_info = self._load_skills_info(skills_path) if skills_path else {}
         
-        # 2. Build planning context
+        # 2. Auto-extract resources from MetaAgent itself if not provided
+        if use_self_resources:
+            if available_tools is None and self.tool_names:
+                available_tools = self.tool_names.copy()
+                logger.debug(f"📦 Using MetaAgent's own tools: {available_tools}")
+            
+            if available_mcp_servers is None and (self.mcp_servers or self.sandbox):
+                available_mcp_servers = self._extract_mcp_servers_info()
+                if available_mcp_servers:
+                    logger.debug(f"📦 Using MetaAgent's own MCP servers: {list(available_mcp_servers.keys())}")
+            
+            if mcp_config is None and self.mcp_config:
+                mcp_config = self.mcp_config
+                logger.debug(f"📦 Using MetaAgent's own MCP config")
+        
+        # 3. Build planning context
         context = self._build_planning_context(
             skills_info, 
             available_agents, 
-            available_tools
+            available_tools,
+            available_mcp_servers
         )
         
         # 3. Call LLM to generate YAML (with retry)
@@ -578,6 +643,58 @@ swarm:
         
         return yaml_str
     
+    def _extract_mcp_servers_info(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Extract MCP servers information from MetaAgent's own configuration.
+        
+        Returns:
+            Dict of MCP servers with their info extracted from sandbox/mcp_config
+        """
+        mcp_servers_info = {}
+        
+        # Get MCP servers list
+        servers_to_extract = self.mcp_servers or []
+        
+        # Try to extract from sandbox if available
+        if self.sandbox and hasattr(self.sandbox, 'mcpservers') and self.sandbox.mcpservers:
+            mcpservers = self.sandbox.mcpservers
+            
+            for server_name in servers_to_extract:
+                if server_name in mcpservers.mcp_servers:
+                    server_instance = mcpservers.mcp_servers[server_name]
+                    
+                    # Extract tools from the server
+                    tools = []
+                    if hasattr(server_instance, 'tools') and server_instance.tools:
+                        tools = [tool.name for tool in server_instance.tools if hasattr(tool, 'name')]
+                    
+                    # Extract server description
+                    desc = f"MCP Server: {server_name}"
+                    if hasattr(server_instance, 'description'):
+                        desc = server_instance.description
+                    
+                    mcp_servers_info[server_name] = {
+                        "desc": desc,
+                        "tools": tools
+                    }
+        
+        # Fallback: extract from mcp_config
+        if self.mcp_config and "mcpServers" in self.mcp_config:
+            mcp_servers_section = self.mcp_config["mcpServers"]
+            
+            for server_name in servers_to_extract:
+                if server_name in mcp_servers_section and server_name not in mcp_servers_info:
+                    server_config = mcp_servers_section[server_name]
+                    
+                    mcp_servers_info[server_name] = {
+                        "desc": server_config.get("desc", f"MCP Server: {server_name}"),
+                        "tools": server_config.get("tools", []),
+                        "command": server_config.get("command"),
+                        "args": server_config.get("args", [])
+                    }
+        
+        return mcp_servers_info
+    
     def _load_skills_info(self, skills_path: Path) -> Dict[str, Any]:
         """Load skills information from directory."""
         from aworld.utils.skill_loader import collect_skill_docs
@@ -593,9 +710,29 @@ swarm:
     def _build_planning_context(self, 
                                  skills_info: Dict[str, Any],
                                  available_agents: Dict[str, BaseAgent],
-                                 available_tools: List[str]) -> str:
+                                 available_tools: List[str],
+                                 available_mcp_servers: Dict[str, Dict[str, Any]]) -> str:
         """Build planning context for MetaAgent."""
         context_parts = []
+        
+        # MCP Servers information (most important for tool assignment)
+        if available_mcp_servers:
+            mcp_desc = []
+            for server_id, server_info in available_mcp_servers.items():
+                desc = server_info.get('desc', 'No description')
+                tools = server_info.get('tools', [])
+                
+                mcp_desc.append(f"  - **{server_id}**: {desc}")
+                
+                # Show sample tools (first 5)
+                if tools:
+                    tools_preview = tools[:5]
+                    tools_str = ', '.join(tools_preview)
+                    if len(tools) > 5:
+                        tools_str += f" (and {len(tools)-5} more tools)"
+                    mcp_desc.append(f"    Tools: {tools_str}")
+            
+            context_parts.append("Available MCP Servers:\n" + "\n".join(mcp_desc))
         
         # Skills information
         if skills_info:
@@ -605,8 +742,14 @@ swarm:
                 agentic_marker = " [Agentic Skill]" if skill_type == "agent" else ""
                 desc = skill.get('description', 'No description')
                 skills_desc.append(f"  - {skill_id}{agentic_marker}: {desc}")
+                
+                # Show which MCP servers this skill uses
+                tool_list = skill.get('tool_list', {})
+                if tool_list:
+                    servers = ', '.join(tool_list.keys())
+                    skills_desc.append(f"    Requires MCP: {servers}")
             
-            context_parts.append("Available Skills:\n" + "\n".join(skills_desc))
+            context_parts.append("\nAvailable Skills:\n" + "\n".join(skills_desc))
         
         # Predefined agents information
         if available_agents:
@@ -615,14 +758,14 @@ swarm:
                 desc = agent.desc if hasattr(agent, 'desc') else 'No description'
                 agents_desc.append(f"  - {agent_id}: {desc}")
             
-            context_parts.append("Predefined Agents:\n" + "\n".join(agents_desc))
+            context_parts.append("\nPredefined Agents:\n" + "\n".join(agents_desc))
         
-        # Available tools
+        # Available tools (legacy, less important now)
         if available_tools:
             tools_str = ", ".join(available_tools)
-            context_parts.append(f"Available Tools: {tools_str}")
+            context_parts.append(f"\nAvailable Tools: {tools_str}")
         
-        return "\n\n".join(context_parts) if context_parts else "No additional resources available."
+        return "\n".join(context_parts) if context_parts else "No additional resources available."
     
     def _format_query(self, query: str, context: str) -> str:
         """Format query and context as MetaAgent input."""
@@ -681,8 +824,10 @@ Remember: Output ONLY the YAML content, without any markdown code blocks or expl
         if not isinstance(agents, list) or len(agents) == 0:
             raise ValueError("'agents' must be a non-empty list")
         
-        # Collect agent IDs
+        # Collect agent IDs and MCP servers used
         agent_ids = set()
+        all_mcp_servers_used = set()
+        
         for agent in agents:
             if not isinstance(agent, dict):
                 raise ValueError(f"Each agent must be a dictionary, got: {type(agent)}")
@@ -696,12 +841,31 @@ Remember: Output ONLY the YAML content, without any markdown code blocks or expl
             agent_ids.add(agent_id)
             
             agent_type = agent.get("type", "builtin")
+            node_type = agent.get("node_type", "agent")
+            
+            # Skip validation for special node types
+            if node_type in ["parallel", "serial", "swarm"]:
+                continue
+            
             if agent_type not in ["builtin", "skill", "predefined"]:
                 raise ValueError(f"Invalid agent type '{agent_type}' for agent '{agent_id}'. Must be one of: builtin, skill, predefined")
             
             # Type-specific validation
             if agent_type == "skill" and "skill_name" not in agent:
                 raise ValueError(f"Agent '{agent_id}' with type 'skill' must have 'skill_name' field")
+            
+            # Collect MCP servers from agent configuration
+            agent_mcp_servers = agent.get("mcp_servers", [])
+            if agent_mcp_servers:
+                all_mcp_servers_used.update(agent_mcp_servers)
+            
+            # Also collect from skill_configs if present
+            agent_config = agent.get("config", {})
+            skill_configs = agent_config.get("skill_configs", {})
+            for skill_id, skill_cfg in skill_configs.items():
+                tool_list = skill_cfg.get("tool_list", {})
+                if isinstance(tool_list, dict):
+                    all_mcp_servers_used.update(tool_list.keys())
         
         # Validate swarm section
         swarm = data.get("swarm", {})
@@ -726,5 +890,18 @@ Remember: Output ONLY the YAML content, without any markdown code blocks or expl
         root_agent = swarm.get("root_agent")
         if root_agent and root_agent not in agent_ids:
             raise ValueError(f"Swarm root_agent '{root_agent}' is not defined in agents section")
+        
+        # Validate MCP configuration consistency
+        mcp_config = data.get("mcp_config", {})
+        if all_mcp_servers_used:
+            mcp_servers_section = mcp_config.get("mcpServers", {})
+            
+            # Check if all used MCP servers are defined in mcp_config
+            missing_servers = all_mcp_servers_used - set(mcp_servers_section.keys())
+            if missing_servers:
+                logger.warning(
+                    f"⚠️ MCP servers used by agents but not defined in mcp_config: {missing_servers}. "
+                    f"This may cause runtime errors if these servers are not available."
+                )
         
         logger.debug("✅ Task YAML validation passed")
