@@ -55,6 +55,13 @@ class LocalAgent(BaseModel):
     desc: str = None
     """Agent description or purpose."""
     
+    path: Optional[str] = Field(default=None, description="File path where the agent is defined")
+    """File path where the @agent decorator is located.
+    
+    This is automatically set by the @agent decorator based on the source file location
+    where the agent is defined. Used for tracking the source file of the agent.
+    """
+    
     swarm: Union[Swarm, Callable[..., Swarm], Callable[..., Awaitable[Swarm]]] = Field(
         default=None, 
         description="Swarm instance or callable", 
@@ -318,13 +325,14 @@ class LocalAgentRegistry(BaseModel):
         return cls.get_instance().list_names()
 
     @classmethod
-    def get_agent(cls, agent_id: str) -> Optional[LocalAgent]:
+    def get_agent(cls, agent_id: str, version: Optional[str] = None) -> Optional[LocalAgent]:
         """Get an agent by agent_id using the singleton instance.
 
         This is a static class method that delegates to the singleton instance's get method.
 
         Args:
             agent_id: The agent identifier (name) to query.
+            version: Optional version string (e.g., "v0", "v1"). If not provided, returns the latest version.
 
         Returns:
             The LocalAgent instance if exists, else None.
@@ -333,11 +341,14 @@ class LocalAgentRegistry(BaseModel):
             >>> agent = LocalAgentRegistry.get_agent("demo")
             >>> if agent:
             ...     print(agent.name)
+            >>> # Get specific version
+            >>> agent_v1 = LocalAgentRegistry.get_agent("demo", version="v1")
         """
-        return cls.get_instance().get(agent_id)
+        return cls.get_instance().get(agent_id, version)
 
     def register_agent(self, agent: LocalAgent) -> None:
         """Register a LocalAgent, requiring a unique non-empty name.
+        Supports multi-version registration: agents with the same name but different versions can coexist.
 
         Args:
             agent: The LocalAgent instance to register.
@@ -346,15 +357,32 @@ class LocalAgentRegistry(BaseModel):
             None
 
         Raises:
-            ValueError: If name is empty or already exists.
+            ValueError: If name is empty.
         """
         if not agent or not agent.name:
             raise ValueError("LocalAgent.name is required for registration")
+        
+        # Extract version from metadata or path
+        version = None
+        if agent.metadata and "version" in agent.metadata:
+            version = agent.metadata["version"]
+        elif agent.register_dir:
+            # Try to extract version from directory path (e.g., {name}_v{N}/)
+            import re
+            import os
+            dir_name = os.path.basename(agent.register_dir.rstrip('/'))
+            match = re.match(r'^(.+)_v(\d+)$', dir_name)
+            if match:
+                version = f"v{match.group(2)}"
+        
+        # Use name:version as key for multi-version support, or just name if no version
+        agent_key = f"{agent.name}:{version}" if version else agent.name
+        
         with self._lock:
-            if agent.name in self._agents:
-                # logger.warning(f"LocalAgent '{agent.name}' is already registered")
-                return
-            self._agents[agent.name] = agent
+            # Allow multiple versions of the same agent name
+            if agent_key in self._agents:
+                logger.warning(f"LocalAgent '{agent_key}' is already registered, updating...")
+            self._agents[agent_key] = agent
 
     def upsert(self, agent: LocalAgent) -> None:
         """Insert or update a LocalAgent.
@@ -413,11 +441,12 @@ class LocalAgentRegistry(BaseModel):
         with self._lock:
             return self._agents.pop(name, None) is not None
 
-    def get(self, name: str) -> Optional[LocalAgent]:
-        """Get an agent by name.
+    def get(self, name: str, version: Optional[str] = None) -> Optional[LocalAgent]:
+        """Get an agent by name, optionally with version.
 
         Args:
             name: Agent name.
+            version: Optional version string (e.g., "v0", "v1"). If not provided, returns the latest version.
 
         Returns:
             The LocalAgent instance if exists, else None.
@@ -425,7 +454,43 @@ class LocalAgentRegistry(BaseModel):
         if not name:
             return None
         with self._lock:
-            return self._agents.get(name)
+            # If version is specified, try exact match first
+            if version:
+                agent_key = f"{name}:{version}"
+                if agent_key in self._agents:
+                    return self._agents[agent_key]
+            
+            # Try direct name match (for backward compatibility)
+            if name in self._agents:
+                return self._agents[name]
+            
+            # Find all agents with this name (multi-version support)
+            matching_agents = []
+            for key, agent in self._agents.items():
+                if key == name or key.startswith(f"{name}:"):
+                    matching_agents.append((key, agent))
+            
+            if not matching_agents:
+                return None
+            
+            # If only one match, return it
+            if len(matching_agents) == 1:
+                return matching_agents[0][1]
+            
+            # Multiple versions found, return the latest one
+            # Extract version numbers and sort
+            def extract_version_from_key(key: str) -> int:
+                if ':' in key:
+                    version_str = key.split(':', 1)[1]
+                    # Extract version number from "v0", "v1", etc.
+                    import re
+                    match = re.match(r'v(\d+)', version_str)
+                    return int(match.group(1)) if match else 0
+                return 0  # No version suffix means v0
+            
+            # Sort by version number (descending) and return the latest
+            matching_agents.sort(key=lambda x: extract_version_from_key(x[0]), reverse=True)
+            return matching_agents[0][1]
 
     def list(self) -> List[LocalAgent]:
         """List all agents.
@@ -437,13 +502,21 @@ class LocalAgentRegistry(BaseModel):
             return list(self._agents.values())
 
     def list_names(self) -> List[str]:
-        """List all agent names.
+        """List all agent names (deduplicated, without version suffixes).
 
         Returns:
-            A list of registered agent names.
+            A list of registered agent names (unique, without version information).
         """
         with self._lock:
-            return list(self._agents.keys())
+            names = set()
+            for key in self._agents.keys():
+                # Extract name from key (remove version suffix if present)
+                if ':' in key:
+                    name = key.split(':', 1)[0]
+                else:
+                    name = key
+                names.add(name)
+            return sorted(list(names))
 
     def exists(self, name: str) -> bool:
         """Check if an agent exists by name.
@@ -545,13 +618,15 @@ def agent(
     if callable(name):
         func = name
         # Function decorator: @agent (without parameters)
-        # Try to get register_dir from function's source file
+        # Try to get register_dir and path from function's source file
         func_register_dir = None
+        func_path = None
         try:
             source_file = inspect.getsourcefile(func)
             if source_file:
                 from pathlib import Path
                 func_register_dir = str(Path(source_file).parent.resolve())
+                func_path = str(Path(source_file).resolve())
         except Exception:
             pass
         
@@ -562,6 +637,9 @@ def agent(
                     # Set register_dir if not already set
                     if not result.register_dir and func_register_dir:
                         result.register_dir = func_register_dir
+                    # Set path if not already set
+                    if not result.path and func_path:
+                        result.path = func_path
                     logger.info(f"Registering agent: {result.name}")
                     LocalAgentRegistry.register(result)
                 return result
@@ -573,6 +651,9 @@ def agent(
                     # Set register_dir if not already set
                     if not result.register_dir and func_register_dir:
                         result.register_dir = func_register_dir
+                    # Set path if not already set
+                    if not result.path and func_path:
+                        result.path = func_path
                     logger.info(f"Registering agent: {result.name}")
                     LocalAgentRegistry.register(result)
                 return result
@@ -583,14 +664,25 @@ def agent(
         if not name:
             raise ValueError("name is required when using @agent decorator with parameters")
         
-        # Get register_dir from function's source file if not explicitly provided
+        # Get register_dir and path from function's source file if not explicitly provided
         func_register_dir = register_dir
+        func_path = None
         if not func_register_dir:
             try:
                 source_file = inspect.getsourcefile(func)
                 if source_file:
                     from pathlib import Path
                     func_register_dir = str(Path(source_file).parent.resolve())
+                    func_path = str(Path(source_file).resolve())
+            except Exception:
+                pass
+        else:
+            # If register_dir is provided, try to get path from function's source file
+            try:
+                source_file = inspect.getsourcefile(func)
+                if source_file:
+                    from pathlib import Path
+                    func_path = str(Path(source_file).resolve())
             except Exception:
                 pass
         
@@ -624,7 +716,8 @@ def agent(
             context_config=context_config or AmniConfigFactory.create(),
             metadata=metadata or {"creator": "aworld-cli", "version": "1.0.0"},
             hooks=hooks,
-            register_dir=func_register_dir
+            register_dir=func_register_dir,
+            path=func_path
         )
 
         logger.info(f"Registering agent: {local_agent.name}")
