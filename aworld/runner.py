@@ -23,7 +23,7 @@ from aworld.output import StreamingOutputs
 from aworld.runners.evaluate_runner import EvaluateRunner
 from aworld.runners.utils import execute_runner, choose_runners
 from aworld.utils.common import sync_exec
-from aworld.utils.run_util import exec_tasks, generate_yaml_path, create_default_meta_agent
+from aworld.utils.run_util import exec_tasks, generate_yaml_path, create_default_meta_agent, run_meta_agent_for_yaml
 
 
 class Runners:
@@ -226,11 +226,11 @@ class Runners:
         await execute_runner([runner], run_conf)
     
     # ============================================================
-    # Auto Run Task: MetaAgent-based task planning and execution
+    # MetaAgent-based task planning and execution
     # ============================================================
     
     @staticmethod
-    async def plan_task(
+    async def text_to_task(
         query: str,
         *,
         meta_agent: 'MetaAgent' = None,
@@ -238,14 +238,14 @@ class Runners:
         available_agents: Dict[str, BaseAgent] = None,
         available_tools: List[str] = None,
         mcp_config: Dict[str, Any] = None,
-        output_yaml: str = None,
-        auto_save: bool = True
-    ) -> str:
+        context_config: Optional[AmniContextConfig] = None,
+        **task_overrides
+    ) -> Task:
         """
-        Use MetaAgent to analyze query and generate Task YAML.
+        Convert text query to Task and Swarm objects using MetaAgent.
         
-        This is step 1 of the two-step auto_run_task workflow.
-        The generated YAML can be reviewed/modified before execution.
+        This is a foundational method that returns object instances for further processing.
+        Upper layers can generate YAML from these objects if needed.
         
         Args:
             query: User query to analyze and plan for
@@ -254,99 +254,107 @@ class Runners:
             available_agents: Dict of predefined agents {agent_id: agent_instance}
             available_tools: List of available tool names
             mcp_config: Global MCP server configurations
-            output_yaml: Output YAML path (if None, auto-generate to ~/.aworld/tasks/)
-            auto_save: Whether to save YAML to file (if False, returns YAML string)
+            context_config: Context configuration for task execution
+            **task_overrides: Override task configs (timeout, session_id, task_id, etc.)
         
         Returns:
-            Path to generated YAML file (if auto_save=True) or YAML string (if auto_save=False)
+            Task - task instance ready for execution or further processing
         
         Example:
-            >>> yaml_path = await Runners.plan_task(
-            ...     query="Help me find the latest one-week stock price of BABA and analyze the trend.",
-            ...     skills_path="./skills",
-            ...     output_yaml="./my_task.yaml"
+            >>> task = await Runners.text_to_task(
+            ...     query="Help me find the latest stock price of BABA.",
+            ...     skills_path="./skills"
             ... )
-            >>> # Review/modify YAML...
-            >>> results = await Runners.execute_plan(yaml_path, skills_path="./skills")
+            >>> # Can further process task objects
+            >>> task.timeout = 300
+            >>> results = await Runners.run_task(task)
         """
         from aworld.agents.meta_agent import MetaAgent
-        
-        # 1. Create or use provided MetaAgent
-        if meta_agent is None:
-            meta_agent = create_default_meta_agent()
-            logger.info("📝 Using default MetaAgent for task planning")
-        else:
-            logger.info(f"📝 Using custom MetaAgent: {meta_agent.name}")
-        
-        # 2. Call MetaAgent to generate YAML
+        from aworld.config.task_loader import load_task_from_yaml
+        import tempfile
+
+        # 1. Run MetaAgent to generate YAML
         logger.info(f"🧠 Analyzing query: {query[:100]}..." if len(query) > 100 else f"🧠 Analyzing query: {query}")
         
-        yaml_str = await meta_agent.plan_task(
+        yaml_str = await run_meta_agent_for_yaml(
+            meta_agent=meta_agent,
             query=query,
-            skills_path=Path(skills_path) if skills_path else None,
+            skills_path=skills_path,
             available_agents=available_agents,
             available_tools=available_tools,
-            mcp_config=mcp_config
+            mcp_config=mcp_config,
+            context_config=context_config
         )
         
-        # 3. Save YAML if requested
-        if auto_save:
-            if not output_yaml:
-                # Auto-generate path by default: ~/.aworld/tasks/{timestamp}_{hash}.yaml
-                output_yaml = generate_yaml_path(query)
-            
-            output_path = Path(output_yaml)
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            with open(output_path, "w", encoding="utf-8") as f:
-                f.write(yaml_str)
-            
-            logger.info(f"✅ Task YAML saved to: {output_path}")
-            return str(output_path)
-        else:
-            logger.info("✅ Task YAML generated (not saved)")
-            return yaml_str
+        # 2. Convert YAML to Task object (via temporary file)
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
+            f.write(yaml_str)
+            temp_yaml_path = f.name
+        
+        try:
+            task = await load_task_from_yaml(
+                temp_yaml_path,
+                available_agents=available_agents,
+                skills_path=Path(skills_path) if skills_path else None,
+                context_config=context_config,
+                **task_overrides
+            )
+        finally:
+            import os
+            os.unlink(temp_yaml_path)
+        
+        logger.info(f"✅ Task created: task_id={task.id}, swarm_type={task.swarm.build_type}")
+        return task
     
     @staticmethod
-    async def execute_plan(
+    async def run_by_yaml(
         yaml_path: str,
         *,
         available_agents: Dict[str, BaseAgent] = None,
         skills_path: Union[str, Path] = None,
         context_config: Optional[AmniContextConfig] = None,
         run_conf: RunConfig = None,
+        execute: bool = True,
         **task_overrides
-    ) -> Dict[str, TaskResponse]:
+    ) -> Union[Task, Tuple[Task, Dict[str, TaskResponse]]]:
         """
-        Execute a Task from YAML plan.
+        Load Task from YAML configuration and optionally execute it.
         
-        This is step 2 of the two-step auto_run_task workflow.
-        Loads the YAML, instantiates agents/swarm, and executes the task.
+        This is a foundational method that returns Task object instance.
+        Can be used to load and inspect Task before execution, or execute directly.
         
         Args:
-            yaml_path: Path to Task YAML file (generated by plan_task)
+            yaml_path: Path to Task YAML file
             available_agents: Dict of predefined agents (for type='predefined')
             skills_path: Path to skills directory (for type='skill')
             context_config: Context configuration for task execution
             run_conf: Runtime configuration
+            execute: If True, execute the task and return (task, results); 
+                    If False, only load and return task object
             **task_overrides: Override task configs (timeout, session_id, task_id, etc.)
         
         Returns:
-            Task execution results {task_id: TaskResponse}
+            If execute=True: Tuple of (Task, results_dict)
+            If execute=False: Task object only
         
         Example:
-            >>> results = await Runners.execute_plan(
-            ...     "task_plan.yaml",
-            ...     available_agents={"search_agent": my_search_agent},
+            >>> # Load and inspect task
+            >>> task = await Runners.run_by_yaml("task.yaml", execute=False)
+            >>> task.timeout = 300
+            >>> 
+            >>> # Load and execute
+            >>> task, results = await Runners.run_by_yaml(
+            ...     "task.yaml",
+            ...     available_agents={"agent1": my_agent},
             ...     skills_path="./skills"
             ... )
-            >>> print(results[task_id].answer)
+            >>> print(results[task.id].answer)
         """
         from aworld.config.task_loader import load_task_from_yaml
         
-        logger.info(f"📋 Executing plan from: {yaml_path}")
+        logger.info(f"📋 Loading task from: {yaml_path}")
         
-        # 1. Load Task from YAML
+        # Load Task from YAML
         task = await load_task_from_yaml(
             yaml_path,
             available_agents=available_agents,
@@ -355,15 +363,20 @@ class Runners:
             **task_overrides
         )
         
-        # 2. Execute Task
+        logger.info(f"✅ Task loaded: id={task.id}, swarm_type={task.swarm.build_type}")
+        
+        if not execute:
+            return task
+        
+        # Execute Task
         logger.info(f"🚀 Running task: {task.id}")
         results = await Runners.run_task(task, run_conf=run_conf)
         
         logger.info(f"✅ Task completed: {task.id}")
-        return results
+        return task, results
     
     @staticmethod
-    async def auto_run_task(
+    async def text_to_run(
         query: str,
         *,
         meta_agent: 'MetaAgent' = None,
@@ -373,14 +386,13 @@ class Runners:
         mcp_config: Dict[str, Any] = None,
         context_config: Optional[AmniContextConfig] = None,
         run_conf: RunConfig = None,
-        output_yaml: str = None,
-        save_plan: bool = True,
         **task_overrides
-    ) -> Tuple[Dict[str, TaskResponse], str]:
+    ) -> Tuple[Task, Dict[str, TaskResponse]]:
         """
-        Auto-run task: plan + execute in one call.
+        Convert text query to execution results in one call.
         
-        Combines plan_task and execute_plan into a single convenient interface.
+        This is a high-level convenience method that combines text_to_task and execution.
+        Returns object instances (Task and results) for further processing.
         
         Args:
             query: User query to analyze and execute
@@ -391,62 +403,39 @@ class Runners:
             mcp_config: Global MCP server configurations
             context_config: Context configuration for execution
             run_conf: Runtime configuration
-            output_yaml: Output YAML path (if None and save_plan=True, auto-generate)
-            save_plan: Whether to save Task YAML to file
             **task_overrides: Override task configs (timeout, session_id, etc.)
         
         Returns:
-            Tuple of (task_results, yaml_path_or_string)
-            - task_results: {task_id: TaskResponse}
-            - yaml_path_or_string: Path to saved YAML if save_plan=True, else YAML string
+            Tuple of (Task, results_dict) - object instances for further processing
         
         Example:
-            >>> results, yaml_path = await Runners.auto_run_task(
-            ...     query="Help me find the latest one-week stock price of BABA and analyze the trend.",
-            ...     skills_path="./skills",
-            ...     save_plan=True
+            >>> task, results = await Runners.text_to_run(
+            ...     query="Help me find the latest stock price of BABA.",
+            ...     skills_path="./skills"
             ... )
-            >>> print(f"Plan saved at: {yaml_path}")
-            >>> print(f"Answer: {results[task_id].answer}")
+            >>> # Can further process task and results
+            >>> print(f"Task ID: {task.id}")
+            >>> print(f"Answer: {results[task.id].answer}")
+            >>> # Can also inspect swarm
+            >>> print(f"Swarm agents: {[a.name for a in task.swarm.agents]}")
         """
-        logger.info("🎯 Auto-running task with MetaAgent planning...")
+        logger.info("🎯 Converting text to execution with MetaAgent planning...")
         
-        # 1. Plan
-        yaml_path_or_str = await Runners.plan_task(
+        # 1. Convert text to Task and Swarm
+        task = await Runners.text_to_task(
             query=query,
             meta_agent=meta_agent,
             skills_path=skills_path,
             available_agents=available_agents,
             available_tools=available_tools,
             mcp_config=mcp_config,
-            output_yaml=output_yaml,
-            auto_save=save_plan
-        )
-        
-        # 2. Execute
-        # If save_plan=False, yaml_path_or_str is YAML string, need to save temporarily
-        if not save_plan:
-            import tempfile
-            with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
-                f.write(yaml_path_or_str)
-                temp_yaml_path = f.name
-            yaml_to_execute = temp_yaml_path
-        else:
-            yaml_to_execute = yaml_path_or_str
-        
-        results = await Runners.execute_plan(
-            yaml_path=yaml_to_execute,
-            available_agents=available_agents,
-            skills_path=skills_path,
             context_config=context_config,
-            run_conf=run_conf,
             **task_overrides
         )
         
-        # Clean up temp file if needed
-        if not save_plan:
-            import os
-            os.unlink(temp_yaml_path)
+        # 2. Execute Task
+        logger.info(f"🚀 Running task: {task.id}")
+        results = await Runners.run_task(task, run_conf=run_conf)
         
-        logger.info("🎉 Auto-run task completed!")
-        return results, yaml_path_or_str
+        logger.info("🎉 Text-to-run completed!")
+        return task, results

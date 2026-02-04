@@ -18,6 +18,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
 from aworld.core.common import Observation
 from aworld.core.agent.base import BaseAgent
+from aworld.core.event.base import Message, AgentMessage
 from aworld.logs.util import logger
 
 
@@ -497,6 +498,13 @@ swarm:
         
         # Register MetaAgent-specific tools
         self._register_meta_tools()
+        
+        # Planning context cache (set by plan_task or async_policy)
+        self._skills_path: Optional[Path] = kwargs.get("skills_path", None)
+        self._available_agents: Dict[str, BaseAgent] = kwargs.get("available_agents", {})
+        self._available_tools: List[str] = kwargs.get("available_tools", [])
+        self._available_mcp_servers: Dict[str, Dict[str, Any]] = kwargs.get("available_mcp_servers", {})
+        self._use_self_resources: bool = True
     
     def _register_meta_tools(self):
         """Register MetaAgent-specific tools."""
@@ -548,43 +556,35 @@ swarm:
             self.tools = []
         self.tools.append(tool)
     
-    async def plan_task(self,
-                       query: str,
-                       skills_path: Optional[Path] = None,
-                       available_agents: Dict[str, BaseAgent] = None,
-                       available_tools: List[str] = None,
-                       available_mcp_servers: Dict[str, Dict[str, Any]] = None,
-                       mcp_config: Dict[str, Any] = None,
-                       use_self_resources: bool = True) -> str:
+    async def async_policy(self, observation: Observation, info: Dict[str, Any] = None, **kwargs) -> str:
         """
-        Analyze query and generate Task YAML configuration.
+        MetaAgent's core logic: Analyze query and generate Task YAML.
+        
+        This overrides the parent Agent's async_policy to implement MetaAgent-specific behavior.
+        Instead of returning List[ActionModel], this returns the YAML string directly.
         
         Args:
-            query: User query to analyze
-            skills_path: Path to skills directory (for scanning available skills)
-            available_agents: Dict of predefined agents {agent_id: agent_instance}
-            available_tools: List of available tool names (if None and use_self_resources=True, 
-                           uses MetaAgent's own tool_names)
-            available_mcp_servers: Dict of available MCP servers with their info
-                Format: {
-                    "server_name": {
-                        "desc": "Server description",
-                        "tools": ["tool1", "tool2", ...],  # Available tools
-                        "command": "command",
-                        "args": ["arg1", "arg2"]
-                    }
-                }
-                If None and use_self_resources=True, extracts from MetaAgent's own mcp_servers/sandbox
-            mcp_config: Global MCP server configurations (fallback if available_mcp_servers not provided)
-            use_self_resources: If True, automatically use MetaAgent's own tools/mcp_servers when 
-                              corresponding parameters are None (default: True)
+            observation: User query wrapped in Observation
+            info: Additional context info (can contain planning parameters)
+            **kwargs: Additional arguments
         
         Returns:
-            Generated YAML string (ready to save to file)
+            YAML string (Task configuration)
         
         Raises:
-            ValueError: If YAML generation fails after max_yaml_retry attempts
+            ValueError: If YAML generation fails
         """
+        # Extract query from observation
+        query = observation.content if hasattr(observation, 'content') else str(observation)
+        
+        # Get planning parameters from info or use cached values
+        skills_path = info.get('skills_path', self._skills_path) if info else self._skills_path
+        available_agents = info.get('available_agents', self._available_agents) if info else self._available_agents
+        available_tools = info.get('available_tools', self._available_tools) if info else self._available_tools
+        available_mcp_servers = info.get('available_mcp_servers', self._available_mcp_servers) if info else self._available_mcp_servers
+        mcp_config = info.get('mcp_config', self._mcp_config) if info else self._mcp_config
+        use_self_resources = info.get('use_self_resources', self._use_self_resources) if info else self._use_self_resources
+        
         # 1. Load skills information
         skills_info = self._load_skills_info(skills_path) if skills_path else {}
         
@@ -611,14 +611,16 @@ swarm:
             available_mcp_servers
         )
         
-        # 3. Call LLM to generate YAML (with retry)
+        # 4. Call parent's async_policy (LLM) to generate YAML (with retry)
         yaml_str = None
         last_error = None
         
         for attempt in range(self.max_yaml_retry):
             try:
-                observation = Observation(content=self._format_query(query, context))
-                result = await self.async_policy(observation)
+                formatted_observation = Observation(content=self._format_query(query, context))
+                
+                # Call parent Agent's async_policy (which calls LLM)
+                result = await super().async_policy(formatted_observation, info=info, **kwargs)
                 
                 # Extract and validate YAML
                 yaml_str = self._extract_yaml(result)
