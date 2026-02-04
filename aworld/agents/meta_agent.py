@@ -53,13 +53,13 @@ You are a MetaAgent responsible for analyzing user queries and planning task exe
 ## Few-Shot Examples:
 
 ### Example 1: Simple Single-Agent Task
-Query: "总结这份 PDF 的核心内容"
+Query: "Summarize the core content of this PDF"
 Analysis: Single capability (document processing), no multi-agent coordination needed.
 
 Output YAML:
 ```yaml
 task:
-  query: "总结这份 PDF 的核心内容"
+  query: "Summarize the core content of this PDF"
 
 agents:
   - id: orchestrator
@@ -95,13 +95,13 @@ mcp_config:
 ```
 
 ### Example 2: Multi-Agent Handoff Task
-Query: "帮我找到最新一周 BABA 的股价并分析趋势"
+Query: "Find the latest one-week stock price of BABA and analyze the trend"
 Analysis: Multi-step (search + analysis), sequential with handoff between specialists.
 
 Output YAML:
 ```yaml
 task:
-  query: "帮我找到最新一周 BABA 的股价并分析趋势"
+  query: "Find the latest one-week stock price of BABA and analyze the trend"
 
 agents:
   - id: orchestrator
