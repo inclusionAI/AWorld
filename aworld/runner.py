@@ -264,7 +264,7 @@ class Runners:
         
         Example:
             >>> yaml_path = await Runners.plan_task(
-            ...     query="帮我找到最新一周 BABA 的股价并分析趋势",
+            ...     query="Help me find the latest one-week stock price of BABA and analyze the trend.",
             ...     skills_path="./skills",
             ...     output_yaml="./my_task.yaml"
             ... )
@@ -294,7 +294,7 @@ class Runners:
         # 3. Save YAML if requested
         if auto_save:
             if not output_yaml:
-                # Auto-generate path: ~/.aworld/tasks/{timestamp}_{hash}.yaml
+                # Auto-generate path by default: ~/.aworld/tasks/{timestamp}_{hash}.yaml
                 output_yaml = _generate_yaml_path(query)
             
             output_path = Path(output_yaml)
@@ -404,7 +404,7 @@ class Runners:
         
         Example:
             >>> results, yaml_path = await Runners.auto_run_task(
-            ...     query="帮我找到最新一周 BABA 的股价并分析趋势",
+            ...     query="Help me find the latest one-week stock price of BABA and analyze the trend.",
             ...     skills_path="./skills",
             ...     save_plan=True
             ... )
