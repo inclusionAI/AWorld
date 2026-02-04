@@ -174,8 +174,7 @@ action_params = {
             "file_path": "path/to/your/file.py",
             "search": "CODE_BLOCK_TO_FIND",
             "replace": "NEW_CODE_BLOCK",
-            "fuzzy_match": True, // Optional, defaults to True
-            "similarity_threshold": 0.8 // Optional, defaults to 0.8
+            "exact_match_only": true
         }
     }),
     "source_dir": "/path/to/agent/root", // Base directory for the operation
@@ -192,8 +191,7 @@ CAST_PATCH.search_replace(**action_params)
 | `file_path`            | string  |    ✓     | The relative path to the file from `source_dir`.                          |
 | `search`               | string  |    ✓     | The multi-line code block to search for.                                  |
 | `replace`              | string  |    ✓     | The multi-line code block to replace it with.                             |
-| `fuzzy_match`          | boolean |    ✗     | Enables/disables fuzzy matching. Defaults to `True`.                      |
-| `similarity_threshold` | float   |    ✗     | Threshold (0.0-1.0) for fuzzy matching. Defaults to `0.8`.                |
+| `exact_match_only`     | boolean | -        | fixed as true（可选，仅为文档说明） |
 
 **Best Practices**:
 *   Use multi-line `search` blocks that include structural context (like `def` or `class` lines) for better accuracy.
