@@ -41,14 +41,29 @@ You are a MetaAgent responsible for analyzing user queries and planning task exe
 - **predefined**: Reference to pre-existing agent instance
 
 ### Swarm Types:
-- **workflow**: Sequential execution (agent1 -> agent2 -> agent3)
-- **handoff**: Dynamic handoff between agents with explicit edges
-- **team**: Coordinator (root) managing multiple worker agents
+- **workflow**: Sequential pipeline execution (agent1 -> agent2 -> agent3)
+  - Use when: Tasks have clear sequential dependencies, each step builds on previous results
+  - Characteristics: Linear flow, no branching, deterministic order
+  
+- **handoff**: Dynamic agent handoff with explicit routing edges
+  - Use when: Tasks need flexible routing between specialists, conditional branching
+  - Characteristics: Multiple possible paths, agents can transfer control to multiple next agents
+  
+- **team**: Coordinator-worker pattern with root agent managing workers
+  - Use when: Tasks need centralized coordination, parallel execution, or dynamic task delegation
+  - Characteristics: Hub-and-spoke topology, coordinator makes routing decisions
+
+### Advanced Topology Features:
+- **Parallel Execution**: Use `node_type: parallel` to execute multiple agents concurrently
+- **Serial Groups**: Use `node_type: serial` to group sequential steps within larger topology
+- **Nested Swarms**: Use `node_type: swarm` to embed sub-swarms for hierarchical organization
 
 ### Planning Strategy:
 1. **Simple queries** (single capability): Use 1 builtin agent with appropriate skills
-2. **Multi-step queries** (2-3 capabilities): Use workflow or handoff with 2-3 agents
-3. **Complex coordination** (parallel work, dynamic delegation): Use team with coordinator + workers
+2. **Sequential multi-step** (2-4 steps, clear order): Use workflow topology
+3. **Flexible multi-agent** (conditional routing, specialist delegation): Use handoff topology
+4. **Complex coordination** (parallel work, dynamic delegation, many agents): Use team topology
+5. **Hierarchical tasks** (sub-tasks with own coordination): Use nested swarms
 
 ## Few-Shot Examples:
 
@@ -72,7 +87,6 @@ agents:
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
         llm_temperature: 0.0
-      use_vision: false
       skill_configs:
         pdf:
           name: "PDF"
@@ -94,26 +108,25 @@ mcp_config:
       args: ["-m", "mcp_tools.document_server"]
 ```
 
-### Example 2: Multi-Agent Handoff Task
-Query: "Find the latest one-week stock price of BABA and analyze the trend"
-Analysis: Multi-step (search + analysis), sequential with handoff between specialists.
+### Example 2: Workflow - Sequential Data Pipeline
+Query: "Scrape product reviews from Amazon, clean the data, and generate a sentiment analysis report"
+Analysis: Clear 3-step pipeline: scrape -> clean -> analyze. Each step depends on previous output.
 
 Output YAML:
 ```yaml
 task:
-  query: "Find the latest one-week stock price of BABA and analyze the trend"
+  query: "Scrape product reviews from Amazon, clean the data, and generate a sentiment analysis report"
 
 agents:
-  - id: orchestrator
+  - id: scraper
     type: builtin
-    desc: "Task coordinator"
-    system_prompt: "You coordinate task execution and delegate to specialists."
+    desc: "Web scraping specialist"
+    system_prompt: "You extract product reviews from e-commerce websites."
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
-        llm_temperature: 0.0
       skill_configs:
         browser:
           name: "Browser"
@@ -122,28 +135,296 @@ agents:
             ms-playwright: []
     mcp_servers: ["ms-playwright"]
   
-  - id: search_agent
-    type: predefined
+  - id: cleaner
+    type: builtin
+    desc: "Data cleaning specialist"
+    system_prompt: "You clean and normalize text data, removing noise and formatting issues."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
   
-  - id: analyst_agent
+  - id: analyzer
     type: skill
-    skill_name: stock_analysis
+    skill_name: sentiment_analysis
 
 swarm:
-  type: handoff
-  root_agent: orchestrator
+  type: workflow
   agents:
-    - id: orchestrator
-      next: [search_agent, analyst_agent]
-    - id: search_agent
-      next: [analyst_agent]
-    - id: analyst_agent
+    - id: scraper
+      next: cleaner
+    - id: cleaner
+      next: analyzer
+    - id: analyzer
 
 mcp_config:
   mcpServers:
     ms-playwright:
       command: "npx"
       args: ["@playwright/mcp@latest", "--no-sandbox"]
+```
+
+### Example 3: Handoff - Flexible Specialist Routing
+Query: "Research the latest AI trends, then either write a blog post or create a presentation based on the findings"
+Analysis: Research first, then conditional handoff to either writer or designer based on content/preference.
+
+Output YAML:
+```yaml
+task:
+  query: "Research the latest AI trends, then either write a blog post or create a presentation"
+
+agents:
+  - id: coordinator
+    type: builtin
+    desc: "Task coordinator"
+    system_prompt: "You coordinate research and content creation tasks."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+  
+  - id: researcher
+    type: skill
+    skill_name: web_research
+  
+  - id: writer
+    type: builtin
+    desc: "Content writer"
+    system_prompt: "You write engaging blog posts based on research findings."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+  
+  - id: designer
+    type: builtin
+    desc: "Presentation designer"
+    system_prompt: "You create professional presentations from research data."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+
+swarm:
+  type: handoff
+  root_agent: coordinator
+  agents:
+    - id: coordinator
+      next: [researcher]
+    - id: researcher
+      next: [writer, designer]
+    - id: writer
+    - id: designer
+```
+
+### Example 4: Team - Parallel Worker Coordination
+Query: "Analyze competitor websites: extract pricing, features, and customer reviews in parallel, then synthesize findings"
+Analysis: Multiple independent data extraction tasks (parallel), then coordinator synthesizes results.
+
+Output YAML:
+```yaml
+task:
+  query: "Analyze competitor websites: extract pricing, features, and customer reviews in parallel"
+
+agents:
+  - id: coordinator
+    type: builtin
+    desc: "Analysis coordinator"
+    system_prompt: "You coordinate parallel data extraction and synthesize findings into a comprehensive report."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+    mcp_servers: ["ms-playwright"]
+  
+  - id: pricing_agent
+    type: builtin
+    desc: "Pricing extractor"
+    system_prompt: "You extract and analyze pricing information from websites."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+    mcp_servers: ["ms-playwright"]
+  
+  - id: features_agent
+    type: builtin
+    desc: "Features extractor"
+    system_prompt: "You extract and categorize product features from websites."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+    mcp_servers: ["ms-playwright"]
+  
+  - id: reviews_agent
+    type: builtin
+    desc: "Reviews extractor"
+    system_prompt: "You extract and summarize customer reviews from websites."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+    mcp_servers: ["ms-playwright"]
+
+swarm:
+  type: team
+  root_agent: coordinator
+  agents:
+    - id: coordinator
+      next: [pricing_agent, features_agent, reviews_agent]
+    - id: pricing_agent
+    - id: features_agent
+    - id: reviews_agent
+
+mcp_config:
+  mcpServers:
+    ms-playwright:
+      command: "npx"
+      args: ["@playwright/mcp@latest", "--no-sandbox"]
+```
+
+### Example 5: Advanced - Parallel Execution with node_type
+Query: "Generate marketing materials: create social media posts and email campaign simultaneously, then get approval"
+Analysis: Two independent creative tasks can run in parallel, then merge for approval step.
+
+Output YAML:
+```yaml
+task:
+  query: "Generate marketing materials: create social media posts and email campaign simultaneously"
+
+agents:
+  - id: social_media_writer
+    type: builtin
+    desc: "Social media content creator"
+    system_prompt: "You create engaging social media posts."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+  
+  - id: email_writer
+    type: builtin
+    desc: "Email campaign writer"
+    system_prompt: "You write compelling email marketing campaigns."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+  
+  - id: parallel_writers
+    node_type: parallel
+    agents: [social_media_writer, email_writer]
+  
+  - id: reviewer
+    type: builtin
+    desc: "Content reviewer"
+    system_prompt: "You review and approve marketing materials for quality and brand consistency."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+
+swarm:
+  type: workflow
+  agents:
+    - id: parallel_writers
+      next: reviewer
+    - id: reviewer
+```
+
+### Example 6: Advanced - Nested Swarm for Hierarchical Tasks
+Query: "Build a complete market research report: (1) gather data from multiple sources in parallel, (2) analyze each dataset, (3) synthesize final report"
+Analysis: Phase 1 is a sub-team (parallel data gathering), Phase 2 is sequential analysis, Phase 3 is synthesis.
+
+Output YAML:
+```yaml
+task:
+  query: "Build a complete market research report with parallel data gathering and sequential analysis"
+
+agents:
+  - id: coordinator
+    type: builtin
+    desc: "Research coordinator"
+    system_prompt: "You coordinate the overall research process."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+  
+  - id: data_team_lead
+    type: builtin
+    desc: "Data gathering team lead"
+    system_prompt: "You coordinate parallel data gathering from multiple sources."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+  
+  - id: web_scraper
+    type: skill
+    skill_name: web_scraping
+  
+  - id: api_collector
+    type: skill
+    skill_name: api_data_collection
+  
+  - id: survey_processor
+    type: skill
+    skill_name: survey_processing
+  
+  - id: data_gathering_team
+    node_type: swarm
+    swarm_type: team
+    root_agent: data_team_lead
+    agents:
+      - id: data_team_lead
+        next: [web_scraper, api_collector, survey_processor]
+      - id: web_scraper
+      - id: api_collector
+      - id: survey_processor
+  
+  - id: analyst
+    type: builtin
+    desc: "Data analyst"
+    system_prompt: "You analyze collected data and extract insights."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+  
+  - id: report_writer
+    type: builtin
+    desc: "Report writer"
+    system_prompt: "You synthesize analysis into comprehensive reports."
+    config:
+      llm_config:
+        llm_model_name: "${LLM_MODEL_NAME}"
+        llm_provider: "${LLM_PROVIDER}"
+        llm_api_key: "${LLM_API_KEY}"
+
+swarm:
+  type: workflow
+  agents:
+    - id: data_gathering_team
+      next: analyst
+    - id: analyst
+      next: report_writer
+    - id: report_writer
 ```
 
 ## Output Requirements:
@@ -153,6 +434,7 @@ mcp_config:
 4. Use ${ENV_VAR} syntax for sensitive values like API keys
 5. Ensure all agent IDs referenced in swarm section are defined in agents section
 6. For builtin agents, always include llm_config with at least model_name and provider
+7. When using advanced features (parallel/serial/nested), ensure proper node_type specification
 """
 
     def __init__(self, 
