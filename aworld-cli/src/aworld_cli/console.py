@@ -899,10 +899,11 @@ class AWorldCLI:
                         # Load User agents from AgentVersionControlRegistry default instance
                         try:
                             agent_list = await global_agent_registry.list_desc()
-                            for name, desc in agent_list:
+                            for name, desc, path, version in agent_list:
                                 agent_info = AgentInfo(
                                     name=name,
                                     desc=desc,
+                                    metadata={"version": version} if version else {},
                                     source_type="USER",
                                     source_location=base_path
                                 )

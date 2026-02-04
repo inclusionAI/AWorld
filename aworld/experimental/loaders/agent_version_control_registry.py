@@ -98,44 +98,62 @@ class AgentDslVersionControlRegistry(VersionControlRegistry):
 
     async def list_desc(self) -> List[tuple]:
         """
-        List all available resources with their descriptions.
+        List all available resources with their descriptions, paths, and versions.
         
         Args:        
         Returns:
-            List of tuples (name, description) for each resource
+            List of tuples (name, description, path, version) for each resource
         """
         resources = self._scan_files_by_suffix(".md")
         resources_with_desc = []
         
+        # Get base_path and storage configuration
+        base_path = os.path.expanduser(os.environ.get('AGENTS_PATH', '~/.aworld/agents'))
+        storage_type = self._get_storage_type()
+        oss_config = self._get_oss_config()
+        
         for name in resources:
             try:
+                # Get version information
+                versions = await self.list_versions(name)
+                if versions:
+                    version = versions[-1]  # Use latest version
+                else:
+                    version = "v0"  # Default to v0 if no versions found
+                
+                # Get path by resolving resource
+                from aworld.core.context.amni import DirArtifact
+                if storage_type == 'oss' and oss_config:
+                    dir_artifact = DirArtifact.with_oss_repository(
+                        access_key_id=oss_config.get('access_key_id'),
+                        access_key_secret=oss_config.get('access_key_secret'),
+                        endpoint=oss_config.get('endpoint'),
+                        bucket_name=oss_config.get('bucket_name'),
+                        base_path=base_path
+                    )
+                else:
+                    dir_artifact = DirArtifact.with_local_repository(base_path)
+                
+                attachment = await VersionControlRegistry.resolve_resource_from_artifact(
+                    dir_artifact=dir_artifact,
+                    name=name,
+                    suffix=".md",
+                    version=None
+                )
+                
+                path = attachment.path if attachment else "Unknown path"
+                
                 agent = await self.load_agent(agent_name=name)
                 # Load the markdown content to parse description
                 if agent:
                     desc = agent.desc() or "No description"
-                    resources_with_desc.append((name, desc))
+                    resources_with_desc.append((name, desc, path, version))
                 else:
-                    resources_with_desc.append((name, "No description"))
+                    resources_with_desc.append((name, "No description", path, version))
             except Exception as e:
-                resources_with_desc.append((name, "No description"))
+                resources_with_desc.append((name, "No description", "Unknown path", "v0"))
         
         return resources_with_desc
-
-    async def load_as_source(self, name: str, version: str = None) -> Optional[str]:
-        """
-        Load agent configuration as source content (markdown format).
-        
-        Args:
-            name: Agent name            version: Optional version number, if None uses the latest version
-        
-        Returns:
-            Agent configuration markdown content, or None if not found
-        """
-        return await self._load_as_source_by_suffix(
-            name=name,
-            suffix=".md",
-            version=version
-        )
 
     async def load_agent(self, agent_name: str, version: str = None) -> Optional[Agent]:
         if not version:
@@ -160,15 +178,6 @@ class AgentDslVersionControlRegistry(VersionControlRegistry):
             oss_config=oss_config
         )
         return agent
-
-
-    async def save_as_source(self, content: str, name: str) -> bool:
-        """Save configuration content as markdown file to storage base path."""
-        return await self._save_file_by_suffix(
-            content=content,
-            name=name,
-            suffix=".md",
-        )
 
 
 
@@ -366,50 +375,66 @@ class AgentCodeVersionControlRegistry(VersionControlRegistry):
 
     async def list_desc(self) -> List[tuple]:
         """
-        List all available resources with their descriptions.
+        List all available resources with their descriptions, paths, and versions.
         
         Args:        
         Returns:
-            List of tuples (name, description) for each resource
+            List of tuples (name, description, path, version) for each resource
         """
         resources = self._scan_files_by_suffix(".py")
         resources_with_desc = []
         
-        # Try to get descriptions from LocalAgentRegistry first
+        # Try to get descriptions and paths from LocalAgentRegistry first
         from aworld_cli.core.agent_registry import LocalAgentRegistry
         import os
         base_path = os.path.expanduser(os.environ.get('AGENTS_PATH', '~/.aworld/agents'))
-        local_agents_dict = {}
-        local_agents_by_dir = {}
+        local_agents_dict = {}  # Map name -> LocalAgent object
+        local_agents_by_dir = {}  # Map dir_name -> LocalAgent object
         try:
             local_agents = LocalAgentRegistry.list_agents()
             for local_agent in local_agents:
                 if local_agent.name:
                     # Map by name (exact match)
-                    local_agents_dict[local_agent.name] = local_agent.desc or "No description"
+                    local_agents_dict[local_agent.name] = local_agent
                     # Map by directory path (for matching resource names from directory structure)
                     if local_agent.register_dir:
                         # Extract directory name from register_dir
                         dir_name = os.path.basename(local_agent.register_dir.rstrip('/'))
                         if dir_name:
-                            local_agents_by_dir[dir_name] = local_agent.desc or "No description"
+                            local_agents_by_dir[dir_name] = local_agent
                     # Also try to match by checking if resource name directory contains agent file
                     # Resource name is typically the directory name in base_path
                     resource_dir = os.path.join(base_path, local_agent.name)
                     if os.path.exists(resource_dir):
-                        local_agents_by_dir[local_agent.name] = local_agent.desc or "No description"
+                        local_agents_by_dir[local_agent.name] = local_agent
         except Exception:
             pass
         
         for name in resources:
             try:
                 desc = None
+                path = None
+                version = None
+                local_agent = None
+                
+                # Get version information
+                versions = await self.list_versions(name)
+                if versions:
+                    version = versions[-1]  # Use latest version
+                else:
+                    version = "v0"  # Default to v0 if no versions found
+                
                 # First try exact name match
                 if name in local_agents_dict:
-                    desc = local_agents_dict[name] or "No description"
+                    local_agent = local_agents_dict[name]
+                    desc = local_agent.desc or "No description"
+                    path = local_agent.path or "Unknown path"
                 # Then try directory name match
                 elif name in local_agents_by_dir:
-                    desc = local_agents_by_dir[name] or "No description"
+                    local_agent = local_agents_by_dir[name]
+                    desc = local_agent.desc or "No description"
+                    path = local_agent.path or "Unknown path"
+                
                 # Fallback to loading agent and getting description from agent instance
                 if not desc:
                     agent = await self.load_agent(agent_name=name)
@@ -417,27 +442,17 @@ class AgentCodeVersionControlRegistry(VersionControlRegistry):
                         desc = agent.desc() or "No description"
                     else:
                         desc = "No description"
-                resources_with_desc.append((name, desc))
+                
+                # If path is still not set, use "Unknown path"
+                if not path:
+                    path = "Unknown path"
+                
+                resources_with_desc.append((name, desc, path, version))
             except Exception as e:
-                resources_with_desc.append((name, "No description"))
+                logger.warning(f"Failed to get description for {name}: {e} {traceback.format_exc()}")
+                resources_with_desc.append((name, "No description", "Unknown path", "v0"))
         
         return resources_with_desc
-
-    async def load_as_source(self, name: str, version: str = None) -> Optional[str]:
-        """
-        Load agent configuration as source content (Python code format).
-        
-        Args:
-            name: Agent name            version: Optional version number, if None uses the latest version
-        
-        Returns:
-            Agent Python source code content, or None if not found
-        """
-        return await self._load_as_source_by_suffix(
-            name=name,
-            suffix=".py",
-            version=version
-        )
 
     async def load_agent(self, agent_name: str, version: str = None) -> Optional[Agent]:
         if not version:
@@ -462,15 +477,6 @@ class AgentCodeVersionControlRegistry(VersionControlRegistry):
             oss_config=oss_config
         )
         return agent
-
-    async def save_as_source(self, content: str, name: str) -> bool:
-        """Save configuration content as Python file to storage base path."""
-        return await self._save_file_by_suffix(
-            content=content,
-            name=name,
-            suffix=".py",
-            mime_type='text/x-python'
-        )
 
 
 
@@ -527,7 +533,10 @@ class AgentVersionControlRegistry(VersionControlRegistry):
 
     async def list_desc(self) -> List[tuple]:
         """
-        List all available resources with their descriptions from both registries.
+        List all available resources with their descriptions, paths, and versions from both registries.
+        
+        Returns:
+            List of tuples (name, description, path, version) for each resource
         """
         # Get descriptions from both registries
         dsl_desc = await self._dsl_registry.list_desc()
@@ -535,34 +544,15 @@ class AgentVersionControlRegistry(VersionControlRegistry):
         
         # Merge results, using a dict to handle duplicates (prefer DSL if both exist)
         resources_dict = {}
-        for name, desc in dsl_desc:
-            resources_dict[name] = desc
-        for name, desc in code_desc:
+        for name, desc, path, version in dsl_desc:
+            resources_dict[name] = (desc, path, version)
+        for name, desc, path, version in code_desc:
             # Only add if not already in dict (DSL takes precedence)
             if name not in resources_dict:
-                resources_dict[name] = desc
+                resources_dict[name] = (desc, path, version)
         
         # Convert to sorted list of tuples
-        return sorted([(name, desc) for name, desc in resources_dict.items()])
-
-    async def load_as_source(self, name: str, version: str = None, session_id: str = None) -> Optional[str]:
-        """
-        Load agent configuration as source content.
-        Tries DSL registry first, then Code registry.
-        
-        Args:
-            name: Agent name
-            version: Optional version number, if None uses the latest version
-            session_id: Optional session ID (currently unused, kept for compatibility)
-        """
-        # Try DSL registry first
-        content = await self._dsl_registry.load_as_source(name, version)
-        if content:
-            return content
-        
-        # Try Code registry
-        content = await self._code_registry.load_as_source(name, version)
-        return content
+        return sorted([(name, desc, path, version) for name, (desc, path, version) in resources_dict.items()])
 
     async def load_agent(self, agent_name: str, version: str = None) -> Optional[Agent]:
         """
@@ -580,24 +570,6 @@ class AgentVersionControlRegistry(VersionControlRegistry):
             return agent
 
         return None
-
-    async def save_as_source(self, content: str, name: str, 
-                            registry_type: str = "dsl") -> bool:
-        """
-        Save configuration content to the specified registry.
-        
-        Args:
-            content: Content to save
-            name: Agent name
-            registry_type: "dsl" for markdown or "code" for Python (default: "dsl")
-        
-        Returns:
-            True if save successful, False otherwise
-        """
-        if registry_type == "code":
-            return await self._code_registry.save_as_source(content, name)
-        else:
-            return await self._dsl_registry.save_as_source(content, name)
 
 
 class DefaultContext:

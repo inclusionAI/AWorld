@@ -14,6 +14,7 @@ from typing import Optional, List
 
 from aworld.core.context.amni import AgentContextConfig
 from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
+from aworld.experimental.cast.tools import CAST_ANALYSIS, CAST_PATCH
 from aworld.logs.util import logger
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,6 +28,8 @@ from aworld.experimental.loaders.agent_version_control_registry import global_ag
 import asyncio
 from aworld.config import AgentConfig, ModelConfig
 from aworld.utils.skill_loader import collect_skill_docs
+# for skills use
+CAST_ANALYSIS, CAST_PATCH
 
 
 # System prompt based on orchestrator_agent prompt
@@ -218,18 +221,18 @@ async def _load_agents_from_global_registry(exclude_names: List[str]) -> List[Ba
         List of BaseAgent instances loaded from global_agent_registry
     """
     registry_agents = []
-    
+
     try:
         # Get all agent names from global_agent_registry
         agent_names = await global_agent_registry.list_as_source()
         logger.debug(f"📋 Found {len(agent_names)} agent(s) in global_agent_registry")
-        
+
         for agent_name in agent_names:
             # Skip excluded agents
             if agent_name in exclude_names:
                 logger.debug(f"⏭️ Skipping excluded agent from global_agent_registry: {agent_name}")
                 continue
-            
+
             try:
                 # Load agent from global_agent_registry
                 agent = await global_agent_registry.load_agent(agent_name)
@@ -237,14 +240,15 @@ async def _load_agents_from_global_registry(exclude_names: List[str]) -> List[Ba
                     registry_agents.append(agent)
                     logger.debug(f"✅ Loaded agent '{agent_name}' from global_agent_registry")
                 else:
-                    logger.debug(f"⚠️ Failed to load agent '{agent_name}' from global_agent_registry: agent is None or not BaseAgent")
+                    logger.debug(
+                        f"⚠️ Failed to load agent '{agent_name}' from global_agent_registry: agent is None or not BaseAgent")
             except Exception as e:
                 logger.warning(f"⚠️ Failed to load agent '{agent_name}' from global_agent_registry: {e}")
                 continue
-                
+
     except Exception as e:
         logger.warning(f"⚠️ Error listing agents from global_agent_registry: {e}")
-    
+
     return registry_agents
 
 
@@ -294,7 +298,7 @@ def load_all_registered_agents(
             logger.debug(f"✅ Successfully initialized agents from current directory")
         except Exception as e:
             logger.debug(f"ℹ️ Could not initialize agents from current directory: {e} (this is usually fine)")
-    
+
     # Get all registered agents
     registered_agents = LocalAgentRegistry.list_agents()
     logger.info(f"📋 Found {len(registered_agents)} registered agent(s) in LocalAgentRegistry")
@@ -364,14 +368,15 @@ def load_all_registered_agents(
                     logger.warning(f"⚠️ No agents extracted from '{local_agent.name}' swarm (swarm type: {swarm_type})")
                     empty_swarm_count += 1
             else:
-                logger.debug(f"⚠️ Could not get swarm for '{local_agent.name}' (swarm type: {swarm_type or 'unknown'}, may require context)")
+                logger.debug(
+                    f"⚠️ Could not get swarm for '{local_agent.name}' (swarm type: {swarm_type or 'unknown'}, may require context)")
                 no_swarm_count += 1
-                
+
         except Exception as e:
             logger.warning(f"❌ Failed to load agents from '{local_agent.name}': {e}")
             failed_count += 1
             continue
-    
+
     # Load agents from global_agent_registry
     try:
         logger.info(f"🔄 Loading agents from global_agent_registry...")
@@ -405,13 +410,13 @@ def load_all_registered_agents(
                 logger.info(f"   • {agent_name} [ID: {agent_id}]")
     except Exception as e:
         logger.warning(f"⚠️ Error loading agents from global_agent_registry: {e}")
-    
+
     # Summary log
     logger.info(f"📊 Load summary:")
     logger.info(f"   • Total registered agents: {len(registered_agents)}")
     logger.info(f"   • Skipped (excluded): {skipped_count}")
     logger.info(f"   • Successfully loaded: {len(all_agent_instances)} sub-agent(s) from {success_count} agent(s)")
-    
+
     # List all loaded agent instances with their IDs
     if all_agent_instances:
         logger.info(f"   • Loaded agent instances:")
@@ -419,14 +424,14 @@ def load_all_registered_agents(
             agent_name = agent.name() if hasattr(agent, 'name') else str(type(agent).__name__)
             agent_id = agent.id() if hasattr(agent, 'id') else 'N/A'
             logger.info(f"     - {agent_name} [ID: {agent_id}]")
-    
+
     if no_swarm_count > 0:
         logger.info(f"   • No swarm available: {no_swarm_count}")
     if empty_swarm_count > 0:
         logger.info(f"   • Empty swarms: {empty_swarm_count}")
     if failed_count > 0:
         logger.warning(f"   • Failed to load: {failed_count}")
-    
+
     return all_agent_instances
 
 
@@ -435,11 +440,12 @@ def build_context_config(debug_mode):
     config.debug_mode = debug_mode
     config.agent_config = AgentContextConfig(
         enable_system_prompt_augment=True,
-        neuron_names= ["skills"],
+        neuron_names=["skills"],
         history_scope='session'
     )
     config.env_config = ContextEnvConfig()
     return config
+
 
 @agent(
     name="Aworld",
@@ -488,7 +494,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
 
     # Load custom skills from skills directory
     CUSTOM_SKILLS = collect_skill_docs(SKILLS_DIR)
-    
+
     # Load additional skills from SKILLS_PATH environment variable (single directory)
     skills_path_env = os.environ.get("SKILLS_PATH")
     if skills_path_env:
@@ -500,7 +506,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
                 # If skill name already exists, log a warning but keep the first one found
                 for skill_name, skill_data in additional_skills.items():
                     if skill_name in CUSTOM_SKILLS:
-                        logger.warning(f"⚠️ Duplicate skill name '{skill_name}' found in SKILLS_PATH '{skills_path_env}', skipping")
+                        logger.warning(
+                            f"⚠️ Duplicate skill name '{skill_name}' found in SKILLS_PATH '{skills_path_env}', skipping")
                     else:
                         CUSTOM_SKILLS[skill_name] = skill_data
                 logger.info(f"✅ Loaded {len(additional_skills)} skill(s) from SKILLS_PATH")
@@ -521,7 +528,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
                 skill_config["skill_path"] = str(potential_skill_path.resolve())
                 logger.debug(f"✅ Added skill_path for skill '{skill_name}': {skill_config['skill_path']}")
             else:
-                logger.warning(f"⚠️ Skill '{skill_name}' has no skill_path and cannot be found in {SKILLS_DIR}, context_skill_tool may not work for this skill")
+                logger.warning(
+                    f"⚠️ Skill '{skill_name}' has no skill_path and cannot be found in {SKILLS_DIR}, context_skill_tool may not work for this skill")
         else:
             logger.debug(f"✅ Skill '{skill_name}' has skill_path: {skill_config['skill_path']}")
 
@@ -536,7 +544,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_provider=os.environ.get("LLM_PROVIDER"),
             llm_api_key=os.environ.get("LLM_API_KEY"),
             llm_base_url=os.environ.get("LLM_BASE_URL"),
-            params={"max_completion_tokens": os.environ.get("MAX_COMPLETION_TOKENS", 10240), "max_tokens": os.environ.get("MAX_TOKENS", 64000)}
+            params={"max_completion_tokens": os.environ.get("MAX_COMPLETION_TOKENS", 10240),
+                    "max_tokens": os.environ.get("MAX_TOKENS", 64000)}
         ),
         use_vision=False,  # Enable if needed for image analysis
         skill_configs=ALL_SKILLS
@@ -544,25 +553,13 @@ def build_aworld_agent(include_skills: Optional[str] = None):
 
     # Get current working directory for filesystem-server
     current_working_dir = os.getcwd()
-    
+
     # Create the Aworld agent
     aworld_agent = Agent(
         name="Aworld",
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
         system_prompt=aworld_system_prompt,
-        # mcp_servers=["terminal-server"],
-        # mcp_config={
-        #    "mcpServers": {
-        #       "terminal-server": {
-        #          "command": "python",
-        #          "args": [
-        #             "-m",
-        #             "aworld_cli.inner_plugins.smllc.agents.mcp_tool.terminal_server"
-        #          ]
-        #       }
-        #    }
-        # }
     )
 
     # Load all registered agents as sub-agents
@@ -572,7 +569,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             agents_dir=None,  # Use default (current directory)
             exclude_names=["Aworld"]  # Exclude self to avoid circular reference
         )
-        
+
         if sub_agents:
             logger.info(f"🤝 Adding {len(sub_agents)} sub-agent(s) to Aworld TeamSwarm")
             # Create TeamSwarm with Aworld as leader and all other agents as sub-agents
@@ -581,8 +578,6 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             logger.info("ℹ️ No sub-agents found, creating Aworld TeamSwarm without sub-agents")
             return TeamSwarm(aworld_agent)
     except Exception as e:
-
-
 
         logger.warning(f"⚠️ Failed to load sub-agents: {e}, creating Aworld TeamSwarm without sub-agents")
         return TeamSwarm(aworld_agent)

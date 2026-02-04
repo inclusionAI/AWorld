@@ -426,33 +426,10 @@ class TeamSwarm(Swarm):
         self.min_call_num = kwargs.get("min_call_num", 0)
 
     def add_agents(self, agents: List[BaseAgent]):
-        root_agent = self.agent_graph.root_agent if self.agent_graph else None
-        
-        # Validate agents before adding (similar to TeamBuilder._valid_check)
-        if not root_agent:
-            raise AWorldRuntimeException("Cannot add agents: root_agent is not set in agent_graph.")
-        
-        # Filter out agents that already exist to avoid duplicate registration
-        agents_to_add = []
-        for agent in agents:
-            # Check if agent is already in the graph
-            if agent.id() in self.agent_graph.agents:
-                logger.warning(f"Agent {agent.id()} already exists in agent_graph, skipping.")
-                continue
-            
-            # Check if agent is the root_agent (should not add root_agent as sub-agent)
-            if agent.id() == root_agent.id():
-                logger.warning(f"Agent {agent.id()} is the root_agent, cannot add root_agent as sub-agent. Skipping.")
-                continue
-            
-            # Check if agent is already in topology
-            if agent in self.topology:
-                logger.warning(f"Agent {agent.id()} already exists in topology, skipping.")
-                continue
-            
-            agents_to_add.append(agent)
-        
+        agents_to_add = agents
         # Only call super().add_agents for agents that don't exist yet
+        logger.info(f"add_agents|before|add agents {agents} to team swarm.agents: {self.agents}")
+
         if agents_to_add:
             super().add_agents(agents_to_add)
             
@@ -460,6 +437,7 @@ class TeamSwarm(Swarm):
                 # All checks passed, add the agent
                 self.agent_graph.add_node(agent)
                 # Follow TeamBuilder.build pattern: only add edge from root_agent to agent (one-way)
+                root_agent = self.agent_graph.root_agent
                 self.agent_graph.add_edge(root_agent, agent)
                 root_agent.handoffs.append(agent.id())
                 # Set feedback_tool_result to True so agent is properly recognized as agent_as_tool
@@ -469,7 +447,7 @@ class TeamSwarm(Swarm):
                     agent.handoffs.remove(agent.id())
                 self.topology.append(agent)
         
-        logger.info(f"add agents {agents} to team swarm.agents: {self.agents}")
+        logger.info(f"add_agents|after|add agents {agents} to team swarm.agents: {self.agents}")
 
 # Alias for TeamSwarm
 Team = TeamSwarm

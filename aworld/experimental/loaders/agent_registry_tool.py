@@ -18,50 +18,6 @@ CONTEXT_AGENT_REGISTRY = "CONTEXT_AGENT_REGISTRY"
 class ContextAgentRegistryAction(ToolAction):
     """Agent Registry Support. Definition of Context agent registry operations."""
 
-    SAVE_AS_SOURCE = ToolActionInfo(
-        name="save_as_source",
-        input_params={
-            "content": ParamInfo(
-                name="content",
-                type="string",
-                required=True,
-                desc="The markdown configuration content to save"
-            ),
-            "name": ParamInfo(
-                name="name",
-                type="string",
-                required=True,
-                desc="The name of the resource to save"
-            )
-        },
-        desc="Save configuration as markdown file to the registry"
-    )
-
-    LOAD_AS_SOURCE = ToolActionInfo(
-        name="load_as_source",
-        input_params={
-            "agent_name": ParamInfo(
-                name="agent_name",
-                type="string",
-                required=True,
-                desc="The name of the agent to retrieve"
-            ),
-            "version": ParamInfo(
-                name="version",
-                type="string",
-                required=False,
-                desc="The version of the agent to retrieve (optional, defaults to latest)"
-            )
-        },
-        desc="Retrieve agent configuration as markdown content from the registry"
-    )
-
-    LIST_AS_SOURCE = ToolActionInfo(
-        name="list_as_source",
-        input_params={},
-        desc="List all available resources in the registry"
-    )
-
     LIST_DESC = ToolActionInfo(
         name="list_desc",
         input_params={},
@@ -112,7 +68,7 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
     try:
         from aworld_cli.core.agent_registry import LocalAgentRegistry
         from aworld.experimental.loaders.agent_version_control_registry import AgentVersionControlRegistry
-        
+
         # Step 1: Get local_agent_name from LocalAgentRegistry
         local_agent = LocalAgentRegistry.get_agent(local_agent_name)
         logger.info(f"local_agent: {local_agent}")
@@ -127,7 +83,7 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
             )
             logger.error(error_msg)
             raise ValueError(error_msg)
-        
+
         # Step 2: Read its team_swarm
         swarm = await local_agent.get_swarm(context=context)
         logger.info(f"swarm: {swarm}")
@@ -139,14 +95,14 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
             )
             logger.error(error_msg)
             raise ValueError(error_msg)
-        
+
         # Step 3: Get latest version of register_agent_name from AgentVersionControlRegistry
         if context is None:
             from aworld.experimental.loaders.agent_version_control_registry import DefaultContext
             context = DefaultContext()
-        
+
         version_control_registry = AgentVersionControlRegistry(context)
-        
+
         # Check if agent exists in registry before loading
         available_resources = await version_control_registry.list_as_source()
         if register_agent_name not in available_resources:
@@ -159,7 +115,7 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
             )
             logger.error(error_msg)
             raise ValueError(error_msg)
-        
+
         register_agent = await version_control_registry.load_agent(agent_name=register_agent_name)
         if not register_agent:
             error_msg = (
@@ -169,10 +125,10 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
             )
             logger.error(error_msg)
             raise ValueError(error_msg)
-        
+
         # Step 4: Add register_agent_name to local_agent_name's team_swarm
         swarm.add_agents([register_agent])
-        
+
         # If swarm was a callable, update local_agent to store the modified swarm instance
         # so the changes persist. Also update the registry to ensure the change is saved.
         if callable(local_agent.swarm):
@@ -180,10 +136,10 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
             # Update the registry to persist the change
             LocalAgentRegistry.get_instance().upsert(local_agent)
             logger.info(f"Updated local_agent.swarm from callable to Swarm instance in registry")
-        
+
         logger.info(f"Successfully added agent '{register_agent_name}' to local agent '{local_agent_name}'s team_swarm")
         return True
-        
+
     except ValueError:
         # Re-raise ValueError with detailed messages
         raise
@@ -216,7 +172,7 @@ class ContextAgentRegistryTool(AsyncTool):
         await self.close()
         self.step_finished = True
         return build_observation(observer=self.name(),
-                                 ability=ContextAgentRegistryAction.LIST_AS_SOURCE.value.name), {}
+                                 ability=ContextAgentRegistryAction.LIST_DESC.value.name), {}
 
     def init(self) -> None:
         self.initialized = True
@@ -254,54 +210,22 @@ class ContextAgentRegistryTool(AsyncTool):
                 action_result = ActionResult(action_name=action_name, tool_name=self.name())
 
                 try:
-                    if action_name == ContextAgentRegistryAction.SAVE_AS_SOURCE.value.name:
-                        content = action.params.get("content", "")
-                        name = action.params.get("name", "")
-
-                        if not content:
-                            raise ValueError("content is required")
-                        if not name:
-                            raise ValueError("name is required")
-
-                        service = get_agent_registry_service()
-                        success = await service.save_as_source(content=content, name=name)
-
-                        if success:
-                            action_result.success = True
-                            action_result.content = f"Successfully saved resource '{name}' as markdown"
-                        else:
-                            raise ValueError(f"Failed to save resource '{name}'")
-
-                    elif action_name == ContextAgentRegistryAction.LOAD_AS_SOURCE.value.name:
-                        agent_name = action.params.get("agent_name", "")
-                        version = action.params.get("version")
-
-                        if not agent_name:
-                            raise ValueError("agent_name is required")
-
-                        service = get_agent_registry_service()
-                        content = await service.load_as_source(name=agent_name, version=version)
-
-                        if content:
-                            action_result.success = True
-                            action_result.content = f"Content: {content}"
-                        else:
-                            raise ValueError(f"Agent '{agent_name}' not found or no content available")
-
-                    elif action_name == ContextAgentRegistryAction.LIST_AS_SOURCE.value.name:
-                        service = get_agent_registry_service()
-                        resources = await service.list_as_source()
-
-                        action_result.success = True
-                        action_result.content = f"Available resources: {', '.join(resources)}" if resources else "No resources found"
-
-                    elif action_name == ContextAgentRegistryAction.LIST_DESC.value.name:
+                    if action_name == ContextAgentRegistryAction.LIST_DESC.value.name:
                         service = get_agent_registry_service()
                         resources_with_desc = await service.list_desc()
 
                         action_result.success = True
                         if resources_with_desc:
-                            desc_lines = [f"- {name}: {desc}" for name, desc in resources_with_desc]
+                            # Handle both old format (3-tuple) and new format (4-tuple with version)
+                            desc_lines = []
+                            for item in resources_with_desc:
+                                if len(item) == 4:
+                                    name, desc, path, version = item
+                                    desc_lines.append(f"- {name}: {desc}\n  Path: {path}\n  Version: {version}")
+                                else:
+                                    # Backward compatibility with old format
+                                    name, desc, path = item[:3]
+                                    desc_lines.append(f"- {name}: {desc}\n  Path: {path}")
                             action_result.content = "Available resources with descriptions:\n" + "\n".join(desc_lines)
                         else:
                             action_result.content = "No resources found"
@@ -328,7 +252,8 @@ class ContextAgentRegistryTool(AsyncTool):
                                 action_result.success = True
                                 action_result.content = f"Successfully registered agent '{register_agent_name}' to local agent '{local_agent_name}'s team_swarm"
                             else:
-                                raise ValueError(f"Failed to register agent '{register_agent_name}' to local agent '{local_agent_name}'")
+                                raise ValueError(
+                                    f"Failed to register agent '{register_agent_name}' to local agent '{local_agent_name}'")
                         except ValueError as ve:
                             # Re-raise ValueError with detailed error message
                             raise ve

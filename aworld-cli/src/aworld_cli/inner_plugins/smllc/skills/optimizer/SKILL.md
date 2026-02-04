@@ -8,7 +8,7 @@ tool_list: {"CONTEXT_AGENT_REGISTRY": [], "CAST_ANALYSIS": [], "CAST_PATCH": []}
 
 ## ⚠️ CRITICAL: Tool Usage Requirements
 
-**MUST READ BEFORE USE:**
+**MUST READ BEFORE USE:**git config --global core.filemode false
 
 1. **CAST_ANALYSIS Tool**: 
    - ✅ MUST directly call the CAST_ANALYSIS tool function
@@ -215,35 +215,33 @@ Example tool call (conceptual):
     layer_strategy="comprehensive"
   )
 
-## SEARCH_REPLACE工具 - 智能搜索替换功能
+## SEARCH_REPLACE工具 - 精确搜索替换功能
 
 ### 🎯 概述
 
-SEARCH_REPLACE工具基于aider的核心算法实现，提供智能的代码搜索替换功能。它支持多种匹配策略，能够处理缩进不一致、格式差异等常见问题，特别适合精确的代码修改场景。
+SEARCH_REPLACE工具基于精确匹配算法实现，提供安全、可靠的代码搜索替换功能。该工具**仅支持精确匹配**，确保代码修改的准确性和安全性，避免意外的代码变更。
 
 ### 🔥 核心特性
 
-#### 三种智能匹配策略
+#### 精确匹配策略
+
+**唯一支持的匹配模式：**
 
 1. **精确匹配** (Exact Match)
    - 完全匹配搜索文本和目标代码
-   - 最高优先级，性能最好
+   - 包括所有空白字符、缩进、换行符等
+   - 保证100%的匹配准确性
 
-2. **空白字符灵活匹配** (Whitespace Flexible)
-   - 忽略缩进差异，自动调整空白字符
-   - 处理复制粘贴导致的缩进不一致
-
-3. **模糊相似度匹配** (Similarity Match)
-   - 基于文本相似度的智能匹配
-   - 可配置相似度阈值(0.0-1.0)
-   - 允许±10%的长度变化
+**已移除的功能：**
+- ❌ 模糊相似度匹配（已禁用）
+- ❌ 空白字符灵活匹配（默认禁用，除非明确启用）
 
 #### 主要优势
 
-- **智能容错**: 自动处理空白字符、缩进等格式问题
-- **高成功率**: 多策略组合，显著提高匹配成功率
-- **安全可靠**: 基于经过验证的aider算法
-- **详细反馈**: 提供匹配策略和错误信息
+- **极高精确度**: 仅执行完全匹配，杜绝误匹配
+- **安全可靠**: 不会意外修改不相关的代码
+- **明确失败**: 找不到精确匹配时明确报告失败
+- **详细反馈**: 提供清晰的匹配结果和错误信息
 
 ### 🚀 使用方法
 
@@ -260,8 +258,7 @@ action_params = {
             "file_path": "相对文件路径",
             "search": "要搜索的代码段",
             "replace": "替换后的代码段",
-            "fuzzy_match": True,
-            "similarity_threshold": 0.8
+            "exact_match_only": true
         }
     }),
     "source_dir": "/path/to/source",
@@ -275,10 +272,9 @@ action_params = {
 |------|------|------|------|
 | type | string | ✓ | 固定值"search_replace" |
 | file_path | string | ✓ | 相对于source_dir的文件路径 |
-| search | string | ✓ | 要搜索的代码段 |
+| search | string | ✓ | 要搜索的代码段（必须完全匹配） |
 | replace | string | ✓ | 替换后的代码段 |
-| fuzzy_match | boolean | ✗ | 是否启用模糊匹配(默认true) |
-| similarity_threshold | float | ✗ | 相似度阈值0.0-1.0(默认0.8) |
+| exact_match_only | boolean | - | 固定为true（可选，仅为文档说明） |
 
 #### 响应格式
 
@@ -298,12 +294,12 @@ action_params = {
 ```json
 {
     "success": false,
-    "error": "未找到匹配的代码段进行替换",
+    "error": "精确搜索替换操作失败",
     "suggestions": [
-        "检查搜索文本是否存在于目标文件中",
-        "尝试调整similarity_threshold参数",
+        "检查搜索文本是否在目标文件中完全匹配（包括空白字符、缩进等）",
         "确认文件路径是否正确",
-        "检查搜索文本的格式和缩进"
+        "确保搜索文本与文件中的代码完全一致",
+        "验证换行符和编码格式是否一致"
     ]
 }
 ```
@@ -326,115 +322,85 @@ def old_function():
         "type": "search_replace",
         "file_path": "example.py",
         "search": "def old_function():\n    print(\"old implementation\")\n    return \"old\"",
-        "replace": "def new_function():\n    print(\"new implementation\")\n    return \"new\"",
-        "fuzzy_match": true
+        "replace": "def new_function():\n    print(\"new implementation\")\n    return \"new\""
     }
 }
 ```
 
 **结果:** 使用精确匹配策略成功替换
 
-#### 示例2：处理缩进差异
+#### ⚠️ 重要：缩进和格式要求
 
-**原始代码（有特定缩进）:**
+**正确示例（匹配成功）:**
 ```python
+# 文件中的代码（注意4个空格缩进）
 class MyClass:
-        def old_method(self):
-            print("old method")
-            return True
+    def old_method(self):
+        print("old method")
+        return True
+
+# 搜索文本（完全匹配缩进）
+"    def old_method(self):\n        print(\"old method\")\n        return True"
 ```
 
-**搜索文本（缩进不同）:**
+**错误示例（匹配失败）:**
 ```python
-def old_method(self):
-    print("old method")
-    return True
+# 搜索文本（缩进不匹配）
+"def old_method(self):\n    print(\"old method\")\n    return True"
 ```
-
-**结果:** 使用空白字符灵活匹配策略自动调整缩进并成功替换
-
-#### 示例3：模糊匹配处理
-
-**原始代码:**
-```python
-def calculate_sum(a, b):
-    # 这是一个计算函数
-    result = a + b
-    print(f"Result: {result}")
-    return result
-```
-
-**搜索文本（忽略注释）:**
-```python
-def calculate_sum(a, b):
-    result = a + b
-    print(f"Result: {result}")
-    return result
-```
-
-**结果:** 使用相似度匹配策略(0.925相似度)成功替换
-
-### 🔧 技术实现细节
-
-#### 核心算法结构
-
-基于aider的EditBlockCoder实现，包含以下核心方法：
-
-**主入口方法：**
-```python
-def search_replace_in_file(self, file_path: Path, search_text: str,
-                          replace_text: str, fuzzy_match: bool = True,
-                          similarity_threshold: float = 0.8) -> Dict[str, Any]
-```
-
-**核心匹配算法：**
-```python
-def _fuzzy_search_replace(self, content: str, search_text: str,
-                         replace_text: str, fuzzy_match: bool = True,
-                         similarity_threshold: float = 0.8) -> Optional[str]
-```
-
-#### 匹配算法优先级
-
-1. 尝试精确匹配 (Perfect Match) - 最快
-2. 尝试空白字符灵活匹配 (Whitespace Flexible) - 中等
-3. 尝试相似度模糊匹配 (Similarity Match) - 较慢但最灵活
-4. 返回失败结果
 
 ### 📝 最佳实践
 
 #### ✅ 推荐做法
 
-1. **逐步调整阈值**: 从高阈值(0.9)开始，失败后逐步降低到0.7
-2. **保留关键结构**: 搜索文本应包含函数签名、类名等关键标识符
-3. **避免过短文本**: 搜索文本至少包含2-3行代码
-4. **测试验证**: 在正式环境前先在测试环境验证效果
+1. **精确复制**: 从源文件中精确复制要替换的代码段
+2. **保留格式**: 确保搜索文本中的缩进、空格、换行符完全一致
+3. **完整代码块**: 包含函数签名、类名等完整的代码结构
+4. **测试验证**: 在小范围内先验证搜索替换的准确性
 
 #### ❌ 避免做法
 
-1. **搜索单行**: 避免搜索过短的代码段，容易产生误匹配
-2. **忽略语法**: 确保搜索和替换文本都是语法正确的代码
-3. **过低阈值**: 避免使用低于0.6的相似度阈值
-4. **批量操作**: 避免一次性处理多个复杂的搜索替换
+1. **手工输入**: 不要手工输入搜索文本，容易产生格式差异
+2. **忽略缩进**: 不要忽略或修改原始代码的缩进
+3. **部分匹配**: 不要期望部分匹配或智能匹配功能
+4. **混合格式**: 避免在搜索文本中混合不同的换行符类型
 
 ### ⚠️ 重要注意事项
 
-#### 使用场景选择
+#### 精确匹配要求
 
-**使用SEARCH_REPLACE当：**
-- 需要精确替换特定函数或方法
-- 处理缩进或格式差异
-- 重命名变量、函数或类
-- 替换算法实现
+**必须严格匹配的元素：**
+- ✅ 每一个空格和Tab字符
+- ✅ 所有换行符（\n 或 \r\n）
+- ✅ 代码中的引号类型（单引号 vs 双引号）
+- ✅ 注释内容和位置
+- ✅ 变量名和函数名的大小写
 
 ### 🛡️ 安全保障
 
+- **零误匹配**: 精确匹配机制杜绝意外修改无关代码
 - **原子操作**: 搜索替换是原子操作，失败时不会部分修改文件
 - **编码处理**: 自动处理UTF-8编码，支持中文等多语言
-- **错误恢复**: 提供详细错误信息和修复建议
-- **测试验证**: 核心算法经过完整的单元测试验证
+- **清晰反馈**: 提供详细的成功/失败信息和操作建议
 
-这个SEARCH_REPLACE工具将显著提升精确代码修改的效率和成功率，特别适合需要智能匹配和容错处理的代码重构场景。
+### 🔧 故障排除
+
+#### 常见问题及解决方案
+
+1. **"未找到精确匹配"**
+   - 检查搜索文本的缩进是否与文件完全一致
+   - 确认换行符格式（Windows vs Unix）
+   - 验证文件编码格式
+
+2. **"文件路径错误"**
+   - 确保file_path是相对于source_dir的正确路径
+   - 检查文件是否存在且可访问
+
+3. **"JSON格式错误"**
+   - 验证JSON语法是否正确
+   - 确保所有必需字段都已提供
+
+这个优化后的SEARCH_REPLACE工具将提供最高级别的代码修改精确性和安全性，适合对代码质量要求极高的生产环境使用。
 
 
 
