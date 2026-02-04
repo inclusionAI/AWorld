@@ -1,7 +1,6 @@
 <div align="center">
 
-# AWorld: Agentic Craft for Your World
-Where Your Expertise Becomes Self-Evolving AI
+# AWorld: Agentic Craft for Your Worldk
 
 </div>
 
@@ -41,6 +40,74 @@ Where Your Expertise Becomes Self-Evolving AI
 ![](./readme_assets/aworld_loop.png)
 
 > 💡 Visit our [homepage](https://www.aworldagents.com/) for more details, or try our online [environments](https://www.aworldagents.com/environments) and [agents](https://playground.aworldagents.com/). 
+
+
+
+
+# The Next Frontier for AI is Your Expertise
+For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. In scientific research, financial analysis, or complex engineering, generic models can't climb this wall. They can't speak your language.
+The AWorld Thesis is that the next leap in AI won't come from building bigger models, but from empowering experts like you to build a gate in that wall.
+We believe the true scaling of AI is achieved by enabling you to infuse your knowledge directly into its core. AWorld is the platform that makes this possible. We provide the tools for you, the expert, to craft your unique insights into fleets of autonomous agents that navigate your world with precision. It’s how we move beyond generic promise to specific, robust application in any industry.
+
+
+# The First Step: Verified Skills as Your Foundation
+Every great craft begins with exceptional materials. That’s why our first step is to equip you with a library of Verified Skills.
+These are master blueprints, not mere templates—designed by domain experts and refined through practical application. They serve as your trusted starting point, allowing you to move instantly from a unique challenge to a working agent. With our simple CLI, you can immediately use these Skills to craft a solution tailored to your world.
+Our initial library of Skills targets the high-value challenges that define your professional craft:
+
+Showcase Agent  Description Status
+🚀 PPT Agent Autonomously creates polished presentations from documents, outlines, or data.  In Progress
+🧠 DeepSearch Agent  Conducts comprehensive, multi-source research on a topic and synthesizes a structured report.   In Progress
+🔧 Parameter Design  An agent for engineering & science that optimizes design parameters based on simulation results & rules.    Planned
+📈 Stock Analysis    Gathers financial data, performs technical/fundamental analysis, and generates an investment memo.  Planned
+
+
+# Create an Agent in Seconds
+Instantly scaffold an agent from a natural language description of your task. AWorld handles the boilerplate, so you can focus on the logic. 
+CLI Input as Command
+1. aworld-cli # This is the start of your journey
+2. prompt the AWorld agent with your requirements for creating a specific agent "Create an agent for generating PowerPoint presentation", and confirm the following building details.
+This command generates a fully operational agent file (~/agents/ppt_creator.py) referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution. Once it's generated, your agent is a permanent, reusable tool in your ~/agents folder. You may also type '/agents' in CLI mode to check your agents.
+
+# Run and Observe
+Execute your agent on a task and watch it work. Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
+Run the Newly Created Agent
+Prompt the AWorld Agent with "let the ppt agent to create a professional slides introducing Hangzhou".
+You can inspect the trajectory_log.json to understand every decision the agent made.
+
+# Iterate and Evolve
+This is where AWorld truly shines. If the agent's performance isn't perfect, you have a spectrum of powerful options for refinement.
+Option 1: The Direct Approach (Manual Tuning)
+You are the expert. Open the generated Python file and fine-tune the prompts, logic, or tool usage directly. You have full control.
+# check the generated agent file(s)
+```bash
+vim ~/agents/ppt_creator.py
+```
+
+Option 2: The Collaborative Approach (AI-Assisted Tuning)
+Use our "Optimizer Agent" as your AI pair programmer. Point it to your agent's code and the trajectory log, then prompt it with your desired changes.
+# Switch to the pre-built Optimizer Agent to refine your agent
+In the CLI mode, just prompt the AWorld agent who and how you want to optimize, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent.
+
+Option 3: The Autonomous Approach (Self-Evolution)
+This is the future. Instead of you providing explicit prompts, the system automatically detects sub-optimal performance based on a reward signal (e.g., failed validation, deviation from a verified Skill). It then triggers an autonomous optimization loop, evolving the agent on its own.
+This is evaluation-driven evolution, where the agent gains true self-awareness and improves without constant human intervention.
+Once you're satisfied, your agent is a permanent, reusable tool in your ~/agents folder.
+
+# Join the Evolution
+AWorld's mission is to handle the complexity so you can focus on innovation. Our roadmap includes expanding our AI for Science & Business initiative, deepening our self-evolution capabilities, and growing our library of community-contributed Skills.
+We warmly welcome developers, researchers, and domain experts to join us. Whether you're enhancing the framework or contributing a Skill from your field of expertise, your work is valuable.
+
+
+
+
+
+
+
+
+
+
+
 
 
 # Installation AWorld & AWorld-CLI
