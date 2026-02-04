@@ -8,8 +8,11 @@ from pydantic import Field
 from aworld.config import ModelConfig, TaskConfig, BaseConfig
 from aworld.evaluations.base import EvalCriteria, Scorer
 from aworld.ralph_loop.detect.stop_condition import StopCondition
+from aworld.ralph_loop.mission.analyzer import Analyzer
+from aworld.ralph_loop.mission.enhancer import ContextEnhancer
+from aworld.ralph_loop.mission.types import MissionType
 from aworld.ralph_loop.reflect import Reflector
-from aworld.ralph_loop.strategic_plan.types import PlanningStrategy
+from aworld.ralph_loop.plan.base import BasePlanner, BasePlanReviewer, BasePlanOptimizer
 from aworld.ralph_loop.types import ConflictStrategy
 
 
@@ -53,10 +56,10 @@ class StopConditionConfig:
 class MissionConfig:
     """Configuration for mission processing."""
 
-    enabled: bool = False
-    auto_detect_input_type: bool = True
-    enable_analysis: bool = False
+    input_type: str = 'hybrid'
     model_config: ModelConfig = field(default_factory=ModelConfig)
+    analyzer: Optional[Analyzer] = None
+    enhancer: Optional[ContextEnhancer] = None
 
 
 @dataclass
@@ -64,10 +67,13 @@ class PlanningConfig:
     """Configuration for strategic planning module."""
 
     enabled: bool = False
-    strategy: PlanningStrategy = PlanningStrategy.HIERARCHICAL
+    planner: Optional[BasePlanner] = None
+
+    # reuse the GeneralPlanner
     model_config: Optional[ModelConfig] = None
-    validate_plan: bool = True
-    optimize_plan: bool = True
+    system_prompt: Optional[str] = ""
+    reviewer: Optional[BasePlanReviewer] = None
+    optimizer: Optional[BasePlanOptimizer] = None
 
 
 @dataclass

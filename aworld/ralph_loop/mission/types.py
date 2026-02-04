@@ -4,24 +4,10 @@ from dataclasses import field, dataclass
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
-from aworld.ralph_loop.types import CompletionCriteria
+from aworld.ralph_loop.types import CompletionCriteria, Complexity
 
 # Mission input types
 MissionType = Literal['text', 'json', 'voice', 'image', 'video', 'hybrid']
-
-
-class MissionComplexity(Enum):
-    """Mission complexity levels."""
-    # one step
-    TRIVIAL = "trivial"
-    # few steps
-    LOW = "low"
-    # need plan
-    MEDIUM = "medium"
-    # task decomposition
-    HIGH = "high"
-    # multi-stage
-    COMPLEX = "complex"
 
 
 @dataclass
@@ -41,16 +27,14 @@ class Mission:
     text: str = field(default="")
     desc: str = field(default="")
     completion_criteria: CompletionCriteria = field(default_factory=CompletionCriteria)
-    sub_tasks: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     ## based on analysis of mission
     intent: MissionIntent = field(default_factory=MissionIntent)
-    complexity: MissionComplexity = field(default=MissionComplexity.LOW)
+    complexity: str = field(default=Complexity.LOW)
     # entity can be structured
     entities: List[str] = field(default_factory=list)
     estimated_time: float = 0.0
-    estimated_cost: float = 0.0
     success_probability: float = 1.0
     risks: List[str] = field(default_factory=list)
     recommendations: List[str] = field(default_factory=list)

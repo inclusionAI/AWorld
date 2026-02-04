@@ -8,7 +8,7 @@ from typing import List, Dict, Any
 import aworld
 from aworld.config import ModelConfig
 from aworld.logs.util import logger
-from aworld.models.llm import get_llm_model, call_llm_model
+from aworld.models.llm import get_llm_model, acall_llm_model
 from aworld.models.model_response import ModelResponse
 from aworld.ralph_loop.reflect.types import (
     ReflectionInput,
@@ -105,36 +105,7 @@ class Reflector(ABC):
         return analysis.get("suggestions", [])
 
 
-class GeneralReflector(Reflector):
-    def __init__(
-            self,
-            model_config: ModelConfig,
-            name: str = "general_reflector",
-            reflection_type: ReflectionType = ReflectionType.OPTIMIZATION,
-            level: ReflectionLevel = ReflectionLevel.DEEP,
-            priority: int = 1
-    ):
-        super().__init__(
-            reflection_type=reflection_type,
-            name=name,
-            level=level,
-            priority=priority
-        )
-
-        self.model_config = model_config
-        self._llm = None
-
-    async def analyze(self, reflection_input: ReflectionInput) -> dict:
-        if not self._llm:
-            self._llm = get_llm_model(self.model_config)
-
-        analysis_input = self._build_analysis_input(reflection_input)
-        response = call_llm_model(self._llm, messages=analysis_input)
-        result = self._parse_response(response)
-        return result
-
-    def _build_system_prompt(self) -> str:
-        return """You are a Deep Task Reflection Specialist.
+reflector_system_prompt = """You are a Deep Task Reflection Specialist.
 Your responsibility is not to evaluate the quality, but to extract valuable experiences, lessons, and systematic improvement plans through dissecting the entire process of task execution.
 
 # Goal
@@ -165,7 +136,7 @@ You need to output a well structured review report, which must include the follo
     - Data level: What characteristics does this reveal about the data source?
     - Strategic level: Is the current Planning logic suitable for this type of task?
     - Cognitive level: Is there a systematic bias in our understanding of user intent?
-    
+
 # 5. Actionable Suggestions for Improvement
 -Definition: A specific action guide for the future (Now What).
 -Requirement: It must be implementable and executable. Divided into "immediate repair (for current tasks)" and "long-term optimization (for system evolution)".
@@ -202,6 +173,37 @@ root_cause, insights, suggestions
 }
 """
 
+
+class GeneralReflector(Reflector):
+    def __init__(
+            self,
+            model_config: ModelConfig,
+            system_prompt: str = reflector_system_prompt,
+            name: str = "general_reflector",
+            reflection_type: ReflectionType = ReflectionType.OPTIMIZATION,
+            level: ReflectionLevel = ReflectionLevel.DEEP,
+            priority: int = 1
+    ):
+        super().__init__(
+            reflection_type=reflection_type,
+            name=name,
+            level=level,
+            priority=priority
+        )
+
+        self.model_config = model_config
+        self.system_pormpt = system_prompt
+        self._llm = None
+
+    async def analyze(self, reflection_input: ReflectionInput) -> dict:
+        if not self._llm:
+            self._llm = get_llm_model(self.model_config)
+
+        analysis_input = self._build_analysis_input(reflection_input)
+        response = await acall_llm_model(self._llm, messages=analysis_input)
+        result = self._parse_response(response)
+        return result
+
     def _build_analysis_input(self, reflection_input: ReflectionInput) -> List[Dict[str, Any]]:
         status = "Success" if reflection_input.success else "Failed"
 
@@ -231,7 +233,7 @@ Validation:
             input_str += f"\nError:\n{reflection_input.error_msg}"
 
         results = [
-            {"role": "system", "content": self._build_system_prompt()},
+            {"role": "system", "content": self.system_pormpt},
             {"role": "user", "content": input_str}
         ]
         return results
