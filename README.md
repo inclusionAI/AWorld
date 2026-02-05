@@ -66,9 +66,11 @@ aworld-cli
 ## Create Your Agent
 <p align="justify">
 Instantly scaffold an agent from a natural language description of your task. AWorld-CLI handles the boilerplate, so you can focus on the logic.
+</p>
 
 ![](./readme_assets/aworld_cli_text2agent.png)
 
+<p align="justify">
 This command generates a fully operational agent file referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution.
 
 Once it's generated, your agent is a permanent, reusable tool in your ~/.agents folder.
@@ -118,9 +120,9 @@ Designed by domain experts and battle-tested in real-world applications, they al
 ## Run Your Agent
 <p align="justify">
 Prompt the AWorld Agent to execute your newly created agent on a task and watch it work. Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
+</p>
 
 ![](./readme_assets/aworld_cli_run_task.png)
-</p>
 
 ## Evolve Your Agent
 <p align="justify">
