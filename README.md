@@ -62,6 +62,15 @@ pip install -e . && cd aworld-cli && pip install -e .
 aworld-cli
 ```
 
+Create a .env file in the AWorld/aworld-cli to configure the base model for both the AWorld Agent and any agents it creates. Add the following content:
+```bash
+LLM_MODEL_NAME="your_model_name"
+LLM_PROVIDER="openai"
+LLM_API_KEY="your_model_api_key"
+LLM_BASE_URL="your_base_url"
+```
+
+
 ## Create Your Agent
 <p align="justify">
 Instantly scaffold an agent from a natural language description of your task. AWorld-CLI handles the boilerplate, so you can focus on the logic.
