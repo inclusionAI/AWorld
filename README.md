@@ -104,7 +104,7 @@ Our initial library of Skills targets the high-value challenges that define your
   </tbody>
 </table>
 
-# Create an Agent in Seconds
+# Create Agent
 <p align="justify">
 Instantly scaffold an agent from a natural language description of your task. AWorld handles the boilerplate, so you can focus on the logic. 
 CLI Input as Command
@@ -113,7 +113,7 @@ CLI Input as Command
 This command generates a fully operational agent file (~/agents/ppt_creator.py) referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution. Once it's generated, your agent is a permanent, reusable tool in your ~/agents folder. You may also type '/agents' in CLI mode to check your agents.
 </p>
 
-# Run and Observe
+# Run Agent
 <p align="justify">
 Execute your agent on a task and watch it work. Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
 Run the Newly Created Agent
@@ -121,11 +121,12 @@ Prompt the AWorld Agent with "let the ppt agent to create a professional slides 
 You can inspect the trajectory_log.json to understand every decision the agent made.
 </p>
 
-# Iterate and Evolve
+# Evolve Agent
 <p align="justify">
 This is where AWorld truly shines. If the agent's performance isn't perfect, you have a spectrum of powerful options for refinement.
 
-Option 1: The Direct Approach (Manual Tuning)
+**Option 1: Manual Tuning**
+
 You are the expert. Open the generated Python file and fine-tune the prompts, logic, or tool usage directly. You have full control.
 
 ## check the generated agent file(s)
@@ -133,16 +134,18 @@ You are the expert. Open the generated Python file and fine-tune the prompts, lo
 vim ~/agents/ppt_creator.py
 ```
 
-Option 2: The Collaborative Approach (AI-Assisted Tuning)
+**Option 2: AI-Assisted Tuning**
+
 Use our "Optimizer Agent" as your AI pair programmer. Point it to your agent's code and the trajectory log, then prompt it with your desired changes.
 Switch to the pre-built Optimizer Agent to refine your agent
 In the CLI mode, just prompt the AWorld agent who and how you want to optimize, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent.
 
-![](./readme_assets/mas_meta_learning.png) -->
+![](./readme_assets/mas_meta_learning.png) 
 
 
 
-Option 3: The Autonomous Approach (Self-Evolution)
+**Option 3: Self-Evolution**
+
 This is the future. Instead of you providing explicit prompts, the system automatically detects sub-optimal performance based on a reward signal (e.g., failed validation, deviation from a verified Skill). It then triggers an autonomous optimization loop, evolving the agent on its own.
 This is evaluation-driven evolution, where the agent gains true self-awareness and improves without constant human intervention.
 Once you're satisfied, your agent is a permanent, reusable tool in your ~/agents folder.
