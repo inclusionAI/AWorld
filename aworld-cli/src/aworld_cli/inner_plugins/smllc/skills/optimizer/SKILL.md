@@ -97,11 +97,11 @@ P*  **rioritize Prompt/Tooling**: Determine if the problem can be solved by modi
 *   **Tool**: `CONTEXT_AGENT_REGISTRY`
 *   **Action**: `dynamic_register`
 *   **Parameters**:
-    *   `local_agent_name`: The name of the agent executing this workflow (i.e., this optimizer).
+    *   `local_agent_name`: The name of the agent executing this workflow (i.e., "Aworld").
     *   `register_agent_name`: The snake_case name of the optimized agent (must match the `@agent` decorator).
 *   **Example**:
     ```json
-    CONTEXT_AGENT_REGISTRY.dynamic_register(local_agent_name="optimizer", register_agent_name="optimized_simple_agent")
+    CONTEXT_AGENT_REGISTRY.dynamic_register(local_agent_name="Aworld", register_agent_name="optimized_simple_agent")
     ```
 
 ---
