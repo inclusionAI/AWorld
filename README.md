@@ -22,7 +22,6 @@
 <h4 align="center">
 
 [中文版](./README_zh.md) |
-[Prefaces](#the-next-frontier-for-ai-is-your-expertise) |
 [Automation](#your-journey-with-aworld-cli) |
 [Manual](#total-control-manually-crafting-agent-systems) |
 [Experience](#experience-to-samples) |
@@ -31,7 +30,6 @@
 [Contributing](#contributing) |
 
 </h4>
-
 
 ---
 
@@ -53,39 +51,36 @@ The AWorld Thesis is that the true scaling of AI is achieved by enabling experts
 The journey from an idea to an evolved, autonomous agent begins at your fingertips.
 
 
-## Installation
+## Installation and Activation
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
 conda create -n aworld_env python=3.11 -y && conda activate aworld_env 
 
-pip install -e . && cd aworld-cli 
+pip install -e . && cd aworld-cli && pip install -e .
 
-pip install -e .
+aworld-cli
 ```
 
 
 ## Create Your Agent
 <p align="justify">
-Instantly scaffold an agent from a natural language description of your task. AWorld handles the boilerplate, so you can focus on the logic.
+Instantly scaffold an agent from a natural language description of your task. AWorld-CLI handles the boilerplate, so you can focus on the logic.
 
-CLI Input as Command
+![](./readme_assets/aworld_cli_text2agent.png)
 
-1. aworld-cli # This is the start of your journey
+This command generates a fully operational agent file referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution.
 
-2. prompt the AWorld agent with your requirements for creating a specific agent "Create an agent for generating PowerPoint presentation".
-
-This command generates a fully operational agent file referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution. 
-
-Once it's generated, your agent is a permanent, reusable tool in your ~/agents folder. You may also type '/agents' in CLI mode to check your agents.
+Once it's generated, your agent is a permanent, reusable tool in your ~/.agents folder.
 </p>
 
 
 ### Verified Skills as Your Foundation
 <p align="justify">
-Every great craft begins with exceptional materials. That’s why our first step is to equip you with a library of Verified Skills.
-These are master blueprints, not mere templates—designed by domain experts and refined through practical application. They serve as your trusted starting point, allowing you to move instantly from a unique challenge to a working agent. With our simple CLI, you can immediately use these Skills to craft a solution tailored to your world.
-Our initial library of Skills targets the high-value challenges that define your professional craft.
+Start building with our library of Verified Skills—master blueprints for mission-critical agents.
+
+Designed by domain experts and battle-tested in real-world applications, they allow you to bypass the basics and go straight to a working solution. Use our simple CLI to instantly tailor these Skills into agents that solve your most critical challenges.
+
 </p>
 
 <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
@@ -122,10 +117,9 @@ Our initial library of Skills targets the high-value challenges that define your
 
 ## Run Your Agent
 <p align="justify">
-Execute your agent on a task and watch it work. Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
-Run the Newly Created Agent
-Prompt the AWorld Agent with "let the ppt agent to create a professional slides introducing Hangzhou".
-You can inspect the trajectory_log.json to understand every decision the agent made.
+Prompt the AWorld Agent to execute your newly created agent on a task and watch it work. Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
+
+![](./readme_assets/aworld_cli_run_task.png)
 </p>
 
 ## Evolve Your Agent
