@@ -78,11 +78,11 @@ Once it's generated, your agent is a permanent, reusable tool in your ~/.agents 
 
 
 ### Verified Skills: The DNA for Automated Agent Creation
-<p align="justify">
+<div align="justify">
 Our library of Verified Skills is more than a collection of blueprints; it's a gene pool of expert capabilities.
 
 When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills, infusing the new agent's core with proven logic and reliability. This ensures your agent inherits the DNA of our best practices (see [Evolution](#evolution)), making it robust and effective from the moment it's created. 
-</p>
+</div>
 <!-- 
 <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
   <colgroup>
