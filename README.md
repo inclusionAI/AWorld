@@ -126,20 +126,21 @@ Prompt the AWorld Agent to execute your newly created agent on a task and watch 
 This is where AWorld truly shines. If the agent's performance isn't perfect, you have a spectrum of powerful options for refinement.
 
 **Option 1: Manual Tuning**
-
+<p align="justify">
 You are the expert. Open the generated Python file and fine-tune the prompts, logic, or tool usage directly. You have full control.
-
+</p>
 
 **Option 2: AI-Assisted Tuning**
-
+<p align="justify">
 Prompt with your desired changes, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent as your AI pair programmer to tune your agent.
-
+</p>
 ![](./readme_assets/mas_meta_learning_v2.png) 
 
 
 **Option 3: Self-Evolution**
-
+<p align="justify">
 This is the future. Instead of you providing explicit prompts, the system automatically detects sub-optimal performance based on a reward signal (e.g., failed validation, deviation from a verified Skill). It then triggers an autonomous optimization loop, evolving the agent on its own. This is evaluation-driven evolution, where the agent gains true self-awareness and improves without constant human intervention.
+</p>
 
 Once you're satisfied with your optimized agent, it is permanent and reusable in your ~/agents folder.
 </p>
