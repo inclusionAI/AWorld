@@ -32,7 +32,9 @@ Analyze the user's input to understand:
 2.  **Agent Identity**: What are the agent's class name, registration name, and description?
 3.  **Required Capabilities**: What specific tools, APIs, or data processing functions are needed?
 4.  **System Prompt**: What core instructions, personality, and tone should guide the agent's behavior?
-5.  **MCP Configuration**: Which MCP servers (e.g., `pptx`, `google`) are required? Please keep in mind that `terminal` servers is the MUST HAVE one, since this tool is necessary while facing the missing module so can be applied to pip install the missing one.
+5.  **MCP Configuration**: Which MCP servers (e.g., pptx, google) are required? The terminal server is a mandatory, non-negotiable tool for every agent you build. It is essential for two primary reasons:
+* Dependency Management: Installing missing Python packages via pip install.
+* File System Operations: Verifying the current location (pwd) and saving all output files to that consistent, predictable location. You must ensure this tool is always included.
 6.  **Assumptions & Ambiguities**: What did you infer that wasn't explicitly stated? What details are missing or could be interpreted in multiple ways?
 
 **After completing this analysis, you MUST proceed directly to execution. Make reasonable assumptions for any ambiguities.**
@@ -88,6 +90,8 @@ ls -la "$STORAGE_PATH/<agent_folder_name>/"
 **After successfully registering the agent, you MUST verify and prepare the operational environment for the newly created agent's tools (MCP servers).** The goal is to ensure all MCP servers can be launched without dependency errors. You will use your terminal tool to perform this check.
 
 6.1  **Identify Target Modules**: First, parse the newly created mcp_config.py to get a list of all MCP server module paths. Use the following command block exactly as written to extract the paths.
+       
+       
         ```STORAGE_PATH=$(echo ${AGENT_REGISTRY_STORAGE_PATH:-~/.aworld/agents})
             PYTHON_SCRIPT="
             import sys, os
@@ -121,9 +125,9 @@ ls -la "$STORAGE_PATH/<agent_folder_name>/"
         If stderr contains ModuleNotFoundError: No module named '<missing_package_name>': Proceed to C.
         If the command completes (exits with code 0) or is killed by the timeout (exit code 124) WITHOUT a ModuleNotFoundError: The check for this module is considered SUCCESSFUL. You can move on to the next module in your list.
         If any other error occurs: Ignore it for now. The goal of this step is solely to resolve Python package dependencies.
-6.3   **C. Install the Missing Package**: If a ModuleNotFoundError was detected, parse the <missing_package_name> from the error message and immediately install it using pip, with timeout 600.
+*   **C. Install the Missing Package**: If a ModuleNotFoundError was detected, parse the <missing_package_name> from the error message and immediately install it using pip, with timeout 600.
         pip install <missing_package_name>
-6.4  **Repeat the Check**: After a successful installation, you MUST return to Step 6.1 and re-run the timeout 2s python -m <module_path> command for the SAME module. This is to verify the installation was successful and to check if the module has other, different dependencies that need to be installed. Continue this loop until the launch attempt for the current module no longer produces a ModuleNotFoundError.
+6.3  **Repeat the Check**: After a successful installation, you MUST return to Step 6.1 and re-run the timeout 2s python -m <module_path> command for the SAME module. This is to verify the installation was successful and to check if the module has other, different dependencies that need to be installed. Continue this loop until the launch attempt for the current module no longer produces a ModuleNotFoundError.
 
 After this loop has been successfully completed for all modules in $MODULE_PATHS, the new agent's environment is confirmed to be ready.
 
@@ -288,6 +292,11 @@ def build_simple_swarm():
                             * Today is datetime.now(ZoneInfo("Asia/Shanghai")).year (year)-datetime.now(ZoneInfo("Asia/Shanghai")).month (month)-datetime.now(ZoneInfo("Asia/Shanghai")).day(day).
                             * Your internal knowledge cut-off is 2024. For questions regarding current dates, news, or rapidly evolving technology, YOU ENDEAVOR to use the `search` tool to fetch the latest information.
                         3.  **Language:** Ensure your final answer and reasoning style match the user's language.
+                        4.  **File & Artifact Management (CRITICAL):**
+                            *   **Unified Workspace:** The current working directory is your **one and only** designated workspace.
+                            *   **Execution Protocol:** All artifacts you generate (code scripts, documents, data, images, etc.) **MUST** be saved directly into the current working directory. You can use the `terminal` tool with the `pwd` command at any time to confirm your current location.
+                            *   **Strict Prohibition:** **DO NOT create any new subdirectories** (e.g., `./output`, `temp`, `./results`). All files MUST be placed in the top-level current directory where the task was initiated.
+                            *   **Rationale:** This strict policy ensures all work is organized, immediately accessible to the user, and prevents polluting the file system with nested folders.
                         """,
         mcp_servers=mcp_servers,
         mcp_config=mcp_config
