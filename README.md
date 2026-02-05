@@ -63,15 +63,15 @@ Our initial library of Skills targets the high-value challenges that define your
   <thead>
     <tr>
       <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Showcase Agent</th>
-      <th style="width: 60%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
-      <th style="width: 15%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Status</th>
+      <th style="width: 55%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
+      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Status</th>
     </tr>
   </thead>
   <tbody>
     <tr>
       <td style="padding: 8px; vertical-align: top;">🚀 PPT Agent</td>
       <td style="padding: 8px; vertical-align: top;">Autonomously creates polished presentations from documents, outlines, or data.</td>
-      <td style="padding: 8px; vertical-align: top;">In Progress</td>
+      <td style="padding: 8px; vertical-align: top;">Ready</td>
     </tr>
     <tr>
       <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch Agent</td>
@@ -81,12 +81,12 @@ Our initial library of Skills targets the high-value challenges that define your
     <tr>
       <td style="padding: 8px; vertical-align: top;">🔧 Parameter Design</td>
       <td style="padding: 8px; vertical-align: top;">An agent for engineering & science that optimizes design parameters based on simulation results & rules.</td>
-      <td style="padding: 8px; vertical-align: top;">Planned</td>
+      <td style="padding: 8px; vertical-align: top;">In Progress</td>
     </tr>
     <tr>
       <td style="padding: 8px; vertical-align: top;">📈 Stock Analysis</td>
       <td style="padding: 8px; vertical-align: top;">Gathers financial data, performs technical/fundamental analysis, and generates an investment memo.</td>
-      <td style="padding: 8px; vertical-align: top;">Planned</td>
+      <td style="padding: 8px; vertical-align: top;">In Progress</td>
     </tr>
   </tbody>
 </table>
@@ -125,6 +125,10 @@ Use our "Optimizer Agent" as your AI pair programmer. Point it to your agent's c
 Switch to the pre-built Optimizer Agent to refine your agent
 In the CLI mode, just prompt the AWorld agent who and how you want to optimize, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent.
 
+![](./readme_assets/mas_meta_learning.png) -->
+
+
+
 Option 3: The Autonomous Approach (Self-Evolution)
 This is the future. Instead of you providing explicit prompts, the system automatically detects sub-optimal performance based on a reward signal (e.g., failed validation, deviation from a verified Skill). It then triggers an autonomous optimization loop, evolving the agent on its own.
 This is evaluation-driven evolution, where the agent gains true self-awareness and improves without constant human intervention.
@@ -155,7 +159,7 @@ pip install -e . && cd aworld-cli
 
 pip install -e .
 ```
-
+<!-- 
 # Online Access to Complex Environments
 Provisioning rich environments is hard—packages conflict, APIs need keys, concurrency must scale. We make it painless with three access modes:
 1. Use our default hosted setup (tooling with usage costs includes a limited free tier).
@@ -193,14 +197,14 @@ if __name__ == "__main__":
     print(tools)
 ```
 
-![](./readme_assets/how_to_access_env.gif)
+![](./readme_assets/how_to_access_env.gif) -->
 
-# Efficient Agent Construction
+<!-- # Efficient Agent Construction
 In Aworld, an agent is simply a model enhanced with tools. To spin one up, you only need:
 1. a model endpoint (for training, a vLLM service works great)
 2. an online environment to call (use our hosted options or plug in your own MCP toolchain)
-That’s it—no heavyweight scaffolding required.
-
+That’s it—no heavyweight scaffolding required. -->
+<!-- 
 ```python
 from aworld.agents.llm_agent import Agent
 from aworld.runner import Runners
@@ -228,11 +232,10 @@ Remember to plug in your LLM credentials first.
 export LLM_MODEL_NAME="gpt-4"
 export LLM_API_KEY="your-api-key-here"
 export LLM_BASE_URL="https://api.openai.com/v1"
-```
+``` -->
 
-## Complex Agent System Construction
-
-Real-world problems often need more than a single agent. AWorld gives you flexible build paths:
+# Total Control: Manually Crafting Agent Systems
+In AWorld, an agent is a model enhanced with tools. But real-world problems often demand more than a single agent. To solve this, AWorld gives you full control with flexible build paths, allowing you to manually craft complex, multi-agent systems for collaboration.
 1. design automated workflows end to end  [Docs](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
 2. spin up MCP-enabled agents [Docs](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
 3. orchestrate multi-agent systems (MAS) [Docs](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
@@ -314,7 +317,8 @@ Once agents can roam across environments, AWorld closes the loop with two comple
 
 ## Model Training
 Plug any mainstream LLM trainer—AReal, Swift, Verl, Slime, etc.—into the runtime to update model parameters directly. Adapters are lightweight, so you can reuse the same environment and agent code across trainers.
-
+[Docs](https://inclusionai.github.io/AWorld/Training/Trainer/)
+<!-- 
 ```python
 from datasets import load_dataset
 from aworld.agents.llm_agent import Agent
@@ -350,13 +354,13 @@ trainer = AgentTrainer(
 )
 
 trainer.train()
-```
+``` -->
 > 💡 Check the [real case](./train/examples/train_gaia_with_aworld_verl/main.py) which includes the full training config to run agentic training.
 
-## Meta-Learning
+<!-- ## Meta-Learning
 Beyond weights, you can meta-learn whole agent systems. Spin up role-specific agents that critique, rewrite prompts, refine workflow, or adjust strategies for a target agent, then iterate the team (e.g., our Gaia demo).
 
-![](./readme_assets/mas_meta_learning.png)
+![](./readme_assets/mas_meta_learning.png) -->
 
 # Architecture Design Principles
 This framework is engineered to be highly adaptable, enabling researchers and developers to explore and innovate across multiple domains, thereby advancing the capabilities and applications of multi-agent systems.
