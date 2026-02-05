@@ -52,7 +52,20 @@ We believe the true scaling of AI is achieved by enabling you to infuse your kno
 </p>
 
 
-# The First Step: Verified Skills as Your Foundation
+# Installation AWorld & AWorld-CLI
+> [!TIP]
+> Python>=3.11
+```bash
+git clone https://github.com/inclusionAI/AWorld && cd AWorld
+
+conda create -n aworld_env python=3.11 -y && conda activate aworld_env 
+
+pip install -e . && cd aworld-cli 
+
+pip install -e .
+```
+
+# Verified Skills as Your Foundation
 <p align="justify">
 Every great craft begins with exceptional materials. That’s why our first step is to equip you with a library of Verified Skills.
 These are master blueprints, not mere templates—designed by domain experts and refined through practical application. They serve as your trusted starting point, allowing you to move instantly from a unique challenge to a working agent. With our simple CLI, you can immediately use these Skills to craft a solution tailored to your world.
@@ -63,8 +76,8 @@ Our initial library of Skills targets the high-value challenges that define your
   <thead>
     <tr>
       <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Showcase Agent</th>
-      <th style="width: 55%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
-      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Status</th>
+      <th style="width: 50%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
+      <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Status</th>
     </tr>
   </thead>
   <tbody>
@@ -147,18 +160,7 @@ We warmly welcome developers, researchers, and domain experts to join us. Whethe
 
 
 
-# Installation AWorld & AWorld-CLI
-> [!TIP]
-> Python>=3.11
-```bash
-git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
-conda create -n aworld_env python=3.11 -y && conda activate aworld_env 
-
-pip install -e . && cd aworld-cli 
-
-pip install -e .
-```
 <!-- 
 # Online Access to Complex Environments
 Provisioning rich environments is hard—packages conflict, APIs need keys, concurrency must scale. We make it painless with three access modes:
@@ -361,7 +363,7 @@ trainer.train()
 Beyond weights, you can meta-learn whole agent systems. Spin up role-specific agents that critique, rewrite prompts, refine workflow, or adjust strategies for a target agent, then iterate the team (e.g., our Gaia demo).
 
 ![](./readme_assets/mas_meta_learning.png) -->
-
+<!-- 
 # Architecture Design Principles
 This framework is engineered to be highly adaptable, enabling researchers and developers to explore and innovate across multiple domains, thereby advancing the capabilities and applications of multi-agent systems.
 
@@ -385,7 +387,7 @@ This framework is engineered to be highly adaptable, enabling researchers and de
 | ✅ Integrated MCP services     | ✅ Encapsulated runtime                                                                            | ✅ Runtime state management  |
 | ✅ Multi-model providers       | ✅ Flexible MAS patterns                                                                           | ✅ High-concurrency support  |
 | ✅ Customization options       | ✅ Clear state tracing                                                                             | ✅ Distributed training      |
-| ✅ [Support Agent Skills](https://github.com/inclusionAI/AWorld/tree/main/examples/skill_agent)  | [Support Aworld-Cli](https://github.com/inclusionAI/AWorld/tree/main/examples/aworld_cli_demo) 🚀 |       |
+| ✅ [Support Agent Skills](https://github.com/inclusionAI/AWorld/tree/main/examples/skill_agent)  | [Support Aworld-Cli](https://github.com/inclusionAI/AWorld/tree/main/examples/aworld_cli_demo) 🚀 |       | -->
 
 
 # Evolution
@@ -584,8 +586,8 @@ For academic citations or wish to contact us, please use the following BibTeX en
 }
 ```
 
-# Star History
-![](https://api.star-history.com/svg?repos=inclusionAI/AWorld&type=Date)
+<!-- # Star History
+![](https://api.star-history.com/svg?repos=inclusionAI/AWorld&type=Date) -->
 
 
 <!-- resource section start -->
