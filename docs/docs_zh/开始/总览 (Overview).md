@@ -44,7 +44,7 @@ AWorld 的典型运行架构是一个反馈控制回路：
 + **经验**：通过 Agent 与环境交互，收集成功或失败的轨迹数据（Trajectory）。
 + **学习**：记录轨迹数据（Trajectory），用于后续的 RL 训练或 In-context Learning 优化，实现自我进化。
 
-![](../../imgs/aworld.png)
+![](../../imgs/arch.png)
 
 
 ## 关键特性
