@@ -66,7 +66,7 @@ AWorld's typical runtime architecture forms a feedback control loop:
 4. **Experience**: Through interaction with the environment, the Agent collects trajectory data (**Trajectory**) that captures both successful and failed attempts.
 5. **Learn**: These trajectories are logged and used for subsequent **optimization** via reinforcement learning (RL) or in-context learning, enabling the Agent to continuously self-improve and evolve.
 
-![AWorld Architecture](../imgs/aworld.png)
+![AWorld Architecture](../imgs/arch.png)
 
 ---
 
