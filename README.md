@@ -6,7 +6,7 @@
 
 <h4 align="center">
 
-*"Self-awareness: the hardest problem isn't solving within limits, it's discovering one's own limitations"*
+*"The Next Frontier for AI is Your Expertise"*
 
 [![Twitter Follow][twitter-image]][twitter-url]
 [![WeChat QR Code][wechat-image]][wechat-url]
@@ -23,18 +23,17 @@
 
 [中文版](./README_zh.md) |
 [Prefaces](#the-next-frontier-for-ai-is-your-expertise) |
-[Let's do it](#your-journey-with-aworld-cli) |
-[Agent](#total-control:-manually-crafting-agent-systems) |
+[Automation](#your-journey-with-aworld-cli) |
+[Manual](#total-control-manually-crafting-agent-systems) |
 [Experience](#experience-to-samples) |
 [Training](#training) |
 [Evolution](#evolution) |
-[Architecture](#architecture-design-principles) |
 [Contributing](#contributing) |
 
 </h4>
 
+
 ---
-**The Next Frontier for AI is Your Expertise**
 
 <p align="justify">
 For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. In scientific research, financial analysis, or complex engineering, generic models can't climb this wall. They can't speak your language.
@@ -68,11 +67,17 @@ pip install -e .
 
 ## Create Your Agent
 <p align="justify">
-Instantly scaffold an agent from a natural language description of your task. AWorld handles the boilerplate, so you can focus on the logic. 
+Instantly scaffold an agent from a natural language description of your task. AWorld handles the boilerplate, so you can focus on the logic.
+
 CLI Input as Command
+
 1. aworld-cli # This is the start of your journey
-2. prompt the AWorld agent with your requirements for creating a specific agent "Create an agent for generating PowerPoint presentation", and confirm the following building details.
-This command generates a fully operational agent file (~/agents/ppt_creator.py) referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution. Once it's generated, your agent is a permanent, reusable tool in your ~/agents folder. You may also type '/agents' in CLI mode to check your agents.
+
+2. prompt the AWorld agent with your requirements for creating a specific agent "Create an agent for generating PowerPoint presentation".
+
+This command generates a fully operational agent file referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution. 
+
+Once it's generated, your agent is a permanent, reusable tool in your ~/agents folder. You may also type '/agents' in CLI mode to check your agents.
 </p>
 
 
@@ -148,43 +153,6 @@ This is the future. Instead of you providing explicit prompts, the system automa
 This is evaluation-driven evolution, where the agent gains true self-awareness and improves without constant human intervention.
 </p>
 
-
-
-
-<!-- # Efficient Agent Construction
-In Aworld, an agent is simply a model enhanced with tools. To spin one up, you only need:
-1. a model endpoint (for training, a vLLM service works great)
-2. an online environment to call (use our hosted options or plug in your own MCP toolchain)
-That’s it—no heavyweight scaffolding required. -->
-<!-- 
-```python
-from aworld.agents.llm_agent import Agent
-from aworld.runner import Runners
-
-# refer the section above for details
-mcp_config = {...}
-
-searcher = Agent(
-    name="Search Agent",
-    system_prompt="You specialize at searching.",
-    mcp_config=mcp_config
-)
-
-if __name__ == "__main__":
-    result = Runners.sync_run(
-        input="Use google search tool to answer the question: the news about AI today.",
-        agent=searcher
-    )
-    print(f"answer: {result.answer}")
-```
-
-Remember to plug in your LLM credentials first.
-```bash
-# Set LLM credentials
-export LLM_MODEL_NAME="gpt-4"
-export LLM_API_KEY="your-api-key-here"
-export LLM_BASE_URL="https://api.openai.com/v1"
-``` -->
 
 # Total Control: Manually Crafting Agent Systems
 In AWorld, an agent is a model enhanced with tools. But real-world problems often demand more than a single agent. To solve this, AWorld gives you full control with flexible build paths, allowing you to manually craft complex, multi-agent systems for collaboration.
