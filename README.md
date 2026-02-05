@@ -134,6 +134,7 @@ You are the expert. Open the generated Python file and fine-tune the prompts, lo
 <p align="justify">
 Prompt with your desired changes, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent as your AI pair programmer to tune your agent.
 </p>
+
 ![](./readme_assets/mas_meta_learning_v2.png) 
 
 
