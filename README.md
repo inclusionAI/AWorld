@@ -36,6 +36,8 @@
 <div align="justify">
 For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. From scientific research, financial analysis, to complex engineering, generic models can't climb this wall. They can't speak your language.
 
+<br>
+
 The AWorld Thesis is that the true scaling of AI is achieved by enabling experts like you to build a gate in that wall.
 
 <strong>AWorld & AWorld-CLI</strong> is the platform designed for this. We provide the fundamental recipe for you, the expert, to infuse your knowledge and craft unique insights into fleets of autonomous agents. This is how we move beyond generic promise to specific, robust applications that navigate your world with precision.
@@ -62,7 +64,6 @@ pip install -e . && cd aworld-cli && pip install -e .
 aworld-cli
 ```
 
-
 ## Create Your Agent
 <p align="justify">
 Instantly scaffold an agent from a natural language description of your task. AWorld-CLI handles the boilerplate, so you can focus on the logic.
@@ -80,9 +81,7 @@ Once it's generated, your agent is a permanent, reusable tool in your ~/.agents 
 ### Verified Skills: The DNA for Automated Agent Creation
 <div align="justify">
 Our library of Verified Skills is more than a collection of blueprints; it's a gene pool of expert capabilities.
-</div>
 
-<div align="justify">
 When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills, infusing the new agent's core with proven logic and reliability. This ensures your agent inherits the DNA of our best practices (see [Evolution](#evolution)), making it robust and effective from the moment it's created. 
 </div>
 <!-- 
