@@ -34,11 +34,7 @@
 ---
 
 <div align="justify">
-For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. From scientific research, financial analysis, to complex engineering, generic models can't climb this wall. They can't speak your language.
-
-<br>
-
-The AWorld Thesis is that the true scaling of AI is achieved by enabling experts like you to build a gate in that wall.
+For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. From scientific research, financial analysis, to complex engineering, generic models can't climb this wall. They can't speak your language. The AWorld Thesis is that the true scaling of AI is achieved by enabling experts like you to build a gate in that wall.
 
 <strong>AWorld & AWorld-CLI</strong> is the platform designed for this. We provide the fundamental recipe for you, the expert, to infuse your knowledge and craft unique insights into fleets of autonomous agents. This is how we move beyond generic promise to specific, robust applications that navigate your world with precision.
 </div>
@@ -129,8 +125,6 @@ Prompt the AWorld Agent to execute your newly created agent on a task and watch 
 <p align="justify">
 This is where AWorld truly shines. If the agent's performance isn't perfect, you have a spectrum of powerful options for refinement.
 
-Once you're satisfied, your agent is permanent, reusable in your ~/agents folder.
-
 **Option 1: Manual Tuning**
 
 You are the expert. Open the generated Python file and fine-tune the prompts, logic, or tool usage directly. You have full control.
@@ -140,14 +134,14 @@ You are the expert. Open the generated Python file and fine-tune the prompts, lo
 
 Prompt with your desired changes, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent as your AI pair programmer to tune your agent.
 
-![](./readme_assets/mas_meta_learning.png) 
+![](./readme_assets/mas_meta_learning_v2.png) 
 
 
 **Option 3: Self-Evolution**
 
-This is the future. Instead of you providing explicit prompts, the system automatically detects sub-optimal performance based on a reward signal (e.g., failed validation, deviation from a verified Skill). It then triggers an autonomous optimization loop, evolving the agent on its own.
+This is the future. Instead of you providing explicit prompts, the system automatically detects sub-optimal performance based on a reward signal (e.g., failed validation, deviation from a verified Skill). It then triggers an autonomous optimization loop, evolving the agent on its own. This is evaluation-driven evolution, where the agent gains true self-awareness and improves without constant human intervention.
 
-This is evaluation-driven evolution, where the agent gains true self-awareness and improves without constant human intervention.
+Once you're satisfied with your optimized agent, it is permanent and reusable in your ~/agents folder.
 </p>
 
 
