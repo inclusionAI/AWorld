@@ -496,65 +496,12 @@ swarm:
         
         self.max_yaml_retry = max_yaml_retry
         
-        # Register MetaAgent-specific tools
-        self._register_meta_tools()
-        
         # Planning context cache (set by plan_task or async_policy)
         self._skills_path: Optional[Path] = kwargs.get("skills_path", None)
         self._available_agents: Dict[str, BaseAgent] = kwargs.get("available_agents", {})
         self._available_tools: List[str] = kwargs.get("available_tools", [])
         self._available_mcp_servers: Dict[str, Dict[str, Any]] = kwargs.get("available_mcp_servers", {})
         self._use_self_resources: bool = True
-    
-    def _register_meta_tools(self):
-        """Register MetaAgent-specific tools."""
-        from aworld.core.tool.function_tool import FunctionTool
-        
-        # list_available_skills tool
-        async def list_available_skills(skills_path: str) -> str:
-            """
-            List all available skills from the specified directory.
-            
-            Args:
-                skills_path: Path to skills directory
-            
-            Returns:
-                Formatted string with skill information including type, description, and MCP servers
-            """
-            from pathlib import Path
-            from aworld.utils.skill_loader import collect_skill_docs
-            
-            try:
-                skills_info = collect_skill_docs(Path(skills_path))
-            except Exception as e:
-                return f"Error loading skills from {skills_path}: {e}"
-            
-            if not skills_info:
-                return f"No skills found in {skills_path}"
-            
-            result = ["Available Skills:\n"]
-            for skill_id, skill in skills_info.items():
-                skill_type = skill.get('type', 'normal')
-                agentic_marker = " [Agentic Skill]" if skill_type == "agent" else ""
-                
-                result.append(f"- **{skill_id}**{agentic_marker}:")
-                result.append(f"  Type: {skill_type}")
-                result.append(f"  Description: {skill.get('description', 'N/A')}")
-                
-                tool_list = skill.get('tool_list', {})
-                if tool_list:
-                    servers = ', '.join(tool_list.keys())
-                    result.append(f"  MCP Servers: {servers}")
-                
-                result.append("")
-            
-            return "\n".join(result)
-        
-        # Add tool to agent
-        tool = FunctionTool.from_function(list_available_skills)
-        if not hasattr(self, 'tools'):
-            self.tools = []
-        self.tools.append(tool)
     
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = None, **kwargs) -> str:
         """
