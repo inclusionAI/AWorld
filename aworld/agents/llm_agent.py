@@ -126,6 +126,9 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                                                policy_info=content))
                     logger.info(f"🔨 [Agent:{agent_id}] Added tool action: {tool_name}_{action_name}")
         else:
+            if not content and resp.reasoning_content:
+                logger.info(f"💬 [Agent:{agent_id}] No tool calls or content, added reasoning content to action")
+                content = resp.reasoning_content
             results.append(ActionModel(agent_name=agent_id, policy_info=content))
             logger.debug(
                 f"💬 [Agent:{agent_id}] No tool calls, added text response action (content_length={len(content)})")
@@ -913,7 +916,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
 
                     # Check if we got a valid response
-                    if llm_response and (llm_response.content or llm_response.tool_calls):
+                    if llm_response and (llm_response.content or llm_response.tool_calls or llm_response.reasoning_content):
                         logger.info(f"LLM Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
                         if llm_response:
                             usage_process(llm_response.usage, message.context)
