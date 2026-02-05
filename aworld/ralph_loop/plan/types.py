@@ -94,7 +94,6 @@ class PlanReview:
     consistent: bool = True
     complete: bool = True
     issues: List[str] = field(default_factory=list)
-    warnings: List[str] = field(default_factory=list)
     suggestions: List[str] = field(default_factory=list)
     # confidence below 0.5, trigger HITL
     confidence: float = 1.0
