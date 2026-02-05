@@ -158,9 +158,9 @@ In AWorld, an agent is a model enhanced with tools. But real-world problems ofte
 
 3. orchestrate multi-agent systems (MAS) [Docs](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
-<p align="justify">
+
 Want to see it live? Load a pre-built DeepResearch team in the AWorld [Playground](https://playground.aworldagents.com/), inspect the source, and run it end to end.
-</p>
+
 
 ![](./readme_assets/playground_gaiateam.gif)
 
@@ -360,12 +360,13 @@ AWorld's mission is to handle the complexity so you can focus on innovation. Thi
 
 
 # Contributing
-
+<p align="justify">
 Our roadmap includes expanding our AI for Science & Business initiative, deepening our self-evolution capabilities, and growing our library of community-contributed Skills.
 
 We warmly welcome developers, researchers, and domain experts to join us. Whether you're enhancing the framework or contributing a Skill from your field of expertise, your work is valuable.
 
 For academic citations or wish to contact us, please use the following BibTeX entry:
+</p>
 
 ```bibtex
 @misc{yu2025aworldorchestratingtrainingrecipe,
