@@ -148,12 +148,15 @@ Once you're satisfied with your optimized agent, it is permanent and reusable in
 
 
 # Total Control: Manually Crafting Agent Systems
+<p align="justify">
 In AWorld, an agent is a model enhanced with tools. But real-world problems often demand more than a single agent. To solve this, AWorld gives you full control with flexible build paths, allowing you to manually craft complex, multi-agent systems for collaboration.
 1. design automated workflows end to end  [Docs](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
 2. spin up MCP-enabled agents [Docs](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
 3. orchestrate multi-agent systems (MAS) [Docs](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
 Want to see it live? Load a pre-built DeepResearch team in the AWorld [Playground](https://playground.aworldagents.com/), inspect the source, and run it end to end.
+</p>
+
 ![](./readme_assets/playground_gaiateam.gif)
 
 # Experience to Samples
