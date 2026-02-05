@@ -79,9 +79,7 @@ Once it's generated, your agent is a permanent, reusable tool in your ~/.agents 
 
 ### Verified Skills as Your Foundation
 <p align="justify">
-Start building with our library of Verified Skills—master blueprints for mission-critical agents.
-
-Designed by domain experts and battle-tested in real-world applications, they allow you to bypass the basics and go straight to a working solution. Use our simple CLI to instantly tailor these Skills into agents that solve your most critical challenges.
+Designed by domain experts and battle-tested in real-world applications, AWorld-CLI allow you to bypass the basics and go straight to a working solution. Use our simple CLI to instantly tailor these Skills into agents that solve your most critical challenges.
 
 </p>
 
@@ -95,6 +93,46 @@ Designed by domain experts and battle-tested in real-world applications, they al
     <tr>
       <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Showcase Agent</th>
       <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
+      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px; white-space: nowrap;">Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch Agent</td>
+      <td style="padding: 8px; vertical-align: top;">Conducts comprehensive, multi-source research on a topic and synthesizes a structured report.</td>
+      <td style="padding: 8px; vertical-align: top; white-space: nowrap;">Ready</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🚀 PPT Agent</td>
+      <td style="padding: 8px; vertical-align: top;">Creates polished presentations from documents, outlines, or data.</td>
+      <td style="padding: 8px; vertical-align: top; white-space: nowrap;">In Progress</td>
+    </tr>
+    <!-- <tr>
+      <td style="padding: 8px; vertical-align: top;">🔧 Parameter Design</td>
+      <td style="padding: 8px; vertical-align: top;">An agent for engineering & science that optimizes design parameters based on simulation results & rules.</td>
+      <td style="padding: 8px; vertical-align: top;">In Progress</td>
+    </tr> -->
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">📈 Stock Analysis</td>
+      <td style="padding: 8px; vertical-align: top;">Gathers financial data, performs technical/fundamental analysis, and generates an investment memo.</td>
+      <td style="padding: 8px; vertical-align: top; white-space: nowrap;">In Progress</td>
+    </tr>
+  </tbody>
+</table>
+
+
+<table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
+  <colgroup>
+    <!-- 变化1: 调整了列宽定义 -->
+    <col style="width: 22%;">
+    <col> <!-- 让描述列自动填充剩余空间 -->
+    <col style="width: auto;"> <!-- 让状态列的宽度根据内容自适应 -->
+  </colgroup>
+  <thead>
+    <tr>
+      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Showcase Agent</th>
+      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
+      <!-- 变化2: 为第三列的表头和单元格增加 nowrap 样式，防止换行 -->
       <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px; white-space: nowrap;">Status</th>
     </tr>
   </thead>
