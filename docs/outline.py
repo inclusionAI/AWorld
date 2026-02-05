@@ -6,7 +6,7 @@ from typing import List
 
 import yaml
 
-docs = "."
+docs = "docs"
 black_keys = ["Index", "docs_zh", "DESIGN_SYSTEM"]
 black_values = ["index.md"]
 file_priority = {"Guides": ["Overview", "Quick Start", "Core Capabilities", "Parallel Tasks", "Streaming Response", "Hitl"],
