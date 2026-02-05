@@ -33,11 +33,13 @@
 
 ---
 
-<div align="justify">
-For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. From scientific research, financial analysis, to complex engineering, generic models can't climb this wall. They can't speak your language. The AWorld Thesis is that the true scaling of AI is achieved by enabling experts like you to build a gate in that wall.
+<p align="justify">
+For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. From scientific research, financial analysis, to complex engineering, generic models can't climb this wall. They can't speak your language. 
 
-<strong>AWorld & AWorld-CLI</strong> is the platform designed for this. We provide the fundamental recipe for you, the expert, to infuse your knowledge and craft unique insights into fleets of autonomous agents. This is how we move beyond generic promise to specific, robust applications that navigate your world with precision.
-</div>
+The AWorld Thesis is that the true scaling of AI is achieved by enabling experts like you to build a gate in that wall.
+
+AWorld with its CLI mode is the platform designed for this. We provide the fundamental recipe for you, the expert, to infuse your knowledge and craft unique insights into fleets of autonomous agents. This is how we move beyond generic promise to specific, robust applications that navigate your world with precision.
+</p>
 
 
 ![](./readme_assets/aworld_loop.png)
