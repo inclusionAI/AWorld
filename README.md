@@ -51,7 +51,7 @@ The AWorld Thesis is that the true scaling of AI is achieved by enabling experts
 The journey from an idea to an evolved, autonomous agent begins at your fingertips.
 
 
-## Installation and Activation
+## Install and Activate
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
@@ -77,12 +77,13 @@ Once it's generated, your agent is a permanent, reusable tool in your ~/.agents 
 </p>
 
 
-### Verified Skills as Your Foundation
+### Verified Skills: The DNA for Automated Agent Creation
 <p align="justify">
-Designed by domain experts and battle-tested in real-world applications, AWorld-CLI allow you to bypass the basics and go straight to a working solution. Use our simple CLI to instantly tailor these Skills into agents that solve your most critical challenges.
+Our library of Verified Skills is more than a collection of blueprints; it's a gene pool of expert capabilities.
 
+When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills, infusing the new agent's core with proven logic and reliability. This ensures your agent inherits the DNA of our best practices (see [Evolution](#evolution)), making it robust and effective from the moment it's created. 
 </p>
-
+<!-- 
 <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
   <colgroup>
     <col style="width: 22%;">
@@ -113,7 +114,7 @@ Designed by domain experts and battle-tested in real-world applications, AWorld-
       <td style="padding: 8px; vertical-align: top; white-space: nowrap;">In Progress</td>
     </tr>
   </tbody>
-</table>
+</table> -->
 
 
 ## Run Your Agent
