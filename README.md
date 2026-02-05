@@ -89,26 +89,26 @@ Designed by domain experts and battle-tested in real-world applications, they al
   <thead>
     <tr>
       <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Showcase Agent</th>
-      <th style="width: 50%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
-      <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Status</th>
+      <th style="width: 45%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
+      <th style="width: 30%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Status</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <td style="padding: 8px; vertical-align: top;">🚀 PPT Agent</td>
-      <td style="padding: 8px; vertical-align: top;">Autonomously creates polished presentations from documents, outlines, or data.</td>
+      <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch Agent</td>
+      <td style="padding: 8px; vertical-align: top;">Conducts comprehensive, multi-source research on a topic and synthesizes a structured report.</td>
       <td style="padding: 8px; vertical-align: top;">Ready</td>
     </tr>
     <tr>
-      <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch Agent</td>
-      <td style="padding: 8px; vertical-align: top;">Conducts comprehensive, multi-source research on a topic and synthesizes a structured report.</td>
+      <td style="padding: 8px; vertical-align: top;">🚀 PPT Agent</td>
+      <td style="padding: 8px; vertical-align: top;">Creates polished presentations from documents, outlines, or data.</td>
       <td style="padding: 8px; vertical-align: top;">In Progress</td>
     </tr>
-    <tr>
+    <!-- <tr>
       <td style="padding: 8px; vertical-align: top;">🔧 Parameter Design</td>
       <td style="padding: 8px; vertical-align: top;">An agent for engineering & science that optimizes design parameters based on simulation results & rules.</td>
       <td style="padding: 8px; vertical-align: top;">In Progress</td>
-    </tr>
+    </tr> -->
     <tr>
       <td style="padding: 8px; vertical-align: top;">📈 Stock Analysis</td>
       <td style="padding: 8px; vertical-align: top;">Gathers financial data, performs technical/fundamental analysis, and generates an investment memo.</td>
