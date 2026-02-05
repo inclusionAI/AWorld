@@ -52,6 +52,16 @@ The journey from an idea to an evolved, autonomous agent begins at your fingerti
 
 
 ## Install and Activate
+
+Create a .env file in the AWorld/aworld-cli to configure the base model for both the AWorld Agent and any agents it creates. Add the following content:
+```bash
+LLM_MODEL_NAME="your_model_name"
+LLM_PROVIDER="openai"
+LLM_API_KEY="your_model_api_key"
+LLM_BASE_URL="your_base_url"
+```
+
+Install and Enter AWorld-CLI
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
@@ -60,14 +70,6 @@ conda create -n aworld_env python=3.11 -y && conda activate aworld_env
 pip install -e . && cd aworld-cli && pip install -e .
 
 aworld-cli
-```
-
-Create a .env file in the AWorld/aworld-cli to configure the base model for both the AWorld Agent and any agents it creates. Add the following content:
-```bash
-LLM_MODEL_NAME="your_model_name"
-LLM_PROVIDER="openai"
-LLM_API_KEY="your_model_api_key"
-LLM_BASE_URL="your_base_url"
 ```
 
 
