@@ -56,14 +56,40 @@ We believe the true scaling of AI is achieved by enabling you to infuse your kno
 <p align="justify">
 Every great craft begins with exceptional materials. That’s why our first step is to equip you with a library of Verified Skills.
 These are master blueprints, not mere templates—designed by domain experts and refined through practical application. They serve as your trusted starting point, allowing you to move instantly from a unique challenge to a working agent. With our simple CLI, you can immediately use these Skills to craft a solution tailored to your world.
-Our initial library of Skills targets the high-value challenges that define your professional craft:
-
-Showcase Agent  Description Status
-🚀 PPT Agent Autonomously creates polished presentations from documents, outlines, or data.  In Progress
-🧠 DeepSearch Agent  Conducts comprehensive, multi-source research on a topic and synthesizes a structured report.   In Progress
-🔧 Parameter Design  An agent for engineering & science that optimizes design parameters based on simulation results & rules.    Planned
-📈 Stock Analysis    Gathers financial data, performs technical/fundamental analysis, and generates an investment memo.  Planned
+Our initial library of Skills targets the high-value challenges that define your professional craft.
 </p>
+
+<table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
+  <thead>
+    <tr>
+      <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Showcase Agent</th>
+      <th style="width: 60%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
+      <th style="width: 15%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Status</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🚀 PPT Agent</td>
+      <td style="padding: 8px; vertical-align: top;">Autonomously creates polished presentations from documents, outlines, or data.</td>
+      <td style="padding: 8px; vertical-align: top;">In Progress</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch Agent</td>
+      <td style="padding: 8px; vertical-align: top;">Conducts comprehensive, multi-source research on a topic and synthesizes a structured report.</td>
+      <td style="padding: 8px; vertical-align: top;">In Progress</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🔧 Parameter Design</td>
+      <td style="padding: 8px; vertical-align: top;">An agent for engineering & science that optimizes design parameters based on simulation results & rules.</td>
+      <td style="padding: 8px; vertical-align: top;">Planned</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">📈 Stock Analysis</td>
+      <td style="padding: 8px; vertical-align: top;">Gathers financial data, performs technical/fundamental analysis, and generates an investment memo.</td>
+      <td style="padding: 8px; vertical-align: top;">Planned</td>
+    </tr>
+  </tbody>
+</table>
 
 # Create an Agent in Seconds
 <p align="justify">
@@ -85,8 +111,10 @@ You can inspect the trajectory_log.json to understand every decision the agent m
 # Iterate and Evolve
 <p align="justify">
 This is where AWorld truly shines. If the agent's performance isn't perfect, you have a spectrum of powerful options for refinement.
+
 Option 1: The Direct Approach (Manual Tuning)
 You are the expert. Open the generated Python file and fine-tune the prompts, logic, or tool usage directly. You have full control.
+
 ## check the generated agent file(s)
 ```bash
 vim ~/agents/ppt_creator.py
@@ -94,7 +122,7 @@ vim ~/agents/ppt_creator.py
 
 Option 2: The Collaborative Approach (AI-Assisted Tuning)
 Use our "Optimizer Agent" as your AI pair programmer. Point it to your agent's code and the trajectory log, then prompt it with your desired changes.
-# Switch to the pre-built Optimizer Agent to refine your agent
+Switch to the pre-built Optimizer Agent to refine your agent
 In the CLI mode, just prompt the AWorld agent who and how you want to optimize, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent.
 
 Option 3: The Autonomous Approach (Self-Evolution)
