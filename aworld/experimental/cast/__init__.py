@@ -40,11 +40,6 @@ from .models import (
     ReferenceType,
 )
 # 解析器工具（核心）
-from .parser_utils import (
-    create_parser,
-    get_supported_languages,
-    get_parser_info
-)
 
 # 工具类
 
@@ -58,11 +53,6 @@ __all__ = [
     "BaseParser",
     "PythonParser",
     "HtmlParser",
-
-    # 解析器工具（推荐使用）
-    "create_parser",
-    "get_supported_languages",
-    "get_parser_info",
 
     # 数据模型
     "Symbol",

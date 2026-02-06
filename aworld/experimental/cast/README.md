@@ -1,6 +1,6 @@
 # AWorld CAST Framework
 
-**C**ode **A**ST **S**ystem **T**oolkit - A unified code analysis framework based on Tree-sitter, designed specifically for agent code understanding and optimization. Adopts a three-tier hierarchical indexing architecture to provide LLMs with precise code understanding and modification capabilities.
+**C**ode **A****S**is**T****A**nt - A unified code assistant framework based on Tree-sitter, designed specifically for agent code understanding and optimization. Adopts a three-tier hierarchical indexing architecture to provide LLMs with precise code understanding and modification capabilities.
 
 ## 🏗️ Layered Architecture Design
 

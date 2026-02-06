@@ -12,9 +12,9 @@ Available Coders:
 """
 
 from .base_coder import BaseCoder, CoderResult, CoderValidationError, CoderOperationError
-from .search_replace_coder import SearchReplaceCoder
 from .dmp_coder import DmpCoder
 from .op_coder import OpCoder
+from .search_replace_coder import SearchReplaceCoder
 
 __all__ = [
     'BaseCoder',

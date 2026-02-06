@@ -11,7 +11,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Dict, Any, Union, List, Optional, Tuple
 
-from aworld.logs.util import logger
+from ..utils import logger
 from .base_coder import BaseCoder, CoderResult, CoderValidationError, CoderOperationError
 
 

@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 
-from aworld.logs.util import logger
+from ..utils import logger
 from .engine import Searcher, SearchParams, SearchResult, SearchType
 from .utils import PygrepSearcher
 

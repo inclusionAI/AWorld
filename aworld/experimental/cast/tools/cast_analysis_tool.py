@@ -13,7 +13,7 @@ from aworld.core.context.amni import AmniContext
 from aworld.core.event.base import Message
 from aworld.core.tool.action import ToolAction
 from aworld.core.tool.base import ToolFactory, AsyncTool
-from aworld.logs.util import logger
+from ..utils import logger
 from aworld.tools.utils import build_observation
 
 CAST_ANALYSIS = "CAST_ANALYSIS"

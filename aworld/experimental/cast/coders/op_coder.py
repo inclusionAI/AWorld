@@ -10,7 +10,7 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Union, List
 
-from aworld.logs.util import logger
+from ..utils import logger
 from .base_coder import BaseCoder, CoderResult, CoderValidationError, CoderOperationError
 from .dmp_coder import DmpCoder
 
