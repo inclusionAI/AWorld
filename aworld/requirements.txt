@@ -27,3 +27,4 @@ pillow~=12.0.0
 
 grep_ast~=0.9.0
 tree-sitter-python~=0.25.0
+pygrep~=0.3.2
