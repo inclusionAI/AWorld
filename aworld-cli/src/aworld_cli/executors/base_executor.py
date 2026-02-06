@@ -73,17 +73,23 @@ class BaseAgentExecutor(ABC, AgentExecutor):
     ):
         """
         Initialize base executor.
-        
+
         Args:
             console: Optional Rich console for output
             session_id: Optional session ID. If None, will generate one automatically.
         """
         self.console = console or Console()
         self.session_id = session_id or self._generate_session_id()
+        # Initialize content collapse states (adaptive display for CLI)
+        self._collapsed_sections = {
+            'message': False,   # 💬 message content - show full by default
+            'tools': False,     # 🔧 tool calls content - show full by default
+            'results': True     # ⚡ tool results content - collapse by default (often verbose)
+        }
         self._init_session_management()
         self._setup_logging()
     
-    # ========== Session Management (通用能力) ==========
+    # ========== Session Management (Common Capabilities) ==========
     
     def _init_session_management(self) -> None:
         """Initialize session history management."""
@@ -277,7 +283,51 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                 self.console.print(f"[dim]Previous session: {old_session_id}[/dim]")
         return self.session_id
     
-    # ========== Output Rendering (通用能力) ==========
+    # ========== Output Rendering (Common Capabilities) ==========
+
+    def _render_collapsible_content(self, section_type: str, header: str, content_lines: List[str], max_lines: int = 3) -> None:
+        """
+        Render collapsible content with expand/collapse functionality.
+
+        Args:
+            section_type: Type of section ('message', 'tools', 'results')
+            header: Header text to display (e.g., "💬 AgentName")
+            content_lines: List of content lines to display
+            max_lines: Maximum lines to show when collapsed
+        """
+        if not content_lines:
+            return
+
+        is_collapsed = self._collapsed_sections.get(section_type, False)
+        total_lines = len(content_lines)
+
+        # Show header
+        if total_lines > max_lines:
+            # Add collapse/expand indicator
+            indicator = "[dim]▼[/dim]" if not is_collapsed else "[dim]▶[/dim]"
+            self.console.print(f"{header} {indicator}")
+        else:
+            # No collapse needed for short content
+            self.console.print(header)
+
+        # Show content
+        if is_collapsed and total_lines > max_lines:
+            # Show only first few lines + summary
+            for line in content_lines[:max_lines]:
+                if line.strip():
+                    self.console.print(f"   {line}")
+                else:
+                    self.console.print()
+            self.console.print(f"   [dim italic]... ({total_lines - max_lines} more lines)[/dim italic]")
+        else:
+            # Show all content
+            for line in content_lines:
+                if line.strip():
+                    self.console.print(f"   {line}")
+                else:
+                    self.console.print()
+
+        # No extra spacing here - let caller control spacing
     
     def _format_tool_call(self, tool_call, idx: int):
         """
@@ -507,7 +557,199 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                 padding=(1, 2)
             )
             return tool_calls_panel
-    
+
+    def _render_simple_message_output(self, output, answer: str, agent_name: str = None, is_handoff: bool = False) -> tuple[str, str]:
+        """
+        Simplified message output rendering with modern, clean Claude Code style.
+
+        Features:
+        - Remove heavy Panel borders
+        - Use clean emoji and text markers
+        - Reduce color usage, focus on content
+        - Add whitespace for better readability
+        - Show agent name and handoff notifications
+
+        Args:
+            output: MessageOutput instance
+            answer: Current answer string
+            agent_name: Name of the current agent
+            is_handoff: Whether this is a handoff to a new agent
+
+        Returns:
+            Tuple of (updated_answer, rendered_content)
+        """
+        from aworld.output.base import MessageOutput
+
+        if not isinstance(output, MessageOutput) or not self.console:
+            return answer, ""
+
+        # Extract agent name from metadata if not provided
+        if not agent_name and hasattr(output, 'metadata') and output.metadata:
+            agent_name = output.metadata.get('agent_name') or output.metadata.get('from_agent')
+
+        # Default agent name
+        if not agent_name:
+            agent_name = "Assistant"
+
+        # Extract content
+        response_text = str(output.response) if hasattr(output, 'response') and output.response else ""
+        reasoning_text = str(output.reasoning) if hasattr(output, 'reasoning') and output.reasoning else ""
+        tool_calls = output.tool_calls if hasattr(output, 'tool_calls') and output.tool_calls else []
+
+        # Update answer
+        if response_text.strip():
+            if not answer:
+                answer = response_text
+            elif response_text not in answer:
+                answer = response_text
+
+        # Build display content
+        display_parts = []
+
+        # Add main response with collapsible content
+        if response_text.strip():
+            # Prepare content lines for collapsible rendering
+            response_lines = []
+
+            # Add reasoning to response lines if available
+            if reasoning_text.strip():
+                response_lines.extend(["[dim]💭 Thinking process：[/dim]", ""])
+                reasoning_lines = reasoning_text.split('\n')
+                for line in reasoning_lines:
+                    if line.strip():
+                        response_lines.append(f"[dim]{line}[/dim]")
+                    else:
+                        response_lines.append("")
+                response_lines.append("")  # Add spacing after reasoning
+
+            # Add main response content
+            content_lines = response_text.split('\n')
+            for line in content_lines:
+                response_lines.append(line)
+
+            # Use collapsible rendering
+            header = f"🤖 [bold]{agent_name}[/bold]"
+            self._render_collapsible_content('message', header, response_lines, max_lines=10)
+            self.console.print()  # Add spacing after message
+
+        # Handle tool calls with collapsible display
+        if tool_calls:
+            # Filter out human tools
+            filtered_tool_calls = []
+            for tool_call_output in tool_calls:
+                tool_call = None
+                if hasattr(tool_call_output, 'data'):
+                    tool_call = tool_call_output.data
+                elif hasattr(tool_call_output, '__class__') and 'ToolCall' in str(tool_call_output.__class__):
+                    tool_call = tool_call_output
+
+                if tool_call:
+                    function_name = ""
+                    if hasattr(tool_call, 'function') and tool_call.function:
+                        function_name = getattr(tool_call.function, 'name', '')
+                    if 'human' not in function_name.lower():
+                        filtered_tool_calls.append((tool_call_output, tool_call))
+
+            # Render filtered tool calls with collapsible content
+            if filtered_tool_calls:
+                tool_lines = []
+
+                for idx, (tool_call_output, tool_call) in enumerate(filtered_tool_calls):
+                    function_name = "Unknown"
+                    if hasattr(tool_call, 'function') and tool_call.function:
+                        function_name = getattr(tool_call.function, 'name', 'Unknown')
+
+                    # Add tool call entry with icon
+                    tool_lines.append(f"▶ [cyan]{function_name}[/cyan]")
+
+                    # Special handling for code execution
+                    if function_name == "execute_ptc_code" or function_name.endswith("__execute_ptc_code"):
+                        function_args = getattr(tool_call.function, 'arguments', '') if hasattr(tool_call, 'function') and tool_call.function else ''
+
+                        try:
+                            # Extract code
+                            code = ""
+                            if function_args:
+                                if isinstance(function_args, str):
+                                    try:
+                                        args_dict = json.loads(function_args)
+                                    except json.JSONDecodeError:
+                                        code = function_args
+                                        args_dict = None
+                                else:
+                                    args_dict = function_args
+
+                                if isinstance(args_dict, dict):
+                                    code = args_dict.get('code', '') or args_dict.get('ptc_code', '') or ''
+                                elif not code and isinstance(function_args, str):
+                                    code = function_args
+
+                            # Add code content with proper indentation
+                            if code and code.strip():
+                                tool_lines.append("   [dim]Code：[/dim]")
+                                code_lines = code.strip().split('\n')
+                                for code_line in code_lines:
+                                    tool_lines.append(f"      {code_line}")
+                        except Exception:
+                            # Fallback for parsing errors
+                            tool_lines.append("   [dim red]Code parsing failed[/dim red]")
+                    else:
+                        # For non-code tools, display arguments
+                        function_args = getattr(tool_call.function, 'arguments', '') if hasattr(tool_call, 'function') and tool_call.function else ''
+
+                        if function_args:
+                            try:
+                                # Try to parse and format arguments nicely
+                                if isinstance(function_args, str):
+                                    try:
+                                        args_dict = json.loads(function_args)
+                                        if isinstance(args_dict, dict) and args_dict:
+                                            tool_lines.append("   [dim]Arguments：[/dim]")
+                                            for key, value in args_dict.items():
+                                                # Truncate long values for readability
+                                                if isinstance(value, str) and len(value) > 50:
+                                                    display_value = value[:47] + "..."
+                                                else:
+                                                    display_value = str(value)
+                                                tool_lines.append(f"      {key}: {display_value}")
+                                    except json.JSONDecodeError:
+                                        # If not valid JSON, show as raw text (truncated)
+                                        if len(function_args) > 100:
+                                            display_args = function_args[:97] + "..."
+                                        else:
+                                            display_args = function_args
+                                        tool_lines.append("   [dim]Arguments：[/dim]")
+                                        tool_lines.append(f"      {display_args}")
+                                else:
+                                    # Non-string arguments
+                                    tool_lines.append("   [dim]Arguments：[/dim]")
+                                    tool_lines.append(f"      {str(function_args)}")
+                            except Exception:
+                                # Fallback for any parsing errors
+                                tool_lines.append("   [dim]Arguments：[/dim]")
+                                tool_lines.append("      [dim red]Argument parsing failed[/dim red]")
+
+                    tool_lines.append("")  # Add spacing between tools
+
+                # Use collapsible rendering for tool calls
+                header = "🔧 [bold]Tool calls[/bold]"
+                self._render_collapsible_content('tools', header, tool_lines, max_lines=15)
+                # No extra spacing here - let next element control spacing
+
+        # Build message_content for return value
+        message_parts = []
+        if reasoning_text.strip():
+            message_parts.append(f"Thinking process：{reasoning_text}")
+        if response_text.strip():
+            message_parts.append(response_text)
+        if tool_calls:
+            tool_summary = f"Used {len(tool_calls)} tools"
+            message_parts.append(tool_summary)
+
+        message_content = "\n\n".join(message_parts).strip()
+
+        return answer, message_content
+
     def _render_message_output(self, output, answer: str) -> tuple[str, str]:
         """
         Render MessageOutput to console and extract answer.
@@ -747,7 +989,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             return output.get('answer', '')
         return ""
     
-    # ========== Logging (通用能力) ==========
+    # ========== Logging (Common Capabilities) ==========
     
     def _setup_logging(self) -> None:
         """
@@ -831,7 +1073,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             logging.getLogger().setLevel(logging.ERROR)
             logging.getLogger("aworld").setLevel(logging.ERROR)
     
-    # ========== Abstract Methods (子类实现) ==========
+    # ========== Abstract Methods (Subclass Implementation) ==========
     
     @abstractmethod
     async def chat(self, message: Union[str, tuple[str, List[str]]]) -> str:

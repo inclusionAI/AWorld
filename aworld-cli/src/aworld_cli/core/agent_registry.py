@@ -28,14 +28,14 @@ else:
 
 class LocalAgent(BaseModel):
     """Represents a local agent configuration with swarm and context components.
-    
+
     A LocalAgent defines a complete agent setup including:
     - The swarm (agent group) that executes tasks
     - Context configuration for managing application state
     - Metadata for additional agent information
-    
+
     The swarm can be provided as instances or callables/factories for lazy initialization.
-    
+
     Example:
         >>> def build_swarm() -> Swarm:
         ...     return Swarm(agent1, agent2)
@@ -44,59 +44,60 @@ class LocalAgent(BaseModel):
         ...     desc="A demo agent",
         ...     swarm=build_swarm,
         ...     context_config=AmniConfigFactory.create(),
-        ...     metadata={"version": "1.0.0"}
+        ...     metadata={"version": "1.0.0"},
+        ...     unique=True
         ... )
         >>> swarm = await agent.get_swarm()
     """
-    
+
     name: str = None
     """Agent name identifier. Required for registration."""
-    
+
     desc: str = None
     """Agent description or purpose."""
-    
+
     path: Optional[str] = Field(default=None, description="File path where the agent is defined")
     """File path where the @agent decorator is located.
-    
+
     This is automatically set by the @agent decorator based on the source file location
     where the agent is defined. Used for tracking the source file of the agent.
     """
-    
+
     swarm: Union[Swarm, Callable[..., Swarm], Callable[..., Awaitable[Swarm]]] = Field(
-        default=None, 
-        description="Swarm instance or callable", 
+        default=None,
+        description="Swarm instance or callable",
         exclude=True
     )
-    """Swarm instance or callable that returns a Swarm. 
-    
+    """Swarm instance or callable that returns a Swarm.
+
     Can be:
     - A Swarm instance
     - A synchronous callable that takes Context and returns Swarm
     - An async callable that takes Context and returns Awaitable[Swarm]
-    
+
     If callable, will be invoked when get_swarm() is called to enable lazy initialization.
     """
-    
+
     context_config: AmniContextConfig = Field(
-        default_factory=AmniContextConfig, 
-        description="Context config", 
+        default_factory=AmniContextConfig,
+        description="Context config",
         exclude=True
     )
     """Configuration for application context management."""
 
     metadata: dict = None
     """Additional metadata dictionary for agent information (e.g., version, creator, etc.)."""
-    
+
     hooks: Optional[List[str]] = Field(default=None, description="Executor hooks configuration")
     """Executor hooks configuration.
-    
+
     List of hook names (registered with HookFactory). Each hook class must:
     1. Inherit from ExecutorHook (or its subclasses like PostBuildContextHook)
     2. Implement the point() method to return its hook point
     3. Be registered with HookFactory using @HookFactory.register(name="HookName")
-    
+
     Hooks are automatically grouped by their hook point (returned by hook.point() method).
-    
+
     Hook points available:
     - pre_input_parse: Before parsing user input
     - post_input_parse: After parsing user input (e.g., image processing)
@@ -107,7 +108,7 @@ class LocalAgent(BaseModel):
     - pre_run_task: Before running task
     - post_run_task: After running task
     - on_task_error: When task execution fails
-    
+
     Example:
         >>> agent = LocalAgent(
         ...     name="MyAgent",
@@ -115,12 +116,32 @@ class LocalAgent(BaseModel):
         ...     ...
         ... )
     """
-    
+
     register_dir: Optional[str] = Field(default=None, description="Directory where agent is registered")
     """Directory path where the agent is registered from.
-    
+
     This is automatically set by the @agent decorator based on the file location
     where the agent is defined. Used for filtering agents by source directory.
+    """
+
+    unique: bool = Field(default=False, description="Whether this agent should be unique (only one instance allowed globally)")
+    """Flag indicating whether this agent should be unique in the registry.
+
+    When set to True:
+    - Only the first registration of an agent with this name will succeed
+    - Subsequent registration attempts with the same name will be skipped
+    - Applies to all versions of agents with the same name
+
+    When set to False (default):
+    - Multiple versions of agents with the same name can coexist
+    - Registration follows normal multi-version behavior
+
+    Example:
+        >>> agent = LocalAgent(
+        ...     name="GlobalAgent",
+        ...     unique=True,  # Only one GlobalAgent allowed globally
+        ...     ...
+        ... )
     """
 
     async def get_swarm(self, context: Context = None) -> Swarm:
@@ -350,6 +371,8 @@ class LocalAgentRegistry(BaseModel):
         """Register a LocalAgent, requiring a unique non-empty name.
         Supports multi-version registration: agents with the same name but different versions can coexist.
 
+        Unique agent handling: If agent.unique is True, only allows one global registration to prevent duplicates.
+
         Args:
             agent: The LocalAgent instance to register.
 
@@ -361,8 +384,31 @@ class LocalAgentRegistry(BaseModel):
         """
         if not agent or not agent.name:
             raise ValueError("LocalAgent.name is required for registration")
-        
-        # Extract version from metadata or path
+
+        # Handle unique agents - global singleton behavior
+        if agent.unique:
+            with self._lock:
+                # Check if any agent with this name is already registered (with or without version)
+                agent_exists = False
+                existing_agent_key = None
+
+                for key in self._agents:
+                    # Check if key is exactly the agent name or starts with "agent_name:"
+                    if key == agent.name or key.startswith(f"{agent.name}:"):
+                        agent_exists = True
+                        existing_agent_key = key
+                        break
+
+                if agent_exists:
+                    logger.info(f"🔒 Unique agent '{agent.name}' already registered globally as '{existing_agent_key}' - skipping duplicate registration")
+                    return
+                else:
+                    # Register the first unique agent
+                    self._agents[agent.name] = agent
+                    logger.info(f"✅ Registered unique agent '{agent.name}' for the first time")
+                    return
+
+        # Extract version from metadata or path for non-unique agents
         version = None
         if agent.metadata and "version" in agent.metadata:
             version = agent.metadata["version"]
@@ -374,12 +420,12 @@ class LocalAgentRegistry(BaseModel):
             match = re.match(r'^(.+)_v(\d+)$', dir_name)
             if match:
                 version = f"v{match.group(2)}"
-        
+
         # Use name:version as key for multi-version support, or just name if no version
         agent_key = f"{agent.name}:{version}" if version else agent.name
-        
+
         with self._lock:
-            # Allow multiple versions of the same agent name
+            # Allow multiple versions of the same agent name (for non-unique agents)
             if agent_key in self._agents:
                 logger.warning(f"LocalAgent '{agent_key}' is already registered, updating...")
             self._agents[agent_key] = agent
@@ -472,11 +518,11 @@ class LocalAgentRegistry(BaseModel):
             
             if not matching_agents:
                 return None
-            
+
             # If only one match, return it
             if len(matching_agents) == 1:
                 return matching_agents[0][1]
-            
+
             # Multiple versions found, return the latest one
             # Extract version numbers and sort
             def extract_version_from_key(key: str) -> int:
@@ -548,29 +594,31 @@ def agent(
     context_config: Optional[AmniContextConfig] = None,
     metadata: Optional[dict] = None,
     hooks: Optional[List[str]] = None,
-    register_dir: Optional[str] = None
+    register_dir: Optional[str] = None,
+    unique: bool = False
 ) -> Callable:
     """Decorator for registering LocalAgent instances.
-    
+
     This decorator provides a convenient way to register LocalAgent instances.
     It supports two usage patterns:
-    
+
     1. Parameterized decorator - decorate a build_swarm function:
         >>> @agent(
         ...     name="MyAgent",
         ...     desc="My agent description",
         ...     context_config=AmniConfigFactory.create(...),
-        ...     metadata={"version": "1.0.0"}
+        ...     metadata={"version": "1.0.0"},
+        ...     unique=True
         ... )
         >>> def build_my_swarm() -> Swarm:
         ...     return Swarm(...)
-        
+
         If the function returns an Agent instance instead of Swarm, it will be
         automatically wrapped as Swarm(agent):
-        >>> @agent(name="MyAgent", desc="My agent")
+        >>> @agent(name="MyAgent", desc="My agent", unique=True)
         >>> def build_agent() -> Agent:
         ...     return MyAgent(...)  # Returns Agent, will be wrapped as Swarm(agent)
-    
+
     2. Function decorator - decorate a function that returns LocalAgent:
         >>> @agent
         >>> def my_agent() -> LocalAgent:
@@ -579,9 +627,10 @@ def agent(
         ...         desc="My agent description",
         ...         swarm=build_my_swarm,
         ...         context_config=AmniConfigFactory.create(...),
-        ...         metadata={"version": "1.0.0"}
+        ...         metadata={"version": "1.0.0"},
+        ...         unique=True
         ...     )
-    
+
     Args:
         name: Agent name identifier. Required when decorating build_swarm function.
         desc: Agent description or purpose.
@@ -590,13 +639,15 @@ def agent(
         hooks: Optional list of hook names (registered with HookFactory).
         register_dir: Optional directory path where agent is registered. If not provided,
                      will be automatically detected from the function's source file location.
-    
+        unique: Whether this agent should be unique (only one instance allowed globally).
+               When True, only the first registration will succeed, subsequent ones will be skipped.
+
     Returns:
         A decorator function that registers the LocalAgent.
-    
+
     Example:
         >>> from aworld.core.context.amni.config import AmniConfigLevel
-        >>> 
+        >>>
         >>> @agent(
         ...     name="MyAgent",
         ...     desc="My agent description",
@@ -604,13 +655,14 @@ def agent(
         ...         AmniConfigLevel.NAVIGATOR,
         ...         debug_mode=True
         ...     ),
-        ...     metadata={"version": "1.0.0"}
+        ...     metadata={"version": "1.0.0"},
+        ...     unique=True
         ... )
         >>> def build_my_swarm() -> Swarm:
         ...     return Swarm(...)
-        
+
         Example with Agent return type (automatically wrapped):
-        >>> @agent(name="SingleAgent", desc="Single agent")
+        >>> @agent(name="SingleAgent", desc="Single agent", unique=True)
         >>> def build_my_agent() -> Agent:
         ...     return MyAgent(...)  # Automatically wrapped as Swarm(agent)
     """
@@ -717,7 +769,8 @@ def agent(
             metadata=metadata or {"creator": "aworld-cli", "version": "1.0.0"},
             hooks=hooks,
             register_dir=func_register_dir,
-            path=func_path
+            path=func_path,
+            unique=unique
         )
 
         logger.info(f"Registering agent: {local_agent.name}")

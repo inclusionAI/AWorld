@@ -1,7 +1,7 @@
 ---
 name: optimizer
 description: Analyzes and automatically optimizes an existing Agent's code by applying patches to improve performance, quality, security, and functionality.
-tool_list: {"CONTEXT_AGENT_REGISTRY": [], "CAST_ANALYSIS": [], "CAST_PATCH": []}
+tool_list: {"AGENT_REGISTRY": [], "CAST_ANALYSIS": [], "CAST_CODER": []}
 ---
 # Agent Optimization Skill (Optimizer)
 
@@ -10,25 +10,25 @@ tool_list: {"CONTEXT_AGENT_REGISTRY": [], "CAST_ANALYSIS": [], "CAST_PATCH": []}
 **CRITICAL: READ BEFORE USE.** Adherence to these rules is essential for the skill to function correctly.
 
 1.  **Tool Calls are Direct**:
-    *   ✅ **DO** call tool functions like `CAST_ANALYSIS(...)` and `CAST_PATCH(...)` directly.
+    *   ✅ **DO** call tool functions like `CAST_ANALYSIS(...)` and `CAST_CODER(...)` directly.
     *   ❌ **DO NOT** write or show Python code examples that import or manually implement tool logic (e.g., `from aworld.experimental.ast import ACast`). The tools are pre-loaded and ready for direct invocation.
 
 2.  **`CAST_ANALYSIS` Query Format**:
-    *   ✅ **DO** use **regular expression (regex) patterns** for all `recall_impl` queries.
+    *   ✅ **DO** use **regular expression (regex) patterns** for all `search_ast` queries.
         *   *Example*: `.*MyClassName.*|.*my_function_name.*`
-    *   ❌ **DO NOT** use natural language for `recall_impl` queries.
+    *   ❌ **DO NOT** use natural language for `search_ast` queries.
         *   *Incorrect*: `"Show me the implementation of the MyClassName class"`
 
-3.  **`CAST_PATCH` Workflow**:
-    *   ✅ **DO** use `CAST_PATCH.generate_snapshot` to create a backup before any modifications.
+3.  **`CAST_CODER` Workflow**:
+    *   ✅ **DO** use `CAST_CODER.generate_snapshot` to create a backup before any modifications.
     *   ✅ **DO** generate patch content (either structured JSON for `search_replace` or `diff` format text) based on your analysis. The LLM's role is to *create* the patch content.
-    *   ✅ **DO** use `CAST_PATCH` actions (like `search_replace`) to *apply* the generated patch content to the source code.
+    *   ✅ **DO** use `CAST_CODER` actions (like `search_replace`) to *apply* the generated patch content to the source code.
     *   ❌ **DO NOT** show Python lists of patches to the user (e.g., `patches = [...]`).
 
 4.  **Patch Content Rules**:
     *   ✅ **DO** ensure each patch operation targets **only one file**.
     *   ✅ **DO** create focused patches that modify **one logical block of code at a time** for clarity and safety.
-    *   ✅ **DO** verify code with `CAST_ANALYSIS.recall_impl` to get accurate line numbers and context before generating a `diff`.
+    *   ✅ **DO** verify code with `CAST_ANALYSIS.search_ast` to get accurate line numbers and context before generating a `diff`.
 
 ## 📜 Skill Overview
 
@@ -54,15 +54,15 @@ While this skill can perform any code modification, effective agent optimization
 
 
 ## 🎯 Core Features
-*   **Agent Discovery**: Locates target agents within the environment using the `CONTEXT_AGENT_REGISTRY`.
+*   **Agent Discovery**: Locates target agents within the environment using the `AGENT_REGISTRY`.
 *   **Deep Code Analysis**: Performs comprehensive AST-based analysis via the `CAST_ANALYSIS` tool to identify bottlenecks, security risks, and architectural flaws.
 *   **Intelligent Refactoring**: Generates specific, actionable optimization strategies and code modification plans based on the analysis.
-*   **Automated Patching**: Creates codebase snapshots and applies structured code changes using the `CAST_PATCH` toolset.
+*   **Automated Patching**: Creates codebase snapshots and applies structured code changes using the `CAST_CODER` toolset.
 
 ## 🔄 Core Workflow
 ### Phase 1: Discovery and Selection
 1.  **Identify Target**: Receive an agent identifier (name, path, or description) from the user.
-2.  **Query Registry**: Call `CONTEXT_AGENT_REGISTRY` to find the specified agent(s).
+2.  **Query Registry**: Call `AGENT_REGISTRY` to find the specified agent(s).
 3.  **Confirm Target**: Present the located agent's information to the user for confirmation.
 
 ### Phase 2: Deep Code Analysis
@@ -76,14 +76,14 @@ While this skill can perform any code modification, effective agent optimization
 
 ### Phase 3: Optimization Strategy
 1.  **Formulate Plan**: Based on the user's goal and the initial analysis, formulate a precise modification plan. Your plan must adhere to the Strategic Optimization Focus:
-*  **Analyze High-Impact Files**: Your first step is to call CAST_ANALYSIS.recall_impl to retrieve the contents of the agent's main file (to inspect the system_prompt) and its mcp_config.py.
+*  **Analyze High-Impact Files**: Your first step is to call CAST_ANALYSIS.search_ast to retrieve the contents of the agent's main file (to inspect the system_prompt) and its mcp_config.py.
 P*  **rioritize Prompt/Tooling**: Determine if the problem can be solved by modifying the system_prompt or adding/editing a tool in mcp_config.py. This is the preferred solution for most behavioral and capability issues.
 *  **Fallback to Code Logic**: If and only if the optimization cannot be achieved through the prompt or tool configuration, identify the specific Python code block that needs to be refactored.
-2.  **Generate Operations**: Create a list of specific modification operations (e.g., a JSON object for CAST_PATCH.search_replace). Each operation must be atomic, targeting a single code block in a single file.
+2.  **Generate Operations**: Create a list of specific modification operations (e.g., a JSON object for CAST_CODER.search_replace). Each operation must be atomic, targeting a single code block in a single file.
 
 ### Phase 4: Snapshot and Patching
-1.  **Create Snapshot**: **Crucial first step.** Call `CAST_PATCH.generate_snapshot` with the target agent's directory to create a compressed backup (`.tar.gz`). This ensures a safe rollback point.
-2.  **Apply Patches**: Execute the modification plan by calling `CAST_PATCH` operations. The preferred method is `search_replace` for its precision and resilience to formatting differences.
+1.  **Create Snapshot**: **Crucial first step.** Call `CAST_CODER.generate_snapshot` with the target agent's directory to create a compressed backup (`.tar.gz`). This ensures a safe rollback point.
+2.  **Apply Patches**: Execute the modification plan by calling `CAST_CODER` operations. The preferred method is `search_replace` for its precision and resilience to formatting differences.
     *   Each operation should be atomic and target a single file.
 3.  **Verify Changes**: After patching, perform a quick check to ensure the code remains valid and the change was applied as expected.
 
@@ -94,21 +94,21 @@ P*  **rioritize Prompt/Tooling**: Determine if the problem can be solved by modi
 ### Phase 6: Dynamic Registration
 **MANDATORY FINAL STEP:** Register the newly optimized agent to make it discoverable and usable within the current swarm.
 
-*   **Tool**: `CONTEXT_AGENT_REGISTRY`
+*   **Tool**: `AGENT_REGISTRY`
 *   **Action**: `dynamic_register`
 *   **Parameters**:
-    *   `local_agent_name`: The name of the agent executing this workflow (i.e., this optimizer).
+    *   `local_agent_name`: The name of the agent executing this workflow (e.g., "Aworld").
     *   `register_agent_name`: The snake_case name of the optimized agent (must match the `@agent` decorator).
 *   **Example**:
     ```json
-    CONTEXT_AGENT_REGISTRY.dynamic_register(local_agent_name="optimizer", register_agent_name="optimized_simple_agent")
+    AGENT_REGISTRY.dynamic_register(local_agent_name="Aworld", register_agent_name="optimized_simple_agent")
     ```
 
 ---
 ## 🛠️ Tool Reference
 
 <details>
-<summary><h3>CONTEXT_AGENT_REGISTRY Tool</h3></summary>
+<summary><h3>AGENT_REGISTRY Tool</h3></summary>
 
 **Purpose**: Discover and retrieve information about existing agents.
 
@@ -127,20 +127,20 @@ P*  **rioritize Prompt/Tooling**: Determine if the problem can be solved by modi
 
 **Primary Actions**:
 *   `analyze_repository()`: Conduct a broad analysis of an entire agent directory to find symbols, complexities, and potential issues.
-*   `recall_impl()`: Fetch the precise source code for specific symbols (classes, functions) or line ranges.
+*   `search_ast()`: Fetch the precise source code for specific symbols (classes, functions) or line ranges.
 
-**Critical Usage Note for `recall_impl`**:
+**Critical Usage Note for `search_ast`**:
 The `analysis_query` for this action **MUST** be a regular expression. Natural language queries are not supported and will fail.
 
 *   ✅ **Correct (Regex)**: `user_query=".*MyClass.*|.*my_function.*"`
-*   ❌ **Incorrect (Natural Language)**: `user_query="Find the MyClass class and the my_function function"`
+*   ❌ **Incorrect (Natural Language)**: `user_query="Find the MyClass class and the my_function function"`, `user_query=".*mcp_config\\.py."`, `user_query=".*"`
 
 **Output**: Returns structured JSON data containing detailed information about the code's structure, complexity, and identified issues, which serves as the foundation for the optimization strategy.
 
 </details>
 
 <details>
-<summary><h3>CAST_PATCH Tool</h3></summary>
+<summary><h3>CAST_CODER Tool</h3></summary>
 
 **Purpose**: A suite of functions for safely modifying source code files. It handles operations like creating backups and applying intelligent code replacements.
 
@@ -181,23 +181,24 @@ action_params = {
     "source_dir": "/path/to/agent/root", // Base directory for the operation
     "show_details": True
 }
-CAST_PATCH.search_replace(**action_params)
+CAST_CODER.search_replace(**action_params)
 ```
 
 **JSON Parameters**:
 
-| Parameter              | Type    | Required | Description                                                               |
-| ---------------------- | ------- | :------: | ------------------------------------------------------------------------- |
-| `type`                 | string  |    ✓     | Must be `"search_replace"`.                                               |
-| `file_path`            | string  |    ✓     | The relative path to the file from `source_dir`.                          |
-| `search`               | string  |    ✓     | The multi-line code block to search for.                                  |
-| `replace`              | string  |    ✓     | The multi-line code block to replace it with.                             |
-| `exact_match_only`     | boolean | -        | fixed as true（可选，仅为文档说明） |
+| Parameter              | Type    | Required | Description                                               |
+| ---------------------- | ------- | :------: |-----------------------------------------------------------|
+| `type`                 | string  |    ✓     | Must be `"search_replace"`.                               |
+| `file_path`            | string  |    ✓     | The relative path to the file from `source_dir`.          |
+| `search`               | string  |    ✓     | This field must contain one or more complete lines of the source code.                |
+| `replace`              | string  |    ✓     | The multi-line code block to replace it with.             |
+| `exact_match_only`     | boolean | -        | fixed as true (Optional, for documentation purposes only) |
 
 **Best Practices**:
-*   Use multi-line `search` blocks that include structural context (like `def` or `class` lines) for better accuracy.
-*   Start with a high similarity threshold (`0.9`) and only lower it if a match is not found.
-*   Always operate on one logical code block at a time.
+* search: The multi-line code block to search for.
+    *   Use multi-line `search` blocks that include structural context (like `def` or `class` lines) for better accuracy.
+    *   must not be blank!
+    *   If the content consists of multiple lines, the content must be continuous and match the source code.
 
 </details>
 

@@ -1,9 +1,11 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import inspect
 import traceback
 from typing import Any, Dict, Tuple
 
 from aworld.config import ToolConfig
+from aworld.core.agent.base import AgentFactory
 from aworld.core.common import Observation, ActionModel, ActionResult, ToolActionInfo, ParamInfo
 from aworld.core.context.amni import AmniContext
 from aworld.core.event.base import Message
@@ -12,7 +14,7 @@ from aworld.core.tool.base import ToolFactory, AsyncTool
 from aworld.logs.util import logger
 from aworld.tools.utils import build_observation
 
-CONTEXT_AGENT_REGISTRY = "CONTEXT_AGENT_REGISTRY"
+AGENT_REGISTRY = "AGENT_REGISTRY"
 
 
 class ContextAgentRegistryAction(ToolAction):
@@ -37,21 +39,31 @@ class ContextAgentRegistryAction(ToolAction):
                 name="register_agent_name",
                 type="string",
                 required=True,
-                desc="The name of the agent in AgentVersionControlRegistry to register"
+                desc="The name of the agent in AgentScanner to register"
             )
         },
-        desc="Dynamically register an agent from AgentVersionControlRegistry to a local agent's team_swarm"
+        desc="Dynamically register an agent from AgentScanner to a local agent's team_swarm"
     )
 
 
+def find_from_agent_factory_by_name(to_find_agent_name: str):
+    logger.info(f"AgentFactory._agent_instance.values(): {AgentFactory._agent_instance.values()} {to_find_agent_name}")
+    # Find agent with the same name from AgentFactory
+    for agent in list(AgentFactory._agent_instance.values()):
+        if agent.name() == to_find_agent_name:
+            factory_agent = AgentFactory._agent_instance[agent.id()]
+            logger.info(f"Found agent '{factory_agent.id()}' (name: '{to_find_agent_name}') from AgentFactory")
+            return factory_agent
+    return None
+
 async def dynamic_register(local_agent_name: str, register_agent_name: str, context=None) -> bool:
     """
-    Dynamically register an agent from AgentVersionControlRegistry to a local agent's team_swarm.
+    Dynamically register an agent from AgentScanner to a local agent's team_swarm.
     
     Args:
         local_agent_name: Name of the local agent in LocalAgentRegistry
-        register_agent_name: Name of the agent in AgentVersionControlRegistry to register
-        context: Optional context for AgentVersionControlRegistry (if None, uses default context)
+        register_agent_name: Name of the agent in AgentScanner to register
+        context: Optional context for AgentScanner (if None, uses default context)
     
     Returns:
         True if registration successful, False otherwise
@@ -62,14 +74,33 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
     Process:
         1. Get local_agent_name from LocalAgentRegistry
         2. Read its team_swarm
-        3. Get latest version of register_agent_name from AgentVersionControlRegistry
+        3. Get register_agent_name from AgentScanner
         4. Add register_agent_name to local_agent_name's team_swarm
     """
     try:
         from aworld_cli.core.agent_registry import LocalAgentRegistry
-        from aworld.experimental.loaders.agent_version_control_registry import AgentVersionControlRegistry
+        from aworld_cli.core.agent_scanner import AgentScanner
 
-        # Step 1: Get local_agent_name from LocalAgentRegistry
+        # Step 1: Get register_agent_name from AgentScanner
+        if context is None:
+            from aworld_cli.core.agent_scanner import DefaultContext
+            context = DefaultContext()
+
+        agent_scanner = AgentScanner(context)
+
+        # Check if agent exists in registry before loading
+        register_agent = await agent_scanner.load_agent(agent_name=register_agent_name)
+        logger.info(f"register_agent, {register_agent.id()}, {inspect.getfile(register_agent.__class__)}")
+        if not register_agent:
+            error_msg = (
+                f"Agent '{register_agent_name}' exists in registry but could not be loaded. "
+                f"This may indicate a problem with the agent file (e.g., syntax error, missing dependencies, "
+                f"or invalid agent definition). Please check the agent file and ensure it is valid."
+            )
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        # Step 2: Get local_agent_name from LocalAgentRegistry
         local_agent = LocalAgentRegistry.get_agent(local_agent_name)
         logger.info(f"local_agent: {local_agent}")
         if not local_agent:
@@ -83,10 +114,9 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
             )
             logger.error(error_msg)
             raise ValueError(error_msg)
-
-        # Step 2: Read its team_swarm
         swarm = await local_agent.get_swarm(context=context)
-        logger.info(f"swarm: {swarm}")
+        # swarm = context.swarm
+        logger.info(f"local_agent|swarm: {swarm} {swarm.agents}")
         if not swarm:
             error_msg = (
                 f"Failed to get swarm for local agent '{local_agent_name}'. "
@@ -96,46 +126,55 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
             logger.error(error_msg)
             raise ValueError(error_msg)
 
-        # Step 3: Get latest version of register_agent_name from AgentVersionControlRegistry
-        if context is None:
-            from aworld.experimental.loaders.agent_version_control_registry import DefaultContext
-            context = DefaultContext()
 
-        version_control_registry = AgentVersionControlRegistry(context)
+        # Step 3: Add register_agent_name to local_agent_name's team_swarm
+        origin_agent = find_from_agent_factory_by_name(register_agent_name)
+        swarm.add_agents(agents=[register_agent], to_remove_agents=[origin_agent])
 
-        # Check if agent exists in registry before loading
-        available_resources = await version_control_registry.list_as_source()
-        if register_agent_name not in available_resources:
-            available_list = ", ".join(available_resources) if available_resources else "none"
-            error_msg = (
-                f"Agent '{register_agent_name}' not found in AgentVersionControlRegistry. "
-                f"Available agents: {available_list}. "
-                f"Please ensure the agent file exists in AGENTS_PATH "
-                f"and the agent name matches the name in the @agent decorator."
-            )
-            logger.error(error_msg)
-            raise ValueError(error_msg)
 
-        register_agent = await version_control_registry.load_agent(agent_name=register_agent_name)
-        if not register_agent:
-            error_msg = (
-                f"Agent '{register_agent_name}' exists in registry but could not be loaded. "
-                f"This may indicate a problem with the agent file (e.g., syntax error, missing dependencies, "
-                f"or invalid agent definition). Please check the agent file and ensure it is valid."
-            )
-            logger.error(error_msg)
-            raise ValueError(error_msg)
+        # Step 4: Refresh the root agent's tools cache to include the newly registered agent
+        # The root agent's handoffs have been updated, but its tools cache needs to be refreshed
+        try:
+            if swarm.agent_graph and swarm.agent_graph.root_agent:
+                root_agent = swarm.agent_graph.root_agent
+                logger.info('root_agent: ', root_agent.id())
+                if isinstance(root_agent, list):
+                    root_agent = root_agent[0]
 
-        # Step 4: Add register_agent_name to local_agent_name's team_swarm
-        swarm.add_agents([register_agent])
+                root_agent_name = root_agent.name()
 
-        # If swarm was a callable, update local_agent to store the modified swarm instance
-        # so the changes persist. Also update the registry to ensure the change is saved.
-        if callable(local_agent.swarm):
-            local_agent.swarm = swarm
-            # Update the registry to persist the change
-            LocalAgentRegistry.get_instance().upsert(local_agent)
-            logger.info(f"Updated local_agent.swarm from callable to Swarm instance in registry")
+                # Find the agent with the same name from AgentFactory
+                from aworld.core.agent.base import AgentFactory
+                import re
+
+                # find agent from factory
+                factory_agent = find_from_agent_factory_by_name(root_agent_name)
+                logger.info('factory_agent: ', factory_agent.id())
+
+                # Use factory agent if found, otherwise use root_agent
+                agent_to_refresh = factory_agent if factory_agent else root_agent
+                agent_source = "AgentFactory" if factory_agent else "swarm.agent_graph.root_agent"
+
+                # Clear the tools cache so it will be regenerated with the new agent in handoffs
+                agent_to_refresh.tools = []
+                logger.info(f"Cleared tools cache for agent '{agent_to_refresh.id()}' (from {agent_source}) to force refresh")
+
+                # Try to refresh tools immediately if context is ApplicationContext
+                # Note: context parameter might be DefaultContext for AgentVersionControlRegistry,
+                # which is not compatible with async_desc_transform, so we check the type
+                from aworld.core.context.amni import ApplicationContext
+                if context and isinstance(context, ApplicationContext):
+                    try:
+                        await agent_to_refresh.async_desc_transform(context)
+                        logger.info(f'agent_to_refresh2: {agent_to_refresh.id()} tools: {agent_to_refresh.tools}')
+                        logger.info(f"Refreshed tools for agent '{agent_to_refresh.id()}' (from {agent_source}) with new agent '{register_agent.id()}'")
+                    except Exception as e:
+                        logger.warning(f"Failed to refresh tools for agent '{agent_to_refresh.id()}' (from {agent_source}): {e}. Tools will be regenerated on next use.")
+                else:
+                    logger.info(f"Tools cache cleared for agent '{agent_to_refresh.id()}' (from {agent_source}). Tools will be regenerated on next use when context is available.")
+        except Exception as e:
+            logger.warning(f"Failed to refresh root agent tools cache: {e}. Tools will be regenerated on next use.")
+
 
         logger.info(f"Successfully added agent '{register_agent_name}' to local agent '{local_agent_name}'s team_swarm")
         return True
@@ -153,8 +192,8 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
         raise ValueError(error_msg) from e
 
 
-@ToolFactory.register(name=CONTEXT_AGENT_REGISTRY,
-                      desc=CONTEXT_AGENT_REGISTRY,
+@ToolFactory.register(name=AGENT_REGISTRY,
+                      desc=AGENT_REGISTRY,
                       supported_action=ContextAgentRegistryAction)
 class ContextAgentRegistryTool(AsyncTool):
     def __init__(self, conf: ToolConfig, **kwargs) -> None:
@@ -198,11 +237,11 @@ class ContextAgentRegistryTool(AsyncTool):
                 raise ValueError("context is not AmniContext")
 
             # Get agent registry service from context
-            from aworld.experimental.loaders.agent_version_control_registry import AgentVersionControlRegistry
+            from aworld_cli.core.agent_scanner import AgentScanner
 
-            def get_agent_registry_service() -> AgentVersionControlRegistry:
+            def get_agent_registry_service() -> AgentScanner:
                 context = message.context._context if hasattr(message.context, '_context') else message.context
-                return AgentVersionControlRegistry(context)
+                return AgentScanner(context)
 
             for action in actions:
                 logger.info(f"ContextAgentRegistryTool|do_step: {action}")
