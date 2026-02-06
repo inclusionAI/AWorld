@@ -95,7 +95,7 @@ Our library of Verified Skills is more than a collection of blueprints; it's a g
 <br>
 
 <p align="justify">
-When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills, infusing the new agent's core with proven logic and reliability. This ensures your agent inherits the DNA of our best practices (see [Evolution](#evolution)), making it robust and effective from the moment it's created. 
+When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills, infusing the new agent's core with proven logic and reliability. This ensures your agent inherits the DNA of our best practices (see <a href="#evolution">Evolution</a>), making it robust and effective from the moment it's created. 
 </p>
 <!-- 
 <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
