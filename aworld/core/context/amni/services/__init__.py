@@ -1,15 +1,14 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
+from aworld_cli.core.agent_scanner import AgentScanner
+from aworld_cli.core.scanner import Scanner
+from .freedom_space_service import FreedomSpaceService, IFreedomSpaceService
 from .knowledge_service import KnowledgeService, IKnowledgeService
-from .skill_service import SkillService, ISkillService
-from .task_state_service import TaskStateService, ITaskStateService
 from .memory_service import MemoryService, IMemoryService
 from .prompt_service import PromptService, IPromptService
-from .freedom_space_service import FreedomSpaceService, IFreedomSpaceService
-from aworld.experimental.loaders.agent_version_control_registry import AgentVersionControlRegistry
-from aworld.experimental.loaders.swarm_version_control_registry import SwarmVersionControlRegistry
-from aworld.experimental.loaders.version_control_registry import VersionControlRegistry
+from .skill_service import SkillService, ISkillService
+from .task_state_service import TaskStateService, ITaskStateService
 
 __all__ = [
     'KnowledgeService',
@@ -24,8 +23,6 @@ __all__ = [
     'IPromptService',
     'FreedomSpaceService',
     'IFreedomSpaceService',
-    'AgentVersionControlRegistry',
-    'SwarmVersionControlRegistry',
-    'VersionControlRegistry',
+    'AgentScanner',
+    'Scanner',
 ]
-

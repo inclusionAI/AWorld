@@ -36,36 +36,36 @@ class RewardTool(AsyncTool):
         self.keyframes = []
         self.init()
         self.step_finished = True
-        logger.info(f"RewardTool|初始化完成, tool_name={self.name()}")
+        logger.info(f"RewardTool|Initialization completed, tool_name={self.name()}")
 
     async def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
         Observation, dict[str, Any]]:
-        logger.info(f"RewardTool|开始重置, seed={seed}, options={options}")
+        logger.info(f"RewardTool|Starting reset, seed={seed}, options={options}")
         await super().reset(seed=seed, options=options)
 
         await self.close()
         self.step_finished = True
         observation = build_observation(observer=self.name(),
                                        ability=RewardExecuteAction.REWARD_EVALUATE.value.name)
-        logger.info(f"RewardTool|重置完成, step_finished={self.step_finished}")
+        logger.info(f"RewardTool|Reset completed, step_finished={self.step_finished}")
         return observation, {}
 
     def init(self) -> None:
         self.initialized = True
-        logger.debug(f"RewardTool|工具初始化完成, initialized={self.initialized}")
+        logger.debug(f"RewardTool|Tool initialization completed, initialized={self.initialized}")
 
     async def close(self) -> None:
-        logger.debug(f"RewardTool|关闭工具")
+        logger.debug(f"RewardTool|Closing tool")
 
     async def finished(self) -> bool:
         result = self.step_finished
-        logger.debug(f"RewardTool|检查完成状态, step_finished={result}")
+        logger.debug(f"RewardTool|Checking completion status, step_finished={result}")
         return result
 
     async def do_step(self, actions: list[ActionModel], message: Message = None, **kwargs) -> Tuple[
         Observation, float, bool, bool, Dict[str, Any]]:
 
-        logger.info(f"RewardTool|开始执行do_step, actions数量={len(actions) if actions else 0}, kwargs={kwargs}")
+        logger.info(f"RewardTool|Starting do_step execution, action count={len(actions) if actions else 0}, kwargs={kwargs}")
         self.step_finished = False
         reward = 0.
         fail_error = ""
@@ -74,34 +74,34 @@ class RewardTool(AsyncTool):
         info = {}
         try:
             if not actions:
-                logger.error("RewardTool|actions为空，无法执行评估")
+                logger.error("RewardTool|actions is empty, cannot perform evaluation")
                 raise ValueError("actions is empty")
             action = actions[0]
-            logger.debug(f"RewardTool|使用action: {action}")
+            logger.debug(f"RewardTool|Using action: {action}")
 
             context: ApplicationContext = message.context
-            logger.debug(f"RewardTool|从context获取数据")
+            logger.debug(f"RewardTool|Getting data from context")
             traj_validation_dataset = context.get('traj_validation_dataset')
             running_traj = context.get('running_traj')
             tmp_file_path = context.get('tmp_file_path')
             reward_function = context.get('reward_function')
 
-            logger.info(f"RewardTool|准备调用奖励函数, "
-                       f"traj_validation_dataset={'存在' if traj_validation_dataset else 'None'}, "
-                       f"running_traj={'存在' if running_traj else 'None'}, "
+            logger.info(f"RewardTool|Preparing to call reward function, "
+                       f"traj_validation_dataset={'exists' if traj_validation_dataset else 'None'}, "
+                       f"running_traj={'exists' if running_traj else 'None'}, "
                        f"tmp_file_path={tmp_file_path}, "
-                       f"reward_function={'存在' if reward_function else 'None'}")
+                       f"reward_function={'exists' if reward_function else 'None'}")
 
             if reward_function is None:
-                logger.error("RewardTool|reward_function为None，无法执行评估")
+                logger.error("RewardTool|reward_function is None, cannot perform evaluation")
                 raise ValueError("reward_function is None")
 
-            logger.info("RewardTool|开始调用奖励函数进行评估")
+            logger.info("RewardTool|Starting reward function evaluation")
             reward_result = await reward_function(context=context, validation_file_path=traj_validation_dataset,
                                                   traj_file_path=running_traj, tmp_file_path=tmp_file_path)
-            logger.info(f"RewardTool|奖励函数执行完成, reward_result={reward_result}")
+            logger.info(f"RewardTool|Reward function execution completed, reward_result={reward_result}")
 
-            # 格式化奖励结果详情
+            # Format reward result details
             result_content = f"Score: {reward_result.score:.2f}\n" \
                            f"Trajectory Output: {reward_result.traj_output}\n" \
                            f"Ground Truth: {reward_result.ground_truth}\n" \
@@ -115,19 +115,19 @@ class RewardTool(AsyncTool):
                              error=f"",
                              keep=False))
             reward = 1.
-            logger.info(f"RewardTool|do_step执行成功, reward={reward}, observation.content已设置")
+            logger.info(f"RewardTool|do_step executed successfully, reward={reward}, observation.content has been set")
         except Exception as e:
             fail_error = str(e)
-            logger.error(f"RewardTool|do_step执行失败: {fail_error}")
-            logger.warn(f"RewardTool|详细错误信息: {traceback.format_exc()}")
+            logger.error(f"RewardTool|do_step execution failed: {fail_error}")
+            logger.warn(f"RewardTool|Detailed error information: {traceback.format_exc()}")
         finally:
             self.step_finished = True
-            logger.debug(f"RewardTool|do_step完成, step_finished={self.step_finished}")
+            logger.debug(f"RewardTool|do_step completed, step_finished={self.step_finished}")
         info["exception"] = fail_error
         info.update(kwargs)
         result = (observation, reward, kwargs.get("terminated", False),
                  kwargs.get("truncated", False), info)
-        logger.info(f"RewardTool|do_step返回结果, reward={reward}, terminated={result[2]}, truncated={result[3]}, "
-                   f"has_exception={'是' if fail_error else '否'}")
+        logger.info(f"RewardTool|do_step returning result, reward={reward}, terminated={result[2]}, truncated={result[3]}, "
+                   f"has_exception={'yes' if fail_error else 'no'}")
         return result
 

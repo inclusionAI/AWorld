@@ -1,8 +1,8 @@
 # coding: utf-8
 """
-GAIA 奖励函数
+GAIA Reward Function
 
-用于评估轨迹执行结果与 GAIA 验证数据集中标准答案的匹配程度。
+Used to evaluate the degree of match between trajectory execution results and standard answers in the GAIA validation dataset.
 """
 
 import json
@@ -18,7 +18,7 @@ from aworld.logs.util import logger
 
 class GaiaMatchRewardFunction(RewardFunction):
     """
-    GAIA 匹配奖励策略实现类
+    GAIA matching reward strategy implementation class
     """
 
     async def __call__(
@@ -28,51 +28,51 @@ class GaiaMatchRewardFunction(RewardFunction):
         traj_file_path: str,
         tmp_file_path: str
     ) -> RewardResult:
-        # 实现实际的奖励计算逻辑
+        # Implement actual reward calculation logic
         if not traj_file_path or not validation_file_path:
-            logger.warning("轨迹文件或验证数据集文件未下载成功，无法计算奖励")
+            logger.warning("Trajectory file or validation dataset file not downloaded successfully, cannot calculate reward")
             return RewardResult(score=0.0, reasoning="Trajectory or validation dataset file not downloaded successfully")
 
         try:
-            # 读取轨迹数据
+            # Read trajectory data
             traj_data = self._load_traj_data(traj_file_path)
             if not traj_data:
-                logger.warning("轨迹数据为空，无法计算奖励")
+                logger.warning("Trajectory data is empty, cannot calculate reward")
                 return RewardResult(score=0.0, reasoning="Trajectory data is empty")
 
-            # 读取验证数据集
+            # Read validation dataset
             validation_data = self._load_validation_data(validation_file_path)
             if not validation_data:
-                logger.warning("验证数据集为空，无法计算奖励")
+                logger.warning("Validation dataset is empty, cannot calculate reward")
                 return RewardResult(score=0.0, reasoning="Validation dataset is empty")
 
-            # 从轨迹中提取query
+            # Extract query from trajectory
             traj_query = self._extract_query_from_traj(traj_data)
             if not traj_query:
-                logger.warning("无法从轨迹中提取query")
+                logger.warning("Unable to extract query from trajectory")
                 return RewardResult(score=0.0, reasoning="Unable to extract query from trajectory")
 
-            # 从轨迹中提取最后输出
+            # Extract final output from trajectory
             traj_output = self._extract_final_output_from_traj(traj_data)
             if not traj_output:
-                logger.warning("无法从轨迹中提取最终输出")
+                logger.warning("Unable to extract final output from trajectory")
                 return RewardResult(score=0.0, reasoning="Unable to extract final output from trajectory")
 
-            # 在validation数据中找到匹配的记录
+            # Find matching record in validation data
             matched_record = self._find_matching_validation_record(validation_data, traj_query)
             if not matched_record:
-                logger.warning(f"未找到匹配的验证记录，query: {traj_query[:100]}...")
+                logger.warning(f"No matching validation record found, query: {traj_query[:100]}...")
                 return RewardResult(score=0.0, reasoning="No matching validation record found")
 
-            # 获取标准答案
+            # Get ground truth answer
             ground_truth = matched_record.get('Final answer', '')
             if not ground_truth:
-                logger.warning("匹配的验证记录中没有Final answer字段")
+                logger.warning("No 'Final answer' field in matched validation record")
                 return RewardResult(score=0.0, reasoning="No 'Final answer' field in matched validation record")
 
-            # 计算匹配分数
+            # Calculate match score
             score, reasoning = self._calculate_match_score(traj_output, ground_truth)
-            logger.info(f"奖励计算完成 - Query: {traj_query[:50]}..., 轨迹输出: {traj_output[:50]}..., 标准答案: {ground_truth[:50]}..., 分数: {score}")
+            logger.info(f"Reward calculation completed - Query: {traj_query[:50]}..., Traj output: {traj_output[:50]}..., Ground truth: {ground_truth[:50]}..., Score: {score}")
 
             return RewardResult(
                 score=score,
@@ -82,15 +82,15 @@ class GaiaMatchRewardFunction(RewardFunction):
             )
 
         except Exception as e:
-            logger.error(f"计算奖励时出错: {e}")
+            logger.error(f"Error calculating reward: {e}")
             return RewardResult(score=0.0, reasoning=f"Error calculating reward: {e}")
 
     def _load_traj_data(self, file_path: str) -> Union[List[Dict], Dict]:
-        """加载轨迹数据文件（支持JSON和JSONL格式）"""
+        """Load trajectory data file (supports JSON and JSONL formats)"""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 if file_path.endswith('.jsonl'):
-                    # JSONL格式：每行一个JSON对象
+                    # JSONL format: one JSON object per line
                     data = []
                     for line in f:
                         line = line.strip()

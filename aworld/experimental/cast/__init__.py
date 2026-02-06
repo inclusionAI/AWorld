@@ -18,11 +18,14 @@ AWorld AST Framework
 - 可扩展的解析器注册机制
 """
 
+# 基础解析器和具体实现
+from .ast_parsers.base_parser import BaseParser
+from .ast_parsers.html_parser import HtmlParser
+from .ast_parsers.python_parser import PythonParser
 # 核心框架类
 from .core import (
     ACast,
-    RepositoryAnalyzer,
-    CodeAnalyzer,
+    ASTContextBuilder,
 )
 # 数据模型
 from .models import (
@@ -42,22 +45,14 @@ from .parser_utils import (
     get_supported_languages,
     get_parser_info
 )
-# 基础解析器和具体实现
-from .parsers.base_parser import BaseParser
-from .parsers.html_parser import HtmlParser
-from .parsers.python_parser import PythonParser
+
 # 工具类
-from .utils import (
-    PageRankCalculator,
-    TokenCounter,
-)
 
 __version__ = "2.0.0"
 __all__ = [
     # 核心框架
     "ACast",
-    "RepositoryAnalyzer",
-    "CodeAnalyzer",
+    "ASTContextBuilder",
 
     # 解析器基类和实现
     "BaseParser",
@@ -80,9 +75,6 @@ __all__ = [
     "SymbolType",
     "ReferenceType",
 
-    # 工具类
-    "PageRankCalculator",
-    "TokenCounter",
 ]
 
 # 版本信息

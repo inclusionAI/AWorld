@@ -6,8 +6,10 @@ AWorld AST Framework - Python解析器
 直接复用官方tree_sitter_python库，减少自定义代码量。
 """
 
-from typing import List, Optional, Dict, Any
 from pathlib import Path
+from typing import List, Optional, Dict
+
+from aworld.logs.util import logger
 
 try:
     import tree_sitter_python as tspython
@@ -31,7 +33,7 @@ class PythonParser(BaseParser):
 
         # 初始化tree-sitter组件
         if not TREE_SITTER_AVAILABLE:
-            self.logger.error("tree_sitter_python库未安装，请运行: pip install tree-sitter tree-sitter-python")
+            logger.error("tree_sitter_python库未安装，请运行: pip install tree-sitter tree-sitter-python")
             self._language = None
             self._parser = None
             self._queries = {}
@@ -47,10 +49,10 @@ class PythonParser(BaseParser):
             # 编译查询
             self._queries = self._compile_queries()
 
-            self.logger.info("Python Tree-sitter解析器初始化成功")
+            logger.info("Python Tree-sitter解析器初始化成功")
 
         except Exception as e:
-            self.logger.error(f"初始化Python解析器失败: {e}")
+            logger.error(f"初始化Python解析器失败: {e}")
             self._language = None
             self._parser = None
             self._queries = {}
@@ -134,11 +136,11 @@ class PythonParser(BaseParser):
                   ]) @call_expr
             """)
 
-            self.logger.debug("Python查询编译成功")
+            logger.debug("Python查询编译成功")
             return queries
 
         except Exception as e:
-            self.logger.error(f"编译Python查询失败: {e}")
+            logger.error(f"编译Python查询失败: {e}")
             return {}
 
     def parse_file(self, file_path: Path) -> CodeNode:
@@ -147,11 +149,11 @@ class PythonParser(BaseParser):
         直接使用tree_sitter_python库，无需依赖base_parser的实现
         """
         if not file_path.exists():
-            self.logger.warning(f"文件不存在: {file_path}")
+            logger.warning(f"文件不存在: {file_path}")
             return CodeNode(file_path=file_path)
 
         if not self._parser or not self._language:
-            self.logger.error("Python解析器未正确初始化")
+            logger.error("Python解析器未正确初始化")
             return CodeNode(file_path=file_path)
 
         try:
@@ -163,7 +165,7 @@ class PythonParser(BaseParser):
             tree = self._parser.parse(source_bytes)
 
             if tree.root_node.has_error:
-                self.logger.warning(f"解析时发现语法错误: {file_path}")
+                logger.warning(f"解析时发现语法错误: {file_path}")
 
             # 提取符号和引用
             symbols = self._extract_symbols(tree, content, file_path)
@@ -184,7 +186,7 @@ class PythonParser(BaseParser):
             )
 
         except Exception as e:
-            self.logger.error(f"解析文件失败 {file_path}: {e}")
+            logger.error(f"解析文件失败 {file_path}: {e}")
             return CodeNode(file_path=file_path)
 
     def _extract_symbols(self, tree, content: str, file_path: Path) -> List[Symbol]:
@@ -210,7 +212,7 @@ class PythonParser(BaseParser):
         filtered_count = len(functions) - len(filtered_functions)
         if filtered_count > 0:
             filtered_names = [func.name for func in functions if func.name in method_names]
-            self.logger.debug(f"过滤了 {filtered_count} 个与方法重名的函数: {filtered_names}")
+            logger.debug(f"过滤了 {filtered_count} 个与方法重名的函数: {filtered_names}")
 
         symbols.extend(filtered_functions)
         symbols.extend(methods)
@@ -267,7 +269,7 @@ class PythonParser(BaseParser):
                 classes.append(symbol)
 
         except Exception as e:
-            self.logger.error(f"提取类定义失败: {e}")
+            logger.error(f"提取类定义失败: {e}")
 
         return classes
 
@@ -334,7 +336,7 @@ class PythonParser(BaseParser):
                     functions.append(symbol)
 
             except Exception as e:
-                self.logger.error(f"提取函数失败: {e}")
+                logger.error(f"提取函数失败: {e}")
 
         return functions
 
@@ -434,7 +436,7 @@ class PythonParser(BaseParser):
                         methods.append(symbol)
 
         except Exception as e:
-            self.logger.error(f"提取方法定义失败: {e}")
+            logger.error(f"提取方法定义失败: {e}")
 
         return methods
 
@@ -502,7 +504,7 @@ class PythonParser(BaseParser):
                     variables.append(symbol)
 
         except Exception as e:
-            self.logger.error(f"提取变量定义失败: {e}")
+            logger.error(f"提取变量定义失败: {e}")
 
         return variables
 
@@ -551,7 +553,7 @@ class PythonParser(BaseParser):
                     references.append(reference)
 
         except Exception as e:
-            self.logger.error(f"提取引用失败: {e}")
+            logger.error(f"提取引用失败: {e}")
 
         return references
 
@@ -595,7 +597,7 @@ class PythonParser(BaseParser):
                     imports.append(module_name)
 
         except Exception as e:
-            self.logger.error(f"提取导入失败: {e}")
+            logger.error(f"提取导入失败: {e}")
 
         return list(set(imports))  # 去重
 
@@ -624,7 +626,7 @@ class PythonParser(BaseParser):
                         exports.append(export_name)
 
         except Exception as e:
-            self.logger.error(f"提取导出失败: {e}")
+            logger.error(f"提取导出失败: {e}")
 
         return exports
 
@@ -673,7 +675,7 @@ class PythonParser(BaseParser):
                 return '\n'.join(result_lines)
 
         except Exception as e:
-            self.logger.debug(f"提取代码内容失败: {e}")
+            logger.debug(f"提取代码内容失败: {e}")
 
         return None
 
@@ -690,7 +692,7 @@ class PythonParser(BaseParser):
                             docstring = docstring.strip('"""\'\'\'')
                             return docstring.strip()
         except Exception as e:
-            self.logger.debug(f"提取文档字符串失败: {e}")
+            logger.debug(f"提取文档字符串失败: {e}")
         return None
 
     def _extract_parameters(self, params_node) -> List[str]:
@@ -716,7 +718,7 @@ class PythonParser(BaseParser):
                             parameters.append(param_name)
                             break
         except Exception as e:
-            self.logger.debug(f"提取参数失败: {e}")
+            logger.debug(f"提取参数失败: {e}")
         return parameters
 
     def _find_parent_class_name(self, method_node) -> Optional[str]:
@@ -734,7 +736,7 @@ class PythonParser(BaseParser):
                             return child.text.decode('utf-8')
                 current = current.parent
         except Exception as e:
-            self.logger.debug(f"查找父类名失败: {e}")
+            logger.debug(f"查找父类名失败: {e}")
         return None
 
     def _extract_class_signature(self, class_node, lines: List[str]) -> Optional[str]:
@@ -753,7 +755,7 @@ class PythonParser(BaseParser):
 
             return ' '.join(signature_lines) if signature_lines else None
         except Exception as e:
-            self.logger.debug(f"提取类签名失败: {e}")
+            logger.debug(f"提取类签名失败: {e}")
             return None
 
     def _extract_function_signature(self, function_node, lines: List[str]) -> Optional[str]:
@@ -777,7 +779,7 @@ class PythonParser(BaseParser):
             # 如果没找到冒号，返回第一行
             return lines[start_line].strip() if start_line < len(lines) else None
         except Exception as e:
-            self.logger.debug(f"提取函数签名失败: {e}")
+            logger.debug(f"提取函数签名失败: {e}")
             return None
 
     # ==============================
@@ -801,7 +803,7 @@ class PythonParser(BaseParser):
             tree = self._parser.parse(source_bytes)
 
             if tree.root_node.has_error:
-                self.logger.warning(f"生成骨架时发现语法错误: {file_path}")
+                logger.warning(f"生成骨架时发现语法错误: {file_path}")
 
             # 提取符号
             symbols = self._extract_symbols(tree, content, file_path)
@@ -836,5 +838,5 @@ class PythonParser(BaseParser):
             return '\n'.join(skeleton_lines)
 
         except Exception as e:
-            self.logger.error(f"生成骨架失败 {file_path}: {e}")
+            logger.error(f"生成骨架失败 {file_path}: {e}")
             return f"# 骨架生成失败: {e}\n# 文件: {file_path}\n"

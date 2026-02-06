@@ -5,7 +5,6 @@ AWorld AST Framework - 基于Tree-sitter的统一解析器基类
 所有解析器都基于Tree-sitter实现，提供统一的接口和高性能解析能力。
 """
 
-import logging
 from abc import ABC, abstractmethod
 from importlib import resources
 from pathlib import Path
@@ -14,10 +13,12 @@ from typing import List, Set, Optional, Tuple
 from grep_ast import TreeContext
 from grep_ast.tsl import get_language, get_parser
 
+from aworld.logs.util import logger
 from ..models import (
     Symbol, Reference, CodeNode,
     SymbolType, ReferenceType
 )
+
 
 class BaseParser(ABC):
     """
@@ -36,7 +37,6 @@ class BaseParser(ABC):
         """
         self.language = language
         self.file_extensions = file_extensions
-        self.logger = logging.getLogger(f"{__name__}.{language.title()}Parser")
 
         # 缓存
         self._parser_cache = None
@@ -58,7 +58,7 @@ class BaseParser(ABC):
             包含符号和引用信息的CodeNode
         """
         if not file_path.exists():
-            self.logger.warning(f"文件不存在: {file_path}")
+            logger.warning(f"文件不存在: {file_path}")
             return CodeNode(file_path=file_path)
 
         try:
@@ -69,7 +69,7 @@ class BaseParser(ABC):
             language = self._get_language()
 
             if not parser or not language:
-                self.logger.warning(f"无法获取{self.language}解析器")
+                logger.warning(f"无法获取{self.language}解析器")
                 return CodeNode(file_path=file_path)
 
             # 解析代码
@@ -95,7 +95,7 @@ class BaseParser(ABC):
             )
 
         except Exception as e:
-            self.logger.error(f"解析文件失败 {file_path}: {e}")
+            logger.error(f"解析文件失败 {file_path}: {e}")
             return CodeNode(file_path=file_path)
 
     def generate_skeleton(self, content: str, file_path: Path) -> str:
@@ -137,7 +137,7 @@ class BaseParser(ABC):
             return context.format()
 
         except Exception as e:
-            self.logger.error(f"生成骨架失败 {file_path}: {e}")
+            logger.error(f"生成骨架失败 {file_path}: {e}")
             return f"# 骨架生成失败: {e}\n"
 
     def extract_symbols(self, content: str, file_path: Path) -> List[Symbol]:
@@ -155,7 +155,7 @@ class BaseParser(ABC):
             )
             return symbols
         except Exception as e:
-            self.logger.error(f"提取符号失败: {e}")
+            logger.error(f"提取符号失败: {e}")
             return []
 
     def extract_references(self, content: str, file_path: Path) -> List[Reference]:
@@ -173,7 +173,7 @@ class BaseParser(ABC):
             )
             return references
         except Exception as e:
-            self.logger.error(f"提取引用失败: {e}")
+            logger.error(f"提取引用失败: {e}")
             return []
 
     def get_imports(self, content: str) -> List[str]:
@@ -186,7 +186,7 @@ class BaseParser(ABC):
             tree = parser.parse(bytes(content, "utf-8"))
             return self._extract_imports(tree, content)
         except Exception as e:
-            self.logger.error(f"提取导入失败: {e}")
+            logger.error(f"提取导入失败: {e}")
             return []
 
     def get_exports(self, content: str) -> List[str]:
@@ -199,7 +199,7 @@ class BaseParser(ABC):
             tree = parser.parse(bytes(content, "utf-8"))
             return self._extract_exports(tree, content)
         except Exception as e:
-            self.logger.error(f"提取导出失败: {e}")
+            logger.error(f"提取导出失败: {e}")
             return []
 
     # ===============================
@@ -212,7 +212,7 @@ class BaseParser(ABC):
             try:
                 self._parser_cache = get_parser(self.language)
             except Exception as e:
-                self.logger.error(f"获取{self.language}解析器失败: {e}")
+                logger.error(f"获取{self.language}解析器失败: {e}")
                 return None
         return self._parser_cache
 
@@ -222,7 +222,7 @@ class BaseParser(ABC):
             try:
                 self._language_cache = get_language(self.language)
             except Exception as e:
-                self.logger.error(f"获取{self.language}语言失败: {e}")
+                logger.error(f"获取{self.language}语言失败: {e}")
                 return None
         return self._language_cache
 
@@ -254,7 +254,7 @@ class BaseParser(ABC):
                 return self._query_cache
 
         except Exception as e:
-            self.logger.debug(f"获取查询文件失败: {e}")
+            logger.debug(f"获取查询文件失败: {e}")
 
         # 返回默认查询（由子类实现）
         self._query_cache = self._get_default_query()
@@ -273,7 +273,7 @@ class BaseParser(ABC):
 
         query_content = self._get_query_content()
         if not query_content:
-            self.logger.debug(f"没有查询文件: {self.language}")
+            logger.debug(f"没有查询文件: {self.language}")
             return symbols, references
 
         try:
@@ -327,7 +327,7 @@ class BaseParser(ABC):
                         references.append(reference)
 
         except Exception as e:
-            self.logger.error(f"提取符号和引用失败: {e}")
+            logger.error(f"提取符号和引用失败: {e}")
 
         return symbols, references
 
@@ -429,5 +429,5 @@ class BaseParser(ABC):
             return symbols
 
         except Exception as e:
-            self.logger.debug(f"快速符号提取失败: {e}")
+            logger.debug(f"快速符号提取失败: {e}")
             return []
