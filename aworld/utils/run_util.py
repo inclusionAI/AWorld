@@ -1,13 +1,18 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import asyncio
+import hashlib
 import uuid
-from typing import Any, List, Dict
+from datetime import datetime
+from pathlib import Path
+from typing import Any, List, Dict, Union, Optional
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import RunConfig
 from aworld.config.conf import TaskConfig
+from aworld.core.agent.base import BaseAgent
 from aworld.core.common import ActionModel, Observation
+from aworld.core.context.amni import AmniContextConfig
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, TopicType
 from aworld.core.task import Task, TaskResponse
@@ -217,3 +222,110 @@ async def serial_exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()
         else:
             task_input = result.msg
     return res
+
+
+def create_default_meta_agent(
+        skills_path: Union[str, Path] = None,
+        available_agents: Dict[str, BaseAgent] = None,
+        available_tools: List[str] = None,
+        mcp_config: Dict[str, Any] = None) -> 'MetaAgent':
+    """Create default MetaAgent instance with environment-based configuration."""
+    from aworld.agents.meta_agent import MetaAgent
+    from aworld.config import AgentConfig, ModelConfig
+    import os
+
+    model_name = os.getenv("LLM_MODEL_NAME", "gpt-4")
+    provider = os.getenv("LLM_PROVIDER", "openai")
+    api_key = os.getenv("LLM_API_KEY")
+    base_url = os.getenv("LLM_BASE_URL")
+
+    if not api_key or not model_name:
+        raise ValueError(
+            "LLM_API_KEY and LLM_MODEL_NAME environment variables must be set to use default MetaAgent. "
+            "Alternatively, pass a custom meta_agent instance."
+        )
+
+    return MetaAgent(
+        conf=AgentConfig(
+            llm_config=ModelConfig(
+                llm_model_name=model_name,
+                llm_provider=provider,
+                llm_api_key=api_key,
+                llm_base_url=base_url,
+                llm_temperature=0.0
+            )
+        ),
+        skills_path = Path(skills_path) if skills_path else None,
+        available_agents = available_agents,
+        available_tools = available_tools,
+        mcp_config = mcp_config,
+        use_self_resources = True
+    )
+
+
+def generate_yaml_path(query: str) -> str:
+    """Generate YAML file path based on query and timestamp."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    query_hash = hashlib.md5(query.encode()).hexdigest()[:8]
+    filename = f"{timestamp}_{query_hash}.yaml"
+
+    # Save to ~/.aworld/tasks/
+    base_dir = Path.home() / ".aworld" / "tasks"
+    base_dir.mkdir(parents=True, exist_ok=True)
+
+    return str(base_dir / filename)
+
+
+async def run_meta_agent_for_yaml(
+        query: str,
+        meta_agent: 'MetaAgent' = None,
+        skills_path: Union[str, Path] = None,
+        available_agents: Dict[str, BaseAgent] = None,
+        available_tools: List[str] = None,
+        mcp_config: Dict[str, Any] = None,
+        context_config: Optional[AmniContextConfig] = None
+) -> str:
+    """
+    Internal helper: Run MetaAgent and return YAML string.
+
+    Args:
+        query: User query
+        meta_agent: MetaAgent instance
+        skills_path: Path to skills directory
+        available_agents: Available agents dict
+        available_tools: Available tools list
+        mcp_config: MCP configuration
+        context_config: Context configuration
+
+    Returns:
+        YAML string from MetaAgent
+    """
+    # Create or use provided MetaAgent
+    if meta_agent is None:
+        meta_agent = create_default_meta_agent(
+            skills_path=skills_path,
+            available_agents=available_agents,
+            available_tools=available_tools,
+            mcp_config=mcp_config
+        )
+        logger.info("📝 Using default MetaAgent for task planning")
+    else:
+        logger.info(f"📝 Using custom MetaAgent: {meta_agent.name}")
+
+    # Create Task and Message to run MetaAgent
+    from aworld.core.common import Observation
+    from aworld.core.event.base import Message
+    from aworld.core.context.amni import AmniContext
+
+    # Create minimal context for MetaAgent execution
+    meta_message = Message(
+        payload=Observation(content=query),
+        sender="system",
+    )
+    meta_message.context = AmniContext(config=context_config) if context_config else AmniContext()
+
+    # Run MetaAgent (returns AgentMessage with YAML in payload)
+    result_message = await meta_agent.async_run(meta_message)
+    return result_message.payload
+
+

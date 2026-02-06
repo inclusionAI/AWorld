@@ -540,7 +540,7 @@ Orchestrator: Receives results from sub-agent
 
 ### 🔄 Implementation Details
 
-The Agentic Skill mechanism is implemented in `aworld/core/context/amni/__init__.py`:
+The Agentic Skill mechanism is implemented in `aworld/core/context/amni/services/skill_service.py`:
 
 ```python
 if skill.get('type') == "agent":
