@@ -8,8 +8,9 @@ Defines the core abstract interfaces and main components of the AST analysis fra
 import json
 import traceback
 from pathlib import Path
-from typing import Dict, List, Optional, Any, TYPE_CHECKING, Union
+from typing import Dict, List, Optional, Any, TYPE_CHECKING, Union, Type
 
+from . import PythonParser, HtmlParser
 from .ast_analyzer import ASTContextBuilder, DefaultASTAnalyzer
 from .coders import (
     BaseCoder, SearchReplaceCoder, DmpCoder, OpCoder
@@ -19,13 +20,23 @@ from .models import (
 )
 from .searchers.engine import SearchEngine, SearchType, SearchParams, SearchResult
 from .searchers.searchers import GrepSearcher, GlobSearcher, ReadSearcher
-from ...logs.util import logger
+from .utils import logger
 
 # Import BaseParser (no circular dependency as parsers.base_parser doesn't import core)
 if TYPE_CHECKING:
     from.ast_parsers.base_parser import BaseParser
 else:
     from.ast_parsers.base_parser import BaseParser
+
+_PARSER_REGISTRY: Dict[str, Type[BaseParser]] = {
+    'python': PythonParser,
+    'html': HtmlParser,
+    # more parsers
+    # 'javascript': JavaScriptParser,
+    # 'typescript': TypeScriptParser,
+    # 'go': GoParser,
+    # 'rust': RustParser,
+}
 
 class ACast:
     """AST Framework Main Entry Class"""
@@ -53,17 +64,31 @@ class ACast:
     code parser
     """
 
+    def create_parser(self, language: str) -> Optional[BaseParser]:
+        parser_class = _PARSER_REGISTRY.get(language.lower())
+        if parser_class:
+            try:
+                return parser_class()
+            except Exception as e:
+                logger.error(f"创建{language}解析器失败: {e}")
+                return None
+
+        logger.warning(f"不支持的语言: {language}")
+        return None
+
+    def get_supported_languages(self) -> List[str]:
+        return list(_PARSER_REGISTRY.keys())
+
     def _auto_register_all_parsers(self) -> None:
         """Automatically register all available parsers"""
         try:
-            from .parser_utils import get_supported_languages, create_parser
 
-            supported_languages = get_supported_languages()
+            supported_languages = self.get_supported_languages()
             logger.info(f"Auto-registering parsers, supported languages: {', '.join(supported_languages)}")
 
             for lang in supported_languages:
                 try:
-                    parser = create_parser(lang)
+                    parser = self.create_parser(lang)
                     if parser:
                         self.parsers[lang] = parser
                         logger.debug(f"✅ Auto-registered parser: {lang}")

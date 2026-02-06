@@ -1,8 +1,8 @@
 """
-AWorld AST Framework - 基于Tree-sitter的统一解析器基类
-===================================================
+AWorld AST Framework - Unified Parser Base Class Based on Tree-sitter
+=====================================================================
 
-所有解析器都基于Tree-sitter实现，提供统一的接口和高性能解析能力。
+All parsers are implemented based on Tree-sitter, providing a unified interface and high-performance parsing capabilities.
 """
 
 from abc import ABC, abstractmethod
@@ -13,7 +13,7 @@ from typing import List, Set, Optional, Tuple
 from grep_ast import TreeContext
 from grep_ast.tsl import get_language, get_parser
 
-from aworld.logs.util import logger
+from ..utils import logger
 from ..models import (
     Symbol, Reference, CodeNode,
     SymbolType, ReferenceType
@@ -22,65 +22,65 @@ from ..models import (
 
 class BaseParser(ABC):
     """
-    基于Tree-sitter的统一解析器基类
+    Unified parser base class based on Tree-sitter
 
-    所有具体语言的解析器都应该继承此类
+    All parsers for specific languages should inherit from this class
     """
 
     def __init__(self, language: str, file_extensions: Set[str]):
         """
-        初始化解析器
+        Initialize parser
 
         Args:
-            language: 编程语言名称（如'python', 'javascript'等）
-            file_extensions: 支持的文件扩展名集合（如{'.py', '.pyi'}）
+            language: Programming language name (e.g., 'python', 'javascript')
+            file_extensions: Set of supported file extensions (e.g., {'.py', '.pyi'})
         """
         self.language = language
         self.file_extensions = file_extensions
 
-        # 缓存
+        # Cache
         self._parser_cache = None
         self._language_cache = None
         self._query_cache = None
 
     def can_parse(self, file_path: Path) -> bool:
-        """判断是否可以解析指定文件"""
+        """Check if the specified file can be parsed"""
         return file_path.suffix.lower() in self.file_extensions
 
     def parse_file(self, file_path: Path) -> CodeNode:
         """
-        解析文件，返回CodeNode
+        Parse file and return CodeNode
 
         Args:
-            file_path: 要解析的文件路径
+            file_path: Path to the file to parse
 
         Returns:
-            包含符号和引用信息的CodeNode
+            CodeNode containing symbol and reference information
         """
         if not file_path.exists():
-            logger.warning(f"文件不存在: {file_path}")
+            logger.warning(f"File does not exist: {file_path}")
             return CodeNode(file_path=file_path)
 
         try:
             content = file_path.read_text(encoding='utf-8')
 
-            # 获取Tree-sitter组件
+            # Get Tree-sitter components
             parser = self._get_parser()
             language = self._get_language()
 
             if not parser or not language:
-                logger.warning(f"无法获取{self.language}解析器")
+                logger.warning(f"Unable to get {self.language} parser")
                 return CodeNode(file_path=file_path)
 
-            # 解析代码
+            # Parse code
             tree = parser.parse(bytes(content, "utf-8"))
 
-            # 提取符号和引用
+            # Extract symbols and references
             symbols, references = self._extract_symbols_and_references(
                 tree, language, content, file_path
             )
 
-            # 提取导入和导出
+            # Extract imports and exports
             imports = self._extract_imports(tree, content)
             exports = self._extract_exports(tree, content)
 
@@ -95,22 +95,22 @@ class BaseParser(ABC):
             )
 
         except Exception as e:
-            logger.error(f"解析文件失败 {file_path}: {e}")
+            logger.error(f"Failed to parse file {file_path}: {e}")
             return CodeNode(file_path=file_path)
 
     def generate_skeleton(self, content: str, file_path: Path) -> str:
         """
-        生成代码骨架，使用TreeContext进行智能上下文提取
+        Generate code skeleton using TreeContext for intelligent context extraction
 
         Args:
-            content: 文件内容
-            file_path: 文件路径
+            content: File content
+            file_path: File path
 
         Returns:
-            格式化的代码骨架字符串
+            Formatted code skeleton string
         """
         try:
-            # 使用TreeContext生成骨架
+            # Use TreeContext to generate skeleton
             context = TreeContext(
                 filename=str(file_path),
                 code=content,
@@ -123,7 +123,7 @@ class BaseParser(ABC):
                 loi_pad=0
             )
 
-            # 获取所有定义的行号
+            # Get line numbers of all definitions
             symbols = self._get_symbols_quick(content, file_path)
             definition_lines = [
                 symbol.line_number for symbol in symbols
@@ -137,11 +137,11 @@ class BaseParser(ABC):
             return context.format()
 
         except Exception as e:
-            logger.error(f"生成骨架失败 {file_path}: {e}")
-            return f"# 骨架生成失败: {e}\n"
+            logger.error(f"Failed to generate skeleton {file_path}: {e}")
+            return f"# Skeleton generation failed: {e}\n"
 
     def extract_symbols(self, content: str, file_path: Path) -> List[Symbol]:
-        """提取符号定义"""
+        """Extract symbol definitions"""
         try:
             parser = self._get_parser()
             language = self._get_language()
@@ -155,11 +155,11 @@ class BaseParser(ABC):
             )
             return symbols
         except Exception as e:
-            logger.error(f"提取符号失败: {e}")
+            logger.error(f"Failed to extract symbols: {e}")
             return []
 
     def extract_references(self, content: str, file_path: Path) -> List[Reference]:
-        """提取符号引用"""
+        """Extract symbol references"""
         try:
             parser = self._get_parser()
             language = self._get_language()
@@ -173,11 +173,11 @@ class BaseParser(ABC):
             )
             return references
         except Exception as e:
-            logger.error(f"提取引用失败: {e}")
+            logger.error(f"Failed to extract references: {e}")
             return []
 
     def get_imports(self, content: str) -> List[str]:
-        """提取导入语句"""
+        """Extract import statements"""
         try:
             parser = self._get_parser()
             if not parser:
@@ -186,11 +186,11 @@ class BaseParser(ABC):
             tree = parser.parse(bytes(content, "utf-8"))
             return self._extract_imports(tree, content)
         except Exception as e:
-            logger.error(f"提取导入失败: {e}")
+            logger.error(f"Failed to extract imports: {e}")
             return []
 
     def get_exports(self, content: str) -> List[str]:
-        """提取导出语句"""
+        """Extract export statements"""
         try:
             parser = self._get_parser()
             if not parser:
@@ -199,40 +199,40 @@ class BaseParser(ABC):
             tree = parser.parse(bytes(content, "utf-8"))
             return self._extract_exports(tree, content)
         except Exception as e:
-            logger.error(f"提取导出失败: {e}")
+            logger.error(f"Failed to extract exports: {e}")
             return []
 
     # ===============================
-    # Tree-sitter内部实现方法
+    # Tree-sitter Internal Implementation Methods
     # ===============================
 
     def _get_parser(self):
-        """获取或缓存Tree-sitter解析器"""
+        """Get or cache Tree-sitter parser"""
         if self._parser_cache is None:
             try:
                 self._parser_cache = get_parser(self.language)
             except Exception as e:
-                logger.error(f"获取{self.language}解析器失败: {e}")
+                logger.error(f"Failed to get {self.language} parser: {e}")
                 return None
         return self._parser_cache
 
     def _get_language(self):
-        """获取或缓存Tree-sitter语言"""
+        """Get or cache Tree-sitter language"""
         if self._language_cache is None:
             try:
                 self._language_cache = get_language(self.language)
             except Exception as e:
-                logger.error(f"获取{self.language}语言失败: {e}")
+                logger.error(f"Failed to get {self.language} language: {e}")
                 return None
         return self._language_cache
 
     def _get_query_content(self) -> Optional[str]:
-        """获取查询文件内容"""
+        """Get query file content"""
         if self._query_cache is not None:
             return self._query_cache
 
         try:
-            # 尝试使用内置查询文件（aider风格）
+            # Try to use built-in query files (aider style)
             query_paths = [
                 f"queries/tree-sitter-language-pack/{self.language}-tags.scm",
                 f"queries/tree-sitter-languages/{self.language}-tags.scm",
@@ -247,33 +247,33 @@ class BaseParser(ABC):
                 except:
                     continue
 
-            # 使用本地查询文件
+            # Use local query file
             local_query = Path(__file__).parent / "queries" / f"{self.language}-tags.scm"
             if local_query.exists():
                 self._query_cache = local_query.read_text()
                 return self._query_cache
 
         except Exception as e:
-            logger.debug(f"获取查询文件失败: {e}")
+            logger.debug(f"Failed to get query file: {e}")
 
-        # 返回默认查询（由子类实现）
+        # Return default query (implemented by subclasses)
         self._query_cache = self._get_default_query()
         return self._query_cache
 
     @abstractmethod
     def _get_default_query(self) -> str:
-        """获取默认查询字符串（子类必须实现）"""
+        """Get default query string (must be implemented by subclasses)"""
         pass
 
     def _extract_symbols_and_references(self, tree, language, content: str,
                                        file_path: Path) -> Tuple[List[Symbol], List[Reference]]:
-        """提取符号定义和引用"""
+        """Extract symbol definitions and references"""
         symbols = []
         references = []
 
         query_content = self._get_query_content()
         if not query_content:
-            logger.debug(f"没有查询文件: {self.language}")
+            logger.debug(f"No query file: {self.language}")
             return symbols, references
 
         try:
@@ -281,7 +281,7 @@ class BaseParser(ABC):
             captures = query.captures(tree.root_node)
             lines = content.split('\n')
 
-            # 处理捕获
+            # Process captures
             for capture_name, nodes in captures.items():
                 for node in nodes:
                     line_num = node.start_point[0] + 1
@@ -291,10 +291,10 @@ class BaseParser(ABC):
                         symbol_type = self._map_definition_type(capture_name)
                         symbol_name = node.text.decode('utf-8')
 
-                        # 获取父级上下文
+                        # Get parent context
                         parent_name = self._find_parent_symbol(node, content)
 
-                        # 提取签名和文档
+                        # Extract signature and documentation
                         signature = self._extract_signature(node, lines, line_num)
                         docstring = self._extract_docstring(node, lines, line_num)
 
@@ -327,12 +327,12 @@ class BaseParser(ABC):
                         references.append(reference)
 
         except Exception as e:
-            logger.error(f"提取符号和引用失败: {e}")
+            logger.error(f"Failed to extract symbols and references: {e}")
 
         return symbols, references
 
     def _map_definition_type(self, capture_name: str) -> SymbolType:
-        """映射捕获名称到符号类型"""
+        """Map capture name to symbol type"""
         if 'class' in capture_name:
             return SymbolType.CLASS
         elif 'function' in capture_name:
@@ -347,7 +347,7 @@ class BaseParser(ABC):
             return SymbolType.FUNCTION
 
     def _map_reference_type(self, capture_name: str) -> ReferenceType:
-        """映射捕获名称到引用类型"""
+        """Map capture name to reference type"""
         if 'call' in capture_name:
             return ReferenceType.CALL
         elif 'class' in capture_name:
@@ -358,7 +358,7 @@ class BaseParser(ABC):
             return ReferenceType.ACCESS
 
     def _find_parent_symbol(self, node, content: str) -> Optional[str]:
-        """查找父级符号名称"""
+        """Find parent symbol name"""
         current = node.parent
         while current:
             if current.type in ['class_definition', 'function_definition', 'method_definition']:
@@ -369,7 +369,7 @@ class BaseParser(ABC):
         return None
 
     def _extract_signature(self, node, lines: List[str], line_num: int) -> Optional[str]:
-        """提取符号签名"""
+        """Extract symbol signature"""
         try:
             def_node = node.parent
             while def_node and def_node.type not in [
@@ -402,19 +402,19 @@ class BaseParser(ABC):
             return None
 
     def _extract_docstring(self, node, lines: List[str], line_num: int) -> Optional[str]:
-        """提取文档字符串（子类可重写以提供更精确的提取）"""
+        """Extract docstring (subclasses can override to provide more precise extraction)"""
         return None
 
     def _extract_imports(self, tree, content: str) -> List[str]:
-        """提取导入语句（子类应重写）"""
+        """Extract import statements (subclasses should override)"""
         return []
 
     def _extract_exports(self, tree, content: str) -> List[str]:
-        """提取导出语句（子类应重写）"""
+        """Extract export statements (subclasses should override)"""
         return []
 
     def _get_symbols_quick(self, content: str, file_path: Path) -> List[Symbol]:
-        """快速获取符号列表（用于骨架生成）"""
+        """Quickly get symbol list (for skeleton generation)"""
         try:
             parser = self._get_parser()
             language = self._get_language()
@@ -429,5 +429,5 @@ class BaseParser(ABC):
             return symbols
 
         except Exception as e:
-            logger.debug(f"快速符号提取失败: {e}")
+            logger.debug(f"Quick symbol extraction failed: {e}")
             return []

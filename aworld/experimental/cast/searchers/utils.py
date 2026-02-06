@@ -21,7 +21,7 @@ from typing import Dict, List, Optional, Any
 
 import requests
 
-from aworld.logs.util import logger
+from ..utils import logger
 
 
 @dataclass

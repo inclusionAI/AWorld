@@ -1,15 +1,15 @@
 """
-AWorld AST Framework - Python解析器
-==================================
+AWorld AST Framework - Python Parser
+=====================================
 
-基于tree-sitter-python库的Python代码解析器实现。
-直接复用官方tree_sitter_python库，减少自定义代码量。
+Python code parser implementation based on tree-sitter-python library.
+Directly reuses the official tree_sitter_python library to reduce custom code.
 """
 
 from pathlib import Path
 from typing import List, Optional, Dict
 
-from aworld.logs.util import logger
+from ..utils import logger
 
 try:
     import tree_sitter_python as tspython
@@ -23,7 +23,7 @@ from ..models import Symbol, Reference, CodeNode, SymbolType, ReferenceType
 
 
 class PythonParser(BaseParser):
-    """Python Tree-sitter解析器，直接使用tree_sitter_python库"""
+    """Python Tree-sitter parser, directly uses tree_sitter_python library"""
 
     def __init__(self):
         super().__init__(
@@ -31,42 +31,42 @@ class PythonParser(BaseParser):
             file_extensions={'.py', '.pyi', '.pyx'}
         )
 
-        # 初始化tree-sitter组件
+        # Initialize tree-sitter components
         if not TREE_SITTER_AVAILABLE:
-            logger.error("tree_sitter_python库未安装，请运行: pip install tree-sitter tree-sitter-python")
+            logger.error("tree_sitter_python library not installed, please run: pip install tree-sitter tree-sitter-python")
             self._language = None
             self._parser = None
             self._queries = {}
             return
 
         try:
-            # 创建Language对象
+            # Create Language object
             self._language = Language(tspython.language())
 
-            # 创建Parser对象
+            # Create Parser object
             self._parser = Parser(self._language)
 
-            # 编译查询
+            # Compile queries
             self._queries = self._compile_queries()
 
-            logger.info("Python Tree-sitter解析器初始化成功")
+            logger.info("Python Tree-sitter parser initialized successfully")
 
         except Exception as e:
-            logger.error(f"初始化Python解析器失败: {e}")
+            logger.error(f"Failed to initialize Python parser: {e}")
             self._language = None
             self._parser = None
             self._queries = {}
 
     def _compile_queries(self) -> Dict[str, "Query"]:
-        """编译所有常用的查询模式"""
+        """Compile all commonly used query patterns"""
         if not self._language:
             return {}
 
         queries = {}
 
         try:
-            # 函数定义查询（只匹配顶层函数，不包括类方法）
-            # 使用 module 作为父节点限定，确保只捕获模块级别的函数
+            # Function definition query (only matches top-level functions, excludes class methods)
+            # Use module as parent node constraint to ensure only module-level functions are captured
             queries['functions'] = Query(self._language, """
                 (function_definition
                     name: (identifier) @function_name
@@ -74,7 +74,7 @@ class PythonParser(BaseParser):
                     body: (block) @function_body) @function_def
             """)
 
-            # 类定义查询
+            # Class definition query
             queries['classes'] = Query(self._language, """
                 (class_definition
                   name: (identifier) @class_name
@@ -82,7 +82,7 @@ class PythonParser(BaseParser):
                   body: (block) @class_body) @class_def
             """)
 
-            # 方法定义查询（在类内部的函数） - 修正版本
+            # Method definition query (functions inside classes) - corrected version
             queries['methods'] = Query(self._language, """
                 (class_definition
                   body: (block
@@ -92,7 +92,7 @@ class PythonParser(BaseParser):
                       body: (block) @method_body) @method_def))
             """)
 
-            # 异步方法查询 - 修正版本（使用正确的节点类型）
+            # Async method query - corrected version (using correct node type)
             queries['async_methods'] = Query(self._language, """
                 (class_definition
                   body: (block
@@ -102,7 +102,7 @@ class PythonParser(BaseParser):
                       body: (block) @async_method_body) @async_method_def))
             """)
 
-            # 变量赋值查询
+            # Variable assignment query
             queries['variables'] = Query(self._language, """
                 (assignment
                   left: (identifier) @variable_name) @variable_assign
@@ -111,7 +111,7 @@ class PythonParser(BaseParser):
                   left: (pattern_list (identifier) @multi_variable_name)) @multi_variable_assign
             """)
 
-            # 导入查询
+            # Import query
             queries['imports'] = Query(self._language, """
                 (import_statement
                   name: (dotted_name) @import_name) @import_stmt
@@ -126,7 +126,7 @@ class PythonParser(BaseParser):
                     (dotted_name) @from_name_list)) @from_import_alias_stmt
             """)
 
-            # 函数调用查询
+            # Function call query
             queries['calls'] = Query(self._language, """
                 (call
                   function: [
@@ -136,11 +136,11 @@ class PythonParser(BaseParser):
                   ]) @call_expr
             """)
 
-            logger.debug("Python查询编译成功")
+            logger.debug("Python queries compiled successfully")
             return queries
 
         except Exception as e:
-            logger.error(f"编译Python查询失败: {e}")
+            logger.error(f"Failed to compile Python queries: {e}")
             return {}
 
     def parse_file(self, file_path: Path) -> CodeNode:

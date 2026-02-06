@@ -14,7 +14,7 @@ from typing import Set, Any
 
 import networkx as nx
 
-from aworld.logs.util import logger
+from .utils import logger
 from .models import (
     CodeNode, RepositoryMap,
     LogicLayer, SkeletonLayer, ImplementationLayer,
