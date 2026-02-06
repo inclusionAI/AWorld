@@ -1,7 +1,7 @@
 ---
 name: optimizer
 description: Analyzes and automatically optimizes an existing Agent's code by applying patches to improve performance, quality, security, and functionality.
-tool_list: {"AGENT_REGISTRY": [], "CAST_ANALYSIS": [], "CAST_CODER": []}
+tool_list: {"AGENT_REGISTRY": [], "CAST_ANALYSIS": [], "CAST_CODER": ["generate_snapshot", "search_replace"], "CAST_SEARCH": []}
 ---
 # Agent Optimization Skill (Optimizer)
 
