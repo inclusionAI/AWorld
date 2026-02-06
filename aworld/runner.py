@@ -230,7 +230,7 @@ class Runners:
     # ============================================================
     
     @staticmethod
-    async def text_to_task(
+    async def text_to_swarm(
         query: str,
         *,
         meta_agent: 'MetaAgent' = None,
@@ -239,42 +239,43 @@ class Runners:
         available_tools: List[str] = None,
         mcp_config: Dict[str, Any] = None,
         context_config: Optional[AmniContextConfig] = None,
-        **task_overrides
-    ) -> Task:
+        **swarm_overrides
+    ) -> Swarm:
         """
-        Convert text query to Task and Swarm objects using MetaAgent.
+        Convert text query to Swarm using MetaAgent.
         
-        This is a foundational method that returns object instances for further processing.
-        Upper layers can generate YAML from these objects if needed.
+        This method generates a reusable Swarm instance from natural language description.
+        The Swarm can be used to create multiple Tasks for different queries.
         
         Args:
-            query: User query to analyze and plan for
+            query: User query describing the team structure or task requirements
             meta_agent: MetaAgent instance (if None, creates a default one)
             skills_path: Path to skills directory for scanning available skills
             available_agents: Dict of predefined agents {agent_id: agent_instance}
             available_tools: List of available tool names
             mcp_config: Global MCP server configurations
-            context_config: Context configuration for task execution
-            **task_overrides: Override task configs (timeout, session_id, task_id, etc.)
+            context_config: Context configuration (not used for swarm, kept for consistency)
+            **swarm_overrides: Override swarm configs (max_steps, event_driven, etc.)
         
         Returns:
-            Task - task instance ready for execution or further processing
+            Swarm instance ready to be used in Task creation
         
         Example:
-            >>> task = await Runners.text_to_task(
-            ...     query="Help me find the latest stock price of BABA.",
+            >>> # Generate a reusable swarm
+            >>> swarm = await Runners.text_to_swarm(
+            ...     query="Create a stock analysis team with data collector, analyst, and risk assessor",
             ...     skills_path="./skills"
             ... )
-            >>> # Can further process task objects
-            >>> task.timeout = 300
-            >>> results = await Runners.run_task(task)
+            >>> 
+            >>> # Use the swarm for multiple tasks
+            >>> task1 = await Runners.text_to_task("Analyze BABA stock", swarm=swarm)
+            >>> task2 = await Runners.text_to_task("Analyze TCEHY stock", swarm=swarm)
         """
-        from aworld.agents.meta_agent import MetaAgent
-        from aworld.config.task_loader import load_task_from_yaml
-        import tempfile
-
-        # 1. Run MetaAgent to generate YAML
-        logger.info(f"🧠 Analyzing query: {query[:100]}..." if len(query) > 100 else f"🧠 Analyzing query: {query}")
+        from aworld.config.task_loader import load_swarm_from_yaml_dict
+        import yaml
+        
+        # 1. Run MetaAgent to generate complete YAML
+        logger.info(f"🧠 Analyzing query for swarm generation: {query[:100]}..." if len(query) > 100 else f"🧠 Analyzing query for swarm generation: {query}")
         
         yaml_str = await run_meta_agent_for_yaml(
             meta_agent=meta_agent,
@@ -286,22 +287,119 @@ class Runners:
             context_config=context_config
         )
         
-        # 2. Convert YAML to Task object (via temporary file)
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False, encoding='utf-8') as f:
-            f.write(yaml_str)
-            temp_yaml_path = f.name
-        
+        # 2. Parse YAML string to dict
         try:
-            task = await load_task_from_yaml(
-                temp_yaml_path,
+            yaml_dict = yaml.safe_load(yaml_str)
+        except yaml.YAMLError as e:
+            raise ValueError(f"Failed to parse YAML from MetaAgent: {e}")
+        
+        # 3. Load Swarm from YAML dict (only extract agents + swarm sections)
+        swarm = await load_swarm_from_yaml_dict(
+            yaml_dict,
+            available_agents=available_agents,
+            skills_path=Path(skills_path) if skills_path else None,
+            global_mcp_config=yaml_dict.get("mcp_config"),
+            **swarm_overrides
+        )
+        
+        logger.info(f"✅ Swarm created: type={swarm.build_type}, agents={len(swarm.agents)}")
+        return swarm
+    
+    @staticmethod
+    async def text_to_task(
+        query: str,
+        *,
+        swarm: Swarm = None,
+        meta_agent: 'MetaAgent' = None,
+        skills_path: Union[str, Path] = None,
+        available_agents: Dict[str, BaseAgent] = None,
+        available_tools: List[str] = None,
+        mcp_config: Dict[str, Any] = None,
+        context_config: Optional[AmniContextConfig] = None,
+        **task_overrides
+    ) -> Task:
+        """
+        Convert text query to Task and Swarm objects using MetaAgent.
+        
+        This method supports two modes:
+        1. Full generation (swarm=None): Generate both swarm and task from query
+        2. Swarm reuse (swarm=provided): Use existing swarm, only create task
+        
+        Args:
+            query: User query to analyze and plan for
+            swarm: Optional pre-generated Swarm instance (if None, generates new swarm)
+            meta_agent: MetaAgent instance (if None, creates a default one)
+            skills_path: Path to skills directory for scanning available skills
+            available_agents: Dict of predefined agents {agent_id: agent_instance}
+            available_tools: List of available tool names
+            mcp_config: Global MCP server configurations
+            context_config: Context configuration for task execution
+            **task_overrides: Override task configs (timeout, session_id, task_id, etc.)
+        
+        Returns:
+            Task instance ready for execution or further processing
+        
+        Example:
+            >>> # Mode 1: Full generation (backward compatible)
+            >>> task = await Runners.text_to_task(
+            ...     query="Help me find the latest stock price of BABA.",
+            ...     skills_path="./skills"
+            ... )
+            >>> 
+            >>> # Mode 2: Swarm reuse
+            >>> swarm = await Runners.text_to_swarm("Create stock analysis team")
+            >>> task = await Runners.text_to_task(
+            ...     query="Analyze BABA stock",
+            ...     swarm=swarm
+            ... )
+        """
+        from aworld.config.task_loader import load_task_from_yaml
+        import tempfile
+
+        # Check if swarm is provided
+        if swarm is None:
+            # Mode 1: Full generation - generate both swarm and task
+            logger.info(f"🧠 Analyzing query (full generation): {query[:100]}..." if len(query) > 100 else f"🧠 Analyzing query (full generation): {query}")
+            
+            # Generate swarm first
+            swarm = await Runners.text_to_swarm(
+                query=query,
+                meta_agent=meta_agent,
+                skills_path=skills_path,
                 available_agents=available_agents,
-                skills_path=Path(skills_path) if skills_path else None,
+                available_tools=available_tools,
+                mcp_config=mcp_config,
+                context_config=context_config
+            )
+            
+            # Create Task with generated swarm
+            task = Task(
+                input=query,
+                swarm=swarm,
+                tool_names=task_overrides.pop("tool_names", []),
+                event_driven=swarm.event_driven,
+                session_id=task_overrides.pop("session_id", None),
+                id=task_overrides.pop("task_id", None),
                 context_config=context_config,
+                conf=task_overrides.pop("conf", None),
                 **task_overrides
             )
-        finally:
-            import os
-            os.unlink(temp_yaml_path)
+        else:
+            # Mode 2: Swarm reuse - use provided swarm, only create task
+            logger.info(f"♻️ Reusing provided swarm (type={swarm.build_type}) for query: {query[:100]}..." if len(query) > 100 else f"♻️ Reusing provided swarm (type={swarm.build_type}) for query: {query}")
+            
+            # Create Task with provided swarm
+            task = Task(
+                input=query,
+                swarm=swarm,
+                tool_names=task_overrides.pop("tool_names", []),
+                event_driven=swarm.event_driven,
+                session_id=task_overrides.pop("session_id", None),
+                id=task_overrides.pop("task_id", None),
+                context_config=context_config,
+                conf=task_overrides.pop("conf", None),
+                **task_overrides
+            )
         
         logger.info(f"✅ Task created: task_id={task.id}, swarm_type={task.swarm.build_type}")
         return task
@@ -379,6 +477,7 @@ class Runners:
     async def text_to_run(
         query: str,
         *,
+        swarm: Swarm = None,
         meta_agent: 'MetaAgent' = None,
         skills_path: Union[str, Path] = None,
         available_agents: Dict[str, BaseAgent] = None,
@@ -392,10 +491,11 @@ class Runners:
         Convert text query to execution results in one call.
         
         This is a high-level convenience method that combines text_to_task and execution.
-        Returns object instances (Task and results) for further processing.
+        Now supports optional swarm parameter for swarm reuse.
         
         Args:
             query: User query to analyze and execute
+            swarm: Optional pre-generated Swarm instance
             meta_agent: MetaAgent for planning (if None, uses default)
             skills_path: Path to skills directory
             available_agents: Dict of predefined agents
@@ -406,24 +506,28 @@ class Runners:
             **task_overrides: Override task configs (timeout, session_id, etc.)
         
         Returns:
-            Tuple of (Task, results_dict) - object instances for further processing
+            Tuple of (Task, results_dict)
         
         Example:
+            >>> # Mode 1: Full generation
             >>> task, results = await Runners.text_to_run(
             ...     query="Help me find the latest stock price of BABA.",
             ...     skills_path="./skills"
             ... )
-            >>> # Can further process task and results
-            >>> print(f"Task ID: {task.id}")
-            >>> print(f"Answer: {results[task.id].answer}")
-            >>> # Can also inspect swarm
-            >>> print(f"Swarm agents: {[a.name for a in task.swarm.agents]}")
+            >>> 
+            >>> # Mode 2: Swarm reuse
+            >>> swarm = await Runners.text_to_swarm("Create stock analysis team")
+            >>> task, results = await Runners.text_to_run(
+            ...     query="Analyze BABA stock",
+            ...     swarm=swarm
+            ... )
         """
         logger.info("🎯 Converting text to execution with MetaAgent planning...")
         
-        # 1. Convert text to Task and Swarm
+        # 1. Convert text to Task (with optional swarm)
         task = await Runners.text_to_task(
             query=query,
+            swarm=swarm,
             meta_agent=meta_agent,
             skills_path=skills_path,
             available_agents=available_agents,
