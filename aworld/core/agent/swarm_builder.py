@@ -470,3 +470,50 @@ def build_swarm_from_dict(
             logger.warning(f"Unknown parameter '{key}' in kwargs, ignoring")
     
     return swarm
+
+
+def build_swarm_from_yaml_string(
+    yaml_str: str,
+    agents_dict: Dict[str, BaseAgent],
+    **kwargs
+) -> Swarm:
+    """Build Swarm from YAML string (swarm section only).
+    
+    This is useful when you have a YAML string containing swarm configuration
+    and want to build a Swarm without writing to a file.
+    
+    Args:
+        yaml_str: YAML string containing swarm configuration
+        agents_dict: Dictionary mapping agent IDs to agent instances
+        **kwargs: Additional parameters to override YAML configuration
+    
+    Returns:
+        Constructed Swarm instance
+    
+    Raises:
+        AWorldRuntimeException: If YAML parsing fails or configuration is invalid
+    
+    Example:
+        >>> yaml_str = '''
+        ... swarm:
+        ...   type: workflow
+        ...   agents:
+        ...     - id: agent1
+        ...     - id: agent2
+        ... '''
+        >>> swarm = build_swarm_from_yaml_string(yaml_str, agents_dict)
+    """
+    # Parse YAML string
+    try:
+        config = yaml.safe_load(yaml_str)
+    except yaml.YAMLError as e:
+        raise AWorldRuntimeException(f"Failed to parse YAML string: {e}")
+    
+    if not config:
+        raise AWorldRuntimeException("Empty YAML configuration")
+    
+    if not isinstance(config, dict):
+        raise AWorldRuntimeException("YAML root must be a dictionary")
+    
+    # Build swarm using existing function
+    return build_swarm_from_dict(config, agents_dict, **kwargs)

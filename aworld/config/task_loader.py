@@ -356,3 +356,121 @@ def _merge_mcp_configs(
     merged["mcpServers"].update(agent_config.get("mcpServers", {}))
     
     return merged
+
+
+async def load_swarm_from_yaml_dict(
+    yaml_dict: Dict[str, Any],
+    *,
+    available_agents: Dict[str, BaseAgent] = None,
+    skills_path: Optional[Path] = None,
+    global_mcp_config: Dict[str, Any] = None,
+    **swarm_overrides
+) -> Swarm:
+    """
+    Load Swarm from parsed YAML dictionary (without Task).
+    
+    This function extracts only the agents and swarm sections from a complete
+    Task YAML and returns a Swarm instance.
+    
+    Args:
+        yaml_dict: Parsed YAML dict containing 'agents' and 'swarm' sections
+        available_agents: Dict of predefined agents for type='predefined'
+        skills_path: Path to skills directory (required for type='skill' agents)
+        global_mcp_config: Global MCP configuration (from yaml_dict or override)
+        **swarm_overrides: Override swarm-level configs
+    
+    Returns:
+        Swarm instance ready to be used in Task creation
+    
+    Raises:
+        ValueError: If YAML is invalid or required resources are missing
+    
+    Example:
+        >>> yaml_dict = {
+        ...     "agents": [...],
+        ...     "swarm": {...},
+        ...     "mcp_config": {...}
+        ... }
+        >>> swarm = await load_swarm_from_yaml_dict(
+        ...     yaml_dict,
+        ...     skills_path=Path("./skills")
+        ... )
+    """
+    logger.info("🕸️ Loading Swarm from YAML dictionary...")
+    
+    # 1. Extract global_mcp_config from yaml_dict if not provided
+    if global_mcp_config is None:
+        global_mcp_config = yaml_dict.get("mcp_config")
+    
+    # 2. Instantiate agents
+    logger.info("🔧 Instantiating agents...")
+    agents_dict = await _load_agents(
+        yaml_dict.get("agents", []),
+        available_agents=available_agents,
+        skills_path=skills_path,
+        global_mcp_config=global_mcp_config
+    )
+    logger.info(f"✅ Loaded {len(agents_dict)} agents: {list(agents_dict.keys())}")
+    
+    # 3. Build swarm
+    logger.info("🕸️ Building swarm...")
+    swarm = _build_swarm(yaml_dict.get("swarm", {}), agents_dict)
+    
+    # 4. Apply swarm_overrides if any
+    for key, value in swarm_overrides.items():
+        if hasattr(swarm, key):
+            setattr(swarm, key, value)
+            logger.debug(f"  ✓ Applied swarm override: {key}={value}")
+        else:
+            logger.warning(f"  ⚠️ Unknown swarm attribute '{key}', ignoring")
+    
+    logger.info(f"✅ Swarm loaded: type={swarm.build_type}, agents={len(swarm.agents)}")
+    return swarm
+
+
+async def load_swarm_from_yaml(
+    yaml_path: str,
+    *,
+    available_agents: Dict[str, BaseAgent] = None,
+    skills_path: Optional[Path] = None,
+    **swarm_overrides
+) -> Swarm:
+    """
+    Load Swarm from standalone swarm.yaml file.
+    
+    This supports loading from files that contain only agents + swarm sections
+    (without task section), enabling users to define reusable swarm configurations.
+    
+    Args:
+        yaml_path: Path to swarm YAML file
+        available_agents: Dict of predefined agents
+        skills_path: Path to skills directory
+        **swarm_overrides: Override swarm-level configs
+    
+    Returns:
+        Swarm instance
+    
+    Raises:
+        ValueError: If YAML is invalid or required resources are missing
+        FileNotFoundError: If YAML file doesn't exist
+    
+    Example:
+        >>> swarm = await load_swarm_from_yaml(
+        ...     "swarms/stock_analysis_team.yaml",
+        ...     skills_path=Path("./skills")
+        ... )
+    """
+    logger.info(f"📄 Loading Swarm from YAML file: {yaml_path}")
+    
+    # 1. Load YAML
+    yaml_dict = _load_yaml(yaml_path)
+    
+    # 2. Call load_swarm_from_yaml_dict
+    swarm = await load_swarm_from_yaml_dict(
+        yaml_dict,
+        available_agents=available_agents,
+        skills_path=skills_path,
+        **swarm_overrides
+    )
+    
+    return swarm
