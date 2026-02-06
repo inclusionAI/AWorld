@@ -864,7 +864,7 @@ def main():
 
     load_dotenv(override=True)
 
-    print("Starting  MCP terminal-server...", file=sys.stderr)
+    logger.info("Starting  MCP terminal-server...", file=sys.stderr)
     mcp.run(transport="stdio")
 
 
