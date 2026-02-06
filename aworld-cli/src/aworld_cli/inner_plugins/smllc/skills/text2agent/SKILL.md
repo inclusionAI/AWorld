@@ -13,7 +13,7 @@ mcp_config: {
       }
    }
 }
-tool_list: {"CONTEXT_AGENT_REGISTRY": [], "human": []}
+tool_list: {"AGENT_REGISTRY": [], "human": []}
 ---
 
 ## Role: Agent Code Generator
@@ -76,14 +76,14 @@ ls -la "$STORAGE_PATH/<agent_folder_name>/"
 ```
 
 ### **Step 5: Dynamic Registration**
-**MANDATORY FINAL STEP: Register the new agent with the current swarm.** Use the `CONTEXT_AGENT_REGISTRY` tool.
+**MANDATORY FINAL STEP: Register the new agent with the current swarm.** Use the `AGENT_REGISTRY` tool.
 
 *   **Action**: `dynamic_register`
 *   **Parameters**:
     *   `local_agent_name`: The name of the agent executing this workflow (e.g., "Aworld").
     *   `register_agent_name`: The name of the newly generated agent (must match the @agent decorator name, which must be snake_case).
 
-**Example**: `CONTEXT_AGENT_REGISTRY` tool call with params `{"local_agent_name": "Aworld", "register_agent_name": "my_custom_agent"}`
+**Example**: `AGENT_REGISTRY` tool call with params `{"local_agent_name": "Aworld", "register_agent_name": "my_custom_agent"}`
 
 
 ### **Step 6: MCP Server Dependency Check and Installation (MANDATORY)**

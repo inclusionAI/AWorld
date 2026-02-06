@@ -6,7 +6,7 @@ import asyncio
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Text
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
@@ -493,9 +493,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 hours = int(elapsed // 3600)
                                 minutes = int((elapsed % 3600) // 60)
                                 elapsed_str = f"{hours}h {minutes}m"
-                            
+
                             if loading_status:
-                                loading_status.update(f"[dim]{base_message} [{elapsed_str}][/dim]")
+                                # Add indentation to elapsed time updates
+                                indented_message = f"   {base_message} [{elapsed_str}]"
+                                loading_status.update(f"[dim]{indented_message}[/dim]")
                             await asyncio.sleep(0.5)  # Update every 0.5 seconds
                     
                     def _start_loading_status(message: str):
@@ -540,6 +542,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         # Show loading status while waiting for first output
                         _start_loading_status("💭 Thinking...")
                         
+                        # Track current agent for handoff detection
+                        current_agent_name = None
+                        last_agent_name = None
+
                         try:
                             # Ensure console is set before processing stream events
                             if not self.console:
@@ -549,14 +555,34 @@ class LocalAgentExecutor(BaseAgentExecutor):
                             async for output in outputs.stream_events():
                                 if not self.console:
                                     continue
-                                
+
                                 # Handle MessageOutput
                                 if isinstance(output, MessageOutput):
                                     # Stop thinking status before rendering message
                                     _stop_loading_status()
-                                    
+
+                                    # Extract agent name from output metadata
+                                    current_agent_name = None
+                                    if hasattr(output, 'metadata') and output.metadata:
+                                        current_agent_name = output.metadata.get('agent_name') or output.metadata.get('from_agent')
+
+                                    # Fallback to get current agent from swarm
+                                    if not current_agent_name and hasattr(self.swarm, 'cur_agent') and self.swarm.cur_agent:
+                                        current_agent_name = getattr(self.swarm.cur_agent, 'name', None) or getattr(self.swarm.cur_agent, 'id', lambda: None)()
+
+                                    # Default agent name
+                                    if not current_agent_name:
+                                        current_agent_name = "Assistant"
+
+                                    # Check if this is a handoff (agent switch)
+                                    is_handoff = last_agent_name is not None and last_agent_name != current_agent_name
+
                                     last_message_output = output
-                                    answer, _ = self._render_message_output(output, answer)
+                                    # Pass agent_name and is_handoff parameters
+                                    answer, _ = self._render_simple_message_output(output, answer, agent_name=current_agent_name, is_handoff=is_handoff)
+
+                                    # Update last_agent_name for next iteration
+                                    last_agent_name = current_agent_name
                                     
                                     # Check if there are tool calls - if so, show "Calling tool..." status
                                     # Skip status for human tools as they require user interaction
@@ -588,7 +614,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         
                                         # Only show loading status if there are non-human tools
                                         if has_non_human_tool:
-                                            _start_loading_status("🔧 Calling tool...")
+                                            # Use dynamic loading status without icon prefix
+                                            _start_loading_status("Calling tool...")
                                     # If no tool calls, don't show thinking status here
                                     # It might be final response, or next output will trigger thinking status
                                 
@@ -598,7 +625,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     _stop_loading_status()
                                     
                                     # Render tool result
-                                    self._render_tool_result_output(output)
+                                    self._render_simple_tool_result_output(output)
                                     
                                     # Immediately show thinking status after tool execution completes
                                     # Agent will process the tool result and think about next steps

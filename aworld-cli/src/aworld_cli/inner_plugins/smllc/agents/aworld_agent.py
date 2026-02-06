@@ -14,8 +14,9 @@ from typing import Optional, List
 
 from aworld.core.context.amni import AgentContextConfig
 from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
-from aworld.experimental.cast.tools import CAST_ANALYSIS, CAST_PATCH
+from aworld.experimental.cast.tools import CAST_ANALYSIS, CAST_CODER
 from aworld.logs.util import logger
+from aworld_cli.core.agent_registry_tool import AGENT_REGISTRY
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -24,12 +25,12 @@ from aworld.core.agent.swarm import TeamSwarm, Swarm
 from aworld.core.agent.base import BaseAgent
 from aworld_cli.core import agent, LocalAgentRegistry
 from aworld_cli.core.loader import init_agents
-from aworld.experimental.loaders.agent_version_control_registry import global_agent_registry
+from aworld_cli.core.agent_scanner import global_agent_registry
 import asyncio
 from aworld.config import AgentConfig, ModelConfig
 from aworld.utils.skill_loader import collect_skill_docs
 # for skills use
-CAST_ANALYSIS, CAST_PATCH
+CAST_ANALYSIS, CAST_CODER, AGENT_REGISTRY
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -463,7 +464,8 @@ def build_context_config(debug_mode):
     desc="Aworld is a versatile AI assistant that can execute tasks directly or delegate to specialized agent teams. Use when you need: (1) General-purpose task execution, (2) Complex multi-step problem solving, (3) Coordination of specialized agent teams, (4) Adaptive task handling that switches between direct execution and team delegation",
     context_config=build_context_config(
         debug_mode=True,
-    )
+    ),
+    unique=True
 )
 def build_aworld_agent(include_skills: Optional[str] = None):
     """
