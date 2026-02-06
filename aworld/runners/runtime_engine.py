@@ -33,6 +33,10 @@ class RuntimeEngine(object):
         # Initialize clients running on top of distributed computing engines
         pass
 
+    @property
+    def name(self):
+        return self.conf.engine_name
+
     def build_engine(self) -> 'RuntimeEngine':
         """Create computing engine runtime.
 

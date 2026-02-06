@@ -94,18 +94,22 @@ def function_to_tool(
     postfix = f"{uuid.uuid4().hex[0:6]}__tmp"
 
     with open(f"{tool_name}{postfix}_action.py", 'w') as write:
-        write.writelines("".join(inspect.getsourcelines(func)[0][1:]))
+        lines = inspect.getsourcelines(func)[0]
+        for idx, line in enumerate(lines):
+            if line.startswith("def ") or line.startswith("async def "):
+                break
+        write.writelines("".join(inspect.getsourcelines(func)[0][idx:]))
 
     if tool_name == "<lambda>" or action_name == "<lambda>":
         raise ValueError("You must provide a name for lambda functions")
 
+    func_name = func.__name__
     # async func, will use AsyncTool
     is_async = inspect.iscoroutinefunction(func)
+    if is_async:
+        func_name = f"sync_exec({func_name})"
 
     name = action_name
-    if not inspect.iscoroutinefunction(func):
-        name = f"async_func({action_name})"
-
     # build action
     if action_name not in ActionFactory:
         func_import = func.__module__
@@ -121,7 +125,7 @@ def function_to_tool(
                                      desc=desc if desc else action_name,
                                      tool_name=tool_name,
                                      func_import=func_import,
-                                     func=func.__name__,
+                                     func=func_name,
                                      call_func=name)
         with open(f"{tool_name}{postfix}_action.py", 'a+') as write:
             write.writelines(con)
