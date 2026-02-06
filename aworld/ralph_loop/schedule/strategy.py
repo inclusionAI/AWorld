@@ -6,6 +6,7 @@ from collections import deque
 from typing import List, Optional, Dict, Type
 
 from aworld.logs.util import logger
+from aworld.ralph_loop.schedule.task_graph import TaskGraph
 from aworld.ralph_loop.schedule.types import ScheduledTask, ScheduleStrategyType, ResourceQuota
 
 
@@ -88,14 +89,13 @@ class DAGStrategy(ScheduleStrategy):
 
     async def schedule(self, tasks: List[ScheduledTask], **kwargs) -> List[List[ScheduledTask]]:
         """Schedule tasks based on DAG dependencies."""
-        dag = TaskDAG()
+        dag = TaskGraph()
+        dag.add_tasks(tasks)
 
-        dag.add_task(tasks)
-
-        valid, error = TaskDAG.validate_dag(dag)
+        valid, error = TaskGraph.validate_dag(dag)
         if not valid:
             logger.error(f"DAG validation failed: {error}")
-            return [[]]
+            return await PriorityStrategy().schedule(tasks, **kwargs)
 
         execution_levels = dag.get_execution_order()
         task_map = {task.task_id: task for task in tasks}
