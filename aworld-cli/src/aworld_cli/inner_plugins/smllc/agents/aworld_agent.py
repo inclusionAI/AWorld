@@ -35,12 +35,6 @@ CAST_ANALYSIS, CAST_CODER, AGENT_REGISTRY
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-def _build_beijing_date_line() -> str:
-    """Return a line stating today's Beijing date in Chinese format."""
-    beijing_now = datetime.now(ZoneInfo("Asia/Shanghai"))
-
-    return f"Today is {beijing_now.year} (year)-{beijing_now.month} (month)-{beijing_now.day}(day)."
-
 
 # System prompt based on orchestrator_agent prompt
 aworld_system_prompt = """
