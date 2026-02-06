@@ -11,6 +11,7 @@ from aworld.trace.base import (
     SpanType,
     get_tracer_provider_silent
 )
+from aworld.trace.hierarchical_manager import get_hierarchical_manager
 from aworld.logs.util import logger
 from aworld.metrics.context_manager import MetricContext
 from aworld.metrics.template import MetricTemplate
@@ -121,12 +122,47 @@ def _async_step_class_wrapper(tracer: Tracer):
         span = None
         message = args[0] or kwargs.get("message")
         attributes = get_tool_span_attributes(instance, message)
-        if tracer:
-            span = tracer.start_span(
-                name=trace_constants.SPAN_NAME_PREFIX_TOOL + "step",
-                span_type=SpanType.SERVER,
-                attributes=attributes
+
+        # 使用层次化span管理器
+        hierarchical_manager = get_hierarchical_manager()
+        span_context = None
+
+        try:
+            # 获取工具名称
+            tool_name = attributes.get(semconv.TOOL_NAME, instance.name())
+
+            # 创建层次化operation span上下文
+            span_context = hierarchical_manager.create_operation_span(
+                operation_type='tool',
+                operation_name=tool_name
             )
+
+            # 添加层次化ID到属性
+            attributes.update({
+                'hierarchical_id': span_context.hierarchical_id,
+                'span_level': span_context.level
+            })
+
+            # 使用层次化ID作为span名称
+            span_name = f"{trace_constants.SPAN_NAME_PREFIX_TOOL}{span_context.hierarchical_id}.{tool_name}"
+
+            if tracer:
+                span = tracer.start_span(
+                    name=span_name,
+                    span_type=SpanType.SERVER,
+                    attributes=attributes
+                )
+
+        except ValueError as e:
+            # 如果没有父级agent span，回退到旧的行为
+            logger.warning(f"Failed to create hierarchical tool span: {e}. Falling back to legacy behavior.")
+            if tracer:
+                span = tracer.start_span(
+                    name=trace_constants.SPAN_NAME_PREFIX_TOOL + "step",
+                    span_type=SpanType.SERVER,
+                    attributes=attributes
+                )
+
         start_time = time.time()
         try:
             response = await wrapped(*args, **kwargs)
@@ -138,8 +174,16 @@ def _async_step_class_wrapper(tracer: Tracer):
                               attributes=attributes
                               )
             _end_span(span)
+            # 弹出span上下文
+            if span_context:
+                hierarchical_manager.pop_span()
             raise e
+
         _end_span(span)
+        # 弹出span上下文
+        if span_context:
+            hierarchical_manager.pop_span()
+
         return response
     return _async_step_wrapper
 
@@ -149,12 +193,47 @@ def _step_class_wrapper(tracer: Tracer):
         span = None
         message = args[0] or kwargs.get("message")
         attributes = get_tool_span_attributes(instance, message)
-        if tracer:
-            span = tracer.start_span(
-                name=trace_constants.SPAN_NAME_PREFIX_TOOL + "step",
-                span_type=SpanType.SERVER,
-                attributes=attributes
+
+        # 使用层次化span管理器
+        hierarchical_manager = get_hierarchical_manager()
+        span_context = None
+
+        try:
+            # 获取工具名称
+            tool_name = attributes.get(semconv.TOOL_NAME, instance.name())
+
+            # 创建层次化operation span上下文
+            span_context = hierarchical_manager.create_operation_span(
+                operation_type='tool',
+                operation_name=tool_name
             )
+
+            # 添加层次化ID到属性
+            attributes.update({
+                'hierarchical_id': span_context.hierarchical_id,
+                'span_level': span_context.level
+            })
+
+            # 使用层次化ID作为span名称
+            span_name = f"{trace_constants.SPAN_NAME_PREFIX_TOOL}{span_context.hierarchical_id}.{tool_name}"
+
+            if tracer:
+                span = tracer.start_span(
+                    name=span_name,
+                    span_type=SpanType.SERVER,
+                    attributes=attributes
+                )
+
+        except ValueError as e:
+            # 如果没有父级agent span，回退到旧的行为
+            logger.warning(f"Failed to create hierarchical tool span: {e}. Falling back to legacy behavior.")
+            if tracer:
+                span = tracer.start_span(
+                    name=trace_constants.SPAN_NAME_PREFIX_TOOL + "step",
+                    span_type=SpanType.SERVER,
+                    attributes=attributes
+                )
+
         start_time = time.time()
         try:
             response = wrapped(*args, **kwargs)
@@ -166,8 +245,16 @@ def _step_class_wrapper(tracer: Tracer):
                               attributes=attributes
                               )
             _end_span(span)
+            # 弹出span上下文
+            if span_context:
+                hierarchical_manager.pop_span()
             raise e
+
         _end_span(span)
+        # 弹出span上下文
+        if span_context:
+            hierarchical_manager.pop_span()
+
         return response
     return _step_wrapper
 

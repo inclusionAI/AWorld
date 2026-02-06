@@ -10,6 +10,7 @@ from aworld.trace.base import (
     get_tracer_provider_silent
 )
 from aworld.trace.constants import ATTRIBUTES_MESSAGE_RUN_TYPE_KEY, RunType, SPAN_NAME_PREFIX_LLM
+from aworld.trace.hierarchical_manager import get_hierarchical_manager
 from aworld.trace.instrumentation.llm_metrics import (
     record_exception_metric,
     record_chat_response_metric,
@@ -36,14 +37,50 @@ def _completion_class_wrapper(tracer: Tracer):
         model_name = instance.provider.model_name
         if not model_name:
             model_name = "LLMModel"
+
         span_attributes = {}
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
         context = kwargs.get("context", None)
         if context:
             span_attributes[semconv.TRACE_ID] = context.trace_id
-        span = tracer.start_span(
-            name=SPAN_NAME_PREFIX_LLM + model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
+
+        # 使用层次化span管理器
+        hierarchical_manager = get_hierarchical_manager()
+        span_context = None
+        span = None
+
+        try:
+            # 创建层次化operation span上下文
+            span_context = hierarchical_manager.create_operation_span(
+                operation_type='llm',
+                operation_name=model_name
+            )
+
+            # 添加层次化ID到属性
+            span_attributes.update({
+                'hierarchical_id': span_context.hierarchical_id,
+                'span_level': span_context.level,
+                semconv.GEN_AI_REQUEST_MODEL: model_name
+            })
+
+            # 使用层次化ID作为span名称
+            span_name = f"{SPAN_NAME_PREFIX_LLM}{span_context.hierarchical_id}.{model_name}"
+
+            span = tracer.start_span(
+                name=span_name,
+                span_type=SpanType.CLIENT,
+                attributes=span_attributes
+            )
+
+        except ValueError as e:
+            # 如果没有父级agent span，回退到旧的行为
+            logger.warning(f"Failed to create hierarchical LLM span: {e}. Falling back to legacy behavior.")
+            span = tracer.start_span(
+                name=SPAN_NAME_PREFIX_LLM + model_name,
+                span_type=SpanType.CLIENT,
+                attributes=span_attributes
+            )
 
         run_async(handle_request(span, kwargs, instance))
         start_time = time.time()
@@ -55,6 +92,9 @@ def _completion_class_wrapper(tracer: Tracer):
                              exception=e
                              )
             span.end()
+            # 弹出span上下文
+            if span_context:
+                hierarchical_manager.pop_span()
             raise e
 
         record_completion(span=span,
@@ -65,6 +105,10 @@ def _completion_class_wrapper(tracer: Tracer):
                           is_async=False
                           )
         span.end()
+        # 弹出span上下文
+        if span_context:
+            hierarchical_manager.pop_span()
+
         return response
 
     return wrapper
@@ -130,14 +174,50 @@ def _acompletion_class_wrapper(tracer: Tracer):
         model_name = instance.provider.model_name
         if not model_name:
             model_name = "LLMModel"
+
         span_attributes = {}
         span_attributes[ATTRIBUTES_MESSAGE_RUN_TYPE_KEY] = RunType.LLM.value
 
         context = kwargs.get("context", None)
         if context:
             span_attributes[semconv.TRACE_ID] = context.trace_id
-        span = tracer.start_span(
-            name=SPAN_NAME_PREFIX_LLM + model_name, span_type=SpanType.CLIENT, attributes=span_attributes)
+
+        # 使用层次化span管理器
+        hierarchical_manager = get_hierarchical_manager()
+        span_context = None
+        span = None
+
+        try:
+            # 创建层次化operation span上下文
+            span_context = hierarchical_manager.create_operation_span(
+                operation_type='llm',
+                operation_name=model_name
+            )
+
+            # 添加层次化ID到属性
+            span_attributes.update({
+                'hierarchical_id': span_context.hierarchical_id,
+                'span_level': span_context.level,
+                semconv.GEN_AI_REQUEST_MODEL: model_name
+            })
+
+            # 使用层次化ID作为span名称
+            span_name = f"{SPAN_NAME_PREFIX_LLM}{span_context.hierarchical_id}.{model_name}"
+
+            span = tracer.start_span(
+                name=span_name,
+                span_type=SpanType.CLIENT,
+                attributes=span_attributes
+            )
+
+        except ValueError as e:
+            # 如果没有父级agent span，回退到旧的行为
+            logger.warning(f"Failed to create hierarchical LLM span: {e}. Falling back to legacy behavior.")
+            span = tracer.start_span(
+                name=SPAN_NAME_PREFIX_LLM + model_name,
+                span_type=SpanType.CLIENT,
+                attributes=span_attributes
+            )
 
         await handle_request(span, kwargs, instance)
         start_time = time.time()
@@ -149,6 +229,9 @@ def _acompletion_class_wrapper(tracer: Tracer):
                              exception=e
                              )
             span.end()
+            # 弹出span上下文
+            if span_context:
+                hierarchical_manager.pop_span()
             try:
                 agent_id = "unknown"
                 if kwargs.get('response_parse_args') and isinstance(kwargs.get('response_parse_args'), dict):
@@ -169,6 +252,10 @@ def _acompletion_class_wrapper(tracer: Tracer):
                           is_async=True
                           )
         span.end()
+        # 弹出span上下文
+        if span_context:
+            hierarchical_manager.pop_span()
+
         return response
 
     return awrapper
