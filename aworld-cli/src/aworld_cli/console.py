@@ -25,6 +25,8 @@ class AWorldCLI:
     def __init__(self):
         self.console = console
         self.user_input = UserInputHandler(console)
+        # 追踪是否是首次启动会话，用于控制激励信息的显示
+        self._is_first_session = True
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -550,9 +552,21 @@ class AWorldCLI:
                 if is_terminal and session:
                     # Use prompt_toolkit for input with completion
                     # We use HTML for basic coloring of the prompt
-                    user_input = await asyncio.to_thread(session.prompt, HTML("<b><cyan>You</cyan></b>: "))
+                    # Show inspirational message only on first session
+                    if self._is_first_session:
+                        prompt_text = "<b>✨ Create an agent to accomplish anything!</b>\n<b><cyan>You</cyan></b>: "
+                        # Mark as no longer first session after showing the message
+                        self._is_first_session = False
+                    else:
+                        prompt_text = "<b><cyan>You</cyan></b>: "
+
+                    user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text))
                 else:
                     # Fallback to plain input() for non-terminal environments
+                    if self._is_first_session:
+                        self.console.print("[cyan]✨ Create an agent to accomplish anything![/cyan]")
+                        # Mark as no longer first session after showing the message
+                        self._is_first_session = False
                     self.console.print("[cyan]You[/cyan]: ", end="")
                     user_input = await asyncio.to_thread(input)
                 
@@ -863,7 +877,7 @@ class AWorldCLI:
                     try:
                         from .runtime.cli import CliRuntime
                         from .runtime.loaders import PluginLoader
-                        from aworld.experimental.loaders.agent_version_control_registry import global_agent_registry
+                        from aworld_cli.core.agent_scanner import global_agent_registry
                         from pathlib import Path
                         import os
 
@@ -896,10 +910,16 @@ class AWorldCLI:
                         except Exception as e:
                             logger.info(f"Failed to load Built-in agents from plugins: {e}")
                         
-                        # Load User agents from AgentVersionControlRegistry default instance
+                        # Load User agents from AgentScanner default instance
                         try:
                             agent_list = await global_agent_registry.list_desc()
-                            for name, desc, path, version in agent_list:
+                            for item in agent_list:
+                                # Handle both old format (4-tuple with version) and new format (3-tuple)
+                                if len(item) == 4:
+                                    name, desc, path, version = item
+                                else:
+                                    name, desc, path = item
+                                    version = None
                                 agent_info = AgentInfo(
                                     name=name,
                                     desc=desc,
