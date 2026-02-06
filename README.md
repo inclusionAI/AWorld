@@ -6,7 +6,7 @@
 
 <h4 align="center">
 
-*"Self-awareness: the hardest problem isn't solving within limits, it's discovering one's own limitations"*
+*"The Next Frontier for AI is Your Expertise"*
 
 [![Twitter Follow][twitter-image]][twitter-url]
 [![WeChat QR Code][wechat-image]][wechat-url]
@@ -22,26 +22,23 @@
 <h4 align="center">
 
 [中文版](./README_zh.md) |
-[Prefaces](#the-next-frontier-for-ai-is-your-expertise) |
-[Let's do it](#your-journey-with-aworld-cli) |
-[Agent](#total-control:-manually-crafting-agent-systems) |
+[Automation](#your-journey-with-aworld-cli) |
+[Manual](#total-control-manually-crafting-agent-systems) |
 [Experience](#experience-to-samples) |
 [Training](#training) |
 [Evolution](#evolution) |
-[Architecture](#architecture-design-principles) |
 [Contributing](#contributing) |
 
 </h4>
 
 ---
-**The Next Frontier for AI is Your Expertise**
 
 <p align="justify">
-For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. In scientific research, financial analysis, or complex engineering, generic models can't climb this wall. They can't speak your language.
+For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. From scientific research, financial analysis, to complex engineering, generic models can't climb this wall. They can't speak your language. 
 
 The AWorld Thesis is that the true scaling of AI is achieved by enabling experts like you to build a gate in that wall.
 
-<strong>AWorld & AWorld-CLI</strong> is the platform designed for this. We provide the fundamental recipe for you, the expert, to infuse your knowledge and craft unique insights into fleets of autonomous agents. This is how we move beyond generic promise to specific, robust applications that navigate your world with precision.
+AWorld with its CLI mode is the platform designed for this. We provide the fundamental recipe for you, the expert, to infuse your knowledge and craft unique insights into fleets of autonomous agents. This is how we move beyond generic promise to specific, robust applications that navigate your world with precision.
 </p>
 
 
@@ -54,145 +51,130 @@ The AWorld Thesis is that the true scaling of AI is achieved by enabling experts
 The journey from an idea to an evolved, autonomous agent begins at your fingertips.
 
 
-## Installation
+## Install and Activate
+
+Create a .env file in the AWorld/aworld-cli to configure the base model for both the AWorld Agent and any agents it creates. Add the following content:
+```bash
+LLM_MODEL_NAME="your_model_name"
+LLM_PROVIDER="openai"
+LLM_API_KEY="your_model_api_key"
+LLM_BASE_URL="your_base_url"
+```
+
+Install and Enter AWorld-CLI
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
 conda create -n aworld_env python=3.11 -y && conda activate aworld_env 
 
-pip install -e . && cd aworld-cli 
+pip install -e . && cd aworld-cli && pip install -e .
 
-pip install -e .
+aworld-cli
 ```
 
 
 ## Create Your Agent
 <p align="justify">
-Instantly scaffold an agent from a natural language description of your task. AWorld handles the boilerplate, so you can focus on the logic. 
-CLI Input as Command
-1. aworld-cli # This is the start of your journey
-2. prompt the AWorld agent with your requirements for creating a specific agent "Create an agent for generating PowerPoint presentation", and confirm the following building details.
-This command generates a fully operational agent file (~/agents/ppt_creator.py) referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution. Once it's generated, your agent is a permanent, reusable tool in your ~/agents folder. You may also type '/agents' in CLI mode to check your agents.
+Instantly scaffold an agent from a natural language description of your task. AWorld-CLI handles the boilerplate, so you can focus on the logic.
 </p>
 
+![](./readme_assets/aworld_cli_text2agent.png)
 
-### Verified Skills as Your Foundation
 <p align="justify">
-Every great craft begins with exceptional materials. That’s why our first step is to equip you with a library of Verified Skills.
-These are master blueprints, not mere templates—designed by domain experts and refined through practical application. They serve as your trusted starting point, allowing you to move instantly from a unique challenge to a working agent. With our simple CLI, you can immediately use these Skills to craft a solution tailored to your world.
-Our initial library of Skills targets the high-value challenges that define your professional craft.
+This command generates a fully operational agent file referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution.
+
+Once it's generated, your agent is a permanent, reusable tool in your ~/.agents folder.
 </p>
 
+
+### Verified Skills: The DNA for Automated Agent Creation
+<div align="justify">
+Our library of Verified Skills is more than a collection of blueprints; it's a gene pool of expert capabilities.
+
+When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills, infusing the new agent's core with proven logic and reliability. This ensures your agent inherits the DNA of our best practices (see [Evolution](#evolution)), making it robust and effective from the moment it's created. 
+</div>
+<!-- 
 <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
+  <colgroup>
+    <col style="width: 22%;">
+    <col style="width: 38%;">
+    <col style="width: 40%;">
+  </colgroup>
   <thead>
     <tr>
-      <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Showcase Agent</th>
-      <th style="width: 50%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
-      <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Status</th>
+      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Showcase Agent</th>
+      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
+      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px; white-space: nowrap;">Status</th>
     </tr>
   </thead>
   <tbody>
     <tr>
-      <td style="padding: 8px; vertical-align: top;">🚀 PPT Agent</td>
-      <td style="padding: 8px; vertical-align: top;">Autonomously creates polished presentations from documents, outlines, or data.</td>
-      <td style="padding: 8px; vertical-align: top;">Ready</td>
-    </tr>
-    <tr>
       <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch Agent</td>
       <td style="padding: 8px; vertical-align: top;">Conducts comprehensive, multi-source research on a topic and synthesizes a structured report.</td>
-      <td style="padding: 8px; vertical-align: top;">In Progress</td>
+      <td style="padding: 8px; vertical-align: top; white-space: nowrap;">Ready</td>
     </tr>
     <tr>
-      <td style="padding: 8px; vertical-align: top;">🔧 Parameter Design</td>
-      <td style="padding: 8px; vertical-align: top;">An agent for engineering & science that optimizes design parameters based on simulation results & rules.</td>
-      <td style="padding: 8px; vertical-align: top;">In Progress</td>
+      <td style="padding: 8px; vertical-align: top;">🚀 PPT Agent</td>
+      <td style="padding: 8px; vertical-align: top;">Creates polished presentations from documents, outlines, or data.</td>
+      <td style="padding: 8px; vertical-align: top; white-space: nowrap;">In Progress</td>
     </tr>
     <tr>
       <td style="padding: 8px; vertical-align: top;">📈 Stock Analysis</td>
       <td style="padding: 8px; vertical-align: top;">Gathers financial data, performs technical/fundamental analysis, and generates an investment memo.</td>
-      <td style="padding: 8px; vertical-align: top;">In Progress</td>
+      <td style="padding: 8px; vertical-align: top; white-space: nowrap;">In Progress</td>
     </tr>
   </tbody>
-</table>
+</table> -->
+
 
 ## Run Your Agent
 <p align="justify">
-Execute your agent on a task and watch it work. Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
-Run the Newly Created Agent
-Prompt the AWorld Agent with "let the ppt agent to create a professional slides introducing Hangzhou".
-You can inspect the trajectory_log.json to understand every decision the agent made.
+Prompt the AWorld Agent to execute your newly created agent on a task and watch it work. Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
 </p>
+
+![](./readme_assets/aworld_cli_run_task.png)
 
 ## Evolve Your Agent
 <p align="justify">
 This is where AWorld truly shines. If the agent's performance isn't perfect, you have a spectrum of powerful options for refinement.
 
-Once you're satisfied, your agent is permanent, reusable in your ~/agents folder.
-
 **Option 1: Manual Tuning**
-
+<p align="justify">
 You are the expert. Open the generated Python file and fine-tune the prompts, logic, or tool usage directly. You have full control.
-
+</p>
 
 **Option 2: AI-Assisted Tuning**
-
+<p align="justify">
 Prompt with your desired changes, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent as your AI pair programmer to tune your agent.
+</p>
 
-![](./readme_assets/mas_meta_learning.png) 
+![](./readme_assets/mas_meta_learning_v2.png) 
 
 
 **Option 3: Self-Evolution**
+<p align="justify">
+This is the future. Instead of you providing explicit prompts, the system automatically detects sub-optimal performance based on a reward signal (e.g., failed validation, deviation from a verified Skill). It then triggers an autonomous optimization loop, evolving the agent on its own. This is evaluation-driven evolution, where the agent gains true self-awareness and improves without constant human intervention.
+</p>
 
-This is the future. Instead of you providing explicit prompts, the system automatically detects sub-optimal performance based on a reward signal (e.g., failed validation, deviation from a verified Skill). It then triggers an autonomous optimization loop, evolving the agent on its own.
-
-This is evaluation-driven evolution, where the agent gains true self-awareness and improves without constant human intervention.
+Once you're satisfied with your optimized agent, it is permanent and reusable in your ~/agents folder.
 </p>
 
 
-
-
-<!-- # Efficient Agent Construction
-In Aworld, an agent is simply a model enhanced with tools. To spin one up, you only need:
-1. a model endpoint (for training, a vLLM service works great)
-2. an online environment to call (use our hosted options or plug in your own MCP toolchain)
-That’s it—no heavyweight scaffolding required. -->
-<!-- 
-```python
-from aworld.agents.llm_agent import Agent
-from aworld.runner import Runners
-
-# refer the section above for details
-mcp_config = {...}
-
-searcher = Agent(
-    name="Search Agent",
-    system_prompt="You specialize at searching.",
-    mcp_config=mcp_config
-)
-
-if __name__ == "__main__":
-    result = Runners.sync_run(
-        input="Use google search tool to answer the question: the news about AI today.",
-        agent=searcher
-    )
-    print(f"answer: {result.answer}")
-```
-
-Remember to plug in your LLM credentials first.
-```bash
-# Set LLM credentials
-export LLM_MODEL_NAME="gpt-4"
-export LLM_API_KEY="your-api-key-here"
-export LLM_BASE_URL="https://api.openai.com/v1"
-``` -->
-
 # Total Control: Manually Crafting Agent Systems
+<p align="justify">
 In AWorld, an agent is a model enhanced with tools. But real-world problems often demand more than a single agent. To solve this, AWorld gives you full control with flexible build paths, allowing you to manually craft complex, multi-agent systems for collaboration.
+</p>
+
 1. design automated workflows end to end  [Docs](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
+
 2. spin up MCP-enabled agents [Docs](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
+
 3. orchestrate multi-agent systems (MAS) [Docs](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
+
 Want to see it live? Load a pre-built DeepResearch team in the AWorld [Playground](https://playground.aworldagents.com/), inspect the source, and run it end to end.
+
+
 ![](./readme_assets/playground_gaiateam.gif)
 
 # Experience to Samples
@@ -391,12 +373,13 @@ AWorld's mission is to handle the complexity so you can focus on innovation. Thi
 
 
 # Contributing
-
+<p align="justify">
 Our roadmap includes expanding our AI for Science & Business initiative, deepening our self-evolution capabilities, and growing our library of community-contributed Skills.
 
 We warmly welcome developers, researchers, and domain experts to join us. Whether you're enhancing the framework or contributing a Skill from your field of expertise, your work is valuable.
 
 For academic citations or wish to contact us, please use the following BibTeX entry:
+</p>
 
 ```bibtex
 @misc{yu2025aworldorchestratingtrainingrecipe,
