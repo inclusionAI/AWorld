@@ -38,7 +38,7 @@
 
 AWorld 的论点是：AI 的真正扩展，来自让像你这样的专家在这堵墙上开一扇门。
 
-带 CLI 的 AWorld 就是为此设计的平台。我们提供一套基础「配方」，让你把知识和洞察注入一支支自主智能体，从通用承诺走向在你领域里精准可用的应用。
+AWorld-CLI 就是为此设计的平台。我们提供一套基础「配方」，让你把知识和洞察注入一支支自主智能体，从通用承诺走向在你领域里精准可用的应用。
 </p>
 
 
@@ -48,8 +48,8 @@ AWorld 的论点是：AI 的真正扩展，来自让像你这样的专家在这�
 
 
 <a id="your-journey-with-aworld-cli"></a>
-# 从想法到智能体：AWorld-CLI 之旅
-从想法到可进化的自主智能体，从你指尖开始。
+# 开启你的 AWorld-CLI 之旅
+从深思熟虑到可进化的自主智能体，从你指尖开始。
 
 
 ## 安装与激活
@@ -65,11 +65,8 @@ LLM_BASE_URL="your_model_base_url"
 安装并进入 AWorld-CLI：
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
-
 conda create -n aworld_env python=3.11 -y && conda activate aworld_env 
-
 pip install -e . && cd aworld-cli && pip install -e .
-
 aworld-cli
 ```
 

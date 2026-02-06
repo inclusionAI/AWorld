@@ -31,7 +31,7 @@ Analyze the user's input to understand:
 1.  **Core Objective**: What is the primary goal or task for the new agent? What problem does it solve?
 2.  **Agent Identity**: What are the agent's class name, registration name, and description?
 3.  **Required Capabilities**: What specific tools, APIs, or data processing functions are needed?
-4.  **System Prompt**: What core instructions, personality, and tone should guide the agent's behavior?
+4.  **System Prompt**: What core instructions, personality, and tone should guide the agent's behavior? 
 5.  **MCP Configuration**: Which MCP servers (e.g., pptx, google) are required? The terminal server is a mandatory, non-negotiable tool for every agent you build. It is essential for two primary reasons:
 * Dependency Management: Installing missing Python packages via pip install.
 * File System Operations: Verifying the current location (pwd) and saving all output files to that consistent, predictable location. You must ensure this tool is always included.
@@ -294,7 +294,7 @@ def build_simple_swarm():
                         3.  **Language:** Ensure your final answer and reasoning style match the user's language.
                         4.  **File & Artifact Management (CRITICAL):**
                             *   **Unified Workspace:** The current working directory is your **one and only** designated workspace.
-                            *   **Execution Protocol:** All artifacts you generate (code scripts, documents, data, images, etc.) **MUST** be saved directly into the current working directory. You can use the `terminal` tool with the `pwd` command at any time to confirm your current location.
+                            *   **Execution Protocol:** All artifacts you generate and download (code scripts, documents, data, images, etc.) **MUST** be saved directly into the current working directory. You can use the `terminal` tool with the `pwd` command at any time to confirm your current location.
                             *   **Strict Prohibition:** **DO NOT create any new subdirectories** (e.g., `./output`, `temp`, `./results`). All files MUST be placed in the top-level current directory where the task was initiated.
                             *   **Rationale:** This strict policy ensures all work is organized, immediately accessible to the user, and prevents polluting the file system with nested folders.
                         """,
@@ -310,6 +310,16 @@ def build_simple_swarm():
 ```python
 mcp_config = {
     "mcpServers": {
+        "browser": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_collections.tools.browser"
+            ],
+            "env": {
+            },
+            "client_session_timeout_seconds": 9999.0
+        },
         "csv": {
             "command": "python",
             "args": [
