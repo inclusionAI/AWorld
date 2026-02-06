@@ -310,12 +310,12 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             # No collapse needed for short content
             self.console.print(header)
 
-        # Show content
+        # Show content with proper indentation for wrapped lines
         if is_collapsed and total_lines > max_lines:
             # Show only first few lines + summary
             for line in content_lines[:max_lines]:
                 if line.strip():
-                    self.console.print(f"   {line}")
+                    self._print_indented_line(line)
                 else:
                     self.console.print()
             self.console.print(f"   [dim italic]... ({total_lines - max_lines} more lines)[/dim italic]")
@@ -323,11 +323,54 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             # Show all content
             for line in content_lines:
                 if line.strip():
-                    self.console.print(f"   {line}")
+                    self._print_indented_line(line)
                 else:
                     self.console.print()
 
         # No extra spacing here - let caller control spacing
+
+    def _print_indented_line(self, line: str, indent: str = "   ") -> None:
+        """
+        Print a line with proper indentation, handling line wrapping.
+
+        When a line is too long and wraps to the next line, the wrapped
+        portion should also be indented to maintain visual consistency.
+
+        Args:
+            line: The line to print
+            indent: The indentation string (default: 3 spaces)
+        """
+        if not self.console:
+            return
+
+        # Get console width and calculate available width for content
+        console_width = self.console.size.width if self.console.size else 80
+        available_width = console_width - len(indent)
+
+        # If line fits within available width, print normally
+        if len(line) <= available_width:
+            self.console.print(f"{indent}{line}")
+            return
+
+        # Handle long lines by splitting and indenting wrapped portions
+        import textwrap
+
+        # Wrap the line, preserving existing indentation in the original line
+        wrapped_lines = textwrap.fill(
+            line,
+            width=available_width,
+            subsequent_indent='',
+            break_long_words=False,
+            break_on_hyphens=False
+        ).split('\n')
+
+        # Print first line with original indent
+        if wrapped_lines:
+            self.console.print(f"{indent}{wrapped_lines[0]}")
+
+            # Print subsequent lines with additional indentation
+            for wrapped_line in wrapped_lines[1:]:
+                self.console.print(f"{indent}{wrapped_line}")
     
     def _format_tool_call(self, tool_call, idx: int):
         """
@@ -878,7 +921,147 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                 self.console.print()
         
         return answer, message_content
-    
+
+    def _filter_file_line_info(self, content: str) -> str:
+        """
+        Filter out file:line information and other unwanted text from tool result content.
+        Removes patterns like "server.py:619", "main.py:123", "Processing request of type", etc.
+
+        Args:
+            content: Original content string
+
+        Returns:
+            Filtered content string
+        """
+        import re
+        if not content:
+            return content
+
+        # Pattern to match file:line references (e.g., "server.py:619", "main.py:123")
+        # Matches: filename.extension:number
+        file_line_pattern = r'\b[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z0-9]+:\d+\b'
+
+        # Remove file:line patterns
+        filtered_content = re.sub(file_line_pattern, '', content)
+
+        # Remove "Processing request of type" lines
+        # This removes the entire line containing this text
+        processing_pattern = r'.*Processing request of type.*\n?'
+        filtered_content = re.sub(processing_pattern, '', filtered_content, flags=re.IGNORECASE)
+
+        # Clean up extra whitespace and empty lines that might be left behind
+        filtered_content = re.sub(r'\n\s*\n', '\n', filtered_content)  # Remove empty lines
+        filtered_content = re.sub(r'\s+', ' ', filtered_content)  # Normalize whitespace
+        filtered_content = filtered_content.strip()
+
+        return filtered_content
+
+    def _render_simple_tool_result_output(self, output) -> None:
+        """
+        Simplified tool result output rendering with modern, clean Claude Code style.
+
+        Features:
+        - Remove heavy Panel borders
+        - Use clean emoji and text markers
+        - Reduce color usage, focus on content
+        - Add whitespace for better readability
+        - Smart content truncation and summarization
+        - Collapsible content display
+
+        Args:
+            output: ToolResultOutput instance
+        """
+        from aworld.output.base import ToolResultOutput
+
+        if not isinstance(output, ToolResultOutput) or not self.console:
+            return
+
+        # Extract tool information
+        tool_name = getattr(output, 'tool_name', 'Unknown Tool')
+        action_name = getattr(output, 'action_name', '')
+        tool_type = getattr(output, 'tool_type', '')
+
+        # Skip rendering for human tools - user input doesn't need to be displayed
+        if 'human' in tool_name.lower() or 'human' in action_name.lower():
+            return
+
+        # Get tool_call_id
+        tool_call_id = ""
+        if hasattr(output, 'metadata') and output.metadata:
+            tool_call_id = output.metadata.get('tool_call_id', '')
+        if not tool_call_id and hasattr(output, 'origin_tool_call') and output.origin_tool_call:
+            tool_call_id = getattr(output.origin_tool_call, 'id', '')
+
+        # Get summary from metadata first
+        summary = None
+        if hasattr(output, 'metadata') and output.metadata:
+            summary = output.metadata.get('summary')
+
+        # Get result content and filter file:line info
+        result_content = ""
+        if hasattr(output, 'data') and output.data:
+            data_str = str(output.data)
+            if data_str.strip():
+                # Filter out file:line information
+                result_content = self._filter_file_line_info(data_str)
+
+        # Build simple tool info line
+        tool_parts = []
+        if tool_name:
+            tool_parts.append(tool_name)
+        if action_name and action_name != tool_name:
+            tool_parts.append(f"→ {action_name}")
+        tool_info = " ".join(tool_parts)
+
+        # Determine what content to show
+        display_content = None
+        if summary:
+            # Use provided summary and filter it too
+            display_content = self._filter_file_line_info(summary)
+        elif result_content:
+            # Smart content truncation
+            max_chars = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_SUMMARY_MAX_CHARS", "300"))
+            max_lines = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_SUMMARY_MAX_LINES", "3"))
+
+            lines = result_content.split('\n')
+
+            # Check if it's JSON and try to format nicely
+            is_json = False
+            try:
+                import json
+                parsed = json.loads(result_content)
+                if isinstance(parsed, dict):
+                    # Show key info from JSON
+                    key_info = []
+                    for key, value in list(parsed.items())[:3]:  # First 3 keys
+                        if isinstance(value, (str, int, float, bool)):
+                            key_info.append(f"{key}: {value}")
+                        elif isinstance(value, (list, dict)):
+                            key_info.append(f"{key}: [{len(value)} items]" if isinstance(value, list) else f"{key}: {{object}}")
+
+                    if key_info:
+                        display_content = "\n".join(key_info)
+                        if len(parsed) > 3:
+                            display_content += f"\n... ({len(parsed) - 3} more fields)"
+                        is_json = True
+            except:
+                pass
+
+            # If not JSON or JSON parsing failed, use line-based truncation
+            if not is_json:
+                display_content = result_content
+
+        # Use collapsible rendering for tool results
+        if display_content:
+            content_lines = display_content.split('\n')
+            header = f"⚡ [bold]{tool_info}[/bold]"
+            self._render_collapsible_content('results', header, content_lines, max_lines=3)
+        else:
+            # No content case - still show header but indicate no output
+            self.console.print(f"⚡ [bold]{tool_info}[/bold]", style="dim")
+            self.console.print("   [dim italic]No output[/dim italic]")
+            self.console.print()
+
     def _render_tool_result_output(self, output) -> None:
         """
         Render ToolResultOutput to console with summary information by default.
