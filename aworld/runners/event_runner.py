@@ -438,7 +438,7 @@ class TaskEventRunner(TaskRunner):
 
                 res = {"task_id": self.task.id,
                        "is_sub_task": self.task.is_sub_task,
-                       "trajectory": json.dumps(self._task_response.trajectory, ensure_ascii=False),
+                       "trajectory": json.dumps(to_serializable(self._task_response.trajectory), ensure_ascii=False),
                        "token_id_trajectory": token_id_traj}
                 trajectory_logger.info(f"{res}")
         except Exception as e:
