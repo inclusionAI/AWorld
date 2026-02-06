@@ -2,7 +2,7 @@
 Ripgrep管理器和工具集成
 =====================
 
-基于opencode的Ripgrep实现，提供高性能的文本搜索和文件发现能力。
+基于Ripgrep实现，提供高性能的文本搜索和文件发现能力。
 同时提供基于Python的Pygrep实现作为替代方案。
 """
 
@@ -13,14 +13,13 @@ import os
 import platform
 import re
 import shutil
-import subprocess
 import tempfile
-import time
 import zipfile
-from pathlib import Path
-from typing import Dict, List, Optional, Any, AsyncIterator, Iterator, Tuple
-import requests
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Any
+
+import requests
 
 from aworld.logs.util import logger
 
