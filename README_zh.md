@@ -1,12 +1,12 @@
 <div align="center">
 
-# AWorld：丰富的环境、高效的智能体、持续的进化
+# AWorld：为你的领域打造智能体
 
 </div>
 
 <h4 align="center">
 
-*“自我意识：最难的问题不在于在局限内求解，而在于发现自身的局限”*
+*「AI 的下一站，是你的专业能力」*
 
 [![Twitter Follow][twitter-image]][twitter-url]
 [![WeChat QR Code][wechat-image]][wechat-url]
@@ -22,273 +22,166 @@
 <h4 align="center">
 
 [English](./README.md) |
-[安装](#安装) |
-[环境](#复杂环境在线访问) |
-[智能体](#高效的智能体构建) |
-[经验](#经验到样本) |
-[训练](#训练) |
-[架构](#架构设计原则) |
-[演进](#演进) |
-[贡献](#贡献) |
+[自动化](#your-journey-with-aworld-cli) |
+[手动构建](#total-control-manually-crafting-agent-systems) |
+[经验与样本](#experience-to-samples) |
+[训练](#training) |
+[演进](#evolution) |
+[参与贡献](#contributing) |
 
 </h4>
 
-**AWorld (Agent World)** 构建智能体（Agent）及其运行的丰富环境，旨在拓展 AI 能力的前沿并实现持续进化。本项目提供了 Agentic Learning（智能体学习）的基础配方：[环境访问](#复杂环境在线访问)、[智能体构建](#高效的智能体构建)、[经验获取](#经验到样本) 和 [模型训练](#训练)。AWorld 的强大之处在于，智能体可以利用这些相同的组件来自动提升自己。
+---
+
+<p align="justify">
+通用 AI 再强，也会撞上「语境之墙」——这堵墙由细粒度工作流、领域数据和长期积累的直觉砌成，构成了你的专业世界。从科研、金融到复杂工程，通用模型翻不过这道墙，也说不了你的「行话」。
+
+AWorld 的论点是：AI 的真正扩展，来自让像你这样的专家在这堵墙上开一扇门。
+
+带 CLI 的 AWorld 就是为此设计的平台。我们提供一套基础「配方」，让你把知识和洞察注入一支支自主智能体，从通用承诺走向在你领域里精准可用的应用。
+</p>
+
 
 ![](./readme_assets/aworld_loop.png)
 
-> 💡 访问我们的 [主页](https://www.aworldagents.com/) 了解更多详情，或者尝试我们的在线 [环境](https://www.aworldagents.com/environments) 和 [智能体](https://playground.aworldagents.com/)。
+> 💡 更多信息请访问[官网](https://www.aworldagents.com/)，或体验在线[环境](https://www.aworldagents.com/environments)与[智能体](https://playground.aworldagents.com/)。 
 
 
-# 安装
-> [!TIP]
-> Python>=3.11
+<a id="your-journey-with-aworld-cli"></a>
+# 从想法到智能体：AWorld-CLI 之旅
+从想法到可进化的自主智能体，从你指尖开始。
+
+
+## 安装与激活
+
+在 AWorld/aworld-cli 下创建 .env，配置 AWorld Agent 及其所创建智能体的基础模型，例如：
+```bash
+LLM_MODEL_NAME="your_model_name, Claude-Sonnet-4.5 suggested"
+LLM_PROVIDER="openai"
+LLM_API_KEY="your_model_api_key"
+LLM_BASE_URL="your_model_base_url"
+```
+
+安装并进入 AWorld-CLI：
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
-pip install -e .
+conda create -n aworld_env python=3.11 -y && conda activate aworld_env 
+
+pip install -e . && cd aworld-cli && pip install -e .
+
+aworld-cli
 ```
 
-# 复杂环境在线访问
-配置丰富的环境并非易事——依赖包冲突、API 需要密钥、并发需要扩展、网路配置等。我们通过三种访问模式让这一切变得轻松无痛：
-1. 使用我们默认的托管设置（针对有使用成本的工具，我们提供有限免费额度）。
-2. 自带 API 密钥以获得无限制次数工具使用（即将推出）。
-3. 拉取我们的 Docker 镜像并在您自己的基础设施上部署运行（即将推出）。
 
-```python
-import os
-import asyncio
-from aworld.sandbox import Sandbox
+## 创建智能体
+<p align="justify">
+用自然语言描述任务，即可一键搭好智能体骨架；AWorld-CLI 负责样板代码，你专注逻辑即可。
+</p>
 
-INVITATION_CODE = os.environ.get("INVITATION_CODE", "")
+![](./readme_assets/aworld_cli_text2agent.png)
 
-mcp_config = {
-    "mcpServers": {
-        "gaia_server": {
-            "type": "streamable-http",
-            "url": "https://playground.aworldagents.com/environments/mcp",
-            "timeout": 600,
-            "sse_read_timeout": 600,
-            "headers": {
-                "ENV_CODE": "gaia",
-                "Authorization": f"Bearer {INVITATION_CODE}",
-            }
-        }
-    }
-}
+<p align="justify">
+该命令会生成可直接运行的智能体文件，以我们精选的 Verified Skills 为底座，并挂载全局配置，生成后即可执行。
 
-async def _list_tools():
-    sand_box = Sandbox(mcp_config=mcp_config, mcp_servers=["gaia_server"])
-    return await sand_box.mcpservers.list_tools()
+智能体一旦生成，会持久保存在 ~/.agents 目录，可重复使用。
+</p>
 
-if __name__ == "__main__":
-    tools = asyncio.run(_list_tools())
-    print(tools)
-```
 
-![](./readme_assets/how_to_access_env.gif)
+### Verified Skills：自动化创建智能体的「基因库」
+<div align="justify">
+Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
+</div>
 
-# 高效的智能体构建
-在 AWorld 中，智能体被简洁的定义成一个工具增强的模型。要启动一个智能体，您只需要：
-1. 一个模型服务（对于训练，vLLM/SGLang服务效果就很好）
-2. 一个可调用的在线环境（使用我们的托管选项或接入您自己的 MCP 工具链）
-就是这样——无需繁重的脚手架代码。
+<br>
 
-```python
-from aworld.agents.llm_agent import Agent
-from aworld.runner import Runners
+<p align="justify">
+自动化创建新智能体时，AWorld-CLI 不会从零开始，而是智能引用这些久经考验的 Skills，把可靠逻辑注入新智能体核心，使其继承最佳实践（见<a href="#evolution">演进</a>），从诞生起就具备稳健与有效性。
+</p>
 
-# 详情请参阅上一节
-mcp_config = {...}
 
-searcher = Agent(
-    name="Search Agent",
-    system_prompt="You specialize at searching.",
-    mcp_config=mcp_config
-)
+## 运行智能体
+<p align="justify">
+向 AWorld Agent 发出指令，让它用你刚创建的智能体执行任务；每次调用、动作与观测都会写入详细轨迹日志，保存在本地目录。
+</p>
 
-if __name__ == "__main__":
-    result = Runners.sync_run(
-        input="Use google search tool to answer the question: the news about AI today.",
-        agent=searcher
-    )
-    print(f"answer: {result.answer}")
-```
+![](./readme_assets/aworld_cli_run_task.png)
 
-记得先配置您的 LLM 凭证。
-```bash
-# 设置 LLM 凭证
-export LLM_MODEL_NAME="gpt-4"
-export LLM_API_KEY="your-api-key-here"
-export LLM_BASE_URL="https://api.openai.com/v1"
-```
+## 进化智能体
+<p align="justify">
+若智能体的表现未达预期，你可以用多种方式迭代改进它。
 
-## 复杂智能体系统构建
+**手动进化**
+<p align="justify">
+你是专家。直接打开生成的智能体 Python 文件，按需调整提示词、逻辑或工具使用，完全可控。
+</p>
 
-现实世界的问题通常需要构建复杂的智能体系统。AWorld 为您提供了灵活的构建模式：
-1. 设计端到端的自动化工作流 [文档](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
-2. 构建支持 MCP 的智能体 [文档](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
+**一颗赛艇：AI 辅助进化**
+<p align="justify">
+这里才是 AWorld-CLI 的亮点！用自然语言描述你想要的改动，AWorld Agent 会把任务交给预置的 Optimizer Agent，作为你的 AI 结对程序员，一起调优智能体。
+</p>
+
+![](./readme_assets/mas_meta_learning_v2.png) 
+
+**愿景：自进化**
+<p align="justify">
+未来形态：无需你写具体提示，系统根据奖励信号（如校验失败、偏离某 Verified Skill）自动发现次优表现，触发自主优化循环，让智能体在评估驱动下自进化，减少持续人工干预。
+</p>
+
+优化满意后，智能体会持久保存在 ~/.agents，可重复使用。
+</p>
+
+
+<a id="total-control-manually-crafting-agent-systems"></a>
+# 完全掌控：手动构建智能体系统
+<p align="justify">
+在 AWorld 中，智能体即「模型 + 工具」。但真实场景常需多智能体协作。为此，AWorld 提供灵活构建路径，让你手动搭建复杂多智能体系统。
+</p>
+
+1. 端到端设计自动化工作流 [文档](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
+
+2. 启动支持 MCP 的智能体 [文档](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
+
 3. 编排多智能体系统 (MAS) [文档](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
-想看实际效果？可在 AWorld [Playground](https://playground.aworldagents.com/) 中加载我们预构建的 DeepResearch 智能体系统，检查源代码，并端到端运行它。
+
+想直接体验？在 AWorld [Playground](https://playground.aworldagents.com/) 加载预置 DeepResearch 团队，查看源码并端到端运行。
+
+
 ![](./readme_assets/playground_gaiateam.gif)
 
-
-# 经验到样本
-我们的运行时（Runtime）会捕获离线和在线运行中的每一个步骤。每个任务都会产生一条完整的轨迹——包含每一次 LLM 调用、动作和奖励——因此您可以用于样本合成、性能评估、并高置信地进行迭代。
-
-## 完整的任务轨迹
-任务是通过许多次 LLM 调用展开的。框架会捕获每一步，为您提供完整的轨迹。
-
-```python
-import asyncio
-from aworld.runner import Runners
-from aworld.core.task import Task
-from aworld.logs.util import logger
-import json
-
-# 智能体构建请参考上一节
-searcher = Agent(...)
-
-if __name__ == "__main__":
-    async def test_complete_trajectory():
-        task = Task(
-            input="Use google search tool to answer the question: the news about AI today.",
-            agent=searcher
-        )
-
-        responses = await Runners.run_task(task)
-        resp = responses[task.id]
-        logger.info(f"task answer: {resp.answer}")
-        logger.info(f"task trajectory: {json.dumps(resp.trajectory, ensure_ascii=False)}")
-    asyncio.run(test_complete_trajectory())
-```
-
-## 单步内省 (Single-Step Introspection)
-需要更精细的控制？调用 `step()` 来逐次检查动作/响应数据对。这允许您在训练期间注入中间奖励，从而实现更丰富、更灵活的学习信号。
-
-```python
-import os
-import asyncio
-from aworld.runner import Runners
-from aworld.core.task import Task
-from aworld.logs.util import logger
-import json
-from aworld.config import TaskConfig, TaskRunMode
-
-# 智能体构建请参考上一节
-searcher = Agent(...)
-
-if __name__ == "__main__":
-    async def test_single_step_introspection():
-        task = Task(
-            input="Use google search tool to answer the question: the news about AI today.",
-            agent=searcher,
-            conf=TaskConfig(
-                resp_carry_context=True,
-                run_mode=TaskRunMode.INTERACTIVE
-            )
-        )
-
-        trajectory_log = os.path.join(os.path.dirname(__file__), "trajectory_log.txt")
-        is_finished = False
-        step = 1
-        while not is_finished:
-            with open(trajectory_log, "a", encoding="utf-8") as traj_file:
-                is_finished, observation, response = await Runners.step(task)
-                traj_file.write(f"Step {step}\n")
-                traj_file.write(json.dumps(response.trajectory, ensure_ascii=False, indent=2))
-                traj_file.write("\n\n")
-                step += 1
-    asyncio.run(test_single_step_introspection())
-```
+<a id="experience-to-samples"></a>
+# 从经验到样本
+<p align="justify">
+放心迭代。运行时为每次任务记录完整历史（每次 LLM 调用、动作与奖励），可用于审计表现并生成高质量训练样本。
+</p>
+[文档](https://inclusionai.github.io/AWorld/Training/Trajectory/)
 
 
-# 训练
-一旦智能体能够在环境中探索，AWorld 能通过两种互补的训练模式形成进化的闭环，推动持续改进。
+<a id="training"></a>
+# 模型训练
+<p align="justify">
+当智能体能在环境中自由运行后，AWorld 用两种互补的训练模式形成闭环、持续提升。可接入主流 LLM 训练框架（如 AReal、Swift、Verl、Slime 等），在运行时中直接更新模型参数；适配器轻量，同一环境与智能体代码可在不同训练器间复用。
+</p>
+[文档](https://inclusionai.github.io/AWorld/Training/Trainer/)
 
-## 模型训练
-将任何主流 LLM 训练框架——AReal、Swift、Verl、Slime 等——接入运行时，直接更新模型参数。适配器非常轻量，因此您可以在不同的训练器之间复用相同的环境和智能体代码。
-
-```python
-from datasets import load_dataset
-from aworld.agents.llm_agent import Agent
-from aworld.config import AgentConfig
-
-from train.trainer.agent_trainer import AgentTrainer
-from train.examples.train_gaia_with_aworld_verl.metrics.gaia_reward_function import gaia_reward_func
+> 💡 可参考[真实案例](./train/examples/train_gaia_with_aworld_verl/main.py)，内含完整智能体训练配置。
 
 
-# 详情请参阅上一节
-mcp_config = {...}
-
-# 配置智能体使用 Verl 作为模型服务（自动适配推理格式）
-agent_config = AgentConfig(
-    llm_provider="verl"
-)
-searcher = Agent(
-    name="Search Agent",
-    system_prompt="You specialize at searching.",
-    mcp_config=mcp_config,
-    conf=agent_config
-)
-
-train_dataset = load_dataset("", split="train")
-test_dataset = load_dataset("", split="test")
-
-trainer = AgentTrainer(
-    agent=agent,
-    config=custom_train_config,
-    reward_func=gaia_reward_func,
-    train_dataset=train_dataset,
-    test_dataset=test_dataset
-)
-
-trainer.train()
-```
-> 💡 查看 [真实案例](./train/examples/train_gaia_with_aworld_verl/main.py)，其中包含运行智能体训练所需的完整训练配置。
-
-## 元学习 (Meta-Learning)
-除了更新模型权重之外，您还可以对整个智能体系统进行元学习。启动特定角色的智能体，让它们针对目标智能体进行更新、重写提示词、优化工作流或调整策略，然后迭代团队（如下图所示）。
-
-![](./readme_assets/mas_meta_learning.png)
-
-# 架构设计原则
-本框架旨在具有高度适应性，使研究人员和开发人员能够跨多个领域进行探索和创新，从而提升多智能体系统的能力和应用。
-
-## 概念与框架
-| 概念 | 描述 |
-| :-------------------------------------- | ------------ |
-| [`agent`](./aworld/core/agent/base.py)  | 定义基础类、描述、输出解析以及多智能体协作（swarm）逻辑，用于定义、管理和编排 AWorld 系统中的智能体。 |
-| [`runner`](./aworld/runners)            | 包含管理智能体在环境中的执行循环的运行器类，处理剧集回放（episode rollouts）和并行训练/评估工作流。   |
-| [`task`](./aworld/core/task.py)         | 定义基础任务类，封装了智能体交互所需的环境目标、必要工具和终止条件。  |
-| [`swarm`](./aworld/core/agent/swarm.py) | 实现 SwarmAgent 类，通过去中心化策略管理多智能体协调和涌现的群体行为。 |
-| [`sandbox`](./aworld/sandbox)           | 提供带有可配置场景的受控运行时，用于快速原型设计和验证智能体行为。 |
-| [`tools`](./aworld/tools)               | 提供灵活的框架，用于定义、适配和执行 AWorld 系统中的智能体-环境交互工具。 |
-| [`context`](./aworld/core/context)      | 为 AWorld 智能体提供全面的上下文管理系统，实现完整的状态跟踪、配置管理、提示词优化、多任务状态处理以及贯穿智能体生命周期的动态提示词模板。  |
-| [`memory`](./aworld/memory)             | 为智能体实现可扩展的记忆系统，支持短期和长期记忆、摘要、检索、嵌入（embeddings）和集成。|
-| [`trace`](./aworld/trace)               | 为 AWorld 提供可观测的追踪框架，支持分布式追踪、上下文传播、Span 管理，并与流行框架和协议集成，以监控和分析智能体、工具及任务的执行。|
-
-
-## 特性
-| 智能体构建                    | 拓扑编排                                                                                     | 环境                           |
-|:------------------------------|:-----------------------------------------------------------------------------------------|:-------------------------------|
-| ✅ 集成 MCP 服务               | ✅ 封装的运行时                                                                                 | ✅ 运行时状态管理               |
-| ✅ 支持多模型提供商              | ✅ 灵活的 MAS 模式                                                                             | ✅ 高并发支持                   |
-| ✅ 高度自定义构建                  | ✅ 清晰的状态追踪                                                                                | ✅ 分布式训练                   |
-| ✅ [支持智能体技能](https://github.com/inclusionAI/AWorld/tree/main/examples/skill_agent)  | ✅ [支持交互式终端](https://github.com/inclusionAI/AWorld/tree/main/examples/aworld_cli_demo) 🚀 |       |
-
-
+<a id="evolution"></a>
 # 演进
-我们的使命：把复杂繁琐的任务留给 AWorld，您来负责创新。本节展示了利用 AWorld 开发的几个创新项目，以证明框架本身的有效性。
+<p align="justify">
+AWorld 的目标是扛住复杂度，让你专注创新。本节展示基于 AWorld 构建的前沿多智能体成果，向 AGI 迈进。
+</p>
 
-#### 智能体打榜
+
+#### 智能体评测
 
 <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
   <thead>
     <tr>
       <th style="width: 30%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">类别</th>
-      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">成就</th>
+      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">成果</th>
       <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">表现</th>
       <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">关键创新</th>
       <th style="width: 5%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">日期</th>
@@ -296,14 +189,14 @@ trainer.train()
   </thead>
   <tbody>
     <tr>
-      <td style="padding: 8px; vertical-align: top;">🤖 智能体
+      <td style="padding: 8px; vertical-align: top;">🤖 Agent
         <br>
         <a href="https://playground.aworldagents.com/" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Try-Online-9B59B6?style=flat-square" alt="Try Online">
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>GAIA Benchmark <br>卓越表现</strong>
+        <strong>GAIA Benchmark <br>Excellence</strong>
         <br>
         <a href="https://huggingface.co/spaces/gaia-benchmark/leaderboard" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/GAIA-Leaderboard-blue" alt="GAIA">
@@ -312,13 +205,13 @@ trainer.train()
       <td style="padding: 8px; vertical-align: top;">
         Pass@1: <strong>67.89</strong> <br>
         Pass@3: <strong>83.49</strong>
-        <br> (109 任务)
+        <br> (109 tasks)
         <a href="./examples/gaia/README_GUARD.md" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-        多智能体系统 <br>稳定性与编排
+        Multi-agent system <br>stability & orchestration
         <br>
         <a href="https://arxiv.org/abs/2508.09889" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Paper-arXiv-red" alt="Paper">
@@ -327,68 +220,68 @@ trainer.train()
       <td style="padding: 8px; vertical-align: top;">2025/08/06</td>
     </tr>
     <tr>
-      <td style="padding: 8px; vertical-align: top;">🧠 推理</td>
+      <td style="padding: 8px; vertical-align: top;">🧠 Reasoning</td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>IMO 2025 <br>解题</strong>
+        <strong>IMO 2025 <br>Problem Solving</strong>
         <br>
         <a href="https://www.imo-official.org/year_info.aspx?year=2025" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/IMO-2025-blue" alt="IMO">
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-        6小时内解决 <br><strong>5/6</strong> 道题
+        <strong>5/6</strong> problems <br>solved in 6 hours
         <br>
         <a href="examples/imo/README.md" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
         </a>
       </td>
-      <td style="padding: 8px; vertical-align: top;">多智能体协作 <br>优于单个模型</td>
+      <td style="padding: 8px; vertical-align: top;">Multi-agent collaboration <br>beats solo models</td>
       <td style="padding: 8px; vertical-align: top;">2025/07/25</td>
     </tr>
     <tr>
-      <td style="padding: 8px; vertical-align: top;">🖼️ 多模态</td>
+      <td style="padding: 8px; vertical-align: top;">🖼️ Multi-Modal</td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>OSWorld <br>排名第一</strong>
+        <strong>OSWorld <br>Rank 1st</strong>
         <br>
         <a href="https://os-world.github.io/" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/OSWorld-Leaderboard-green" alt="OSWorld">
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>58.0%</strong> <br> 成功率
+        <strong>58.0%</strong> <br> Success Rate
         <br>
         <a href="examples/osworld/README.md" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
         </a>
       </td>
-      <td style="padding: 8px; vertical-align: top;">工具越多越好吗？</td>
+      <td style="padding: 8px; vertical-align: top;">The more tools the better?</td>
       <td style="padding: 8px; vertical-align: top;">2025/09/18</td>
     </tr>
     <tr>
-      <td style="padding: 8px; vertical-align: top;">🖼️ 多模态</td>
+      <td style="padding: 8px; vertical-align: top;">🖼️ Multi-Modal</td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>VisualWebArena 九月排名第一</strong>
+        <strong>VisualWebArena Rank 1st in September</strong>
         <br>
         <a href="https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=2044883967#gid=2044883967" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/VWA-Leaderboard-green" alt="VWA">
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>36.5%</strong> <br> 成功率
+        <strong>36.5%</strong> <br> Success Rate
         <br>
         <a href="examples/visualwebarena/README.md" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
         </a>
       </td>
-      <td style="padding: 8px; vertical-align: top;">自动化工具生成 <br>
+      <td style="padding: 8px; vertical-align: top;">Automated tool generation <br>
         <a href="https://arxiv.org/pdf/2509.21072" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Paper-arXiv-red" alt="Paper"></td>
       <td style="padding: 8px; vertical-align: top;">2025/09/25</td>
     </tr>
     <tr>
-      <td style="padding: 8px; vertical-align: top;">🔍 深度搜索</td>
+      <td style="padding: 8px; vertical-align: top;">🔍 Deep-Search</td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>Xbench 卓越表现</strong>
+        <strong>Xbench Excellence</strong>
         <br>
         <a href="https://xbench.org/" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/xbench-Leaderboard-green" alt="xbench">
@@ -402,62 +295,73 @@ trainer.train()
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-          AWorld 拥有自己的上下文引擎：Amni。
+          AWorld has its own context engine: Amni.
       </td>
       <td style="padding: 8px; vertical-align: top;">2025/10/23</td>
     </tr>
   </tbody>
 </table>
 
-#### 数据合成 (Data Synthesis)
+#### 数据合成
 
-1. **FunReason-MT Technical Report: Overcoming the Complexity Barrier in Multi-Turn Function Calling** arxiv, 2025. [论文](https://arxiv.org/abs/2510.24645), [代码](https://github.com/inclusionAI/AWorld-RL), [模型](https://huggingface.co/Bingguang/FunReason-MT), [数据集](https://huggingface.co/datasets/Bingguang/FunReason-MT)
+1. **FunReason-MT Technical Report: Overcoming the Complexity Barrier in Multi-Turn Function Calling** arxiv, 2025. [paper](https://arxiv.org/abs/2510.24645), [code](https://github.com/inclusionAI/AWorld-RL), [model](https://huggingface.co/Bingguang/FunReason-MT), [dataset](https://huggingface.co/datasets/Bingguang/FunReason-MT)
 
-    *Zengzhuang Xu, Bingguang Hao, Zechuan Wang, Yuntao Wen, Maolin Wang, 等*
+    *Zengzhuang Xu, Bingguang Hao, Zechuan Wang, Yuntao Wen, Maolin Wang, etc.*
+   
+2. **From Failure to Mastery: Generating Hard Samples for Tool-use Agents** arxiv, 2026. [paper](https://arxiv.org/abs/2601.01498), [code](https://github.com/inclusionAI/AWorld-RL), [model](https://huggingface.co/Bingguang/FunReason-MT), [dataset](https://huggingface.co/datasets/Bingguang/FunReason-MT)
+
+    *Bingguang Hao, Zengzhuang Xu, Yuntao Wen, Xinyi Xu, Yang Liu, etc.*
 
 
-#### 模型训练 (Model Training)
+#### 模型训练
 
-1. **AWorld: Orchestrating the Training Recipe for Agentic AI.** arxiv, 2025. [论文](https://arxiv.org/abs/2508.20404), [代码](https://github.com/inclusionAI/AWorld/tree/main/train), [模型](https://huggingface.co/inclusionAI/Qwen3-32B-AWorld)
+1. **AWorld: Orchestrating the Training Recipe for Agentic AI.** arxiv, 2025. [paper](https://arxiv.org/abs/2508.20404), [code](https://github.com/inclusionAI/AWorld/tree/main/train), [model](https://huggingface.co/inclusionAI/Qwen3-32B-AWorld)
 
-    *Chengyue Yu, Siyuan Lu, Chenyi Zhuang, Dong Wang, Qintong Wu, 等*
+    *Chengyue Yu, Siyuan Lu, Chenyi Zhuang, Dong Wang, Qintong Wu, etc.*
 
-2. **FunReason: Enhancing Large Language Models' Function Calling via Self-Refinement Multiscale Loss and Automated Data Refinement.** arxiv, 2025. [论文](https://arxiv.org/abs/2505.20192), [模型](https://huggingface.co/Bingguang/FunReason)
+2. **FunReason: Enhancing Large Language Models' Function Calling via Self-Refinement Multiscale Loss and Automated Data Refinement.** arxiv, 2025. [paper](https://arxiv.org/abs/2505.20192), [model](https://huggingface.co/Bingguang/FunReason)
 
-    *Bingguang Hao, Maolin Wang, Zengzhuang Xu, Cunyin Peng, 等*
+    *Bingguang Hao, Maolin Wang, Zengzhuang Xu, Cunyin Peng, etc.*
 
-3. **Exploring Superior Function Calls via Reinforcement Learning.** arxiv, 2025. [论文](https://arxiv.org/abs/2508.05118), [代码](https://github.com/BingguangHao/RLFC)
+3. **Exploring Superior Function Calls via Reinforcement Learning.** arxiv, 2025. [paper](https://arxiv.org/abs/2508.05118), [code](https://github.com/BingguangHao/RLFC)
 
-    *Bingguang Hao, Maolin Wang, Zengzhuang Xu, Yicheng Chen, 等*
+    *Bingguang Hao, Maolin Wang, Zengzhuang Xu, Yicheng Chen, etc.*
 
-4. **RAG-R1 : Incentivize the Search and Reasoning Capabilities of LLMs through Multi-query Parallelism.** arxiv, 2025. [论文](https://arxiv.org/abs/2507.02962), [代码](https://github.com/inclusionAI/AgenticLearning), [模型](https://huggingface.co/collections/endertzw/rag-r1-68481d7694b3fca8b809aa29)
+4. **RAG-R1 : Incentivize the Search and Reasoning Capabilities of LLMs through Multi-query Parallelism.** arxiv, 2025. [paper](https://arxiv.org/abs/2507.02962), [code](https://github.com/inclusionAI/AgenticLearning), [model](https://huggingface.co/collections/endertzw/rag-r1-68481d7694b3fca8b809aa29)
 
     *Zhiwen Tan, Jiaming Huang, Qintong Wu, Hongxuan Zhang, Chenyi Zhuang, Jinjie Gu*
 
-5. **V2P: From Background Suppression to Center Peaking for Robust GUI Grounding Task.** arxiv, 2025. [论文](https://arxiv.org/abs/2508.13634), [代码](https://github.com/inclusionAI/AgenticLearning/tree/main/V2P)
+5. **V2P: From Background Suppression to Center Peaking for Robust GUI Grounding Task.** arxiv, 2025. [paper](https://arxiv.org/abs/2508.13634), [code](https://github.com/inclusionAI/AgenticLearning/tree/main/V2P)
 
     *Jikai Chen, Long Chen, Dong Wang, Leilei Gan, Chenyi Zhuang, Jinjie Gu*
 
-6. **Don’t Just Fine-tune the Agent, Tune the Environment** arxiv, 2025. [论文](https://arxiv.org/abs/2510.10197)
+6. **Don't Just Fine-tune the Agent, Tune the Environment** arxiv, 2025. [paper](https://arxiv.org/abs/2510.10197)
 
-    *Siyuan Lu, Zechuan Wang, Hongxuan Zhang, Qintong Wu, Leilei Gan, Chenyi Zhuang, 等*
+    *Siyuan Lu, Zechuan Wang, Hongxuan Zhang, Qintong Wu, Leilei Gan, Chenyi Zhuang, etc.*
 
 
-#### 元学习 (Meta Learning)
+#### 元学习
 
-1. **Profile-Aware Maneuvering: A Dynamic Multi-Agent System for Robust GAIA Problem Solving by AWorld.** arxiv, 2025. [论文](https://arxiv.org/abs/2508.09889), [代码](https://github.com/inclusionAI/AWorld/blob/main/examples/gaia/README_GUARD.md)
+1. **Profile-Aware Maneuvering: A Dynamic Multi-Agent System for Robust GAIA Problem Solving by AWorld.** arxiv, 2025. [paper](https://arxiv.org/abs/2508.09889), [code](https://github.com/inclusionAI/AWorld/blob/main/examples/gaia/README_GUARD.md)
 
     *Zhitian Xie, Qintong Wu, Chengyue Yu, Chenyi Zhuang, Jinjie Gu*
 
-2. **Recon-Act: A Self-Evolving Multi-Agent Browser-Use System via Web Reconnaissance, Tool Generation, and Task Execution.** arxiv, 2025. [论文](https://arxiv.org/pdf/2509.21072), [代码](https://github.com/inclusionAI/AWorld/tree/main/examples/visualwebarena)
+2. **Recon-Act: A Self-Evolving Multi-Agent Browser-Use System via Web Reconnaissance, Tool Generation, and Task Execution.** arxiv, 2025. [paper](https://arxiv.org/pdf/2509.21072), [code](https://github.com/inclusionAI/AWorld/tree/main/examples/visualwebarena)
 
     *Kaiwen He, Zhiwei Wang, Chenyi Zhuang, Jinjie Gu*
 
+</p>
 
-# 贡献
-我们热烈欢迎开发者加入我们，共同构建和改进 AWorld！无论您是想增强框架功能、修复 Bug 还是添加新特性，您的贡献对我们都非常宝贵。
 
-如需学术引用或希望联系我们，请使用以下 BibTeX 条目：
+<a id="contributing"></a>
+# 参与贡献
+<p align="justify">
+我们的愿景包括：拓展 AI for Science & Business、深化自进化能力、扩充社区贡献的 Skills 库。
+
+我们欢迎开发者、研究者与领域专家加入——无论是改进框架，还是贡献你所在领域的 Skill，都很有价值。
+
+学术引用或联系我们，请使用以下 BibTeX：
+</p>
 
 ```bibtex
 @misc{yu2025aworldorchestratingtrainingrecipe,
@@ -470,9 +374,6 @@ trainer.train()
       url={https://arxiv.org/abs/2508.20404}, 
 }
 ```
-
-# Star History
-![](https://api.star-history.com/svg?repos=inclusionAI/AWorld&type=Date)
 
 <!-- resource section start -->
 <!-- image links -->
@@ -493,9 +394,9 @@ trainer.train()
 [deepwiki-url]: https://deepwiki.com/inclusionAI/AWorld
 [discord-url]: https://discord.gg/b4Asj2ynMw
 [license-url]: https://opensource.org/licenses/MIT
-[twitter-url]: https://x.com/InclusionAI666
+[twitter-url]: https://x.com/AWorldAgents
 [wechat-url]: https://raw.githubusercontent.com/inclusionAI/AWorld/main/readme_assets/aworld_wechat.png
-[arxiv-url]: https://arxiv.org/abs/2508.
+[arxiv-url]: https://arxiv.org/abs/2508.20404
 [tutorial-url]: https://inclusionai.github.io/AWorld/
 [playground-url]: https://playground.aworldagents.com/
 
@@ -503,8 +404,6 @@ trainer.train()
 [funreason-code-url]: https://github.com/BingguangHao/FunReason
 [funreason-model-url]: https://huggingface.co/Bingguang/FunReason
 [funreason-paper-url]: https://arxiv.org/pdf/2505.20192
-<!-- [funreason-dataset-url]: https://github.com/BingguangHao/FunReason -->
-<!-- [funreason-blog-url]: https://github.com/BingguangHao/FunReason -->
 
 <!-- deepsearch links -->
 [deepsearch-code-url]: https://github.com/inclusionAI/AgenticLearning
