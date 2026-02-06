@@ -7,6 +7,7 @@ from aworld.config import RunConfig
 from aworld.logs.util import logger
 from aworld.runners.runtime_engine import RuntimeEngine
 from aworld.ralph_loop.schedule.types import ScheduledTask
+from aworld.runners.utils import runtime_engine
 from aworld.utils.run_util import exec_tasks
 
 
@@ -29,10 +30,6 @@ class RuntimeEngineExecutor:
         if not tasks:
             return {}
 
-        for task in tasks:
-            task.task_status = 'running'
-            task.started_at = time.time()
-
         funcs = []
         # Wrap each task in an async executor function
         for scheduled_task in tasks:
@@ -47,6 +44,9 @@ class RuntimeEngineExecutor:
 
     async def _one_task_execute(self, task: ScheduledTask) -> Any:
         """Execute a single scheduled task, update its status, and handle exceptions."""
+        if not self.runtime_engine:
+            self.runtime_engine = await runtime_engine(self.run_config)
+
         try:
             task.task_status = 'running'
             task.started_at = time.time()

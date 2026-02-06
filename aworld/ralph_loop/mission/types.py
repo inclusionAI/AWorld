@@ -1,7 +1,6 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
 from dataclasses import field, dataclass
-from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
 from aworld.ralph_loop.types import CompletionCriteria, Complexity
