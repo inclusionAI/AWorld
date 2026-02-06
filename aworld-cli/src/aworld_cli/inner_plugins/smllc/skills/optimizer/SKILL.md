@@ -49,6 +49,9 @@ While this skill can perform any code modification, effective agent optimization
 *   **What it is**: The mcp_config dictionary, typically in a dedicated mcp_config.py file.
 *   **Why it's critical**: It defines the agent's capabilities. A missing capability (e.g., inability to search the web, read a PDF) is almost always due to a missing tool entry in this configuration.
 *   **Your Action**: If an agent lacks a required function, your first step is to verify if the corresponding tool is missing from mcp_config.py. Add the necessary tool configuration block to grant the agent that capability.
+*   **MCP Configuration**: Which MCP servers (e.g., pptx, google) are required? The terminal server is a mandatory, non-negotiable tool for every agent you build. It is essential for two primary reasons:
+    * **Dependency Management**: Installing missing Python packages via pip install.
+    * **File System Operations**: Verifying the current location (pwd) and saving all output files to that consistent, predictable location. You must ensure this tool is always included.
 
 **Core Principle**: Always assume the problem lies in the system_prompt or mcp_config.py first. Only resort to modifying other parts of the Python code if the issue cannot be resolved through these two primary vectors (e.g., adding support for a dynamic variable in the prompt).
 
@@ -77,7 +80,7 @@ While this skill can perform any code modification, effective agent optimization
 ### Phase 3: Optimization Strategy
 1.  **Formulate Plan**: Based on the user's goal and the initial analysis, formulate a precise modification plan. Your plan must adhere to the Strategic Optimization Focus:
 *  **Analyze High-Impact Files**: Your first step is to call CAST_ANALYSIS.search_ast to retrieve the contents of the agent's main file (to inspect the system_prompt) and its mcp_config.py.
-P*  **rioritize Prompt/Tooling**: Determine if the problem can be solved by modifying the system_prompt or adding/editing a tool in mcp_config.py. This is the preferred solution for most behavioral and capability issues.
+*  **Prioritize Prompt/Tooling**: Determine if the problem can be solved by modifying the system_prompt or adding/editing a tool in mcp_config.py. This is the preferred solution for most behavioral and capability issues.
 *  **Fallback to Code Logic**: If and only if the optimization cannot be achieved through the prompt or tool configuration, identify the specific Python code block that needs to be refactored.
 2.  **Generate Operations**: Create a list of specific modification operations (e.g., a JSON object for CAST_CODER.search_replace). Each operation must be atomic, targeting a single code block in a single file.
 
@@ -325,7 +328,7 @@ def build_simple_swarm():
 
                         ## 2. Methodology & Workflow
                         Complex tasks must be solved step-by-step using a generic ReAct (Reasoning + Acting) approach:
-
+                        0.  ** Module Dependency Install:** If found relevant modules missing, please use the terminal tool to install the appropriate module.
                         1.  **Task Analysis:** Break down the user's request into sub-tasks.
                         2.  **Tool Execution:** Select and use the appropriate tool for the current sub-task.
                         3.  **Analysis:** Review the tool's output. If the result is insufficient, try a different approach or search query.
@@ -337,8 +340,14 @@ def build_simple_swarm():
                             *   **During Execution:** Every response MUST contain exactly one tool call. Do not chat without acting until the task is done.
                             *   **Completion:** If the task is finished, your VERY NEXT and ONLY action is to provide the final answer in the `<answer>` tag. Do not call almost any tool once the task is solved.
                         2.  **Time Sensitivity:**
-                            *   Your internal knowledge cut-off is 2024. For questions regarding current dates, news, or rapidly evolving technology, YOU ENDEAVOR to use the `search` tool to fetch the latest information.
+                            * Today is datetime.now(ZoneInfo("Asia/Shanghai")).year (year)-datetime.now(ZoneInfo("Asia/Shanghai")).month (month)-datetime.now(ZoneInfo("Asia/Shanghai")).day(day).
+                            * Your internal knowledge cut-off is 2024. For questions regarding current dates, news, or rapidly evolving technology, YOU ENDEAVOR to use the `search` tool to fetch the latest information.
                         3.  **Language:** Ensure your final answer and reasoning style match the user's language.
+                        4.  **File & Artifact Management (CRITICAL):**
+                            *   **Unified Workspace:** The current working directory is your **one and only** designated workspace.
+                            *   **Execution Protocol:** All artifacts you generate (code scripts, documents, data, images, etc.) **MUST** be saved directly into the current working directory. You can use the `terminal` tool with the `pwd` command at any time to confirm your current location.
+                            *   **Strict Prohibition:** **DO NOT create any new subdirectories** (e.g., `./output`, `temp`, `./results`). All files MUST be placed in the top-level current directory where the task was initiated.
+                            *   **Rationale:** This strict policy ensures all work is organized, immediately accessible to the user, and prevents polluting the file system with nested folders.
                         """,
         mcp_servers=mcp_servers,
         mcp_config=mcp_config
