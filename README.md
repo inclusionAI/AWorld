@@ -55,7 +55,7 @@ The journey from an idea to an evolved, autonomous agent begins at your fingerti
 
 Create a .env file in the AWorld/aworld-cli to configure the base model for both the AWorld Agent and any agents it creates. Add the following content:
 ```bash
-LLM_MODEL_NAME="your_model_name"
+LLM_MODEL_NAME="your_model_name, Claude-Sonnet-4.5 suggested"
 LLM_PROVIDER="openai"
 LLM_API_KEY="your_model_api_key"
 LLM_BASE_URL="your_base_url"
@@ -90,9 +90,11 @@ Once it's generated, your agent is a permanent, reusable tool in your ~/.agents 
 ### Verified Skills: The DNA for Automated Agent Creation
 <div align="justify">
 Our library of Verified Skills is more than a collection of blueprints; it's a gene pool of expert capabilities.
-
-When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills, infusing the new agent's core with proven logic and reliability. This ensures your agent inherits the DNA of our best practices (see [Evolution](#evolution)), making it robust and effective from the moment it's created. 
 </div>
+
+<p align="justify">
+When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills, infusing the new agent's core with proven logic and reliability. This ensures your agent inherits the DNA of our best practices (see [Evolution](#evolution)), making it robust and effective from the moment it's created. 
+</p>
 <!-- 
 <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
   <colgroup>
@@ -138,12 +140,12 @@ Prompt the AWorld Agent to execute your newly created agent on a task and watch 
 <p align="justify">
 If the agent's performance isn't perfect in your opinion, you have a spectrum of powerful options for refinement.
 
-**Total Control: Manual Tuning**
+**Manual Evolution**
 <p align="justify">
 You are the expert. Open the generated Python file and fine-tune the prompts, logic, or tool usage directly. You have full control.
 </p>
 
-**One More Thing: AI-Assisted Tuning**
+**One More Thing: AI-Assisted Evolution**
 <p align="justify">
 This is where AWorld truly shines! Prompt with your desired changes, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent as your AI pair programmer to tune your agent.
 </p>
@@ -177,7 +179,7 @@ Want to see it live? Load a pre-built DeepResearch team in the AWorld [Playgroun
 ![](./readme_assets/playground_gaiateam.gif)
 
 # Experience to Samples
-Our runtime captures every step across offline and online runs. Each task yields a complete trajectory—every LLM call, action, and reward—so you can synthesize training samples, audit performance, and iterate with confidence.
+Iterate with confidence. Our runtime records a complete history for every task, capturing each LLM call, action, and reward. Use this data to audit performance and generate high-quality training samples.
 [Docs](https://inclusionai.github.io/AWorld/Training/Trajectory/)
 
 
