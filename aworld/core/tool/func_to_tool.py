@@ -98,7 +98,7 @@ def function_to_tool(
         for idx, line in enumerate(lines):
             if line.startswith("def ") or line.startswith("async def "):
                 break
-        write.writelines("".join(inspect.getsourcelines(func)[0][idx:]))
+        write.writelines("".join(lines[idx:]))
 
     if tool_name == "<lambda>" or action_name == "<lambda>":
         raise ValueError("You must provide a name for lambda functions")
