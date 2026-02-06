@@ -18,7 +18,7 @@ from aworld.core.context.amni import ApplicationContext, AmniConfigFactory
 from aworld.core.context.amni.config import AmniConfigLevel
 from aworld.experimental.metalearning.knowledge.learning_knowledge import LearningKnowledge, TrajType, \
     save_context_artifact, _convert_to_json_serializable
-from aworld.core.context.amni.tool import CONTEXT_AGENT_REGISTRY
+from aworld.core.context.amni.tool import AGENT_REGISTRY
 from aworld.experimental.loaders.swarm_registry_tool import CONTEXT_SWARM_REGISTRY
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
@@ -47,7 +47,7 @@ class MetaLearningAgent(Agent):
         if not observation.content:
             observation.content = context.origin_user_input
 
-        # 添加 tmp_file_path 信息到 observation
+        # Add tmp_file_path information to observation
         tmp_file_path = info.get('tmp_file_path') or context.get('tmp_file_path') or ''
         if tmp_file_path:
             observation.content = f"{observation.content}\ntmp_file_path：{tmp_file_path}"
@@ -134,15 +134,15 @@ def load_skill_from_md(file_path: Path):
     return skill_def
 
 async def build_meta_swarm(context: Context, tmp_file_path: str, reward_function: RewardFunction = None):
-    # 确保临时目录存在
+    # Ensure temporary directory exists
     from pathlib import Path
     tmp_file_path = Path(tmp_file_path)
     tmp_file_path.mkdir(parents=True, exist_ok=True)
     tmp_file_path = str(tmp_file_path)
 
-    # 将 tmp_file_path 存储到 context 中，供 agent 访问
+    # Store tmp_file_path in context for agent access
     context.put('tmp_file_path', tmp_file_path)
-    # 将reward_function存储到context中，供agent访问，在RewardTool中使用
+    # Store reward_function in context for agent access, used in RewardTool
     context.put('reward_function', reward_function)
 
 
@@ -153,7 +153,7 @@ async def build_meta_swarm(context: Context, tmp_file_path: str, reward_function
     #     context_agent_registry_skill['name']: context_agent_registry_skill,
     # }
     meta_learning_agent = MetaLearningAgent(
-        tool_names=[REWARD, CONTEXT_AGENT_REGISTRY, CONTEXT_SWARM_REGISTRY],
+        tool_names=[REWARD, AGENT_REGISTRY, CONTEXT_SWARM_REGISTRY],
         conf=AgentConfig(
             llm_config=ModelConfig(
                 provider="openai",
@@ -236,7 +236,7 @@ This workflow performs the following steps automatically:
 **⚠️ CRITICAL: Before analyzing or generating optimizations, you MUST first call `list_desc` to get all available template descriptions. This step cannot be skipped.**
 
 1. **Call `list_desc` Tool**:
-   - Use the `CONTEXT_AGENT_REGISTRY` tool with the `list_desc` action
+   - Use the `AGENT_REGISTRY` tool with the `list_desc` action
    - This will return all available resources (agents and skills) with their descriptions
 
 2. **Analyze Template Descriptions**:
@@ -274,7 +274,7 @@ This workflow performs the following steps automatically:
    - Possess the capabilities your target is missing
    - Follow best practices you want to adopt
 
-2. **Read Source**: Use `CONTEXT_AGENT_REGISTRY` tool with `load_as_source` action to read their full configuration and system prompts
+2. **Read Source**: Use `AGENT_REGISTRY` tool with `load_as_source` action to read their full configuration and system prompts
 
 3. **Analyze Patterns**: Understand how they are structured and prompted:
    - **DO NOT just copy the content. You must UNDERSTAND:**
@@ -300,7 +300,7 @@ This workflow performs the following steps automatically:
 **⚠️ Based on the reference agents and root cause analysis, design your optimization approach.**
 
 **⚠️ MANDATORY: Before designing, you MUST read reference materials:**
-- **For Agent Design**: Use `CONTEXT_AGENT_REGISTRY` with `load_as_source` action to read similar agent files as reference (refer to `context_agent_registry` skill)
+- **For Agent Design**: Use `AGENT_REGISTRY` with `load_as_source` action to read similar agent files as reference (refer to `context_agent_registry` skill)
 - **For Team Design**: Use `CONTEXT_SWARM_REGISTRY` with `load_as_source` action to read similar team YAML files as reference (refer to `context_swarm_registry` skill)
 
 This ensures your optimized agents and teams follow existing patterns and conventions.
@@ -591,7 +591,7 @@ After completing your task, you MUST output a JSON object in the following forma
 - `task_input`: The specific task input for this agent (this variable will be automatically replaced by the system)
 ```
 
-**Save Agent File**: Use `CONTEXT_AGENT_REGISTRY` with `save_as_source` action (refer to `context_agent_registry` skill)
+**Save Agent File**: Use `AGENT_REGISTRY` with `save_as_source` action (refer to `context_agent_registry` skill)
 - Parameter `content`: Complete agent file content (FULL original content with targeted improvements)
 - Parameter `name`: Agent name (MUST be a NEW name, e.g., `image_searcher` or original_name + `_enhanced`. Do NOT use the original name.)
 - **Content Length Check:** Your optimized content should be approximately the same length or LONGER than the original
@@ -602,7 +602,7 @@ After completing your task, you MUST output a JSON object in the following forma
 
 **⚠️ CRITICAL: This step is CONDITIONAL. Only execute if you have generated a new agent with a new name.**
 
-**⚠️ CRITICAL: You MUST use `CONTEXT_SWARM_REGISTRY` tool (NOT CONTEXT_AGENT_REGISTRY) with `save_as_source` action to write the team YAML file.**
+**⚠️ CRITICAL: You MUST use `CONTEXT_SWARM_REGISTRY` tool (NOT AGENT_REGISTRY) with `save_as_source` action to write the team YAML file.**
 
 **Refer to `context_swarm_registry` skill for `save_as_source` usage details.**
 
@@ -688,7 +688,7 @@ swarm:
 
 ### Agent File Notes
 
-1. **Saving Method**: Use `CONTEXT_AGENT_REGISTRY` with `save_as_source` action (refer to `context_agent_registry` skill)
+1. **Saving Method**: Use `AGENT_REGISTRY` with `save_as_source` action (refer to `context_agent_registry` skill)
 2. **File Naming**: Provide agent name in `name` parameter (without `.md` extension)
 3. **Format Validation**: YAML frontmatter MUST be valid YAML format
 4. **JSON Configuration**: `mcp_config` and `model_config` use JSON string format
@@ -708,7 +708,7 @@ swarm:
 
 **⚠️ For detailed tool usage specifications and examples:**
 
-- **CONTEXT_AGENT_REGISTRY**: Refer to the `context_agent_registry` skill for all available actions (`list_desc`, `load_as_source`, `list_as_source`, `save_as_source`)
+- **AGENT_REGISTRY**: Refer to the `context_agent_registry` skill for all available actions (`list_desc`, `load_as_source`, `list_as_source`, `save_as_source`)
 - **CONTEXT_SWARM_REGISTRY**: Refer to the `context_swarm_registry` skill for all available actions (`save_as_source`, `load_as_source`, `list_as_source`)
 - **Terminal Operations**: Refer to the `terminal_server` skill for terminal command execution and file operations
 

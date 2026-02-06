@@ -8,9 +8,9 @@ AWorld AST Framework - 解析器工具
 from pathlib import Path
 from typing import Dict, List, Optional, Type
 
-from .parsers.base_parser import BaseParser
-from .parsers.html_parser import HtmlParser
-from .parsers.python_parser import PythonParser
+from.ast_parsers.base_parser import BaseParser
+from.ast_parsers.html_parser import HtmlParser
+from.ast_parsers.python_parser import PythonParser
 from ...logs.util import logger
 
 # ===============================

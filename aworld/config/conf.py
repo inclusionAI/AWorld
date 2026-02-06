@@ -159,9 +159,24 @@ class OptimizationConfig(BaseConfig):
 
 
 class MetaLearningConfig(BaseConfig):
-    enabled: bool = Field(default=False, description="Whether to enable meta-learning. When enabled, task_id will be recorded to MULTI_TURN_TASK_ID_DATA upon task completion")
-    # AGENTS_PATH
-    # 去掉MIND_STREAM_DEBUG_MODE 修正TRAJ_STORAGE_BASE_PATH的逻辑
+    """Enhanced configuration for meta-learning functionality.
+
+    Meta-learning enables intelligent agents to learn from task execution trajectories,
+    analyze performance patterns, extract knowledge, and continuously optimize their
+    behavior based on observed outcomes. This comprehensive configuration supports
+    multiple learning modes and specialized learning components.
+    """
+    # Core enablement
+    enabled: bool = Field(
+        default=False,
+        description="Whether to enable meta-learning capabilities"
+    )
+
+    # Storage configuration
+    learning_knowledge_storage_base_path: Optional[str] = Field(
+        default=None,
+        description="Base path for storing trajectory data. Defaults to './' or TRAJ_STORAGE_BASE_PATH env var"
+    )
 
 class SummaryPromptConfig(BaseConfig):
     """Configuration for summary prompt templates."""

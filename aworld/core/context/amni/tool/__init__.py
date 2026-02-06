@@ -4,12 +4,10 @@
 Context tools for managing planning, knowledge, and skills.
 """
 
-from .context_skill_tool import CONTEXT_SKILL, ContextSkillTool, ContextExecuteAction
-from .context_planning_tool import CONTEXT_PLANNING, ContextPlanningTool, ContextPlanningAction
-from .context_knowledge_tool import CONTEXT_KNOWLEDGE, ContextKnowledgeTool, ContextKnowledgeAction
-from aworld.experimental.loaders.agent_registry_tool import CONTEXT_AGENT_REGISTRY, ContextAgentRegistryAction, ContextAgentRegistryTool
-from aworld.experimental.loaders.swarm_registry_tool import CONTEXT_SWARM_REGISTRY, ContextSwarmRegistryAction, ContextSwarmRegistryTool
 from .context_file_tool import CONTEXT_FILE, ContextFileTool, ContextFileAction
+from .context_knowledge_tool import CONTEXT_KNOWLEDGE, ContextKnowledgeTool, ContextKnowledgeAction
+from .context_planning_tool import CONTEXT_PLANNING, ContextPlanningTool, ContextPlanningAction
+from .context_skill_tool import CONTEXT_SKILL, ContextSkillTool, ContextExecuteAction
 
 __all__ = [
     "CONTEXT_SKILL",
@@ -24,11 +22,4 @@ __all__ = [
     "CONTEXT_FILE",
     "ContextFileTool",
     "ContextFileAction",
-    "CONTEXT_AGENT_REGISTRY",
-    "ContextAgentRegistryAction",
-    "ContextAgentRegistryTool",
-    "CONTEXT_SWARM_REGISTRY",
-    "ContextSwarmRegistryAction",
-    "ContextSwarmRegistryTool",
 ]
-

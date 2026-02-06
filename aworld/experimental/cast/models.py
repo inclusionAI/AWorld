@@ -1,8 +1,8 @@
 """
-AWorld AST Framework - 数据模型
-============================
+AWorld AST Framework - Data Models
+=================================
 
-定义AST分析框架中使用的核心数据结构和模型。
+Defines core data structures and models used in the AST analysis framework.
 """
 
 from dataclasses import dataclass, field
@@ -12,7 +12,7 @@ from typing import Dict, List, Set, Optional, Any, Tuple
 
 
 class SymbolType(Enum):
-    """符号类型枚举"""
+    """Symbol type enumeration"""
     FUNCTION = "function"
     CLASS = "class"
     METHOD = "method"
@@ -25,7 +25,7 @@ class SymbolType(Enum):
 
 
 class ReferenceType(Enum):
-    """引用类型枚举"""
+    """Reference type enumeration"""
     CALL = "call"
     INHERITANCE = "inheritance"
     IMPORT = "import"
@@ -36,7 +36,7 @@ class ReferenceType(Enum):
 
 @dataclass
 class Symbol:
-    """代码符号定义"""
+    """Code symbol definition"""
     name: str
     symbol_type: SymbolType
     file_path: Path
@@ -46,47 +46,47 @@ class Symbol:
     end_column: int = 0
     signature: Optional[str] = None
     docstring: Optional[str] = None
-    content: Optional[str] = None  # 符号的完整代码内容
-    parent: Optional[str] = None  # 父级符号名称
-    modifiers: Set[str] = field(default_factory=set)  # public, private, static等
+    content: Optional[str] = None  # Complete code content of the symbol
+    parent: Optional[str] = None  # Parent symbol name
+    modifiers: Set[str] = field(default_factory=set)  # public, private, static, etc.
     parameters: List[str] = field(default_factory=list)
     return_type: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def full_name(self) -> str:
-        """获取完整的符号名称"""
+        """Get full symbol name"""
         if self.parent:
             return f"{self.parent}.{self.name}"
         return self.name
 
     @property
     def location_key(self) -> str:
-        """获取位置键，用于缓存和索引"""
+        """Get location key for caching and indexing"""
         return f"{self.file_path}:{self.line_number}:{self.column}"
 
 
 @dataclass
 class Reference:
-    """代码引用"""
+    """Code reference"""
     symbol_name: str
     reference_type: ReferenceType
     file_path: Path
     line_number: int
     column: int
-    context: Optional[str] = None  # 引用的上下文代码
-    target_symbol: Optional[Symbol] = None  # 被引用的符号
+    context: Optional[str] = None  # Context code of the reference
+    target_symbol: Optional[Symbol] = None  # Referenced symbol
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def location_key(self) -> str:
-        """获取位置键"""
+        """Get location key"""
         return f"{self.file_path}:{self.line_number}:{self.column}"
 
 
 @dataclass
 class CodeNode:
-    """代码节点，用于构建代码关系图"""
+    """Code node for building code relationship graph"""
     file_path: Path
     symbols: List[Symbol] = field(default_factory=list)
     references: List[Reference] = field(default_factory=list)
@@ -94,48 +94,48 @@ class CodeNode:
     exports: List[str] = field(default_factory=list)
     dependencies: Set[Path] = field(default_factory=set)
     dependents: Set[Path] = field(default_factory=set)
-    weight: float = 1.0  # PageRank权重
+    weight: float = 1.0  # PageRank weight
     last_modified: Optional[float] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def add_symbol(self, symbol: Symbol) -> None:
-        """添加符号"""
+        """Add symbol"""
         self.symbols.append(symbol)
 
     def add_reference(self, reference: Reference) -> None:
-        """添加引用"""
+        """Add reference"""
         self.references.append(reference)
 
     def get_symbols_by_type(self, symbol_type: SymbolType) -> List[Symbol]:
-        """根据类型获取符号"""
+        """Get symbols by type"""
         return [s for s in self.symbols if s.symbol_type == symbol_type]
 
     def get_references_by_type(self, ref_type: ReferenceType) -> List[Reference]:
-        """根据类型获取引用"""
+        """Get references by type"""
         return [r for r in self.references if r.reference_type == ref_type]
 
 
 @dataclass
 class LogicLayer:
-    """L1 - 全景逻辑层数据结构"""
-    project_structure: Dict[str, Any]  # 项目目录结构
-    key_symbols: List[Symbol]  # 关键符号表
-    call_graph: Dict[str, List[str]]  # 调用关系图
-    dependency_graph: Dict[Path, Set[Path]]  # 依赖关系图
-    execution_heatmap: Dict[str, int] = field(default_factory=dict)  # 执行热力图
-    module_descriptions: Dict[Path, str] = field(default_factory=dict)  # 模块描述
+    """L1 - Panoramic logic layer data structure"""
+    project_structure: Dict[str, Any]  # Project directory structure
+    key_symbols: List[Symbol]  # Key symbol table
+    call_graph: Dict[str, List[str]]  # Call relationship graph
+    dependency_graph: Dict[Path, Set[Path]]  # Dependency relationship graph
+    execution_heatmap: Dict[str, int] = field(default_factory=dict)  # Execution heatmap
+    module_descriptions: Dict[Path, str] = field(default_factory=dict)  # Module descriptions
 
     def to_markdown(self) -> str:
-        """转换为Markdown格式的描述"""
-        md_lines = ["# 项目逻辑结构", ""]
+        """Convert to Markdown format description"""
+        md_lines = ["# Project Logic Structure", ""]
 
-        # 项目结构
-        md_lines.extend(["## 项目结构", "```"])
+        # Project structure
+        md_lines.extend(["## Project Structure", "```"])
         md_lines.append(self._format_structure(self.project_structure))
         md_lines.extend(["```", ""])
 
-        # 关键符号
-        md_lines.extend(["## 关键符号", ""])
+        # Key symbols
+        md_lines.extend(["## Key Symbols", ""])
         for symbol in sorted(self.key_symbols, key=lambda s: s.name):
             heat = self.execution_heatmap.get(symbol.full_name, 0)
             heat_indicator = "🔥" * min(heat // 10, 5) if heat > 0 else ""
@@ -145,8 +145,8 @@ class LogicLayer:
 
         md_lines.append("")
 
-        # 调用关系
-        md_lines.extend(["## 调用关系", ""])
+        # Call relationships
+        md_lines.extend(["## Call Relationships", ""])
         for caller, callees in self.call_graph.items():
             if callees:
                 md_lines.append(f"- **{caller}** → {', '.join(callees)}")

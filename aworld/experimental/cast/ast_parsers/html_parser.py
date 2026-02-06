@@ -7,9 +7,10 @@ AWorld AST Framework - HTML解析器
 """
 
 import re
-from typing import List, Optional
 from pathlib import Path
+from typing import List, Optional
 
+from aworld.logs.util import logger
 from .base_parser import BaseParser
 
 
@@ -127,10 +128,10 @@ class HtmlParser(BaseParser):
 
     def parse_file(self, file_path: Path) -> "CodeNode":
         """重写parse_file，提供HTML特殊处理"""
-        from .models import CodeNode, Symbol, Reference, SymbolType, ReferenceType
+        from ..models import CodeNode
 
         if not file_path.exists():
-            self.logger.warning(f"文件不存在: {file_path}")
+            logger.warning(f"文件不存在: {file_path}")
             return CodeNode(file_path=file_path)
 
         try:
@@ -140,7 +141,7 @@ class HtmlParser(BaseParser):
             try:
                 return super().parse_file(file_path)
             except Exception as e:
-                self.logger.debug(f"Tree-sitter解析失败，使用正则表达式备用方案: {e}")
+                logger.debug(f"Tree-sitter解析失败，使用正则表达式备用方案: {e}")
 
             # 备用方案：使用正则表达式解析HTML
             symbols = self._extract_html_symbols_regex(content, file_path)
@@ -159,12 +160,12 @@ class HtmlParser(BaseParser):
             )
 
         except Exception as e:
-            self.logger.error(f"解析HTML文件失败 {file_path}: {e}")
+            logger.error(f"解析HTML文件失败 {file_path}: {e}")
             return CodeNode(file_path=file_path)
 
     def _extract_html_symbols_regex(self, content: str, file_path: Path) -> List["Symbol"]:
         """使用正则表达式提取HTML符号（备用方案）"""
-        from .models import Symbol, SymbolType
+        from ..models import Symbol, SymbolType
 
         symbols = []
         lines = content.split('\n')
@@ -217,7 +218,7 @@ class HtmlParser(BaseParser):
 
     def _extract_html_references_regex(self, content: str, file_path: Path) -> List["Reference"]:
         """使用正则表达式提取HTML引用（备用方案）"""
-        from .models import Reference, ReferenceType
+        from ..models import Reference, ReferenceType
 
         references = []
         lines = content.split('\n')

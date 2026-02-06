@@ -15,14 +15,14 @@ from aworld.core.agent.base import AgentFactory
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.base import Context
 from aworld.dataset.types import TrajectoryItem
-from aworld.experimental.loaders.agent_version_control_registry import global_agent_registry
-from aworld.logs.util import logger
+from aworld_cli.core.agent_scanner import global_agent_registry
 from aworld.experimental.metalearning.knowledge.learning_knowledge import (
     AgentSnapshot,
     TrajType,
     get_context_artifact_data,
     save_context_artifact
 )
+from aworld.logs.util import logger
 
 
 class MetaKnowledge:
@@ -42,8 +42,8 @@ class MetaKnowledge:
         agent = AgentFactory.agent_instance(item.meta.agent_id)
         # Get class source code and instance member variable values, and code file path
         definition = await global_agent_registry.load_as_source(name=agent.name())
-        diffs = await global_agent_registry.compare_versions(name=agent.name(),
-                                                                      format="context")
+        # Version comparison is no longer supported, set diffs to None
+        diffs = None
         agents_config[item.meta.agent_id] = AgentSnapshot(
             id=agent.id(),
             name=agent.name(),
