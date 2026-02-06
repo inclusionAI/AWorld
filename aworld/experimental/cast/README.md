@@ -1,6 +1,6 @@
 # AWorld CAST Framework
 
-**C**ode **A****S**is**T****A**nt - A unified code assistant framework based on Tree-sitter, designed specifically for agent code understanding and optimization. Adopts a three-tier hierarchical indexing architecture to provide LLMs with precise code understanding and modification capabilities.
+**C**ode **AS**is**T**ant - A unified code assistant framework based on Tree-sitter, designed specifically for agent code understanding and optimization. Adopts a three-tier hierarchical indexing architecture to provide LLMs with precise code understanding and modification capabilities.
 
 ## 🏗️ Layered Architecture Design
 
@@ -117,8 +117,8 @@ Serves as the integration bridge between the CAST framework and the AWorld ecosy
 | Tool | Description | Integration Interface |
 |------|-------------|----------------------|
 | `cast_analysis_tool.py` | Code analysis and structure extraction | ANALYZE_REPOSITORY, SEARCH_AST |
-| `cast_patch_tool.py` | Intelligent code patching and verification | APPLY_PATCH, VERIFY_PATCH |
-| `cast_search_tool.py` | Search functionality tools | [In Development] |
+| `cast_coder_tool.py` | Code modification and deployment tools | GENERATE_SNAPSHOT, DEPLOY_PATCHES, DEPLOY_OPS, SEARCH_REPLACE |
+| `cast_search_tool.py` | Search functionality tools | GREP_SEARCH, GLOB_SEARCH, READ_FILE |
 
 ## 🗄️ Three-Tier Hierarchical Index Architecture
 
@@ -173,69 +173,7 @@ class ImplementationLayer:
 
 ## 🚀 Quick Start
 
-### Basic Usage
-
-```python
-from aworld.experimental.cast.core import ACast
-from pathlib import Path
-
-# Create framework instance
-framework = ACast()
-
-# Analyze code repository
-repo_map = framework.analyze(
-    root_path=Path("./my_project"),
-    ignore_patterns=['__pycache__', '*.pyc', '.git'],
-    record_name="my_project_analysis"
-)
-
-# L1 Layer: Rapid architecture understanding
-architecture_context = framework.recall(
-    record_name="my_project_analysis",
-    user_query="Overall project architecture",
-    context_layers=["logic"]
-)
-
-# L2 Layer: Interface skeleton analysis
-skeleton_context = framework.recall(
-    record_name="my_project_analysis",
-    user_query="API interface design",
-    context_layers=["skeleton"]
-)
-
-# L3 Layer: Precise code location
-implementation_context = framework.recall(
-    record_name="my_project_analysis",
-    user_query="class.*Agent|def.*process",  # Regular expression query
-    context_layers=["implementation"],
-    max_tokens=8000
-)
-```
-
-### Agent Self-Optimization Workflow
-
-```python
-# 1. Analyze target agent
-repo_map = framework.analyze(Path("./target_agent"), record_name="agent_v0")
-
-# 2. Understand overall architecture (L1 Layer)
-arch = framework.recall("agent_v0", "Overall architecture design", ["logic"])
-
-# 3. Analyze interface design (L2 Layer)
-interfaces = framework.recall("agent_v0", "Core interfaces", ["skeleton"])
-
-# 4. Locate performance issues (L3 Layer)
-problems = framework.recall("agent_v0", "performance|slow|bottleneck", ["implementation"])
-
-# 5. Apply optimization patches
-from aworld.experimental.cast.tools.cast_patch_tool import CastPatchTool
-patch_tool = CastPatchTool()
-result = patch_tool.apply_patch(
-    root_path=Path("./target_agent"),
-    patch_content=optimization_patch,
-    verification_enabled=True
-)
-```
+TODO...
 
 ## 🔧 Extension Development
 
