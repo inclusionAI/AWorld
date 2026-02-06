@@ -29,7 +29,11 @@ class SerialableAgent(Agent):
         self.agents = agents if agents else []
         self.aggregate_func = aggregate_func
 
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {},  message: Message = None,**kwargs) -> List[ActionModel]:
+    async def async_policy(self,
+                           observation: Observation,
+                           info: Dict[str, Any] = {},
+                           message: Message = None,
+                           **kwargs) -> List[ActionModel]:
         self.results = None
         results = {}
         action = ActionModel(agent_name=self.id(), policy_info=observation.content)
@@ -62,5 +66,6 @@ class SerialableAgent(Agent):
         logger.debug(f"{policy.policy_info}")
         return Observation(content=policy.policy_info, observer=agent_name)
 
+    @property
     def finished(self) -> bool:
         return all([agent.finished for agent in self.agents])
