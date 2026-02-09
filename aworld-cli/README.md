@@ -1,194 +1,180 @@
-# 大卫·贝克汉姆：传奇足球生涯与人生 - PPT演示文稿
+# AWorld CLI
 
-## 📋 项目概述
+AWorld CLI is a command-line tool for interacting with AWorld agents.
 
-这是一个关于足球传奇大卫·贝克汉姆生平的专业PPT演示文稿，采用HTML5技术制作，包含12页精心设计的幻灯片，全面展示了贝克汉姆从曼联少年到全球偶像的完整故事。
+## Features
 
-## 🎯 内容结构
+- **Interactive CLI**: Rich terminal interface for agent interaction
+- **Agent Discovery**: Automatic discovery of agents using `@agent` decorator
+- **Built-in Agents**: Automatically loads built-in agents from `inner_plugins/*/agents` directories (no configuration required)
+- **Multiple Sources**: Support for local and remote agents
+- **Streaming Output**: Real-time streaming of agent responses
+- **Agent Priority**: Built-in agents → Local agents → Remote agents
 
-### 第1页：封面页
-- 主标题：大卫·贝克汉姆
-- 副标题：传奇足球生涯与人生
-- 设计特色：深蓝红渐变背景，金色装饰元素
 
-### 第2页：目录
-- 10个主要章节导航
-- 足球图标装饰
-- 清晰的结构层次
+## Installation
 
-### 第3页：基本信息与早期生活
-- 个人基本信息（出生日期、身高、位置等）
-- 早期足球经历时间轴
-- 双栏卡片布局
+```bash
+# Install dependencies with uv
+uv sync
 
-### 第4页：曼联时代 (1992-2003)
-- 职业生涯重要时刻时间轴
-- 主要荣誉徽章展示
-- 图片占位符设计
+# Or install with pip
+pip install -e .
+```
 
-### 第5页：皇家马德里 (2003-2007)
-- 银河战舰时代介绍
-- 详细统计数据展示
-- 中心焦点布局
+## Quick Start
 
-### 第6页：洛杉矶银河 & 租借经历
-- 三栏布局展示三个阶段
-- MLS、AC米兰、巴黎圣日耳曼
-- 统计数据和成就
+### Interactive Mode
 
-### 第7页：英格兰国家队生涯
-- 国家队统计数据
-- 重要时刻时间轴
-- 双栏对比布局
+```bash
+# Start interactive CLI (automatically loads built-in Aworld agent)
+aworld-cli
+```
 
-### 第8页：职业生涯荣誉与成就
-- 俱乐部荣誉徽章
-- 个人奖项展示
-- 历史记录和数据
-- 网格矩阵布局
+### List Available Agents
 
-### 第9页：退役后的商业帝国
-- 品牌代言与投资
-- 迈阿密国际足球俱乐部
-- 商业成就展示
+```bash
+aworld-cli list
+```
 
-### 第10页：慈善事业与社会影响
-- 联合国儿童基金会亲善大使
-- 7基金、疟疾防治、教育支持
-- 三栏卡片布局
+### Run Tasks Directly
 
-### 第11页：家庭生活与个人品牌
-- 贝克汉姆家族介绍
-- 时尚与文化偶像影响
-- 媒体影响力数据
+```bash
+# Execute a task with built-in Aworld agent
+aworld-cli --task "Your task here" --agent Aworld
 
-### 第12页：传奇的永恒影响
-- 足球遗产总结
-- 全球影响、文化偶像、未来展望
-- 经典名言结尾
+# Limit number of runs
+aworld-cli --task "Your task" --agent Aworld --max-runs 5
 
-## 🎨 设计特色
+# Limit cost
+aworld-cli --task "Your task" --agent Aworld --max-cost 10.00
 
-### 色彩主题
-- **主色调**：深蓝色 (#1a237e) - 代表英格兰和专业精神
-- **辅助色**：红色 (#c62828) - 代表曼联和激情
-- **强调色**：金色 (#ffd700) - 代表荣誉和成就
+# Limit duration
+aworld-cli --task "Your task" --agent Aworld --max-duration 2h
+```
 
-### 视觉元素
-- 渐变背景和装饰
-- 足球主题图标
-- 荣誉徽章设计
-- 时间轴可视化
-- 统计数据展示
-- 卡片式布局
+### Use Custom Agents
 
-### 布局类型
-- 标题页布局
-- 双栏对比布局
-- 三栏并列布局
-- 网格矩阵布局
-- 中心焦点布局
-- 时间轴布局
+```bash
+# Specify agent directory
+aworld-cli --agent-dir ./my_agents list
 
-## 💻 技术特性
+# Execute task with custom agent
+aworld-cli --agent-dir ./my_agents --task "Your task" --agent MyAgent
+```
 
-### HTML5 & CSS3
-- 现代化的网页技术
-- CSS Grid 和 Flexbox 布局
-- CSS 变量系统
-- 渐变和阴影效果
+### Use Remote Backend
 
-### 响应式设计
-- 支持桌面、平板、手机
-- 自适应布局调整
-- 移动端优化
+```bash
+# Connect to remote backend
+aworld-cli --remote-backend http://localhost:8000 list
+```
 
-### 交互效果
-- 卡片悬停动画
-- 平滑过渡效果
-- 视觉反馈设计
 
-### 打印支持
-- 专门的打印样式
-- 分页控制
-- 高质量输出
+## Command-Line Interface
 
-## 📱 使用方法
+### Interactive Mode
 
-### 浏览器查看
-1. 用任意现代浏览器打开 `beckham_presentation.html`
-2. 使用全屏模式获得最佳体验
-3. 可以使用浏览器的缩放功能调整大小
+```bash
+# Start interactive mode (automatically loads built-in Aworld agent)
+aworld-cli
+```
 
-### 演示播放
-1. 按 F11 进入全屏模式
-2. 使用 Page Down/Page Up 或方向键翻页
-3. 按 Esc 退出全屏
+### List Agents
 
-### 打印输出
-1. 使用浏览器的打印功能 (Ctrl+P)
-2. 选择"更多设置"
-3. 设置为横向打印
-4. 选择合适的纸张大小
+```bash
+# List all available agents (including built-in agents)
+aworld-cli list
 
-### 转换为PDF
-1. 在打印对话框中选择"另存为PDF"
-2. 调整页面设置和边距
-3. 保存为PDF文件
+# Example output:
+# 📦 Loading built-in agents from: .../inner_plugins/smllc/agents
+# 📚 Loaded 2 global skill(s): text2agent, optimizer
+# 
+#                                                                   Available Agents
+#╭────────┬─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┬─────────╮
+#│ Name   │ Description                                                                                                                     │ Address │
+#├────────┼─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┼─────────┤
+#│ Aworld │ Aworld is a versatile AI assistant that can execute tasks directly or delegate to specialized agent teams. Use when you need:   │ list    │
+#│        │ (1) General-purpose task execution, (2) Complex multi-step problem solving, (3) Coordination of specialized agent teams, (4)    │         │
+#│        │ Adaptive task handling that switches between direct execution and team delegation                                               │         │
+#╰────────┴─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┴─────────╯
+```
 
-## 🔧 自定义修改
+### Direct Run Mode
 
-### 更换图片
-- 找到 `[图片占位符]` 标记
-- 替换为实际图片的 `<img>` 标签
-- 调整图片尺寸和样式
+```bash
+# Run a task with built-in Aworld agent
+aworld-cli --task "Your task here" --agent Aworld --max-runs 5
 
-### 修改内容
-- 直接编辑HTML中的文本内容
-- 保持原有的HTML结构
-- 注意保持样式类名
+# Use custom agents alongside built-in agents
+aworld-cli --agent-dir ./my_agents --task "Your task" --agent MyAgent
 
-### 调整样式
-- 修改CSS变量来改变主题色彩
-- 调整字体大小和间距
-- 自定义动画效果
+# Use remote agents
+aworld-cli --remote-backend http://localhost:8000 --task "Your task" --agent RemoteAgent
+```
 
-### 添加页面
-- 复制现有幻灯片结构
-- 修改内容和布局
-- 更新页脚页码
 
-## 📊 数据来源
+## Create Custom Agent
 
-本PPT中的数据和信息来源于：
-- 官方足球统计网站
-- 贝克汉姆官方传记
-- 新闻报道和采访
-- 俱乐部官方记录
+Use the `@agent` decorator to register an agent:
 
-## 🎯 适用场景
+```python
+from aworld_cli.core.agent_registry import agent
+from aworld.core.agent.swarm import Swarm
+from aworld.agents.llm_agent import Agent
 
-- 体育主题演讲
-- 足球文化介绍
-- 偶像人物分析
-- 商业案例研究
-- 教育培训材料
+@agent(
+    name="MyAgent",
+    desc="My agent description"
+)
+def build_my_swarm() -> Swarm:
+    agent = Agent(...)
+    return Swarm(agent)
+```
 
-## 📝 版权说明
+Place the file in the directory specified by `LOCAL_AGENTS_DIR` or use `--agent-dir` parameter.
 
-本PPT模板为教育和演示目的制作，请遵守相关版权法规。如需商业使用，请确保获得相应授权。
 
-## 🚀 技术支持
 
-如需技术支持或定制服务，请联系开发团队。我们提供：
-- PPT内容定制
-- 视觉设计优化
-- 交互功能增强
-- 多格式转换
+## Agent Loading Priority
 
----
+1. 📦 **Built-in Agents** (`inner_plugins/*/agents`) - Always loaded first (no configuration required)
+   - Only loads `agents` directories from each plugin
+   - Skills are managed separately by `skill_registry`
+2. 📂 **Local Agents** (`LOCAL_AGENTS_DIR` or `--agent-dir`) - User-configured local agents
+3. 🌐 **Remote Agents** (`REMOTE_AGENTS_BACKEND` or `--remote-backend`) - Remote backend agents
 
-**制作时间**：2024年
-**技术栈**：HTML5, CSS3, JavaScript
-**兼容性**：Chrome, Firefox, Safari, Edge
-**文件大小**：约 50KB
+**Built-in Agents:**
+- **Aworld**: A versatile AI assistant that can execute tasks directly or delegate to specialized agent teams
+  - Location: `inner_plugins/smllc/agents/`
+  - Supports direct execution with MCP tools and skills
+  - Can delegate complex tasks to agent teams
+  - Includes agent creation skills
+
+
+## Environment Variables
+
+- `LOCAL_AGENTS_DIR`: Semicolon-separated list of local agent directories (in addition to built-in agents)
+- `REMOTE_AGENTS_BACKEND`: Semicolon-separated list of remote backend URLs
+- `SKILLS_PATH`: Semicolon-separated list of skill sources (local directories or GitHub URLs)
+  - Example: `SKILLS_PATH=./skills;https://github.com/user/repo;../custom-skills`
+- `SKILLS_DIR`: Single skills directory (legacy, for backward compatibility)
+- `SKILLS_CACHE_DIR`: Custom cache directory for GitHub skill repositories (default: ~/.aworld/skills)
+- `AWORLD_DISABLE_CONSOLE_LOG`: Disable console logging (set to 'true')
+
+**Note:** Built-in agents from `inner_plugins/*/agents` directories are always loaded automatically, regardless of environment variable configuration. Only the `agents` subdirectories are scanned to avoid loading unnecessary files.
+
+
+
+## More Help
+
+```bash
+# Show help
+aworld-cli --help
+
+# Show Chinese help
+aworld-cli --zh
+
+# Show usage examples
+aworld-cli --examples
+```

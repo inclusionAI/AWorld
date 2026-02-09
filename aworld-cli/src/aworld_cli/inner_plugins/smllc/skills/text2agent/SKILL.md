@@ -1,21 +1,21 @@
 ---
 name: text2agent
 description: This skill is Mandatory triggered when the user explicitly requests to create agents. It analyzes user requirements and automatically generates the optimal agent code files (Python implementation) to accomplish the task. Do NOT use this skill for general tasks - use it when agent creation is explicitly needed.
-mcp_servers: ["terminal"]
+mcp_servers: [ "terminal" ]
 mcp_config: {
-   "mcpServers": {
-        "terminal": {
-            "command": "python",
-            "args": [
-                "-m",
-                "examples.gaia.mcp_collections.tools.terminal"
-            ],
-            "env": {},
-            "client_session_timeout_seconds": 9999.0
-        }
-   }
+  "mcpServers": {
+    "terminal": {
+      "command": "python",
+      "args": [
+        "-m",
+        "examples.gaia.mcp_collections.tools.terminal"
+      ],
+      "env": { },
+      "client_session_timeout_seconds": 9999.0
+    }
+  }
 }
-tool_list: {"AGENT_REGISTRY": [], "CAST_SEARCH": [], "human": []}
+tool_list: { "AGENT_REGISTRY": [ ], "CAST_SEARCH": [ ], "human": [ ] }
 ---
 ## Role: Master Agent Architect
 
@@ -67,7 +67,7 @@ This is where you demonstrate your architectural expertise. You will deconstruct
   **Source 2: User-Uploaded Agents**
   - **Command:** First, get the user's custom skills path. Then, use CAST_SEARCH to find all SKILL.md files within it.
     ```bash
-    SKILLS_PATH=$(echo ${SKILLS_PATH:-~/.aworld/SKILLS/})
+    SKILLS_PATH="${SKILLS_PATH:-$HOME/.aworld/SKILLS/}"
     CAST_SEARCH.glob_search(pattern='**/SKILL.md', path="$SKILLS_PATH")
     ```
   - **Analysis:** Examine the file paths returned by the search. The directory structure (e.g., `.../SKILLS/financial_report_agent/SKILL.md`) is a strong clue to the agent's function. Select the most relevant skill.
@@ -89,13 +89,11 @@ This is where you demonstrate your architectural expertise. You will deconstruct
 **If no reference clearly fits the requirement, skip this step and proceed to Step 3.**
 
 ### **Step 3: Environment and Directory Setup**
-1.  **Get Storage Path**: Retrieve the `AGENTS_PATH`.
+1.  **Create Agent Directory**: Use the determined agent name (in snake_case) to create its directory.
     ```bash
-    STORAGE_PATH=$(echo ${AGENTS_PATH:-~/.aworld/agents})
-    ```
-2.  **Create Agent Directory**: Use the determined agent name (in snake_case) to create its directory.
-    ```bash
-    mkdir -p "$STORAGE_PATH/<agent_folder_name>"
+    AGENTS_PATH="${AGENTS_PATH:-$HOME/.aworld/agents}"
+    echo "AGENTS_PATH: $AGENTS_PATH"
+    mkdir -p "$AGENTS_PATH/<agent_folder_name>"
     ```
 
 ### **Step 4: Code Generation (Execution Phase)**
@@ -103,25 +101,25 @@ This is where you demonstrate your architectural expertise. You will deconstruct
 
 1.  **Generate Main Agent File** (`<agent_name>.py`):
     ```bash
-    cat > "$STORAGE_PATH/<agent_folder_name>/<agent_name>.py" << 'ENDOFFILE'
+    cat > "${AGENTS_PATH:-$HOME/.aworld/agents}/<agent_folder_name>/<agent_name>.py" << 'ENDOFFILE'
     # Complete Python agent code goes here...
     ENDOFFILE
     ```
 2.  **Generate MCP Config File** (`mcp_config.py` - if required): 
     ```bash
-    cat > "$STORAGE_PATH/<agent_folder_name>/mcp_config.py" << 'ENDOFFILE'
+    cat > "${AGENTS_PATH:-$HOME/.aworld/agents}/<agent_folder_name>/mcp_config.py" << 'ENDOFFILE'
     # MCP server configuration dictionary goes here...
     ENDOFFILE
     ```
 3.  **Create `__init__.py`**:
     ```bash
-    touch "$STORAGE_PATH/<agent_folder_name>/__init__.py"
+    touch "${AGENTS_PATH:-$HOME/.aworld/agents}/<agent_folder_name>/__init__.py"
     ```
 
 ### **Step 5: Verification**
 Confirm that all files were created successfully.
 ```bash
-ls -la "$STORAGE_PATH/<agent_folder_name>/"
+ls -la "${AGENTS_PATH:-$HOME/.aworld/agents}/<agent_folder_name>/"
 ```
 
 ### **Step 6: Dynamic Registration**
@@ -141,10 +139,10 @@ ls -la "$STORAGE_PATH/<agent_folder_name>/"
 7.1  **Identify Target Modules**: First, parse the newly created mcp_config.py to get a list of all MCP server module paths. Use the following command block exactly as written to extract the paths.
        
        
-        ```STORAGE_PATH=$(echo ${AGENTS_PATH:-~/.aworld/agents})
-            PYTHON_SCRIPT="
+        ```PYTHON_SCRIPT="
             import sys, os
-            agent_path = os.path.join('$STORAGE_PATH', '<agent_folder_name>')
+            agents_path = os.path.expanduser('${AGENTS_PATH:-$HOME/.aworld/agents}')
+            agent_path = os.path.join(agents_path, '<agent_folder_name>')
             if os.path.isdir(agent_path):
                 sys.path.insert(0, agent_path)
             try:
@@ -491,3 +489,6 @@ Generated Agent Files
 
 Dynamic Registration
 - Status: Agent '[register_agent_name]' successfully registered to '[local_agent_name]'s team swarm.
+
+
+Now, please strictly conduct the workflows (step 1 to 7), to build the agent.
