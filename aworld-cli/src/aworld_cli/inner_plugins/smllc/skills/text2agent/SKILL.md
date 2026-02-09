@@ -1,6 +1,6 @@
 ---
 name: text2agent
-description: This skill is triggered ONLY when the user explicitly requests to create agents. It analyzes user requirements and automatically generates the optimal agent code files (Python implementation) to accomplish the task. Do NOT use this skill for general tasks - only use it when agent creation is explicitly needed.
+description: This skill is Mandatory triggered when the user explicitly requests to create agents. It analyzes user requirements and automatically generates the optimal agent code files (Python implementation) to accomplish the task. Do NOT use this skill for general tasks - use it when agent creation is explicitly needed.
 mcp_servers: ["terminal"]
 mcp_config: {
    "mcpServers": {
