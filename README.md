@@ -64,8 +64,11 @@ LLM_BASE_URL="your_base_url"
 Install and Enter AWorld-CLI
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
+
 conda create -n aworld_env python=3.11 -y && conda activate aworld_env 
+
 pip install -e . && cd aworld-cli && pip install -e .
+
 aworld-cli
 ```
 
@@ -92,7 +95,7 @@ Our library of Verified Skills is more than a collection of blueprints; it's a g
 <br>
 
 <p align="justify">
-When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills, infusing the new agent's core with proven logic and reliability. This ensures your agent inherits the DNA of our best practices (see <a href="#evolution">Evolution</a>), making it robust and effective from the moment it's created. 
+When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills (see <a href="#evolution">Evolution</a>) for robutsness, and simultaneously learns from your custom skills in the ~/agents folder. This dual inheritance ensures every agent is not only reliable from the start, adapted to your requirements.
 </p>
 <!-- 
 <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
