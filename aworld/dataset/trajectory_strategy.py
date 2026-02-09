@@ -12,7 +12,9 @@ import json
 from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
 from aworld.core.agent.base import AgentFactory
+from aworld.core.common import Observation
 from aworld.core.context.base import Context
+from aworld.core.event.base import Message
 from aworld.logs.util import logger
 from aworld.dataset.types import (
     TrajectoryItem,
@@ -21,6 +23,7 @@ from aworld.dataset.types import (
     TrajectoryReward,
     ExpMeta,
 )
+from aworld.utils.serialized_util import to_serializable
 
 if TYPE_CHECKING:
     from aworld.core.agent.swarm import Swarm
@@ -178,8 +181,21 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
                     ctx_dict = {}
             elif isinstance(info, dict):
                 ctx_dict = info
+        input = source.payload
+        if isinstance(source, Message):
+            data = source.payload
+            if isinstance(data, Observation):
+                input = {
+                    "from_agent_name": data.from_agent_name,
+                    "to_agent_name": data.to_agent_name,
+                    "content": data.content,
+                    "action_result": data.action_result,
+                    "image": data.image,
+                    "images": data.images,
+                    "dom_tree": to_serializable(data.dom_tree)
+                }
         state = TrajectoryState(
-            input=source.payload,
+            input=input,
             messages=history_messages,
             # context=ctx_dict
         )
