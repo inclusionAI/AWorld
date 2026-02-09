@@ -1,6 +1,8 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
 
+# Moving forward, it will be consolidated into the `runners` package.
+
 """
 The detect module is used to detect stop conditions from different dimensions.
 The framework supports stop condition detection such as Completion, Limits (max iterations, timeout, cost),
@@ -22,7 +24,8 @@ Priority Levels (lower value = higher priority):
 - 1: User interrupts
 - 2: Failure conditions
 - 3: Completion conditions
-- 4: Limit conditions
+- 4: Limit conditions (lowest priority)
+
 """
 
 from aworld.ralph_loop.detect.detector import CompositeStopDetector
