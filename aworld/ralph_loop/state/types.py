@@ -84,5 +84,11 @@ class LoopContext(Context):
     def check_directories(self):
         """Create necessary directories."""
         self.loop_dir().mkdir(parents=True, exist_ok=True)
-        self.agent_dir().mkdir(parents=True, exist_ok=True)
+        self.task_dir().mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir().mkdir(parents=True, exist_ok=True)
+
+    async def read_to_task_context(self, dir_name: str, strategy: str):
+        """Read strategy from a directory."""
+
+    async def write_to_loop_context(self, dir_name: str, strategy: str, data: Dict[str, Any]):
+        """Write strategy to the directory."""
