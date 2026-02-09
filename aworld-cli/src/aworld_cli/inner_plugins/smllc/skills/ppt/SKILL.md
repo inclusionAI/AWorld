@@ -1,11 +1,20 @@
 ---
 name: ppt
-description: Professional PPT generation skill that combines orchestrator (outline generation), template (HTML style template), and content (slide content) generation. Generates complete PowerPoint presentations with structured outlines, custom HTML templates, and rich slide content.
+description: Professional PPT generation skill that combines orchestrator (outline generation), template (HTML style template), and content (slide content) generation. Generates complete PowerPoint presentations with structured outlines, custom HTML templates, and rich slide content. The skill employs specialized sub-skills: `ppt_layout` performs semantic analysis and layout prediction during outline generation, outputting structured JSON with layout configurations and slot data; `ppt_renderer` then reads these layout predictions in the content generation phase, selects matching HTML templates from the templates directory, and injects content into corresponding DOM slots, ensuring seamless integration between layout planning and content rendering.
 ---
 
 # PPT Generation Skill
 
 你是一位专业的 PPT 生成专家，负责将用户需求转化为完整的演示文稿。你的工作分为三个阶段：**大纲生成（Orchestrator）**、**模板设计（Template）**和**内容生成（Content）**。
+
+
+## 关键工具使用
+
+- **`ppt_layout`**: 用于在大纲生成阶段进行布局预判，确定每页的最佳布局模式
+    ppt_layout 的定义位于sub_skills/ppt_layout.md
+- **`ppt_renderer`**: 用于在内容生成阶段读取布局模板文件（如 `outline.md`、`split_txt_txt.md` 等）
+    ppt_renderer 的定义位于sub_skills/ppt_renderer.md
+- **`html2pptx`**: 用于将生成的 HTML 幻灯片转换为 PowerPoint 格式
 
 ## 工作流程概览
 
@@ -618,14 +627,6 @@ description: Professional PPT generation skill that combines orchestrator (outli
      - 基于大纲内容、HTML 风格模板和布局模板生成单页 HTML
      - 使用 `html2pptx` skill 将 HTML 转换为 PPTX 格式
    - 将所有页面合并为完整的 PPT 文件
-
-### 关键工具使用
-
-- **`ppt_layout`**: 用于在大纲生成阶段进行布局预判，确定每页的最佳布局模式
-    ppt_layout 的定义位于sub_skills/ppt_layout.md
-- **`ppt_renderer`**: 用于在内容生成阶段读取布局模板文件（如 `outline.md`、`split_txt_txt.md` 等）
-    ppt_renderer 的定义位于sub_skills/ppt_renderer.md
-- **`html2pptx`**: 用于将生成的 HTML 幻灯片转换为 PowerPoint 格式
 
 ### 注意事项
 

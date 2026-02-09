@@ -557,8 +557,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_provider=os.environ.get("LLM_PROVIDER"),
             llm_api_key=os.environ.get("LLM_API_KEY"),
             llm_base_url=os.environ.get("LLM_BASE_URL"),
-            params={"max_completion_tokens": os.environ.get("MAX_COMPLETION_TOKENS", 10240),
-                    "max_tokens": os.environ.get("MAX_TOKENS", 64000)}
+            params={"max_completion_tokens": os.environ.get("MAX_COMPLETION_TOKENS", 10240)}
         ),
         use_vision=False,  # Enable if needed for image analysis
         skill_configs=ALL_SKILLS
