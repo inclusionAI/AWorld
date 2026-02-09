@@ -152,24 +152,35 @@ async def list_built_in_resources() -> List[tuple]:
                         try:
                             with open(skill_md_file, 'r', encoding='utf-8') as f:
                                 content = f.read()
-                                # Try to extract description from markdown (look for # title or first paragraph)
+                                # Try to extract description from markdown
                                 lines = content.split('\n')
                                 desc = "No description"
-                                for i, line in enumerate(lines):
-                                    if line.strip().startswith('#'):
-                                        # Found title, next non-empty line might be description
-                                        if i + 1 < len(lines) and lines[i + 1].strip():
-                                            desc = lines[i + 1].strip()[:200]  # Limit description length
-                                            break
-                                        else:
-                                            desc = line.strip('#').strip()[:200]
-                                            break
-                                if desc == "No description" and lines:
-                                    # Use first non-empty line as description
-                                    for line in lines:
-                                        if line.strip() and not line.strip().startswith('#'):
-                                            desc = line.strip()[:200]
-                                            break
+                                
+                                # First, look for "description:" prefix line
+                                for line in lines:
+                                    line_stripped = line.strip()
+                                    if line_stripped.lower().startswith('description:'):
+                                        # Extract description after "description:" prefix
+                                        desc = line_stripped[len('description:'):].strip()[:200]
+                                        break
+                                
+                                # If not found, fall back to original logic
+                                if desc == "No description":
+                                    for i, line in enumerate(lines):
+                                        if line.strip().startswith('#'):
+                                            # Found title, next non-empty line might be description
+                                            if i + 1 < len(lines) and lines[i + 1].strip():
+                                                desc = lines[i + 1].strip()[:200]  # Limit description length
+                                                break
+                                            else:
+                                                desc = line.strip('#').strip()[:200]
+                                                break
+                                    if desc == "No description" and lines:
+                                        # Use first non-empty line as description
+                                        for line in lines:
+                                            if line.strip() and not line.strip().startswith('#'):
+                                                desc = line.strip()[:200]
+                                                break
                         except Exception:
                             desc = "No description"
                         
