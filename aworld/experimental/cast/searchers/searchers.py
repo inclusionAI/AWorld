@@ -287,7 +287,12 @@ class ReadSearcher(Searcher):
         if not file_path.is_absolute():
             file_path = self.root_path / file_path
 
-        title = str(file_path.relative_to(self.root_path))
+        # Try to get relative path, but fall back to absolute path if not in subpath
+        try:
+            title = str(file_path.relative_to(self.root_path))
+        except ValueError:
+            # File is not in root_path subpath, use absolute path as title
+            title = str(file_path)
 
         try:
             # Check if file exists
