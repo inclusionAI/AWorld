@@ -100,8 +100,8 @@ When you automate the creation of a new agent, AWorld-CLI doesn't start from scr
 
 <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
   <colgroup>
-    <col style="width: 25%;">
-    <col style="width: 75%;">
+    <col style="width: 40%;">
+    <col style="width: 60%;">
   </colgroup>
   <thead>
     <tr>
