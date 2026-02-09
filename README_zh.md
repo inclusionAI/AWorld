@@ -99,6 +99,28 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
 自动化创建新智能体时，AWorld-CLI 不会从零开始，而是智能引用这些久经考验的 Skills（见<a href="#evolution">演进</a>），以确保其稳健性，同时也会从您位于 ~/agents 文件夹中的自定义 Skills 中学习。这种双重继承机制，确保了每个智能体不仅从诞生之初就稳定可靠，适应您的特定需求。
 </p>
 
+<table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
+  <colgroup>
+    <col style="width: 40%;">
+    <col style="width: 60%;">
+  </colgroup>
+  <thead>
+    <tr>
+      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">技能</th>
+      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">描述</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch 智能体</td>
+      <td style="padding: 8px; vertical-align: top;">对指定主题进行全面、多源的研究，并整合生成一份结构化的报告。</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🚀 PPT 智能体</td>
+      <td style="padding: 8px; vertical-align: top;">根据文档、大纲或数据，创建精美的演示文稿。</td>
+    </tr>
+  </tbody>
+</table>
 
 ## 运行智能体
 <p align="justify">
