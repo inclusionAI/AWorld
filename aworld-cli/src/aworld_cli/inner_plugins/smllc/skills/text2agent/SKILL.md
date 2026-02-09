@@ -158,7 +158,7 @@ After this loop has been successfully completed for all modules in $MODULE_PATHS
 *   **`glob_search`**: Find files by pattern. Use to list available reference SKILLs (e.g. `pattern` = `**/SKILL.md`, `path` = skills root). Parameters: `pattern` (required), `path`, `max_depth`, `max_results`, `show_details`.
 *   **`grep_search`**: Content search by regex. Use if you need to search inside SKILL files (e.g. for "mcp_config" or "system prompt"). Parameters: `pattern` (required), `path`, `case_sensitive`, `context_lines`, `max_results`, `include_patterns`, `show_details`.
 
-**Typical flow for Step 2**: For built-in references, use paths from `AGENT_REGISTRY.list_desc`; for user-uploaded references, use `CAST_SEARCH.glob_search` with `path` = `SKILLS_PATH` to find `**/SKILL.md`, then call `CAST_SEARCH.read_file` with the chosen SKILL.md path. Extract front matter (mcp_servers, mcp_config, tool_list) and body (system prompt) to inform the new agent's `mcp_config.py` and `system_prompt` in the generated code.
+**Typical flow for Step 2**: For built-in references, use paths from `AGENT_REGISTRY.list_desc`; for user-uploaded references, use `CAST_SEARCH.glob_search` with `path` = `SKILLS_PATH` to find `**/SKILL.md`, then call `CAST_SEARCH.read_file` with the chosen SKILL.md path. Extract front matter (mcp tool's usage) and body (system prompt)'s content and logic, to construct the new agent's `mcp_config.py` (please strictly refer to **mcp_config.py example** in the following section for the correct and professional mcp_config.py format) and `system_prompt` in the generated code.
 
 </details>
 
@@ -321,7 +321,7 @@ def build_simple_swarm():
     return Swarm(simple_agent)
 ```
 
-**`mcp_config.py`**
+**`mcp_config.py`** you should strictly follow its format while building the new agent's mcp_config.py!
 ```python
 mcp_config = {
     "mcpServers": {
