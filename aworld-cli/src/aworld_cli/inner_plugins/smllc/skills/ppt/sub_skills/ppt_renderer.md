@@ -1,7 +1,6 @@
 ---
 name: ppt_renderer
 description: 解析当前PPT页大纲中的布局预判 JSON 数据，严格按照 JSON 中的 config 字段，选择最匹配的HTML模版，并将 data 数组中的内容精准注入到对应的 DOM 槽位。
-active: True
 ---
 
 # 模版管理决策流程

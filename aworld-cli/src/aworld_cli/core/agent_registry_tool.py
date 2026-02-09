@@ -63,12 +63,62 @@ def find_from_agent_factory_by_name(to_find_agent_name: str):
             return factory_agent
     return None
 
+
+def get_directory_structure(directory_path, max_depth=5, current_depth=0):
+    """
+    Get the file structure of a directory recursively.
+    
+    Args:
+        directory_path: Path to the directory
+        max_depth: Maximum depth to traverse (default: 5)
+        current_depth: Current depth in recursion
+    
+    Returns:
+        List of strings representing the file structure
+    """
+    from pathlib import Path
+    
+    structure = []
+    try:
+        dir_path = Path(directory_path)
+        if not dir_path.exists() or not dir_path.is_dir():
+            return structure
+        
+        if current_depth >= max_depth:
+            return structure
+        
+        # Sort entries: directories first, then files
+        entries = sorted(dir_path.iterdir(), key=lambda x: (x.is_file(), x.name))
+        
+        for entry in entries:
+            # Skip hidden files and directories
+            if entry.name.startswith('.'):
+                continue
+            
+            # Calculate indentation based on depth
+            indent = "  " * current_depth
+            if entry.is_dir():
+                structure.append(f"{indent}{entry.name}/")
+                # Recursively get subdirectory structure
+                sub_structure = get_directory_structure(entry, max_depth, current_depth + 1)
+                structure.extend(sub_structure)
+            else:
+                structure.append(f"{indent}{entry.name}")
+    
+    except Exception as e:
+        logger.warning(f"Failed to get directory structure for {directory_path}: {e}")
+    
+    return structure
+
 async def list_built_in_resources() -> List[tuple]:
     """
     List all built-in resources (agents and skills) from plugins.
     
     Returns:
-        List of tuples (name, desc, path) for agents and skills from plugins
+        List of tuples:
+        - For agents: (name, desc, path)
+        - For skills: (name, desc, path, file_structure) where file_structure is a string
+          containing the directory structure of the skill
     """
     resources_with_desc = []
     
@@ -184,8 +234,12 @@ async def list_built_in_resources() -> List[tuple]:
                         except Exception:
                             desc = "No description"
                         
+                        # Get file structure of the skill directory
+                        file_structure = get_directory_structure(subdir)
+                        file_structure_str = "\n".join(file_structure) if file_structure else ""
+                        
                         path = str(skill_md_file)
-                        resources_with_desc.append((skill_name, desc, path))
+                        resources_with_desc.append((skill_name, desc, path, file_structure_str))
             except Exception as e:
                 logger.warning(f"Failed to get skills from plugin {plugin_dir}: {e}")
         
@@ -401,12 +455,21 @@ class ContextAgentRegistryTool(AsyncTool):
 
                         action_result.success = True
                         if resources_with_desc:
-                            # Handle both old format (3-tuple) and new format (4-tuple with version)
+                            # Handle multiple formats:
+                            # - 3-tuple: (name, desc, path)
+                            # - 4-tuple: (name, desc, path, version) or (name, desc, path, file_structure)
                             desc_lines = []
                             for item in resources_with_desc:
                                 if len(item) == 4:
-                                    name, desc, path, version = item
-                                    desc_lines.append(f"- {name}: {desc}\n  Path: {path}\n  Version: {version}")
+                                    name, desc, path, fourth_field = item
+                                    # Check if fourth field is file structure (contains newlines) or version
+                                    if isinstance(fourth_field, str) and '\n' in fourth_field:
+                                        # It's a file structure - indent each line for better readability
+                                        indented_structure = '\n'.join('    ' + line for line in fourth_field.split('\n') if line.strip())
+                                        desc_lines.append(f"- {name}: {desc}\n  Path: {path}\n  File Structure:\n{indented_structure}")
+                                    else:
+                                        # It's a version
+                                        desc_lines.append(f"- {name}: {desc}\n  Path: {path}\n  Version: {fourth_field}")
                                 else:
                                     # Backward compatibility with old format
                                     name, desc, path = item[:3]
