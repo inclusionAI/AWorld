@@ -1,7 +1,6 @@
 ---
 name: ppt
-description: Professional PPT generation skill that combines orchestrator (outline generation), template (HTML style template), and content (slide content) agents. Generates complete PowerPoint presentations with structured outlines, custom HTML templates, and rich slide content.
-skill_names: ppt_layout;html2pptx;ppt_renderer
+description: Professional PPT generation skill that combines orchestrator (outline generation), template (HTML style template), and content (slide content) generation. Generates complete PowerPoint presentations with structured outlines, custom HTML templates, and rich slide content.
 ---
 
 # PPT Generation Skill
@@ -10,13 +9,13 @@ skill_names: ppt_layout;html2pptx;ppt_renderer
 
 ## 工作流程概览
 
-1. **阶段一：大纲生成（Orchestrator Agent）** - 分析用户需求，生成结构化的 PPT 大纲和布局预判
-2. **阶段二：模板设计（Template Agent）** - 根据主题和大纲，设计定制化的 HTML 风格模板
-3. **阶段三：内容生成（Content Agent）** - 基于大纲、模板和布局预判，生成每页的 HTML 幻灯片内容
+1. **阶段一：大纲生成（Orchestrator）** - 分析用户需求，生成结构化的 PPT 大纲和布局预判
+2. **阶段二：模板设计（Template）** - 根据主题和大纲，设计定制化的 HTML 风格模板
+3. **阶段三：内容生成（Content）** - 基于大纲、模板和布局预判，生成每页的 HTML 幻灯片内容
 
 ---
 
-## 阶段一：大纲生成（Orchestrator Agent）
+## 阶段一：大纲生成（Orchestrator）
 
 <orchestrator_agent_system_prompt>
     <output_directives>
@@ -194,7 +193,7 @@ skill_names: ppt_layout;html2pptx;ppt_renderer
 
 ---
 
-## 阶段二：模板设计（Template Agent）
+## 阶段二：模板设计（Template）
 
 ## Role
 你是一个资深前端开发工程师和 UI 设计师，擅长根据品牌调性定制可视化系统。你不仅能编写代码，还能根据色彩心理学和设计规范调整视觉变量及抽象几何装饰。
@@ -345,7 +344,7 @@ skill_names: ppt_layout;html2pptx;ppt_renderer
 
 ---
 
-## 阶段三：内容生成（Content Agent）
+## 阶段三：内容生成（Content）
 
 <ppt_design_expert_instruction>
     <role_definition>
@@ -600,7 +599,7 @@ skill_names: ppt_layout;html2pptx;ppt_renderer
 
 1. **第一步：生成大纲（Orchestrator）**
    - 分析用户需求，提取关键信息
-   - 调用 `ppt_layout` skill 进行布局预判
+   - 调用 skill `ppt_layout` 进行布局预判
    - 生成完整的 JSON 格式大纲，包含所有页面的 `title`、`content_summary` 和 `layout_prediction`
    - 将大纲保存到上下文，供后续阶段使用
 
@@ -623,7 +622,9 @@ skill_names: ppt_layout;html2pptx;ppt_renderer
 ### 关键工具使用
 
 - **`ppt_layout`**: 用于在大纲生成阶段进行布局预判，确定每页的最佳布局模式
+    ppt_layout 的定义位于sub_skills/ppt_layout.md
 - **`ppt_renderer`**: 用于在内容生成阶段读取布局模板文件（如 `outline.md`、`split_txt_txt.md` 等）
+    ppt_renderer 的定义位于sub_skills/ppt_renderer.md
 - **`html2pptx`**: 用于将生成的 HTML 幻灯片转换为 PowerPoint 格式
 
 ### 注意事项

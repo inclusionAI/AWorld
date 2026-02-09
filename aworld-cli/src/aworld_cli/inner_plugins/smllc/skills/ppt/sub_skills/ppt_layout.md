@@ -1,7 +1,6 @@
 ---
 name: ppt_layout
 description: 针对单页 PPT 大纲的标题和内容概要，通过【语义量化】确定节点数 N，结合【元素载体】判定 Carrier，最终锁定【空间布局】Layout。输出用于前端渲染的施工级 JSON。
-active: True
 ---
 
 # 概念介绍

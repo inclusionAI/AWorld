@@ -25,7 +25,7 @@ class AWorldCLI:
     def __init__(self):
         self.console = console
         self.user_input = UserInputHandler(console)
-        # 追踪是否是首次启动会话，用于控制激励信息的显示
+        # Track whether this is the first session startup, used to control the display of motivational messages
         self._is_first_session = True
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
@@ -554,7 +554,7 @@ class AWorldCLI:
                     # We use HTML for basic coloring of the prompt
                     # Show inspirational message only on first session
                     if self._is_first_session:
-                        prompt_text = "<b>✨ Create an agent to accomplish anything!</b>\n<b><cyan>You</cyan></b>: "
+                        prompt_text = "<b>✨ Create an agent to do anything!</b>\n<b><cyan>You</cyan></b>: "
                         # Mark as no longer first session after showing the message
                         self._is_first_session = False
                     else:
@@ -564,7 +564,7 @@ class AWorldCLI:
                 else:
                     # Fallback to plain input() for non-terminal environments
                     if self._is_first_session:
-                        self.console.print("[cyan]✨ Create an agent to accomplish anything![/cyan]")
+                        self.console.print("[cyan]✨ Create an agent to do anything![/cyan]")
                         # Mark as no longer first session after showing the message
                         self._is_first_session = False
                     self.console.print("[cyan]You[/cyan]: ", end="")

@@ -1,16 +1,18 @@
 ---
 name: text2agent
 description: This skill is triggered ONLY when the user explicitly requests to create agents. It analyzes user requirements and automatically generates the optimal agent code files (Python implementation) to accomplish the task. Do NOT use this skill for general tasks - only use it when agent creation is explicitly needed.
-mcp_servers: ["terminal-server"]
+mcp_servers: ["terminal"]
 mcp_config: {
    "mcpServers": {
-      "terminal-server": {
-         "command": "python",
-         "args": [
-            "-m",
-            "aworld_cli.inner_plugins.smllc.agents.mcp_tool.terminal_server"
-         ]
-      }
+        "terminal": {
+            "command": "python",
+            "args": [
+                "-m",
+                "examples.gaia.mcp_collections.tools.terminal"
+            ],
+            "env": {},
+            "client_session_timeout_seconds": 9999.0
+        }
    }
 }
 tool_list: {"AGENT_REGISTRY": [], "CAST_SEARCH": [], "human": []}
