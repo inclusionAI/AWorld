@@ -613,16 +613,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                     has_non_human_tool = True
                                         
                                         # Only show loading status if there are non-human tools
-                                        if has_non_human_tool:
+                                        # if has_non_human_tool:
                                             # Use dynamic loading status without icon prefix
-                                            _start_loading_status("Calling tool...")
+                                            # _start_loading_status("Calling tool...")
                                     # If no tool calls, don't show thinking status here
                                     # It might be final response, or next output will trigger thinking status
                                 
                                 # Handle ToolResultOutput
                                 elif isinstance(output, ToolResultOutput):
                                     # Stop "Calling tool..." status before rendering result
-                                    _stop_loading_status()
+                                    # _stop_loading_status()
                                     
                                     # Render tool result
                                     self._render_simple_tool_result_output(output)
