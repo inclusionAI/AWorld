@@ -65,8 +65,11 @@ LLM_BASE_URL="your_model_base_url"
 安装并进入 AWorld-CLI：
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
+
 conda create -n aworld_env python=3.11 -y && conda activate aworld_env 
+
 pip install -e . && cd aworld-cli && pip install -e .
+
 aworld-cli
 ```
 
@@ -93,7 +96,7 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
 <br>
 
 <p align="justify">
-自动化创建新智能体时，AWorld-CLI 不会从零开始，而是智能引用这些久经考验的 Skills，把可靠逻辑注入新智能体核心，使其继承最佳实践（见<a href="#evolution">演进</a>），从诞生起就具备稳健与有效性。
+自动化创建新智能体时，AWorld-CLI 不会从零开始，而是智能引用这些久经考验的 Skills（见<a href="#evolution">演进</a>），以确保其稳健性，同时也会从您位于 ~/agents 文件夹中的自定义 Skills 中学习。这种双重继承机制，确保了每个智能体不仅从诞生之初就稳定可靠，适应您的特定需求。
 </p>
 
 
