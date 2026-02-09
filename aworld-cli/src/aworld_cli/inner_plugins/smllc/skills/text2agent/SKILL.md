@@ -13,7 +13,7 @@ mcp_config: {
       }
    }
 }
-tool_list: {"AGENT_REGISTRY": [], "human": []}
+tool_list: {"AGENT_REGISTRY": [], "CAST_SEARCH": [], "CAST_ANALYSIS": [], "human": []}
 ---
 
 ## Role: Agent Code Generator
