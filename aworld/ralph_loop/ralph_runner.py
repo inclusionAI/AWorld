@@ -34,7 +34,7 @@ from aworld.ralph_loop.validate.types import ValidationMetrics
 
 
 class RalphRunner(Runner):
-    """Ralph Runner implementing Ralph pattern.
+    """Pipeline mode of RalphRunner implementing Ralph pattern.
 
     The RALPH pattern consists of:
     - R (Run): Execute tasks with strategic planning

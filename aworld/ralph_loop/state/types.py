@@ -59,11 +59,11 @@ class LoopContext(Context):
     def loop_dir(self) -> Path:
         return Path(self.workspace) / "loop"
 
-    def agent_dir(self) -> Path:
-        return Path(self.workspace) / "agent"
+    def task_dir(self) -> Path:
+        return Path(self.workspace) / "task"
 
     def summary_dir(self) -> Path:
-        return self.agent_dir() / "summary"
+        return self.task_dir() / "summary"
 
     def reflect_dir(self) -> Path:
         return self.loop_dir() / "reflect"
