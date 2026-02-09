@@ -95,40 +95,31 @@ Our library of Verified Skills is more than a collection of blueprints; it's a g
 <br>
 
 <p align="justify">
-When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills (see <a href="#evolution">Evolution</a>) for robutsness, and simultaneously learns from your custom skills in the ~/agents folder. This dual inheritance ensures every agent is not only reliable from the start, adapted to your requirements.
+When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills for robutsness, and simultaneously learns from your custom skills in the ~/agents folder. This dual inheritance ensures every agent is not only reliable from the start, adapted to your requirements.
 </p>
-<!-- 
+
 <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
   <colgroup>
-    <col style="width: 22%;">
-    <col style="width: 38%;">
-    <col style="width: 40%;">
+    <col style="width: 25%;">
+    <col style="width: 75%;">
   </colgroup>
   <thead>
     <tr>
-      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Showcase Agent</th>
+      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Skills</th>
       <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
-      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px; white-space: nowrap;">Status</th>
     </tr>
   </thead>
   <tbody>
     <tr>
       <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch Agent</td>
       <td style="padding: 8px; vertical-align: top;">Conducts comprehensive, multi-source research on a topic and synthesizes a structured report.</td>
-      <td style="padding: 8px; vertical-align: top; white-space: nowrap;">Ready</td>
     </tr>
     <tr>
       <td style="padding: 8px; vertical-align: top;">🚀 PPT Agent</td>
       <td style="padding: 8px; vertical-align: top;">Creates polished presentations from documents, outlines, or data.</td>
-      <td style="padding: 8px; vertical-align: top; white-space: nowrap;">In Progress</td>
-    </tr>
-    <tr>
-      <td style="padding: 8px; vertical-align: top;">📈 Stock Analysis</td>
-      <td style="padding: 8px; vertical-align: top;">Gathers financial data, performs technical/fundamental analysis, and generates an investment memo.</td>
-      <td style="padding: 8px; vertical-align: top; white-space: nowrap;">In Progress</td>
     </tr>
   </tbody>
-</table> -->
+</table>
 
 
 ## Run Your Agent
