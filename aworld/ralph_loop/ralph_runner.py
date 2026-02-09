@@ -145,16 +145,16 @@ class RalphRunner(Runner):
             iter_num = self.loop_state.iteration
             # 1. Check stop conditions
             logger.info(f"Iteration {iter_num} [1/5] CHECK - Stop condition check...")
-            stop_decision = await self._check_stop_condition()
+            stop_decision = await self._check_stop_condition(iter_num=iter_num)
             if stop_decision.should_stop:
                 logger.info(f"Loop terminated: {stop_decision.stop_type}, Reason: {stop_decision.reason}")
                 break
 
-            await self._task_preprocessing(cur_task)
+            await self._task_preprocessing(cur_task, iter_num=iter_num)
 
             # 2. Schedule and Execute task
             logger.info(f"Iteration {iter_num} [2/5] EXECUTE - Executing task...")
-            execution_result, execution_success = await self._execute_task(cur_task)
+            execution_result, execution_success = await self._execute_task(cur_task, iter_num=iter_num)
 
             if not execution_success:
                 self.loop_state.consecutive_failures += 1
@@ -307,7 +307,7 @@ class RalphRunner(Runner):
         if aworld.debug_mode:
             logger.info("Stop detector initialized")
 
-    async def _check_stop_condition(self) -> Any:
+    async def _check_stop_condition(self, iter_num: int) -> Any:
         """Check if loop should stop."""
         stop_state = StopState(
             loop_context=self.loop_context,
@@ -320,7 +320,18 @@ class RalphRunner(Runner):
 
         return await self.stop_detector.should_stop(stop_state)
 
-    async def _execute_task(self, task: Task) -> Tuple[TaskResponse, bool]:
+    async def _task_preprocessing(self, cur_task: Task, iter_num: int):
+        info = self.workspace.get_artifact_data(f"{self.loop_context.reflect_dir()}_{cur_task.id}_{iter_num - 1}")
+        if info:
+            content = f'{info.get("content")}\n'
+        else:
+            content = ''
+        cur_task.input = f"{content}{cur_task.input}"
+
+        context = await create_context(cur_task)
+        cur_task.context = context
+
+    async def _execute_task(self, task: Task, iter_num: int) -> Tuple[TaskResponse, bool]:
         """Execute a task and return result and success status."""
 
         try:
@@ -344,7 +355,7 @@ class RalphRunner(Runner):
             )
             return error_response, False
 
-    async def _validate(self, eval_target: EvalTarget) -> Dict[str, Any]:
+    async def _validate(self, eval_target: EvalTarget, iter_num: int) -> Dict[str, Any]:
         case = EvalDataCase(
             case_data={
                 "format_type": "text",
@@ -356,7 +367,8 @@ class RalphRunner(Runner):
         result = await self.validator.evaluate(dataset=dataset, eval_target=eval_target)
         case_result = result.eval_case_results[0]
 
-        logger.info(f"Task {eval_target.output.get('id')} validate result: {case_result.score_rows}")
+        logger.info(f"Iteration {iter_num} task {eval_target.output.get('id')} "
+                    f"validate result: {case_result.score_rows}")
 
         passed = all(
             sr.metric_results[k]["eval_status"].value == 1
@@ -383,6 +395,7 @@ class RalphRunner(Runner):
             validation_result: Optional[Dict[str, Any]],
             iteration_time: float,
             success: bool,
+            iter_num: int
     ) -> Optional[List]:
         """Execute reflection on the iteration."""
 
@@ -407,9 +420,9 @@ class RalphRunner(Runner):
                 logger.debug(f"Reflection failed: {traceback.format_exc()}")
             return None
 
-        await self._apply_reflections(reflections, task_id=reflect_input.task_id)
+        await self._apply_reflections(reflections, task_id=reflect_input.task_id, iter_num=iter_num)
 
-        logger.info(f"Reflection completed: {len(reflections)} results")
+        logger.info(f"Iteration {iter_num} reflection completed: {len(reflections)} results")
         for i, reflection in enumerate(reflections):
             logger.info(f"Reflection {i + 1} ({reflection.reflection_type.value}):\n"
                         f"    · Summary: {reflection.summary}\n"
@@ -418,7 +431,7 @@ class RalphRunner(Runner):
                         f"    · Suggestions: {', '.join(reflection.suggestions)}")
         return reflections
 
-    async def _apply_reflections(self, reflections: List[ReflectionResult], task_id: str) -> None:
+    async def _apply_reflections(self, reflections: List[ReflectionResult], task_id: str, iter_num: int) -> None:
         all_suggestions = []
         for reflection in reflections:
             if reflection.suggestions:
@@ -433,30 +446,9 @@ class RalphRunner(Runner):
             return
 
         content = "\n- ".join(all_suggestions)
-        artifact = Artifact(artifact_id=f"{self.loop_context.reflect_dir()}",
+        artifact = Artifact(artifact_id=f"{self.loop_context.reflect_dir()}_{task_id}_{iter_num}",
                             artifact_type=ArtifactType.TEXT, content=content,
                             metadata={
                                 "context_type": "reflect",
                             })
         await self.workspace.add_artifact(artifact, index=False)
-
-        # # todo workspace
-        # self.loop_context.reflect_dir().mkdir(parents=True, exist_ok=True)
-        # if all_suggestions:
-        #     # need version manager
-        #     reflection_path = self.loop_context.reflect_dir() / f"{task_id}.md"
-        #     reflection_path.write_text("\n- ".join(all_suggestions))
-        #     if not task.is_sub_task:
-        #         reflection_path = self.loop_context.reflect_dir() / "mission.md"
-        #         reflection_path.write_text("\n- ".join(all_suggestions))
-
-    async def _task_preprocessing(self, cur_task):
-        info = self.workspace.get_artifact_data(f"{self.loop_context.reflect_dir()}")
-        if info:
-            content = f'{info.get("content")}\n'
-        else:
-            content = ''
-        cur_task.input = f"{content}{cur_task.input}"
-
-        context = await create_context(cur_task)
-        cur_task.context = context

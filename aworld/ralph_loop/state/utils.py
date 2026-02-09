@@ -1,5 +1,7 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
+import uuid
+
 from aworld.core.context.amni import AmniConfigFactory, ApplicationContext, TaskInput
 from aworld.core.context.amni.config import AmniConfigLevel, BaseConfig
 from aworld.core.context.base import Context
@@ -10,8 +12,8 @@ async def create_context(task: Task, context_config: BaseConfig = None) -> Conte
     if not context_config:
         context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR)
     task_input = TaskInput(
-        user_id=task.user_id,
-        session_id=task.session_id,
+        user_id=task.user_id or '',
+        session_id=task.session_id or uuid.uuid4().hex,
         task_id=task.id,
         task_content=task.input,
         origin_user_input=task.input
