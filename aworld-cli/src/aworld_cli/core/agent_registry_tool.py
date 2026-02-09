@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import inspect
 import traceback
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 from aworld.config import ToolConfig
 from aworld.core.agent.base import AgentFactory
@@ -22,7 +22,14 @@ class ContextAgentRegistryAction(ToolAction):
 
     LIST_DESC = ToolActionInfo(
         name="list_desc",
-        input_params={},
+        input_params={
+            "source_type": ParamInfo(
+                name="source_type",
+                type="string",
+                required=False,
+                desc="Type of resources to list: 'built-in' for plugin agents/skills, 'user' for user-registered agents (default: 'user')"
+            )
+        },
         desc="List all available resources with their descriptions in the registry"
     )
 
@@ -55,6 +62,127 @@ def find_from_agent_factory_by_name(to_find_agent_name: str):
             logger.info(f"Found agent '{factory_agent.id()}' (name: '{to_find_agent_name}') from AgentFactory")
             return factory_agent
     return None
+
+async def list_built_in_resources() -> List[tuple]:
+    """
+    List all built-in resources (agents and skills) from plugins.
+    
+    Returns:
+        List of tuples (name, desc, path) for agents and skills from plugins
+    """
+    resources_with_desc = []
+    
+    try:
+        from pathlib import Path
+        from ..core.plugin_manager import PluginManager
+        from ..core.agent_registry import LocalAgentRegistry
+        
+        # Get all plugin directories (built-in and installed)
+        plugin_dirs = []
+        
+        # Get built-in plugins (inner_plugins)
+        import pathlib
+        current_dir = pathlib.Path(__file__).parent.parent
+        inner_plugins_dir = current_dir / "inner_plugins"
+        
+        if inner_plugins_dir.exists() and inner_plugins_dir.is_dir():
+            for plugin_dir in inner_plugins_dir.iterdir():
+                if plugin_dir.is_dir():
+                    plugin_dirs.append(plugin_dir)
+        
+        # Get installed plugins
+        try:
+            plugin_manager = PluginManager()
+            installed_plugin_dirs = plugin_manager.get_plugin_dirs()
+            # Convert agent dirs back to plugin dirs (parent directory)
+            for agent_dir in installed_plugin_dirs:
+                plugin_dir = agent_dir.parent
+                if plugin_dir not in plugin_dirs:
+                    plugin_dirs.append(plugin_dir)
+        except Exception:
+            pass
+        
+        # Get agents from plugins
+        try:
+            local_agents = LocalAgentRegistry.list_agents()
+            for local_agent in local_agents:
+                if local_agent.name and local_agent.register_dir:
+                    register_dir_path = Path(local_agent.register_dir)
+                    # Check if agent is from a plugin directory
+                    is_from_plugin = False
+                    for plugin_dir in plugin_dirs:
+                        try:
+                            # Try is_relative_to (Python 3.9+)
+                            if hasattr(register_dir_path, 'is_relative_to') and register_dir_path.is_relative_to(plugin_dir):
+                                is_from_plugin = True
+                                break
+                        except (AttributeError, ValueError):
+                            # Fallback: check if plugin_dir is a parent of register_dir_path
+                            try:
+                                register_dir_path.resolve().relative_to(plugin_dir.resolve())
+                                is_from_plugin = True
+                                break
+                            except ValueError:
+                                # Not relative, continue checking
+                                pass
+                    
+                    if is_from_plugin:
+                        desc = local_agent.desc or "No description"
+                        path = local_agent.path or str(register_dir_path)
+                        resources_with_desc.append((local_agent.name, desc, path))
+        except Exception as e:
+            logger.warning(f"Failed to get agents from plugins: {e}")
+        
+        # Get skills from plugins
+        for plugin_dir in plugin_dirs:
+            skills_dir = plugin_dir / "skills"
+            if not skills_dir.exists() or not skills_dir.is_dir():
+                continue
+            
+            try:
+                for subdir in skills_dir.iterdir():
+                    if not subdir.is_dir():
+                        continue
+                    
+                    # Check if directory contains SKILL.md file
+                    skill_md_file = subdir / "SKILL.md"
+                    if skill_md_file.exists() and skill_md_file.is_file():
+                        skill_name = subdir.name
+                        # Try to read description from SKILL.md
+                        try:
+                            with open(skill_md_file, 'r', encoding='utf-8') as f:
+                                content = f.read()
+                                # Try to extract description from markdown (look for # title or first paragraph)
+                                lines = content.split('\n')
+                                desc = "No description"
+                                for i, line in enumerate(lines):
+                                    if line.strip().startswith('#'):
+                                        # Found title, next non-empty line might be description
+                                        if i + 1 < len(lines) and lines[i + 1].strip():
+                                            desc = lines[i + 1].strip()[:200]  # Limit description length
+                                            break
+                                        else:
+                                            desc = line.strip('#').strip()[:200]
+                                            break
+                                if desc == "No description" and lines:
+                                    # Use first non-empty line as description
+                                    for line in lines:
+                                        if line.strip() and not line.strip().startswith('#'):
+                                            desc = line.strip()[:200]
+                                            break
+                        except Exception:
+                            desc = "No description"
+                        
+                        path = str(skill_md_file)
+                        resources_with_desc.append((skill_name, desc, path))
+            except Exception as e:
+                logger.warning(f"Failed to get skills from plugin {plugin_dir}: {e}")
+        
+    except Exception as e:
+        logger.error(f"Failed to list built-in resources: {e} {traceback.format_exc()}")
+    
+    return resources_with_desc
+
 
 async def dynamic_register(local_agent_name: str, register_agent_name: str, context=None) -> bool:
     """
@@ -250,8 +378,15 @@ class ContextAgentRegistryTool(AsyncTool):
 
                 try:
                     if action_name == ContextAgentRegistryAction.LIST_DESC.value.name:
-                        service = get_agent_registry_service()
-                        resources_with_desc = await service.list_desc()
+                        source_type = action.params.get("source_type", "user")
+                        
+                        if source_type == "built-in":
+                            # Query built-in resources from plugin_manager
+                            resources_with_desc = await list_built_in_resources()
+                        else:
+                            # Query user resources from AgentScanner (default)
+                            service = get_agent_registry_service()
+                            resources_with_desc = await service.list_desc()
 
                         action_result.success = True
                         if resources_with_desc:
@@ -265,9 +400,12 @@ class ContextAgentRegistryTool(AsyncTool):
                                     # Backward compatibility with old format
                                     name, desc, path = item[:3]
                                     desc_lines.append(f"- {name}: {desc}\n  Path: {path}")
-                            action_result.content = "Available resources with descriptions:\n" + "\n".join(desc_lines)
+                            
+                            source_label = "Built-in" if source_type == "built-in" else "User"
+                            action_result.content = f"Available {source_label} resources with descriptions:\n" + "\n".join(desc_lines)
                         else:
-                            action_result.content = "No resources found"
+                            source_label = "built-in" if source_type == "built-in" else "user"
+                            action_result.content = f"No {source_label} resources found"
 
                     elif action_name == ContextAgentRegistryAction.DYNAMIC_REGISTER.value.name:
                         local_agent_name = action.params.get("local_agent_name", "")
