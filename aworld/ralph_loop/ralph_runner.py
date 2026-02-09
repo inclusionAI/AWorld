@@ -328,8 +328,9 @@ class RalphRunner(Runner):
             content = ''
         cur_task.input = f"{content}{cur_task.input}"
 
-        context = await create_context(cur_task)
-        cur_task.context = context
+        if not cur_task.context:
+            context = await create_context(cur_task)
+            cur_task.context = context
 
     async def _execute_task(self, task: Task, iter_num: int) -> Tuple[TaskResponse, bool]:
         """Execute a task and return result and success status."""

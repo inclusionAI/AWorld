@@ -10,7 +10,13 @@ from aworld.core.task import Task
 
 async def create_context(task: Task, context_config: BaseConfig = None) -> Context:
     if not context_config:
-        context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR)
+        context_config = AmniConfigFactory.create(AmniConfigLevel.PILOT)
+        context_config.agent_config.enable_summary = True
+        context_config.agent_config.summary_rounds = 30
+        context_config.agent_config.summary_context_length = 40960
+        context_config.agent_config.summary_summaried = True
+        context_config.agent_config.summary_role = "user"
+        context_config.agent_config.summary_prompts = []
     task_input = TaskInput(
         user_id=task.user_id or '',
         session_id=task.session_id or uuid.uuid4().hex,
