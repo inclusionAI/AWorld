@@ -49,7 +49,7 @@ When the new agent's requirements align with existing, proven agent designs (e.g
     *   **Body (system prompt)**: Workflow (e.g. ReAct), guardrails, time sensitivity, file/artifact rules, output format. Imitate or adapt these sections in the new agent's `system_prompt` so the new agent behaves in a proven, consistent way.
 4.  **Integration**: Do not copy blindly. Merge only what fits the user's stated requirements: add or remove tools, tighten or relax guardrails, and keep the new agent's identity (name, description, class) and storage path unchanged. The new agent code is still written to `AGENT_REGISTRY_STORAGE_PATH`; reference SKILLs are read-only and only for inspiration.
 
-**If no reference clearly fits the requirement, skip this step and proceed to Step 2.**
+**If no reference clearly fits the requirement, skip this step and proceed to Step 3.**
 
 ### **Step 3: Environment and Directory Setup**
 1.  **Get Storage Path**: Retrieve the `AGENT_REGISTRY_STORAGE_PATH`.
