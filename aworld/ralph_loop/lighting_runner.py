@@ -30,7 +30,7 @@ class LightingRalphRunner(Runner):
         self.task = task
         self.original_input = task.input
         self.completed_tasks: Set[str] = set()
-        self.ralph_config = RalphConfig(llm_config=task.swarm.ordered_agents[0].conf.llm_config)
+        self.ralph_config = RalphConfig.create(model_config=task.swarm.ordered_agents[0].conf.llm_config)
         self.completion_criteria = completion_criteria
 
         # State management
@@ -196,7 +196,9 @@ class LightingRalphRunner(Runner):
 
     async def _apply_reflections(self, reflections: List[ReflectionResult], task_id: str, iter_num: int) -> None:
         all_suggestions = []
-        all_suggestions.extend([reflection.suggestions for reflection in reflections])
+        for reflection in reflections:
+            if reflection.suggestions:
+                all_suggestions.extend(reflection.suggestions)
         if not all_suggestions:
             return
 

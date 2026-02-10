@@ -225,5 +225,10 @@ class Runners:
         """Run task on Ralph pattern."""
         from aworld.ralph_loop.lighting_runner import LightingRalphRunner
 
+        if task.agent:
+            swarm = Swarm(task.agent)
+            task.agent = None
+            task.swarm = swarm
+
         runner = LightingRalphRunner(task=task, completion_criteria=completion_criteria)
         return await runner.run()

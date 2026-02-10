@@ -7,7 +7,7 @@ from aworld.evaluations.scorers.base_validator import LLMAsJudgeScorer
 from aworld.evaluations.types import MetricNames
 
 
-@scorer_register(MetricNames.OUTPUT_RELEVANCE)
+@scorer_register("answer_accuracy")
 class AnswerAccuracyLLMScorer(LLMAsJudgeScorer):
 
     def _build_judge_system_prompt(self) -> str:
@@ -36,7 +36,7 @@ class AnswerAccuracyLLMScorer(LLMAsJudgeScorer):
         json_output = self.fetch_json_from_result(judge_response)
         if json_output:
             return {
-                MetricNames.OUTPUT_RELEVANCE: MetricResult(
+                "answer_accuracy": MetricResult(
                     value=json_output.get('score', 0),
                     explanation=json_output.get('explanation', '')
                 )
