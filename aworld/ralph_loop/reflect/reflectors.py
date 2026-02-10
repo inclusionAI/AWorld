@@ -28,10 +28,12 @@ class Reflector(ABC):
             self,
             name: str,
             reflection_type: ReflectionType,
+            system_prompt: str = None,
             level: ReflectionLevel = ReflectionLevel.MEDIUM,
             priority: int = 10
     ):
         self.name = name
+        self.system_prompt = system_prompt
         self.reflection_type = reflection_type
         self.level = level
         self.priority = priority
@@ -105,47 +107,7 @@ class Reflector(ABC):
         return analysis.get("suggestions", [])
 
 
-class GeneralReflector(Reflector):
-    def __init__(
-            self,
-            model_config: ModelConfig,
-            name: str = "general_reflector",
-            reflection_type: ReflectionType = ReflectionType.OPTIMIZATION,
-            level: ReflectionLevel = ReflectionLevel.DEEP,
-            priority: int = 1
-    ):
-        super().__init__(
-            reflection_type=reflection_type,
-            name=name,
-            level=level,
-            priority=priority
-        )
-
-        self.model_config = model_config
-        self._llm = None
-
-    async def analyze(self, reflection_input: ReflectionInput) -> dict:
-        """Analyzing inputs for reflection using LLM.
-
-        The analysis result is structured data:
-        {
-            "summary": "",
-            "key_findings": [],
-            "root_causes": [],
-            "insights": [],
-            "suggestions": []
-        }
-        """
-        if not self._llm:
-            self._llm = get_llm_model(self.model_config)
-
-        analysis_input = self._build_analysis_input(reflection_input)
-        response = await acall_llm_model(self._llm, messages=analysis_input)
-        result = self._parse_response(response)
-        return result
-
-    def _build_system_prompt(self) -> str:
-        return """You are a Deep Task Reflection Specialist.
+general_reflector_system_prompt = """You are a Deep Task Reflection Specialist.
 Your responsibility is not to evaluate the quality, but to extract valuable experiences, lessons, and systematic improvement plans through dissecting the entire process of task execution.
 
 # Goal
@@ -213,6 +175,47 @@ root_cause, insights, suggestions
 }
 """
 
+class GeneralReflector(Reflector):
+    def __init__(
+            self,
+            model_config: ModelConfig,
+            name: str = "general_reflector",
+            system_prompt: str = general_reflector_system_prompt,
+            reflection_type: ReflectionType = ReflectionType.OPTIMIZATION,
+            level: ReflectionLevel = ReflectionLevel.DEEP,
+            priority: int = 1
+    ):
+        super().__init__(
+            reflection_type=reflection_type,
+            name=name,
+            level=level,
+            priority=priority
+        )
+
+        self.system_prompt = system_prompt
+        self.model_config = model_config
+        self._llm = None
+
+    async def analyze(self, reflection_input: ReflectionInput) -> dict:
+        """Analyzing inputs for reflection using LLM.
+
+        The analysis result is structured data:
+        {
+            "summary": "",
+            "key_findings": [],
+            "root_causes": [],
+            "insights": [],
+            "suggestions": []
+        }
+        """
+        if not self._llm:
+            self._llm = get_llm_model(self.model_config)
+
+        analysis_input = self._build_analysis_input(reflection_input)
+        response = await acall_llm_model(self._llm, messages=analysis_input)
+        result = self._parse_response(response)
+        return result
+
     def _build_analysis_input(self, reflection_input: ReflectionInput) -> List[Dict[str, Any]]:
         status = "Success" if reflection_input.success else "Failed"
 
@@ -242,7 +245,7 @@ Validation:
             input_str += f"\nError:\n{reflection_input.error_msg}"
 
         results = [
-            {"role": "system", "content": self._build_system_prompt()},
+            {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": input_str}
         ]
         return results

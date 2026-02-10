@@ -5,13 +5,12 @@ import importlib
 import pkgutil
 from aworld.logs.util import logger
 
-current_dir = os.path.join(os.path.dirname(__file__), 'scorers')
 
-
-def _auto_discover_scorers():
+def _auto_discover_scorers(current_dir, package_name: str = None):
     """Auto-discover and import all scorer modules in the current directory."""
 
-    package_name = f"{__name__}.scorers"
+    if not package_name:
+        package_name = f"{__name__}.{os.path.basename(current_dir)}"
     for _, module_name, _ in pkgutil.iter_modules([current_dir]):
         try:
             importlib.import_module(f'.{module_name}', package=package_name)
@@ -19,4 +18,4 @@ def _auto_discover_scorers():
             logger.error(f"Failed to import scorer module {module_name}: {e}")
 
 
-_auto_discover_scorers()
+_auto_discover_scorers(current_dir=os.path.join(os.path.dirname(__file__), 'scorers'))

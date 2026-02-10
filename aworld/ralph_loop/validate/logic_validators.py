@@ -6,14 +6,7 @@ from aworld.config.conf import ModelConfig, EvaluationConfig
 from aworld.ralph_loop.validate.base_validator import LlmValidator
 from aworld.ralph_loop.validate.types import ValidationMetrics
 
-
-@scorer_register(ValidationMetrics.LOGIC_CONSISTENCY)
-class LogicConsistencyScorer(LlmValidator):
-    def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
-        super().__init__(name=ValidationMetrics.LOGIC_CONSISTENCY, eval_config=eval_config, model_config=model_config)
-
-    def _build_judge_system_prompt(self) -> str:
-        return """# Role
+logic_consistency_system_prompt = """# Role
 You are an expert **Logical Consistency Auditor**. Your task is to analyze the provided [Content] to detect internal contradictions, causal fallacies, or temporal errors, and produce a structured JSON report.
 
 # Objective
@@ -93,19 +86,7 @@ Content:
 Please analyze the logical consistency of the following text:
 """
 
-    def build_judge_data(self, index: int, input: EvalDataCase, output: dict) -> str:
-        # add context info?
-        content = output.get("content", output.get("text", str(output)))
-        return f"Content:\n{content}"
-
-
-@scorer_register(ValidationMetrics.REASONING_VALIDITY)
-class ReasoningValidityScorer(LlmValidator):
-    def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
-        super().__init__(name=ValidationMetrics.REASONING_VALIDITY, eval_config=eval_config, model_config=model_config)
-
-    def _build_judge_system_prompt(self) -> str:
-        return """# Role
+logic_reasoning_system_prompt = """# Role
 You are an expert **Logical Reasoning Validator**. Your task is to analyze the [Input Text] to determine the validity of its argumentation, identify specific logical fallacies, and classify the type of reasoning used.
 
 # Objective
@@ -190,21 +171,7 @@ I saw three people in London today, and they were all rude. Therefore, everyone 
 Please analyze the reasoning validity of the following text:
 """
 
-    def build_judge_data(self, index: int, input: EvalDataCase, output: dict) -> str:
-        content = output.get("answer", output.get("content", str(output)))
-
-        return f"Content:\n{content}"
-
-
-@scorer_register(ValidationMetrics.CONSTRAINT_SATISFACTION)
-class ConstraintSatisfactionScorer(LlmValidator):
-    def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
-        super().__init__(name=ValidationMetrics.CONSTRAINT_SATISFACTION,
-                         eval_config=eval_config,
-                         model_config=model_config)
-
-    def _build_judge_system_prompt(self) -> str:
-        return """You are a strict **Content Auditor**. Your task is to evaluate whether the [Content] satisfies a specific list of [Constraints] and calculate a precise compliance score.
+logic_constraint_system_prompt = """You are a strict **Content Auditor**. Your task is to evaluate whether the [Content] satisfies a specific list of [Constraints] and calculate a precise compliance score.
 
 # Objective
 1.  Verify each constraint individually.
@@ -287,6 +254,44 @@ Output:
   "score": 0.67
 }
 """
+
+@scorer_register(ValidationMetrics.LOGIC_CONSISTENCY)
+class LogicConsistencyScorer(LlmValidator):
+    def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
+        super().__init__(name=ValidationMetrics.LOGIC_CONSISTENCY, eval_config=eval_config, model_config=model_config)
+
+    def _build_judge_system_prompt(self) -> str:
+        return self.system_prompt or logic_consistency_system_prompt
+
+    def build_judge_data(self, index: int, input: EvalDataCase, output: dict) -> str:
+        # add context info?
+        content = output.get("content", output.get("text", str(output)))
+        return f"Content:\n{content}"
+
+
+@scorer_register(ValidationMetrics.REASONING_VALIDITY)
+class ReasoningValidityScorer(LlmValidator):
+    def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
+        super().__init__(name=ValidationMetrics.REASONING_VALIDITY, eval_config=eval_config, model_config=model_config)
+
+    def _build_judge_system_prompt(self) -> str:
+        return self.system_prompt or logic_reasoning_system_prompt
+
+    def build_judge_data(self, index: int, input: EvalDataCase, output: dict) -> str:
+        content = output.get("answer", output.get("content", str(output)))
+
+        return f"Content:\n{content}"
+
+
+@scorer_register(ValidationMetrics.CONSTRAINT_SATISFACTION)
+class ConstraintSatisfactionScorer(LlmValidator):
+    def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
+        super().__init__(name=ValidationMetrics.CONSTRAINT_SATISFACTION,
+                         eval_config=eval_config,
+                         model_config=model_config)
+
+    def _build_judge_system_prompt(self) -> str:
+        return self.system_prompt or logic_constraint_system_prompt
 
     def build_judge_data(self, index: int, input: EvalDataCase, output: dict) -> str:
         constraints = input.case_data.get("constraints", [])
