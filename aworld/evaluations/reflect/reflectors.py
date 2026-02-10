@@ -7,15 +7,15 @@ from typing import List, Dict, Any
 
 import aworld
 from aworld.config import ModelConfig
-from aworld.logs.util import logger
-from aworld.models.llm import get_llm_model, acall_llm_model
-from aworld.models.model_response import ModelResponse
-from aworld.ralph_loop.reflect.types import (
+from aworld.evaluations.reflect.types import (
     ReflectionInput,
     ReflectionType,
     ReflectionLevel,
     ReflectionResult,
 )
+from aworld.logs.util import logger
+from aworld.models.llm import get_llm_model, acall_llm_model
+from aworld.models.model_response import ModelResponse
 
 
 class Reflector(ABC):

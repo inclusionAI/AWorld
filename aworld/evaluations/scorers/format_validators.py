@@ -5,16 +5,16 @@ import re
 from typing import Any, Dict
 
 from aworld.config import EvaluationConfig
-from aworld.evaluations.base import Scorer, EvalDataCase, ScorerResult, MetricResult
+from aworld.evaluations.base import EvalDataCase, ScorerResult, MetricResult
 from aworld.evaluations.scorers import scorer_register
-from aworld.ralph_loop.validate.base_validator import RuleValidator
-from aworld.ralph_loop.validate.types import ValidationMetrics
+from aworld.evaluations.scorers.base_validator import RuleScorer
+from aworld.evaluations.types import MetricNames
 
 
-@scorer_register(ValidationMetrics.FORMAT_CORRECTNESS)
-class FormatValidationScorer(RuleValidator):
+@scorer_register(MetricNames.FORMAT_CORRECTNESS)
+class FormatValidationScorer(RuleScorer):
     def __init__(self, eval_config: EvaluationConfig = None):
-        super().__init__(name=ValidationMetrics.FORMAT_CORRECTNESS, eval_config=eval_config)
+        super().__init__(name=MetricNames.FORMAT_CORRECTNESS, eval_config=eval_config)
 
     async def score(
             self,
@@ -121,11 +121,11 @@ class FormatValidationScorer(RuleValidator):
         return is_valid, None if is_valid else "Empty content", {}
 
 
-@scorer_register(ValidationMetrics.SCHEMA_COMPLIANCE)
-class SchemaValidationScorer(RuleValidator):
+@scorer_register(MetricNames.SCHEMA_COMPLIANCE)
+class SchemaValidationScorer(RuleScorer):
     """structure_validity, hierarchy_correctness, field_presence, field_type_match."""
     def __init__(self, eval_config: EvaluationConfig = None):
-        super().__init__(name=ValidationMetrics.SCHEMA_COMPLIANCE, eval_config=eval_config)
+        super().__init__(name=MetricNames.SCHEMA_COMPLIANCE, eval_config=eval_config)
 
     async def score(
             self,

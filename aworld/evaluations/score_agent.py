@@ -6,7 +6,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message
 from aworld.evaluations.base import Evaluator, EvalDataCase, EvalDataset
-from aworld.ralph_loop.validate.target import DelegateEvalTarget
+from aworld.evaluations.eval_targets.delegate_eval import DelegateEvalTarget
 
 
 class ValidateAgent(Agent):

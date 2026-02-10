@@ -1,12 +1,13 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
 from typing import Optional
-from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, MetricResult, MetricNames
+from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, MetricResult
 from aworld.evaluations.scorers import scorer_register
-from aworld.evaluations.scorers.llm_as_judge import LLMAsJudgeScorer
+from aworld.evaluations.scorers.base_validator import LLMAsJudgeScorer
+from aworld.evaluations.types import MetricNames
 
 
-@scorer_register(MetricNames.ANSWER_ACCURACY)
+@scorer_register(MetricNames.OUTPUT_RELEVANCE)
 class AnswerAccuracyLLMScorer(LLMAsJudgeScorer):
 
     def _build_judge_system_prompt(self) -> str:
@@ -35,7 +36,7 @@ class AnswerAccuracyLLMScorer(LLMAsJudgeScorer):
         json_output = self.fetch_json_from_result(judge_response)
         if json_output:
             return {
-                MetricNames.ANSWER_ACCURACY: MetricResult(
+                MetricNames.OUTPUT_RELEVANCE: MetricResult(
                     value=json_output.get('score', 0),
                     explanation=json_output.get('explanation', '')
                 )
