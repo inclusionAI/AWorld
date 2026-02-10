@@ -263,8 +263,8 @@ from aworld.logs.util import logger
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
 from aworld_cli.core import agent
+from aworld.sandbox.base import Sandbox
 from simple_agent.mcp_config import mcp_config
-
 
 @HookFactory.register(name="pre_simple_agent_hook")
 class PreSimpleAgentHook(PreLLMCallHook):
@@ -313,7 +313,6 @@ class SimpleAgent(Agent):
     def __init__(self, name: str, conf: AgentConfig = None, desc: str = None,
                  system_prompt: str = None, tool_names: List[str] = None, **kwargs):
         super().__init__(name=name, conf=conf, desc=desc, **kwargs)
-        self.system_prompt = system_prompt or "You are a helpful AI assistant."
         self.model_name = conf.llm_config.llm_model_name if conf and conf.llm_config else "gpt-3.5-turbo"
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
