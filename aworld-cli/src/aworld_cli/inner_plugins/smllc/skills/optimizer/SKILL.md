@@ -1,7 +1,7 @@
 ---
 name: optimizer
 description: Analyzes and automatically optimizes an existing Agent's code by applying patches to improve performance, quality, security, and functionality.
-tool_list: {"AGENT_REGISTRY": [], "CAST_ANALYSIS": [], "CAST_CODER": ["generate_snapshot", "search_replace"], "CAST_SEARCH": []}
+tool_list: {"AGENT_REGISTRY": [], "CAST_ANALYSIS": [], "CAST_CODER": [], "CAST_SEARCH": []}
 ---
 # Agent Optimization Skill (Optimizer)
 
@@ -77,24 +77,60 @@ While this skill can perform any code modification, effective agent optimization
     *   **Security**: Basic checks for common vulnerabilities.
 2.  **Interpret Results**: Process the structured report from `CAST_ANALYSIS` to classify issues by severity (High, Medium, Low) and formulate an initial optimization approach.
 
-### Phase 3: Optimization Strategy
+
+### Phase 3: Deep Architecture Analysis & Fusion (MANDATORY)
+
+This is where you demonstrate your architectural expertise. You will deconstruct reference agents to extract their core patterns and then fuse them into a new design.
+
+#### Part A: Deconstruction and Analysis
+**1. Foundation Analysis (search)**
+- **Action:** First, locate the search agent using `AGENT_REGISTRY.list_desc`.
+- **Analysis:** Read its SKILL.md using `CAST_SEARCH.read_file`. Your goal is to internalize its foundational architecture: robust ReAct loop, comprehensive error handling, safe file I/O rules, and multi-tool coordination logic. This is your baseline for all new agents.
+
+**2. Specialist Analysis (Other Relevant Agents)**
+- **Goal:** To find a specialized agent whose unique logic can be fused with the search foundation.
+- **Action (Discovering Specialists):** You must now methodically search both sources for a relevant specialist:
+  **Source 1: Built-in Agents**
+  - **Command:** Use the AGENT_REGISTRY tool to list all platform-provided skills.
+    ```text
+    AGENT_REGISTRY.list_desc(source_type="built-in")
+    ```
+  - **Analysis:** Review the description of each agent returned from the command. Identify and select the agent whose purpose is most specifically aligned with the user's current request.
+
+- **Deep Dive Analysis:** Once you have selected the most relevant specialist agent, read its SKILL.md using `CAST_SEARCH.read_file`. You must now perform a comparative analysis against search. Ask yourself:
+    - What is this agent's "secret sauce"? What unique rules, steps, or principles are in its system prompt that are NOT in search's?
+    - How is its workflow different? Does it have a specific multi-step process for its domain (e.g., for financial analysis: 1. gather data, 2. perform calculation, 3. add disclaimer, 4. format output)?
+    - What are its specialized guardrails? What does it explicitly forbid or require?
+
+**This analysis is critical. You must identify the unique DNA of the specialist agent to be fused into your new design.**
+
+#### Part B: Synthesis and Fusion
+**3. Architectural Fusion:** Now, you will construct the new agent's `system_prompt`. This is a fusion process, not a simple copy-paste.
+- **Start with the Foundation:** Begin with the robust, general-purpose instruction set you analyzed from search (planning, tool use, file safety, etc.).
+- **Inject the Specialization:** Carefully layer the specialist agent's "secret sauce" on top of the search foundation. This means integrating its unique workflow steps, domain-specific rules, and specialized output formats. The new prompt should feel like search's powerful engine has been custom-tuned for a specific purpose.
+
+**4. Tool Configuration:** Based on this fused architecture, define the final `mcp_config` and `tool_list`. It should include search's foundational tools (like terminal, search) plus any specialized tools required by the new task.
+
+**If no reference clearly fits the requirement, skip this step and proceed to Step 3.**
+
+### Phase 4: Optimization Strategy
 1.  **Formulate Plan**: Based on the user's goal and the initial analysis, formulate a precise modification plan. Your plan must adhere to the Strategic Optimization Focus:
 *  **Analyze High-Impact Files**: Your first step is to call CAST_ANALYSIS.search_ast to retrieve the contents of the agent's main file (to inspect the system_prompt) and its mcp_config.py.
 *  **Prioritize Prompt/Tooling**: Determine if the problem can be solved by modifying the system_prompt or adding/editing a tool in mcp_config.py. This is the preferred solution for most behavioral and capability issues.
 *  **Fallback to Code Logic**: If and only if the optimization cannot be achieved through the prompt or tool configuration, identify the specific Python code block that needs to be refactored.
 2.  **Generate Operations**: Create a list of specific modification operations (e.g., a JSON object for CAST_CODER.search_replace). Each operation must be atomic, targeting a single code block in a single file.
 
-### Phase 4: Snapshot and Patching
+### Phase 5: Snapshot and Patching
 1.  **Create Snapshot**: **Crucial first step.** Call `CAST_CODER.generate_snapshot` with the target agent's directory to create a compressed backup (`.tar.gz`). This ensures a safe rollback point.
 2.  **Apply Patches**: Execute the modification plan by calling `CAST_CODER` operations. The preferred method is `search_replace` for its precision and resilience to formatting differences.
     *   Each operation should be atomic and target a single file.
 3.  **Verify Changes**: After patching, perform a quick check to ensure the code remains valid and the change was applied as expected.
 
-### Phase 5: Verification and Reporting
+### Phase 6: Verification and Reporting
 1.  **Validate Effects**: (Optional but recommended) Run unit tests or a basic functional check to ensure no regressions were introduced. Compare pre- and post-optimization metrics if applicable.
 2.  **Generate Report**: Summarize the analysis findings, the list of applied changes, and the expected benefits for the user.
 
-### Phase 6: Dynamic Registration
+### Phase 7: Dynamic Registration
 **MANDATORY FINAL STEP:** Register the newly optimized agent to make it discoverable and usable within the current swarm.
 
 *   **Tool**: `AGENT_REGISTRY`
@@ -361,16 +397,6 @@ def build_simple_swarm():
 ```python
 mcp_config = {
     "mcpServers": {
-        "browser": {
-            "command": "python",
-            "args": [
-                "-m",
-                "examples.gaia.mcp_collections.tools.browser"
-            ],
-            "env": {
-            },
-            "client_session_timeout_seconds": 9999.0
-        },
         "csv": {
             "command": "python",
             "args": [

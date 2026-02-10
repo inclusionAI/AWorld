@@ -362,16 +362,6 @@ def build_simple_swarm():
 ```python
 mcp_config = {
     "mcpServers": {
-        "browser": {
-            "command": "python",
-            "args": [
-                "-m",
-                "examples.gaia.mcp_collections.tools.browser"
-            ],
-            "env": {
-            },
-            "client_session_timeout_seconds": 9999.0
-        },
         "csv": {
             "command": "python",
             "args": [
