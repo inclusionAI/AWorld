@@ -169,7 +169,7 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
 
 想直接体验？在 AWorld [Playground](https://playground.aworldagents.com/) 加载预置 DeepResearch 团队，查看源码并端到端运行。
 
-
+# MAS演练场: 即刻运行，亲眼见证
 ![](./readme_assets/playground_gaiateam.gif)
 
 <a id="experience-to-samples"></a>

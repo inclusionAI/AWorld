@@ -165,7 +165,7 @@ In AWorld, an agent is a model enhanced with tools. But real-world problems ofte
 
 3. orchestrate multi-agent systems (MAS) [Docs](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
-
+# Playground: See a Multi-Agent System in Action
 Want to see it live? Load a pre-built DeepResearch team in the AWorld [Playground](https://playground.aworldagents.com/), inspect the source, and run it end to end.
 
 
