@@ -14,6 +14,7 @@ from aworld.core.task import Task, TaskResponse
 from aworld.evaluations.base import EvalTask
 from aworld.logs.util import logger
 from aworld.output import StreamingOutputs
+from aworld.ralph_loop.types import CompletionCriteria
 from aworld.runners.evaluate_runner import EvaluateRunner
 from aworld.runners.utils import execute_runner, choose_runners
 from aworld.utils.common import sync_exec
@@ -218,3 +219,11 @@ class Runners:
             evolve_conf.run_conf = run_conf
         runner = EvolutionRunner(task=task, config=evolve_conf)
         await execute_runner([runner], run_conf)
+
+    @staticmethod
+    async def ralph_run(task: Task, completion_criteria: CompletionCriteria) -> TaskResponse:
+        """Run task on Ralph pattern."""
+        from aworld.ralph_loop.lighting_runner import LightingRalphRunner
+
+        runner = LightingRalphRunner(task=task, completion_criteria=completion_criteria)
+        return await runner.run()
