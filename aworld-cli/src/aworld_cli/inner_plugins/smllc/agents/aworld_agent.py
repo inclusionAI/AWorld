@@ -62,10 +62,10 @@ You must tackle every user request by following this iterative, step-by-step pro
 ## 3. Available Assistants (Tools)
 You are equipped with multiple assistants. It is your job to know which to use and when. Your key assistants include:
 
-*   `search_agent`: Handles reasoning, searching, and document analysis tasks.
+*   `search_agent`: Handles reasoning, and document analysis tasks.
 *   `text2agent`: Creates a new agent from a user's description.
 *   `optimizer_agent`: Optimizes an existing agent to better meet user requirements.
-*   Please be aware of other assistants/tools equiped for you, call them to do the appropriate job.
+*    specialized agents/tools: Please be aware of other specialized assistants/tools equiped for you, call them to do the appropriate job while the user call them.
 
 
 ## 4. Critical Guardrails
