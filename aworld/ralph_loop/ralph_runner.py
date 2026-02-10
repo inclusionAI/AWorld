@@ -14,7 +14,11 @@ import aworld
 from aworld.config import ModelConfig
 from aworld.core.task import Runner, Task, TaskResponse
 from aworld.evaluations.base import Evaluator, EvalCriteria, EvalDataCase, EvalDataset, EvalTarget, Scorer
+from aworld.evaluations.eval_targets.delegate_eval import DelegateEvalTarget
+from aworld.evaluations.reflect import Reflection, GeneralReflector
+from aworld.evaluations.reflect.types import ReflectionInput, ReflectionResult
 from aworld.evaluations.scorers import scorer_factory
+from aworld.evaluations.types import MetricNames
 from aworld.logs.util import logger
 from aworld.output import WorkSpace, ArtifactType, Artifact
 from aworld.ralph_loop.state.utils import create_context
@@ -25,12 +29,9 @@ from aworld.utils.run_util import exec_tasks
 from aworld.ralph_loop.config import RalphConfig
 from aworld.ralph_loop.detect.detector import create_stop_detector
 from aworld.ralph_loop.detect.types import StopState
-from aworld.ralph_loop.reflect import Reflection, GeneralReflector
-from aworld.ralph_loop.reflect.types import ReflectionInput, ReflectionResult
+
 from aworld.ralph_loop.state.types import LoopContext, LoopState
 from aworld.ralph_loop.types import CompletionCriteria, ConflictStrategy
-from aworld.ralph_loop.validate.target import DelegateEvalTarget
-from aworld.ralph_loop.validate.types import ValidationMetrics
 
 
 class RalphRunner(Runner):
@@ -246,10 +247,9 @@ class RalphRunner(Runner):
         if strategy == ConflictStrategy.OVERWRITE or strategy == ConflictStrategy.UPDATE:
             pass
         else:
-            # defaults = [ValidationMetrics.TRAJECTORY_QUALITY]
             defaults = []
             if self.completion_criteria.answer:
-                defaults.append(ValidationMetrics.OUTPUT_CORRECTNESS)
+                defaults.append(MetricNames.OUTPUT_CORRECTNESS)
             criterias = []
             for metric_name in defaults:
                 criteria = EvalCriteria(metric_name=metric_name)
