@@ -6,7 +6,6 @@ tool_list: {"AGENT_REGISTRY": [], "CAST_ANALYSIS": [], "CAST_CODER": [], "CAST_S
 # Agent Optimization Skill (Optimizer)
 
 ## 📌 Mandatory Usage Guidelines
-
 **CRITICAL: READ BEFORE USE.** Adherence to these rules is essential for the skill to function correctly.
 
 1.  **Tool Calls are Direct**:
@@ -31,7 +30,6 @@ tool_list: {"AGENT_REGISTRY": [], "CAST_ANALYSIS": [], "CAST_CODER": [], "CAST_S
     *   ✅ **DO** verify code with `CAST_ANALYSIS.search_ast` to get accurate line numbers and context before generating a `diff`.
 
 ## 📜 Skill Overview
-
 The **Optimizer Skill** is an advanced agent capability designed to analyze and enhance other agents. It leverages Abstract Syntax Tree (AST) analysis to systematically improve an agent's behavior and performance.
 
 It achieves this by focusing on an agent's core behavioral drivers: its **system prompt** (which controls its reasoning and workflow) and its **tool configuration** (mcp_config.py) (which defines its capabilities). By intelligently patching these high-impact areas, the Optimizer can rapidly correct flaws and expand an agent's functionality. This skill treats the target agent as a codebase, applying static analysis and automated patching to achieve its goals.
@@ -55,7 +53,6 @@ While this skill can perform any code modification, effective agent optimization
 
 **Core Principle**: Always assume the problem lies in the system_prompt or mcp_config.py first. Only resort to modifying other parts of the Python code if the issue cannot be resolved through these two primary vectors (e.g., adding support for a dynamic variable in the prompt).
 
-
 ## 🎯 Core Features
 *   **Agent Discovery**: Locates target agents within the environment using the `AGENT_REGISTRY`.
 *   **Deep Code Analysis**: Performs comprehensive AST-based analysis via the `CAST_ANALYSIS` tool to identify bottlenecks, security risks, and architectural flaws.
@@ -77,15 +74,13 @@ While this skill can perform any code modification, effective agent optimization
     *   **Security**: Basic checks for common vulnerabilities.
 2.  **Interpret Results**: Process the structured report from `CAST_ANALYSIS` to classify issues by severity (High, Medium, Low) and formulate an initial optimization approach.
 
-
 ### Phase 3: Deep Architecture Analysis & Fusion (MANDATORY)
-
 This is where you demonstrate your architectural expertise. You will deconstruct reference agents to extract their core patterns and then fuse them into a new design.
 
 #### Part A: Deconstruction and Analysis
-**1. Foundation Analysis (search)**
-- **Action:** First, you **MUST** locate the search agent using `AGENT_REGISTRY.list_desc`.
-- **Analysis:** Read its SKILL.md using `CAST_SEARCH.read_file`. Your goal is to internalize its foundational architecture: robust ReAct loop, comprehensive error handling, safe file I/O rules, and multi-tool coordination logic. This is your baseline for all new agents.
+**1. Foundation Analysis (search) - MANDATORY**
+- **Action:** This is your non-negotiable first step. You **MUST** locate the `search` agent using `AGENT_REGISTRY.list_desc`. Once found, you **MUST** read both its `SKILL.md` (using `CAST_SEARCH.read_file`) using `CAST_ANALYSIS.search_ast`.
+- **Analysis:** Your goal is to internalize its foundational architecture: the `system_prompt` design, functions, the ReAct loop logic, error handling patterns, file I/O safety rules, and multi-tool coordination. This architecture is the mandatory baseline for all agents you build or modify with better quality.
 
 **2. Specialist Analysis (Other Relevant Agents)**
 - **Goal:** To find a specialized agent whose unique logic can be fused with the search foundation.
@@ -111,7 +106,6 @@ This is where you demonstrate your architectural expertise. You will deconstruct
 
 **4. Tool Configuration:** Based on this fused architecture, define the final `mcp_config` and `tool_list`. It should include search's foundational tools (like terminal, search) plus any specialized tools required by the new task.
 
-**If no reference clearly fits the requirement, skip this step and proceed to Step 3.**
 
 ### Phase 4: Optimization Strategy
 1.  **Formulate Plan**: Based on the user's goal and the initial analysis, formulate a precise modification plan. Your plan must adhere to the Strategic Optimization Focus:
