@@ -359,7 +359,7 @@ def build_simple_swarm():
         # Relative paths should be avoided. Use os.path.abspath() or Path(__file__).parent to resolve paths.
         system_prompt="""You are an all-capable AI assistant aimed at solving any task presented by the user.
                          <the following instructions, workflows, guardrails should be adapt to the user's requirements and referred SKILL.md>
-                        """,,
+                        """,
         mcp_servers=mcp_servers,
         mcp_config=mcp_config,
         sandbox=sandbox
