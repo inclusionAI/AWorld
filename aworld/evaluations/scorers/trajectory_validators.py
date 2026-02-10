@@ -6,9 +6,9 @@ from typing import Any, Dict, List, Optional
 from aworld.config import EvaluationConfig, ModelConfig
 from aworld.evaluations.base import Scorer, ScorerResult, EvalStatus, MetricResult, EvalDataCase
 from aworld.evaluations.scorers import scorer_register
+from aworld.evaluations.scorers.base_validator import RuleScorer, LLMAsJudgeScorer
+from aworld.evaluations.types import MetricNames
 from aworld.logs.util import logger
-from aworld.ralph_loop.validate.base_validator import LlmValidator, RuleValidator
-from aworld.ralph_loop.validate.types import ValidationMetrics
 
 trajectory_quality_system_prompt = """# Role
 You are a Lead **Agent Trajectory Auditor**. Your objective is to evaluate the execution log of an AI Agent to ensure logical consistency, correct tool usage, and operational efficiency.
@@ -68,7 +68,7 @@ Please evaluate the following Agent Trajectory:
 """
 
 
-class TrajectoryValidator(RuleValidator):
+class TrajectoryValidator(RuleScorer):
     def _parse_trajectory(self, output: Any) -> Dict:
         if isinstance(output, dict):
             if "trajectory" in output:
@@ -98,10 +98,10 @@ class TrajectoryValidator(RuleValidator):
         )
 
 
-@scorer_register(ValidationMetrics.TRAJECTORY_STRUCTURE)
+@scorer_register(MetricNames.TRAJECTORY_STRUCTURE)
 class TrajectoryStructureScorer(TrajectoryValidator):
     def __init__(self, eval_config: EvaluationConfig = None):
-        super().__init__(name=ValidationMetrics.TRAJECTORY_STRUCTURE, eval_config=eval_config)
+        super().__init__(name=MetricNames.TRAJECTORY_STRUCTURE, eval_config=eval_config)
         self.required_fields = {
             "step_level": ["id", "meta", "state", "action", "reward"],
             "meta_level": ["session_id", "task_id", "agent_id", "step", "execute_time"],
@@ -124,10 +124,10 @@ class TrajectoryStructureScorer(TrajectoryValidator):
                 if error:
                     return self._failed_result(error)
 
-            return self._success_result(key=ValidationMetrics.TRAJECTORY_STRUCTURE)
+            return self._success_result(key=MetricNames.TRAJECTORY_STRUCTURE)
         except Exception as e:
             return self._failed_result(reason=f"Verification failed: {str(e)}",
-                                       key=ValidationMetrics.TRAJECTORY_STRUCTURE)
+                                       key=MetricNames.TRAJECTORY_STRUCTURE)
 
     def _validate_step(self, step: Dict, step_idx: int) -> Optional[str]:
         # step field
@@ -153,12 +153,12 @@ class TrajectoryStructureScorer(TrajectoryValidator):
         return None
 
 
-@scorer_register(ValidationMetrics.TRAJECTORY_TOOL_CALLS)
+@scorer_register(MetricNames.TRAJECTORY_TOOL_CALLS)
 class TrajectoryToolCallsScorer(TrajectoryValidator):
     """Verify the validity of tool calls in the trajectory."""
 
     def __init__(self, eval_config: EvaluationConfig = None):
-        super().__init__(name=ValidationMetrics.TRAJECTORY_TOOL_CALLS, eval_config=eval_config)
+        super().__init__(name=MetricNames.TRAJECTORY_TOOL_CALLS, eval_config=eval_config)
 
     async def score(self, index: int, input: Any, output: Any) -> ScorerResult:
         try:
@@ -213,18 +213,18 @@ class TrajectoryToolCallsScorer(TrajectoryValidator):
                 message = f"Tool call is valid (total: {tool_call_count}, success: {successful_calls})"
 
             if score >= 0.5:
-                return self._success_result(key=ValidationMetrics.TRAJECTORY_TOOL_CALLS)
+                return self._success_result(key=MetricNames.TRAJECTORY_TOOL_CALLS)
             else:
-                return self._failed_result(message, key=ValidationMetrics.TRAJECTORY_TOOL_CALLS)
+                return self._failed_result(message, key=MetricNames.TRAJECTORY_TOOL_CALLS)
         except Exception as e:
             return self._failed_result(reason=f"Verification failed: {str(e)}",
-                                       key=ValidationMetrics.TRAJECTORY_TOOL_CALLS)
+                                       key=MetricNames.TRAJECTORY_TOOL_CALLS)
 
 
-@scorer_register(ValidationMetrics.TRAJECTORY_COMPLETENESS)
+@scorer_register(MetricNames.TRAJECTORY_COMPLETENESS)
 class TrajectoryCompletenessScorer(TrajectoryValidator):
     def __init__(self, eval_config: EvaluationConfig = None):
-        super().__init__(name=ValidationMetrics.TRAJECTORY_COMPLETENESS, eval_config=eval_config)
+        super().__init__(name=MetricNames.TRAJECTORY_COMPLETENESS, eval_config=eval_config)
 
     async def score(self, index: int, input: Any, output: Any) -> ScorerResult:
         try:
@@ -255,18 +255,18 @@ class TrajectoryCompletenessScorer(TrajectoryValidator):
                     issues.append("missing assistant message")
 
             if issues:
-                return self._failed_result("; ".join(issues), key=ValidationMetrics.TRAJECTORY_COMPLETENESS)
+                return self._failed_result("; ".join(issues), key=MetricNames.TRAJECTORY_COMPLETENESS)
 
-            return self._success_result(key=ValidationMetrics.TRAJECTORY_COMPLETENESS)
+            return self._success_result(key=MetricNames.TRAJECTORY_COMPLETENESS)
         except Exception as e:
             return self._failed_result(reason=f"Verification failed: {str(e)}",
-                                       key=ValidationMetrics.TRAJECTORY_COMPLETENESS)
+                                       key=MetricNames.TRAJECTORY_COMPLETENESS)
 
 
-@scorer_register(ValidationMetrics.TRAJECTORY_EFFICIENCY)
+@scorer_register(MetricNames.TRAJECTORY_EFFICIENCY)
 class TrajectoryEfficiencyScorer(TrajectoryValidator):
     def __init__(self, eval_config: EvaluationConfig = None, max_steps: int = 10, max_time: float = 60.0):
-        super().__init__(name=ValidationMetrics.TRAJECTORY_EFFICIENCY, eval_config=eval_config)
+        super().__init__(name=MetricNames.TRAJECTORY_EFFICIENCY, eval_config=eval_config)
         self.max_steps = max_steps
         self.max_time = max_time
 
@@ -295,18 +295,18 @@ class TrajectoryEfficiencyScorer(TrajectoryValidator):
 
             if efficiency_score >= 0.5:
                 logger.info(f"efficiency message: {message}")
-                return self._success_result(key=ValidationMetrics.TRAJECTORY_EFFICIENCY)
+                return self._success_result(key=MetricNames.TRAJECTORY_EFFICIENCY)
             else:
-                return self._failed_result(message, key=ValidationMetrics.TRAJECTORY_EFFICIENCY)
+                return self._failed_result(message, key=MetricNames.TRAJECTORY_EFFICIENCY)
         except Exception as e:
             return self._failed_result(reason=f"Verification failed: {str(e)}",
-                                       key=ValidationMetrics.TRAJECTORY_EFFICIENCY)
+                                       key=MetricNames.TRAJECTORY_EFFICIENCY)
 
 
-@scorer_register(ValidationMetrics.TRAJECTORY_QUALITY)
-class TrajectoryQualityScorer(LlmValidator, TrajectoryValidator):
+@scorer_register(MetricNames.TRAJECTORY_QUALITY)
+class TrajectoryQualityScorer(LLMAsJudgeScorer, TrajectoryValidator):
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
-        super().__init__(name=ValidationMetrics.TRAJECTORY_QUALITY, eval_config=eval_config, model_config=model_config)
+        super().__init__(name=MetricNames.TRAJECTORY_QUALITY, eval_config=eval_config, model_config=model_config)
 
     def _build_judge_system_prompt(self) -> str:
         return self.system_prompt or trajectory_quality_system_prompt

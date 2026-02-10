@@ -3,8 +3,8 @@
 from aworld.evaluations.base import MetricResult, EvalDataCase
 from aworld.evaluations.scorers import scorer_register
 from aworld.config.conf import ModelConfig, EvaluationConfig
-from aworld.ralph_loop.validate.base_validator import LlmValidator
-from aworld.ralph_loop.validate.types import ValidationMetrics
+from aworld.evaluations.scorers.base_validator import LLMAsJudgeScorer
+from aworld.evaluations.types import MetricNames
 
 logic_consistency_system_prompt = """# Role
 You are an expert **Logical Consistency Auditor**. Your task is to analyze the provided [Content] to detect internal contradictions, causal fallacies, or temporal errors, and produce a structured JSON report.
@@ -255,10 +255,10 @@ Output:
 }
 """
 
-@scorer_register(ValidationMetrics.LOGIC_CONSISTENCY)
-class LogicConsistencyScorer(LlmValidator):
+@scorer_register(MetricNames.LOGIC_CONSISTENCY)
+class LogicConsistencyScorer(LLMAsJudgeScorer):
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
-        super().__init__(name=ValidationMetrics.LOGIC_CONSISTENCY, eval_config=eval_config, model_config=model_config)
+        super().__init__(name=MetricNames.LOGIC_CONSISTENCY, eval_config=eval_config, model_config=model_config)
 
     def _build_judge_system_prompt(self) -> str:
         return self.system_prompt or logic_consistency_system_prompt
@@ -269,10 +269,10 @@ class LogicConsistencyScorer(LlmValidator):
         return f"Content:\n{content}"
 
 
-@scorer_register(ValidationMetrics.REASONING_VALIDITY)
-class ReasoningValidityScorer(LlmValidator):
+@scorer_register(MetricNames.REASONING_VALIDITY)
+class ReasoningValidityScorer(LLMAsJudgeScorer):
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
-        super().__init__(name=ValidationMetrics.REASONING_VALIDITY, eval_config=eval_config, model_config=model_config)
+        super().__init__(name=MetricNames.REASONING_VALIDITY, eval_config=eval_config, model_config=model_config)
 
     def _build_judge_system_prompt(self) -> str:
         return self.system_prompt or logic_reasoning_system_prompt
@@ -283,10 +283,10 @@ class ReasoningValidityScorer(LlmValidator):
         return f"Content:\n{content}"
 
 
-@scorer_register(ValidationMetrics.CONSTRAINT_SATISFACTION)
-class ConstraintSatisfactionScorer(LlmValidator):
+@scorer_register(MetricNames.CONSTRAINT_SATISFACTION)
+class ConstraintSatisfactionScorer(LLMAsJudgeScorer):
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
-        super().__init__(name=ValidationMetrics.CONSTRAINT_SATISFACTION,
+        super().__init__(name=MetricNames.CONSTRAINT_SATISFACTION,
                          eval_config=eval_config,
                          model_config=model_config)
 

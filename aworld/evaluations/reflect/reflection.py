@@ -4,14 +4,14 @@ import traceback
 from typing import List, Optional
 
 import aworld
-from aworld.logs.util import logger
-from aworld.ralph_loop.reflect.reflectors import Reflector
-from aworld.ralph_loop.reflect.types import (
+from aworld.evaluations.reflect.reflectors import Reflector
+from aworld.evaluations.reflect.types import (
     ReflectionInput,
     ReflectionResult,
     ReflectionHistory,
     ReflectionType,
 )
+from aworld.logs.util import logger
 
 
 class Reflection:

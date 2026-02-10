@@ -6,8 +6,8 @@ from typing import Dict, Any, List
 from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message
-from aworld.ralph_loop.reflect import Reflector, GeneralReflector
-from aworld.ralph_loop.reflect.types import ReflectionResult, ReflectionInput
+from aworld.evaluations.reflect import Reflector, GeneralReflector
+from aworld.evaluations.reflect.types import ReflectionResult, ReflectionInput
 
 
 # Moving forward, consolidated into the `agents` package
