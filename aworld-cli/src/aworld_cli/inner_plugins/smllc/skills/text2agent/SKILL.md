@@ -257,8 +257,8 @@ from aworld.logs.util import logger
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
 from aworld_cli.core import agent
+from aworld.sandbox.base import Sandbox
 from simple_agent.mcp_config import mcp_config
-
 
 @HookFactory.register(name="pre_simple_agent_hook")
 class PreSimpleAgentHook(PreLLMCallHook):
