@@ -1,5 +1,7 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
+"""Output scores contain output match and length rule validator. """
+
 import os
 import re
 from typing import Any, Dict, List
@@ -7,8 +9,8 @@ from typing import Any, Dict, List
 from aworld.config import EvaluationConfig, ModelConfig
 from aworld.evaluations.base import Scorer, ScorerResult, EvalStatus, MetricResult, EvalDataCase
 from aworld.evaluations.scorers import scorer_register
-from aworld.ralph_loop.validate.base_validator import LlmValidator, RuleValidator
-from aworld.ralph_loop.validate.types import ValidationMetrics
+from aworld.evaluations.scorers.base_validator import RuleScorer, LLMAsJudgeScorer
+from aworld.evaluations.types import MetricNames
 
 relevance_system_prompt = """# Role
 You are an expert in evaluating Search and Question Answering (QA) quality. Your task is to assess the **relevance** of the [Model Response] relative to the [User Query].
@@ -174,10 +176,10 @@ Please strictly output in the following JSON format:
 """
 
 
-@scorer_register(ValidationMetrics.OUTPUT_CORRECTNESS)
-class OutputCorrectnessScorer(RuleValidator):
+@scorer_register(MetricNames.OUTPUT_CORRECTNESS)
+class OutputCorrectnessScorer(RuleScorer):
     def __init__(self, eval_config: EvaluationConfig = None):
-        super().__init__(name=ValidationMetrics.OUTPUT_CORRECTNESS, eval_config=eval_config)
+        super().__init__(name=MetricNames.OUTPUT_CORRECTNESS, eval_config=eval_config)
 
     async def score(self, index: int, input: EvalDataCase, output: Any) -> ScorerResult:
         try:
@@ -283,11 +285,11 @@ class OutputCorrectnessScorer(RuleValidator):
         )
 
 
-@scorer_register(ValidationMetrics.OUTPUT_LENGTH)
-class OutputLengthScorer(OutputCorrectnessScorer, RuleValidator):
+@scorer_register(MetricNames.OUTPUT_LENGTH)
+class OutputLengthScorer(OutputCorrectnessScorer, RuleScorer):
     def __init__(self, eval_config: EvaluationConfig = None, min_length: int = 10, max_length: int = 1000, **kwargs):
         super().__init__(eval_config=eval_config)
-        self.name = ValidationMetrics.OUTPUT_LENGTH
+        self.name = MetricNames.OUTPUT_LENGTH
         self.min_length = min_length
         self.max_length = max_length
 
@@ -323,23 +325,24 @@ class OutputLengthScorer(OutputCorrectnessScorer, RuleValidator):
             return self._failed_result(f"verification failed: {str(e)}")
 
 
-class OutputLlmScore(LlmValidator):
+class OutputLlmScore(LLMAsJudgeScorer):
     def build_judge_data(self, index: int, input: Any, output: Any) -> str:
-        question = input.get("question", "Unknown")
+        question = input.get("user_input", "")
+        reference_answer = input.get("ground_truth")
         context = input.get("context", "")
         answer = output.get("answer", output.get("content", "")) if isinstance(output, dict) else str(output)
 
         prompt = f"""User Query: {question}
+{f"Reference Answer: {reference_answer}" if reference_answer else ""}
+{f"Context: {context}" if context else ""}
 
-    {f"Context: {context}" if context else ""}
-
-    Model Response: {answer}
-    """
+Model Response: {answer}
+"""
         return prompt
 
 
 @scorer_register(
-    ValidationMetrics.OUTPUT_RELEVANCE,
+    MetricNames.OUTPUT_RELEVANCE,
     model_config=ModelConfig(
         llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER", "openai")),
         llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
@@ -358,14 +361,14 @@ class OutputRelevanceScorer(OutputLlmScore):
     """
 
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
-        super().__init__(name=ValidationMetrics.OUTPUT_RELEVANCE, eval_config=eval_config, model_config=model_config)
+        super().__init__(name=MetricNames.OUTPUT_RELEVANCE, eval_config=eval_config, model_config=model_config)
 
     def _build_judge_system_prompt(self) -> str:
         return self.system_prompt or relevance_system_prompt
 
 
 @scorer_register(
-    ValidationMetrics.OUTPUT_COMPLETENESS,
+    MetricNames.OUTPUT_COMPLETENESS,
     model_config=ModelConfig(
         llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER", "openai")),
         llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
@@ -384,7 +387,7 @@ class OutputCompletenessScorer(OutputLlmScore):
     """
 
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
-        super().__init__(name=ValidationMetrics.OUTPUT_COMPLETENESS, eval_config=eval_config, model_config=model_config)
+        super().__init__(name=MetricNames.OUTPUT_COMPLETENESS, eval_config=eval_config, model_config=model_config)
 
     def _build_judge_system_prompt(self) -> str:
         return self.system_prompt or completeness_system_prompt
@@ -402,7 +405,7 @@ class OutputCompletenessScorer(OutputLlmScore):
 
 
 @scorer_register(
-    ValidationMetrics.OUTPUT_QUALITY,
+    MetricNames.OUTPUT_QUALITY,
     model_config=ModelConfig(
         llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER", "openai")),
         llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
@@ -423,7 +426,7 @@ class OutputQualityScorer(OutputLlmScore):
     """
 
     def __init__(self, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
-        super().__init__(name=ValidationMetrics.OUTPUT_QUALITY, eval_config=eval_config, model_config=model_config)
+        super().__init__(name=MetricNames.OUTPUT_QUALITY, eval_config=eval_config, model_config=model_config)
 
     def _build_judge_system_prompt(self) -> str:
         return self.system_prompt or quality_system_prompt
