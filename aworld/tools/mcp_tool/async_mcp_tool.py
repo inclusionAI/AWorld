@@ -1,6 +1,5 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import json
 from typing import Any, Dict, Tuple, Union
 
 from aworld.core.context.base import Context
@@ -128,12 +127,6 @@ class McpTool(AsyncTool):
 
             observation.action_result = action_results
             observation.content = action_results[-1].content
-
-            if actions[0].action_name == 'browser_take_screenshot':
-                json_con = json.loads(action_results[0].content)
-                observation.image = json_con[1]
-                observation.content = json_con[0]
-                action_results[0].content = json_con[1]
         else:
             if self.conf.get('exit_on_failure'):
                 raise Exception(fail_error)
