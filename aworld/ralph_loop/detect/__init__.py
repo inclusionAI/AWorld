@@ -27,3 +27,5 @@ Priority Levels (lower value = higher priority):
 - 4: Limit conditions (lowest priority)
 
 """
+
+from aworld.ralph_loop.detect.detector import CompositeStopDetector

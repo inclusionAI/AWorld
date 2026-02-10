@@ -24,32 +24,38 @@ class RemoteAgentExecutor(BaseAgentExecutor):
     """
     
     def __init__(
-        self, 
-        backend_url: str, 
-        agent_name: str, 
+        self,
+        backend_url: str,
+        agent_name: str,
         console: Optional[Console] = None,
-        session_id: Optional[str] = None
+        session_id: Optional[str] = None,
+        disable_live_display: bool = False,
     ):
         """
         Initialize remote agent executor.
-        
+
         Args:
             backend_url: Backend server URL
             agent_name: Name of the agent
             console: Rich console for output
             session_id: Optional session ID. If None, will generate one automatically.
-            
+            disable_live_display: If True, do not use Rich Status/Live for activity
+                (use plain print instead). Use in batch/concurrent mode to avoid
+                "Only one live display may be active at once".
+
         Example:
             >>> executor = RemoteAgentExecutor("http://localhost:8000", "MyAgent")
+            >>> batch_executor = RemoteAgentExecutor(url, name, disable_live_display=True)
         """
         # Initialize base executor (handles session management, logging, etc.)
         super().__init__(console=console, session_id=session_id)
-        
+
         # Remote-specific initialization
         self.backend_url = backend_url
         self.agent_name = agent_name
         self.user_id = "cli-user"  # Could be configurable
-        # Track activity status for clearing previous state
+        self.disable_live_display = disable_live_display
+        # Track activity status for clearing previous state (only when live display enabled)
         self._activity_status: Optional[Status] = None
     
     def _process_output_data(self, data: Dict[str, Any], full_content: str) -> tuple[str, bool]:
@@ -83,18 +89,21 @@ class RemoteAgentExecutor(BaseAgentExecutor):
             # ActivityOutput: display data field and clear previous activity state
             if output_data:
                 activity_text = str(output_data)
-                
-                # Use Rich Status to automatically clear and update the line
                 formatted_text = f"[dim]📋 {activity_text}[/dim]"
-                
-                if self._activity_status:
-                    # Update existing status (automatically clears previous line)
-                    self._activity_status.update(formatted_text)
+
+                if self.disable_live_display:
+                    # Batch/concurrent mode: plain print to avoid "Only one live display at once"
+                    self.console.print(formatted_text)
                 else:
-                    # Create new status
-                    self._activity_status = Status(formatted_text, console=self.console)
-                    self._activity_status.start()
-                
+                    # Use Rich Status to automatically clear and update the line
+                    if self._activity_status:
+                        self._activity_status.update(formatted_text)
+                    else:
+                        self._activity_status = Status(
+                            formatted_text, console=self.console
+                        )
+                        self._activity_status.start()
+
                 full_content += activity_text + "\n"
         
         elif output_type == "step":
@@ -241,23 +250,28 @@ class RemoteAgentExecutor(BaseAgentExecutor):
         
         return full_content, True  # Continue processing
     
-    async def chat(self, message: Union[str, tuple[str, List[str]]]) -> str:
+    async def chat(
+        self,
+        message: Union[str, tuple[str, List[str]]],
+        *,
+        task_id: Optional[str] = None,
+    ) -> str:
         """
         Send chat message and handle streaming response.
-        
+
         Args:
             message: User message to send (string or tuple of (text, image_urls) for multimodal)
                     Multimodal format: (text, [image_data_url1, image_data_url2, ...])
-            
+            task_id: Optional task ID for request tracking. If provided, used in
+                    x-aworld-task-id header for digest_logger correlation.
+
         Returns:
             Complete response content as string
-            
+
         Example:
             >>> executor = RemoteAgentExecutor("http://localhost:8000", "MyAgent")
-            >>> # Text only
             >>> response = await executor.chat("Hello")
-            >>> # With images (remote executor may need to convert to appropriate format)
-            >>> response = await executor.chat(("Analyze this", ["data:image/jpeg;base64,..."]))
+            >>> response = await executor.chat("Hello", task_id="batch_0_abc123")
         """
         # Update session last used time (inherited from BaseAgentExecutor)
         self._update_session_last_used(self.session_id)
@@ -295,7 +309,7 @@ class RemoteAgentExecutor(BaseAgentExecutor):
                 "x-aworld-user-id": self.user_id,
                 "x-aworld-session-id": self.session_id,
                 "x-aworld-message-id": str(uuid.uuid4()),
-                "x-aworld-task-id": str(uuid.uuid4())
+                "x-aworld-task-id": task_id if task_id else str(uuid.uuid4()),
             }
             
             try:

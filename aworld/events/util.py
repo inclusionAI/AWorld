@@ -3,6 +3,7 @@
 from typing import Callable, Any, List
 import asyncio
 
+from aworld.core.common import TaskStatusValue
 from aworld.core.context.base import Context
 from aworld.events import eventbus
 from aworld.core.event.base import Message, Constants
@@ -58,6 +59,7 @@ async def send_message(msg: Message):
         from aworld.core.common import TaskStatusValue
         task_status = await context.get_task_status()
         if task_status == TaskStatusValue.CANCELLED or task_status == TaskStatusValue.INTERRUPTED:
+            await _send_finish_message(msg, task_status)
             return
     await _send_message(msg)
 
@@ -79,6 +81,7 @@ async def send_and_wait_message(msg: Message) -> List['HandleResult'] | None:
         from aworld.core.common import TaskStatusValue
         task_status = await context.get_task_status()
         if task_status == TaskStatusValue.CANCELLED or task_status == TaskStatusValue.INTERRUPTED:
+            await _send_finish_message(msg, task_status)
             return None
     await _send_message(msg)
     from aworld.runners.state_manager import RuntimeStateManager, RunNodeStatus, RunNodeBusiType
@@ -184,6 +187,7 @@ async def send_message_with_future(msg: Message) -> MessageFuture:
         from aworld.core.common import TaskStatusValue
         task_status = await context.get_task_status()
         if task_status == TaskStatusValue.CANCELLED or task_status == TaskStatusValue.INTERRUPTED:
+            await _send_finish_message(msg, task_status)
             # Task cancelled or interrupted, return a completed Future with empty result
             dummy_msg_id = f"cancelled_{msg.id}"
             future = MessageFuture(dummy_msg_id)
@@ -194,6 +198,10 @@ async def send_message_with_future(msg: Message) -> MessageFuture:
     logger.debug(f"Created MessageFuture for message {msg_id}")
     future = MessageFuture(msg_id)
     return future
+
+async def _send_finish_message(msg: Message, status: str = TaskStatusValue.SUCCESS):
+    context = msg.context
+    await _send_message(Message(payload=f"Task {status.lower()}",session_id=context.session_id, category=Constants.TASK, headers={"context": context}))
 
 
 # ============================================================================

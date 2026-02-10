@@ -27,7 +27,7 @@ from aworld.trace.instrumentation.uni_llmmodel.model_response_parse import (
 from aworld.trace.instrumentation.openai.inout_parse import run_async
 
 from aworld.models.model_response import ModelResponse
-from aworld.logs.util import logger
+from aworld.logs.util import logger, digest_logger
 
 
 def _completion_class_wrapper(tracer: Tracer):
@@ -149,6 +149,16 @@ def _acompletion_class_wrapper(tracer: Tracer):
                              exception=e
                              )
             span.end()
+            try:
+                agent_id = "unknown"
+                if kwargs.get('response_parse_args') and isinstance(kwargs.get('response_parse_args'), dict):
+                    agent_id = kwargs.get('response_parse_args').get('agent_id')
+                digest_logger.info(f"llm_call|{agent_id}|{instance.provider.model_name}"
+                                   f"|{getattr(context, 'user', 'default')}|{context.session_id}|{context.task_id}"
+                                   f"|0|0|0"
+                                   f"|{round(time.time() - start_time, 2)}|failed|{str(e)}")
+            except Exception:
+                pass
             raise e
 
         record_completion(span=span,
@@ -231,6 +241,14 @@ def record_completion(span,
                                 completion_tokens=completion_tokens,
                                 duration=duration
                                 )
+
+    try:
+        agent_id = "unknown"
+        if request_kwargs.get('response_parse_args') and isinstance(request_kwargs.get('response_parse_args'), dict):
+            agent_id = request_kwargs.get('response_parse_args').get('agent_id')
+        digest_logger.info(f"llm_call|{agent_id}|{instance.provider.model_name}|{getattr(context, 'user', 'default')}|{context.session_id}|{context.task_id}|{total_tokens}|{prompt_tokens}|{completion_tokens}|{round(duration,2)}|success")
+    except Exception:
+        pass
 
 
 class WrappedGeneratorResponse():

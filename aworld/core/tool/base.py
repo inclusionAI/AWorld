@@ -8,6 +8,7 @@ from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
 
 from pydantic import BaseModel
 
+import aworld
 from aworld.config.conf import ToolConfig, load_config, ConfigDict
 from aworld.core.common import Observation, ActionModel, ActionResult, CallbackItem, CallbackResult, CallbackActionType
 from aworld.core.context.base import Context
@@ -435,8 +436,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
 
     async def step(self, message: Message, **kwargs) -> Message:
         final_res = None
+        action = message.payload
         try:
-            action = message.payload
             tool_id_mapping = {}
             for act in action:
                 tool_id = act.tool_call_id
@@ -469,6 +470,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             logger.warning(
                 f"Tool {self.name()} result: {final_res}, session_id: {message.session_id}, task_id: {message.context.task_id}"
             )
+            if aworld.debug_mode:
+                logger.info(f"{self.name()} {[act.action_name for act in action]} payload: {final_res.payload}")
 
     async def post_step(self,
                         step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],

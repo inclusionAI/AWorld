@@ -168,6 +168,10 @@ class McpServers:
         if not action_list:
             return None
 
+        # Lazy initialization: ensure tool_list is loaded before calling tools
+        if not self.tool_list:
+            await self.list_tools(context=context)
+
         try:
             for action in action_list:
                 if not isinstance(action, dict):
@@ -230,6 +234,8 @@ class McpServers:
                 async def progress_callback(
                         progress: float, total: float | None, message: str | None
                 ):
+                    if not context:
+                        return
                     # for debug vnc
                     message_str = message.replace('\n', '\\n') if message else message
                     logger.info(f"McpServers|progress_callback|{progress}|{total}|{message_str}")

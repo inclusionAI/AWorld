@@ -5,7 +5,7 @@ from typing import List, Dict, Any, Callable
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
-from aworld.core.event.base import Message
+from aworld.core.event.base import Message, AgentMessage
 from aworld.utils.run_util import exec_agent
 
 
@@ -27,11 +27,17 @@ class ParallelizableAgent(Agent):
         # The function of aggregating the results of the parallel execution of agents.
         self.aggregate_func = aggregate_func
 
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, **kwargs) -> List[ActionModel]:
+    async def async_policy(self,
+                           observation: Observation,
+                           info: Dict[str, Any] = {},
+                           message: Message = None,
+                           **kwargs) -> List[ActionModel]:
         tasks = []
         if self.agents:
             for agent in self.agents:
-                tasks.append(asyncio.create_task(exec_agent(observation.content, agent, self.context, sub_task=True)))
+                tasks.append(asyncio.create_task(
+                    exec_agent(observation.content, agent=agent, context=message.context, sub_task=True)
+                ))
 
         results = await asyncio.gather(*tasks)
         res = []
@@ -46,22 +52,27 @@ class ParallelizableAgent(Agent):
             res = [self.aggregate_func(self, {action.agent_name: action.policy_info for action in res})]
         return res
 
-    async def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
+    def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if self.aggregate_func:
             return super()._agent_result(actions, caller, input_message)
 
         if not actions:
             raise Exception(f'{self.id()} no action decision has been made.')
 
-        action = ActionModel(agent_name=self.id(),
-                             policy_info={action.agent_name: action.policy_info for action in actions})
-        return Message(payload=[action],
-                       caller=caller,
-                       sender=self.id(),
-                       receiver=actions[0].tool_name,
-                       category=self.event_handler_name,
-                       session_id=input_message.context.session_id if input_message.context else "",
-                       headers=self._update_headers(input_message))
+        action = ActionModel(
+            agent_name=self.id(),
+            policy_info={f"{idx}: {action.agent_name}": action.policy_info for idx, action in enumerate(actions)}
+        )
+        msg = AgentMessage(payload=[action],
+                           caller=caller,
+                           sender=self.id(),
+                           receiver=actions[0].tool_name,
+                           session_id=input_message.context.session_id if input_message.context else "",
+                           headers=self._update_headers(input_message))
+        if self.event_handler_name:
+            msg.category = self.event_handler_name
+        return msg
 
+    @property
     def finished(self) -> bool:
         return all([agent.finished for agent in self.agents])

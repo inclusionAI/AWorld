@@ -16,6 +16,7 @@ class SandboxBuilder:
         self._env_type: Optional[int] = None
         self._metadata: Optional[Dict[str, str]] = None
         self._timeout: Optional[int] = None
+        self._mode: Optional[str] = None
         self._mcp_servers: Optional[List[str]] = None
         self._mcp_config: Optional[Any] = None
         self._black_tool_actions: Optional[Dict[str, List[str]]] = None
@@ -27,6 +28,7 @@ class SandboxBuilder:
         self._streaming: bool = False
         self._env_content_name: Optional[str] = None
         self._env_content: Optional[Dict[str, Any]] = None
+        self._workspace: Optional[List[str]] = None
         self._agents_builder = AgentsBuilder(self)
     
     def sandbox_id(self, sandbox_id: str) -> 'SandboxBuilder':
@@ -58,6 +60,19 @@ class SandboxBuilder:
         """Set timeout."""
         self._auto_commit_current_agent()
         self._timeout = timeout
+        return self
+
+    def mode(self, mode: str) -> 'SandboxBuilder':
+        """Set sandbox execution mode.
+
+        Args:
+            mode: Execution mode, supports "local" or "remote". Defaults to "local".
+
+        Returns:
+            SandboxBuilder: Self for method chaining.
+        """
+        self._auto_commit_current_agent()
+        self._mode = mode
         return self
     
     def mcp_servers(self, mcp_servers: List[str]) -> 'SandboxBuilder':
@@ -153,12 +168,76 @@ class SandboxBuilder:
         self._env_content = env_content
         return self
     
+    def workspace(self, workspace: List[str]) -> 'SandboxBuilder':
+        """Set workspace directories for filesystem tool.
+        
+        Args:
+            workspace: List of allowed workspace directory paths. If None, uses default workspaces 
+                (~/workspace, ~/aworld_workspace). Can also be set via environment variable 
+                AWORLD_WORKSPACE_PATH (comma-separated paths).
+        
+        Returns:
+            SandboxBuilder: Self for method chaining.
+        
+        Examples:
+            # Single workspace
+            builder.workspace(["~/workspace"])
+            
+            # Multiple workspaces
+            builder.workspace(["~/workspace", "~/projects", "/custom/path"])
+        """
+        self._auto_commit_current_agent()
+        self._workspace = workspace
+        return self
+    
     def _add_agent(self, name: str, config: Dict[str, Any]):
         """Internal method to add an agent configuration."""
         if self._agents is None:
             self._agents = {}
         self._agents[name] = config
-    
+
+    # ==================== Builtin tools proxies (for IDE completion) ====================
+
+    async def read_file(self, path: str, head: Optional[int] = None, tail: Optional[int] = None) -> str:
+        """Proxy to Sandbox.read_file for IDE completion."""
+        instance = self.build()
+        return await instance.read_file(path=path, head=head, tail=tail)
+
+    async def write_file(self, path: str, content: str) -> str:
+        """Proxy to Sandbox.write_file for IDE completion."""
+        instance = self.build()
+        return await instance.write_file(path=path, content=content)
+
+    async def edit_file(self, path: str, edits: List[dict], dryRun: bool = False) -> str:
+        """Proxy to Sandbox.edit_file for IDE completion."""
+        instance = self.build()
+        return await instance.edit_file(path=path, edits=edits, dryRun=dryRun)
+
+    async def create_directory(self, path: str) -> str:
+        """Proxy to Sandbox.create_directory for IDE completion."""
+        instance = self.build()
+        return await instance.create_directory(path=path)
+
+    async def list_directory(self, path: str) -> str:
+        """Proxy to Sandbox.list_directory for IDE completion."""
+        instance = self.build()
+        return await instance.list_directory(path=path)
+
+    async def move_file(self, source: str, destination: str) -> str:
+        """Proxy to Sandbox.move_file for IDE completion."""
+        instance = self.build()
+        return await instance.move_file(source=source, destination=destination)
+
+    async def list_allowed_directories(self) -> str:
+        """Proxy to Sandbox.list_allowed_directories for IDE completion."""
+        instance = self.build()
+        return await instance.list_allowed_directories()
+
+    async def run_code(self, code: str, timeout: int = 30, output_format: str = "markdown") -> str:
+        """Proxy to Sandbox.run_code for IDE completion."""
+        instance = self.build()
+        return await instance.run_code(code=code, timeout=timeout, output_format=output_format)
+
     def build(self) -> 'Sandbox':
         """Build and return the Sandbox instance.
         This is the only build() call needed - all agent configurations are auto-committed.
@@ -179,6 +258,8 @@ class SandboxBuilder:
             kwargs['metadata'] = self._metadata
         if self._timeout is not None:
             kwargs['timeout'] = self._timeout
+        if self._mode is not None:
+            kwargs['mode'] = self._mode
         if self._mcp_servers is not None:
             kwargs['mcp_servers'] = self._mcp_servers
         if self._mcp_config is not None:
@@ -201,6 +282,42 @@ class SandboxBuilder:
             kwargs['env_content_name'] = self._env_content_name
         if self._env_content is not None:
             kwargs['env_content'] = self._env_content
+        if self._workspace is not None:
+            kwargs['workspace'] = self._workspace
+        
+        # Ensure at least mcp_config is provided to avoid Sandbox() returning Builder
+        # mcp_config defaults to {} in Sandbox.__init__ if not provided
+        if 'mcp_config' not in kwargs:
+            kwargs['mcp_config'] = {}
         
         return Sandbox(**kwargs)
+    
+    def __getattr__(self, name: str):
+        """Auto-build and forward attribute access to Sandbox instance.
+        
+        This allows Sandbox() to be used directly without calling .build(),
+        while still supporting the Builder pattern for chain calls.
+        
+        Args:
+            name: Attribute name to access
+            
+        Returns:
+            Attribute from built Sandbox instance
+        """
+        # Builder methods - return them normally
+        builder_methods = {
+            'build', 'sandbox_id', 'env_type', 'metadata', 'timeout',
+            'mcp_servers', 'mcp_config', 'black_tool_actions', 'skill_configs',
+            'tools', 'registry_url', 'custom_env_tools', 'agents', 'streaming',
+            'env_content_name', 'env_content', 'workspace', '_auto_commit_current_agent',
+            '_add_agent', '_agents_builder'
+        }
+        
+        # If it's a Builder method or private attribute, use normal attribute access
+        if name.startswith('_') or name in builder_methods:
+            return object.__getattribute__(self, name)
+        
+        # For any other attribute/method (Sandbox methods), auto-build and forward
+        instance = self.build()
+        return getattr(instance, name)
 

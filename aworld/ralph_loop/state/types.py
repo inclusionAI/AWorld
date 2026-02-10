@@ -59,31 +59,36 @@ class LoopContext(Context):
     def loop_dir(self) -> Path:
         return Path(self.workspace) / "loop"
 
-    def agent_dir(self) -> Path:
-        return Path(self.workspace) / "agent"
-
-    def tasks_path(self) -> Path:
-        return self.agent_dir() / "tasks.jsonl"
+    def task_dir(self) -> Path:
+        return Path(self.workspace) / "task"
 
     def summary_dir(self) -> Path:
-        return self.agent_dir() / "summary"
+        return self.task_dir() / "summary"
 
     def reflect_dir(self) -> Path:
         return self.loop_dir() / "reflect"
 
-    def loop_lock_path(self) -> Path:
-        return Path(self.repo_root) / "loop" / "loop.lock"
+    def stop_dir(self) -> Path:
+        return self.loop_dir() / "stop"
 
     def checkpoints_dir(self) -> Path:
         """Directory for state checkpoints."""
         return self.loop_dir() / "checkpoints"
 
-    def state_history_path(self) -> Path:
-        """Path for state history."""
-        return self.loop_dir() / "state_history.jsonl"
+    def tasks_path(self) -> Path:
+        return self.loop_dir() / "tasks.jsonl"
+
+    def loop_lock_path(self) -> Path:
+        return Path(self.repo_root) / "loop" / "loop.lock"
 
     def check_directories(self):
         """Create necessary directories."""
         self.loop_dir().mkdir(parents=True, exist_ok=True)
-        self.agent_dir().mkdir(parents=True, exist_ok=True)
+        self.task_dir().mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir().mkdir(parents=True, exist_ok=True)
+
+    async def read_to_task_context(self, dir_name: str, strategy: str):
+        """Read strategy from a directory."""
+
+    async def write_to_loop_context(self, dir_name: str, strategy: str, data: Dict[str, Any]):
+        """Write strategy to the directory."""

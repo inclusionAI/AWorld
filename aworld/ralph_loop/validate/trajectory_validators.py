@@ -10,6 +10,63 @@ from aworld.logs.util import logger
 from aworld.ralph_loop.validate.base_validator import LlmValidator, RuleValidator
 from aworld.ralph_loop.validate.types import ValidationMetrics
 
+trajectory_quality_system_prompt = """# Role
+You are a Lead **Agent Trajectory Auditor**. Your objective is to evaluate the execution log of an AI Agent to ensure logical consistency, correct tool usage, and operational efficiency.
+
+# Evaluation
+Analyze the provided [Trajectory] based on the [User Goal] and [Available Tools].
+Assign a score from **0.0 (Fail)** to **1.0 (Perfect)** for each dimension below. Then, calculate the final **Score**.
+
+## Dimensions & Weights
+1.  **Reasoning Logic (Weight: 0.4)**
+    - **Criteria**: Is the `Thought` process coherent? Does the Agent correctly interpret the previous `Observation`? Does it avoid hallucinating data not present in the observation?
+    - **1.0**: Perfect logic flow.
+    - **0.0**: Complete hallucination or nonsense reasoning.
+
+2.  **Tool Usage (Weight: 0.3)**
+    - **Criteria**: Are the chosen tools appropriate? Are the arguments/parameters syntactically correct and contextually accurate?
+    - **1.0**: Flawless tool calls.
+    - **0.0**: Repeated invalid calls or nonexistent tools.
+
+3.  **Efficiency (Weight: 0.2)**
+    - **Criteria**: Is the path to the solution direct? Are there redundant steps or infinite loops?
+    - **1.0**: Minimum necessary steps used.
+    - **0.0**: Stuck in a loop or excessive wandering.
+
+4.  **Goal Achievement (Weight: 0.1)**
+    - **Criteria**: Did the sequence of actions actually result in the user's requested outcome?
+    - **1.0**: Goal fully achieved.
+    - **0.0**: Goal not met.
+
+# Calculation Formula
+Final Score = (Reasoning × 0.4) + (Tool Usage × 0.3) + (Efficiency × 0.2) + (Goal Achievement × 0.1)
+
+# Output Format
+Please strictly output in the following JSON format:
+{
+  "dimension_scores": {
+    "reasoning": <float 0.0-1.0>,
+    "tool_usage": <float 0.0-1.0>,
+    "efficiency": <float 0.0-1.0>,
+    "goal_achievement": <float 0.0-1.0>
+  },
+  "score": <float 0.00-1.00>,
+  "critical_issues": [
+    "List specific logical errors or loops. Empty list if perfect."
+  ],
+  "step_review": [
+    {
+      "step_index": 1,
+      "status": "VALID | INVALID | SUBOPTIMAL",
+      "comment": "Brief critique of this specific step."
+    }
+  ],
+  "reason": "Concise explanation of the final score."
+}
+
+Please evaluate the following Agent Trajectory:
+"""
+
 
 class TrajectoryValidator(RuleValidator):
     def _parse_trajectory(self, output: Any) -> Dict:
@@ -252,62 +309,7 @@ class TrajectoryQualityScorer(LlmValidator, TrajectoryValidator):
         super().__init__(name=ValidationMetrics.TRAJECTORY_QUALITY, eval_config=eval_config, model_config=model_config)
 
     def _build_judge_system_prompt(self) -> str:
-        return """# Role
-You are a Lead **Agent Trajectory Auditor**. Your objective is to evaluate the execution log of an AI Agent to ensure logical consistency, correct tool usage, and operational efficiency.
-
-# Evaluation
-Analyze the provided [Trajectory] based on the [User Goal] and [Available Tools].
-Assign a score from **0.0 (Fail)** to **1.0 (Perfect)** for each dimension below. Then, calculate the final **Score**.
-
-## Dimensions & Weights
-1.  **Reasoning Logic (Weight: 0.4)**
-    - **Criteria**: Is the `Thought` process coherent? Does the Agent correctly interpret the previous `Observation`? Does it avoid hallucinating data not present in the observation?
-    - **1.0**: Perfect logic flow.
-    - **0.0**: Complete hallucination or nonsense reasoning.
-
-2.  **Tool Usage (Weight: 0.3)**
-    - **Criteria**: Are the chosen tools appropriate? Are the arguments/parameters syntactically correct and contextually accurate?
-    - **1.0**: Flawless tool calls.
-    - **0.0**: Repeated invalid calls or nonexistent tools.
-
-3.  **Efficiency (Weight: 0.2)**
-    - **Criteria**: Is the path to the solution direct? Are there redundant steps or infinite loops?
-    - **1.0**: Minimum necessary steps used.
-    - **0.0**: Stuck in a loop or excessive wandering.
-
-4.  **Goal Achievement (Weight: 0.1)**
-    - **Criteria**: Did the sequence of actions actually result in the user's requested outcome?
-    - **1.0**: Goal fully achieved.
-    - **0.0**: Goal not met.
-
-# Calculation Formula
-Final Score = (Reasoning × 0.4) + (Tool Usage × 0.3) + (Efficiency × 0.2) + (Goal Achievement × 0.1)
-
-# Output Format
-Please strictly output in the following JSON format:
-{
-  "dimension_scores": {
-    "reasoning": <float 0.0-1.0>,
-    "tool_usage": <float 0.0-1.0>,
-    "efficiency": <float 0.0-1.0>,
-    "goal_achievement": <float 0.0-1.0>
-  },
-  "score": <float 0.00-1.00>,
-  "critical_issues": [
-    "List specific logical errors or loops. Empty list if perfect."
-  ],
-  "step_review": [
-    {
-      "step_index": 1,
-      "status": "VALID | INVALID | SUBOPTIMAL",
-      "comment": "Brief critique of this specific step."
-    }
-  ],
-  "reason": "Concise explanation of the final score."
-}
-
-Please evaluate the following Agent Trajectory:
-"""
+        return self.system_prompt or trajectory_quality_system_prompt
 
     def build_judge_data(self, index: int, input: EvalDataCase, output: Any) -> str:
         try:

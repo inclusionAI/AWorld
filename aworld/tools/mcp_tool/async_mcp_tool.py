@@ -1,6 +1,5 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-
 from typing import Any, Dict, Tuple, Union
 
 from aworld.core.context.base import Context

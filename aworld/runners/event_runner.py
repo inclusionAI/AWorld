@@ -5,7 +5,7 @@ import json
 import time
 import traceback
 from functools import partial
-from typing import List, Callable, Any
+from typing import List, Callable, Any, AsyncGenerator
 
 import aworld.trace as trace
 from aworld.core.agent.base import BaseAgent, is_agent_by_name
@@ -40,6 +40,7 @@ class TaskEventRunner(TaskRunner):
         self.init_messages = []
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
+        self.inited = False
 
 
     async def do_run(self, context: Context = None):
@@ -64,7 +65,7 @@ class TaskEventRunner(TaskRunner):
                 # the last step mark output finished
                 if not self.task.is_sub_task:
                     logger.info(f'main task {self.task.id} will mark outputs finished')
-                    await self.task.outputs.mark_completed()
+                    await self.task.outputs.mark_completed(resp)
 
     async def pre_run(self):
         logger.debug(f"task {self.task.id} pre run start...")
@@ -129,6 +130,7 @@ class TaskEventRunner(TaskRunner):
                 self.handlers.append(handler_instance)
 
         self.task_flag = "sub" if self.task.is_sub_task else "main"
+        self.inited = True
         logger.debug(f"{self.task_flag} task: {self.task.id} pre run finish, will start to run...")
 
     def _build_first_message(self):
@@ -184,7 +186,7 @@ class TaskEventRunner(TaskRunner):
                 handler_list = handlers.get(message.topic) or handlers.get(message.receiver)
                 if not handler_list:
                     logger.warning(f"{message.topic}/{message.receiver} no handler, ignore.")
-                    handlers.clear()
+                    handlers = []
                 else:
                     handle_map = {}
 
@@ -195,6 +197,14 @@ class TaskEventRunner(TaskRunner):
                     for t, _ in handle_map.items():
                         t.add_done_callback(partial(self._task_done_callback, group=handle_map, message=message))
                         await asyncio.sleep(0)
+            else:
+                if message.category in [Constants.TOOL, Constants.AGENT]:
+                    logger.info(f"Task {self.task.id} with key {key} cannot get handlers, use inner_handlers. message: {message}")
+                    if message.receiver and message.receiver not in inner_handlers:
+                        logger.warning(
+                            f"Task {self.task.id} {message.receiver} no handler, ignore."
+                            f"current subscriber: {self.event_mng.event_bus._subscribers}"
+                        )
             if not handlers or message.receiver in inner_handlers:
                 # not handler, return raw message
                 # if key == Constants.OUTPUT:
@@ -316,7 +326,7 @@ class TaskEventRunner(TaskRunner):
                 # External control - Check task status before processing each message
                 should_stop_task = await self.should_stop_task(message)
                 if should_stop_task:
-                    logger.warn(f"Runner {self.task.id} task should stop.")
+                    logger.warn(f"Runner {message.context.get_task().id if message else self.task.id} task should stop.")
                     await self.stop()
                 else:
                     self._stopped.clear()
@@ -407,7 +417,8 @@ class TaskEventRunner(TaskRunner):
         if self._task_response is None:
             self._task_response = TaskResponse(id=self.context.task_id if self.context else "",
                                                success=False,
-                                               msg="Task return None.")
+                                               msg="Task return None.",
+                                               status=TaskStatusValue.FAILED)
         if self.context.get_task().conf and self.context.get_task().conf.resp_carry_raw_llm_resp == True:
             self._task_response.raw_llm_resp = self.context.context_info.get('llm_output')
         self._task_response.trace_id = get_trace_id()
@@ -427,7 +438,7 @@ class TaskEventRunner(TaskRunner):
 
                 res = {"task_id": self.task.id,
                        "is_sub_task": self.task.is_sub_task,
-                       "trajectory": json.dumps(self._task_response.trajectory, ensure_ascii=False),
+                       "trajectory": json.dumps(to_serializable(self._task_response.trajectory), ensure_ascii=False),
                        "token_id_trajectory": token_id_traj}
                 trajectory_logger.info(f"{res}")
         except Exception as e:
@@ -479,3 +490,33 @@ class TaskEventRunner(TaskRunner):
                 return False
 
         return await self.is_stopped()
+
+    async def streaming(self) -> AsyncGenerator[Message, None]:
+        if not self.task.streaming_mode:
+            logger.warning(f"Task {self.task.id} is not in streaming mode")
+            return
+
+        while not self.inited:
+            await asyncio.sleep(0)
+
+        streaming_eventbus = self.event_mng.streaming_eventbus
+        if not streaming_eventbus:
+            logger.warning(f"Task {self.task.id} has no streaming_eventbus configured")
+            return
+
+        def is_task_end_msg(msg: Message):
+            return msg and isinstance(msg, Message) and msg.topic == TopicType.TASK_RESPONSE
+
+        try:
+            while True:
+                msg = await streaming_eventbus.get(self.task.id)
+                yield msg
+                # End the loop when receiving end signal
+                if is_task_end_msg(msg):
+                    break
+        except asyncio.TimeoutError:
+            logger.warning(f"Streaming queue timeout for task {self.task.id}")
+        except Exception as e:
+            logger.error(f"Error reading from streaming queue: {e}")
+            raise
+

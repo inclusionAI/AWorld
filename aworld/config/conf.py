@@ -248,6 +248,9 @@ class AgentConfig(BaseConfig):
     human_tools: List[str] = []
     skill_configs: Dict[str, Any] = None
     ptc_tools: List[str] = []
+    # Concurrent batch size when this agent is called as tool in parallel
+    # None means no limit (all parallel), positive integer limits batch size
+    concurrent_batch_size: Optional[int] = None
     ext: dict = {}
 
     def __init__(self, **kwargs):

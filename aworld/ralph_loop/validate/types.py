@@ -18,10 +18,6 @@ class ValidationMetrics:
     OUTPUT_QUALITY = "output_quality"
     OUTPUT_LENGTH = "output_length"
 
-    # Quality
-    READABILITY = "readability"
-    PROFILE = "profile"
-
     # Trajectory
     TRAJECTORY_STRUCTURE = "trajectory_structure"
     TRAJECTORY_TOOL_CALLS = "trajectory_tool_calls"
@@ -34,6 +30,10 @@ class ValidationMetrics:
     SECURITY_COMPLIANCE = "security_compliance"
     STANDARD_COMPLIANCE = "standard_compliance"
     REGULATION_COMPLIANCE = "regulation_compliance"
+
+    # Quality
+    READABILITY = "readability"
+    PROFILE = "profile"
 
     # Code (Special)
     CODE_QUALITY = "code_quality"

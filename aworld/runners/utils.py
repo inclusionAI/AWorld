@@ -40,7 +40,7 @@ async def choose_runners(tasks: List[Task], agent_oriented: bool = True, run_con
         # user custom runner class
         runner_cls = task.runner_cls
         if runner_cls:
-            return new_instance(runner_cls, task=task, run_conf=run_conf)
+            runner = new_instance(runner_cls, task=task, run_conf=run_conf)
         else:
             # user runner class in the framework
             if task.swarm:

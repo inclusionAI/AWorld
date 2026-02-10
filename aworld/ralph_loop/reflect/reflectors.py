@@ -28,10 +28,12 @@ class Reflector(ABC):
             self,
             name: str,
             reflection_type: ReflectionType,
+            system_prompt: str = None,
             level: ReflectionLevel = ReflectionLevel.MEDIUM,
             priority: int = 10
     ):
         self.name = name
+        self.system_prompt = system_prompt
         self.reflection_type = reflection_type
         self.level = level
         self.priority = priority
@@ -105,7 +107,7 @@ class Reflector(ABC):
         return analysis.get("suggestions", [])
 
 
-reflector_system_prompt = """You are a Deep Task Reflection Specialist.
+general_reflector_system_prompt = """You are a Deep Task Reflection Specialist.
 Your responsibility is not to evaluate the quality, but to extract valuable experiences, lessons, and systematic improvement plans through dissecting the entire process of task execution.
 
 # Goal
@@ -136,7 +138,11 @@ You need to output a well structured review report, which must include the follo
     - Data level: What characteristics does this reveal about the data source?
     - Strategic level: Is the current Planning logic suitable for this type of task?
     - Cognitive level: Is there a systematic bias in our understanding of user intent?
+<<<<<<< HEAD
 
+=======
+    
+>>>>>>> origin/main
 # 5. Actionable Suggestions for Improvement
 -Definition: A specific action guide for the future (Now What).
 -Requirement: It must be implementable and executable. Divided into "immediate repair (for current tasks)" and "long-term optimization (for system evolution)".
@@ -178,8 +184,8 @@ class GeneralReflector(Reflector):
     def __init__(
             self,
             model_config: ModelConfig,
-            system_prompt: str = reflector_system_prompt,
             name: str = "general_reflector",
+            system_prompt: str = general_reflector_system_prompt,
             reflection_type: ReflectionType = ReflectionType.OPTIMIZATION,
             level: ReflectionLevel = ReflectionLevel.DEEP,
             priority: int = 1
@@ -190,12 +196,22 @@ class GeneralReflector(Reflector):
             level=level,
             priority=priority
         )
-
+        self.system_prompt = system_prompt
         self.model_config = model_config
-        self.system_pormpt = system_prompt
         self._llm = None
 
     async def analyze(self, reflection_input: ReflectionInput) -> dict:
+        """Analyzing inputs for reflection using LLM.
+
+        The analysis result is structured data:
+        {
+            "summary": "",
+            "key_findings": [],
+            "root_causes": [],
+            "insights": [],
+            "suggestions": []
+        }
+        """
         if not self._llm:
             self._llm = get_llm_model(self.model_config)
 
@@ -233,7 +249,7 @@ Validation:
             input_str += f"\nError:\n{reflection_input.error_msg}"
 
         results = [
-            {"role": "system", "content": self.system_pormpt},
+            {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": input_str}
         ]
         return results

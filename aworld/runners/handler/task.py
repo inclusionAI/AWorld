@@ -3,6 +3,7 @@
 import abc
 import json
 import time
+import traceback
 from typing import AsyncGenerator, TYPE_CHECKING
 
 from aworld.core.common import TaskItem
@@ -60,15 +61,18 @@ class DefaultTaskHandler(TaskHandler):
         if topic == TopicType.SUBSCRIBE_TOOL:
             new_tools = message.payload.data
             for name, tool in new_tools.items():
-                if isinstance(tool, Tool) or isinstance(tool, AsyncTool):
-                    # Prioritize using handlers
-                    if tool.handler:
-                        await self.runner.event_mng.register(Constants.TOOL, name, tool.handler)
+                try:
+                    if isinstance(tool, Tool) or isinstance(tool, AsyncTool):
+                        # Prioritize using handlers
+                        if tool.handler:
+                            await self.runner.event_mng.register(Constants.TOOL, name, tool.handler)
+                        else:
+                            await self.runner.event_mng.register(Constants.TOOL, name, tool.step)
+                        logger.info(f"Task {self.runner.task.id} dynamic register {name} tool.")
                     else:
-                        await self.runner.event_mng.register(Constants.TOOL, name, tool.step)
-                    logger.info(f"dynamic register {name} tool.")
-                else:
-                    logger.warning(f"Unknown tool instance: {tool}")
+                        logger.warning(f"Task {self.runner.task.id}#Unknown tool instance: {tool}")
+                except Exception as e:
+                    logger.warn(f"Task {self.runner.task.id}#Failed to register new tool {name}: {str(e)}. {traceback.format_exc()}")
             return
         elif topic == TopicType.SUBSCRIBE_AGENT:
             return
@@ -83,7 +87,8 @@ class DefaultTaskHandler(TaskHandler):
                                                       success=False,
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
-                                                      usage=self.runner.context.token_usage)
+                                                      usage=self.runner.context.token_usage,
+                                                      status=TaskStatusValue.FAILED)
             await self.runner.stop()
             yield Message(payload=self.runner._task_response,
                           session_id=message.session_id,

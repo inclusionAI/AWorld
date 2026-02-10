@@ -5,9 +5,9 @@ import asyncio
 import enum
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Union, List, Dict, Callable, Optional, Literal, TYPE_CHECKING
+from typing import Any, Union, List, Dict, Callable, Optional, Literal, TYPE_CHECKING, AsyncGenerator
 
-from aworld.dataset.types import TrajectoryItem
+from aworld.core.event.base import Message
 from aworld.utils.serialized_util import to_serializable
 
 from aworld.agents.llm_agent import Agent
@@ -149,6 +149,10 @@ class Runner(object):
             import threading
             t = threading.Thread(target=self.daemon_target, name="daemon", daemon=True)
             t.start()
+
+    @abc.abstractmethod
+    async def streaming(self) -> AsyncGenerator[Message, None]:
+        """Streaming run api."""
 
     async def run(self) -> Any:
         try:
