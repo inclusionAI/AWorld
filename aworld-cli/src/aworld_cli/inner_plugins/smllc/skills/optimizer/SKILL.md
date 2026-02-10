@@ -84,7 +84,7 @@ This is where you demonstrate your architectural expertise. You will deconstruct
 
 #### Part A: Deconstruction and Analysis
 **1. Foundation Analysis (search)**
-- **Action:** First, locate the search agent using `AGENT_REGISTRY.list_desc`.
+- **Action:** First, you **MUST** locate the search agent using `AGENT_REGISTRY.list_desc`.
 - **Analysis:** Read its SKILL.md using `CAST_SEARCH.read_file`. Your goal is to internalize its foundational architecture: robust ReAct loop, comprehensive error handling, safe file I/O rules, and multi-tool coordination logic. This is your baseline for all new agents.
 
 **2. Specialist Analysis (Other Relevant Agents)**
@@ -350,6 +350,12 @@ def build_simple_swarm():
     # Extract all server keys from mcp_config
     mcp_servers = list(mcp_config.get("mcpServers", {}).keys())
 
+    # Mandatory Use - You must use this.
+    sandbox = Sandbox(
+        mcp_config=mcp_config
+    )
+    sandbox.reuse = True
+
     # Create SimpleAgent instance
     simple_agent = SimpleAgent(
         name="simple_agent",
@@ -386,7 +392,8 @@ def build_simple_swarm():
                             *   **Rationale:** This strict policy ensures all work is organized, immediately accessible to the user, and prevents polluting the file system with nested folders.
                         """,
         mcp_servers=mcp_servers,
-        mcp_config=mcp_config
+        mcp_config=mcp_config,
+        sandbox=sandbox
     )
 
     # Return the Swarm containing this Agent
@@ -495,6 +502,20 @@ mcp_config = {
             "env": {
             },
             "client_session_timeout_seconds": 9999.0
+        },
+        "ms-playwright": {
+            "command": "npx",
+            "args": [
+                "@playwright/mcp@latest",
+                "--no-sandbox",
+                "--isolated",
+                "--output-dir=/tmp/playwright",
+                "--timeout-action=10000",
+            ],
+            "env": {
+                "PLAYWRIGHT_TIMEOUT": "120000",
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
+            }
         }
     }
 }
