@@ -340,6 +340,12 @@ def build_simple_swarm():
     # Extract all server keys from mcp_config
     mcp_servers = list(mcp_config.get("mcpServers", {}).keys())
 
+    # Mandatory Use - You must use this.
+    sandbox = Sandbox(
+        mcp_config=mcp_config
+    )
+    sandbox.reuse = True
+
     # Create SimpleAgent instance
     simple_agent = SimpleAgent(
         name="simple_agent",
@@ -351,7 +357,8 @@ def build_simple_swarm():
                          <the following instructions, workflows, guardrails should be adapt to the user's requirements and referred SKILL.md>
                         """,
         mcp_servers=mcp_servers,
-        mcp_config=mcp_config
+        mcp_config=mcp_config,
+        sandbox=sandbox
     )
 
     # Return the Swarm containing this Agent
@@ -450,6 +457,20 @@ mcp_config = {
             "env": {
             },
             "client_session_timeout_seconds": 9999.0
+        },
+        "ms-playwright": {
+            "command": "npx",
+            "args": [
+                "@playwright/mcp@latest",
+                "--no-sandbox",
+                "--isolated",
+                "--output-dir=/tmp/playwright",
+                "--timeout-action=10000",
+            ],
+            "env": {
+                "PLAYWRIGHT_TIMEOUT": "120000",
+                "SESSION_REQUEST_CONNECT_TIMEOUT": "120"
+            }
         }
     }
 }

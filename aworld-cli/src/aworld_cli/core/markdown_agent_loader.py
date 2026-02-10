@@ -10,6 +10,7 @@ import importlib.util
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
+from aworld.sandbox import Sandbox
 from aworld.utils.skill_loader import extract_front_matter, collect_skill_docs
 from .skill_registry import get_skill_registry
 from aworld.agents.llm_agent import Agent
@@ -566,6 +567,10 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
             )
             """Build Swarm from markdown agent definition."""
 
+            sandbox = Sandbox(
+                mcp_config=mcp_config,
+            )
+            sandbox.reuse = True
             agent = Agent(
                 name=agent_name,
                 desc=description,
@@ -574,6 +579,7 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
                 tool_names=tool_names if tool_names else None,
                 mcp_servers=mcp_servers if mcp_servers else None,
                 mcp_config=mcp_config,
+                sandbox=sandbox,
                 ptc_tools=ptc_tools if ptc_tools else []
             )
             return Swarm(agent)
