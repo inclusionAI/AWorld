@@ -17,7 +17,11 @@ from aworld.utils.run_util import exec_agent
 class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
     """Scorer that uses an LLM agent as a judge to evaluate the quality of the response."""
 
-    def __init__(self, name: str = None, eval_config: EvaluationConfig = None, model_config: ModelConfig = None):
+    def __init__(self,
+                 name: str = None,
+                 eval_config: EvaluationConfig = None,
+                 model_config: ModelConfig = None,
+                 system_prompt: str = None):
         super().__init__(name=name, eval_config=eval_config)
 
         self.model_config = model_config or ModelConfig(
@@ -34,6 +38,7 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
             llm_base_url=self.model_config.llm_base_url,
             llm_api_key=self.model_config.llm_api_key,
         )
+        self.system_prompt = system_prompt
 
     @abc.abstractmethod
     def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
@@ -104,6 +109,4 @@ class LLMAsJudgeScorer(Scorer, Generic[EvalCaseDataType]):
         Returns:
             str: System prompt.
         """
-        return '''
-        You are a judge model that evaluates the quality of the response.
-        '''
+        return self.system_prompt

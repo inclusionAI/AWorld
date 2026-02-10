@@ -1,6 +1,8 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
 
+# Moving forward, it will be consolidated into the `evaluations` package.
+
 """
 The validation module is mainly used to evaluate scores from different dimensions.
 The framework supports indicators of various dimension types such as Format, Logic, Output, Quality,
@@ -16,5 +18,3 @@ Key Validators:
 - TrajectoryQualityScorer: Overall trajectory quality assessment using LLM
 
 """
-
-# TODO: If there is sufficient universal stability, it will be moved to the evaluation module
