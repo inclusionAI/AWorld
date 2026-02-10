@@ -1,13 +1,16 @@
 import abc
 import asyncio
-import traceback
 from abc import abstractmethod
 from dataclasses import field, dataclass
-from typing import AsyncIterator, Any, Union, Iterator
+from typing import AsyncIterator, Any, Union, Iterator, Optional
 
 from aworld.logs.util import logger
 from aworld.output import Output
 from aworld.output.base import RUN_FINISHED_SIGNAL, MessageOutput
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from aworld.core.task import TaskResponse
 
 
 @dataclass
@@ -55,7 +58,7 @@ class Outputs(abc.ABC):
         pass
 
     @abstractmethod
-    async def mark_completed(self):
+    async def mark_completed(self, task_response: 'TaskResponse' = None):
         pass
 
     async def get_metadata(self) -> dict:
@@ -100,7 +103,7 @@ class DefaultOutputs(Outputs):
     def sync_stream_events(self) -> Union[Iterator[Output], list]:
         return self._outputs
 
-    async def mark_completed(self):
+    async def mark_completed(self, task_response: 'TaskResponse' = None) -> None:
         pass
 
 
@@ -127,6 +130,7 @@ class StreamingOutputs(AsyncOutputs):
     _visited_outputs: list[Output] = field(default_factory=list)
     _stored_exception: Exception | None = field(default=None, repr=False)  # Stores any exceptions that occur
     _run_impl_task: asyncio.Task[Any] | None = field(default=None, repr=False)  # The running task
+    _task_response: Optional[Any] = field(default=None, repr=False)
 
     async def add_output(self, output: Output):
         """Add an output to the queue asynchronously.
@@ -211,9 +215,13 @@ class StreamingOutputs(AsyncOutputs):
         if self._run_impl_task and not self._run_impl_task.done():
             self._run_impl_task.cancel()
 
-    async def mark_completed(self) -> None:
+    async def mark_completed(self, task_response: "TaskResponse" = None) -> None:
         """Mark the streaming process as completed by adding a RUN_FINISHED_SIGNAL to the queue."""
+        self._task_response = task_response
         await self._output_queue.put(RUN_FINISHED_SIGNAL)
+
+    def response(self) -> Optional["TaskResponse"]:
+        return self._task_response
 
     def get_message_output_content(self) -> str:
         content = ""

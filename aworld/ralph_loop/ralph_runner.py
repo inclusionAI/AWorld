@@ -17,6 +17,7 @@ from aworld.evaluations.base import Evaluator, EvalCriteria, EvalDataCase, EvalD
 from aworld.evaluations.scorers import scorer_factory
 from aworld.logs.util import logger
 from aworld.output import Artifact, ArtifactType, WorkSpace
+from aworld.ralph_loop.detect.detector import create_stop_detector
 from aworld.ralph_loop.mission.analyzer import MissionAnalyzer
 from aworld.ralph_loop.mission.enhancer import DefaultContextEnhancer
 from aworld.ralph_loop.mission.processor import to_mission
@@ -31,7 +32,6 @@ from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.utils.run_util import exec_tasks
 
 from aworld.ralph_loop.config import RalphConfig
-from aworld.ralph_loop.detect.stop_condition import create_stop_detector
 from aworld.ralph_loop.detect.types import StopState
 from aworld.ralph_loop.reflect import Reflection, GeneralReflector
 from aworld.ralph_loop.state.types import LoopContext, LoopState
@@ -41,7 +41,7 @@ from aworld.ralph_loop.validate.types import ValidationMetrics
 
 
 class RalphRunner(Runner):
-    """Ralph Runner implementing Ralph pattern.
+    """Pipeline mode of RalphRunner implementing Ralph pattern.
 
     The RALPH pattern consists of:
     - R (Run): Execute tasks with strategic planning
@@ -49,8 +49,6 @@ class RalphRunner(Runner):
     - L (Learn): Reflect on execution and extract insights
     - P (Plan): Replan based on feedback and learnings
     - H (Halt): Detect termination conditions
-
-    TODO: agentic
     """
 
     def __init__(self, task: Union[str, Task], completion_criteria: Optional[CompletionCriteria] = None, **kwargs):
@@ -215,7 +213,7 @@ class RalphRunner(Runner):
             # 4. Reflect on execution
             # validation did not pass or execution failed or task complex
             if self.reflector and (not validation_result.get("passed") or not execution_success):
-                logger.info(f"Iteration {self.loop_state.iteration} [4/5] LEARN - Reflecting on execution...")
+                logger.info(f"Iteration {iter_num} [4/5] LEARN - Reflecting on execution...")
                 iteration_time = time.time() - iteration_start
 
                 reflection_results = await self._reflect(
@@ -368,7 +366,7 @@ class RalphRunner(Runner):
         if aworld.debug_mode:
             logger.info("Replanning initialized")
 
-    async def _check_stop_condition(self) -> Any:
+    async def _check_stop_condition(self, iter_num: int) -> Any:
         """Check if loop should stop."""
         stop_state = StopState(
             loop_context=self.loop_context,
@@ -389,12 +387,13 @@ class RalphRunner(Runner):
             content = ''
         cur_task.input = f"{content}{cur_task.input}"
 
-        context = await create_context(cur_task)
-        cur_task.context = context
+        if not cur_task.context:
+            context = await create_context(cur_task)
+            cur_task.context = context
 
     async def _execute_task(self, task: Task, iter_num: int) -> Tuple[TaskResponse, bool]:
         """Execute a task and return result and success status."""
-        # todo: task context processing
+
         try:
             results = await exec_tasks(tasks=[task])
             execution_result: TaskResponse = results.get(task.id)

@@ -23,21 +23,22 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
     """
 
     def __init__(
-            self,
-            sandbox_id: Optional[str] = None,
-            metadata: Optional[Dict[str, str]] = None,
-            timeout: Optional[int] = None,
-            mcp_servers: Optional[List[str]] = None,
-            mcp_config: Optional[Any] = None,
-            black_tool_actions: Optional[Dict[str, List[str]]] = None,
-            skill_configs: Optional[Any] = None,
-            tools: Optional[List[str]] = None,
-            registry_url: Optional[str] = None,
-            custom_env_tools: Optional[Any] = None,
-            agents: Optional[Dict[str, Any]] = None,
-            env_content_name: Optional[str] = None,
-            env_content: Optional[Dict[str, Any]] = None,
-            **kwargs
+        self,
+        sandbox_id: Optional[str] = None,
+        metadata: Optional[Dict[str, str]] = None,
+        timeout: Optional[int] = None,
+        mcp_servers: Optional[List[str]] = None,
+        mcp_config: Optional[Any] = None,
+        black_tool_actions: Optional[Dict[str, List[str]]] = None,
+        skill_configs: Optional[Any] = None,
+        tools: Optional[List[str]] = None,
+        registry_url: Optional[str] = None,
+        custom_env_tools: Optional[Any] = None,
+        agents: Optional[Dict[str, Any]] = None,
+        env_content_name: Optional[str] = None,
+        env_content: Optional[Dict[str, Any]] = None,
+        mode: str = "local",
+        **kwargs,
     ):
         """Initialize a new LocalSandbox instance.
         
@@ -79,8 +80,9 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
                 Note that task_id and session_id are added dynamically from context during tool calls.
             **kwargs: Additional parameters for specific sandbox types.
         """
-        # Extract reuse from kwargs if present
-        reuse = kwargs.pop('reuse', False)
+        # Extract reuse / workspace / streaming from kwargs if present
+        reuse = kwargs.pop("reuse", False)
+        workspace = kwargs.pop("workspace", None)
         super().__init__(
             sandbox_id=sandbox_id,
             env_type=SandboxEnvType.LOCAL,
@@ -94,10 +96,12 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             registry_url=registry_url,
             custom_env_tools=custom_env_tools,
             agents=agents,
-            streaming=kwargs.get('streaming', False),
+            streaming=kwargs.get("streaming", False),
             env_content_name=env_content_name,
             env_content=env_content,
-            reuse=reuse
+            reuse=reuse,
+            workspace=workspace,
+            mode=mode,
         )
 
         # Initialize properties

@@ -75,7 +75,8 @@ class Swarm(object):
             self.builder = BUILD_CLS.get(self.build_type)(topology=self.topology,
                                                           root_agent=root_agent,
                                                           keep_build_type=keep_build_type)
-
+        if build_type == GraphBuildType.TEAM.value:
+            self.min_call_num = kwargs.get("min_call_num", 0)
         self.agent_graph: AgentGraph = None
 
         # global tools

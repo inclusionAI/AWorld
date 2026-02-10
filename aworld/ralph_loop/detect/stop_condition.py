@@ -52,12 +52,11 @@ class StopCondition(ABC):
 
 
 class CompletionCondition(StopCondition):
-    """Complete Condition Detector - Check if the task has been successfully completed."""
-
     def __init__(self):
         super().__init__(priority=3)
 
     async def should_stop(self, state: StopState) -> StopDecision:
+        """Complete Condition Detector - Check if the task has been successfully completed."""
         confirmations = state.loop_state.completion_confirmations
         confirmation_threshold = state.loop_state.confirmation_threshold
 
@@ -301,89 +300,48 @@ class ResourceExhaustedCondition(ErrorCondition):
         return StopDecision(should_stop=False)
 
 
-class CompositeStopDetector:
-    """Combination termination detector, coordinate multiple detectors and perform detection in priority order."""
-
-    def __init__(self, detectors: Optional[List[StopCondition]] = None):
-        if not detectors:
-            detectors = build_stop_detectors()
-
-        self.detectors = sorted(detectors, key=lambda d: d.priority)
-
-    async def should_stop(self, state: StopState) -> StopDecision:
-        for detector in self.detectors:
-            decision = await detector.safe_check(state)
-            # Logic circuit breaker
-            if decision.should_stop:
-                logger.info(
-                    f"Terminate detector trigger: {detector.__class__.__name__} | "
-                    f"reason: {decision.stop_type.value} | "
-                    f"message: {decision.reason}"
-                )
-                return decision
-
-        return StopDecision(should_stop=False)
-
-    def add_detector(self, detector: StopCondition):
-        self.detectors.append(detector)
-        self.detectors.sort(key=lambda d: d.priority)
-
-    def remove_detector(self, detector_class: type):
-        self.detectors = [d for d in self.detectors if not isinstance(d, detector_class)]
-
-    def enable_detector(self, detector_class: type):
-        for detector in self.detectors:
-            if isinstance(detector, detector_class):
-                detector.enabled = True
-
-    def disable_detector(self, detector_class: type):
-        for detector in self.detectors:
-            if isinstance(detector, detector_class):
-                detector.enabled = False
-
-
-def build_stop_detectors(enable_completion: bool = True,
-                         enable_limits: bool = True,
-                         enable_failure_detection: bool = True,
-                         enable_interrupt: bool = True,
-                         enable_error: bool = True,
-                         custom_detectors: Optional[List[StopCondition]] = None) -> List[StopCondition]:
+def build_stop_conditions(enable_completion: bool = True,
+                          enable_limits: bool = True,
+                          enable_failure_detection: bool = True,
+                          enable_interrupt: bool = True,
+                          enable_error: bool = True,
+                          custom_conditions: Optional[List[StopCondition]] = None) -> List[StopCondition]:
     """Utility function for creating termination detectors.
 
     Args:
-        enable_completion: Whether to enable completion detection
-        enable_limits: whether to enable restriction detection
-        enable_failure_detection: Whether to enable failure detection
-        enable_interrupt: Whether to enable interrupt detection
-        enable_error: Whether to enable system error detection
-        custom_detectors: List of custom detectors
+        enable_completion: Whether to enable completion detection.
+        enable_limits: Whether to enable restriction detection.
+        enable_failure_detection: Whether to enable failure detection.
+        enable_interrupt: Whether to enable interrupt detection.
+        enable_error: Whether to enable system error detection.
+        custom_conditions: List of custom conditions.
 
     Returns:
-        Stop detector list.
+        Stop condition list.
     """
-    detectors = []
+    conditions = []
 
-    # built-in detectors
+    # built-in condition
     if enable_interrupt:
-        detectors.extend([
+        conditions.extend([
             UserInterruptCondition(),
             ExternalSignalCondition(),
         ])
 
     if enable_error:
-        detectors.extend([
+        conditions.extend([
             SystemErrorCondition(),
             ResourceExhaustedCondition(),
         ])
 
     if enable_completion:
-        detectors.extend([
+        conditions.extend([
             CompletionCondition(),
             CustomStopCondition(),
         ])
 
     if enable_limits:
-        detectors.extend([
+        conditions.extend([
             MaxIterationsCondition(),
             TimeoutCondition(),
             MaxCostCondition(),
@@ -391,26 +349,13 @@ def build_stop_detectors(enable_completion: bool = True,
         ])
 
     if enable_failure_detection:
-        detectors.extend([
+        conditions.extend([
             ConsecutiveFailuresCondition(),
             ValidationFailureCondition(),
         ])
 
-    # custom detectors
-    if custom_detectors:
-        detectors.extend(custom_detectors)
+    # add custom conditions
+    if custom_conditions:
+        conditions.extend(custom_conditions)
 
-    return detectors
-
-
-def create_stop_detector(enable_completion: bool = True,
-                         enable_limits: bool = True,
-                         enable_failure_detection: bool = True,
-                         enable_interrupt: bool = True,
-                         enable_error: bool = True,
-                         custom_detectors: Optional[List[StopCondition]] = None) -> CompositeStopDetector:
-    # Return the detection of the combination
-    detectors = build_stop_detectors(enable_completion, enable_limits,
-                                     enable_failure_detection, enable_interrupt,
-                                     enable_error, custom_detectors)
-    return CompositeStopDetector(detectors)
+    return conditions

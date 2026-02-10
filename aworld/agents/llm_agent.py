@@ -1,5 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import time
+
 import asyncio
 import json
 import os
@@ -24,7 +26,7 @@ from aworld.core.tool.tool_desc import get_tool_desc
 from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.prompt_log import PromptLogger
-from aworld.logs.util import logger, Color
+from aworld.logs.util import logger, Color, digest_logger
 from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
@@ -124,6 +126,9 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                                                policy_info=content))
                     logger.info(f"🔨 [Agent:{agent_id}] Added tool action: {tool_name}_{action_name}")
         else:
+            if not content and resp.reasoning_content:
+                logger.info(f"💬 [Agent:{agent_id}] No tool calls or content, added reasoning content to action")
+                content = resp.reasoning_content
             results.append(ActionModel(agent_name=agent_id, policy_info=content))
             logger.debug(
                 f"💬 [Agent:{agent_id}] No tool calls, added text response action (content_length={len(content)})")
@@ -160,6 +165,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                  event_handler_name: str = None,
                  event_driven: bool = True,
                  skill_configs: Dict[str, Any] = None,
+                 llm_max_attempts: int = 1,
+                 llm_retry_delay: float = 0.05,
                  **kwargs):
         """A api class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 
@@ -173,6 +180,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             output_converter: Function to convert ModelResponse to AgentResult.
             tool_aggregate_func: Aggregation strategy for multiple tool results.
             event_handler_name: Custom handlers for certain types of events.
+            llm_max_attempts: Maximum number of attempts to call LLM. Default is 1 (no retry). Set to 3 means max 3 attempts.
+            llm_retry_delay: Delay in seconds between retry attempts. Default is 0.05 (50ms).
         """
         if conf is None:
             model_name = os.getenv("LLM_MODEL_NAME")
@@ -229,7 +238,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self.tools_aggregate_func = tool_aggregate_func if tool_aggregate_func else self._tools_aggregate_func
         self.event_handler_name = event_handler_name
         self.context = kwargs.get("context", None)
-
+        self.llm_max_attempts = max(1, llm_max_attempts)  # Ensure at least 1 attempt
+        self.llm_retry_delay = llm_retry_delay
     @property
     def llm(self):
         # lazy
@@ -579,6 +589,18 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             logger.info(f"🧠 [Agent:{self.id()}] Found {len(pending_items)} pending memory items, "
                         f"holding task execution. Pending content: {pending_items[0]}...")
             self._finished = False
+        if self._finished:
+            from aworld.core.context.amni import AmniContext
+            duration = None
+            if isinstance(message.context, AmniContext):
+                agent_start_times = message.context.get("agent_start_times") or {}
+                if isinstance(agent_start_times, dict):
+                    start_time = agent_start_times.get(self.id())
+                    if isinstance(start_time, (int, float)):
+                        duration = round(time.time() - start_time, 2)
+            if duration is None:
+                duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
+            digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|success")
         return self._agent_result(
             policy_result,
             policy_input.from_agent_name if policy_input.from_agent_name else policy_input.observer,
@@ -648,7 +670,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             kwargs["response_parse_args"] = response_parse_args
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
-            logger.warn(traceback.format_exc())
+            logger.warn(f"{self.id()} result error: {e}")
             raise e
         finally:
             if llm_response:
@@ -818,7 +840,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                            messages: List[Dict[str, str]] = [],
                            message: Message = None,
                            **kwargs) -> ModelResponse:
-        """Perform LLM call.
+        """Perform LLM call with retry mechanism.
 
         Args:
             messages: LLM model input messages.
@@ -829,64 +851,139 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             LLM response
         """
         llm_response = None
+        
+        # Prepare parameters once before retry loop
         try:
             tools = await self._filter_tools(message.context)
             if not tools:
                 # Some model must be clearly defined as None
                 tools = None
             self._log_messages(messages, tools=tools, context=message.context)
+            
             stream_mode = kwargs.get("stream",
                                      False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
             float_temperature = float(self.conf.llm_config.llm_temperature)
-            if stream_mode:
-                llm_response = ModelResponse(
-                    id="", model="", content="", tool_calls=[])
-                resp_stream = acall_llm_model_stream(
-                    self.llm,
-                    messages=messages,
-                    model=self.model_name,
-                    temperature=float_temperature,
-                    tools=tools,
-                    stream=True,
-                    context=message.context,
-                    **kwargs
-                )
+            
+            # Retry loop for LLM call
+            attempt = 1
+            last_exception = None
+            
+            while attempt <= self.llm_max_attempts:
+                try:
+                    logger.info(f"🔄 Attempt {attempt}/{self.llm_max_attempts} for LLM call")
+                    
+                    if stream_mode:
+                        llm_response = ModelResponse(
+                            id="", model="", content="", tool_calls=[])
+                        resp_stream = acall_llm_model_stream(
+                            self.llm,
+                            messages=messages,
+                            model=self.model_name,
+                            temperature=float_temperature,
+                            tools=tools,
+                            stream=True,
+                            context=message.context,
+                            **kwargs
+                        )
 
-                async for chunk in resp_stream:
-                    if chunk.content:
-                        llm_response.content += chunk.content
-                    if chunk.tool_calls:
-                        llm_response.tool_calls.extend(chunk.tool_calls)
-                    if chunk.error:
-                        llm_response.error = chunk.error
-                    llm_response.id = chunk.id
-                    llm_response.model = chunk.model
-                    llm_response.usage = nest_dict_counter(
-                        llm_response.usage, chunk.usage, ignore_zero=False)
-                    llm_response.message.update(chunk.message)
-                    await send_message(ChunkMessage(payload=chunk,
-                                                    source_type="llm",
-                                                    session_id=message.context.session_id,
-                                                    headers=message.headers))
+                        async for chunk in resp_stream:
+                            if chunk.content:
+                                llm_response.content += chunk.content
+                            if chunk.tool_calls:
+                                llm_response.tool_calls.extend(chunk.tool_calls)
+                            if chunk.error:
+                                llm_response.error = chunk.error
+                            llm_response.id = chunk.id
+                            llm_response.model = chunk.model
+                            llm_response.usage = nest_dict_counter(
+                                llm_response.usage, chunk.usage, ignore_zero=False)
+                            llm_response.message.update(chunk.message)
+                            await send_message(ChunkMessage(payload=chunk,
+                                                            source_type="llm",
+                                                            session_id=message.context.session_id,
+                                                            headers=message.headers))
 
-            else:
-                llm_response = await acall_llm_model(
-                    self.llm,
-                    messages=messages,
-                    model=self.model_name,
-                    temperature=float_temperature,
-                    tools=tools,
-                    stream=kwargs.get("stream", False),
-                    context=message.context,
-                    **kwargs
-                )
+                    else:
+                        llm_response = await acall_llm_model(
+                            self.llm,
+                            messages=messages,
+                            model=self.model_name,
+                            temperature=float_temperature,
+                            tools=tools,
+                            stream=kwargs.get("stream", False),
+                            context=message.context,
+                            **kwargs
+                        )
 
-            logger.info(f"LLM Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
-            if llm_response:
-                usage_process(llm_response.usage, message.context)
+                    # Check if we got a valid response
+                    if llm_response and (llm_response.content or llm_response.tool_calls or llm_response.reasoning_content):
+                        logger.info(f"LLM Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
+                        if llm_response:
+                            usage_process(llm_response.usage, message.context)
+                        return llm_response
+                    else:
+                        # Invalid response, treat as failure
+                        error_msg = f"LLM returned empty or invalid response: {llm_response}"
+                        logger.warning(f"⚠️[attempt {attempt}/{self.llm_max_attempts}] {error_msg}")
+                        if attempt < self.llm_max_attempts:
+                            attempt += 1
+                            await asyncio.sleep(self.llm_retry_delay)
+                            continue
+                        else:
+                            raise AWorldRuntimeException(error_msg)
+                            
+                except Exception as e:
+                    last_exception = e
+                    logger.warn(f"❌[attempt {attempt}/{self.llm_max_attempts}] LLM call failed : {str(e)}")
+
+                    # Check if this is a context length error - don't retry for these
+                    if "Please reduce the length of the messages" in str(e):
+                        await send_message(Message(
+                            category=Constants.OUTPUT,
+                            payload=Output(
+                                data=f"Failed to call llm model: {e}"
+                            ),
+                            sender=self.id(),
+                            session_id=message.context.session_id if message.context else "",
+                            headers={"context": message.context}
+                        ))
+                        # Meaning context too long, will return directly. You can develop a Processor to truncate or compress it.
+                        await send_message(Message(
+                            category=Constants.TASK,
+                            topic=TopicType.CANCEL,
+                            payload=TaskItem(data=messages, msg=str(e)),
+                            sender=self.id(),
+                            priority=-1,
+                            session_id=message.context.session_id if message.context else "",
+                            headers={"context": message.context}
+                        ))
+                        return ModelResponse(id=uuid.uuid4().hex, model=self.model_name, content=to_serializable(messages))
+                    
+                    # If we haven't reached max attempts, try again
+                    if attempt < self.llm_max_attempts:
+                        attempt += 1
+                        await asyncio.sleep(self.llm_retry_delay)
+                        continue
+                    else:
+                        # Max attempts reached, send error message and raise
+                        await send_message(Message(
+                            category=Constants.OUTPUT,
+                            payload=Output(
+                                data=f"Failed to call llm model after {attempt} attempts: {e}"
+                            ),
+                            sender=self.id(),
+                            session_id=message.context.session_id if message.context else "",
+                            headers={"context": message.context}
+                        ))
+                        raise e
+            
+            # This should not be reached, but just in case
+            if last_exception:
+                raise last_exception
             return llm_response
+            
         except Exception as e:
-            logger.warn(traceback.format_exc())
+            logger.warn(f"Failed to call llm model: {e}")
             await send_message(Message(
                 category=Constants.OUTPUT,
                 payload=Output(

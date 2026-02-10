@@ -1,3 +1,5 @@
+# coding: utf-8
+# Copyright (c) inclusionAI.
 from collections import Counter
 from typing import Optional
 
@@ -17,7 +19,7 @@ class LabelDistributionScorer(Scorer[dict]):
         self.dataset_column = dataset_column
 
     async def score(self, index: int, input: EvalDataCase[dict], output: dict) -> ScorerResult:
-        """score the execute result.
+        """Score the execute result.
 
         Returns:
             score
@@ -25,14 +27,13 @@ class LabelDistributionScorer(Scorer[dict]):
         return ScorerResult(scorer_name=self.name, metric_results={MetricNames.LABEL_DISTRIBUTION: {"value": 0.0}})
 
     def summarize(self, result_rows: list[EvalCaseResult], repeat_times: int) -> Optional[dict]:
-        '''
-            summarize the score rows.
-        '''
+        """Summarize the score rows."""
         from scipy import stats
 
         column_values = [result.input.case_data[self.dataset_column] for result in result_rows]
         c = Counter(column_values)
-        label_distribution = {"labels": [k for k in c.keys()], "fractions": [f / len(column_values) for f in c.values()]}
+        label_distribution = {"labels": [k for k in c.keys()],
+                              "fractions": [f / len(column_values) for f in c.values()]}
         if isinstance(column_values[0], str):
             label2id = {label: id for id, label in enumerate(label_distribution["labels"])}
             column_values = [label2id[d] for d in column_values]

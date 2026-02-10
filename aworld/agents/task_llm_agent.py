@@ -31,7 +31,11 @@ class TaskAgent(Agent):
         else:
             self.swarm.reset(options.get("task"), options.get("context"), options.get("tools"))
 
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = {},message: Message = None, **kwargs) -> List[ActionModel]:
+    async def async_policy(self,
+                           observation: Observation,
+                           info: Dict[str, Any] = {},
+                           message: Message = None,
+                           **kwargs) -> List[ActionModel]:
         self._finished = False
         task = Task(
             input=observation.content,
@@ -49,9 +53,9 @@ class TaskAgent(Agent):
             # result is TaskResponse
             if result.success:
                 info = result.answer
+                res.append(ActionModel(agent_name=self.id(), policy_info=info))
             else:
-                info = result.msg
-            res.append(ActionModel(agent_name=self.id(), policy_info=info))
+                raise AWorldRuntimeException(result.msg)
 
         self._finished = True
         return res

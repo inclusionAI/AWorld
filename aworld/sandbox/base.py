@@ -167,6 +167,33 @@ class Sandbox(SandboxSetup):
         self._env_content = value or {}
 
     @property
+    def workspace(self) -> Optional[List[str]]:
+        """Returns the workspace directories for filesystem tool.
+        
+        Returns:
+            Optional[List[str]]: List of allowed workspace directory paths, or None if using defaults.
+        """
+        return self._workspace
+
+    @workspace.setter
+    def workspace(self, value):
+        """Set workspace directories for filesystem tool.
+        
+        Args:
+            value: List of allowed workspace directory paths, or a single string path.
+                   If None, uses default workspaces.
+        """
+        # Convert string to list for convenience
+        if isinstance(value, str):
+            value = [value]
+        elif value is not None and not isinstance(value, list):
+            raise TypeError(f"workspace must be a list of strings or a single string, got {type(value)}")
+        
+        self._workspace = value
+        # Note: Changing workspace requires reinitializing FilesystemTool
+        # This should be handled by BaseSandbox if needed
+
+    @property
     @abc.abstractmethod
     def mcpservers(self) -> McpServers:
         """Module for running MCP in the sandbox.
@@ -176,24 +203,50 @@ class Sandbox(SandboxSetup):
         """
         pass
 
+    @property
+    def mode(self) -> str:
+        """Execution mode for builtin filesystem/terminal abstraction.
+
+        - "local": sandbox.read_file / write_file / run_code use local implementation
+          (local workspace and local bash). MCP config for filesystem/terminal is ignored.
+        - "remote": same APIs use MCP servers; mcp_config must define "filesystem" and/or
+          "terminal" with corresponding tools. If not configured, returns an error message
+          string instead of raising.
+
+        Defaults to "local".
+        """
+        return self._mode
+
+    @mode.setter
+    def mode(self, value: str) -> None:
+        """Set execution mode of the sandbox."""
+        if value is None:
+            value = "local"
+        normalized = str(value).lower()
+        if normalized not in ("local", "remote"):
+            raise ValueError(f"Unsupported sandbox mode: {value!r}, expected 'local' or 'remote'")
+        self._mode = normalized
+
     def __init__(
-            self,
-            sandbox_id: Optional[str] = None,
-            env_type: Optional[int] = None,
-            metadata: Optional[Dict[str, str]] = None,
-            timeout: Optional[int] = None,
-            mcp_servers: Optional[List[str]] = None,
-            mcp_config: Optional[Any] = None,
-            black_tool_actions: Optional[Dict[str, List[str]]] = None,
-            skill_configs: Optional[Any] = None,
-            tools: Optional[List[str]] = None,
-            registry_url: Optional[str] = None,
-            custom_env_tools: Optional[Any] = None,
-            agents: Optional[Dict[str, Any]] = None,
-            streaming: bool = False,
-            env_content_name: Optional[str] = None,
-            env_content: Optional[Dict[str, Any]] = None,
-            reuse: bool = False,
+        self,
+        sandbox_id: Optional[str] = None,
+        env_type: Optional[int] = None,
+        metadata: Optional[Dict[str, str]] = None,
+        timeout: Optional[int] = None,
+        mcp_servers: Optional[List[str]] = None,
+        mcp_config: Optional[Any] = None,
+        black_tool_actions: Optional[Dict[str, List[str]]] = None,
+        skill_configs: Optional[Any] = None,
+        tools: Optional[List[str]] = None,
+        registry_url: Optional[str] = None,
+        custom_env_tools: Optional[Any] = None,
+        agents: Optional[Dict[str, Any]] = None,
+        streaming: bool = False,
+        env_content_name: Optional[str] = None,
+        env_content: Optional[Dict[str, Any]] = None,
+        reuse: bool = False,
+        workspace: Optional[List[str]] = None,
+        mode: str = "local",
     ):
         """Initialize a new Sandbox instance.
         
@@ -236,6 +289,9 @@ class Sandbox(SandboxSetup):
             env_content_name: Parameter name for environment content in tool schemas. Defaults to "env_content".
             env_content: User-defined context values to be automatically injected into tool calls.
                 Note that task_id and session_id are added dynamically from context during tool calls.
+            workspace: List of allowed workspace directories for filesystem tool. If None, uses default workspaces 
+                (~/workspace, ~/aworld_workspace). Can also be set via environment variable AWORLD_WORKSPACE_PATH 
+                (comma-separated paths).
         """
         # Initialize basic attributes
         self._sandbox_id = sandbox_id or str(uuid.uuid4())
@@ -255,9 +311,20 @@ class Sandbox(SandboxSetup):
         self._reuse = reuse
         self._agents = agents
         self._streaming = streaming
+        # Execution mode (local/remote), default "local"
+        # Use property setter for validation and normalization
+        self._mode = "local"
+        self.mode = mode
         # Environment content context for tool parameters
         self._env_content_name: str = env_content_name or "env_content"  # Parameter name in tool schema
         self._env_content: Dict[str, Any] = env_content or {}  # User-defined context values
+        
+        # Handle workspace parameter: check environment variable if not provided
+        if workspace is None:
+            env_workspace = os.getenv("AWORLD_WORKSPACE_PATH")
+            if env_workspace:
+                workspace = [p.strip() for p in env_workspace.split(",") if p.strip()]
+        self._workspace = workspace
 
     @abc.abstractmethod
     def get_info(self) -> SandboxInfo:

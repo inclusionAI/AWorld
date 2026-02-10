@@ -2,8 +2,10 @@
 Batch executor for running multiple agent tasks concurrently.
 """
 import asyncio
+import inspect
 import time
-from typing import List, Dict, Any, Optional, Tuple
+import uuid
+from typing import List, Dict, Any, Optional, Set, Tuple
 from datetime import datetime
 from rich.console import Console
 from rich.panel import Panel
@@ -14,6 +16,7 @@ from .source import CsvBatchSource
 from .builder import SimpleTaskBuilder
 from .sink import CsvBatchSink
 from .config import BatchJobConfig
+from .digest_stats import DigestLogStats
 from aworld.logs.util import logger
 
 
@@ -105,7 +108,12 @@ class BatchExecutor:
 
         # Step 3: Create runtime and load agents
         self.console.print(f"[dim]🔄 Loading agent: {config.agent.name}...[/dim]")
-        runtime = CliRuntime(remote_backends=[config.agent.remote_backend] if config.agent.remote_backend else None)
+        runtime = CliRuntime(
+            remote_backends=[config.agent.remote_backend]
+            if config.agent.remote_backend
+            else None,
+            disable_live_display=True,
+        )
         all_agents = await runtime._load_agents()
 
         # Find the requested agent
@@ -118,11 +126,6 @@ class BatchExecutor:
         if not agent_info:
             raise ValueError(f"❌ Agent '{config.agent.name}' not found")
 
-        # Create agent executor
-        agent_executor = await runtime._create_executor(agent_info)
-        if not agent_executor:
-            raise ValueError(f"❌ Failed to create executor for agent '{config.agent.name}'")
-
         # Step 4: Execute tasks concurrently
         self.console.print(f"[bold]🔄 Processing {len(records)} records with parallel={config.execution.parallel}...[/bold]")
 
@@ -134,16 +137,18 @@ class BatchExecutor:
                 semaphore=semaphore,
                 record=record,
                 builder=builder,
-                agent_executor=agent_executor,
-                config=config
+                config=config,
+                agent_info=agent_info,
+                runtime=runtime
             )
             tasks.append(task)
 
         # Wait for all tasks to complete
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Process results and write to sink
+        # Process results and write to sink; collect task_ids for digest filter
         total_cost = 0.0
+        batch_task_ids: Set[str] = set()
         for idx, result in enumerate(results):
             if isinstance(result, Exception):
                 # Handle exceptions
@@ -153,11 +158,13 @@ class BatchExecutor:
                     "response": "",
                     "error": str(result),
                     "metrics": {},
-                    "original_record": records[idx]
+                    "original_record": records[idx],
                 }
                 await sink.write(error_result)
             else:
                 await sink.write(result)
+                if result.get("task_id"):
+                    batch_task_ids.add(result["task_id"])
                 # Accumulate cost
                 if result.get("success") and result.get("metrics", {}).get("cost"):
                     total_cost += result["metrics"]["cost"]
@@ -180,10 +187,59 @@ class BatchExecutor:
             f"Duration: {duration}\n"
             f"Output: [cyan]{summary['output_path']}[/cyan]",
             title="📊 Summary",
-            border_style="green"
+            border_style="green",
         ))
 
+        # Step 6: Print digest_logger statistics if configured
+        # Filter by task_id only when using remote backend (task_ids are passed in headers)
+        if config.digest_log and config.digest_log.path:
+            filter_task_ids = batch_task_ids if config.agent.remote_backend else None
+            self._print_digest_stats(
+                config.digest_log.path, task_ids=filter_task_ids
+            )
+
         return summary
+
+    def _print_digest_stats(
+        self,
+        digest_log_path: str,
+        task_ids: Optional[Set[str]] = None,
+    ) -> None:
+        """
+        Read and print digest_logger statistics, optionally filtered by task_id.
+
+        Args:
+            digest_log_path: Path to digest_logger.log file (e.g. from remote
+                backend's log directory).
+            task_ids: Optional set of task_ids to filter (batch's task_ids for
+                current run). When provided, only stats for these tasks are shown.
+        """
+        try:
+            stats, _ = DigestLogStats.parse_file(
+                digest_log_path, task_ids=task_ids
+            )
+            if (
+                stats.total_tasks == 0
+                and stats.agent_run.count == 0
+                and stats.llm_call.count == 0
+            ):
+                self.console.print(
+                    f"[dim]📋 No digest_logger data found in {digest_log_path}[/dim]"
+                )
+                return
+            self.console.print(
+                Panel(
+                    stats.format_summary(
+                        filtered_by_task_id=task_ids is not None
+                    ),
+                    title="📋 Digest Logger 统计",
+                    border_style="cyan",
+                )
+            )
+        except Exception as e:  # pylint: disable=broad-except
+            self.console.print(
+                f"[yellow]⚠️ Failed to read digest_logger: {e}[/yellow]"
+            )
 
     def _extract_usage_metrics(self, response: Any, agent_executor: Any) -> Tuple[float, int]:
         """
@@ -269,12 +325,13 @@ class BatchExecutor:
         return cost, tokens
 
     async def _execute_single_task(
-        self,
-        semaphore: asyncio.Semaphore,
-        record: Dict[str, Any],
-        builder: SimpleTaskBuilder,
-        agent_executor: Any,
-        config: BatchJobConfig
+            self,
+            semaphore: asyncio.Semaphore,
+            record: Dict[str, Any],
+            builder: SimpleTaskBuilder,
+            config: BatchJobConfig,
+            agent_info: Any,
+            runtime: Any
     ) -> Dict[str, Any]:
         """
         Execute a single task with concurrency control and error handling.
@@ -290,21 +347,32 @@ class BatchExecutor:
             Result dictionary with success status, response, error, and metrics
         """
         async with semaphore:
+
+            # Create agent executor
+            agent_executor = await runtime._create_executor(agent_info)
+            if not agent_executor:
+                raise ValueError(f"❌ Failed to create executor for agent '{config.agent.name}'")
+
             task_spec = builder.build_task(record)
             record_id = task_spec["record_id"]
             prompt = task_spec["prompt"]
+            # Generate task_id for digest_logger correlation (remote backend)
+            task_id = f"batch_{record_id}_{uuid.uuid4().hex[:8]}"
 
             start_time = time.time()
+            chat_kwargs: Dict[str, Any] = {}
+            if "task_id" in inspect.signature(agent_executor.chat).parameters:
+                chat_kwargs["task_id"] = task_id
 
             try:
                 # Execute task with timeout if configured
                 if config.execution.timeout_per_task:
                     response = await asyncio.wait_for(
-                        agent_executor.chat(prompt),
-                        timeout=config.execution.timeout_per_task
+                        agent_executor.chat(prompt, **chat_kwargs),
+                        timeout=config.execution.timeout_per_task,
                     )
                 else:
-                    response = await agent_executor.chat(prompt)
+                    response = await agent_executor.chat(prompt, **chat_kwargs)
 
                 logger.info(f"response: {response}")
                 latency = time.time() - start_time
@@ -325,7 +393,8 @@ class BatchExecutor:
                     "response": str(response) if response else "",
                     "error": None,
                     "metrics": metrics,
-                    "original_record": record
+                    "original_record": record,
+                    "task_id": task_id,
                 }
 
             except asyncio.TimeoutError:
@@ -339,7 +408,8 @@ class BatchExecutor:
                     "response": "",
                     "error": error_msg,
                     "metrics": {"latency": latency},
-                    "original_record": record
+                    "original_record": record,
+                    "task_id": task_id,
                 }
 
             except Exception as e:
@@ -353,5 +423,6 @@ class BatchExecutor:
                     "response": "",
                     "error": error_msg,
                     "metrics": {"latency": latency},
-                    "original_record": record
+                    "original_record": record,
+                    "task_id": task_id,
                 }
