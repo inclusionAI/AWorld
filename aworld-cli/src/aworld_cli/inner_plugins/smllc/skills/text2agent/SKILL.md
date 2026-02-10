@@ -307,7 +307,6 @@ class SimpleAgent(Agent):
     def __init__(self, name: str, conf: AgentConfig = None, desc: str = None,
                  system_prompt: str = None, tool_names: List[str] = None, **kwargs):
         super().__init__(name=name, conf=conf, desc=desc, **kwargs)
-        self.system_prompt = system_prompt or "You are a helpful AI assistant."
         self.model_name = conf.llm_config.llm_model_name if conf and conf.llm_config else "gpt-3.5-turbo"
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
