@@ -109,7 +109,6 @@ class RalphRunner(Runner):
         # State management
         self.loop_context = LoopContext(self.ralph_config.workspace)
         self.loop_state = LoopState()
-        self.workspace = WorkSpace(workspace_id=self.ralph_config.workspace)
         self.state_manager = EventRuntimeStateManager.instance()
 
         # Current strategic plan
@@ -150,8 +149,6 @@ class RalphRunner(Runner):
             if stop_decision.should_stop:
                 logger.info(f"Loop terminated: {stop_decision.stop_type}, Reason: {stop_decision.reason}")
                 break
-
-            await self._task_preprocessing(cur_task, iter_num=iter_num)
 
             # 2. Schedule and Execute task
             logger.info(f"Iteration {iter_num} [2/5] EXECUTE - Executing task...")
@@ -246,7 +243,7 @@ class RalphRunner(Runner):
 
         if strategy == ConflictStrategy.OVERWRITE or strategy == ConflictStrategy.UPDATE:
             pass
-        else:
+        elif self.ralph_config.validation.enabled:
             defaults = []
             if self.completion_criteria.answer:
                 defaults.append(MetricNames.OUTPUT_CORRECTNESS)
@@ -257,7 +254,7 @@ class RalphRunner(Runner):
             scorers.extend(scorer_factory.get_scorer_instances_for_criterias(criterias))
 
         parallel_num = 1
-        self.validator = Evaluator(scorers=scorers, parallel_num=parallel_num)
+        self.validator = Evaluator(scorers=scorers, parallel_num=parallel_num) if scorers else None
 
         if aworld.debug_mode:
             logger.info(f"Validator initialized with {len(scorers)} scorers: {[score.name for score in scorers]}")
@@ -273,16 +270,17 @@ class RalphRunner(Runner):
         if strategy == ConflictStrategy.OVERWRITE or strategy == ConflictStrategy.UPDATE:
             reflectors = reflectors
         elif strategy == ConflictStrategy.MERGE or strategy == ConflictStrategy.APPEND:
-            reflectors.append(GeneralReflector(
-                model_config=self.ralph_config.reflection.model_config,
-            ))
-        else:
+            if self.ralph_config.reflection.enabled:
+                reflectors.append(GeneralReflector(
+                    model_config=self.ralph_config.reflection.model_config,
+                ))
+        elif self.ralph_config.reflection.enabled:
             reflectors.clear()
             reflectors.append(GeneralReflector(
                 model_config=self.ralph_config.reflection.model_config,
             ))
 
-        self.reflector = Reflection(reflectors=reflectors)
+        self.reflector = Reflection(reflectors=reflectors) if reflectors else None
         if aworld.debug_mode:
             logger.info(f"Reflection initialized with {len(reflectors)} reflectors")
 
@@ -320,21 +318,10 @@ class RalphRunner(Runner):
 
         return await self.stop_detector.should_stop(stop_state)
 
-    async def _task_preprocessing(self, cur_task: Task, iter_num: int):
-        info = self.workspace.get_artifact_data(f"{self.loop_context.reflect_dir()}_{cur_task.id}_{iter_num - 1}")
-        if info:
-            content = f'{info.get("content")}\n'
-        else:
-            content = ''
-        cur_task.input = f"{content}{cur_task.input}"
-
-        if not cur_task.context:
-            context = await create_context(cur_task)
-            cur_task.context = context
-
     async def _execute_task(self, task: Task, iter_num: int) -> Tuple[TaskResponse, bool]:
         """Execute a task and return result and success status."""
 
+        task.context = await self.loop_context.read_to_task_context(task=task, iter_num=iter_num)
         try:
             results = await exec_tasks(tasks=[task])
             execution_result: TaskResponse = results.get(task.id)
@@ -421,7 +408,13 @@ class RalphRunner(Runner):
                 logger.debug(f"Reflection failed: {traceback.format_exc()}")
             return None
 
-        await self._apply_reflections(reflections, task_id=reflect_input.task_id, iter_num=iter_num)
+        all_suggestions = []
+        for reflection in reflections:
+            if reflection.suggestions:
+                all_suggestions.extend(reflection.suggestions)
+        await self.loop_context.write_to_loop_context(content="\n- ".join(all_suggestions),
+                                                      task_context=self.tasks.get(reflect_input.task_id).context,
+                                                      iter_num=iter_num)
 
         logger.info(f"Iteration {iter_num} reflection completed: {len(reflections)} results")
         for i, reflection in enumerate(reflections):
@@ -431,25 +424,3 @@ class RalphRunner(Runner):
                         f"    · Insights: {', '.join(reflection.insights)}\n"
                         f"    · Suggestions: {', '.join(reflection.suggestions)}")
         return reflections
-
-    async def _apply_reflections(self, reflections: List[ReflectionResult], task_id: str, iter_num: int) -> None:
-        all_suggestions = []
-        for reflection in reflections:
-            if reflection.suggestions:
-                all_suggestions.extend(reflection.suggestions)
-
-        task = self.tasks.get(task_id)
-        if not task:
-            # something wrong, need rerun
-            pass
-
-        if not all_suggestions:
-            return
-
-        content = "\n- ".join(all_suggestions)
-        artifact = Artifact(artifact_id=f"{self.loop_context.reflect_dir()}_{task_id}_{iter_num}",
-                            artifact_type=ArtifactType.TEXT, content=content,
-                            metadata={
-                                "context_type": "reflect",
-                            })
-        await self.workspace.add_artifact(artifact, index=False)
