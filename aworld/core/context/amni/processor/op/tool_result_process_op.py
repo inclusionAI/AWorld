@@ -27,9 +27,8 @@ class ToolResultOffloadOp(BaseOp):
             info["memory_commands"] = []
 
         items = await self._resolve_tool_result(event.agent_id, event.tool_call_id, event.tool_result, context, event)
-        if items:
-            for item in items:
-                info["memory_commands"].append(MemoryCommand(type="ADD", item=item))
+        for item in items:
+            info["memory_commands"].append(MemoryCommand(type="ADD", item=item))
         return info
 
     async def _resolve_tool_result(self,
@@ -56,7 +55,6 @@ class ToolResultOffloadOp(BaseOp):
         except Exception as err:
             logger.warning(
                 f"extract_artifacts_from_toolresult execute failed is {err}, trace is {traceback.format_exc()}")
-            return []
 
     async def _need_offload(self, tool_result, context: ApplicationContext, event: ToolResultMessagePayload) -> Optional[bool]:
         agent_context_config = context.get_config().get_agent_context_config(event.agent_id)
@@ -70,11 +68,9 @@ class ToolResultOffloadOp(BaseOp):
             if tool_result.metadata and tool_result.metadata.get("offload", False) == True:
                 logger.info(f"📦 tool_result.tool_name:tool_result.metadata.offload Enable, need compress")
                 return True
-            # Check if content is a valid string before calculating tokens
-            if tool_result.content and isinstance(tool_result.content, str):
-                if num_tokens_from_string(tool_result.content) > agent_context_config.tool_result_length_threshold:
-                    logger.info(f"📦 tool_result.tool_name:tool_result.content is too large, need compress")
-                    return True
+            if num_tokens_from_string(tool_result.content) > agent_context_config.tool_result_length_threshold:
+                logger.info(f"📦 tool_result.tool_name:tool_result.content is too large, need compress")
+                return True
             return False
         elif isinstance(tool_result, str):
             if num_tokens_from_string(tool_result) > agent_context_config.tool_result_length_threshold:
