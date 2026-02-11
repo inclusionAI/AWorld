@@ -158,6 +158,26 @@ class OptimizationConfig(BaseConfig):
     max_token_budget_ratio: float = 0.5  # Maximum context length ratio
 
 
+class MetaLearningConfig(BaseConfig):
+    """Enhanced configuration for meta-learning functionality.
+
+    Meta-learning enables intelligent agents to learn from task execution trajectories,
+    analyze performance patterns, extract knowledge, and continuously optimize their
+    behavior based on observed outcomes. This comprehensive configuration supports
+    multiple learning modes and specialized learning components.
+    """
+    # Core enablement
+    enabled: bool = Field(
+        default=False,
+        description="Whether to enable meta-learning capabilities"
+    )
+
+    # Storage configuration
+    learning_knowledge_storage_base_path: Optional[str] = Field(
+        default=None,
+        description="Base path for storing trajectory data. Defaults to './' or TRAJ_STORAGE_BASE_PATH env var"
+    )
+
 class SummaryPromptConfig(BaseConfig):
     """Configuration for summary prompt templates."""
     
@@ -251,6 +271,7 @@ class AgentConfig(BaseConfig):
     # Concurrent batch size when this agent is called as tool in parallel
     # None means no limit (all parallel), positive integer limits batch size
     concurrent_batch_size: Optional[int] = None
+    meta_learning_config: MetaLearningConfig = MetaLearningConfig()
     ext: dict = {}
 
     def __init__(self, **kwargs):

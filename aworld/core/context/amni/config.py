@@ -16,6 +16,10 @@ from .retrieval.base import RetrieverFactory
 from ...event.base import TopicType
 
 
+def get_env_mode() -> str:
+    return os.environ.get("ENV_MODE", "dev")
+
+
 class EventSubscriptionConfig(BaseModel):
     """Event subscription configuration"""
     event_types: Optional[List[str]] = Field(default_factory=list)  # None means subscribe to all event types

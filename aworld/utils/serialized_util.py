@@ -1,9 +1,12 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import json
+import traceback
 from enum import Enum
 
 import numpy as np
+
+from aworld.logs.util import logger
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -44,4 +47,5 @@ def to_serializable(obj, _memo=None):
             json.dumps(obj)
             return obj
         except TypeError as e:
+            logger.error(f"Failed to serialize object: {obj} {traceback.format_exc()}")
             raise RuntimeError(f"{e}")
