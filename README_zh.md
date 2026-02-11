@@ -13,9 +13,9 @@
 [![Discord][discord-image]][discord-url]
 [![License: MIT][license-image]][license-url]
 [![DeepWiki][deepwiki-image]][deepwiki-url]
-[![arXiv][arxiv-image]][arxiv-url]
+<!-- [![arXiv][arxiv-image]][arxiv-url] -->
 [![Tutorial][tutorial-image]][tutorial-url]
-[![Playground][playground-image]][playground-url]
+<!-- [![Playground][playground-image]][playground-url] -->
 
 </h4>
 
@@ -24,8 +24,8 @@
 [English](./README.md) |
 [自动化](#your-journey-with-aworld-cli) |
 [手动构建](#total-control-manually-crafting-agent-systems) |
-[经验与样本](#experience-to-samples) |
-[训练](#training) |
+<!-- [经验与样本](#experience-to-samples) |
+[训练](#training) | -->
 [演进](#evolution) |
 [参与贡献](#contributing) |
 
@@ -79,7 +79,10 @@ aworld-cli
 用自然语言描述任务，即可一键搭好智能体骨架；AWorld-CLI 负责样板代码，你专注逻辑即可。
 </p>
 
-![](./readme_assets/aworld_cli_text2agent.png)
+
+<!-- ![](./readme_assets/aworld_cli_text2agent.png) -->
+***让 AWorld Agent 为你构建智能体***
+![](./readme_assets/aworld_cli_demo_step1.gif)
 
 <p align="justify">
 该命令会生成可直接运行的智能体文件，以我们精选的 Verified Skills 为底座，并挂载全局配置，生成后即可执行。
@@ -127,7 +130,10 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
 向 AWorld Agent 发出指令，让它用你刚创建的智能体执行任务；每次调用、动作与观测都会写入详细轨迹日志，保存在本地目录。
 </p>
 
-![](./readme_assets/aworld_cli_run_task.png)
+
+<!-- ![](./readme_assets/aworld_cli_run_task.png) -->
+***让新创建的智能体为你工作***
+![](./readme_assets/aworld_cli_demo_step2.gif)
 
 ## 进化智能体
 <p align="justify">
@@ -143,7 +149,17 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
 这里才是 AWorld-CLI 的亮点！用自然语言描述你想要的改动，AWorld Agent 会把任务交给预置的 Optimizer Agent，作为你的 AI 结对程序员，一起调优智能体。
 </p>
 
+
+***AI 辅助进化示意图***
 ![](./readme_assets/mas_meta_learning_v2.png) 
+
+
+***优化你的智能体***
+![](./readme_assets/aworld_cli_demo_step3.gif)
+
+
+***让优化后的智能体为你做更复杂的工作***
+![](./readme_assets/aworld_cli_demo_step4.gif)
 
 **愿景：自进化**
 <p align="justify">
@@ -170,8 +186,21 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
 想直接体验？在 AWorld [Playground](https://playground.aworldagents.com/) 加载预置 DeepResearch 团队，查看源码并端到端运行。
 
 # MAS演练场: 即刻运行，亲眼见证
+
+在 AWorld [Playground](https://playground.aworldagents.com/) 启动官方 DeepResearch 团队，实时观摩 AI 协作。你可以检视其源码、运行全过程，并从中获取灵感。
+
 ![](./readme_assets/playground_gaiateam.gif)
 
+**从用户到创造者：让你的智能体登上舞台！**
+准备好构建你自己的智能体了吗？使用 aworld-cli 将你的专业知识铸造成一个强大的智能体，并将其核心能力定义在 skill.md 文件中。
+
+想让你的作品登上这个舞台？只需提交一个 Pull Request，将你的 skill.md 添加至：
+AWorld/examples/Custom_Skills/
+
+我们会在这里展示最出色的社区智能体，让你的杰作大放异彩，赋能整个社区！
+
+
+<!-- 
 <a id="experience-to-samples"></a>
 # 从经验到样本
 <p align="justify">
@@ -187,7 +216,7 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
 </p>
 [文档](https://inclusionai.github.io/AWorld/Training/Trainer/)
 
-> 💡 可参考[真实案例](./train/examples/train_gaia_with_aworld_verl/main.py)，内含完整智能体训练配置。
+> 💡 可参考[真实案例](./train/examples/train_gaia_with_aworld_verl/main.py)，内含完整智能体训练配置。 -->
 
 
 <a id="evolution"></a>
