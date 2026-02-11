@@ -56,6 +56,39 @@ class LLMHTTPHandler:
         if headers:
             self.headers.update(headers)
 
+        # Shared aiohttp session to prevent memory leaks
+        # One session per handler instance, not per request
+        self._session: Optional[Any] = None
+
+    async def _get_session(self):
+        """Get or create the shared aiohttp session.
+
+        This method ensures we reuse a single session across all requests,
+        preventing memory leaks from creating/destroying sessions repeatedly.
+
+        Returns:
+            aiohttp.ClientSession: The shared session instance.
+        """
+        import aiohttp
+        if self._session is None or self._session.closed:
+            # Create session with connection pooling
+            connector = aiohttp.TCPConnector(
+                limit=100,  # Max connections
+                limit_per_host=30,  # Max connections per host
+            )
+            self._session = aiohttp.ClientSession(connector=connector)
+        return self._session
+
+    async def close(self):
+        """Close the shared aiohttp session.
+
+        Call this method when the handler is no longer needed to properly
+        clean up resources.
+        """
+        if self._session and not self._session.closed:
+            await self._session.close()
+            self._session = None
+
     def _parse_sse_line(self, line: bytes) -> Optional[Dict[str, Any]]:
         """Parse a Server-Sent Events (SSE) line.
 
@@ -178,8 +211,8 @@ class LLMHTTPHandler:
         if headers:
             request_headers.update(headers)
 
-        # Create an independent session and keep it open
-        session = aiohttp.ClientSession()
+        # Use the shared session instead of creating a new one
+        session = await self._get_session()
         try:
             response = await session.post(
                 url,
@@ -215,9 +248,7 @@ class LLMHTTPHandler:
         except Exception as e:
             logger.error(f"Error in stream: {str(e)}")
             raise
-        finally:
-            # Ensure the session is eventually closed
-            await session.close()
+        # Note: We don't close the session here as it's shared and reused
 
     async def _make_async_request(
         self,
@@ -237,21 +268,21 @@ class LLMHTTPHandler:
         Raises:
             aiohttp.ClientError: If the request fails.
         """
-        import aiohttp
         url = f"{self.base_url}/{endpoint.lstrip('/')}"
         request_headers = self.headers.copy()
         if headers:
             request_headers.update(headers)
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                headers=request_headers,
-                json=data,
-                timeout=self.timeout,
-            ) as response:
-                response.raise_for_status()
-                return await response.json()
+        # Use the shared session instead of creating a new one
+        session = await self._get_session()
+        async with session.post(
+            url,
+            headers=request_headers,
+            json=data,
+            timeout=self.timeout,
+        ) as response:
+            response.raise_for_status()
+            return await response.json()
 
     def sync_call(
         self,
