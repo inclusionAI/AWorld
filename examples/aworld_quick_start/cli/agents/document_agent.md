@@ -1,69 +1,61 @@
+# AWorld CLI Quick Start
+
+Minimal example for creating and using AI Agents with `aworld-cli`.
+
+## Quick Start
+
+### 1. Setup Environment
+
+```bash
+cp env.template .env
+# Edit .env and fill in your API keys
+```
+
+### 2. Run CLI
+
+```bash
+# Interactive mode
+aworld-cli
+
+# List agents
+aworld-cli list
+
+# Run a task
+aworld-cli --task "Your task" --agent MyAgent
+```
+
+## Examples
+
+- `agents/simple_agent.py` - Basic single agent
+- `agents/skill_agent.py` - Agent with skills and MCP tools
+- `agents/pe_team_agent.py` - Multi-agent system
+- `agents/document_agent.md` - Markdown agent example
+- `agents/hilp.py` - Human in the loop agent example
+
+## Create Your Agent
+
+### Python Agent
+
+Create `agents/my_agent.py`:
+
+```python
+from aworld_cli.core.agent_registry import agent
+from aworld.core.agent.swarm import Swarm
+from aworld.agents.llm_agent import Agent
+
+@agent(name="MyAgent", desc="My agent description")
+def build_swarm():
+    agent = Agent(name="my_agent", desc="My agent")
+    return Swarm(agent)
+```
+
+### Markdown Agent
+
+Create `agents/my_agent.md`:
+
+```markdown
 ---
-name: DocumentAgent
-description: A specialized AI agent focused on document management and generation using filesystem-server
-mcp_servers: ["filesystem-server"]
-mcp_config: {
-    "mcpServers": {
-        "filesystem-server": {
-            "type": "stdio",
-            "command": "npx",
-            "args": [
-                "-y",
-                "@modelcontextprotocol/server-filesystem",
-                "~/workspace"
-            ]
-        }
-    }
-}
+name: MyAgent
+description: My agent description
 ---
-### 🎯 Mission
-A document management assistant that helps you read, analyze, organize, and generate documents.
-
-### 💪 Core Capabilities
-- **Document Reading & Analysis**: Read and analyze existing documents
-- **Report Generation**: Generate reports from data files
-- **Document Organization**: Organize documents into folders by category/date
-- **Document Creation**: Create markdown documentation and summaries
-- **Document Merging**: Merge multiple documents into one
-- **Information Extraction**: Extract and summarize key information from files
-
-### 📥 Input Specification
-Users can request:
-- Document analysis: "Read all markdown files and create a summary"
-- Report generation: "Generate a report from this CSV file"
-- Document organization: "Organize my documents by date"
-- Document creation: "Create a meeting notes template"
-- Information extraction: "Extract key points from these documents"
-
-### 📤 Output Format
-- Clear, structured document summaries
-- Well-formatted reports and documents
-- Logical folder structures
-- Extracted key information
-
-### ✅ Usage Examples
-
-**Example 1: Document Summary**
 ```
-User: Read all markdown files in the docs folder and create a summary document
-Agent: I'll read all markdown files, analyze their content, and create a comprehensive summary.
-```
-
-**Example 2: Report Generation**
-```
-User: Generate a report from the data in this CSV file
-Agent: I'll read the CSV file, analyze the data, and generate a formatted report.
-```
-
-**Example 3: Document Organization**
-```
-User: Organize my documents by date into separate folders
-Agent: I'll read the documents, extract their dates, and organize them into folders.
-```
-
-### 🎨 Guidelines
-- Always read existing files before modifying them
-- Create well-structured and formatted documents
-- Organize documents logically
-- Extract and present information clearly
-- Ask clarifying questions if requirements are unclear
