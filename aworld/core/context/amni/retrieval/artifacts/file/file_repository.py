@@ -116,7 +116,7 @@ class LocalFileRepository(FileRepository):
     def list_files(self, prefix: str = "") -> List[Dict[str, Any]]:
         """
         List files in local file system with optional prefix filter.
-        Recursively traverses all subdirectories to find files.
+        Only traverses one level deep (current directory and immediate subdirectories).
         
         Args:
             prefix: Optional prefix to filter files (relative to base_path)
@@ -127,7 +127,7 @@ class LocalFileRepository(FileRepository):
         Example:
             >>> repo = LocalFileRepository("/tmp/files")
             >>> files = repo.list_files("ppt_20260112155703")
-            >>> # Returns all files under /tmp/files/ppt_20260112155703/ recursively
+            >>> # Returns files in /tmp/files/ppt_20260112155703/ and its immediate subdirectories (one level deep)
         """
         try:
             search_path = os.path.join(self.base_path, prefix) if prefix else self.base_path
@@ -135,14 +135,20 @@ class LocalFileRepository(FileRepository):
                 return []
             
             files = []
-            # Use os.walk to recursively traverse all subdirectories
-            for root, dirs, filenames in os.walk(search_path):
-                for filename in filenames:
-                    file_path = os.path.join(root, filename)
+            # Only traverse one level deep (current directory and immediate subdirectories)
+            try:
+                items = os.listdir(search_path)
+            except PermissionError:
+                logger.warning(f"⚠️ Permission denied to list directory {search_path}")
+                return []
+            
+            for item in items:
+                item_path = os.path.join(search_path, item)
+                if os.path.isfile(item_path):
                     # Get relative path from base_path
-                    rel_path = os.path.relpath(file_path, self.base_path)
+                    rel_path = os.path.relpath(item_path, self.base_path)
                     # Get file stats
-                    stat = os.stat(file_path)
+                    stat = os.stat(item_path)
                     files.append({
                         'key': rel_path,
                         'filename': rel_path,  # Keep full relative path as filename
@@ -150,6 +156,27 @@ class LocalFileRepository(FileRepository):
                         'modified_time': stat.st_mtime,
                         'is_file': True
                     })
+                elif os.path.isdir(item_path):
+                    # Only list files in immediate subdirectory (one level deep)
+                    try:
+                        sub_items = os.listdir(item_path)
+                        for sub_item in sub_items:
+                            sub_item_path = os.path.join(item_path, sub_item)
+                            if os.path.isfile(sub_item_path):
+                                # Get relative path from base_path
+                                rel_path = os.path.relpath(sub_item_path, self.base_path)
+                                # Get file stats
+                                stat = os.stat(sub_item_path)
+                                files.append({
+                                    'key': rel_path,
+                                    'filename': rel_path,  # Keep full relative path as filename
+                                    'size': stat.st_size,
+                                    'modified_time': stat.st_mtime,
+                                    'is_file': True
+                                })
+                    except PermissionError:
+                        logger.warning(f"⚠️ Permission denied to list subdirectory {item_path}")
+                        continue
             return files
         except Exception as e:
             logger.error(f"❌ Error listing files in local directory {search_path}: {e}")
