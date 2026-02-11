@@ -7,7 +7,7 @@ from typing import Optional, List, Union, Dict
 from pydantic import BaseModel, Field
 
 from aworld.config import ModelConfig
-from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy, MetaLearningConfig
+from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy
 from aworld.core.memory import MemoryConfig
 from aworld.memory.db.sqlite import SQLiteMemoryStore
 # from aworld.memory.db import SQLiteMemoryStore  # Temporarily commented out to avoid import errors
@@ -134,10 +134,6 @@ class AgentContextConfig(BaseConfig):
     # Automated Memory Recall
     automated_memory_recall: bool = Field(default=False,
                                          description="Enable automated memory recall. The agent automatically retrieves relevant memories from past experiences based on current context and task requirements, without manual intervention. This enables proactive context awareness and intelligent decision-making by leveraging historical knowledge.")
-
-    # Meta learning configuration
-    meta_learning: MetaLearningConfig = Field(default_factory=MetaLearningConfig, description="Meta-learning configuration")
-
 
     def to_memory_config(self) -> AgentMemoryConfig:
         return AgentMemoryConfig(
