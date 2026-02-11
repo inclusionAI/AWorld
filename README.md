@@ -190,6 +190,7 @@ Launch our official DeepResearch team in the AWorld [Playground](https://playgro
 ![](./readme_assets/playground_gaiateam.gif)
 
 **From User to Creator: Get Your Agent Featured!**
+
 Ready to build your own? Use the aworld-cli to forge an agent with your unique expertise, captured in its skill.md file.
 
 To get your creation featured, simply submit a Pull Request with your skill.md to:
