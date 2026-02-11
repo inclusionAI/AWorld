@@ -88,20 +88,6 @@ class RunFinishedSignal(Output):
         return self
 
 
-class TopologyOutput(Output):
-    """
-    TopologyOutput structure of swarm topology
-    """
-    topology: Any = Field(default_factory=dict, description="topology structure")
-    team_name: str = Field(default="", description="team name")
-    agent_details: Dict[str, Any] = Field(default_factory=dict, description="details of agents in the topology")
-
-    @model_validator(mode='after')
-    def set_meta(self):
-        self.metadata["type"] = "topology"
-        return self
-
-
 RUN_FINISHED_SIGNAL = RunFinishedSignal()
 
 
