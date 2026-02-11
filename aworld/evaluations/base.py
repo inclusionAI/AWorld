@@ -1,3 +1,5 @@
+# coding: utf-8
+# Copyright (c) inclusionAI.
 import abc
 import time
 import uuid
@@ -28,14 +30,6 @@ class EvalStatus(Enum):
 
 
 MetricValueType = Union[int, float, bool]
-
-
-class MetricNames:
-    """Supported metrics name in AWorld."""
-    LABEL_DISTRIBUTION = 'label_distribution'
-    SUMMARIZE_QUALITY = 'summarize_quality'
-    ANSWER_ACCURACY = 'answer_accuracy'
-    PREDICT_TIME_COST_MS = 'predict_time_cost_ms'
 
 
 @dataclass
@@ -92,9 +86,6 @@ class EvalDataCase(Generic[EvalCaseDataType]):
 
 @dataclass
 class EvalDataset:
-    '''
-    Evaluation dataset.
-    '''
     eval_dataset_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     eval_dataset_name: Optional[str] = field(default_factory=str)
     run_id: Optional[str] = field(default_factory=str)
@@ -103,11 +94,9 @@ class EvalDataset:
 
 
 class MetricResult(TypedDict, total=False):
-    '''
-    Metric result.
-    '''
     value: MetricValueType
     eval_status: EvalStatus
+    metadata: dict
 
 
 @dataclass
@@ -187,7 +176,7 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
         """Judge the status."""
         scorer_result = await self.score(index, input, output)
         for metric_name, metric_result in scorer_result.metric_results.items():
-            if metric_name in self.eval_criterias:
+            if metric_result.get('eval_status', None) is None and metric_name in self.eval_criterias:
                 metric_result['eval_status'] = self.eval_criterias[metric_name].judge(metric_result['value'])
         return scorer_result
 

@@ -20,6 +20,7 @@ from aworld.core.task import Task, TaskResponse
 from aworld.evaluations.base import EvalTask
 from aworld.logs.util import logger
 from aworld.output import StreamingOutputs
+from aworld.ralph_loop.types import CompletionCriteria
 from aworld.runners.evaluate_runner import EvaluateRunner
 from aworld.runners.utils import execute_runner, choose_runners
 from aworld.utils.common import sync_exec
@@ -224,11 +225,11 @@ class Runners:
             evolve_conf.run_conf = run_conf
         runner = EvolutionRunner(task=task, config=evolve_conf)
         await execute_runner([runner], run_conf)
-    
+
     # ============================================================
     # SwarmComposerAgent-based task planning and execution
     # ============================================================
-    
+
     @staticmethod
     async def text_to_swarm(
         query: str,
@@ -243,10 +244,10 @@ class Runners:
     ) -> Swarm:
         """
         Convert text query to Swarm using SwarmComposerAgent.
-        
+
         This method generates a reusable Swarm instance from natural language description.
         The Swarm can be used to create multiple Tasks for different queries.
-        
+
         Args:
             query: User query describing the team structure or task requirements
             swarm_composer_agent: SwarmComposerAgent instance (if None, creates a default one)
@@ -256,27 +257,27 @@ class Runners:
             mcp_config: Global MCP server configurations
             context_config: Context configuration (not used for swarm, kept for consistency)
             **swarm_overrides: Override swarm configs (max_steps, event_driven, etc.)
-        
+
         Returns:
             Swarm instance ready to be used in Task creation
-        
+
         Example:
             >>> # Generate a reusable swarm
             >>> swarm = await Runners.text_to_swarm(
             ...     query="Create a stock analysis team with data collector, analyst, and risk assessor",
             ...     skills_path="./skills"
             ... )
-            >>> 
+            >>>
             >>> # Use the swarm for multiple tasks
             >>> task1 = await Runners.text_to_task("Analyze BABA stock", swarm=swarm)
             >>> task2 = await Runners.text_to_task("Analyze TCEHY stock", swarm=swarm)
         """
         from aworld.config.task_loader import load_swarm_from_yaml_dict
         import yaml
-        
+
         # 1. Run SwarmComposerAgent to generate complete YAML
         logger.info(f"🧠 Analyzing query for swarm generation: {query[:100]}..." if len(query) > 100 else f"🧠 Analyzing query for swarm generation: {query}")
-        
+
         yaml_str = await run_swarm_composer_agent_for_yaml(
             swarm_composer_agent=swarm_composer_agent,
             query=query,
@@ -286,13 +287,13 @@ class Runners:
             mcp_config=mcp_config,
             context_config=context_config
         )
-        
+
         # 2. Parse YAML string to dict
         try:
             yaml_dict = yaml.safe_load(yaml_str)
         except yaml.YAMLError as e:
             raise ValueError(f"Failed to parse YAML from SwarmComposerAgent: {e}")
-        
+
         # 3. Load Swarm from YAML dict (only extract agents + swarm sections)
         swarm = await load_swarm_from_yaml_dict(
             yaml_dict,
@@ -301,6 +302,19 @@ class Runners:
             global_mcp_config=yaml_dict.get("mcp_config"),
             **swarm_overrides
         )
-        
+
         logger.info(f"✅ Swarm created: type={swarm.build_type}, agents={len(swarm.agents)}")
         return swarm
+
+    @staticmethod
+    async def ralph_run(task: Task, completion_criteria: CompletionCriteria) -> TaskResponse:
+        """Run task on Ralph pattern."""
+        from aworld.ralph_loop.lighting_runner import LightingRalphRunner
+
+        if task.agent:
+            swarm = Swarm(task.agent)
+            task.agent = None
+            task.swarm = swarm
+
+        runner = LightingRalphRunner(task=task, completion_criteria=completion_criteria)
+        return await runner.run()

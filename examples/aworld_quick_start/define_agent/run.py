@@ -4,9 +4,7 @@ import asyncio
 import os
 
 import aworld
-from aworld import trace
 from aworld.core.task import Task
-from aworld.trace import ObservabilityConfig
 
 # use custom log path
 os.environ['AWORLD_LOG_PATH'] = '/tmp/aworld_logs'
@@ -19,7 +17,7 @@ from examples.aworld_quick_start.common import agent_config
 
 async def main():
     # reset show DEBUG log level
-    aworld.configure(log_level="DEBUG", use_trace=True)
+    aworld.configure(logger_level="INFO", use_trace=True)
     # reset log format, one line log style
     logger.reset_format("<black>{time:YYYY-MM-DD HH:mm:ss.SSS}/ {extra[trace_id]} | {level} | \
 {extra[name]} PID: {process}, TID:{thread} |</black> <bold>{name}.{function}:{line}</bold> \

@@ -7,7 +7,7 @@ from typing import Dict, Any, List, Optional, Callable
 from aworld.config.conf import EvaluationConfig
 from aworld.core.task import Runner
 from aworld.evaluations.base import (
-    EvalDataCase, EvalDataset, Scorer, EvalCriteria, EvalTarget, EvalTask, Evaluator, MetricNames
+    EvalDataCase, EvalDataset, Scorer, EvalCriteria, EvalTarget, EvalTask, Evaluator
 )
 from aworld.evaluations.recoder.base import EvalRecorder
 from aworld.evaluations.recoder.eval_recorder import EvalResultRecorder, EvalDatasetRecorder, EvalTaskRecorder

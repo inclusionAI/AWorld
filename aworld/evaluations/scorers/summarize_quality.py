@@ -1,8 +1,10 @@
+# coding: utf-8
+# Copyright (c) inclusionAI.
 from typing import Optional
-from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, MetricResult, MetricNames
+from aworld.evaluations.base import EvalDataCase, EvalCaseDataType, MetricResult
 from aworld.evaluations.scorers import scorer_register
-from aworld.evaluations.scorers.llm_as_judge import LLMAsJudgeScorer
-
+from aworld.evaluations.scorers.base_validator import LLMAsJudgeScorer
+from aworld.evaluations.types import MetricNames
 
 SUMMARIZE_QUALITY_EVAL_PROMPT = """
 Given an <input> and a <summary>, evaluate the quality of the <summary>.
@@ -48,7 +50,7 @@ class SummarizeQualityScorer(LLMAsJudgeScorer):
         model_config (ModelConfig): Model configuration.
     """
 
-    def build_judge_prompt(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:
+    def _build_judge_system_prompt(self) -> str:
         return SUMMARIZE_QUALITY_EVAL_PROMPT
 
     def build_judge_data(self, index: int, input: EvalDataCase[EvalCaseDataType], output: dict) -> str:

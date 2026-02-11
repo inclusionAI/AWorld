@@ -9,15 +9,14 @@ import yaml
 docs = "docs"
 black_keys = ["Index", "docs_zh", "DESIGN_SYSTEM"]
 black_values = ["index.md"]
-file_priority = {"Guides": ["Overview", "Quick Start", "Core Capabilities", "Parallel Tasks", "Streaming Response", "Human in the Loop (HITL)"],
-                 "Agents": ["Build Agent", "Custom Agent", "Multi-Agent System(MAS)", "Workflow", "Context", "Memory", "Runtime", "Trace"],
+file_priority = {"Guides": ["Overview", "Quick Start", "Core Capabilities", "Parallel Tasks", "Streaming Response", "Hitl"],
+                 "Agents": ["Build Agent", "Build Multi-Agent System(Mas)", "Build Workflow", "Custom Agent", "Context", "Runtime", "Memory", "Trace"],
                  "Runtime": ["Overview", "Custom Runner", "Hooks"],
-                 "Environment": ["Overview", "Env Client", "Advanced Capabilities"],
-                 "Training": ["Evaluation", "Trainer"],
-                 "Deployment": ["OceanBase Setup"]}
+                 "Environment": ["Overview", "Using Api", "Env Client", "Advanced Capabilities"],
+                 "Training": ["Trainer", "Trajectory", "Evaluation"]}
 file_mapping = {"Hitl": "Human in the Loop (HITL)", "Get Start": "Guides",
                 "Build Multi-Agent System(Mas)": "Multi-Agent System(MAS)",
-                "Build Workflow": "Workflow"}
+                "Build Workflow": "Workflow", "Using Api": "Using API"}
 dir_order = ["Get Start", "Agents", "Environment", "Training", "Deployment"]
 
 
@@ -47,7 +46,15 @@ def scan_path(path: str) -> List[dict]:
         final_map = OrderedDict()
         for file in file_priority.get(display_name, []):
             if file in v:
-                final_map[file_mapping.get(file, file)] = v[file]
+                # sub dir
+                if isinstance(v[file], dict):
+                    new_dict = OrderedDict()
+                    for in_file in file_priority.get(file, []):
+                        new_dict[in_file] = v[file].pop(in_file)
+                    new_dict.update(v[file])
+                    final_map[file_mapping.get(file, file)] = dict(new_dict)
+                else:
+                    final_map[file_mapping.get(file, file)] = v[file]
                 v.pop(file)
         final_map.update(v)
 
@@ -86,8 +93,8 @@ if __name__ == '__main__':
     theme_cfg = {
         "name": "material",
         "language": "en",
-        "logo": "img/aworld.png",
-        "favicon": "img/aworld.png",
+        "logo": "imgs/logo.png",
+        "favicon": "imgs/logo.png",
         "features": [
             "navigation.instant",
             "navigation.tracking",
