@@ -176,6 +176,7 @@ class Swarm(object):
         Swarm.register_agent(self.register_agents)
         self.cur_step = 1
         self.initialized = True
+        self._finished = False
 
     @staticmethod
     def register_agent(agents: List[BaseAgent]) -> None:
