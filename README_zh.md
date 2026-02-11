@@ -63,7 +63,7 @@ LLM_API_KEY="your_model_api_key"
 LLM_BASE_URL="your_model_base_url"
 ```
 
-安装并进入 AWorld-CLI：
+**安装并进入 AWorld-CLI：**
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
