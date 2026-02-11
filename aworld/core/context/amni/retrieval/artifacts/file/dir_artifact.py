@@ -118,7 +118,9 @@ class DirArtifact(Artifact):
             # Generate key if not provided
             if custom_key is None:
                 # Use base_path, artifact_id and filename to create unique key
-                if self.base_path:
+                if attachment.path and attachment.path.endswith(attachment.filename):
+                    custom_key = f"{self.base_path}/{attachment.path}"
+                elif self.base_path:
                     custom_key = f"{self.base_path}/{attachment.filename}"
                 else:
                     custom_key = f"{attachment.filename}"
