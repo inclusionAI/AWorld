@@ -13,9 +13,9 @@
 [![Discord][discord-image]][discord-url]
 [![License: MIT][license-image]][license-url]
 [![DeepWiki][deepwiki-image]][deepwiki-url]
-[![arXiv][arxiv-image]][arxiv-url]
 [![Tutorial][tutorial-image]][tutorial-url]
-[![Playground][playground-image]][playground-url]
+<!-- [![arXiv][arxiv-image]][arxiv-url] -->
+<!-- [![Playground][playground-image]][playground-url] -->
 
 </h4>
 
@@ -24,10 +24,10 @@
 [中文版](./README_zh.md) |
 [Automation](#your-journey-with-aworld-cli) |
 [Manual](#total-control-manually-crafting-agent-systems) |
-[Experience](#experience-to-samples) |
-[Training](#training) |
 [Evolution](#evolution) |
 [Contributing](#contributing) |
+<!-- [Experience](#experience-to-samples) |
+[Training](#training) | -->
 
 </h4>
 
@@ -55,13 +55,13 @@ The journey from an idea to an evolved, autonomous agent begins at your fingerti
 
 Create a .env file in the AWorld/aworld-cli to configure the base model for both the AWorld Agent and any agents it creates. Add the following content:
 ```bash
-LLM_MODEL_NAME="your_model_name, Claude-Sonnet-4.5 suggested"
+LLM_MODEL_NAME="your_model_name, Claude-Sonnet-4 or above suggested"
 LLM_PROVIDER="openai"
 LLM_API_KEY="your_model_api_key"
 LLM_BASE_URL="your_base_url"
 ```
 
-Install and Enter AWorld-CLI
+**Install and Enter AWorld-CLI**
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
@@ -78,7 +78,10 @@ aworld-cli
 Instantly scaffold an agent from a natural language description of your task. AWorld-CLI handles the boilerplate, so you can focus on the logic.
 </p>
 
-![](./readme_assets/aworld_cli_text2agent.png)
+
+<!-- ![](./readme_assets/aworld_cli_text2agent.png) -->
+***Let AWorld Agent make an agent for you***
+![](./readme_assets/aworld_cli_demo_step1.gif)
 
 <p align="justify">
 This command generates a fully operational agent file referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution.
@@ -127,7 +130,10 @@ When you automate the creation of a new agent, AWorld-CLI doesn't start from scr
 Prompt the AWorld Agent to execute your newly created agent on a task and watch it work. Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
 </p>
 
-![](./readme_assets/aworld_cli_run_task.png)
+
+***Let the created agent do your job***
+![](./readme_assets/aworld_cli_demo_step2.gif)
+<!-- ![](./readme_assets/aworld_cli_run_task.png) -->
 
 ## Evolve Your Agent
 <p align="justify">
@@ -138,12 +144,23 @@ If the agent's performance isn't perfect in your opinion, you have a spectrum of
 You are the expert. Open the generated Python file and fine-tune the prompts, logic, or tool usage directly. You have full control.
 </p>
 
-**One More Thing: AI-Assisted Evolution**
+**Exciting: AI-Assisted Evolution**
 <p align="justify">
 This is where AWorld truly shines! Prompt with your desired changes, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent as your AI pair programmer to tune your agent.
 </p>
 
+
+***Schematic***
 ![](./readme_assets/mas_meta_learning_v2.png) 
+
+
+***Optimize your agent***
+![](./readme_assets/aworld_cli_demo_step3.gif)
+
+
+***Let the optimized agent do the more challenging job***
+![](./readme_assets/aworld_cli_demo_step4.gif)
+
 
 **Our Vista: Self-Evolution**
 <p align="justify">
@@ -165,13 +182,23 @@ In AWorld, an agent is a model enhanced with tools. But real-world problems ofte
 
 3. orchestrate multi-agent systems (MAS) [Docs](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
-# Playground: See a Multi-Agent System in Action
-Want to see it live? Load a pre-built DeepResearch team in the AWorld [Playground](https://playground.aworldagents.com/), inspect the source, and run it end to end.
 
+# Playground: See a Multi-Agent System in Action
+Launch our official DeepResearch team in the AWorld [Playground](https://playground.aworldagents.com/) to see AI collaboration live. Inspect its source, run it end-to-end, and get inspired.
 
 ![](./readme_assets/playground_gaiateam.gif)
 
-# Experience to Samples
+**From User to Creator: Get Your Agent Featured!**
+Ready to build your own? Use the aworld-cli to forge an agent with your unique expertise, captured in its skill.md file.
+
+To get your creation featured, simply submit a Pull Request with your skill.md to:
+AWorld/examples/Custom_Skills/
+
+<p align="justify">
+We'll showcase the best community agents here in the Playground. Let your expertise evolve into a professional agent, gain recognition, and empower the entire community to experience the amazing tools you've built.
+</p>
+
+<!-- # Experience to Samples
 Iterate with confidence. Our runtime records a complete history for every task, capturing each LLM call, action, and reward. Use this data to audit performance and generate high-quality training samples.
 [Docs](https://inclusionai.github.io/AWorld/Training/Trajectory/)
 
@@ -181,7 +208,7 @@ Once agents can roam across environments, AWorld closes the loop with two comple
 [Docs](https://inclusionai.github.io/AWorld/Training/Trainer/)
 
 > 💡 Check the [real case](./train/examples/train_gaia_with_aworld_verl/main.py) which includes the full training config to run agentic training.
-
+ -->
 
 # Evolution
 <p align="justify">
