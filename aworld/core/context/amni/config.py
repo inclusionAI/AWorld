@@ -2,7 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import os
 from enum import Enum
-from typing import Optional, List, Union, Dict, Any
+from typing import Optional, List, Union, Dict
 
 from pydantic import BaseModel, Field
 
@@ -172,35 +172,6 @@ class WorkingDirOssConfig(BaseModel):
     bucket_name: Optional[str] = Field(
         default=None,
         description="OSS bucket name. Priority: config > WORKING_DIR_OSS_BUCKET_NAME > OSS_BUCKET_NAME"
-    )
-
-class AgentRegistryConfig(BaseModel):
-    """Configuration for agent registry service.
-    
-    A registry service for managing agents and swarms with version control, storage, and discovery.
-    Supports both agent and swarm configurations:
-    - Agent config: Dictionary mapping agent names to AgentConfig
-    - Swarm config: Dictionary with swarm topology definition (type, order, edges, etc.)
-    """
-    storage_type: str = Field(default="local", description="Storage type: local|oss")
-    storage_base_path: Optional[str] = Field(
-        default=None,
-        description="Base path for agent registry storage and scanning. "
-                    "This path is used for both storing agent configurations and scanning for agent definitions. "
-                    "Priority: config > AGENTS_PATH > default (~/.aworld/agents)"
-    )
-    
-    # Agent configurations: Dict[str, AgentConfig] or Dict[str, Dict] (will be converted to AgentConfig)
-    agent_configs: Optional[Dict[str, Union[Dict[str, Any], Any]]] = Field(
-        default_factory=dict,
-        description="Agent configurations dictionary. Key is agent name, value is AgentConfig or dict that can be converted to AgentConfig"
-    )
-    
-    # Swarm configuration: supports workflow, handoff, team types
-    swarm_config: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="Swarm topology configuration. Supports: "
-                    "type (workflow/handoff/team), order (for workflow), edges (for handoff), root/members (for team)"
     )
 
 class ContextEnvConfig(BaseModel):

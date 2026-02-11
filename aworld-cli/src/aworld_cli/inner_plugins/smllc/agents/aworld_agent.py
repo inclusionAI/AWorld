@@ -493,7 +493,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             params={"max_completion_tokens": os.environ.get("MAX_COMPLETION_TOKENS", 10240)}
         ),
         use_vision=False,  # Enable if needed for image analysis
-        skill_configs=ALL_SKILLS
+        # skill_configs=ALL_SKILLS
     )
 
     # Get current working directory for filesystem-server

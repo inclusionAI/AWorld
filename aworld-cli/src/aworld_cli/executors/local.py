@@ -1,25 +1,22 @@
 """
 Local agent executor.
 """
-import os
 import asyncio
+import os
 import traceback
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Dict, Any, Union, Text
+from typing import Optional, List, Dict, Any, Union
+
 from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.status import Status
-from rich.live import Live
-from rich.syntax import Syntax
-from rich.columns import Columns
-from rich.align import Align
 
 from aworld.config import TaskConfig
 from aworld.core.agent.swarm import Swarm
-from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.common import Observation
+from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
 from aworld.core.task import Task
 from aworld.runner import Runners
@@ -537,7 +534,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         status_start_time = None
                     
                     try:
-                        from aworld.output.base import MessageOutput, ToolResultOutput, StepOutput, TopologyOutput
+                        from aworld.output.base import MessageOutput, ToolResultOutput, StepOutput
                         
                         # Show loading status while waiting for first output
                         _start_loading_status("💭 Thinking...")
@@ -637,17 +634,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     # Just silently continue, keeping the Thinking status active
                                     # Optionally, we can log or render step info without stopping status
                                     pass
-
-                                # Handle TopologyOutput
-                                elif isinstance(output, TopologyOutput):
-                                    # Stop any loading status
-                                    _stop_loading_status()
-
-                                    # Render topology
-                                    self._render_topology_output(output)
-
-                                    # Resume thinking status
-                                    _start_loading_status("💭 Thinking...")
 
                                 # Handle other output types
                                 else:
@@ -779,198 +765,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
     
     # Note: _format_tool_call, _format_tool_calls, _render_message_output,
     # _render_tool_result_output, _extract_answer_from_output are now inherited from BaseAgentExecutor
-
-    def _render_topology_output(self, output) -> None:
-        """
-        Render TopologyOutput to console with a cool box diagram.
-        """
-        from aworld.output.base import TopologyOutput
-        from rich.table import Table
-        from rich.box import ROUNDED
-        # Import Group with fallback for older Rich versions
-        try:
-            from rich.console import Group
-        except ImportError:
-            try:
-                from rich import Group
-            except ImportError:
-                # Fallback for older Rich versions
-                class Group:
-                    """Fallback Group class for older Rich versions."""
-                    def __init__(self, *renderables):
-                        self.renderables = renderables
-                    
-                    def __rich_console__(self, console, options):
-                        for renderable in self.renderables:
-                            yield renderable
-
-        if not isinstance(output, TopologyOutput) or not self.console:
-            return
-
-        topology = output.topology
-        team_name = output.team_name
-
-        def get_agent_details(agent_name):
-            """Find agent details by name."""
-            # Try getting from output first (source of truth for this topology render)
-            if hasattr(output, 'agent_details') and output.agent_details:
-                return output.agent_details.get(agent_name)
-
-            # Fallback to local swarm check (legacy/direct path)
-            if not hasattr(self, 'swarm') or not self.swarm:
-                return None
-
-            # Try agent_graph first (O(1) lookup)
-            if hasattr(self.swarm, 'agent_graph') and self.swarm.agent_graph:
-                if hasattr(self.swarm.agent_graph, 'agents') and isinstance(self.swarm.agent_graph.agents, dict):
-                    agent = self.swarm.agent_graph.agents.get(agent_name)
-                    if agent:
-                        # Normalize to dict format to match output.agent_details
-                        details = {
-                            "type": type(agent).__name__,
-                            "tools": getattr(agent, 'tool_names', []),
-                            "skills": list(getattr(agent, 'skill_configs', {}).keys()) if isinstance(getattr(agent, 'skill_configs', {}), dict) else []
-                        }
-                        return details
-
-            return None
-
-        def create_node_panel(item):
-            if isinstance(item, dict) and "name" in item:
-                name = item.get("name", "Unknown")
-                node_type = item.get("type", "Agent")
-
-                # Get detailed agent info
-                agent_details = get_agent_details(name)
-
-                # Build content
-                content_parts = []
-                content_parts.append(f"[bold white]{name}[/bold white]")
-                content_parts.append(f"[dim]{node_type}[/dim]")
-
-                if agent_details:
-                    # Extract Skills
-                    skills = agent_details.get("skills", [])
-                    if skills:
-                        content_parts.append("\n[bold cyan]📚 Skills:[/bold cyan]")
-                        for skill in skills:
-                            content_parts.append(f"[cyan]• {skill}[/cyan]")
-
-                    # Extract Tools
-                    tools = agent_details.get("tools", [])
-                    if tools:
-                        content_parts.append("\n[bold yellow]🛠️ Tools:[/bold yellow]")
-                        for tool in tools:
-                            # Handle if tool is object or string
-                            tool_name = getattr(tool, 'name', str(tool)) if not isinstance(tool, str) else tool
-                            content_parts.append(f"[yellow]• {tool_name}[/yellow]")
-
-                    # Extract MCP Servers
-                    mcp_servers = agent_details.get("mcp_servers", [])
-                    if mcp_servers:
-                        content_parts.append("\n[bold magenta]🔌 MCP Servers:[/bold magenta]")
-                        for mcp in mcp_servers:
-                            content_parts.append(f"[magenta]• {mcp}[/magenta]")
-
-                    # Extract System Prompt (if available and not too long)
-                    sys_prompt = agent_details.get("system_prompt", "")
-                    if sys_prompt:
-                        content_parts.append("\n[bold green]📝 Prompt:[/bold green]")
-                        # Truncate if too long
-                        if len(sys_prompt) > 100:
-                            content_parts.append(f"[green]{sys_prompt[:100]}...[/green]")
-                        else:
-                            content_parts.append(f"[green]{sys_prompt}[/green]")
-
-                final_content = "\n".join(content_parts)
-
-                return Panel(
-                    Align.center(final_content),
-                    border_style="cyan",
-                    padding=(1, 2),
-                    expand=False,
-                    width=50,
-                    title="[bold cyan]Agent[/bold cyan]",
-                    title_align="center"
-                )
-            elif isinstance(item, str):
-                return Panel(
-                    Align.center(f"[bold white]{item}[/bold white]"),
-                    border_style="cyan",
-                    padding=(1, 2),
-                    expand=False,
-                    width=50
-                )
-            else:
-                return Panel(
-                    Align.center(f"[red]Unknown: {str(item)}[/red]"),
-                    border_style="red",
-                    expand=False,
-                    width=50
-                )
-
-        def render_structure(item):
-            # Workflow (List)
-            if isinstance(item, list):
-                children = [render_structure(sub) for sub in item]
-                if not children:
-                    return Text("Empty Workflow", style="dim")
-
-                # Render top to bottom with dashed lines
-                rows = []
-                for i, child in enumerate(children):
-                    rows.append(child)
-                    if i < len(children) - 1:
-                        # Downward thick pillar with arrow below
-                        rows.append(Align.center(Text("⬇", style="bold yellow")))
-
-                return Group(*rows)
-
-            # Serial Group (Tuple)
-            elif isinstance(item, tuple):
-                children = [render_structure(sub) for sub in item]
-                if not children:
-                    return Text("Empty Sequence", style="dim")
-
-                # Render top to bottom with dashed lines
-                rows = []
-                for i, child in enumerate(children):
-                    rows.append(child)
-                    if i < len(children) - 1:
-                        # Downward thick pillar with arrow below
-                        rows.append(Align.center(Text("⬇", style="bold yellow")))
-
-                return Panel(
-                    Group(*rows),
-                    title="[bold magenta]🔄 Serial Execution[/bold magenta]",
-                    border_style="magenta",
-                    padding=(1, 2),
-                    title_align="center"
-                )
-
-            # Leaf Node
-            else:
-                return create_node_panel(item)
-
-        # Main rendering logic
-        if isinstance(topology, (list, tuple)):
-            # If top level is list/tuple, treat it as such
-            content = render_structure(topology)
-        else:
-            # Single item
-            content = render_structure(topology)
-
-        # Wrap everything in a main panel
-        main_panel = Panel(
-            Align.center(content),
-            title=f"[bold green]🤖 Team Topology: {team_name}[/bold green]",
-            border_style="green",
-            padding=(1, 2),
-            expand=True
-        )
-
-        self.console.print(main_panel)
-        self.console.print()
 
     async def _create_workspace(self, session_id: str):
         """Create local workspace for the session.
