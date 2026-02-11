@@ -13,8 +13,8 @@
 [![Discord][discord-image]][discord-url]
 [![License: MIT][license-image]][license-url]
 [![DeepWiki][deepwiki-image]][deepwiki-url]
-<!-- [![arXiv][arxiv-image]][arxiv-url] -->
 [![Tutorial][tutorial-image]][tutorial-url]
+<!-- [![arXiv][arxiv-image]][arxiv-url] -->
 <!-- [![Playground][playground-image]][playground-url] -->
 
 </h4>
@@ -24,10 +24,11 @@
 [English](./README.md) |
 [自动化](#your-journey-with-aworld-cli) |
 [手动构建](#total-control-manually-crafting-agent-systems) |
-<!-- [经验与样本](#experience-to-samples) |
-[训练](#training) | -->
 [演进](#evolution) |
 [参与贡献](#contributing) |
+
+<!-- [经验与样本](#experience-to-samples) |
+[训练](#training) | -->
 
 </h4>
 
@@ -56,7 +57,7 @@ AWorld-CLI 就是为此设计的平台。我们提供一套基础「配方」，
 
 在 AWorld/aworld-cli 下创建 .env，配置 AWorld Agent 及其所创建智能体的基础模型，例如：
 ```bash
-LLM_MODEL_NAME="your_model_name, Claude-Sonnet-4.5 suggested"
+LLM_MODEL_NAME="your_model_name, Claude-Sonnet-4 or above suggested"
 LLM_PROVIDER="openai"
 LLM_API_KEY="your_model_api_key"
 LLM_BASE_URL="your_model_base_url"
@@ -124,6 +125,7 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
     </tr>
   </tbody>
 </table>
+
 
 ## 运行智能体
 <p align="justify">

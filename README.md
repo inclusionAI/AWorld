@@ -13,8 +13,8 @@
 [![Discord][discord-image]][discord-url]
 [![License: MIT][license-image]][license-url]
 [![DeepWiki][deepwiki-image]][deepwiki-url]
-<!-- [![arXiv][arxiv-image]][arxiv-url] -->
 [![Tutorial][tutorial-image]][tutorial-url]
+<!-- [![arXiv][arxiv-image]][arxiv-url] -->
 <!-- [![Playground][playground-image]][playground-url] -->
 
 </h4>
@@ -24,10 +24,10 @@
 [中文版](./README_zh.md) |
 [Automation](#your-journey-with-aworld-cli) |
 [Manual](#total-control-manually-crafting-agent-systems) |
-<!-- [Experience](#experience-to-samples) |
-[Training](#training) | -->
 [Evolution](#evolution) |
 [Contributing](#contributing) |
+<!-- [Experience](#experience-to-samples) |
+[Training](#training) | -->
 
 </h4>
 
@@ -55,7 +55,7 @@ The journey from an idea to an evolved, autonomous agent begins at your fingerti
 
 Create a .env file in the AWorld/aworld-cli to configure the base model for both the AWorld Agent and any agents it creates. Add the following content:
 ```bash
-LLM_MODEL_NAME="your_model_name, Claude-Sonnet-4.5 suggested"
+LLM_MODEL_NAME="your_model_name, Claude-Sonnet-4 or above suggested"
 LLM_PROVIDER="openai"
 LLM_API_KEY="your_model_api_key"
 LLM_BASE_URL="your_base_url"
@@ -144,7 +144,7 @@ If the agent's performance isn't perfect in your opinion, you have a spectrum of
 You are the expert. Open the generated Python file and fine-tune the prompts, logic, or tool usage directly. You have full control.
 </p>
 
-**One More Thing: AI-Assisted Evolution**
+**Exciting: AI-Assisted Evolution**
 <p align="justify">
 This is where AWorld truly shines! Prompt with your desired changes, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent as your AI pair programmer to tune your agent.
 </p>
@@ -160,6 +160,7 @@ This is where AWorld truly shines! Prompt with your desired changes, so the AWor
 
 ***Let the optimized agent do the more challenging job***
 ![](./readme_assets/aworld_cli_demo_step4.gif)
+
 
 **Our Vista: Self-Evolution**
 <p align="justify">
@@ -181,6 +182,7 @@ In AWorld, an agent is a model enhanced with tools. But real-world problems ofte
 
 3. orchestrate multi-agent systems (MAS) [Docs](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
+
 # Playground: See a Multi-Agent System in Action
 Launch our official DeepResearch team in the AWorld [Playground](https://playground.aworldagents.com/) to see AI collaboration live. Inspect its source, run it end-to-end, and get inspired.
 
@@ -193,10 +195,6 @@ To get your creation featured, simply submit a Pull Request with your skill.md t
 AWorld/examples/Custom_Skills/
 
 We'll showcase the best community agents right here in the Playground. Let your expertise evolve into a professional agent, gain recognition, and empower the entire community to experience the amazing tools you've built.
-
-
-
-
 
 <!-- # Experience to Samples
 Iterate with confidence. Our runtime records a complete history for every task, capturing each LLM call, action, and reward. Use this data to audit performance and generate high-quality training samples.
