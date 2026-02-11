@@ -224,7 +224,7 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         try:
             message.context.update_agent_step(self.id())
             task = message.context.get_task()
-            if task.conf and task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
+            if task and task.conf and task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
                 agent = task.swarm.ordered_agents[0] if task.agent is None else task.agent
                 message.context.new_trajectory_step(agent.id())
             caller = message.caller

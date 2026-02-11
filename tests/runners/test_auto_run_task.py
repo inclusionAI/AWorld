@@ -4,7 +4,7 @@
 Unit tests for Auto Run Task functionality.
 
 Tests cover:
-- MetaAgent YAML generation
+- SwarmComposerAgent YAML generation
 - Task YAML loading
 - Agent instantiation (builtin/skill/predefined)
 - Swarm building
@@ -108,15 +108,15 @@ Test skill usage content.
     return skills_dir
 
 
-class TestMetaAgent:
-    """Tests for MetaAgent class."""
+class TestSwarmComposerAgent:
+    """Tests for SwarmComposerAgent class."""
     
-    def test_meta_agent_initialization(self):
-        """Test MetaAgent can be instantiated."""
-        from aworld.agents.meta_agent import MetaAgent
+    def test_swarm_composer_agent_initialization(self):
+        """Test SwarmComposerAgent can be instantiated."""
+        from aworld.agents.swarm_composer_agent import SwarmComposerAgent
         from aworld.config import AgentConfig, ModelConfig
         
-        meta_agent = MetaAgent(
+        swarm_composer_agent = SwarmComposerAgent(
             conf=AgentConfig(
                 llm_config=ModelConfig(
                     llm_model_name="gpt-4-test",
@@ -127,16 +127,16 @@ class TestMetaAgent:
             max_yaml_retry=3
         )
         
-        assert meta_agent.name == "MetaAgent"
-        assert meta_agent.max_yaml_retry == 3
-        assert meta_agent.system_prompt is not None
+        assert swarm_composer_agent.name == "SwarmComposerAgent"
+        assert swarm_composer_agent.max_yaml_retry == 3
+        assert swarm_composer_agent.system_prompt is not None
     
-    def test_meta_agent_validates_yaml(self):
-        """Test MetaAgent YAML validation."""
-        from aworld.agents.meta_agent import MetaAgent
+    def test_swarm_composer_agent_validates_yaml(self):
+        """Test SwarmComposerAgent YAML validation."""
+        from aworld.agents.swarm_composer_agent import SwarmComposerAgent
         from aworld.config import AgentConfig, ModelConfig
         
-        meta_agent = MetaAgent(
+        swarm_composer_agent = SwarmComposerAgent(
             conf=AgentConfig(
                 llm_config=ModelConfig(
                     llm_model_name="gpt-4-test",
@@ -160,12 +160,12 @@ swarm:
   agents:
     - id: agent1
 """
-        meta_agent._validate_task_yaml(valid_yaml)  # Should not raise
+        swarm_composer_agent._validate_task_yaml(valid_yaml)  # Should not raise
         
         # Invalid YAML should raise
         invalid_yaml = "not: valid"
         with pytest.raises(ValueError, match="must contain 'agents' section"):
-            meta_agent._validate_task_yaml(invalid_yaml)
+            swarm_composer_agent._validate_task_yaml(invalid_yaml)
 
 
 class TestTaskLoader:
@@ -317,11 +317,11 @@ class TestRunnersIntegration:
     async def test_plan_task_creates_yaml(self, tmp_path):
         """Test plan_task generates valid YAML."""
         from aworld.runner import Runners
-        from aworld.agents.meta_agent import MetaAgent
+        from aworld.agents.swarm_composer_agent import SwarmComposerAgent
         from aworld.config import AgentConfig, ModelConfig
         from aworld.core.common import Observation
         
-        # Mock MetaAgent to return predefined YAML
+        # Mock SwarmComposerAgent to return predefined YAML
         mock_yaml = """
 task:
   query: "Test query"
@@ -342,15 +342,15 @@ swarm:
     - id: orchestrator
 """
         
-        # Create mock MetaAgent
-        meta_agent = Mock(spec=MetaAgent)
-        meta_agent.plan_task = AsyncMock(return_value=mock_yaml)
+        # Create mock SwarmComposerAgent
+        swarm_composer_agent = Mock(spec=SwarmComposerAgent)
+        swarm_composer_agent.plan_task = AsyncMock(return_value=mock_yaml)
         
         output_path = tmp_path / "test_plan.yaml"
         
         yaml_path = await Runners.plan_task(
             query="Test query",
-            meta_agent=meta_agent,
+            swarm_composer_agent=swarm_composer_agent,
             output_yaml=str(output_path),
             auto_save=True
         )
@@ -399,10 +399,10 @@ class TestErrorHandling:
     
     def test_yaml_validation_duplicate_agent_id(self):
         """Test validation catches duplicate agent IDs."""
-        from aworld.agents.meta_agent import MetaAgent
+        from aworld.agents.swarm_composer_agent import SwarmComposerAgent
         from aworld.config import AgentConfig, ModelConfig
         
-        meta_agent = MetaAgent(
+        swarm_composer_agent = SwarmComposerAgent(
             conf=AgentConfig(
                 llm_config=ModelConfig(
                     llm_model_name="gpt-4-test",
@@ -429,14 +429,14 @@ swarm:
 """
         
         with pytest.raises(ValueError, match="Duplicate agent id"):
-            meta_agent._validate_task_yaml(invalid_yaml)
+            swarm_composer_agent._validate_task_yaml(invalid_yaml)
     
     def test_yaml_validation_undefined_root_agent(self):
         """Test validation catches undefined root_agent."""
-        from aworld.agents.meta_agent import MetaAgent
+        from aworld.agents.swarm_composer_agent import SwarmComposerAgent
         from aworld.config import AgentConfig, ModelConfig
         
-        meta_agent = MetaAgent(
+        swarm_composer_agent = SwarmComposerAgent(
             conf=AgentConfig(
                 llm_config=ModelConfig(
                     llm_model_name="gpt-4-test",
@@ -462,7 +462,7 @@ swarm:
 """
         
         with pytest.raises(ValueError, match="root_agent.*not defined"):
-            meta_agent._validate_task_yaml(invalid_yaml)
+            swarm_composer_agent._validate_task_yaml(invalid_yaml)
 
 
 if __name__ == "__main__":

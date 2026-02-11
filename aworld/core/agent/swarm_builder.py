@@ -209,13 +209,42 @@ class SwarmYAMLBuilder:
         
         # Convert edge tuples to agent pairs
         topology = []
+        agents_in_edges = set()  # Track which agents appear in edges
+        
         for from_id, to_id in merged_edges:
             from_agent = self._get_agent_by_id(from_id)
             to_agent = self._get_agent_by_id(to_id)
             topology.append((from_agent, to_agent))
+            agents_in_edges.add(from_id)
+            agents_in_edges.add(to_id)
+        
+        # For team swarm, add agents not in edges as individual elements
+        swarm_type = self.swarm_config["type"]
+        if swarm_type == "team":
+            # Find agents not in edges
+            standalone_agents = []
+            root_agent_id = self.swarm_config.get("root_agent")
+            
+            for agent_def in agents_config:
+                agent_id = agent_def["id"]
+                if agent_id not in agents_in_edges:
+                    agent = self._get_agent_by_id(agent_id)
+                    standalone_agents.append((agent_id, agent))
+            
+            # If root_agent is standalone, it must be first
+            if root_agent_id and root_agent_id not in agents_in_edges:
+                # Insert root_agent at the beginning
+                root_agent = self._get_agent_by_id(root_agent_id)
+                topology.insert(0, root_agent)
+                # Remove from standalone list
+                standalone_agents = [(aid, a) for aid, a in standalone_agents if aid != root_agent_id]
+            
+            # Add remaining standalone agents
+            for _, agent in standalone_agents:
+                topology.append(agent)
         
         # For workflow without explicit edges, add single agents
-        if not topology and self.swarm_config["type"] == "workflow":
+        if not topology and swarm_type == "workflow":
             for agent_def in agents_config:
                 agent = self._get_agent_by_id(agent_def["id"])
                 topology.append(agent)

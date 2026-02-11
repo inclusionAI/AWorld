@@ -1,9 +1,9 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 """
-MetaAgent: Meta-level agent for task planning and agent selection.
+SwarmComposerAgent: Swarm YAML composer for planning and agent selection.
 
-MetaAgent analyzes user queries and generates Task YAML configurations that define:
+SwarmComposerAgent analyzes user queries and generates Task YAML configurations that define:
 - Required agents (builtin/skill/predefined types)
 - Swarm topology (workflow/handoff/team)
 - Tools and MCP configurations
@@ -16,17 +16,17 @@ from typing import Dict, Any, List, Optional
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
-from aworld.core.common import Observation
+from aworld.core.common import Observation, ActionModel
 from aworld.core.agent.base import BaseAgent
 from aworld.core.event.base import Message, AgentMessage
 from aworld.logs.util import logger
 
 
-class MetaAgent(Agent):
-    """Meta-level agent for task planning and agent selection."""
+class SwarmComposerAgent(Agent):
+    """Compose Task/Swarm YAML from user queries."""
     
     DEFAULT_SYSTEM_PROMPT = """
-You are a MetaAgent responsible for analyzing user queries and planning task execution strategies.
+You are a SwarmComposerAgent responsible for analyzing user queries and composing a Task YAML configuration.
 
 ## Query Understanding:
 
@@ -120,6 +120,58 @@ Users may provide two types of queries:
 - Pure reasoning agent → no MCP servers needed
 - Coordinator in team topology → usually no MCP servers (delegates to workers)
 
+### MCP Configuration Guidelines:
+
+**CRITICAL**: When generating the `mcp_config` section in YAML:
+
+1. **Use EXACT configuration from "Available MCP Servers"** (provided in the context below)
+2. **Only include servers that agents actually use** (referenced in agents' `mcp_servers` field)
+3. **Copy command, args verbatim** - DO NOT invent, modify, or guess configurations
+4. **If a server is not in the available list, DO NOT include it** in mcp_config
+5. **Filter unused servers** - if no agent uses a server, omit it from mcp_config
+
+**NEVER use placeholders like "<from available servers>" or "<copy from available servers>"**
+**ALWAYS copy the ACTUAL command and args values from the "Available MCP Servers" section in the context**
+
+**Correct Pattern** (using provided real config):
+```yaml
+agents:
+  - id: agent1
+    mcp_servers: ["server_a"]  # Agent needs server_a
+
+mcp_config:
+  mcpServers:
+    server_a:  # Only server_a is included (used by agent1)
+      command: "npx"  # ✓ Copied exactly from available servers context
+      args: ["-y", "server_a@1.0.0"]  # ✓ Copied exactly from available servers context
+```
+
+**WRONG Patterns** (DO NOT do these):
+```yaml
+# ✗ WRONG: Using placeholder text instead of real configuration
+mcp_config:
+  mcpServers:
+    server_a:
+      command: "<from available servers>"  # WRONG - must use actual value
+      args: ["<from available servers>"]  # WRONG - must use actual value
+
+# ✗ WRONG: Invented configuration (not from provided list)
+mcp_config:
+  mcpServers:
+    server_a:
+      command: "python"  # Invented - not from context
+      args: ["-m", "mcp_server"]  # Invented - not from context
+
+# ✗ WRONG: Including server not used by any agent
+agents:
+  - id: agent1
+    mcp_servers: ["server_a"]
+mcp_config:
+  mcpServers:
+    server_a: {...}
+    server_b: {...}  # No agent uses server_b, should not be here
+```
+
 ## Few-Shot Examples:
 
 ### Example 1: Simple Single-Agent Task
@@ -139,6 +191,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
         llm_temperature: 0.0
@@ -151,10 +204,12 @@ swarm:
     - id: orchestrator
 
 mcp_config:
+  # Copy ACTUAL command/args from "Available MCP Servers" context above
+  # Example format (replace with real values from context):
   mcpServers:
     document_server:
-      command: "python"
-      args: ["-m", "mcp_tools.document_server"]
+      command: "uvx"  # Use actual command from context
+      args: ["mcp-server-fetch"]  # Use actual args from context
 ```
 
 ### Example 2: Workflow - Sequential Data Pipeline
@@ -174,6 +229,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
     mcp_servers: ["ms-playwright"]
@@ -185,6 +241,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
   
@@ -202,10 +259,11 @@ swarm:
     - id: analyzer
 
 mcp_config:
+  # Copy ACTUAL command/args from "Available MCP Servers" context above
   mcpServers:
     ms-playwright:
-      command: "npx"
-      args: ["@playwright/mcp@latest", "--no-sandbox"]
+      command: "npx"  # Use actual command from context
+      args: ["-y", "@modelcontextprotocol/server-playwright"]  # Use actual args from context
 ```
 
 ### Example 3: Handoff - Flexible Specialist Routing
@@ -225,6 +283,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
   
@@ -239,6 +298,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
   
@@ -249,6 +309,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
 
@@ -281,6 +342,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
     mcp_servers: ["ms-playwright"]
@@ -292,6 +354,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
     mcp_servers: ["ms-playwright"]
@@ -303,6 +366,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
     mcp_servers: ["ms-playwright"]
@@ -314,6 +378,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
     mcp_servers: ["ms-playwright"]
@@ -329,10 +394,11 @@ swarm:
     - id: reviews_agent
 
 mcp_config:
+  # Copy ACTUAL command/args from "Available MCP Servers" context above
   mcpServers:
     ms-playwright:
-      command: "npx"
-      args: ["@playwright/mcp@latest", "--no-sandbox"]
+      command: "npx"  # Use actual command from context
+      args: ["-y", "@modelcontextprotocol/server-playwright"]  # Use actual args from context
 ```
 
 ### Example 5: Advanced - Parallel Execution with Fine-Grained Tool Control
@@ -353,6 +419,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
       skill_configs:
@@ -369,6 +436,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
   
@@ -383,6 +451,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
 
@@ -394,10 +463,11 @@ swarm:
     - id: reviewer
 
 mcp_config:
+  # Copy ACTUAL command/args from "Available MCP Servers" context above
   mcpServers:
     image_server:
-      command: "python"
-      args: ["-m", "mcp_tools.image_server"]
+      command: "node"  # Use actual command from context
+      args: ["image-server.js"]  # Use actual args from context
 ```
 
 ### Example 6: Advanced - Nested Swarm for Hierarchical Tasks
@@ -417,6 +487,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
   
@@ -427,6 +498,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
   
@@ -460,6 +532,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
   
@@ -470,6 +543,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
 
@@ -501,6 +575,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
   
@@ -511,6 +586,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
     mcp_servers: ["finance_api"]
@@ -522,6 +598,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
     mcp_servers: ["chart_analysis"]
@@ -533,6 +610,7 @@ agents:
     config:
       llm_config:
         llm_model_name: "${LLM_MODEL_NAME}"
+        llm_base_url: "${LLM_BASE_URL}"
         llm_provider: "${LLM_PROVIDER}"
         llm_api_key: "${LLM_API_KEY}"
 
@@ -546,13 +624,15 @@ swarm:
     - id: risk_assessor
 
 mcp_config:
+  # Copy ACTUAL command/args from "Available MCP Servers" context above
+  # Only include servers actually used by agents
   mcpServers:
     finance_api:
-      command: "python"
-      args: ["-m", "mcp_tools.finance_api"]
+      command: "python"  # Use actual command from context
+      args: ["-m", "finance_mcp_server"]  # Use actual args from context
     chart_analysis:
-      command: "python"
-      args: ["-m", "mcp_tools.chart_analysis"]
+      command: "npx"  # Use actual command from context
+      args: ["-y", "chart-analysis-server"]  # Use actual args from context
 ```
 
 ## Output Requirements:
@@ -571,14 +651,14 @@ mcp_config:
 """
 
     def __init__(self, 
-                 name: str = "MetaAgent",
-                 desc: str = "Meta-level agent for task planning and agent selection",
+                 name: str = "SwarmComposerAgent",
+                 desc: str = "Compose swarm/task YAML from user queries",
                  system_prompt: str = None,
                  conf: AgentConfig = None,
                  max_yaml_retry: int = 3,
                  **kwargs):
         """
-        Initialize MetaAgent.
+        Initialize SwarmComposerAgent.
         
         Args:
             name: Agent name
@@ -601,11 +681,11 @@ mcp_config:
         self._available_mcp_servers: Dict[str, Dict[str, Any]] = kwargs.get("available_mcp_servers", {})
         self._use_self_resources: bool = True
     
-    async def async_policy(self, observation: Observation, info: Dict[str, Any] = None, **kwargs) -> str:
+    async def async_policy(self, observation: Observation, info: Dict[str, Any] = None, **kwargs) -> List[ActionModel]:
         """
-        MetaAgent's core logic: Analyze query and generate Task YAML.
+        SwarmComposerAgent core logic: Analyze query and generate Task YAML.
         
-        This overrides the parent Agent's async_policy to implement MetaAgent-specific behavior.
+        This overrides the parent Agent's async_policy to implement SwarmComposerAgent-specific behavior.
         Instead of returning List[ActionModel], this returns the YAML string directly.
         
         Args:
@@ -627,26 +707,26 @@ mcp_config:
         available_agents = info.get('available_agents', self._available_agents) if info else self._available_agents
         available_tools = info.get('available_tools', self._available_tools) if info else self._available_tools
         available_mcp_servers = info.get('available_mcp_servers', self._available_mcp_servers) if info else self._available_mcp_servers
-        mcp_config = info.get('mcp_config', self._mcp_config) if info else self._mcp_config
+        mcp_config = info.get('mcp_config', self.mcp_config) if info else self.mcp_config
         use_self_resources = info.get('use_self_resources', self._use_self_resources) if info else self._use_self_resources
         
         # 1. Load skills information
         skills_info = self._load_skills_info(skills_path) if skills_path else {}
         
-        # 2. Auto-extract resources from MetaAgent itself if not provided
+        # 2. Auto-extract resources from SwarmComposerAgent itself if not provided
         if use_self_resources:
             if available_tools is None and self.tool_names:
                 available_tools = self.tool_names.copy()
-                logger.debug(f"📦 Using MetaAgent's own tools: {available_tools}")
+                logger.debug(f"📦 Using SwarmComposerAgent's own tools: {available_tools}")
             
             if available_mcp_servers is None and (self.mcp_servers or self.sandbox):
                 available_mcp_servers = self._extract_mcp_servers_info()
                 if available_mcp_servers:
-                    logger.debug(f"📦 Using MetaAgent's own MCP servers: {list(available_mcp_servers.keys())}")
+                    logger.debug(f"📦 Using SwarmComposerAgent's own MCP servers: {list(available_mcp_servers.keys())}")
             
             if mcp_config is None and self.mcp_config:
                 mcp_config = self.mcp_config
-                logger.debug(f"📦 Using MetaAgent's own MCP config")
+                logger.debug("📦 Using SwarmComposerAgent's own MCP config")
         
         # 3. Build planning context
         context = self._build_planning_context(
@@ -688,11 +768,11 @@ mcp_config:
             logger.error(f"❌ {error_msg}")
             raise ValueError(error_msg)
         
-        return yaml_str
+        return [ActionModel(policy_info=yaml_str, agent_name=self.id())]
     
     def _extract_mcp_servers_info(self) -> Dict[str, Dict[str, Any]]:
         """
-        Extract MCP servers information from MetaAgent's own configuration.
+        Extract MCP servers information from SwarmComposerAgent configuration.
         
         Returns:
             Dict of MCP servers with their info extracted from sandbox/mcp_config
@@ -759,7 +839,7 @@ mcp_config:
                                  available_agents: Dict[str, BaseAgent],
                                  available_tools: List[str],
                                  available_mcp_servers: Dict[str, Dict[str, Any]]) -> str:
-        """Build planning context for MetaAgent."""
+        """Build planning context for SwarmComposerAgent."""
         context_parts = []
         
         # MCP Servers information (most important for tool assignment)
@@ -768,6 +848,8 @@ mcp_config:
             for server_id, server_info in available_mcp_servers.items():
                 desc = server_info.get('desc', 'No description')
                 tools = server_info.get('tools', [])
+                command = server_info.get('command')
+                args = server_info.get('args', [])
                 
                 mcp_desc.append(f"  - **{server_id}**: {desc}")
                 
@@ -778,6 +860,11 @@ mcp_config:
                     if len(tools) > 5:
                         tools_str += f" (and {len(tools)-5} more tools)"
                     mcp_desc.append(f"    Tools: {tools_str}")
+                
+                # Add real MCP server configuration
+                if command:
+                    args_str = str(args) if args else "[]"
+                    mcp_desc.append(f"    Config: command=\"{command}\", args={args_str}")
             
             context_parts.append("Available MCP Servers:\n" + "\n".join(mcp_desc))
         
@@ -815,7 +902,7 @@ mcp_config:
         return "\n".join(context_parts) if context_parts else "No additional resources available."
     
     def _format_query(self, query: str, context: str) -> str:
-        """Format query and context as MetaAgent input."""
+        """Format query and context as SwarmComposerAgent input."""
         return f"""
 User Query: {query}
 

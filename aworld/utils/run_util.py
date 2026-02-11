@@ -5,7 +5,7 @@ import hashlib
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Dict, Union, Optional
+from typing import Any, List, Dict, Union, Optional, TYPE_CHECKING
 
 from aworld.agents.llm_agent import Agent
 from aworld.config import RunConfig
@@ -20,6 +20,9 @@ from aworld.logs.util import logger
 from aworld.output.outputs import Outputs
 from aworld.runners.utils import choose_runners, execute_runner
 from aworld.utils.common import sync_exec
+
+if TYPE_CHECKING:
+    from aworld.agents.swarm_composer_agent import SwarmComposerAgent
 
 
 async def exec_tool(tool_name: str,
@@ -224,13 +227,13 @@ async def serial_exec_tasks(tasks: List[Task], run_conf: RunConfig = RunConfig()
     return res
 
 
-def create_default_meta_agent(
+def create_default_swarm_composer_agent(
         skills_path: Union[str, Path] = None,
         available_agents: Dict[str, BaseAgent] = None,
         available_tools: List[str] = None,
-        mcp_config: Dict[str, Any] = None) -> 'MetaAgent':
-    """Create default MetaAgent instance with environment-based configuration."""
-    from aworld.agents.meta_agent import MetaAgent
+        mcp_config: Dict[str, Any] = None) -> 'SwarmComposerAgent':
+    """Create default SwarmComposerAgent instance with environment-based configuration."""
+    from aworld.agents.swarm_composer_agent import SwarmComposerAgent
     from aworld.config import AgentConfig, ModelConfig
     import os
 
@@ -241,11 +244,11 @@ def create_default_meta_agent(
 
     if not api_key or not model_name:
         raise ValueError(
-            "LLM_API_KEY and LLM_MODEL_NAME environment variables must be set to use default MetaAgent. "
-            "Alternatively, pass a custom meta_agent instance."
+            "LLM_API_KEY and LLM_MODEL_NAME environment variables must be set to use default SwarmComposerAgent. "
+            "Alternatively, pass a custom swarm_composer_agent instance."
         )
 
-    return MetaAgent(
+    return SwarmComposerAgent(
         conf=AgentConfig(
             llm_config=ModelConfig(
                 llm_model_name=model_name,
@@ -276,9 +279,9 @@ def generate_yaml_path(query: str) -> str:
     return str(base_dir / filename)
 
 
-async def run_meta_agent_for_yaml(
+async def run_swarm_composer_agent_for_yaml(
         query: str,
-        meta_agent: 'MetaAgent' = None,
+        swarm_composer_agent: 'SwarmComposerAgent' = None,
         skills_path: Union[str, Path] = None,
         available_agents: Dict[str, BaseAgent] = None,
         available_tools: List[str] = None,
@@ -286,11 +289,11 @@ async def run_meta_agent_for_yaml(
         context_config: Optional[AmniContextConfig] = None
 ) -> str:
     """
-    Internal helper: Run MetaAgent and return YAML string.
+    Internal helper: Run SwarmComposerAgent and return YAML string.
 
     Args:
         query: User query
-        meta_agent: MetaAgent instance
+        swarm_composer_agent: SwarmComposerAgent instance
         skills_path: Path to skills directory
         available_agents: Available agents dict
         available_tools: Available tools list
@@ -298,34 +301,36 @@ async def run_meta_agent_for_yaml(
         context_config: Context configuration
 
     Returns:
-        YAML string from MetaAgent
+        YAML string from SwarmComposerAgent
     """
-    # Create or use provided MetaAgent
-    if meta_agent is None:
-        meta_agent = create_default_meta_agent(
+    # Create or use provided SwarmComposerAgent
+    if swarm_composer_agent is None:
+        swarm_composer_agent = create_default_swarm_composer_agent(
             skills_path=skills_path,
             available_agents=available_agents,
             available_tools=available_tools,
             mcp_config=mcp_config
         )
-        logger.info("📝 Using default MetaAgent for task planning")
+        logger.info("📝 Using default SwarmComposerAgent for task planning")
     else:
-        logger.info(f"📝 Using custom MetaAgent: {meta_agent.name}")
+        logger.info(f"📝 Using custom SwarmComposerAgent: {swarm_composer_agent.name}")
 
-    # Create Task and Message to run MetaAgent
+    # Create Task and Message to run SwarmComposerAgent
     from aworld.core.common import Observation
     from aworld.core.event.base import Message
     from aworld.core.context.amni import AmniContext
 
-    # Create minimal context for MetaAgent execution
+    # Create minimal context for SwarmComposerAgent execution
+    context = AmniContext(config=context_config) if context_config else AmniContext()
     meta_message = Message(
         payload=Observation(content=query),
         sender="system",
     )
-    meta_message.context = AmniContext(config=context_config) if context_config else AmniContext()
+    meta_message.context = context
 
-    # Run MetaAgent (returns AgentMessage with YAML in payload)
-    result_message = await meta_agent.async_run(meta_message)
-    return result_message.payload
+    # Run SwarmComposerAgent (returns AgentMessage with YAML in payload)
+    agent_result = await exec_agent(agent=swarm_composer_agent, question=query, context=context)
+    return agent_result.answer
+
 
 
