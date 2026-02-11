@@ -2,7 +2,9 @@ import asyncio
 import copy
 import json
 import os
+import threading
 import uuid
+from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
 from collections import defaultdict
 from pathlib import Path
@@ -11,6 +13,7 @@ from aworld.logs.util import logger
 from aworld.sandbox.api.local.sandbox_api import LocalSandboxApi
 from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxInfo
 from aworld.sandbox.run.mcp_servers import McpServers
+from aworld.sandbox.runtime import SandboxManager
 from aworld.sandbox.common import BaseSandbox
 from aworld.utils.common import sync_exec
 from aworld.sandbox.utils.util import is_url, is_remote_url
@@ -81,7 +84,7 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             **kwargs: Additional parameters for specific sandbox types.
         """
         # Extract reuse / workspace / streaming from kwargs if present
-        reuse = kwargs.pop("reuse", False)
+        reuse = kwargs.pop("reuse", True)
         workspace = kwargs.pop("workspace", None)
         super().__init__(
             sandbox_id=sandbox_id,
@@ -1084,12 +1087,17 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
 
     async def cleanup(self) -> None:
         """Clean up Sandbox resources, including MCP server connections."""
+        logger.info(
+            f"[sandbox] cleanup sandbox_id={self.sandbox_id} caller_tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
+        )
         try:
             if hasattr(self, '_mcpservers') and self._mcpservers:
                 await self._mcpservers.cleanup()
-                logger.info(f"Cleaned up MCP servers for sandbox {self.sandbox_id}")
+                logger.debug(f"Cleaned up MCP servers for sandbox {self.sandbox_id}")
         except Exception as e:
             logger.warning(f"Failed to cleanup MCP servers: {e}")
+        finally:
+            SandboxManager.get_instance().unregister_sandbox(self.sandbox_id)
 
         # Call the original remove method
         try:

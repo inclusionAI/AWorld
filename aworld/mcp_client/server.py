@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import threading
 from datetime import timedelta
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from pathlib import Path
@@ -178,6 +179,7 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
 
     async def cleanup(self):
         """Cleanup the server."""
+        logger.debug(f"[mcp] cleanup tid={threading.get_ident()}")
         async with self._cleanup_lock:
             try:
                 # Ensure cleanup operations occur in the same task context

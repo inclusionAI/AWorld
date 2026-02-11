@@ -38,7 +38,7 @@ class BaseSandbox(Sandbox):
         streaming: bool = False,
         env_content_name: Optional[str] = None,
         env_content: Optional[Dict[str, Any]] = None,
-        reuse: bool = False,
+        reuse: bool = True,
         workspace: Optional[List[str]] = None,
         mode: str = "local",
     ):
@@ -83,7 +83,7 @@ class BaseSandbox(Sandbox):
             env_content_name: Parameter name for environment content in tool schemas. Defaults to "env_content".
             env_content: User-defined context values to be automatically injected into tool calls.
                 Note that task_id and session_id are added dynamically from context during tool calls.
-            reuse: Whether to reuse MCP server connections. Default is False.
+            reuse: Whether to reuse MCP server connections. Default is True.
             workspace: List of allowed workspace directories for filesystem tool. If None, uses default workspaces 
                 (~/workspace, ~/aworld_workspace). Can also be set via environment variable AWORLD_WORKSPACE_PATH 
                 (comma-separated paths).
