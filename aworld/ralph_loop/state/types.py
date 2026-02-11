@@ -8,6 +8,8 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from aworld.core.context.amni import ApplicationContext, TaskInput, AmniConfigFactory
+from aworld.core.context.amni.config import AmniConfigLevel
 from aworld.core.context.base import Context
 from aworld.core.task import Task
 from aworld.logs.util import logger
@@ -93,8 +95,26 @@ class LoopContext(Context):
 
     async def build_sub_context(self, sub_task_content: Any, sub_task_id: str = None, **kwargs):
         # no need agent info to sub context
-        new_context = object.__new__(Context)
-        self._deep_copy(new_context)
+        context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR)
+        context_config.agent_config.neuron_names.clear()
+
+        task = kwargs.get("task")
+        task_input = TaskInput(
+            user_id=task.user_id or '',
+            session_id=task.session_id or uuid.uuid4().hex,
+            task_id=task.id,
+            task_content=task.input,
+            origin_user_input=task.input
+        )
+        context_config = None
+        new_context = await ApplicationContext.from_input(task_input, context_config=context_config)
+
+        if task.agent:
+            await new_context.build_agents_state([task.agent])
+        if task.swarm:
+            await new_context.build_agents_state(task.swarm.topology)
+        task.conf = {}
+
         new_context.task_id = sub_task_id
         new_context.task_input = sub_task_content
         self.add_task_node(sub_task_id, self.task_id, caller_agent_info={}, **kwargs)
@@ -112,7 +132,7 @@ class LoopContext(Context):
         task.input = sub_task_content
 
         logger.info(f"Read for task {task.id} iteration {iter_num} content: {sub_task_content}")
-        return await self.build_sub_context(sub_task_content=sub_task_content, sub_task_id=task.id, **kwargs)
+        return await self.build_sub_context(sub_task_content=sub_task_content, sub_task_id=task.id, task=task, **kwargs)
 
     async def write_to_loop_context(self,
                                     content: Any,
