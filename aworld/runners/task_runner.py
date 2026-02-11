@@ -207,8 +207,6 @@ class TaskRunner(Runner):
     async def post_run(self):
         """Execute post-run hooks after task completion."""
         # Lazy import to avoid circular import
-        # This registers LearningKnowledgeGenerationHook to HookFactory
-        import aworld.experimental.metalearning.knowledge.learning_knowledge_generation_hook  # noqa: F401
         try:
             async for _ in run_hooks(
                 context=self.context,
