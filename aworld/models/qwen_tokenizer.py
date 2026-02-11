@@ -45,13 +45,28 @@ SPECIAL_TOKENS = tuple(enumerate(
 ))
 SPECIAL_TOKENS_SET = set(t for i, t in SPECIAL_TOKENS)
 
+# Global cache to prevent memory leaks from repeatedly loading BPE files
+_BPE_CACHE = {}
+
 
 def _load_tiktoken_bpe(tiktoken_bpe_file: str) -> Dict[bytes, int]:
+    """Load tiktoken BPE file with caching to prevent memory leaks."""
+    # Check cache first
+    if tiktoken_bpe_file in _BPE_CACHE:
+        return _BPE_CACHE[tiktoken_bpe_file]
+
+    # Load and decode file
     with open(tiktoken_bpe_file, 'rb') as f:
         contents = f.read()
-    return {
-        base64.b64decode(token): int(rank) for token, rank in (line.split() for line in contents.splitlines() if line)
+
+    result = {
+        base64.b64decode(token): int(rank)
+        for token, rank in (line.split() for line in contents.splitlines() if line)
     }
+
+    # Cache the result
+    _BPE_CACHE[tiktoken_bpe_file] = result
+    return result
 
 
 class QWenTokenizer:
