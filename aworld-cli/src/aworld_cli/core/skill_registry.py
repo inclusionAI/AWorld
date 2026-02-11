@@ -64,24 +64,28 @@ def get_skill_registry(
         # Determine cache directory
         if cache_dir is None:
             env_cache_dir = os.getenv(ENV_SKILLS_CACHE_DIR)
-            cache_dir = Path(env_cache_dir) if env_cache_dir else DEFAULT_CACHE_DIR
+            if env_cache_dir:
+                # Expand ~ in path if present
+                cache_dir = Path(os.path.expanduser(env_cache_dir))
+            else:
+                cache_dir = DEFAULT_CACHE_DIR
         
         _global_registry = SkillRegistry(cache_dir=cache_dir)
         
         if auto_init:
             # Register skills from environment variables
             _register_from_env(_global_registry)
-            
+
             # Register skills from provided skill_paths parameter
             if skill_paths:
                 for skill_path in skill_paths:
                     try:
                         count = _global_registry.register_source(skill_path, source_name=skill_path)
                         if count > 0:
-                            print(f"📚 Registered skill source: {skill_path} ({count} skills)")
-                        logger.debug(f"📚 Registered skill source from parameter: {skill_path}")
+                            logger.info(f"📚 Registered skill source: {skill_path} ({count} skills)")
+                        logger.info(f"📚 Registered skill source from parameter: {skill_path}")
                     except Exception as e:
-                        print(f"⚠️ Failed to register skill source '{skill_path}': {e}")
+                        logger.error(f"⚠️ Failed to register skill source '{skill_path}': {e}")
                         logger.warning(f"⚠️ Failed to register skill source '{skill_path}': {e}")
             
             # Register default skills directory if provided or exists
@@ -131,12 +135,26 @@ def _register_from_env(registry: SkillRegistry) -> None:
             except Exception as e:
                 print(f"⚠️ Failed to register skill source from env '{source}': {e}")
                 logger.warning(f"⚠️ Failed to register skill source from env '{source}': {e}")
+    else:
+        # Default to ~/.aworld/skills if ENV_SKILLS_PATH is not set
+        default_skills_path = Path.home() / ".aworld" / "skills"
+        try:
+            # Create directory if it doesn't exist
+            default_skills_path.mkdir(parents=True, exist_ok=True)
+            # Register the default directory
+            count = registry.register_source(str(default_skills_path), source_name=str(default_skills_path))
+            if count > 0:
+                print(f"📚 Registered default skill source: {default_skills_path} ({count} skills)")
+            logger.info(f"📚 Registered default skill source: {default_skills_path} ({count} skills)")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register default skill source '{default_skills_path}': {e}")
     
     # Register from SKILLS_DIR (legacy, single directory for backward compatibility)
     skills_dir_env = os.getenv(ENV_SKILLS_DIR)
     if skills_dir_env:
         try:
-            skills_dir_path = Path(skills_dir_env).resolve()
+            # Expand ~ in path if present
+            skills_dir_path = Path(os.path.expanduser(skills_dir_env)).resolve()
             if skills_dir_path.exists() and skills_dir_path.is_dir():
                 count = registry.register_source(str(skills_dir_path), source_name=str(skills_dir_path))
                 if count > 0:
