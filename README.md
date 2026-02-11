@@ -13,9 +13,9 @@
 [![Discord][discord-image]][discord-url]
 [![License: MIT][license-image]][license-url]
 [![DeepWiki][deepwiki-image]][deepwiki-url]
-[![arXiv][arxiv-image]][arxiv-url]
+<!-- [![arXiv][arxiv-image]][arxiv-url] -->
 [![Tutorial][tutorial-image]][tutorial-url]
-[![Playground][playground-image]][playground-url]
+<!-- [![Playground][playground-image]][playground-url] -->
 
 </h4>
 
@@ -78,7 +78,9 @@ aworld-cli
 Instantly scaffold an agent from a natural language description of your task. AWorld-CLI handles the boilerplate, so you can focus on the logic.
 </p>
 
-![](./readme_assets/aworld_cli_text2agent.png)
+<!-- ![](./readme_assets/aworld_cli_text2agent.png) -->
+***Let AWorld Agent make an agent for you***
+![](./readme_assets/aworld_cli_demo_step1.gif)
 
 <p align="justify">
 This command generates a fully operational agent file referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution.
@@ -127,7 +129,9 @@ When you automate the creation of a new agent, AWorld-CLI doesn't start from scr
 Prompt the AWorld Agent to execute your newly created agent on a task and watch it work. Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
 </p>
 
-![](./readme_assets/aworld_cli_run_task.png)
+***Let the created agent do your job***
+![](./readme_assets/aworld_cli_demo_step2.gif)
+<!-- ![](./readme_assets/aworld_cli_run_task.png) -->
 
 ## Evolve Your Agent
 <p align="justify">
@@ -143,7 +147,15 @@ You are the expert. Open the generated Python file and fine-tune the prompts, lo
 This is where AWorld truly shines! Prompt with your desired changes, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent as your AI pair programmer to tune your agent.
 </p>
 
+***Schematic***
 ![](./readme_assets/mas_meta_learning_v2.png) 
+
+***Optimize your agent***
+![](./readme_assets/aworld_cli_demo_step3.gif)
+
+
+***Let the optimized agent do the more challenging job***
+![](./readme_assets/aworld_cli_demo_step4.gif)
 
 **Our Vista: Self-Evolution**
 <p align="justify">
