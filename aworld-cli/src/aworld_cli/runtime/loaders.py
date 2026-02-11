@@ -112,7 +112,7 @@ class PluginLoader(AgentLoader):
         Load agents from plugin directory.
         
         Returns:
-            List of AgentInfo objects
+            List of AgentInfo objects (filtered to only include agents from inner_plugins directory)
         """
         if not self.agents_dir.exists():
             return []
@@ -120,6 +120,7 @@ class PluginLoader(AgentLoader):
         try:
             from ..core.loader import init_agents
             from ..core.agent_registry import LocalAgentRegistry
+            from pathlib import Path
             
             # Load agents from plugin directory
             init_agents(str(self.agents_dir))
@@ -128,10 +129,17 @@ class PluginLoader(AgentLoader):
             agents = LocalAgentRegistry.list_agents()
             agents_info = []
             
+            # Filter agents: only keep those from inner_plugins directory
             for agent in agents:
-                agent_info = AgentInfo.from_local_agent(agent, source_location=str(self.agents_dir))
-                agents_info.append(agent_info)
-                self._loaded_agents[agent_info.name] = agent_info
+                # Only include agents that have register_dir set and contain "inner_plugins"
+                if agent.register_dir:
+                    register_dir_path = Path(agent.register_dir)
+                    # Check if "inner_plugins" is in the path
+                    if "inner_plugins" in str(register_dir_path):
+                        agent_info = AgentInfo.from_local_agent(agent, source_location=str(self.agents_dir))
+                        agents_info.append(agent_info)
+                        self._loaded_agents[agent_info.name] = agent_info
+                # If register_dir is not set, skip the agent (cannot determine if from inner_plugins)
             
             return agents_info
         except Exception as e:
