@@ -3,7 +3,9 @@ import asyncio
 import json
 import logging
 import os
+import threading
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Any, Optional
 
@@ -11,6 +13,7 @@ from aworld.logs.util import logger
 from aworld.sandbox.api.setup import SandboxSetup
 from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxInfo
 from aworld.sandbox.run.mcp_servers import McpServers
+from aworld.sandbox.runtime import SandboxManager
 from aworld.sandbox.utils.mcp_client import get_tools_from_mcp_servers
 from aworld.sandbox.utils.util import is_url, process_registry_url, ensure_registry_file_exists
 
@@ -244,7 +247,7 @@ class Sandbox(SandboxSetup):
         streaming: bool = False,
         env_content_name: Optional[str] = None,
         env_content: Optional[Dict[str, Any]] = None,
-        reuse: bool = False,
+        reuse: bool = True,
         workspace: Optional[List[str]] = None,
         mode: str = "local",
     ):
@@ -262,7 +265,7 @@ class Sandbox(SandboxSetup):
             tools: List of tools. Optional parameter.
             registry_url: Environment registry URL. Optional parameter, reads from environment variable "ENV_REGISTRY_URL" if not provided, defaults to empty string.
             custom_env_tools: Custom environment tools. Optional parameter.
-            reuse: Whether to reuse MCP server connections. Default is False (create new connection for each call).
+            reuse: Whether to reuse MCP server connections. Default is True.
             agents: Custom environment agents. Optional parameter.
                 Supports two formats (mixed mode):
 
@@ -325,6 +328,11 @@ class Sandbox(SandboxSetup):
             if env_workspace:
                 workspace = [p.strip() for p in env_workspace.split(",") if p.strip()]
         self._workspace = workspace
+        logger.info(
+            f"[sandbox] created sandbox_id={self._sandbox_id} tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
+        )
+        if self._sandbox_id:
+            SandboxManager.get_instance().register_sandbox(self._sandbox_id, self)
 
     @abc.abstractmethod
     def get_info(self) -> SandboxInfo:
