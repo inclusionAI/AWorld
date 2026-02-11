@@ -3,6 +3,7 @@ import os
 import abc
 import asyncio
 import copy
+import os
 import traceback
 from typing import Optional, Any, List, Dict, Tuple
 
@@ -493,6 +494,7 @@ class ApplicationContext(AmniContext):
         self._memory_service = None
         self._prompt_service = None
         self._freedom_space_service = None
+        self._traj_service = None
 
     def get_config(self) -> AmniContextConfig:
         return self._config
@@ -552,6 +554,13 @@ class ApplicationContext(AmniContext):
             from .services import FreedomSpaceService
             self._freedom_space_service = FreedomSpaceService(self)
         return self._freedom_space_service
+
+    # @property
+    # def traj_service(self) -> TrajectoryService:
+    #     if self._traj_service is None:
+    #         from .services import TrajectoryService
+    #         self._traj_service = TrajectoryService(self)
+    #     return self._traj_service
 
     ####################### Context Build/Copy/Merge/Restore #######################
 
@@ -1053,6 +1062,14 @@ class ApplicationContext(AmniContext):
         return None
 
     @property
+    def swarm(self):
+        if self._task:
+            return self._task.swarm
+        if self.parent:
+            return self.parent.swarm
+        return None
+
+    @property
     def root(self) -> "ApplicationContext":
         """
         Get main task history from root parent context.
@@ -1258,6 +1275,11 @@ class ApplicationContext(AmniContext):
             value = context.get_from_context_hierarchy(key, context, recursive)
             if value is not None and value != DEFAULT_VALUE:
                 return value
+
+            # 4. get key from environment variables
+            env_value = os.getenv(key)
+            if env_value is not None:
+                return env_value
 
             result = str(value) if value is not None else DEFAULT_VALUE
             logger.debug(f"Field retrieval: '{key}' -> '{result}'")
