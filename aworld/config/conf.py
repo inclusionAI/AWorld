@@ -268,7 +268,7 @@ class AgentConfig(BaseConfig):
     human_tools: List[str] = []
     skill_configs: Dict[str, Any] = None
     ptc_tools: List[str] = []
-    meta_learning: MetaLearningConfig = MetaLearningConfig()
+    meta_learning_config: MetaLearningConfig = MetaLearningConfig()
     ext: dict = {}
 
     def __init__(self, **kwargs):

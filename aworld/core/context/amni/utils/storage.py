@@ -15,59 +15,59 @@ logger = logging.getLogger(__name__)
 
 def serialize_for_json(obj):
     """
-    递归序列化对象为 JSON 可序列化的格式。
-    支持 Pydantic BaseModel、具有 to_dict 或 model_dump 方法的对象。
+    Recursively serialize objects to JSON-serializable format.
+    Supports Pydantic BaseModel and objects with to_dict or model_dump methods.
     
     Args:
-        obj: 要序列化的对象
+        obj: Object to serialize
         
     Returns:
-        JSON 可序列化的对象（dict、list 或基本类型）
+        JSON-serializable object (dict, list, or basic types)
     """
-    # 处理 Pydantic BaseModel 或具有 model_dump 方法的对象
-    # 处理具有 to_dict 方法的对象
+    # Handle objects with to_dict method
     if hasattr(obj, 'to_dict'):
         result = obj.to_dict()
-        # 递归处理嵌套对象
+        # Recursively process nested objects
         if isinstance(result, dict):
             return {k: serialize_for_json(v) for k, v in result.items()}
         elif isinstance(result, (list, tuple)):
             return [serialize_for_json(item) for item in result]
         return result
+    # Handle Pydantic BaseModel or objects with model_dump method
     elif hasattr(obj, 'model_dump'):
         return obj.model_dump()
-    # 处理字典
+    # Handle dictionaries
     elif isinstance(obj, dict):
         return {k: serialize_for_json(v) for k, v in obj.items()}
-    # 处理列表和元组
+    # Handle lists and tuples
     elif isinstance(obj, (list, tuple)):
         return [serialize_for_json(item) for item in obj]
-    # 基本类型直接返回
+    # Basic types are returned directly
     return obj
 
 
 class TrajectoryJSONEncoder(json.JSONEncoder):
     """
-    JSON 编码器，用于序列化包含 TrajectoryItem 等 Pydantic 模型的对象。
+    JSON encoder for serializing objects containing Pydantic models like TrajectoryItem.
     
-    使用方法：
+    Usage:
         json.dumps(data, cls=TrajectoryJSONEncoder, ensure_ascii=False)
         
-    或者使用 serialize_for_json 函数预处理：
+    Or preprocess with serialize_for_json function:
         json.dumps(serialize_for_json(data), ensure_ascii=False)
     """
     def default(self, obj):
-        # 处理 Pydantic BaseModel
+        # Handle Pydantic BaseModel
         if hasattr(obj, 'model_dump'):
             result = obj.model_dump()
-            # 递归处理嵌套的 Pydantic 对象
+            # Recursively process nested Pydantic objects
             return serialize_for_json(result)
-        # 处理具有 to_dict 方法的对象
+        # Handle objects with to_dict method
         elif hasattr(obj, 'to_dict'):
             result = obj.to_dict()
-            # 递归处理嵌套对象
+            # Recursively process nested objects
             return serialize_for_json(result)
-        # 处理其他无法序列化的对象，转换为字符串
+        # Handle other non-serializable objects by converting to string
         return str(obj)
 
 
@@ -222,15 +222,10 @@ def get_storage(base_dir) -> FileTrajectoryStorage:
     Get or create global storage instance.
     
     Args:
-        oss_prefix: Prefix path in OSS bucket for storing trajectories
-        access_key_id: OSS access key ID (or from env: OSS_ACCESS_KEY_ID)
-        access_key_secret: OSS access key secret (or from env: OSS_ACCESS_KEY_SECRET)
-        endpoint: OSS endpoint (or from env: OSS_ENDPOINT)
-        bucket_name: OSS bucket name (or from env: OSS_BUCKET_NAME)
-        enable_export: Whether to enable OSS export
+        base_dir: Base directory path for storing trajectories
     
     Returns:
-        OssTrajectoryStorage instance
+        FileTrajectoryStorage instance
     """
     global _storage_instance
     if _storage_instance is None:
