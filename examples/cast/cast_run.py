@@ -8,29 +8,17 @@ from datetime import datetime
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ModelConfig
 from aworld.core.agent.swarm import Swarm
-from aworld.core.context.amni import TaskInput, ApplicationContext, AmniConfigFactory
+from aworld.core.context.amni import ApplicationContext
+from aworld.core.context.amni import TaskInput, AmniConfigFactory
 from aworld.core.context.amni.config import AmniConfigLevel
 from aworld.core.task import Task
 from aworld.experimental.cast.tools import CAST_ANALYSIS, CAST_CODER
 from aworld.experimental.cast.tools.cast_search_tool import CAST_SEARCH
 from aworld.runner import Runners
-from aworld_cli.core import agent
+from aworld_cli.core.agent_registry_tool import AGENT_REGISTRY
 
-# Path to the PPTX skill definition
+def build_skill_run_agent():
 
-os.environ['AGENTS_PATH'] = "/Users/hgc/hgc_repo/AWorld/examples/aworld_quick_start/cli/skills"
-
-
-@agent(
-    name="CastAgent",
-    desc="Agent configured with PPTX skill"
-)
-def build_cast_run_agent():
-    """
-    Build an agent configured with the PPTX skill.
-    """
-
-    # 2. Configure Agent
     agent_config = AgentConfig(
         llm_config=ModelConfig(
             llm_model_name=os.environ.get("LLM_MODEL_NAME", "gpt-4"),
@@ -38,36 +26,34 @@ def build_cast_run_agent():
             llm_api_key=os.environ.get("LLM_API_KEY"),
             llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=0.7,
-            params={"max_completion_tokens": 40960},
-            ext_config={
-                "max_tokens": 16384
-            }
+            params={"max_completion_tokens": 40960}
         ),
+        # meta_learning_config=MetaLearningConfig(enabled=True,
+        #                                         learning_knowledge_storage_base_path="~/.aworld/meta_learning")
     )
 
     skill_runner = Agent(
-        name="pptx_agent",
-        desc="pptx_agent",
+        name="cast_agent",
+        desc="cast_agent",
         conf=agent_config,
-        system_prompt="",
-        # mcp_servers=pptx_skill.get("mcp_servers"),
-        # mcp_config=mcp_config,
-        tool_names=[CAST_ANALYSIS, CAST_CODER, CAST_SEARCH]
+        system_prompt="you are a coding agent",
+        tool_names=[AGENT_REGISTRY, CAST_SEARCH, CAST_ANALYSIS, CAST_CODER],
     )
 
     return Swarm(skill_runner)
+
 
 async def build_context(task_input: TaskInput) -> ApplicationContext:
     context_config = AmniConfigFactory.create(AmniConfigLevel.PILOT)
     context_config.debug_mode = True
     return await ApplicationContext.from_input(task_input, context_config=context_config)
 
+
 async def main():
     session_id = f"session_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     task_id = "task_1"
-    task_content = """在/Users/hgc/.aworld/agents/html_generator_agent目录中，检索mcp_config第三个mcp server配置的内容"""
-
-    swarm = build_cast_run_agent()
+    task_content = """First, use the `list_desc` tool in `AGENT_REGISTRY` to check if there are any built-in agents available for reference.
+Then, read the first five lines of `text2agent`."""
 
     task_input = TaskInput(
         user_id=f"test_user",
@@ -78,6 +64,8 @@ async def main():
     )
 
     context = await build_context(task_input)
+
+    swarm = build_skill_run_agent()
 
     task1 = Task(
         input=task_content,

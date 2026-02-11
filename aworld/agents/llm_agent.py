@@ -895,7 +895,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     **kwargs
                 )
 
-            logger.info(f"LLM Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
+            logger.info(f"LLM Execute response: {json.dumps(to_serializable(llm_response.to_dict()), ensure_ascii=False)}")
             if llm_response:
                 usage_process(llm_response.usage, message.context)
             return llm_response
