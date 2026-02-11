@@ -61,7 +61,7 @@ LLM_API_KEY="your_model_api_key"
 LLM_BASE_URL="your_base_url"
 ```
 
-Install and Enter AWorld-CLI
+**Install and Enter AWorld-CLI**
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
@@ -194,7 +194,9 @@ Ready to build your own? Use the aworld-cli to forge an agent with your unique e
 To get your creation featured, simply submit a Pull Request with your skill.md to:
 AWorld/examples/Custom_Skills/
 
-We'll showcase the best community agents right here in the Playground. Let your expertise evolve into a professional agent, gain recognition, and empower the entire community to experience the amazing tools you've built.
+<p align="justify">
+We'll showcase the best community agents here in the Playground. Let your expertise evolve into a professional agent, gain recognition, and empower the entire community to experience the amazing tools you've built.
+</p>
 
 <!-- # Experience to Samples
 Iterate with confidence. Our runtime records a complete history for every task, capturing each LLM call, action, and reward. Use this data to audit performance and generate high-quality training samples.
