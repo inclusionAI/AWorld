@@ -194,6 +194,7 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
 ![](./readme_assets/playground_gaiateam.gif)
 
 **从用户到创造者：让你的智能体登上舞台！**
+
 准备好构建你自己的智能体了吗？使用 aworld-cli 将你的专业知识铸造成一个强大的智能体，并将其核心能力定义在 skill.md 文件中。
 
 想让你的作品登上这个舞台？只需提交一个 Pull Request，将你的 skill.md 添加至：

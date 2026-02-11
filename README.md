@@ -133,7 +133,6 @@ Prompt the AWorld Agent to execute your newly created agent on a task and watch 
 
 ***Let the created agent do your job***
 ![](./readme_assets/aworld_cli_demo_step2.gif)
-![](./readme_assets/step_1.mov)
 <!-- ![](./readme_assets/aworld_cli_run_task.png) -->
 
 ## Evolve Your Agent
