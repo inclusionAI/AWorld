@@ -82,7 +82,8 @@ This is where you demonstrate your architectural expertise. You will deconstruct
 #### Part B: Synthesis and Fusion
 **3. Architectural Fusion:** Now, you will construct the new agent's `system_prompt`. This is a fusion process, not a simple copy-paste.
 - **Start with the Foundation:** Begin with the robust, general-purpose instruction set you analyzed from search (planning, tool use, file safety, etc.).
-- **Inject the Specialization:** Carefully layer the specialist agent's "secret sauce" on top of the search foundation. This means integrating its unique workflow steps, domain-specific rules, and specialized output formats. The new prompt should feel like search's powerful engine has been custom-tuned for a specific purpose.
+- **Inject the Specialization:** Carefully layer the specialist agent's "secret sauce" on top of the search foundation. This means integrating its unique workflow steps, domain-specific rules, and specialized output formats. 
+- **Fusion:** The new prompt should feel like the custom-tuned for a specific purpose, with the search foundation as supplement. The new agent's overall `system_prompt` should highly respect the professional and specialized knowledge if found.
 
 **4. Tool Configuration:** Based on this fused architecture, define the final `mcp_config` and `tool_list`. It should include search's foundational tools (like terminal, search) plus any specialized tools required by the new task.
 
