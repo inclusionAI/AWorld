@@ -6,6 +6,7 @@ Export structured metadata for all skill documentation files.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -247,8 +248,11 @@ def resolve_skill_path(skill_path: Union[str, Path], cache_dir: Optional[Path] =
         
         return cache_path
     else:
-        # Local path
-        return Path(skill_path).resolve()
+        # Local path - expand ~ if present
+        skill_path_str = str(skill_path)
+        if '~' in skill_path_str:
+            skill_path_str = os.path.expanduser(skill_path_str)
+        return Path(skill_path_str).resolve()
 
 
 def extract_front_matter(content_lines: List[str]) -> Tuple[Dict[str, Any], int]:
@@ -372,7 +376,7 @@ def collect_skill_docs(
                     "tool_list": tool_list,
                     "usage": usage,
                     "type": front_matter.get("type", ""),
-                    "active": front_matter.get("active", "False").lower() == "true",
+                    "active": str(front_matter.get("active", "False")).lower() == "true",
                     "skill_path": skill_file.as_posix(),
                 }
                 logger.debug(f"✅ Collected skill: {skill_name}")
