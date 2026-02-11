@@ -1,9 +1,9 @@
 """
-Ripgrep管理器和工具集成
+Ripgrep manager and tool integration
 =====================
 
-基于Ripgrep实现，提供高性能的文本搜索和文件发现能力。
-同时提供基于Python的Pygrep实现作为替代方案。
+Provides high-performance text search and file discovery based on Ripgrep.
+Also provides a Python-based Pygrep implementation as an alternative implementation.
 """
 
 import asyncio
@@ -26,7 +26,7 @@ from ..utils import logger
 
 @dataclass
 class RipgrepMatch:
-    """Ripgrep搜索匹配结果"""
+    """Ripgrep search match result"""
     file_path: str
     line_number: int
     line_text: str
@@ -37,7 +37,7 @@ class RipgrepMatch:
 
 @dataclass
 class RipgrepStats:
-    """Ripgrep搜索统计信息"""
+    """Ripgrep search statistics"""
     elapsed_secs: float
     searches: int
     searches_with_match: int
@@ -49,10 +49,10 @@ class RipgrepStats:
 
 class RipgrepManager:
     """
-    Ripgrep二进制文件管理器
+    Ripgrep binary manager
 
-    负责自动下载、安装和管理Ripgrep二进制文件。
-    基于opencode的跨平台支持实现。
+    Responsible for automatically downloading, installing and managing the Ripgrep binary.
+    Based on opencode's cross‑platform support implementation.
     """
 
     PLATFORM_CONFIG = {
@@ -83,22 +83,22 @@ class RipgrepManager:
         self.version = "14.1.1"
         self._executable_path: Optional[Path] = None
 
-        # 确保安装目录存在
+        # Ensure the installation directory exists
         self.install_dir.mkdir(parents=True, exist_ok=True)
 
     @property
     def executable_path(self) -> Path:
-        """获取Ripgrep可执行文件路径"""
+        """Get the path to the Ripgrep executable"""
         if self._executable_path:
             return self._executable_path
 
-        # 检查系统是否已安装ripgrep
+        # Check whether ripgrep is already installed on the system
         system_rg = shutil.which("rg")
         if system_rg:
             self._executable_path = Path(system_rg)
             return self._executable_path
 
-        # 检查本地安装
+        # Check local installation directory
         exe_name = "rg.exe" if platform.system() == "Windows" else "rg"
         local_path = self.install_dir / exe_name
 
@@ -106,11 +106,11 @@ class RipgrepManager:
             self._executable_path = local_path
             return self._executable_path
 
-        # 需要下载安装
-        raise RuntimeError("Ripgrep未安装，请调用install()方法安装")
+        # Need to download and install
+        raise RuntimeError("Ripgrep is not installed, please call install() first")
 
     def is_installed(self) -> bool:
-        """检查Ripgrep是否已安装"""
+        """Check whether Ripgrep is installed"""
         try:
             self.executable_path
             return True
@@ -118,28 +118,28 @@ class RipgrepManager:
             return False
 
     async def install(self) -> Path:
-        """异步安装Ripgrep"""
-        logger.info(f"开始安装Ripgrep {self.version}")
+        """Asynchronously install Ripgrep"""
+        logger.info(f"Start installing Ripgrep {self.version}")
 
-        # 获取平台配置
+        # Get platform configuration
         machine = platform.machine()
         system = platform.system()
         platform_key = (machine, system)
 
         if platform_key not in self.PLATFORM_CONFIG:
-            raise RuntimeError(f"不支持的平台: {machine}-{system}")
+            raise RuntimeError(f"Unsupported platform: {machine}-{system}")
 
         config = self.PLATFORM_CONFIG[platform_key]
         filename = f"ripgrep-{self.version}-{config['platform']}.{config['extension']}"
         download_url = f"https://github.com/BurntSushi/ripgrep/releases/download/{self.version}/{filename}"
 
-        logger.info(f"下载URL: {download_url}")
+        logger.info(f"Download URL: {download_url}")
 
-        # 下载文件
+        # Download archive file
         temp_file = await self._download_file(download_url, filename)
 
         try:
-            # 解压和安装
+            # Extract and install
             exe_name = "rg.exe" if system == "Windows" else "rg"
             target_path = self.install_dir / exe_name
 
@@ -148,20 +148,20 @@ class RipgrepManager:
             elif config['extension'] == 'zip':
                 await self._extract_zip(temp_file, target_path)
 
-            # 设置可执行权限 (Unix系统)
+            # Set executable permission (Unix‑like systems)
             if system != "Windows":
                 target_path.chmod(0o755)
 
             self._executable_path = target_path
-            logger.info(f"Ripgrep安装完成: {target_path}")
+            logger.info(f"Ripgrep installed at: {target_path}")
             return target_path
 
         finally:
-            # 清理临时文件
+            # Clean up temporary file
             temp_file.unlink(missing_ok=True)
 
     async def _download_file(self, url: str, filename: str) -> Path:
-        """异步下载文件"""
+        """Download a file asynchronously"""
         temp_dir = Path(tempfile.gettempdir())
         temp_file = temp_dir / filename
 
@@ -173,39 +173,39 @@ class RipgrepManager:
                 for chunk in response.iter_content(chunk_size=8192):
                     f.write(chunk)
 
-        # 在线程池中执行下载
+        # Run the download in a thread pool
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, download)
 
         return temp_file
 
     async def _extract_tar_gz(self, archive_path: Path, target_path: Path):
-        """解压tar.gz文件"""
+        """Extract a tar.gz archive"""
         def extract():
             import tarfile
             with tarfile.open(archive_path, 'r:gz') as tar:
-                # 查找rg可执行文件
+                # Look for the rg executable in archive
                 for member in tar.getmembers():
                     if member.name.endswith('/rg') or member.name == 'rg':
                         with tar.extractfile(member) as f:
                             target_path.write_bytes(f.read())
                         return
-                raise RuntimeError("在压缩包中未找到rg可执行文件")
+                raise RuntimeError("rg executable not found in archive")
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, extract)
 
     async def _extract_zip(self, archive_path: Path, target_path: Path):
-        """解压zip文件"""
+        """Extract a zip archive"""
         def extract():
             with zipfile.ZipFile(archive_path, 'r') as zip_file:
-                # 查找rg.exe文件
+                # Look for rg.exe in archive
                 for file_name in zip_file.namelist():
                     if file_name.endswith('rg.exe'):
                         with zip_file.open(file_name) as f:
                             target_path.write_bytes(f.read())
                         return
-                raise RuntimeError("在压缩包中未找到rg.exe文件")
+                raise RuntimeError("rg.exe not found in archive")
 
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, extract)
@@ -213,16 +213,16 @@ class RipgrepManager:
 
 class RipgrepSearcher:
     """
-    Ripgrep搜索器
+    Ripgrep searcher
 
-    提供高级的搜索接口，包括内容搜索、文件发现和目录树生成。
+    Provides high‑level search APIs, including content search, file discovery and directory tree generation.
     """
 
     def __init__(self, manager: Optional[RipgrepManager] = None):
         self.manager = manager or RipgrepManager()
 
     async def ensure_installed(self):
-        """确保Ripgrep已安装"""
+        """Ensure Ripgrep is installed"""
         if not self.manager.is_installed():
             await self.manager.install()
 
@@ -236,20 +236,20 @@ class RipgrepSearcher:
                     follow_symlinks: bool = True,
                     search_hidden: bool = True) -> List[RipgrepMatch]:
         """
-        执行内容搜索
+        Execute a content search.
 
         Args:
-            pattern: 搜索模式(正则表达式)
-            path: 搜索路径
-            include_patterns: 包含文件模式列表
-            max_count: 最大匹配数
-            context_lines: 上下文行数
-            case_sensitive: 是否大小写敏感
-            follow_symlinks: 是否跟随符号链接
-            search_hidden: 是否搜索隐藏文件
+            pattern: Search pattern (regular expression).
+            path: Search path.
+            include_patterns: List of file glob patterns to include.
+            max_count: Maximum number of matches.
+            context_lines: Number of context lines.
+            case_sensitive: Whether the search is case‑sensitive.
+            follow_symlinks: Whether to follow symbolic links.
+            search_hidden: Whether to search hidden files.
 
         Returns:
-            匹配结果列表
+            List of match results.
         """
         await self.ensure_installed()
 
@@ -259,7 +259,7 @@ class RipgrepSearcher:
             "--regexp", pattern
         ]
 
-        # 基本选项
+        # Basic options
         if not case_sensitive:
             args.append("--ignore-case")
         if follow_symlinks:
@@ -267,25 +267,25 @@ class RipgrepSearcher:
         if search_hidden:
             args.append("--hidden")
 
-        # 排除Git目录
+        # Exclude Git directory
         args.extend(["--glob", "!.git/*"])
 
-        # 包含模式
+        # Include patterns
         if include_patterns:
             for pattern_str in include_patterns:
                 args.extend(["--glob", pattern_str])
 
-        # 最大计数
+        # Maximum number of matches
         if max_count:
             args.append(f"--max-count={max_count}")
 
-        # 上下文行数
+        # Number of context lines
         if context_lines > 0:
             args.append(f"--context={context_lines}")
 
         args.append(path)
 
-        logger.debug(f"执行Ripgrep搜索: {' '.join(args)}")
+        logger.debug(f"Run Ripgrep search: {' '.join(args)}")
 
         try:
             process = await asyncio.create_subprocess_exec(
@@ -296,14 +296,14 @@ class RipgrepSearcher:
 
             stdout, stderr = await process.communicate()
 
-            if process.returncode not in (0, 1):  # 0=找到匹配, 1=无匹配, 2+=错误
+            if process.returncode not in (0, 1):  # 0 = match found, 1 = no match, >=2 = error
                 error_msg = stderr.decode('utf-8', errors='ignore')
-                raise RuntimeError(f"Ripgrep搜索失败: {error_msg}")
+                raise RuntimeError(f"Ripgrep search failed: {error_msg}")
 
             return await self._parse_json_output(stdout.decode('utf-8', errors='ignore'))
 
         except Exception as e:
-            logger.error(f"Ripgrep搜索异常: {e}")
+            logger.error(f"Ripgrep search error: {e}")
             raise
 
     async def find_files(self,
@@ -313,17 +313,17 @@ class RipgrepSearcher:
                         follow_symlinks: bool = True,
                         search_hidden: bool = True) -> List[str]:
         """
-        发现文件
+        Discover files.
 
         Args:
-            path: 搜索路径
-            include_patterns: 包含文件模式
-            max_depth: 最大搜索深度
-            follow_symlinks: 是否跟随符号链接
-            search_hidden: 是否包含隐藏文件
+            path: Root search path.
+            include_patterns: File glob patterns to include.
+            max_depth: Maximum directory traversal depth.
+            follow_symlinks: Whether to follow symbolic links.
+            search_hidden: Whether to include hidden files.
 
         Returns:
-            文件路径列表
+            List of file paths.
         """
         await self.ensure_installed()
 
@@ -332,21 +332,21 @@ class RipgrepSearcher:
             "--files"
         ]
 
-        # 基本选项
+        # Basic options
         if follow_symlinks:
             args.append("--follow")
         if search_hidden:
             args.append("--hidden")
 
-        # 排除Git目录
+        # Exclude Git directory
         args.extend(["--glob", "!.git/*"])
 
-        # 包含模式
+        # Include patterns
         if include_patterns:
             for pattern in include_patterns:
                 args.extend(["--glob", pattern])
 
-        # 最大深度
+        # Maximum depth
         if max_depth is not None:
             args.append(f"--max-depth={max_depth}")
 
@@ -363,17 +363,17 @@ class RipgrepSearcher:
 
             if process.returncode != 0:
                 error_msg = stderr.decode('utf-8', errors='ignore')
-                logger.warning(f"文件发现警告: {error_msg}")
+                logger.warning(f"File discovery warning: {error_msg}")
 
             output = stdout.decode('utf-8', errors='ignore')
             return [line.strip() for line in output.split('\n') if line.strip()]
 
         except Exception as e:
-            logger.error(f"文件发现异常: {e}")
+            logger.error(f"File discovery error: {e}")
             raise
 
     async def _parse_json_output(self, output: str) -> List[RipgrepMatch]:
-        """解析JSON输出"""
+        """Parse ripgrep JSON output"""
         matches = []
 
         for line in output.strip().split('\n'):
@@ -385,7 +385,7 @@ class RipgrepSearcher:
                 if data.get('type') == 'match':
                     match_data = data['data']
 
-                    # 获取文件修改时间
+                    # Get file modification time
                     file_path = match_data['path']['text']
                     try:
                         mod_time = os.path.getmtime(file_path)
@@ -403,53 +403,54 @@ class RipgrepSearcher:
                     matches.append(match)
 
             except json.JSONDecodeError as e:
-                logger.warning(f"解析JSON行失败: {line[:100]}... 错误: {e}")
+                logger.warning(f"Failed to parse JSON line: {line[:100]}... error: {e}")
                 continue
 
-        # 按修改时间排序
+        # Sort by modification time
         matches.sort(key=lambda m: m.mod_time, reverse=True)
         return matches
 
 
 class PygrepSearcher:
     """
-    Python实现的Grep搜索器
-    
-    使用Python的re模块和文件遍历实现文本搜索功能，作为Ripgrep的替代方案。
-    提供与RipgrepSearcher相同的接口，可以无缝替换。
+    Grep‑like searcher implemented in pure Python.
+
+    Uses Python's ``re`` module and filesystem traversal to implement text search
+    as a fallback when Ripgrep is not available.
+    Provides the same interface as ``RipgrepSearcher`` and can be used as a drop‑in replacement.
     """
 
     def __init__(self):
-        """初始化Pygrep搜索器"""
+        """Initialize the Pygrep searcher"""
         pass
 
     async def ensure_installed(self):
-        """确保搜索器可用（Python实现无需安装）"""
+        """Ensure the searcher is available (Python implementation needs no installation)"""
         pass
 
     def _should_include_file(self, file_path: Path, include_patterns: Optional[List[str]] = None) -> bool:
-        """检查文件是否应该被包含在搜索中"""
-        # 排除 .git 目录
+        """Check whether a file should be included in the search"""
+        # Exclude .git directory
         if '.git' in file_path.parts:
             return False
         
-        # 如果没有指定包含模式，包含所有文件
+        # If no include patterns are specified, include all files
         if not include_patterns:
             return True
         
-        # 检查文件是否匹配任何包含模式
+        # Check whether the file matches any include pattern
         file_str = str(file_path)
         for pattern in include_patterns:
-            # 支持 glob 模式匹配
+            # Support glob‑style matching
             if fnmatch.fnmatch(file_str, pattern) or fnmatch.fnmatch(file_path.name, pattern):
                 return True
         
         return False
 
     def _is_binary_file(self, file_path: Path) -> bool:
-        """检测文件是否为二进制文件"""
+        """Detect whether the file is binary"""
         try:
-            # 检查文件扩展名
+            # First check by file extension
             binary_extensions = {
                 '.zip', '.tar', '.gz', '.exe', '.dll', '.so', '.class', '.jar',
                 '.war', '.7z', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
@@ -460,13 +461,13 @@ class PygrepSearcher:
             if file_path.suffix.lower() in binary_extensions:
                 return True
             
-            # 检查文件内容
+            # Then check by sampling file content
             try:
                 with open(file_path, 'rb') as f:
                     chunk = f.read(4096)
                     if b'\x00' in chunk:
                         return True
-                    # 检查非打印字符比例
+                    # Check ratio of non‑printable characters
                     non_printable = sum(1 for byte in chunk if byte < 9 or (byte > 13 and byte < 32))
                     if len(chunk) > 0 and (non_printable / len(chunk)) > 0.3:
                         return True
@@ -487,77 +488,77 @@ class PygrepSearcher:
                     follow_symlinks: bool = True,
                     search_hidden: bool = True) -> List[RipgrepMatch]:
         """
-        执行内容搜索
+        Execute a content search.
 
         Args:
-            pattern: 搜索模式(正则表达式)
-            path: 搜索路径
-            include_patterns: 包含文件模式列表
-            max_count: 最大匹配数
-            context_lines: 上下文行数
-            case_sensitive: 是否大小写敏感
-            follow_symlinks: 是否跟随符号链接
-            search_hidden: 是否搜索隐藏文件
+            pattern: Search pattern (regular expression).
+            path: Search path.
+            include_patterns: List of file glob patterns to include.
+            max_count: Maximum number of matches.
+            context_lines: Number of context lines (currently unused).
+            case_sensitive: Whether the search is case‑sensitive.
+            follow_symlinks: Whether to follow symbolic links.
+            search_hidden: Whether to search hidden files.
 
         Returns:
-            匹配结果列表
+            List of match results.
         """
         search_path = Path(path)
         if not search_path.exists():
-            raise ValueError(f"搜索路径不存在: {path}")
+            raise ValueError(f"Search path does not exist: {path}")
 
-        # 编译正则表达式
+        # Compile regular expression
         flags = 0 if case_sensitive else re.IGNORECASE
         try:
             regex = re.compile(pattern, flags)
         except re.error as e:
-            raise ValueError(f"无效的正则表达式模式: {pattern}, 错误: {e}")
+            raise ValueError(f"Invalid regular expression pattern: {pattern}, error: {e}")
 
         matches = []
         match_count = 0
 
-        # 遍历文件
+        # Traverse files
         def search_files():
             nonlocal match_count
             for root, dirs, files in os.walk(search_path, followlinks=follow_symlinks):
-                # 过滤目录
+                # Filter directories
                 dirs[:] = [d for d in dirs if search_hidden or not d.startswith('.')]
                 
                 for file_name in files:
-                    # 跳过隐藏文件
+                    # Skip hidden files if required
                     if not search_hidden and file_name.startswith('.'):
                         continue
                     
                     file_path = Path(root) / file_name
                     
-                    # 检查是否应该包含此文件
+                    # Check whether this file should be included
                     if not self._should_include_file(file_path, include_patterns):
                         continue
                     
-                    # 跳过二进制文件
+                    # Skip binary files
                     if self._is_binary_file(file_path):
                         continue
                     
-                    # 检查是否达到最大匹配数
+                    # Stop when reaching the maximum number of matches
                     if max_count and match_count >= max_count:
                         return
                     
                     try:
-                        # 读取文件内容
+                        # Read file content
                         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                             lines = f.readlines()
                             absolute_offset = 0
                             
                             for line_num, line in enumerate(lines, start=1):
-                                # 检查是否达到最大匹配数
+                                # Check again if we have reached the maximum number of matches
                                 if max_count and match_count >= max_count:
                                     break
                                 
                                 line_text = line.rstrip('\n\r')
                                 
-                                # 搜索匹配
+                                # Search for matches in this line
                                 for match in regex.finditer(line_text):
-                                    # 提取子匹配
+                                    # Extract sub‑matches for capturing groups
                                     submatches = []
                                     for i, group in enumerate(match.groups(), start=1):
                                         if group is not None:
@@ -567,14 +568,14 @@ class PygrepSearcher:
                                                 'match': {'text': group}
                                             })
                                     
-                                    # 添加主匹配
+                                    # Add the main match at the beginning
                                     submatches.insert(0, {
                                         'start': match.start(),
                                         'end': match.end(),
                                         'match': {'text': match.group()}
                                     })
                                     
-                                    # 获取文件修改时间
+                                    # Get file modification time
                                     try:
                                         mod_time = os.path.getmtime(file_path)
                                     except OSError:
@@ -591,21 +592,21 @@ class PygrepSearcher:
                                     matches.append(match_obj)
                                     match_count += 1
                                 
-                                # 更新绝对偏移量（包括换行符）
+                                # Update absolute byte offset (including newline bytes)
                                 absolute_offset += len(line.encode('utf-8'))
                                 
                     except (UnicodeDecodeError, PermissionError, OSError) as e:
-                        logger.debug(f"跳过文件 {file_path}: {e}")
+                        logger.debug(f"Skip file {file_path}: {e}")
                         continue
 
-        # 在线程池中执行搜索
+        # Run the search in a thread pool
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, search_files)
 
-        # 按修改时间排序
+        # Sort by modification time
         matches.sort(key=lambda m: m.mod_time, reverse=True)
         
-        logger.debug(f"Pygrep搜索完成: pattern='{pattern}', 找到 {len(matches)} 个匹配")
+        logger.debug(f"Pygrep search finished: pattern='{pattern}', found {len(matches)} matches")
         return matches
 
     async def find_files(self,
@@ -615,41 +616,41 @@ class PygrepSearcher:
                         follow_symlinks: bool = True,
                         search_hidden: bool = True) -> List[str]:
         """
-        发现文件
+        Discover files.
 
         Args:
-            path: 搜索路径
-            include_patterns: 包含文件模式
-            max_depth: 最大搜索深度
-            follow_symlinks: 是否跟随符号链接
-            search_hidden: 是否包含隐藏文件
+            path: Root search path.
+            include_patterns: File glob patterns to include.
+            max_depth: Maximum directory traversal depth.
+            follow_symlinks: Whether to follow symbolic links.
+            search_hidden: Whether to include hidden files.
 
         Returns:
-            文件路径列表
+            List of file paths.
         """
         search_path = Path(path)
         if not search_path.exists():
-            raise ValueError(f"搜索路径不存在: {path}")
+            raise ValueError(f"Search path does not exist: {path}")
 
         file_paths = []
 
         def find_files_recursive(current_path: Path, current_depth: int = 0):
-            # 检查深度限制
+            # Check depth limit
             if max_depth is not None and current_depth > max_depth:
                 return
             
             try:
-                # 遍历当前目录
+                # Walk current directory
                 for item in current_path.iterdir():
-                    # 跳过隐藏文件/目录
+                    # Skip hidden files/directories if required
                     if not search_hidden and item.name.startswith('.'):
                         continue
                     
-                    # 排除 .git 目录
+                    # Exclude .git directory
                     if item.name == '.git' and item.is_dir():
                         continue
                     
-                    # 处理符号链接
+                    # Handle symbolic links
                     if item.is_symlink():
                         if not follow_symlinks:
                             continue
@@ -659,18 +660,18 @@ class PygrepSearcher:
                             continue
                     
                     if item.is_file():
-                        # 检查是否匹配包含模式
+                        # Check whether it matches the include patterns
                         if self._should_include_file(item, include_patterns):
                             file_paths.append(str(item))
                     elif item.is_dir():
                         find_files_recursive(item, current_depth + 1)
             
             except (PermissionError, OSError) as e:
-                logger.debug(f"无法访问目录 {current_path}: {e}")
+                logger.debug(f"Cannot access directory {current_path}: {e}")
 
-        # 在线程池中执行文件查找
+        # Run file discovery in a thread pool
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, find_files_recursive, search_path, 0)
 
-        logger.debug(f"Pygrep文件查找完成: 找到 {len(file_paths)} 个文件")
+        logger.debug(f"Pygrep file discovery finished: found {len(file_paths)} files")
         return file_paths
