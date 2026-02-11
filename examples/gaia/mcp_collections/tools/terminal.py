@@ -87,7 +87,7 @@ class TerminalActionCollection(ActionCollection):
             "dd if=",
             ":(){ :|:& };:",  # Unix
             "del /f /s /q",
-            "format",
+            # "format",
             "diskpart",  # Windows
             "sudo rm",
             "sudo dd",
