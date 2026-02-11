@@ -1,4 +1,6 @@
 # coding: utf-8
+import traceback
+
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
@@ -13,7 +15,8 @@ from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PostTaskCallHook
 
 
-@HookFactory.register(name="LearningKnowledgeGenerationHook", desc="Learning knowledge generation Hook, generates knowledge artifacts and records task_id when task is completed")
+@HookFactory.register(name="LearningKnowledgeGenerationHook",
+                      desc="Learning knowledge generation Hook, generates knowledge artifacts and records task_id when task is completed")
 class LearningKnowledgeGenerationHook(PostTaskCallHook):
     """
     Learning knowledge generation Hook
@@ -47,12 +50,13 @@ class LearningKnowledgeGenerationHook(PostTaskCallHook):
 
         try:
             # Get configuration
-            config = context.get_config()
-            if not config:
+            agent = context.swarm.communicate_agent[0]
+            if not agent or not agent.conf:
                 return message
 
             # Check if enabled
-            if not config.agent_config.meta_learning.enabled:
+            config = agent.conf
+            if not config.meta_learning_config.enabled:
                 logger.debug(f"Meta-learning is not enabled, skip knowledge generation: task_id={context.task_id}")
                 return message
 
@@ -66,12 +70,14 @@ class LearningKnowledgeGenerationHook(PostTaskCallHook):
             await self._generate_knowledge_artifacts(context)
 
             # Record task_id
-            logger.info(f"Recording trajectory task_id to MULTI_TURN_TASK_ID_DATA: task_id={task_id}, session_id={context.session_id}")
+            logger.info(
+                f"Recording trajectory task_id to MULTI_TURN_TASK_ID_DATA: task_id={task_id}, session_id={context.session_id}")
             await append_traj_id_to_session_artifact(context=context, task_id=task_id)
             logger.info(f"Successfully recorded trajectory task_id: task_id={task_id}")
 
         except Exception as e:
-            logger.error(f"Failed to generate knowledge or record task_id: task_id={context.task_id if context else 'unknown'}, error={e}")
+            logger.error(
+                f"Failed to generate knowledge or record task_id: task_id={context.task_id if context else 'unknown'}, error={e} {traceback.format_exc()}")
 
         return message
 
@@ -100,10 +106,12 @@ class LearningKnowledgeGenerationHook(PostTaskCallHook):
 
         meta_data = await LearningKnowledge.get_running_meta(context, context.task_id)
         meta_artifact_id = await save_context_artifact(context, TrajType.META_DATA, meta_data)
-        exp_artifact_id = await save_context_artifact(context, TrajType.EXP_DATA, LearningKnowledge.convert_to_store_data(traj_data))
+        exp_artifact_id = await save_context_artifact(context, TrajType.EXP_DATA,
+                                                      LearningKnowledge.convert_to_store_data(traj_data))
         graph_data_artifact_id = await save_context_artifact(context, TrajType.GRAPH_DATA, graph_data)
 
-        logger.info(f"LearningKnowledgeGenerationHook: Successfully created graph structure artifact, exp_data_artifact_id={exp_artifact_id}, "
-                    f"graph_data_artifact_id={graph_data_artifact_id}, "
-                    f"meta_data_artifact_id={meta_artifact_id}, "
-                    f"nodes={len(graph_data.get('nodes', []))}, edges={len(graph_data.get('edges', []))}")
+        logger.info(
+            f"LearningKnowledgeGenerationHook: Successfully created graph structure artifact, exp_data_artifact_id={exp_artifact_id}, "
+            f"graph_data_artifact_id={graph_data_artifact_id}, "
+            f"meta_data_artifact_id={meta_artifact_id}, "
+            f"nodes={len(graph_data.get('nodes', []))}, edges={len(graph_data.get('edges', []))}")
