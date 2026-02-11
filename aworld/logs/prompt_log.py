@@ -80,6 +80,9 @@ def _format_tools(tools: list) -> str:
     if not tools:
         return "No tools"
 
+    # Lazy import to avoid circular dependencies
+    from aworld.core.agent.base import AgentFactory, is_agent_by_name
+
     formatted_tools = []
     for tool in tools:
         if isinstance(tool, dict) and 'function' in tool:
@@ -87,10 +90,10 @@ def _format_tools(tools: list) -> str:
             if isinstance(function_info, dict) and 'name' in function_info:
                 tool_name = function_info['name']
 
-                # Determine tool type based on name
+                # Determine tool type based on name and AgentFactory registration
                 if tool_name.startswith('mcp'):
                     tool_type = "mcp"
-                elif '_agent' in tool_name:
+                elif '_agent' in tool_name or is_agent_by_name(tool_name):
                     tool_type = "agent_as_tool"
                 else:
                     tool_type = "tool"
@@ -369,16 +372,18 @@ class PromptLogger:
         """
         if tools:
             prompt_logger.info(f"│ 🔨 Tools: │")
+            # Lazy import to avoid circular dependencies
+            from aworld.core.agent.base import is_agent_by_name
             # Log all tools on separate lines
             for tool in tools:
                 if isinstance(tool, dict) and 'function' in tool:
                     function_info = tool['function']
                     if isinstance(function_info, dict) and 'name' in function_info:
                         tool_name = function_info['name']
-                        # Determine tool type based on name
+                        # Determine tool type based on name and AgentFactory registration
                         if tool_name.startswith('mcp'):
                             tool_type = "mcp"
-                        elif '_agent' in tool_name:
+                        elif '_agent' in tool_name or is_agent_by_name(tool_name):
                             tool_type = "agent_as_tool"
                         else:
                             tool_type = "tool"

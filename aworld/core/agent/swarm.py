@@ -4,8 +4,9 @@ import abc
 import uuid
 from collections import OrderedDict
 from enum import Enum
-from typing import Dict, List, Any, Callable, Optional, Tuple, Iterator, Union
+from typing import Dict, List, Any, Callable, Optional, Union
 
+from aworld.agents.llm_agent import Agent
 from aworld.core.agent.agent_desc import agent_handoffs_desc
 from aworld.core.agent.base import AgentFactory, BaseAgent
 from aworld.core.common import ActionModel, Observation
@@ -427,6 +428,101 @@ class TeamSwarm(Swarm):
         # Default is 0, means calling at least once. Suggestion is 2, means at least interacting with one executor.
         self.min_call_num = kwargs.get("min_call_num", 0)
 
+    def del_agents(self, agents: List[BaseAgent]):
+        if not agents:
+            return
+
+        agents_to_remove = []
+        root_agent = self.agent_graph.root_agent if self.agent_graph else None
+
+        # Filter agents that actually exist in the swarm and are not root_agent
+        for agent in agents:
+            for a in self.agents.values():
+                # Prevent removing root_agent as it's essential for team coordination
+                if (root_agent and agent.name() == root_agent.name()):
+                    logger.warning(f"Cannot remove root_agent {agent.id()} {agent.name()} from TeamSwarm, skipping")
+                    continue
+                if agent.name() == a.name():
+                    agents_to_remove.append(a)
+
+        if not agents_to_remove:
+            logger.info("No valid agents to remove")
+            return
+
+        logger.info(f"del_agents|before|removing agents {[a.id() for a in agents_to_remove]} from team swarm.agents: {list(self.agents.keys())}")
+
+        for agent in agents_to_remove:
+            try:
+                # 1. Remove agent from agent_graph
+                self.agent_graph.del_node(agent)
+
+                # 2. Remove agent from root_agent's handoffs
+                root_agent.handoffs.remove(agent.id())
+
+                # 3. Remove agent from topology list
+                if agent in self.topology:
+                    self.topology.remove(agent)
+
+                # 4. Remove agent from register_agents in parent class
+                if agent in self.register_agents:
+                    self.register_agents.remove(agent)
+
+                # 5. Reset agent properties that were set during addition
+                agent.feedback_tool_result = False
+
+                # 6. Clean up agent's handoffs references to other agents in the swarm
+                # (though in TeamSwarm agents typically don't have handoffs to others)
+
+                logger.info(f"Successfully removed agent {agent.id()} {agent.name()} from TeamSwarm")
+
+            except Exception as e:
+                logger.error(f"Failed to remove agent {agent.id()} {agent.name()}: {e}")
+                continue
+
+        logger.info(f"del_agents|after|removed agents, remaining swarm.agents: {list(self.agents.keys())}")
+
+
+    def find_from_agent_factory_by_name(self, to_find_agent_name: str):
+        logger.info(f"AgentFactory._agent_instance.values(): {AgentFactory._agent_instance.values()} {to_find_agent_name}")
+        # Find agent with the same name from AgentFactory
+        for agent in list(AgentFactory._agent_instance.values()):
+            if agent.name() == to_find_agent_name:
+                factory_agent = AgentFactory._agent_instance[agent.id()]
+                logger.info(f"Found agent '{factory_agent.id()}' (name: '{to_find_agent_name}') from AgentFactory")
+                return factory_agent
+        return None
+
+    def add_agents(self, agents: List[BaseAgent], to_remove_agents: List[BaseAgent] = None):
+        # del existed, add new
+        if not to_remove_agents:
+            to_remove_agents = agents
+        logger.info(f"add_agents|before del|del agents {agents} to team swarm.agents: {self.agents}")
+        self.del_agents(to_remove_agents)
+        logger.info(f"add_agents|after del|del agents {agents} to team swarm.agents: {self.agents}")
+
+        agents_to_add = agents
+        # Only call super().add_agents for agents that don't exist yet
+        logger.info(f"add_agents|before add|add agents {agents} to team swarm.agents: {self.agents}")
+
+        if agents_to_add:
+            super().add_agents(agents_to_add)
+            
+            for agent in agents_to_add:
+                # All checks passed, add the agent
+                self.agent_graph.add_node(agent)
+                # Follow TeamBuilder.build pattern: only add edge from root_agent to agent (one-way)
+                root_agent = self.agent_graph.root_agent
+                self.agent_graph.add_edge(root_agent, agent)
+                # Find agent with same name as root_agent from AgentFactory and register handoff
+                root_agent.handoffs.append(agent.id())
+                # Set feedback_tool_result to True so agent is properly recognized as agent_as_tool
+                agent.feedback_tool_result = True
+                # Remove agent from its own handoffs if present (same as TeamBuilder.build)
+                if isinstance(agent, BaseAgent) and agent.id() in agent.handoffs:
+                    agent.handoffs.remove(agent.id())
+                self.topology.append(agent)
+        
+        logger.info(f"add_agents|after add|add agents {agents} to team swarm.agents: {self.agents}")
 
 # Alias for TeamSwarm
 Team = TeamSwarm
@@ -561,7 +657,8 @@ class AgentGraph:
         if not agent or agent.id() not in self.agents:
             return
 
-        self.ordered_agents.remove(agent)
+        if agent.id() in self.ordered_agents:
+            self.ordered_agents.remove(agent)
         del self.agents[agent.id()]
 
         successor = self.successor.get(agent.id(), {})
@@ -569,7 +666,7 @@ class AgentGraph:
             del self.predecessor[key][agent.id()]
         del self.successor[agent.id()]
 
-        for key, _ in self.predecessor.get(agent.id(), {}):
+        for key in self.predecessor.get(agent.id(), {}):
             del self.successor[key][agent.id()]
         del self.predecessor[agent.id()]
 
@@ -1040,6 +1137,7 @@ class TeamBuilder(TopologyBuilder):
         return True
 
     def build(self):
+        logger.info(f"Building swarm with root_agent={self.root_agent}, topology_size={len(self.topology)}")
         agent_graph = AgentGraph(GraphBuildType.TEAM.value, root_agent=self.root_agent)
         valid_agents = []
         root_agent = self.topology[0]
