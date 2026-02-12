@@ -13,8 +13,7 @@ from aworld.logs.util import logger
 
 
 class OpenAIProvider(LLMProviderBase):
-    """OpenAI provider implementation.
-    """
+    """OpenAI provider implementation."""
 
     def _init_provider(self):
         """Initialize OpenAI provider.

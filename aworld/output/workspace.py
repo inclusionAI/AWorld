@@ -9,15 +9,13 @@ from pydantic import BaseModel, Field, ConfigDict
 
 from aworld.logs.util import logger
 from aworld.output.artifact import ArtifactType, Artifact
+from aworld.output.artifact_repository import ArtifactRepository
 from aworld.output.code_artifact import CodeArtifact
-from aworld.output.storage.artifact_repository import ArtifactRepository, LocalArtifactRepository
 from aworld.output.observer import WorkspaceObserver, get_observer
-from aworld.output.storage.oss_artifact_repository import OSSArtifactRepository
 
 
 class WorkSpace(BaseModel):
-    """
-    Artifact workspace, managing a group of related artifacts
+    """Artifact workspace, managing a group of related artifacts.
     
     Provides collaborative editing features, supporting version management, update notifications, etc. for multiple Artifacts
     """
@@ -56,7 +54,7 @@ class WorkSpace(BaseModel):
         # Initialize repository first
         storage_dir = storage_path or os.path.join("data", "workspaces", self.workspace_id)
         if repository is None:
-            self.repository = LocalArtifactRepository(storage_dir)
+            self.repository = ArtifactRepository.create_local(storage_dir)
         else:
             self.repository = repository
 
@@ -182,7 +180,7 @@ class WorkSpace(BaseModel):
                 "endpoint": os.getenv("OSS_ENDPOINT"),
                 "bucket_name": os.getenv("OSS_BUCKET_NAME"),
             }
-        repository = OSSArtifactRepository(
+        repository = ArtifactRepository.create_oss(
             access_key_id=oss_config["access_key_id"],
             access_key_secret=oss_config["access_key_secret"],
             endpoint=oss_config["endpoint"],
@@ -223,17 +221,13 @@ class WorkSpace(BaseModel):
         if isinstance(artifact_type, str):
             artifact_type = ArtifactType(artifact_type)
 
-        # Create new artifacts
-        artifacts = []
-
         # Ensure metadata is a dictionary
         if metadata is None:
             metadata = {}
 
         # Ensure artifact_id is a valid string
-        if artifact_id is None:
-            artifact_id = str(uuid.uuid4())
-
+        artifact_id = artifact_id or uuid.uuid4().hex
+        artifacts = []
         if artifact_type == ArtifactType.CODE:
             artifacts = CodeArtifact.from_code_content(artifact_type, content)
         else:
@@ -295,7 +289,7 @@ class WorkSpace(BaseModel):
         artifact = self.get_artifact(artifact_id)
         if artifact:
             artifact.mark_complete()
-            self.repository.store_artifact(artifact)
+            await self.repository.store_artifact(artifact)
             logger.info(f"[📂WORKSPACE]🎉 Marking artifact as completed: {artifact_id}")
             await self._notify_observers("complete", artifact)
         self.save()
@@ -354,8 +348,7 @@ class WorkSpace(BaseModel):
         return None
 
     async def delete_artifact(self, artifact_id: str) -> bool:
-        """
-        Delete an artifact from the workspace
+        """Delete an artifact from the workspace.
         
         Args:
             artifact_id: Artifact ID
@@ -374,7 +367,7 @@ class WorkSpace(BaseModel):
                 # Update workspace time
                 self.updated_at = datetime.now().isoformat()
 
-                self.repository.delete_artifact(artifact_id)
+                await self.repository.delete_artifact(artifact_id)
                 # Save workspace state to create new version
                 self.save()
 
@@ -474,20 +467,18 @@ class WorkSpace(BaseModel):
         # Include complete version history
         artifact_data["version_history"] = artifact.version_history
 
-        version_id = self.repository.store_artifact(artifact)
-
-        # Store in repository
+        version_id = await self.repository.store_artifact(artifact)
         artifact.current_version = version_id
 
     def save(self) -> None:
-        """
-        Save workspace state
+        """Save workspace state.
 
         Returns:
             Workspace storage ID
         """
         workspace_data = {
             "workspace_id": self.workspace_id,
+            "id": "index.json",
             "name": self.name,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
@@ -521,13 +512,13 @@ class WorkSpace(BaseModel):
         decoded_string = result.encode('utf-8').decode('unicode_escape')
         return decoded_string
 
-    def generate_tree_data(self) -> Dict[str, Any]:
+    async def generate_tree_data(self) -> Dict[str, Any]:
         """
         Generate a directory tree structure using the repository's implementation.
         Returns:
             A dictionary representing the directory tree.
         """
-        return self.repository.generate_tree_data(self.name)
+        return await self.repository.generate_tree_data(self.name)
 
     def _rebuild_artifact_id_index(self) -> None:
         """

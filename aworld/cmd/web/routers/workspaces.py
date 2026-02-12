@@ -17,7 +17,7 @@ prefix = "/api/workspaces"
 async def get_workspace_tree(workspace_id: str):
     logger.info(f"get_workspace_tree: {workspace_id}")
     workspace = await get_workspace(workspace_id)
-    return workspace.generate_tree_data()
+    return await workspace.generate_tree_data()
 
 
 class ArtifactRequest(BaseModel):

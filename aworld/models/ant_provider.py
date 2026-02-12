@@ -22,33 +22,14 @@ from aworld.models.model_response import ModelResponse, LLMResponseError, ToolCa
 from aworld.logs.util import logger
 from aworld.utils import import_package
 
-
 MODEL_NAMES = {
     "anthropic": ["claude-3-5-sonnet-20241022", "claude-3-5-sonnet-20240620", "claude-3-opus-20240229"],
     "openai": ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini", "gpt-4o-mini"],
 }
 
 
-# Custom JSON encoder to handle ToolCall and other special types
-class CustomJSONEncoder(json.JSONEncoder):
-    """Custom JSON encoder to handle ToolCall objects and other special types."""
-
-    def default(self, obj):
-        # Handle objects with to_dict method
-        if hasattr(obj, 'to_dict') and callable(obj.to_dict):
-            return obj.to_dict()
-
-        # Handle objects with __dict__ attribute (most custom classes)
-        if hasattr(obj, '__dict__'):
-            return obj.__dict__
-
-        # Let the base class handle it (will raise TypeError if not serializable)
-        return super().default(obj)
-
-
 class AntProvider(LLMProviderBase):
-    """Ant provider implementation.
-    """
+    """Ant provider implementation."""
 
     def _init_provider(self):
         """Initialize Ant provider.
