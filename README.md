@@ -1,286 +1,220 @@
 <div align="center">
 
-# AWorld: Rich Environments, Intelligent Agents, Continuous Evolution
+# AWorld: Agentic Craft for Your World
 
 </div>
 
 <h4 align="center">
 
-*"Self-awareness: the hardest problem isn't solving within limits, it's discovering one's own limitations"*
+*"The Next Frontier for AI is Your Expertise"*
 
 [![Twitter Follow][twitter-image]][twitter-url]
 [![WeChat QR Code][wechat-image]][wechat-url]
 [![Discord][discord-image]][discord-url]
 [![License: MIT][license-image]][license-url]
 [![DeepWiki][deepwiki-image]][deepwiki-url]
-[![arXiv][arxiv-image]][arxiv-url]
 [![Tutorial][tutorial-image]][tutorial-url]
-[![Playground][playground-image]][playground-url]
+<!-- [![arXiv][arxiv-image]][arxiv-url] -->
+<!-- [![Playground][playground-image]][playground-url] -->
 
 </h4>
 
 <h4 align="center">
 
 [中文版](./README_zh.md) |
-[Installation](#installation) |
-[Environments](#online-access-to-complex-environments) |
-[Agent](#efficient-agent-construction) |
-[Experience](#experience-to-samples) |
-[Training](#training) |
-[Architecture](#architecture-design-principles) |
+[Automation](#your-journey-with-aworld-cli) |
+[Manual](#total-control-manually-crafting-agent-systems) |
 [Evolution](#evolution) |
 [Contributing](#contributing) |
+<!-- [Experience](#experience-to-samples) |
+[Training](#training) | -->
 
 </h4>
 
 ---
 
-**AWorld (Agent World)** builds intelligent agents and rich environments where they operate, pushing the frontiers of AI capabilities and enabling continuous evolution. This project provides the fundamental recipe for agentic learning: [Environment Access](#online-access-to-complex-environments), [Agent Construction](#efficient-agent-construction), [Experience Retrieval](#experience-to-samples), and [Model Training](#training). What makes AWorld powerful is that agents can use these same components to automatically improve themselves.
+<p align="justify">
+For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. From scientific research, financial analysis, to complex engineering, generic models can't climb this wall. They can't speak your language. 
+
+The AWorld Thesis is that the true scaling of AI is achieved by enabling experts like you to build a gate in that wall.
+
+AWorld with its CLI mode is the platform designed for this. We provide the fundamental recipe for you, the expert, to infuse your knowledge and craft unique insights into fleets of autonomous agents. This is how we move beyond generic promise to specific, robust applications that navigate your world with precision.
+</p>
+
 
 ![](./readme_assets/aworld_loop.png)
 
 > 💡 Visit our [homepage](https://www.aworldagents.com/) for more details, or try our online [environments](https://www.aworldagents.com/environments) and [agents](https://playground.aworldagents.com/). 
 
 
-# Installation
-> [!TIP]
-> Python>=3.11
+# Your Journey with AWorld-CLI
+The journey from an idea to an evolved, autonomous agent begins at your fingertips.
+
+
+## Install and Activate
+
+Create a .env file in the AWorld/aworld-cli to configure the base model for both the AWorld Agent and any agents it creates. Add the following content:
+```bash
+LLM_MODEL_NAME="your_model_name, Claude-Sonnet-4 or above suggested"
+LLM_PROVIDER="openai"
+LLM_API_KEY="your_model_api_key"
+LLM_BASE_URL="your_base_url"
+```
+
+**Install and Enter AWorld-CLI**
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
-pip install -e .
+conda create -n aworld_env python=3.11 -y && conda activate aworld_env 
+
+pip install -e . && cd aworld-cli && pip install -e .
+
+aworld-cli
 ```
 
-# Online Access to Complex Environments
-Provisioning rich environments is hard—packages conflict, APIs need keys, concurrency must scale. We make it painless with three access modes:
-1. Use our default hosted setup (tooling with usage costs includes a limited free tier).
-2. Bring your own API keys for unrestricted access (coming soon).
-3. Pull our Docker images and run everything on your own infrastructure (coming soon).
 
-```python
-import os
-import asyncio
-from aworld.sandbox import Sandbox
+## Create Your Agent
+<p align="justify">
+Instantly scaffold an agent from a natural language description of your task. AWorld-CLI handles the boilerplate, so you can focus on the logic.
+</p>
 
-INVITATION_CODE = os.environ.get("INVITATION_CODE", "")
 
-mcp_config = {
-    "mcpServers": {
-        "gaia_server": {
-            "type": "streamable-http",
-            "url": "https://playground.aworldagents.com/environments/mcp",
-            "timeout": 600,
-            "sse_read_timeout": 600,
-            "headers": {
-                "ENV_CODE": "gaia",
-                "Authorization": f"Bearer {INVITATION_CODE}",
-            }
-        }
-    }
-}
+<!-- ![](./readme_assets/aworld_cli_text2agent.png) -->
+***Let AWorld Agent make an agent for you***
+![](./readme_assets/aworld_cli_demo_step1.gif)
 
-async def _list_tools():
-    sand_box = Sandbox(mcp_config=mcp_config, mcp_servers=["gaia_server"])
-    return await sand_box.mcpservers.list_tools()
+<p align="justify">
+This command generates a fully operational agent file referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution.
 
-if __name__ == "__main__":
-    tools = asyncio.run(_list_tools())
-    print(tools)
-```
+Once it's generated, your agent is a permanent, reusable tool in your ~/.agents folder.
+</p>
 
-![](./readme_assets/how_to_access_env.gif)
 
-# Efficient Agent Construction
-In Aworld, an agent is simply a model enhanced with tools. To spin one up, you only need:
-1. a model endpoint (for training, a vLLM service works great)
-2. an online environment to call (use our hosted options or plug in your own MCP toolchain)
-That’s it—no heavyweight scaffolding required.
+### Verified Skills: The DNA for Automated Agent Creation
+<div align="justify">
+Our library of Verified Skills is more than a collection of blueprints; it's a gene pool of expert capabilities.
+</div>
 
-```python
-from aworld.agents.llm_agent import Agent
-from aworld.runner import Runners
+<br>
 
-# refer the section above for details
-mcp_config = {...}
+<p align="justify">
+When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills for robutsness, and simultaneously learns from your custom skills in the ~/agents folder. This dual inheritance ensures every agent is not only reliable from the start, adapted to your requirements.
+</p>
 
-searcher = Agent(
-    name="Search Agent",
-    system_prompt="You specialize at searching.",
-    mcp_config=mcp_config
-)
+<table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
+  <colgroup>
+    <col style="width: 40%;">
+    <col style="width: 60%;">
+  </colgroup>
+  <thead>
+    <tr>
+      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Skills</th>
+      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch Agent</td>
+      <td style="padding: 8px; vertical-align: top;">Conducts comprehensive, multi-source research on a topic and synthesizes a structured report.</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🚀 PPT Agent</td>
+      <td style="padding: 8px; vertical-align: top;">Creates polished presentations from documents, outlines, or data.</td>
+    </tr>
+  </tbody>
+</table>
 
-if __name__ == "__main__":
-    result = Runners.sync_run(
-        input="Use google search tool to answer the question: the news about AI today.",
-        agent=searcher
-    )
-    print(f"answer: {result.answer}")
-```
 
-Remember to plug in your LLM credentials first.
-```bash
-# Set LLM credentials
-export LLM_MODEL_NAME="gpt-4"
-export LLM_API_KEY="your-api-key-here"
-export LLM_BASE_URL="https://api.openai.com/v1"
-```
+## Run Your Agent
+<p align="justify">
+Prompt the AWorld Agent to execute your newly created agent on a task and watch it work. Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
+</p>
 
-## Complex Agent System Construction
 
-Real-world problems often need more than a single agent. AWorld gives you flexible build paths:
+***Let the created agent do your job***
+![](./readme_assets/aworld_cli_demo_step2.gif)
+<!-- ![](./readme_assets/aworld_cli_run_task.png) -->
+
+## Evolve Your Agent
+<p align="justify">
+If the agent's performance isn't perfect in your opinion, you have a spectrum of powerful options for refinement.
+
+**Manual Evolution**
+<p align="justify">
+You are the expert. Open the generated Python file and fine-tune the prompts, logic, or tool usage directly. You have full control.
+</p>
+
+**Exciting: AI-Assisted Evolution**
+<p align="justify">
+This is where AWorld truly shines! Prompt with your desired changes, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent as your AI pair programmer to tune your agent.
+</p>
+
+
+***Schematic***
+![](./readme_assets/mas_meta_learning_v2.png) 
+
+
+***Optimize your agent***
+![](./readme_assets/aworld_cli_demo_step3.gif)
+
+
+***Let the optimized agent do the more challenging job***
+![](./readme_assets/aworld_cli_demo_step4.gif)
+
+
+**Our Vista: Self-Evolution**
+<p align="justify">
+This is the future. Instead of you providing explicit prompts, the system automatically detects sub-optimal performance based on a reward signal (e.g., failed validation, deviation from a verified Skill). It then triggers an autonomous optimization loop, evolving the agent on its own. This is evaluation-driven evolution, where the agent gains true self-awareness and improves without constant human intervention.
+</p>
+
+Once you're satisfied with your optimized agent, it is permanent and reusable in your ~/agents folder.
+</p>
+
+
+# Total Control: Manually Crafting Agent Systems
+<p align="justify">
+In AWorld, an agent is a model enhanced with tools. But real-world problems often demand more than a single agent. To solve this, AWorld gives you full control with flexible build paths, allowing you to manually craft complex, multi-agent systems for collaboration.
+</p>
+
 1. design automated workflows end to end  [Docs](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
+
 2. spin up MCP-enabled agents [Docs](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
+
 3. orchestrate multi-agent systems (MAS) [Docs](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
 
-Want to see it live? Load a pre-built DeepResearch team in the AWorld [Playground](https://playground.aworldagents.com/), inspect the source, and run it end to end.
+
+# Playground: See a Multi-Agent System in Action
+Launch our official DeepResearch team in the AWorld [Playground](https://playground.aworldagents.com/) to see AI collaboration live. Inspect its source, run it end-to-end, and get inspired.
+
 ![](./readme_assets/playground_gaiateam.gif)
 
-# Experience to samples
-Our runtime captures every step across offline and online runs. Each task yields a complete trajectory—every LLM call, action, and reward—so you can synthesize training samples, audit performance, and iterate with confidence.
+**From User to Creator: Get Your Agent Featured!**
 
-## Complete Task Trajectories
-Tasks unfold over many LLM calls. The framework captures every step, giving you a full trajectory.
+Ready to build your own? Use the aworld-cli to forge an agent with your unique expertise, captured in its skill.md file.
 
-```python
-import asyncio
-from aworld.runner import Runners
-from aworld.core.task import Task
-from aworld.logs.util import logger
-import json
+To get your creation featured, simply submit a Pull Request with your skill.md to:
+AWorld/examples/Custom_Skills/
 
-# refer the section above for agent constrution 
-searcher = Agent(...)
+<p align="justify">
+We'll showcase the best community agents here in the Playground. Let your expertise evolve into a professional agent, gain recognition, and empower the entire community to experience the amazing tools you've built.
+</p>
 
-if __name__ == "__main__":
-    async def test_complete_trajectory():
-        task = Task(
-            input="Use google search tool to answer the question: the news about AI today.",
-            agent=searcher
-        )
-
-        responses = await Runners.run_task(task)
-        resp = responses[task.id]
-        logger.info(f"task answer: {resp.answer}")
-        logger.info(f"task trajectory: {json.dumps(resp.trajectory, ensure_ascii=False)}")
-    asyncio.run(test_complete_trajectory())
-```
-
-## Single-Step Introspection
-Need finer control? Call `step()` to inspect one action/response pair at a time. This lets you inject intermediate rewards during training, enabling richer, more flexible learning signals.
-
-```python
-import os
-import asyncio
-from aworld.runner import Runners
-from aworld.core.task import Task
-from aworld.logs.util import logger
-import json
-from aworld.config import TaskConfig, TaskRunMode
-
-# refer the section above for agent constrution 
-searcher = Agent(...)
-
-if __name__ == "__main__":
-    async def test_single_step_introspection():
-        task = Task(
-            input="Use google search tool to answer the question: the news about AI today.",
-            agent=searcher,
-            conf=TaskConfig(
-                resp_carry_context=True,
-                run_mode=TaskRunMode.INTERACTIVE
-            )
-        )
-
-        trajectory_log = os.path.join(os.path.dirname(__file__), "trajectory_log.txt")
-        is_finished = False
-        step = 1
-        while not is_finished:
-            with open(trajectory_log, "a", encoding="utf-8") as traj_file:
-                is_finished, observation, response = await Runners.step(task)
-                traj_file.write(f"Step {step}\n")
-                traj_file.write(json.dumps(response.trajectory, ensure_ascii=False, indent=2))
-                traj_file.write("\n\n")
-                step += 1
-    asyncio.run(test_single_step_introspection())
-```
-
-# Training
-Once agents can roam across environments, AWorld closes the loop with two complementary training modes that drive continuous improvement.
-
-## Model Training
-Plug any mainstream LLM trainer—AReal, Swift, Verl, Slime, etc.—into the runtime to update model parameters directly. Adapters are lightweight, so you can reuse the same environment and agent code across trainers.
-
-```python
-from datasets import load_dataset
-from aworld.agents.llm_agent import Agent
-from aworld.config import AgentConfig
-
-from train.trainer.agent_trainer import AgentTrainer
-from train.examples.train_gaia_with_aworld_verl.metrics.gaia_reward_function import gaia_reward_func
+<!-- # Experience to Samples
+Iterate with confidence. Our runtime records a complete history for every task, capturing each LLM call, action, and reward. Use this data to audit performance and generate high-quality training samples.
+[Docs](https://inclusionai.github.io/AWorld/Training/Trajectory/)
 
 
-# refer the section above for details
-mcp_config = {...}
+# Model Training
+Once agents can roam across environments, AWorld closes the loop with two complementary training modes that drive continuous improvement. Plug any mainstream LLM trainer—AReal, Swift, Verl, Slime, etc.—into the runtime to update model parameters directly. Adapters are lightweight, so you can reuse the same environment and agent code across trainers.
+[Docs](https://inclusionai.github.io/AWorld/Training/Trainer/)
 
-# Configure agent to use Verl as the model service (adapts inference format automatically)
-agent_config = AgentConfig(
-    llm_provider="verl"
-)
-searcher = Agent(
-    name="Search Agent",
-    system_prompt="You specialize at searching.",
-    mcp_config=mcp_config,
-    conf=agent_config
-)
-
-train_dataset = load_dataset("", split="train")
-test_dataset = load_dataset("", split="test")
-
-trainer = AgentTrainer(
-    agent=agent,
-    config=custom_train_config,
-    reward_func=gaia_reward_func,
-    train_dataset=train_dataset,
-    test_dataset=test_dataset
-)
-
-trainer.train()
-```
 > 💡 Check the [real case](./train/examples/train_gaia_with_aworld_verl/main.py) which includes the full training config to run agentic training.
-
-## Meta-Learning
-Beyond weights, you can meta-learn whole agent systems. Spin up role-specific agents that critique, rewrite prompts, refine workflow, or adjust strategies for a target agent, then iterate the team (e.g., our Gaia demo).
-
-![](./readme_assets/mas_meta_learning.png)
-
-# Architecture Design Principles
-This framework is engineered to be highly adaptable, enabling researchers and developers to explore and innovate across multiple domains, thereby advancing the capabilities and applications of multi-agent systems.
-
-## Concepts & Framework
-| Concepts | Description |
-| :-------------------------------------- | ------------ |
-| [`agent`](./aworld/core/agent/base.py)  | Define the foundational classes, descriptions, output parsing, and multi-agent collaboration (swarm) logic for defining, managing, and orchestrating agents in the AWorld system. |
-| [`runner`](./aworld/runners)            | Contains runner classes that manage the execution loop for agents in environments, handling episode rollouts and parallel training/evaluation workflows.   |
-| [`task`](./aworld/core/task.py)         | Define the base Task class that encapsulates environment objectives, necessary tools, and termination conditions for agent interactions.  |
-| [`swarm`](./aworld/core/agent/swarm.py) | Implement the SwarmAgent class managing multi-agent coordination and emergent group behaviors through decentralized policies. |
-| [`sandbox`](./aworld/sandbox)           | Provide a controlled runtime with configurable scenarios for rapid prototyping and validation of agent behaviors. |
-| [`tools`](./aworld/tools)               | Offer a flexible framework for defining, adapting, and executing tools for agent-environment interaction in the AWorld system. |
-| [`context`](./aworld/core/context)      | Feature a comprehensive context management system for AWorld agents, enabling complete state tracking, configuration management, prompt optimization, multi-task state handling, and dynamic prompt templating throughout the agent lifecycle.  |
-| [`memory`](./aworld/memory)             | Implement an extensible memory system for agents, supporting short-term and long-term memory, summarization, retrieval, embeddings, and integration.|
-| [`trace`](./aworld/trace)               | Feature an observable tracing framework for AWorld, enabling distributed tracing, context propagation, span management, and integration with popular frameworks and protocols to monitor and analyze agent, tool, and task execution.|
-
-
-## Characteristics
-| Agent Construction            | Topology Orchestration                                                                            | Environment                    |
-|:------------------------------|:--------------------------------------------------------------------------------------------------|:-------------------------------|
-| ✅ Integrated MCP services     | ✅ Encapsulated runtime                                                                            | ✅ Runtime state management  |
-| ✅ Multi-model providers       | ✅ Flexible MAS patterns                                                                           | ✅ High-concurrency support  |
-| ✅ Customization options       | ✅ Clear state tracing                                                                             | ✅ Distributed training      |
-| ✅ [Support Agent Skills](https://github.com/inclusionAI/AWorld/tree/main/examples/skill_agent)  | [Support Aworld-Cli](https://github.com/inclusionAI/AWorld/tree/main/examples/aworld_cli_demo) 🚀 |       |
-
+ -->
 
 # Evolution
-Our mission: AWorld handles the complexity, you focus on innovation. This section showcases cutting-edge multi-agent systems built with AWorld, advancing toward AGI.
+<p align="justify">
+AWorld's mission is to handle the complexity so you can focus on innovation. This section showcases cutting-edge multi-agent systems built with AWorld, advancing toward AGI.
+
 
 #### Agent Benchmarking
 
@@ -457,11 +391,17 @@ Our mission: AWorld handles the complexity, you focus on innovation. This sectio
 
     *Kaiwen He, Zhiwei Wang, Chenyi Zhuang, Jinjie Gu*
 
+</p>
+
 
 # Contributing
-We warmly welcome developers to join us in building and improving AWorld! Whether you're interested in enhancing the framework, fixing bugs, or adding new features, your contributions are valuable to us.
+<p align="justify">
+Our roadmap includes expanding our AI for Science & Business initiative, deepening our self-evolution capabilities, and growing our library of community-contributed Skills.
+
+We warmly welcome developers, researchers, and domain experts to join us. Whether you're enhancing the framework or contributing a Skill from your field of expertise, your work is valuable.
 
 For academic citations or wish to contact us, please use the following BibTeX entry:
+</p>
 
 ```bibtex
 @misc{yu2025aworldorchestratingtrainingrecipe,
@@ -475,8 +415,8 @@ For academic citations or wish to contact us, please use the following BibTeX en
 }
 ```
 
-# Star History
-![](https://api.star-history.com/svg?repos=inclusionAI/AWorld&type=Date)
+<!-- # Star History
+![](https://api.star-history.com/svg?repos=inclusionAI/AWorld&type=Date) -->
 
 
 <!-- resource section start -->
