@@ -40,9 +40,9 @@ The AWorld Thesis is that the true scaling of AI is achieved by enabling experts
 
 AWorld with its CLI mode is the platform designed for this. We provide the fundamental recipe for you, the expert, to infuse your knowledge and craft unique insights into fleets of autonomous agents. This is how we move beyond generic promise to specific, robust applications that navigate your world with precision.
 </p>
+<!-- 
 
-
-![](./readme_assets/aworld_loop.png)
+![](./readme_assets/aworld_loop.png) -->
 
 > 💡 Visit our [homepage](https://www.aworldagents.com/) for more details, or try our online [environments](https://www.aworldagents.com/environments) and [agents](https://playground.aworldagents.com/). 
 
@@ -75,7 +75,8 @@ aworld-cli
 
 ## Create Your Agent
 <p align="justify">
-Instantly scaffold an agent from a natural language description of your task. AWorld-CLI handles the boilerplate, so you can focus on the logic.
+Instantly scaffold an agent from a natural language description of your task, such as *"create an agent that can generate HTML report"*. AWorld-CLI handles the boilerplate, so you can focus on the logic.
+
 </p>
 
 
@@ -114,12 +115,12 @@ When you automate the creation of a new agent, AWorld-CLI doesn't start from scr
   </thead>
   <tbody>
     <tr>
-      <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch Agent</td>
-      <td style="padding: 8px; vertical-align: top;">Conducts comprehensive, multi-source research on a topic and synthesizes a structured report.</td>
-    </tr>
-    <tr>
       <td style="padding: 8px; vertical-align: top;">🚀 PPT Agent</td>
       <td style="padding: 8px; vertical-align: top;">Creates polished presentations from documents, outlines, or data.</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch Agent</td>
+      <td style="padding: 8px; vertical-align: top;">Conducts comprehensive, multi-source research on a topic and synthesizes a structured report.</td>
     </tr>
   </tbody>
 </table>
@@ -127,7 +128,7 @@ When you automate the creation of a new agent, AWorld-CLI doesn't start from scr
 
 ## Run Your Agent
 <p align="justify">
-Prompt the AWorld Agent to execute your newly created agent on a task and watch it work. Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
+Prompt the AWorld Agent to execute your newly created agent on a task and watch it work, such as "Let the html agent generate an html report introducing Beckham". Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
 </p>
 
 
@@ -146,20 +147,20 @@ You are the expert. Open the generated Python file and fine-tune the prompts, lo
 
 **Exciting: AI-Assisted Evolution**
 <p align="justify">
-This is where AWorld truly shines! Prompt with your desired changes, so the AWorld Agent can transfer this complex task to our pre-built Optimizer Agent as your AI pair programmer to tune your agent.
+This is where AWorld truly shines! Prompt AWorld with your expertise and desired changes, such as *"help me optimize the html agent so that it can browse web, download and insert image into the html"*. It then tasks our built-in **Optimizer Agent**—a specialized code agent—to act as your AI pair programmer. Because all agents you create extend from a unified AWorld base class, the Optimizer Agent has a global understanding of the agent's structure. This allows it to reason about and precisely modify the agent's code to implement your logic, evolving its capabilities far beyond simple prompt tuning.
 </p>
 
-
+<!-- 
 ***Schematic***
-![](./readme_assets/mas_meta_learning_v2.png) 
+![](./readme_assets/mas_meta_learning_v2.png)  -->
 
 
-***Optimize your agent***
+***AI evolve your agent to make it more professional***
 ![](./readme_assets/aworld_cli_demo_step3.gif)
 
 
-***Let the optimized agent do the more challenging job***
-![](./readme_assets/aworld_cli_demo_step4.gif)
+<!-- ***Let the optimized agent do the more challenging job***
+![](./readme_assets/aworld_cli_demo_step4.gif) -->
 
 
 **Our Vista: Self-Evolution**
