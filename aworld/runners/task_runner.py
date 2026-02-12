@@ -217,6 +217,16 @@ class TaskRunner(Runner):
                 pass
         except Exception as e:
             logger.warning(f"POST_TASK_CALL hook execution failed: {e}")
+        # finally:
+        #     try:
+        #         await self.cleanup()
+        #     except Exception as e:
+        #         # Cleanup must never block task response delivery.
+        #         logger.warning(f"Task cleanup failed but ignored: {e}")
+
+    async def cleanup(self):
+        """Task cleanup hook, override in subclass when needed."""
+        return
 
     @abc.abstractmethod
     async def do_run(self, context: Context = None) -> TaskResponse:

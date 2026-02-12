@@ -87,6 +87,7 @@ class Swarm(object):
         self._finished: bool = False
         self._name = kwargs.get('name', f"swarm_{uuid.uuid1().hex}")
         self._id = f"{self._name}_{uuid.uuid1().hex}"
+        self._released = False
 
     def setting_build_type(self, build_type: GraphBuildType):
         all_pair = True
@@ -178,6 +179,7 @@ class Swarm(object):
         self.cur_step = 1
         self.initialized = True
         self._finished = False
+        self._released = False
 
     @staticmethod
     def register_agent(agents: List[BaseAgent]) -> None:
@@ -379,6 +381,42 @@ class Swarm(object):
             if agent.id() not in registered_agents:
                 self.register_agents.append(agent)
         Swarm.register_agent(agents)
+
+    def release(self):
+        """Release runtime references held by swarm and registered agents.
+
+        This method is idempotent and safe to call multiple times.
+        """
+        if getattr(self, "_released", False):
+            return
+        self._released = True
+
+        agent_ids = []
+        if self.agent_graph and self.agent_graph.agents:
+            agent_ids.extend(list(self.agent_graph.agents.keys()))
+        if self.register_agents:
+            agent_ids.extend([agent.id() for agent in self.register_agents if agent])
+
+        for agent_id in set(agent_ids):
+            AgentFactory.unregister(agent_id)
+
+        if self.agent_graph:
+            self.agent_graph.ordered_agents.clear()
+            self.agent_graph.agents.clear()
+            self.agent_graph.predecessor.clear()
+            self.agent_graph.successor.clear()
+            self.agent_graph.root_agent = None
+            self.agent_graph = None
+
+        self.register_agents.clear()
+        self.topology.clear()
+        self.tools.clear()
+        self.task = ''
+        self._communicate_agent = None
+        self.cur_agent = None
+        self.initialized = False
+        self._finished = True
+        self._cur_step = 0
 
 
 class WorkflowSwarm(Swarm):
