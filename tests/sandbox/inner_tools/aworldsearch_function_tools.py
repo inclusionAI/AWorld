@@ -5,14 +5,13 @@ import asyncio
 import json
 import logging
 import os
-import pprint
 from typing import List, Dict, Any, Optional, Union
 
 import aiohttp
 from mcp.types import TextContent
 from pydantic import Field
 
-from aworld.tools import FunctionTools
+from aworld.tools.function_tools import FunctionTools
 
 # Create function tools server
 function = FunctionTools("aworldsearch_server",
