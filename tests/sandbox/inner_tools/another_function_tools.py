@@ -6,7 +6,7 @@ from typing import Dict, Any, List, Optional
 
 from pydantic import Field
 
-from tests.sandbox.inner_tools.function_tools import FunctionTools
+from aworld.tools.function_tools import FunctionTools
 
 # Create another function tool server with a different name
 function = FunctionTools("another-server", 
