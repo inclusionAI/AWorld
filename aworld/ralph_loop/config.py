@@ -19,7 +19,7 @@ from aworld.ralph_loop.types import ConflictStrategy
 @dataclass
 class ValidationConfig:
     """Configuration for validation module."""
-
+    enabled: bool = True
     validators: List[Union[str, EvalCriteria, Scorer]] = field(default_factory=lambda: [])
     conflict_strategy: str = ConflictStrategy.MERGE
     model_config: ModelConfig = None
@@ -31,7 +31,7 @@ class ValidationConfig:
 @dataclass
 class ReflectionConfig:
     """Configuration for reflection module."""
-
+    enabled: bool = True
     reflectors: List[Union[str, Reflector]] = field(default_factory=list)
     conflict_strategy: str = ConflictStrategy.MERGE
     model_config: ModelConfig = None
