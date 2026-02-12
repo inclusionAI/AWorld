@@ -13,6 +13,7 @@ from pydantic.fields import FieldInfo  # Import FieldInfo type
 
 from aworld.core.common import ActionResult
 from aworld.logs.util import logger
+from aworld.utils.common import sync_exec
 
 # Global function tools server registry
 _FUNCTION_TOOLS_REGISTRY = {}
@@ -291,60 +292,9 @@ class FunctionTools:
             )
     
     def call_tool(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None):
-        """Synchronously call the specified tool function
-        
-        For async tools, it will run in the event loop.
-        
-        Args:
-            tool_name: Tool name
-            arguments: Tool arguments
-            
-        Returns:
-            Tool call result
-            
-        Raises:
-            ValueError: When tool doesn't exist
-            Exception: Exceptions during tool execution
-        """
-        if tool_name not in self.tools:
-            raise ValueError(f"Tool '{tool_name}' not found in server '{self.name}'")
-        
-        tool_info = self.tools[tool_name]
-        func = tool_info["function"]
-        is_async = tool_info["is_async"]
-        arguments = arguments or {}
-        
-        # Filter parameters, only keep parameters defined in the function
-        filtered_args = self._filter_arguments(func, arguments)
-        
-        try:
-            # Call based on function type
-            if is_async:
-                import asyncio
-                try:
-                    loop = asyncio.get_running_loop()
-                except RuntimeError:
-                    loop = None
+        """Synchronously call the specified tool function."""
+        return sync_exec(self.call_tool_async, tool_name, arguments)
 
-                if loop and loop.is_running():
-                    # If in a running event loop, schedule the coroutine
-                    future = asyncio.run_coroutine_threadsafe(func(**filtered_args), loop)
-                    result = future.result(timeout=60)
-                else:
-                    # If not in a running event loop, run it directly
-                    result = asyncio.run(func(**filtered_args))
-            else:
-                # Sync call
-                result = func(**filtered_args)
-                
-            return self._format_result(result)
-        except Exception as e:
-            logger.error(f"Error calling tool '{tool_name}': {str(e)}")
-            logger.debug(traceback.format_exc())
-            # Return error message
-            return CallToolResult(
-                content=[TextContent(type="text", text=f"Error: {str(e)}")]
-            )
     
     def _filter_arguments(self, func, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Filter arguments, only keep parameters defined in the function
@@ -430,67 +380,3 @@ class FunctionTools:
                 content.append(TextContent(type="text", text=str(result)))
         
         return CallToolResult(content=content)
-
-
-class FunctionToolsAdapter:
-    """Adapter base class for adapting FunctionTools to MCPServer interface
-    
-    This class provides basic adaptation functionality, but needs to be inherited and extended in specific implementations.
-    """
-    
-    def __init__(self, name: str):
-        """Initialize adapter
-        
-        Args:
-            name: Function tools server name
-        """
-        self._function_tools = get_function_tools(name)
-        if not self._function_tools:
-            raise ValueError(f"FunctionTools '{name}' not found")
-        self._name = name
-    
-    @property
-    def name(self) -> str:
-        """Server name"""
-        return self._name
-    
-    async def list_tools(self) -> List[MCPTool]:
-        """List all tools and their descriptions"""
-        return self._function_tools.list_tools()
-    
-    async def call_tool(self, tool_name: str, arguments: Optional[Dict[str, Any]] = None):
-        """Asynchronously call the specified tool function"""
-        return await self._function_tools.call_tool_async(tool_name, arguments)
-    
-    def to_action_result(self, result) -> ActionResult:
-        """Convert call result to ActionResult
-        
-        This method is used to convert MCP call results to AWorld framework's ActionResult objects.
-        
-        Args:
-            result: MCP call result
-            
-        Returns:
-            ActionResult object
-        """
-        action_result = ActionResult(
-            content="",
-            keep=True
-        )
-        
-        if result and result.content:
-            if len(result.content) > 0:
-                if isinstance(result.content[0], TextContent):
-                    action_result = ActionResult(
-                        content=result.content[0].text,
-                        keep=True,
-                        metadata=getattr(result.content[0], "metadata", {})
-                    )
-                elif isinstance(result.content[0], ImageContent):
-                    action_result = ActionResult(
-                        content=f"data:image/jpeg;base64,{result.content[0].data}",
-                        keep=True,
-                        metadata=getattr(result.content[0], "metadata", {})
-                    )
-        
-        return action_result 

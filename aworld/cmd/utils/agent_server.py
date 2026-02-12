@@ -11,12 +11,11 @@ from aworld.cmd.data_model import (
     ChatCompletionMessage,
     ChatCompletionRequest,
 )
-from aworld.session.base_session_service import BaseSessionService
-from aworld.session.simple_session_service import SimpleSessionService
 from . import agent_loader
 from aworld.trace.config import ObservabilityConfig
 from aworld.trace.opentelemetry.memory_storage import InMemoryWithPersistStorage
-
+from ..session.base_session_service import BaseSessionService
+from ..session.simple_session_service import SimpleSessionService
 
 # bugfix for tracer exception
 trace.configure(ObservabilityConfig(trace_storage=(InMemoryWithPersistStorage())))

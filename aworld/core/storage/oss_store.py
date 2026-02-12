@@ -1,13 +1,19 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import List
+import json
+from typing import List, Tuple
 
-from aworld.config import StorageConfig
-from aworld.core.storage.base import Storage, DataItem, DataBlock
+from oss2.models import ListObjectsResult
+
+from aworld.core.storage.base import DataItem, DataBlock, Storage
 from aworld.core.storage.condition import Condition, ConditionFilter
+from aworld.core.storage.data import Data
+from aworld.core.storage.file_store import FileConfig
+from aworld.logs.util import logger
+from aworld.utils.serialized_util import to_serializable
 
 
-class OssConfig(StorageConfig):
+class OssConfig(FileConfig):
     name: str = "oss"
     access_id: str
     access_key: str
@@ -33,16 +39,26 @@ class OssStorage(Storage):
         return oss2.Bucket(self.auth, self.conf.endpoint, bucket) if bucket else self.bucket
 
     async def create_data(self, data: DataItem, block_id: str = None, overwrite: bool = True) -> bool:
-        block_id = data.block_id if data.block_id else block_id
-        block_id = str(block_id)
-        self._get_bucket().put_object(f"{block_id}_{data.id}", data)
+        key, content = await self._encode_data(data, block_id)
+        self._get_bucket().put_object(key, content)
+        logger.info(f"Data key={key}")
         return True
 
     async def update_data(self, data: DataItem, block_id: str = None, exists: bool = False) -> bool:
+        return await self.create_data(data, block_id)
+
+    async def _encode_data(self, data: DataItem, block_id: str = None) -> Tuple[str, bytes]:
         block_id = data.block_id if data.block_id else block_id
         block_id = str(block_id)
-        self._get_bucket().put_object(f"{block_id}_{data.id}", data)
-        return True
+        data_id = data.id
+        if self.conf.record_value_only and isinstance(data, Data):
+            data = data.value
+
+        if isinstance(data, str):
+            content = data.encode('utf-8')
+        else:
+            content = json.dumps(to_serializable(data), ensure_ascii=False).encode('utf-8')
+        return f"{block_id}/{data_id}", content
 
     async def delete_data(self,
                           data_id: str = None,
@@ -50,12 +66,38 @@ class OssStorage(Storage):
                           block_id: str = None,
                           exists: bool = False) -> bool:
         block_id = str(block_id)
-        self._get_bucket().delete_object(f"{block_id}_{data_id}")
+        self._get_bucket().delete_object(f"{block_id}/{data_id}")
         return True
 
     async def get_data_items(self, block_id: str = None) -> List[DataItem]:
         block_id = str(block_id)
-        return self._get_bucket().list_objects(block_id)
+        res: ListObjectsResult = self._get_bucket().list_objects(block_id)
+        obj_list = res.object_list
+        results = []
+        for obj in obj_list:
+            data = await self.get_data_item(block_id, obj.key)
+            if data:
+                results.append(data)
+
+        return results
+
+    async def get_data_item(self, block_id: str = None, data_id: str = None) -> DataItem:
+        if data_id:
+            if self._get_bucket().object_exists(f"{block_id}/{data_id}"):
+                res = self._get_bucket().get_object(f"{block_id}/{data_id}")
+                data = res.read()
+                return Data(value=data)
+            else:
+                return None
+        else:
+            res = await self.get_data_items(block_id)
+            return res[0] if res else None
+
+    async def list_items(self, block_id: str = None) -> List[str]:
+        block_id = str(block_id)
+        res: ListObjectsResult = self._get_bucket().list_objects(block_id)
+        obj_list = res.object_list
+        return [obj.key for obj in obj_list]
 
     async def select_data(self, condition: Condition = None) -> List[DataItem]:
         res = self._get_bucket().list_objects()
@@ -74,7 +116,9 @@ class OssStorage(Storage):
 
     async def delete_block(self, block_id: str, exists: bool = False) -> bool:
         # unsupported
-        return False
+        block_id = str(block_id)
+        self._get_bucket().delete_object(f"{block_id}")
+        return True
 
     async def get_block(self, block_id: str) -> DataBlock:
         # unsupported

@@ -16,14 +16,15 @@ from aworld.logs.util import logger
 
 class FileConfig(StorageConfig):
     name: str = "file"
-    root_dir: str = "."
+    work_dir: str = "."
+    record_value_only: bool = False
 
 
 class FileStorage(Storage[DataItem]):
     """Simple local file-based storage.
     TODO: add index
 
-    Layout: root_dir/ -> block_id/ -> meta.json
+    Layout: work_dir/ -> block_id/ -> meta.json
                                    -> data/ -> data_id.json
 
     Note: Does not support data sharding, structuring, etc.
@@ -33,7 +34,7 @@ class FileStorage(Storage[DataItem]):
         if not conf:
             conf = FileConfig()
         super().__init__(conf)
-        self._blocks_dir = Path(conf.root_dir).resolve()
+        self._blocks_dir = Path(conf.work_dir).resolve()
         self._blocks_dir.mkdir(parents=True, exist_ok=True)
 
     def backend(self):
@@ -63,7 +64,7 @@ class FileStorage(Storage[DataItem]):
         return self._block_dir(block_id) / "meta.json"
 
     def _data_dir(self, block_id: str) -> Path:
-        return self._block_dir(block_id) / "data"
+        return self._block_dir(block_id)
 
     async def create_block(self, block_id: str, overwrite: bool = True) -> bool:
         block_id = str(block_id)
@@ -123,7 +124,7 @@ class FileStorage(Storage[DataItem]):
         return DataBlock(id=block_id)
 
     def _data_path(self, block_id: str, data_id: str) -> Path:
-        return self._data_dir(block_id) / f"{data_id}.json"
+        return self._data_dir(block_id) / f"{data_id}"
 
     async def create_data(self, data: DataItem, block_id: str = None, overwrite: bool = True) -> bool:
         block_id = str(data.block_id if hasattr(data, "block_id") and data.block_id else block_id)
@@ -135,8 +136,9 @@ class FileStorage(Storage[DataItem]):
             return False
 
         try:
+            value = data.value if self.conf.record_value_only else data.model_dump()
             async with aiofiles.open(path, "w", encoding="utf-8") as f:
-                await f.write(json.dumps(data.model_dump(), ensure_ascii=False))
+                await f.write(json.dumps(value, ensure_ascii=False))
             logger.info(f"create_data: {data_id} store to the {path}")
             return True
         except Exception as e:
@@ -179,7 +181,7 @@ class FileStorage(Storage[DataItem]):
             logger.warning(f"delete_data: failed for block={block_id}, id={data_id}, err={e}")
             return False
 
-    def _load_all_data_in_block(self, block_id: str) -> List[DataItem]:
+    def _load_all_data_in_block(self, block_id: str, data_id: str = None) -> List[DataItem]:
         items: List[DataItem] = []
         data_dir = self._data_dir(block_id)
         if not data_dir.exists():
@@ -192,9 +194,12 @@ class FileStorage(Storage[DataItem]):
                 item = Data.from_dict(data)
                 # BaseModel
                 if not item.value:
-                    item = data
+                    item = Data(value=data, id=item.get("id", None))
                 elif not item.block_id:
                     item.block_id = block_id
+
+                if data_id and item.id != data_id:
+                    continue
                 items.append(item)
             except Exception as e:
                 logger.warning(f"failed to parse {fp}: {e}")
@@ -211,6 +216,11 @@ class FileStorage(Storage[DataItem]):
     async def get_data_items(self, block_id: str = None) -> List[DataItem]:
         block_id = str(block_id)
         return self._load_all_data_in_block(block_id)
+
+    async def get_data_item(self, block_id: str = None, data_id: str = None) -> DataItem:
+        block_id = str(block_id)
+        res = self._load_all_data_in_block(block_id, data_id=data_id)
+        return res[0] if res else None
 
     async def size(self, condition: Condition = None) -> int:
         return len(await self.select_data(condition))

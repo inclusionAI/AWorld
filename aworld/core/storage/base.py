@@ -57,7 +57,7 @@ class Storage(Generic[DataItem]):
             overwrite: Can the same data be overwritten, True is yes.
         """
 
-    async def add_data(self, data: Any, block_id: str = None, overwrite: bool = True) -> bool:
+    async def add_data(self, data: Any, data_id: str = None, block_id: str = None, overwrite: bool = True) -> bool:
         """Adding arbitrary serializable data to the storage, corresponding to `get_data`.
 
         Args:
@@ -66,6 +66,8 @@ class Storage(Generic[DataItem]):
             overwrite: Can the same data be overwritten, True is yes.
         """
         data_in_store = Data(value=data, block_id=block_id)
+        if data_id:
+            data_in_store.id = data_id
         return await self.create_data(data=data_in_store, block_id=block_id, overwrite=overwrite)
 
     async def create_datas(self, data: List[DataItem], block_id: str = None, overwrite: bool = True) -> bool:
@@ -152,13 +154,22 @@ class Storage(Generic[DataItem]):
             List of data.
         """
 
-    async def get_data(self, block_id: str = None) -> List[Any]:
+    @abstractmethod
+    async def get_data_item(self, block_id: str = None, data_id: str = None) -> DataItem:
+        res = await self.get_data_items(block_id)
+        return res[0] if res else None
+
+    async def get_data(self, block_id: str = None, data_id: str = None) -> List[Any]:
         """Get raw data from the storage, corresponding to `add_data`."""
-        results = await self.get_data_items(block_id=block_id)
+        if data_id:
+            res = await self.get_data_item(block_id=block_id, data_id=data_id)
+            results = [res] if res else []
+        else:
+            results = await self.get_data_items(block_id=block_id)
         if not results:
             return []
 
-        if hasattr(results[0], "value"):
+        if hasattr(results[0], "value") and results[0].value:
             return [result.value for result in results]
         else:
             return results

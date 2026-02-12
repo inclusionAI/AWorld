@@ -34,6 +34,10 @@ class Data(BaseModel):
     def model_dump(self):
         return self.to_dict()
 
+    @staticmethod
+    def from_dict(data: dict) -> 'Data':
+        return Data(**data)
+
     def to_dict(self):
         return {
             "block_id": self.block_id,
