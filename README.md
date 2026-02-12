@@ -144,7 +144,7 @@ You are the expert. Open the generated Python file and fine-tune the prompts, lo
 
 **Exciting: AI-Assisted Evolution**
 <p align="justify">
-This is where AWorld truly shines! Prompt AWorld with your expertise and desired changes, such as "help me optimize the html agent so that it can browse web, download and insert image into the html". It then tasks our built-in **Optimizer Agent**—a specialized code agent—to act as your AI pair programmer. Because all agents you create extend from a unified AWorld base class, the Optimizer Agent has a global understanding of the agent's structure. This allows it to reason about and precisely modify the agent's code to implement your logic, evolving its capabilities far beyond simple prompt tuning.
+This is where AWorld truly shines! Prompt AWorld with your expertise and desired changes, such as "help me optimize the html agent so that it can browse web, download and insert image into the html". It then tasks our built-in Optimizer Agent—a specialized code agent—to act as your AI pair programmer. Because all agents you create extend from a unified AWorld base class, the Optimizer Agent has a global understanding of the agent's structure. This allows it to reason about and precisely modify the agent's code to implement your logic, evolving its capabilities far beyond simple prompt tuning.
 </p>
 
 
