@@ -440,11 +440,27 @@ class AgentManager(Factory):
         self._agent_conf[name] = conf
         return res
 
-    def unregister(self, name: str):
+    def unregister(self, name: str, runtime_only: bool = False):
+        """Unregister agent metadata or only runtime instances.
+
+        Args:
+            name: Agent id/name.
+            runtime_only: If True, only clear runtime instance/config cache and
+                keep class/description registry.
+        """
+        if runtime_only:
+            self._agent_conf.pop(name, None)
+            self._agent_instance.pop(name, None)
+            return
+
         super().unregister(name)
-        if name in self._agent_instance:
-            del self._agent_conf[name]
-            del self._agent_instance[name]
+        self._agent_conf.pop(name, None)
+        self._agent_instance.pop(name, None)
+
+    def cleanup(self, runtime_only: bool = False):
+        """Clear all runtime agent instances/configs."""
+        for name in list(self._agent_instance.keys()):
+            self.unregister(name, runtime_only=runtime_only)
 
 
 AgentFactory = AgentManager("agent_type")

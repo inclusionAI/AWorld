@@ -402,6 +402,16 @@ class TaskEventRunner(TaskRunner):
         # Clear the set as all tasks should be done now
         self.background_tasks.clear()
 
+    async def cleanup(self):
+        """Release runtime resources after task completion."""
+        task_id = self.task.id if self.task else None
+        try:
+            if self.task and not self.task.is_sub_task and self.swarm:
+                self.swarm.release()
+        except Exception as e:
+            # Cleanup must never block task response delivery.
+            logger.warning(f"Task {task_id} cleanup failed but ignored: {e}")
+
     async def stop(self):
         self._stopped.set()
 
