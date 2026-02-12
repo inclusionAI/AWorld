@@ -154,7 +154,7 @@ class LogicLayer:
         return "\n".join(md_lines)
 
     def _format_structure(self, structure: Dict, indent: int = 0) -> str:
-        """格式化目录结构"""
+        """Format directory structure"""
         lines = []
         prefix = "  " * indent
         for key, value in structure.items():
@@ -168,31 +168,31 @@ class LogicLayer:
 
 @dataclass
 class SkeletonLayer:
-    """L2 - 接口骨架层数据结构"""
-    file_skeletons: Dict[Path, str]  # 文件骨架代码
-    symbol_signatures: Dict[str, str]  # 符号签名映射
-    line_mappings: Dict[Path, Dict[int, int]]  # 行号映射（骨架到原始）
+    """L2 - Interface skeleton layer data structure"""
+    file_skeletons: Dict[Path, str]  # File skeleton code
+    symbol_signatures: Dict[str, str]  # Symbol signature mapping
+    line_mappings: Dict[Path, Dict[int, int]]  # Line number mapping (skeleton to original)
 
     def get_skeleton(self, file_path: Path) -> Optional[str]:
-        """获取文件骨架"""
+        """Get file skeleton"""
         return self.file_skeletons.get(file_path)
 
     def get_signature(self, symbol_name: str) -> Optional[str]:
-        """获取符号签名"""
+        """Get symbol signature"""
         return self.symbol_signatures.get(symbol_name)
 
 
 @dataclass
 class ImplementationLayer:
-    """L3 - 源码实现层数据结构"""
-    code_nodes: Dict[Path, 'CodeNode']  # 完整的代码节点，包含符号和内容
+    """L3 - Source code implementation layer data structure"""
+    code_nodes: Dict[Path, 'CodeNode']  # Complete code nodes, including symbols and content
 
     def get_code_node(self, file_path: Path) -> Optional['CodeNode']:
-        """获取代码节点"""
+        """Get code node"""
         return self.code_nodes.get(file_path)
 
     def get_symbol_by_name(self, symbol_name: str) -> Optional['Symbol']:
-        """根据名称获取符号"""
+        """Get symbol by name"""
         for node in self.code_nodes.values():
             for symbol in node.symbols:
                 if symbol.name == symbol_name or symbol.full_name == symbol_name:
@@ -200,14 +200,14 @@ class ImplementationLayer:
         return None
 
     def get_symbols_in_file(self, file_path: Path) -> List['Symbol']:
-        """获取文件中的所有符号"""
+        """Get all symbols in file"""
         node = self.code_nodes.get(file_path)
         return node.symbols if node else []
 
 
 @dataclass
 class RepositoryMap:
-    """完整的仓库映射，包含三层结构"""
+    """Complete repository mapping, including three-layer structure"""
     logic_layer: LogicLayer
     skeleton_layer: SkeletonLayer
     implementation_layer: ImplementationLayer
@@ -220,24 +220,24 @@ class RepositoryMap:
                           user_mentions: List[str] = None,
                           trajectory_filter: bool = False,
                           top_k: int = 10) -> List[Path]:
-        """获取相关文件列表"""
+        """Get relevant file list"""
         scores = self.pagerank_scores.copy()
 
-        # 如果有用户提及的内容，增加权重
+        # If user mentions content, increase weight
         if user_mentions:
             for file_path, node in self.code_nodes.items():
                 for symbol in node.symbols:
                     if any(mention.lower() in symbol.name.lower() for mention in user_mentions):
                         scores[file_path] = scores.get(file_path, 0.0) + 10.0
 
-        # 如果启用轨迹过滤，只返回执行过的文件
+        # If trajectory filter is enabled, only return executed files
         if trajectory_filter and self.trajectory_mapping:
             executed_files = set()
             for locations in self.trajectory_mapping.values():
                 executed_files.update(loc[0] for loc in locations)
             scores = {f: s for f, s in scores.items() if f in executed_files}
 
-        # 根据分数排序并返回top-k
+        # Sort by score and return top-k
         sorted_files = sorted(scores.items(), key=lambda x: x[1], reverse=True)
         return [file_path for file_path, _ in sorted_files[:top_k]]
 
@@ -245,20 +245,20 @@ class RepositoryMap:
                         max_tokens: int = 8000,
                         user_mentions: List[str] = None,
                         trajectory_filter: bool = False) -> str:
-        """生成给LLM的上下文"""
+        """Generate context for LLM"""
         context_parts = []
 
-        # L1 - 全景逻辑层
-        context_parts.append("# 项目概览")
+        # L1 - Panoramic logic layer
+        context_parts.append("# Project Overview")
         context_parts.append(self.logic_layer.to_markdown())
         context_parts.append("")
 
-        # 获取相关文件
+        # Get relevant files
         relevant_files = self.get_relevant_files(user_mentions, trajectory_filter)
 
-        # L2 - 接口骨架层
-        context_parts.append("# 代码结构")
-        for file_path in relevant_files[:5]:  # 限制文件数量
+        # L2 - Interface skeleton layer
+        context_parts.append("# Code Structure")
+        for file_path in relevant_files[:5]:  # Limit file count
             skeleton = self.skeleton_layer.get_skeleton(file_path)
             if skeleton:
                 context_parts.append(f"## {file_path}")
@@ -267,34 +267,34 @@ class RepositoryMap:
                 context_parts.append("```")
                 context_parts.append("")
 
-        # TODO: 实现token计数和截断逻辑
+        # TODO: Implement token counting and truncation logic
         return "\n".join(context_parts)
 
     def to_dict(self) -> Dict[str, Any]:
-        """将RepositoryMap序列化为字典（JSON可序列化）"""
+        """Serialize RepositoryMap to dictionary (JSON serializable)"""
         def serialize_value(value: Any) -> Any:
-            """递归序列化值"""
+            """Recursively serialize value"""
             if isinstance(value, Path):
                 return str(value)
             elif isinstance(value, Enum):
                 return value.value
             elif isinstance(value, (Symbol, Reference, CodeNode, LogicLayer, SkeletonLayer, ImplementationLayer)):
-                # 处理dataclass对象
+                # Handle dataclass objects
                 result = {}
                 for field_name, field_value in value.__dict__.items():
                     result[field_name] = serialize_value(field_value)
-                return result
+                    return result
             elif isinstance(value, dict):
-                # 处理字典，需要将Path键转换为字符串，确保所有键都是可序列化的
+                # Handle dictionary, convert Path keys to strings, ensure all keys are serializable
                 result = {}
                 for k, v in value.items():
-                    # 确保键是字符串类型（JSON要求）
+                    # Ensure keys are string type (JSON requirement)
                     if isinstance(k, Path):
                         key = str(k)
                     elif isinstance(k, (int, float, bool)) or k is None:
-                        key = k  # JSON支持这些类型作为键
+                        key = k  # JSON supports these types as keys
                     else:
-                        key = str(k)  # 其他类型也转换为字符串
+                        key = str(k)  # Convert other types to strings as well
                     result[key] = serialize_value(v)
                 return result
             elif isinstance(value, (list, tuple)):
@@ -316,11 +316,11 @@ class RepositoryMap:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'RepositoryMap':
-        """从字典反序列化为RepositoryMap对象"""
+        """Deserialize from dictionary to RepositoryMap object"""
         def deserialize_value(value: Any, target_type: type = None) -> Any:
-            """递归反序列化值"""
+            """Recursively deserialize value"""
             if isinstance(value, dict):
-                # 检查是否是已知的dataclass类型
+                # Check if it's a known dataclass type
                 if 'name' in value and 'symbol_type' in value and 'file_path' in value:
                     # Symbol
                     return Symbol(
@@ -385,20 +385,20 @@ class RepositoryMap:
                         line_mappings={Path(k): v for k, v in value.get('line_mappings', {}).items()}
                     )
                 elif 'code_nodes' in value and len(value) == 1:
-                    # ImplementationLayer (新结构)
+                    # ImplementationLayer (new structure)
                     return ImplementationLayer(
                         code_nodes={Path(k): deserialize_value(v, CodeNode) for k, v in value.get('code_nodes', {}).items()}
                     )
                 elif 'file_contents' in value:
-                    # ImplementationLayer (旧结构，向后兼容)
+                    # ImplementationLayer (old structure, backward compatible)
                     return ImplementationLayer(
-                        code_nodes={}  # 旧结构转换为新结构，但没有code_nodes数据
+                        code_nodes={}  # Old structure converted to new structure, but no code_nodes data
                     )
                 else:
-                    # 普通字典，尝试将字符串键转换回Path（如果看起来像路径）
+                    # Regular dictionary, try to convert string keys back to Path (if it looks like a path)
                     result = {}
                     for k, v in value.items():
-                        # 如果键是字符串且看起来像路径，尝试转换为Path
+                        # If key is string and looks like a path, try to convert to Path
                         if isinstance(k, str) and ('/' in k or '\\' in k or k.endswith('.py')):
                             try:
                                 result[Path(k)] = deserialize_value(v)
@@ -410,7 +410,7 @@ class RepositoryMap:
             elif isinstance(value, list):
                 return [deserialize_value(item) for item in value]
             elif isinstance(value, str):
-                # 检查是否是路径字符串
+                # Check if it's a path string
                 if '/' in value or '\\' in value or value.endswith('.py'):
                     try:
                         return Path(value)
