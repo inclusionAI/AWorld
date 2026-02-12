@@ -288,7 +288,7 @@ class CAstAnalysisTool(AsyncTool):
                     result = {
                         "root_path": str(root_path),
                         "ignore_patterns": ignore_patterns,
-                        "repository_map": repo_map_without_impl.to_dict(),  # 使用to_dict()转换为JSON可序列化对象
+                        "repository_map": repo_map_without_impl.to_dict(),  # Use to_dict() to convert to JSON serializable object
                         "analysis_stats": analysis_stats,
                         "analysis_success": True,
                         "analysis_time": datetime.now().isoformat()
