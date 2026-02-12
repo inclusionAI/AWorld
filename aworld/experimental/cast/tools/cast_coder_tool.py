@@ -103,7 +103,7 @@ class CAstCoderAction(ToolAction):
                 name="operations_json",
                 type="string",
                 required=True,
-                desc="JSON格式的操作指令，支持insert、replace、delete三种操作类型"
+                desc="JSON format operation instructions, supporting insert, replace, and delete operation types"
             ),
             "source_dir": ParamInfo(
                 name="source_dir",
@@ -258,7 +258,7 @@ class CAstCoderTool(AsyncTool):
                     action_result.success = True
                     action_results.append(action_result)
                 elif action_name == CAstCoderAction.DEPLOY_PATCHES.value.name:
-                    # 部署patch
+                    # Deploy patch
                     patch_content = action.params.get("patch_content")
                     source_dir = Path(action.params.get("source_dir"))
                     version = action.params.get("version", "v0")
@@ -270,7 +270,7 @@ class CAstCoderTool(AsyncTool):
                     if not patch_content:
                         raise ValueError("patch_content is required")
 
-                    # 使用ACast原地更新并部署patch，启用严格验证
+                    # Use ACast to update in-place and deploy patch with strict validation enabled
                     try:
                         target_dir = self.acast.deploy_dmp(
                             source_dir=source_dir,
@@ -295,15 +295,15 @@ class CAstCoderTool(AsyncTool):
                         action_result.success = True
 
                     except Exception as validation_error:
-                        # 如果是验证错误，提供详细的错误信息
-                        if "上下文验证失败" in str(validation_error):
+                        # If it's a validation error, provide detailed error information
+                        if "Context validation failed" in str(validation_error):
                             error_result = {
                                 "error": "Context validation failed",
                                 "error_message": str(validation_error),
                                 "suggestions": [
-                                    "使用CAST_ANALYSIS.layered_recall重新获取最新的文件内容",
-                                    "基于验证后的实际文件内容重新生成patch",
-                                    "确保diff中的上下文行与实际文件完全匹配"
+                                    "Use CAST_ANALYSIS.layered_recall to re-fetch the latest file content",
+                                    "Regenerate patch based on the validated actual file content",
+                                    "Ensure context lines in diff exactly match the actual file"
                                 ],
                                 "validation_mode": "strict" if strict_validation else "lenient",
                                 "max_allowed_mismatches": max_context_mismatches
@@ -312,12 +312,12 @@ class CAstCoderTool(AsyncTool):
                             action_result.success = False
                             action_result.error = str(validation_error)
                         else:
-                            # 其他类型的错误
+                            # Other types of errors
                             raise validation_error
 
                     action_results.append(action_result)
                 elif action_name == CAstCoderAction.DEPLOY_OPS.value.name:
-                    # 部署JSON操作指令
+                    # Deploy JSON operation instructions
                     operations_json = action.params.get("operations_json")
                     source_dir = Path(action.params.get("source_dir"))
                     version = action.params.get("version", "v0")
@@ -331,7 +331,7 @@ class CAstCoderTool(AsyncTool):
                     if not source_dir.exists():
                         raise ValueError(f"Source directory does not exist: {source_dir}")
 
-                    # 使用ACast的deploy_operations方法直接处理JSON操作
+                    # Use ACast's deploy_operations method to directly process JSON operations
                     try:
                         target_dir = self.acast.deploy_ops(
                             operations_json=operations_json,
@@ -350,20 +350,20 @@ class CAstCoderTool(AsyncTool):
                         }
 
                         if show_details:
-                            logger.info(f"JSON操作已成功部署到: {target_dir}")
+                            logger.info(f"JSON operations successfully deployed to: {target_dir}")
 
                         action_result.content = json.dumps(result, ensure_ascii=False, default=str)
                         action_result.success = True
 
                     except Exception as deployment_error:
-                        # 处理部署错误
+                        # Handle deployment errors
                         error_result = {
                             "error": "Operations deployment failed",
                             "error_message": str(deployment_error),
                             "suggestions": [
-                                "检查JSON格式是否正确",
-                                "确认文件路径和行号是否有效",
-                                "验证操作指令的完整性"
+                                "Check if the JSON format is correct",
+                                "Confirm file paths and line numbers are valid",
+                                "Verify the completeness of operation instructions"
                             ],
                             "validation_mode": "strict" if strict_validation else "lenient",
                             "max_allowed_mismatches": max_context_mismatches
@@ -374,7 +374,7 @@ class CAstCoderTool(AsyncTool):
 
                     action_results.append(action_result)
                 elif action_name == CAstCoderAction.SEARCH_REPLACE.value.name:
-                    # 搜索替换操作
+                    # Search and replace operation
                     operation_json = action.params.get("operation_json")
                     source_dir = Path(action.params.get("source_dir"))
                     show_details = action.params.get("show_details", True)
