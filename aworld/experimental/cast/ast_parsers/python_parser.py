@@ -252,7 +252,7 @@ class PythonParser(BaseParser):
                 # Extract complete code content of the class
                 class_content = self._extract_code_content(class_def_node, content)
 
-                # 创建类符号
+                # Create class symbol
                 symbol = Symbol(
                     name=class_name,
                     symbol_type=SymbolType.CLASS,

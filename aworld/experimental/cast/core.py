@@ -70,10 +70,10 @@ class ACast:
             try:
                 return parser_class()
             except Exception as e:
-                logger.error(f"创建{language}解析器失败: {e}")
+                logger.error(f"Failed to create {language} parser: {e}")
                 return None
 
-        logger.warning(f"不支持的语言: {language}")
+        logger.warning(f"Unsupported language: {language}")
         return None
 
     def get_supported_languages(self) -> List[str]:

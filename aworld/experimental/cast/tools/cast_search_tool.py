@@ -283,9 +283,9 @@ class CastSearchTool(AsyncTool):
                             "error": "Grep search failed",
                             "error_message": str(e),
                             "suggestions": [
-                                "检查正则表达式模式是否正确",
-                                "确认搜索路径是否存在",
-                                "验证参数格式是否正确"
+                                "Check if the regular expression pattern is correct",
+                                "Confirm the search path exists",
+                                "Verify the parameter format is correct"
                             ]
                         }
                         action_result.content = json.dumps(error_result, ensure_ascii=False, default=str)
@@ -339,9 +339,9 @@ class CastSearchTool(AsyncTool):
                             "error": "Glob search failed",
                             "error_message": str(e),
                             "suggestions": [
-                                "检查文件模式是否正确",
-                                "确认搜索路径是否存在",
-                                "验证参数格式是否正确"
+                                "Check if the file pattern is correct",
+                                "Confirm the search path exists",
+                                "Verify the parameter format is correct"
                             ]
                         }
                         action_result.content = json.dumps(error_result, ensure_ascii=False, default=str)
@@ -388,9 +388,9 @@ class CastSearchTool(AsyncTool):
                             "error": "File read failed",
                             "error_message": str(e),
                             "suggestions": [
-                                "检查文件路径是否正确",
-                                "确认文件是否存在",
-                                "验证文件权限是否足够"
+                                "Check if the file path is correct",
+                                "Confirm the file exists",
+                                "Verify file permissions are sufficient"
                             ]
                         }
                         action_result.content = json.dumps(error_result, ensure_ascii=False, default=str)
