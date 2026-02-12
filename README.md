@@ -40,9 +40,7 @@ The AWorld Thesis is that the true scaling of AI is achieved by enabling experts
 
 AWorld with its CLI mode is the platform designed for this. We provide the fundamental recipe for you, the expert, to infuse your knowledge and craft unique insights into fleets of autonomous agents. This is how we move beyond generic promise to specific, robust applications that navigate your world with precision.
 </p>
-<!-- 
 
-![](./readme_assets/aworld_loop.png) -->
 
 > 💡 Visit our [homepage](https://www.aworldagents.com/) for more details, or try our online [environments](https://www.aworldagents.com/environments) and [agents](https://playground.aworldagents.com/). 
 
@@ -75,12 +73,11 @@ aworld-cli
 
 ## Create Your Agent
 <p align="justify">
-Instantly scaffold an agent from a natural language description of your task, such as *"create an agent that can generate HTML report"*. AWorld-CLI handles the boilerplate, so you can focus on the logic.
+Instantly scaffold an agent from a natural language description of your task, such as "create an agent that can generate HTML report". AWorld-CLI handles the boilerplate, so you can focus on the logic.
 
 </p>
 
 
-<!-- ![](./readme_assets/aworld_cli_text2agent.png) -->
 ***Let AWorld Agent make an agent for you***
 ![](./readme_assets/aworld_cli_demo_step1.gif)
 
@@ -147,20 +144,12 @@ You are the expert. Open the generated Python file and fine-tune the prompts, lo
 
 **Exciting: AI-Assisted Evolution**
 <p align="justify">
-This is where AWorld truly shines! Prompt AWorld with your expertise and desired changes, such as *"help me optimize the html agent so that it can browse web, download and insert image into the html"*. It then tasks our built-in **Optimizer Agent**—a specialized code agent—to act as your AI pair programmer. Because all agents you create extend from a unified AWorld base class, the Optimizer Agent has a global understanding of the agent's structure. This allows it to reason about and precisely modify the agent's code to implement your logic, evolving its capabilities far beyond simple prompt tuning.
+This is where AWorld truly shines! Prompt AWorld with your expertise and desired changes, such as "help me optimize the html agent so that it can browse web, download and insert image into the html". It then tasks our built-in **Optimizer Agent**—a specialized code agent—to act as your AI pair programmer. Because all agents you create extend from a unified AWorld base class, the Optimizer Agent has a global understanding of the agent's structure. This allows it to reason about and precisely modify the agent's code to implement your logic, evolving its capabilities far beyond simple prompt tuning.
 </p>
-
-<!-- 
-***Schematic***
-![](./readme_assets/mas_meta_learning_v2.png)  -->
 
 
 ***AI evolve your agent to make it more professional***
 ![](./readme_assets/aworld_cli_demo_step3.gif)
-
-
-<!-- ***Let the optimized agent do the more challenging job***
-![](./readme_assets/aworld_cli_demo_step4.gif) -->
 
 
 **Our Vista: Self-Evolution**
