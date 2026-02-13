@@ -17,7 +17,6 @@ from aworld.logs.util import logger
 class FileConfig(StorageConfig):
     name: str = "file"
     work_dir: str = "."
-    record_value_only: bool = False
 
 
 class FileStorage(Storage[DataItem]):

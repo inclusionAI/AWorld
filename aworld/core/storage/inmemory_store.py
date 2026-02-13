@@ -162,6 +162,13 @@ class InmemoryStorage(Storage[DataItem]):
             self.datas[block_id] = []
         return self.datas.get(block_id, [])
 
+    async def get_data_item(self, block_id: str = None, data_id: str = None) -> DataItem:
+        results = await self.get_data_items(block_id)
+        for res in results:
+            if res.id == data_id:
+                return res
+        return None
+
     async def delete_all(self):
         self.blocks.clear()
         self.datas.clear()

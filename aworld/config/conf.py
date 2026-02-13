@@ -359,6 +359,7 @@ class RunConfig(BaseConfig):
 
 class StorageConfig(BaseConfig):
     name: str = "inmemory"
+    record_value_only: bool = False
 
 
 class DataLoaderConfig(BaseConfig):

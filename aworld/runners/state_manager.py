@@ -7,11 +7,14 @@ from aworld.core.event.base import Message
 from enum import Enum
 from abc import ABC, abstractmethod, ABCMeta
 from aworld.core.agent.base import is_agent_by_name
+from aworld.core.storage.base import Storage
+from aworld.core.storage.inmemory_store import InmemoryStorage, InmemoryConfig
 from aworld.core.tool.tool_desc import is_tool_by_name
 from aworld.core.singleton import InheritanceSingleton, SingletonMeta
 from aworld.core.event.base import Constants
 from aworld.logs.util import logger
 from aworld.events.util import send_message
+from aworld.utils.common import sync_exec
 from aworld.utils.serialized_util import to_serializable
 
 
@@ -95,12 +98,10 @@ class RunNode(BaseModel):
 
 
 class SubGroup(BaseModel):
-    '''
-    SubGroup represents an execution chain pointing to the root node 
-    '''
+    """SubGroup represents an execution chain pointing to the root node."""
     root_node_id: Optional[str] = None
     session_id: Optional[str] = None
-    group_id: Optional[str] = None
+    id: Optional[str] = None
     create_time: Optional[float] = None
     execute_time: Optional[float] = None
     end_time: Optional[float] = None
@@ -114,10 +115,8 @@ class SubGroup(BaseModel):
 
 
 class NodeGroup(BaseModel):
-    '''
-    Node group, used to manage sub group
-    '''
-    group_id: str = None
+    """Node group, used to manage subgroup."""
+    id: str = None
     session_id: str = None
     # subtask root node id list
     root_node_ids: List[str] = None
@@ -140,151 +139,92 @@ class NodeGroupDetail(NodeGroup):
     sub_groups: Optional[List[SubGroup]] = None
 
 
-class StateStorage:
-    __metaclass__ = abc.ABCMeta
-
-    @abstractmethod
-    def get(self, node_id: str) -> RunNode:
-        pass
-
-    @abstractmethod
-    def insert(self, node: RunNode):
-        pass
-
-    @abstractmethod
-    def update(self, node: RunNode):
-        pass
-
-    @abstractmethod
-    def query(self, session_id: str) -> List[RunNode]:
-        pass
-
-    @abstractmethod
-    def query_by_task_id(self, task_id: str) -> List[RunNode]:
-        pass
-
-
-class NodeGroupStorage:
-    __metaclass__ = abc.ABCMeta
-
-    @abstractmethod
-    def get(self, group_id: str) -> NodeGroup:
-        pass
-
-    @abstractmethod
-    def insert(self, node_group: NodeGroup):
-        pass
-
-    @abstractmethod
-    def update(self, node_group: NodeGroup):
-        pass
-
-
-class SubGroupStorage:
-    __metaclass__ = abc.ABCMeta
-
-    @abstractmethod
-    def get(self, node_id: str) -> SubGroup:
-        pass
-
-    @abstractmethod
-    def insert(self, sub_group: SubGroup):
-        pass
-
-    @abstractmethod
-    def update(self, sub_group: SubGroup):
-        pass
-
-
 class StateStorageMeta(SingletonMeta, ABCMeta):
     pass
 
 
-class InMemoryStateStorage(StateStorage, InheritanceSingleton, metaclass=StateStorageMeta):
-    '''
-    In memory state storage
-    '''
-
-    def __init__(self, max_session=1000):
-        self._max_session = max_session
-        self._nodes = {}  # {node_id: RunNode}
-        self._ordered_session_ids = []
-        self._session_nodes = {}  # {session_id: [RunNode, RunNode]}
+class StateRepository(InheritanceSingleton, metaclass=StateStorageMeta):
+    def __init__(self, storage: Storage = InmemoryStorage(InmemoryConfig(record_value_only=True))):
+        self.storage = storage
+        # self._max_session = storage.conf.max_capacity
+        # self._nodes = {}  # {node_id: RunNode}
+        # self._ordered_session_ids = []
+        # self._session_nodes = {}  # {session_id: [RunNode, RunNode]}
 
     def get(self, node_id: str) -> RunNode:
-        return self._nodes.get(node_id)
+        res = self.storage.get_data(data_id=node_id)
+        return res[0] if res else None
+        # return self._nodes.get(node_id)
 
     def insert(self, node: RunNode):
-        if node.session_id not in self._ordered_session_ids:
-            self._ordered_session_ids.append(node.session_id)
-            self._session_nodes.update({node.session_id: []})
-        if node.node_id not in self._nodes:
-            self._nodes.update({node.node_id: node})
-            self._session_nodes[node.session_id].append(node)
+        res = sync_exec(self.storage.get_data, data_id=node.node_id)
+        if not res:
+            sync_exec(self.storage.add_data, node, block_id=node.session_id, data_id=node.node_id, overwrite=True)
 
-        if len(self._ordered_session_ids) > self._max_session:
-            oldest_session_id = self._ordered_session_ids.pop(0)
-            session_nodes = self._session_nodes.pop(oldest_session_id)
-            for node in session_nodes:
-                self._nodes.pop(node.node_id)
+        # if node.session_id not in self._ordered_session_ids:
+        #     self._ordered_session_ids.append(node.session_id)
+        #     self._session_nodes.update({node.session_id: []})
+        # if node.node_id not in self._nodes:
+        #     self._nodes.update({node.node_id: node})
+        #     self._session_nodes[node.session_id].append(node)
+        #
+        # if len(self._ordered_session_ids) > self._max_session:
+        #     oldest_session_id = self._ordered_session_ids.pop(0)
+        #     session_nodes = self._session_nodes.pop(oldest_session_id)
+        #     for node in session_nodes:
+        #         self._nodes.pop(node.node_id)
         # logger.info(f"storage nodes: {self._nodes}")
 
     def update(self, node: RunNode):
-        self._nodes[node.node_id] = node
+        sync_exec(self.storage.add_data, node, data_id=node.node_id, overwrite=True)
+        # self._nodes[node.node_id] = node
 
     def query(self, session_id: str, msg_id: str = None) -> List[RunNode]:
-        session_nodes = self._session_nodes.get(session_id, [])
+        session_nodes = sync_exec(self.storage.get_data, block_id=session_id)
+        # session_nodes = self._session_nodes.get(session_id, [])
         if msg_id:
             return [node for node in session_nodes if node.msg_id == msg_id]
         return session_nodes
 
     def query_by_task_id(self, task_id: str) -> List[RunNode]:
-        return [node for node in self._nodes.values() if node.task_id == task_id]
+        nodes = sync_exec(self.storage.get_data)
+        return [node for node in nodes if node.task_id == task_id] if nodes else []
 
 
-class InMemoryNodeGroupStorage(NodeGroupStorage, InheritanceSingleton, metaclass=StateStorageMeta):
-    '''
-    In memory node group storage
-    '''
+class NodeGroupRepository(InheritanceSingleton, metaclass=StateStorageMeta):
+    def __init__(self, storage: Storage = InmemoryStorage(InmemoryConfig(record_value_only=True))):
+        self.storage = storage
 
-    def __init__(self):
-        self.node_groups = {}
-
-    def get(self, group_id: str) -> NodeGroup:
-        return self.node_groups.get(group_id)
+    def get(self, group_id: str):
+        res = sync_exec(self.storage.get_data, data_id=group_id)
+        return res[0] if res else None
 
     def insert(self, node_group: NodeGroup):
-        self.node_groups[node_group.group_id] = node_group
+        sync_exec(self.storage.add_data, node_group, data_id=node_group.id)
 
     def update(self, node_group: NodeGroup):
-        self.node_groups[node_group.group_id] = node_group
+        sync_exec(self.storage.add_data, node_group, data_id=node_group.id, overwrite=True)
 
 
-class InMemorySubGroupStorage(SubGroupStorage, InheritanceSingleton, metaclass=StateStorageMeta):
-    '''
-    In memory sub task storage
-    '''
+class SubGroupRepository(InheritanceSingleton, metaclass=StateStorageMeta):
+    def __init__(self, storage: Storage = InmemoryStorage(InmemoryConfig(record_value_only=True))):
+        self.storage = storage
 
-    def __init__(self):
-        self.sub_groups = {}
-
-    def get(self, node_id: str) -> SubGroup:
-        return self.sub_groups.get(node_id)
+    def get(self, group_id: str):
+        res = sync_exec(self.storage.get_data, data_id=group_id)
+        return res[0] if res else None
 
     def insert(self, sub_group: SubGroup):
-        self.sub_groups[sub_group.root_node_id] = sub_group
+        sync_exec(self.storage.add_data, sub_group, data_id=sub_group.id)
 
     def update(self, sub_group: SubGroup):
-        self.sub_groups[sub_group.root_node_id] = sub_group
+        sync_exec(self.storage.add_data, sub_group, data_id=sub_group.id, overwrite=True)
 
 
 class RuntimeStateManager(InheritanceSingleton):
-    '''
-    Runtime state manager
-    '''
+    """Runtime state manager."""
 
-    def __init__(self,
-                 storage: StateStorage = InMemoryStateStorage.instance()):
+    def __init__(self, storage: StateRepository = StateRepository.instance()):
         self.storage = storage
         self._node_group_manager = None
 
@@ -504,7 +444,8 @@ class RuntimeStateManager(InheritanceSingleton):
         '''
         create node group
         '''
-        return await self.node_group_manager.create_group(group_id, session_id, root_node_ids, parent_group_id, metadata)
+        return await self.node_group_manager.create_group(group_id, session_id, root_node_ids, parent_group_id,
+                                                          metadata)
 
     async def finish_sub_group(self,
                                group_id: str,
@@ -541,7 +482,8 @@ class RuntimeStateManager(InheritanceSingleton):
         if (not busi_typ and busi_id) or (busi_typ and not busi_id):
             raise Exception("busi_typ and busi_id must be both None or not None")
         if busi_typ and busi_id:
-            result_nodes = [node for node in all_task_nodes if node.busi_type == busi_typ.name and node.busi_id == busi_id]
+            result_nodes = [node for node in all_task_nodes if
+                            node.busi_type == busi_typ.name and node.busi_id == busi_id]
         else:
             result_nodes = all_task_nodes
         result_nodes.sort(key=lambda x: x.create_time if x.create_time else 0, reverse=True)
@@ -549,13 +491,9 @@ class RuntimeStateManager(InheritanceSingleton):
 
 
 class NodeGroupManager(InheritanceSingleton):
-    '''
-    Node group manager, used to manage node group
-    '''
-
     def __init__(self,
-                 sub_group_storage: SubGroupStorage = InMemorySubGroupStorage.instance(),
-                 node_group_storage: NodeGroupStorage = InMemoryNodeGroupStorage.instance(),
+                 sub_group_storage: SubGroupRepository = SubGroupRepository.instance(),
+                 node_group_storage: NodeGroupRepository = NodeGroupRepository.instance(),
                  node_state_manager: RuntimeStateManager = None):
         self.sub_group_storage = sub_group_storage
         self.node_group_storage = node_group_storage
@@ -574,7 +512,7 @@ class NodeGroupManager(InheritanceSingleton):
             raise Exception(f"group already exist, group_id: {group_id}")
         node_group = NodeGroup(
             session_id=session_id,
-            group_id=group_id,
+            id=group_id,
             root_node_ids=root_node_ids,
             parent_group_id=parent_group_id,
             metadata=metadata,
@@ -736,7 +674,7 @@ class NodeGroupManager(InheritanceSingleton):
             if subgroup:
                 sub_groups.append(subgroup)
         return NodeGroupDetail(
-            group_id=group.group_id,
+            id=group.id,
             root_node_ids=group.root_node_ids,
             parent_group_id=group.parent_group_id,
             metadata=group.metadata,
