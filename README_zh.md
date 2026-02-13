@@ -44,8 +44,8 @@ AWorld-CLI 就是为此设计的平台。我们提供一套基础「配方」，
 
 <!-- 
 ![](./readme_assets/aworld_loop.png) -->
-
-> 💡 更多信息请访问[官网](https://www.aworldagents.com/)，或体验在线[环境](https://www.aworldagents.com/environments)与[智能体](https://playground.aworldagents.com/)。 
+<!-- 
+> 💡 更多信息请访问[官网](https://www.aworldagents.com/)，或体验在线[环境](https://www.aworldagents.com/environments)与[智能体](https://playground.aworldagents.com/)。  -->
 
 
 <a id="your-journey-with-aworld-cli"></a>
