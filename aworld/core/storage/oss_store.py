@@ -77,6 +77,7 @@ class OssStorage(Storage):
         for obj in obj_list:
             data = await self.get_data_item(block_id, obj.key)
             if data:
+                data.meta_info = {"size": obj.size, "last_modified": obj.last_modified, "etag": obj.etag}
                 results.append(data)
 
         return results
