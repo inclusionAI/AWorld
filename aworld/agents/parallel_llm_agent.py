@@ -7,6 +7,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message, AgentMessage
 from aworld.utils.run_util import exec_agent
+from aworld.logs.util import logger
 
 
 class ParallelizableAgent(Agent):
@@ -32,6 +33,22 @@ class ParallelizableAgent(Agent):
                            info: Dict[str, Any] = {},
                            message: Message = None,
                            **kwargs) -> List[ActionModel]:
+        # Validate context before spawning sub-agents
+        if message is None or message.context is None:
+            logger.error(
+                f"ParallelizableAgent '{self.id()}': Cannot spawn sub-agents because message.context is None. "
+                f"This typically occurs in asynchronous execution where context is lost. "
+                f"Sub-agents: {[agent.id() for agent in self.agents]}"
+            )
+            # Return empty results or error results for all agents
+            return [
+                ActionModel(
+                    agent_name=self.id(),
+                    policy_info=f"Error: Context unavailable for agent execution in ParallelizableAgent '{self.id()}'."
+                                f"Sub-agents: {[agent.id() for agent in self.agents]}"
+                )
+            ]
+
         tasks = []
         if self.agents:
             for agent in self.agents:

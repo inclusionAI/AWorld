@@ -82,6 +82,13 @@ async def exec_agent(question: Any,
         task_conf: Task config.
         run_conf: Task runtime config.
     """
+    # Guard clause: Check if context is None
+    if context is None:
+        raise ValueError(
+            f"Context cannot be None when executing agent '{agent.id()}'. "
+            f"Please ensure a valid context is passed to the exec_agent function."
+        )
+
     task_id = uuid.uuid1().hex
     info_dict = context.agent_info.get(agent.id(), {})
     use_new_agent = info_dict.get("use_new_agent")

@@ -34,6 +34,19 @@ class SerialableAgent(Agent):
                            info: Dict[str, Any] = {},
                            message: Message = None,
                            **kwargs) -> List[ActionModel]:
+        # Validate context before executing serial agents
+        if message is None or message.context is None:
+            logger.error(
+                f"SerialableAgent '{self.id()}': Cannot execute agents because message.context is None. "
+                f"This typically occurs in asynchronous execution where context is lost. "
+                f"Agents: {[agent.id() for agent in self.agents]}"
+            )
+            return [ActionModel(
+                agent_name=self.id(),
+                policy_info=f"Error: Context unavailable for agent execution in SerialableAgent '{self.id()}'."
+                            f"Sub-agents: {[agent.id() for agent in self.agents]}"
+            )]
+
         self.results = None
         results = {}
         action = ActionModel(agent_name=self.id(), policy_info=observation.content)
