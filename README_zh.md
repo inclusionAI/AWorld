@@ -179,11 +179,11 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
 在 AWorld 中，智能体即「模型 + 工具」。但真实场景常需多智能体协作。为此，AWorld 提供灵活构建路径，让你手动搭建复杂多智能体系统。
 </p>
 
-1. 端到端设计自动化工作流 [文档](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
+1. 灵活的多智能构建和编排, 丰富的开箱即用沙盒环境, 详尽的运行时日志记录 [Docs](https://inclusionai.github.io/AWorld/Get%20Start/Core%20Capabilities/)
 
-2. 启动支持 MCP 的智能体 [文档](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
+2. 多任务并行执行, 流式模型返回 [Docs](https://inclusionai.github.io/AWorld/Get%20Start/Parallel%20Tasks/)
 
-3. 编排多智能体系统 (MAS) [文档](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
+3. 人和Agent全双工互动 [Docs](https://inclusionai.github.io/AWorld/Get%20Start/HITL/)
 
 
 想直接体验？在 AWorld [Playground](https://playground.aworldagents.com/) 加载预置 DeepResearch 团队，查看源码并端到端运行。
