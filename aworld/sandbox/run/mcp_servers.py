@@ -70,6 +70,8 @@ class McpServers:
         event loop (SandboxManager) so that connect/cleanup stay in the same task.
         When reuse=False, no manager; run directly on current loop.
         """
+        if self.tool_list:
+            return self.tool_list
         sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
         if not sandbox_id or not self._should_reuse():
             return await self._list_tools_impl(context=context)
@@ -142,17 +144,35 @@ class McpServers:
     async def _connect_and_get_tools_one_server(
         self, server_name: str, context: Context = None
     ) -> List[Dict[str, Any]]:
-        """Run on (sandbox_id, server_name) worker: connect one server and return its tools."""
+        """
+        Run on (sandbox_id, server_name) worker: connect one server and return its tools.
+
+        In reuse mode this MUST prefer an existing cached instance from
+        self.server_instances to avoid dropping an older MCP connection
+        while its async generators / cancel scopes are still live.
+        Otherwise the old instance can be garbage-collected and its
+        async cleanup may run on a different task/loop, triggering
+        errors like:
+        "Attempted to exit cancel scope in a different task than it was entered in".
+        """
         sandbox_id = self.sandbox.sandbox_id if self.sandbox else None
-        server, _ = await get_server_instance(
-            server_name,
-            mcp_config=self.mcp_config,
-            context=context,
-            sandbox_id=sandbox_id,
-        )
-        if server is None:
-            return []
-        self.server_instances[server_name] = server
+
+        # Reuse existing server instance for this server_name if available.
+        # This mirrors the reuse logic in mcp_tool_desc_transform_v2_reuse,
+        # but scoped to a single (sandbox_id, server_name) worker.
+        server = self.server_instances.get(server_name)
+
+        if not server:
+            server, _ = await get_server_instance(
+                server_name,
+                mcp_config=self.mcp_config,
+                context=context,
+                sandbox_id=sandbox_id,
+            )
+            if server is None:
+                return []
+            self.server_instances[server_name] = server
+
         return await mcp_run(
             mcp_servers=[server],
             black_tool_actions=self.black_tool_actions,
