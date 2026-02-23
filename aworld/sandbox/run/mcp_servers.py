@@ -19,7 +19,7 @@ from typing_extensions import Optional, List, Dict, Any
 from typing import TYPE_CHECKING
 
 from aworld.mcp_client.utils import mcp_tool_desc_transform, call_api, get_server_instance, cleanup_server, \
-    call_function_tool, mcp_tool_desc_transform_v2, mcp_tool_desc_transform_v2_reuse, call_mcp_tool_with_exit_stack, call_mcp_tool_with_reuse
+    call_function_tool, mcp_tool_desc_transform_v2, mcp_tool_desc_transform_v2_reuse, call_mcp_tool_with_exit_stack, call_mcp_tool_with_reuse, run as mcp_run
 from mcp.types import TextContent, ImageContent
 
 from aworld.core.common import ActionResult, Observation
@@ -30,8 +30,7 @@ from aworld.sandbox.runtime import SandboxManager
 # from env_channel import EnvChannelMessage, env_channel_sub
 
 if TYPE_CHECKING:
-    from aworld.sandbox.base import Sandbox
-
+    from aworld.sandbox.implementations.sandbox import Sandbox
 
 class McpServers:
 
@@ -75,9 +74,27 @@ class McpServers:
         if not sandbox_id or not self._should_reuse():
             return await self._list_tools_impl(context=context)
 
-        logger.debug(f"[sandbox] list_tools forwarded sandbox_id={sandbox_id} tid={threading.get_ident()}")
         manager = SandboxManager.get_instance()
-        return await manager.run_on_sandbox(sandbox_id, self._list_tools_impl, context=context)
+        # When reuse: one worker per server (sandbox_id:server_name) to avoid cleanup hang / no DELETE when multiple servers share the same endpoint
+        if not self.mcp_servers or not self.mcp_config:
+            return []
+        self.tool_list = []
+        for server_name in self.mcp_servers:
+            tools = await manager.run_on_sandbox(
+                sandbox_id,
+                self._connect_and_get_tools_one_server,
+                server_name,
+                context,
+                server_name=server_name,
+            )
+            if tools:
+                self.tool_list.extend(tools)
+        if self.sandbox and self.tool_list:
+            self._process_and_save_env_content_mapping()
+        logger.info(
+            f"[sandbox list_tools] done connections={len(self.server_instances)} pid={os.getpid()} tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
+        )
+        return self.tool_list
 
     async def _list_tools_impl(self, context: Context = None) -> List[Dict[str, Any]]:
         """
@@ -114,15 +131,33 @@ class McpServers:
             if self.sandbox and self.tool_list:
                 self._process_and_save_env_content_mapping()
 
-            sid = self.sandbox.sandbox_id if self.sandbox else None
             logger.info(
-                f"[sandbox] used list_tools sandbox_id={sid} tid={threading.get_ident()} connections={len(self.server_instances)} at={datetime.now().isoformat(timespec='milliseconds')}"
+                f"[sandbox list_tools] done connections={len(self.server_instances)} pid={os.getpid()} tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
             )
             return self.tool_list
         except Exception as e:
             logger.warning(f"Failed to list tools: {traceback.format_exc()}")
             return []
 
+    async def _connect_and_get_tools_one_server(
+        self, server_name: str, context: Context = None
+    ) -> List[Dict[str, Any]]:
+        """Run on (sandbox_id, server_name) worker: connect one server and return its tools."""
+        sandbox_id = self.sandbox.sandbox_id if self.sandbox else None
+        server, _ = await get_server_instance(
+            server_name,
+            mcp_config=self.mcp_config,
+            context=context,
+            sandbox_id=sandbox_id,
+        )
+        if server is None:
+            return []
+        self.server_instances[server_name] = server
+        return await mcp_run(
+            mcp_servers=[server],
+            black_tool_actions=self.black_tool_actions,
+            tool_actions=self.tool_actions,
+        )
 
     async def check_tool_params(self, context: Context, server_name: str, tool_name: str,
                                 parameter: Dict[str, Any]) -> Any:
@@ -208,8 +243,40 @@ class McpServers:
                 event_message=event_message,
             )
 
-        logger.debug(f"[sandbox] call_tool forwarded sandbox_id={sandbox_id} tid={threading.get_ident()}")
         manager = SandboxManager.get_instance()
+        if action_list:
+            # Group by server, run on each server's worker, then merge results back in original action_list order
+            from collections import defaultdict
+            by_server = defaultdict(list)
+            for i, action in enumerate(action_list):
+                ad = action if isinstance(action, dict) else vars(action)
+                sn = ad.get("tool_name") or ad.get("server_name")
+                if sn:
+                    by_server[sn].append((i, action))
+            results_by_server = {}
+            for server_name, indexed_actions in by_server.items():
+                filtered = [a for _, a in indexed_actions]
+                part = await manager.run_on_sandbox(
+                    sandbox_id,
+                    self._call_tool_impl,
+                    filtered,
+                    task_id,
+                    session_id,
+                    context,
+                    event_message,
+                    server_name=server_name,
+                )
+                if part:
+                    results_by_server[server_name] = part
+            indices = {sn: 0 for sn in results_by_server}
+            merged = [None] * len(action_list)
+            for i, action in enumerate(action_list):
+                ad = action if isinstance(action, dict) else vars(action)
+                sn = ad.get("tool_name") or ad.get("server_name")
+                if sn and sn in results_by_server and indices[sn] < len(results_by_server[sn]):
+                    merged[i] = results_by_server[sn][indices[sn]]
+                    indices[sn] += 1
+            return merged
         return await manager.run_on_sandbox(
             sandbox_id,
             self._call_tool_impl,
@@ -429,9 +496,16 @@ class McpServers:
                 f"Failed to call_tool: {e}.Extra info: session_id = {session_id}, action_list = {action_list}, traceback = {traceback.format_exc()}")
             return None
 
-        sid = self.sandbox.sandbox_id if self.sandbox else None
+        # Log first action's server+action for clarity (action_list from call_tool)
+        first_server = first_action = ""
+        if action_list and isinstance(action_list[0], dict):
+            first_server = action_list[0].get("tool_name") or action_list[0].get("server_name") or ""
+            first_action = action_list[0].get("action_name") or ""
+        elif action_list and hasattr(action_list[0], "tool_name"):
+            first_server = getattr(action_list[0], "tool_name", "") or getattr(action_list[0], "server_name", "")
+            first_action = getattr(action_list[0], "action_name", "")
         logger.info(
-            f"[sandbox] used call_tool sandbox_id={sid} tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
+            f"[sandbox call_tool] server={first_server} action={first_action} pid={os.getpid()} tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
         )
         return results
 
@@ -649,29 +723,55 @@ class McpServers:
         if not sandbox_id:
             return await self._cleanup_impl()
 
-        logger.debug(f"[sandbox] cleanup forwarded sandbox_id={sandbox_id} tid={threading.get_ident()}")
         manager = SandboxManager.get_instance()
-        return await manager.run_on_sandbox(sandbox_id, self._cleanup_impl)
+        return await self._cleanup_impl_with_server_affinity(sandbox_id, manager)
+
+    async def _cleanup_one_server(self, server_name: str) -> None:
+        """Clean up one server; run on (sandbox_id, server_name) worker."""
+        server = self.server_instances.get(server_name)
+        if server is None:
+            return
+        try:
+            await cleanup_server(server)
+        except Exception as e:
+            logger.warning(f"Failed to cleanup server {server_name}: {e}")
+        finally:
+            self.server_instances.pop(server_name, None)
+            self.server_instances_session.pop(server_name, None)
+
+    async def _cleanup_impl_with_server_affinity(
+        self, sandbox_id: str, manager: SandboxManager
+    ) -> None:
+        """Cleanup with one worker per server."""
+        if not self._should_reuse():
+            return
+        logger.info(
+            f"[sandbox cleanup] start pid={os.getpid()} tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
+        )
+        for server_name in list(self.server_instances.keys()):
+            try:
+                await manager.run_on_sandbox(
+                    sandbox_id,
+                    self._cleanup_one_server,
+                    server_name,
+                    server_name=server_name,
+                )
+            except Exception as e:
+                logger.warning(f"Failed to cleanup server {server_name}: {e}")
 
     async def _cleanup_impl(self):
         """Actual cleanup logic; assumes running on the correct loop."""
         if not self._should_reuse():
             return
 
-        sid = self.sandbox.sandbox_id if self.sandbox else None
-        connections_before = len(self.server_instances)
-        logger.debug(f"[sandbox] cleanup start sandbox_id={sid} connections={connections_before} tid={threading.get_ident()}")
+        logger.info(
+            f"[sandbox cleanup] start pid={os.getpid()} tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
+        )
         for server_name, server in list(self.server_instances.items()):
             try:
                 await cleanup_server(server)
                 del self.server_instances[server_name]
                 if server_name in self.server_instances_session:
                     del self.server_instances_session[server_name]
-                logger.debug(f"Cleaned up server instance for {server_name}")
             except Exception as e:
                 logger.warning(f"Failed to cleanup server {server_name}: {e}")
-        connections_remaining = len(self.server_instances)
-        logger.info(
-            f"[sandbox] mcp_cleanup_done sandbox_id={sid} tid={threading.get_ident()} "
-            f"connections_before={connections_before} connections_remaining={connections_remaining} at={datetime.now().isoformat(timespec='milliseconds')}"
-        )

@@ -1,8 +1,10 @@
 import asyncio
 import json
+import os
+import threading
 import traceback
 from contextlib import AsyncExitStack
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
 import requests
@@ -250,10 +252,6 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
                         "function": openai_function_schema,
                     }
                 )
-            logger.info(
-                f"✅ server #{i + 1} ({server.name}) connected success，tools: {len(tools)}"
-            )
-
         except Exception as e:
             logger.warning(
                 f"❌ server #{i + 1} ({server.name}) connect fail: {e}\n"
@@ -748,7 +746,6 @@ async def mcp_tool_desc_transform_v2_reuse(
             )
             if _mcp_openai_tools:
                 mcp_openai_tools.extend(_mcp_openai_tools)
-            logger.info(f"✅ server ({server_name}) connected success")
         except BaseException as err:
             logger.warning(
                 f"❌ server ({server_name}) connect fail: {err}\n"
@@ -1140,7 +1137,9 @@ async def get_server_instance(
                 },
             )
             await server.connect()
-            logger.info(f"Successfully connected to STREAMABLE-HTTP server: {server_name}")
+            logger.info(
+                f"[sandbox list_tools] server={server_name} pid={os.getpid()} tid={threading.get_ident()} at={datetime.utcnow().strftime('%H:%M:%S.%f')[:-3]}"
+            )
             return server, _SESSION_ID
         else:  # stdio type
             params = {
@@ -1169,14 +1168,12 @@ async def cleanup_server(server):
     Args:
         server: Server instance
     """
+    name = getattr(server, "name", "unknown")
     try:
         if hasattr(server, "cleanup"):
             await server.cleanup()
         elif hasattr(server, "close"):
             await server.close()
-        logger.info(
-            f"Successfully cleaned up server: {getattr(server, 'name', 'unknown')}"
-        )
     except RuntimeError as e:
         # RuntimeError about cancel scope usually means cleanup is being called
         # from a different task context. Log it but don't fail.

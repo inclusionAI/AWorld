@@ -50,16 +50,22 @@ class SandboxLoopPool:
         asyncio.set_event_loop(loop)
         loop.run_forever()
 
+    def get_loop_for_key(self, key: str) -> asyncio.AbstractEventLoop:
+        """
+        Deterministically pick a loop for a given key (e.g. sandbox_id or "sandbox_id:server_name").
+        """
+        if not self._loops:
+            raise RuntimeError("SandboxLoopPool is not initialized")
+        index = hash(key) % len(self._loops)
+        return self._loops[index]
+
     def get_loop_for_sandbox_id(self, sandbox_id: str) -> asyncio.AbstractEventLoop:
         """
         Deterministically pick a loop for a given sandbox_id.
 
         A simple hash-based sharding is sufficient here.
         """
-        if not self._loops:
-            raise RuntimeError("SandboxLoopPool is not initialized")
-        index = hash(sandbox_id) % len(self._loops)
-        return self._loops[index]
+        return self.get_loop_for_key(sandbox_id)
 
     def submit_to_loop(
         self, loop: asyncio.AbstractEventLoop, coro: "asyncio.Future"

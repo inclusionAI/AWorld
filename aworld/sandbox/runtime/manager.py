@@ -1,4 +1,5 @@
 import asyncio
+import os
 import threading
 from concurrent.futures import Future
 from datetime import datetime
@@ -90,18 +91,23 @@ class SandboxManager:
         """Return a snapshot list of all registered Sandbox instances."""
         return list(self._sandbox_instances.values())
 
-    async def _ensure_context(self, sandbox_id: str) -> _SandboxContext:
+    def _context_key(self, sandbox_id: str, server_name: Optional[str] = None) -> str:
+        """Key for registry: sandbox_id only, or sandbox_id:server_name when server affinity is used."""
+        if server_name:
+            return f"{sandbox_id}:{server_name}"
+        return sandbox_id
+
+    async def _ensure_context(self, sandbox_id: str, server_name: Optional[str] = None) -> _SandboxContext:
         """
-        Get (or create) the runtime context for the given sandbox_id:
-        - choose a loop from the pool
-        - on that loop, create a dedicated worker_task that processes
-          this sandbox's job queue sequentially
+        Get (or create) the runtime context for the given sandbox_id (and optionally server_name).
+        When server_name is set, key is "sandbox_id:server_name" so each server gets its own worker/loop.
         """
-        ctx = self._registry.get(sandbox_id)
+        key = self._context_key(sandbox_id, server_name)
+        ctx = self._registry.get(key)
         if ctx is not None:
             return ctx
-        
-        loop = self._loop_pool.get_loop_for_sandbox_id(sandbox_id)
+
+        loop = self._loop_pool.get_loop_for_key(key)
         
         async def _init_worker() -> _SandboxContext:
             # Create the queue and worker_task on the sandbox loop
@@ -141,9 +147,10 @@ class SandboxManager:
             worker_task = asyncio.create_task(_worker())
             ctx_inner = _SandboxContext(loop=loop, queue=queue, worker_task=worker_task)
             # Update registry on the sandbox loop; GIL prevents cross-thread races here
-            self._registry[sandbox_id] = ctx_inner
+            self._registry[key] = ctx_inner
+            # bound = first time this key gets a worker/event-loop (after create)
             logger.info(
-                f"[sandbox] bound sandbox_id={sandbox_id} loop_tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
+                f"[sandbox bound] key={key} pid={os.getpid()} tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
             )
             return ctx_inner
         
@@ -151,29 +158,26 @@ class SandboxManager:
         init_future = self._loop_pool.submit_to_loop(loop, _init_worker())
         ctx = await asyncio.wrap_future(init_future)
         return ctx
-    
+
     async def run_on_sandbox(
         self,
         sandbox_id: str,
         func: Callable[..., Awaitable[Any]],
         *args: Any,
+        server_name: Optional[str] = None,
         **kwargs: Any,
     ) -> Any:
         """
-        Execute a coroutine function on the Task/loop bound to a sandbox.
+        Execute a coroutine function on the Task/loop bound to a sandbox (and optionally a server).
 
-        Design:
-        - each sandbox has exactly one worker_task that executes all jobs in order
-        - connect / list_tools / call_tool / cleanup all run inside this Task,
-          so anyio cancel scopes and async generators are always entered/exited
-          from the same Task
-        - safe to call from any thread/loop; results are returned via a Future
+        When server_name is provided, the key is "sandbox_id:server_name" so each server
+        has its own worker/loop (for testing: same endpoint, different thread per server).
         """
         if not sandbox_id:
             # No sandbox_id (rare tool-only calls): execute directly on current loop
             return await func(*args, **kwargs)
-        
-        ctx = await self._ensure_context(sandbox_id)
+
+        ctx = await self._ensure_context(sandbox_id, server_name)
         loop = ctx.loop
         
         try:
@@ -186,11 +190,13 @@ class SandboxManager:
         if current_loop is loop:
             current_task = asyncio.current_task()
             if current_task is ctx.worker_task:
-                logger.debug(f"[sandbox] run_on_sandbox direct sandbox_id={sandbox_id} tid={threading.get_ident()}")
+                key = self._context_key(sandbox_id, server_name)
+                logger.debug(f"[sandbox] run_on_sandbox direct key={key} tid={threading.get_ident()}")
                 return await func(*args, **kwargs)
-        
+
         # Normal path: build a Future, enqueue the job, let worker_task execute it
-        logger.debug(f"[sandbox] run_on_sandbox forwarded sandbox_id={sandbox_id} caller_tid={threading.get_ident()}")
+        key = self._context_key(sandbox_id, server_name)
+        logger.debug(f"[sandbox] run_on_sandbox forwarded key={key} caller_tid={threading.get_ident()}")
         fut: Future = Future()
         job = (func, args, kwargs, fut)
         
