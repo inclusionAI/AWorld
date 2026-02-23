@@ -17,7 +17,7 @@ from aworld.core.factory import Factory
 from aworld.events.util import send_message
 from aworld.logs.util import logger, digest_logger
 from aworld.output.base import StepOutput
-from aworld.sandbox.base import Sandbox
+from aworld.sandbox import Sandbox
 from aworld.utils.common import convert_to_snake, replace_env_variables, sync_exec
 from aworld.mcp_client.utils import replace_mcp_servers_variables, extract_mcp_servers_from_config
 

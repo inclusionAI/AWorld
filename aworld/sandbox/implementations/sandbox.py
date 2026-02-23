@@ -5,25 +5,37 @@ import os
 import threading
 import uuid
 from datetime import datetime
-from typing import Dict, List, Any, Optional, Tuple
+from typing import Dict, List, Any, Optional, Tuple, TYPE_CHECKING
 from collections import defaultdict
 from pathlib import Path
 
 from aworld.logs.util import logger
-from aworld.sandbox.api.local.sandbox_api import LocalSandboxApi
+from aworld.sandbox.api.local.sandbox_api import SandboxApi
+from aworld.sandbox.base import BaseSandbox
+from aworld.sandbox.config.manager import ToolConfigManager
 from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxInfo
 from aworld.sandbox.run.mcp_servers import McpServers
 from aworld.sandbox.runtime import SandboxManager
-from aworld.sandbox.common import BaseSandbox
 from aworld.utils.common import sync_exec
 from aworld.sandbox.utils.util import is_url, is_remote_url
 
+if TYPE_CHECKING:
+    from aworld.sandbox.builder.sandbox_builder import SandboxBuilder
+    from aworld.sandbox.namespaces.file import FileNamespace
+    from aworld.sandbox.namespaces.terminal import TerminalNamespace
 
-class LocalSandbox(BaseSandbox, LocalSandboxApi):
+
+class Sandbox(BaseSandbox, SandboxApi):
     """
     Local sandbox implementation that runs in the local environment.
     This sandbox runs processes and MCP servers directly on the local machine.
     """
+
+    @classmethod
+    def builder(cls) -> "SandboxBuilder":
+        """链式编程入口：返回 SandboxBuilder，每个 . 后都有 IDE 方法提示，最后 .build() 得到 Sandbox。"""
+        from aworld.sandbox.builder.sandbox_builder import SandboxBuilder
+        return SandboxBuilder()
 
     def __init__(
         self,
@@ -41,49 +53,10 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         env_content_name: Optional[str] = None,
         env_content: Optional[Dict[str, Any]] = None,
         mode: str = "local",
+        builtin_tools: Any = None,
         **kwargs,
     ):
-        """Initialize a new LocalSandbox instance.
-        
-        Args:
-            sandbox_id: Unique identifier for the sandbox. If None, one will be generated.
-            metadata: Additional metadata for the sandbox.
-            timeout: Timeout for sandbox operations.
-            mcp_servers: List of MCP servers to use.
-            mcp_config: Configuration for MCP servers.
-            black_tool_actions: Black list of tool actions.
-            skill_configs: Skill configurations.
-            tools: List of tools. Optional parameter.
-            registry_url: Environment registry URL. Optional parameter, reads from environment variable "ENV_REGISTRY_URL" if not provided, defaults to empty string.
-            custom_env_tools: Custom environment tools. Optional parameter.
-            agents: Custom environment agents. Optional parameter.
-                Supports two formats (mixed mode):
-
-                Simple format (auto-detected):
-                {
-                    "local_agent": "/path/to/agent.py",
-                    "remote_agent": "https://github.com/..."
-                }
-
-                Extended format (with additional config):
-                {
-                    "advanced_agent": {
-                        "location": "/path/to/agent.py",  # or "https://..."
-                        "run_mode": "local",  # optional: "local" or "remote" (case-insensitive), default is "local"
-                        "env": {"KEY": "value"},  # optional
-                        "args": ["--option"],  # optional
-                        # ... other optional config
-                    }
-                }
-
-                Note: If "type" is provided, it will be used directly (case-insensitive).
-                      If "type" is not provided, the function will auto-detect based on location.
-            env_content_name: Parameter name for environment content in tool schemas. Defaults to "env_content".
-            env_content: User-defined context values to be automatically injected into tool calls.
-                Note that task_id and session_id are added dynamically from context during tool calls.
-            **kwargs: Additional parameters for specific sandbox types.
-        """
-        # Extract reuse / workspace / streaming from kwargs if present
+        """Initialize a new Sandbox instance."""
         reuse = kwargs.pop("reuse", True)
         workspace = kwargs.pop("workspace", None)
         super().__init__(
@@ -91,54 +64,281 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
             env_type=SandboxEnvType.LOCAL,
             metadata=metadata,
             timeout=timeout,
-            mcp_servers=mcp_servers,
-            mcp_config=mcp_config,
-            black_tool_actions=black_tool_actions,
-            skill_configs=skill_configs,
-            tools=tools,
-            registry_url=registry_url,
-            custom_env_tools=custom_env_tools,
-            agents=agents,
-            streaming=kwargs.get("streaming", False),
-            env_content_name=env_content_name,
-            env_content=env_content,
-            reuse=reuse,
-            workspace=workspace,
-            mode=mode,
         )
-
-        # Initialize properties
-        self._status = SandboxStatus.INIT
-        self._timeout = timeout or self.default_sandbox_timeout
-        self._metadata = metadata or {}
-        self._env_type = SandboxEnvType.LOCAL
-        self._mcp_servers = mcp_servers
-        self._mcp_config = mcp_config
-        # Keep original logic: if mcp_config exists and mcp_servers is empty, populate from mcp_config
-        if mcp_config and not mcp_servers:
-            mcp_servers = list(mcp_config.get("mcpServers", {}).keys())
-            self._mcp_servers = mcp_servers
-        self._skill_configs = skill_configs
+        default_registry_url = os.getenv("ENV_REGISTRY_URL", "~/workspace/registry.json")
+        self._registry_url = registry_url or default_registry_url
+        if workspace is None:
+            env_workspace = os.getenv("AWORLD_WORKSPACE_PATH")
+            if env_workspace:
+                workspace = [p.strip() for p in env_workspace.split(",") if p.strip()]
+        self._skill_configs = skill_configs or {}
         self._black_tool_actions = black_tool_actions or {}
         self._tools = tools or []
         self._custom_env_tools = custom_env_tools
+        self._reuse = reuse
         self._agents = agents
+        self._streaming = kwargs.get("streaming", False)
+        self._env_content_name = env_content_name or "env_content"
+        self._env_content = env_content or {}
+        self._workspace = workspace
+        self._mode = "local"
+        self.mode = mode
+        self._builtin_tools = builtin_tools
+        self._logger = self._setup_logger()
+        self._initialized = False
+        self._file_namespace = None
+        self._terminal_namespace = None
 
-        # Initialize sandbox if configuration is provided
-        # Support lazy initialization: if no config provided, skip initialization
-        if mcp_config or mcp_servers or tools or custom_env_tools or agents:
+        user_mcp_config = copy.deepcopy(mcp_config) if mcp_config else {}
+        user_mcp_servers = mcp_servers or []
+        if user_mcp_config and not user_mcp_servers:
+            user_mcp_servers = list(user_mcp_config.get("mcpServers", {}).keys())
+
+        enabled_builtin = self._resolve_builtin_tools()
+        config_manager = ToolConfigManager(mode=self._mode, workspace=self._workspace)
+        auto_config = config_manager.get_mcp_config(enabled_builtin) if enabled_builtin else {}
+        self._mcp_config = self._merge_mcp_configs(user_mcp_config, auto_config)
+        self._mcp_servers = list(self._mcp_config.get("mcpServers", {}).keys()) or user_mcp_servers
+
+        if self._mcp_config.get("mcpServers") or tools or custom_env_tools or agents:
             self._initialize_sandbox(
-                mcp_servers=mcp_servers,
-                mcp_config=mcp_config,
-                black_tool_actions=black_tool_actions,
-                skill_configs=skill_configs,
-                tools=tools,
-                custom_env_tools=custom_env_tools,
-                agents=agents
+                mcp_servers=self._mcp_servers,
+                mcp_config=self._mcp_config,
+                black_tool_actions=self._black_tool_actions,
+                skill_configs=self._skill_configs,
+                tools=self._tools,
+                custom_env_tools=self._custom_env_tools,
+                agents=self._agents,
             )
         else:
-            # Mark as not initialized for lazy initialization
             self._initialized = False
+
+    def _resolve_builtin_tools(self) -> List[str]:
+        """Resolve builtin_tools to list of server names, or empty if disabled."""
+        bt = self._builtin_tools
+        if bt is None:
+            return []
+        if isinstance(bt, (list, tuple)):
+            return [str(x) for x in bt]
+        return []
+
+    def _merge_mcp_configs(self, user_config: Dict, auto_config: Dict) -> Dict:
+        """Merge user mcp_config with auto-generated builtin tool config. User wins on same key."""
+        merged = {"mcpServers": {}}
+        user_servers = user_config.get("mcpServers") or {}
+        auto_servers = auto_config.get("mcpServers") or {}
+        for k, v in user_servers.items():
+            merged["mcpServers"][k] = v
+        for k, v in auto_servers.items():
+            if k not in merged["mcpServers"]:
+                merged["mcpServers"][k] = v
+                logger.info(f"Auto-configured builtin tool server: {k}")
+        return merged
+
+    def _trigger_reinitialize(self, reinit_type: str = "mcpservers", attribute_name: str = ""):
+        if reinit_type == "mcpservers":
+            if hasattr(self, "_reinitialize_mcpservers"):
+                self._reinitialize_mcpservers()
+        elif reinit_type == "full":
+            if hasattr(self, "_initialize_sandbox"):
+                try:
+                    self._initialize_sandbox()
+                except Exception as e:
+                    logger.warning(f"Failed to reinitialize sandbox after {attribute_name} change: {e}")
+
+    def _setup_logger(self):
+        return logger
+
+    def get_info(self) -> SandboxInfo:
+        return {
+            "sandbox_id": self.sandbox_id,
+            "status": self.status,
+            "metadata": self.metadata,
+            "env_type": self.env_type,
+        }
+
+    @property
+    def mcpservers(self) -> McpServers:
+        if hasattr(self, "_mcpservers") and self._mcpservers is not None:
+            return self._mcpservers
+        if not self._initialized and (self._mcp_config or self._mcp_servers):
+            if hasattr(self, "_initialize_sandbox"):
+                try:
+                    self._initialize_sandbox()
+                    return self._mcpservers if hasattr(self, "_mcpservers") else None
+                except Exception as e:
+                    logger.warning(f"Failed to auto-initialize sandbox: {e}")
+        return None
+
+    @property
+    def file(self) -> "FileNamespace":
+        """File namespace: sandbox.file.read_file(), write_file(), etc."""
+        if self._file_namespace is None:
+            from aworld.sandbox.namespaces.file import FileNamespace
+            self._file_namespace = FileNamespace(self)
+        return self._file_namespace
+
+    @property
+    def terminal(self) -> "TerminalNamespace":
+        """Terminal namespace: sandbox.terminal.run_code(), etc."""
+        if self._terminal_namespace is None:
+            from aworld.sandbox.namespaces.terminal import TerminalNamespace
+            self._terminal_namespace = TerminalNamespace(self)
+        return self._terminal_namespace
+
+    @property
+    def mcp_config(self) -> Any:
+        return self._mcp_config
+
+    @mcp_config.setter
+    def mcp_config(self, value: Any):
+        self._mcp_config = value or {}
+        self._trigger_reinitialize("mcpservers", "mcp_config")
+
+    @property
+    def black_tool_actions(self) -> Dict[str, List[str]]:
+        return self._black_tool_actions
+
+    @black_tool_actions.setter
+    def black_tool_actions(self, value: Dict[str, List[str]]):
+        self._black_tool_actions = value or {}
+        self._trigger_reinitialize("mcpservers", "black_tool_actions")
+
+    @property
+    def mcp_servers(self) -> List[str]:
+        return self._mcp_servers
+
+    @mcp_servers.setter
+    def mcp_servers(self, value: List[str]):
+        self._mcp_servers = value or []
+        self._trigger_reinitialize("mcpservers", "mcp_servers")
+
+    @property
+    def skill_configs(self) -> Any:
+        return self._skill_configs
+
+    @skill_configs.setter
+    def skill_configs(self, value: Any):
+        self._skill_configs = value or {}
+        self._trigger_reinitialize("mcpservers", "skill_configs")
+
+    @property
+    def tools(self) -> List[str]:
+        return self._tools
+
+    @tools.setter
+    def tools(self, value: List[str]):
+        self._tools = value or []
+        self._trigger_reinitialize("full", "tools")
+
+    @property
+    def registry_url(self) -> str:
+        return self._registry_url
+
+    @registry_url.setter
+    def registry_url(self, value: str):
+        self._registry_url = value or ""
+        self._trigger_reinitialize("full", "registry_url")
+
+    @property
+    def custom_env_tools(self) -> Optional[Any]:
+        return self._custom_env_tools
+
+    @custom_env_tools.setter
+    def custom_env_tools(self, value: Optional[Any]):
+        self._custom_env_tools = value
+        self._trigger_reinitialize("mcpservers", "custom_env_tools")
+
+    @property
+    def agents(self) -> Optional[Dict[str, Any]]:
+        return self._agents
+
+    @agents.setter
+    def agents(self, value: Optional[Dict[str, Any]]):
+        self._agents = value
+        self._trigger_reinitialize("mcpservers", "agents")
+
+    @property
+    def metadata(self) -> Dict[str, Any]:
+        return self._metadata
+
+    @metadata.setter
+    def metadata(self, value: Dict[str, Any]):
+        self._metadata = value or {}
+
+    @property
+    def timeout(self) -> int:
+        return self._timeout
+
+    @timeout.setter
+    def timeout(self, value: int):
+        self._timeout = value or self.default_sandbox_timeout
+
+    @property
+    def env_content_name(self) -> str:
+        return self._env_content_name
+
+    @env_content_name.setter
+    def env_content_name(self, value: str):
+        old_value = self._env_content_name
+        self._env_content_name = value or "env_content"
+        if old_value != self._env_content_name and self._initialized:
+            self._trigger_reinitialize("mcpservers", "env_content_name")
+
+    @property
+    def env_content(self) -> Dict[str, Any]:
+        return self._env_content
+
+    @env_content.setter
+    def env_content(self, value: Dict[str, Any]):
+        self._env_content = value or {}
+
+    @property
+    def workspace(self) -> Optional[List[str]]:
+        return self._workspace
+
+    @workspace.setter
+    def workspace(self, value):
+        if self._mode == "remote":
+            logger.warning(
+                "workspace setting is ignored in remote mode. "
+                "Configure workspace on the remote MCP server instead."
+            )
+            return
+        if isinstance(value, str):
+            value = [value]
+        elif value is not None and not isinstance(value, list):
+            raise TypeError(f"workspace must be a list of strings or a single string, got {type(value)}")
+        self._workspace = value
+        logger.info(f"Updated sandbox workspace to: {self._workspace}")
+
+    @property
+    def reuse(self) -> bool:
+        return self._reuse
+
+    @reuse.setter
+    def reuse(self, value: bool):
+        self._reuse = bool(value)
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @mode.setter
+    def mode(self, value: str):
+        mode = (value or "local").lower().strip()
+        if mode not in ("local", "remote"):
+            logger.warning(f"Unknown mode={value!r}, using 'local'")
+            mode = "local"
+        self._mode = mode
+
+    @property
+    def streaming(self) -> bool:
+        return self._streaming
+
+    @streaming.setter
+    def streaming(self, value: bool):
+        self._streaming = bool(value)
 
     def _initialize_sandbox(
         self,
@@ -1086,10 +1286,9 @@ class LocalSandbox(BaseSandbox, LocalSandboxApi):
         )
 
     async def cleanup(self) -> None:
-        """Clean up Sandbox resources, including MCP server connections."""
-        logger.info(
-            f"[sandbox] cleanup sandbox_id={self.sandbox_id} caller_tid={threading.get_ident()} at={datetime.now().isoformat(timespec='milliseconds')}"
-        )
+        """Clean up Sandbox resources, including MCP server connections.
+        '[sandbox cleanup] start' is logged inside _cleanup_impl (on worker thread when sandbox_id set) so TID matches list_tools/call_tool.
+        """
         try:
             if hasattr(self, '_mcpservers') and self._mcpservers:
                 await self._mcpservers.cleanup()
