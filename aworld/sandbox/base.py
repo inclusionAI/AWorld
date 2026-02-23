@@ -96,6 +96,21 @@ class BaseSandbox(SandboxSetup):
         """Clean up the sandbox resources."""
         pass
 
+    async def __aenter__(self):
+        """Async context manager entry. Returns self for use in `async with sandbox:`."""
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> bool:
+        """
+        Async context manager exit. Ensures cleanup runs when leaving the `async with` block.
+        Caller does not need to manually call await sandbox.cleanup() when using async with.
+        """
+        try:
+            await self.cleanup()
+        except Exception as e:
+            logger.warning(f"Sandbox cleanup during async with exit failed: {e}")
+        return False
+
     async def list_tools(self, context: Any = None) -> List[Dict[str, Any]]:
         """List all available tools from MCP servers. Delegates to mcpservers.list_tools()."""
         if hasattr(self, "mcpservers") and self.mcpservers is not None:
