@@ -1,11 +1,11 @@
 import asyncio
-import json
 import sys
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory
 from rich import box
 from rich.color import Color
 from rich.panel import Panel
@@ -81,8 +81,7 @@ class AWorldCLI:
         """Interactive configuration editor. First menu: choose config type (e.g. model)."""
         from .core.config import get_config
         from rich.panel import Panel
-        from rich.table import Table
-        
+
         config = get_config()
         current_config = config.load_config()
         
@@ -574,7 +573,6 @@ class AWorldCLI:
             f"Type '/restore' or '/latest' to restore to the latest session.\n"
             f"Type '/skills' to list all available skills.\n"
             f"Type '/agents' to list all available agents.\n"
-            f"Type '/test' to test user input functionality.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
         self.console.print(Panel(help_text, style="blue"))
@@ -590,7 +588,7 @@ class AWorldCLI:
             # 用整行前缀匹配：/ski → /skills、/age → /agents；meta_dict 在补全菜单中显示描述（命令左、描述右）
             slash_cmds = [
                 "/agents", "/skills", "/new", "/restore", "/latest",
-                "/test", "/exit", "/quit", "/switch",
+                "/exit", "/quit", "/switch",
             ]
             switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
             all_words = slash_cmds + switch_with_agents + ["exit", "quit"]
@@ -600,7 +598,6 @@ class AWorldCLI:
                 "/new": "Create a new session",
                 "/restore": "Restore to the latest session",
                 "/latest": "Restore to the latest session",
-                "/test": "Test user input functionality",
                 "/exit": "Exit chat",
                 "/quit": "Exit chat",
                 "/switch": "Switch to another agent",
@@ -615,9 +612,14 @@ class AWorldCLI:
                 sentence=True,
                 meta_dict=meta_dict,
             )
+            # 历史记录文件：上/下方向键可浏览并加载已执行过的指令
+            from pathlib import Path
+            history_path = Path.home() / ".aworld" / "cli_history"
+            history_path.parent.mkdir(parents=True, exist_ok=True)
             session = PromptSession(
                 completer=completer,
                 complete_while_typing=True,  # 输入时即显示补全列表（带描述）
+                history=FileHistory(str(history_path)),
             )
 
         while True:
@@ -756,182 +758,6 @@ class AWorldCLI:
                         self.console.print(f"[dim]Total: {len(all_skills)} skill(s)[/dim]")
                     except Exception as e:
                         self.console.print(f"[red]Error loading skills: {e}[/red]")
-                    continue
-
-                # Handle test command
-                if user_input.lower() in ("/test", "test"):
-                    try:
-                        self.console.print("[bold cyan]🧪 User Input Test Function[/bold cyan]")
-                        self.console.print()
-
-                        # Test options
-                        test_options = [
-                            "1. Test text input",
-                            "2. Test multi-select input",
-                            "3. Test confirmation input",
-                            "4. Test composite menu",
-                            "5. Test single-select list",
-                            "6. Exit test"
-                        ]
-
-                        self.console.print("[bold]Please select a function to test:[/bold]")
-                        for option in test_options:
-                            self.console.print(f"  {option}")
-                        self.console.print()
-
-                        test_choice = await asyncio.to_thread(
-                            Prompt.ask,
-                            "[cyan]Please enter option number (1-6)[/cyan]",
-                            default="1",
-                            console=self.console
-                        )
-
-                        test_choice = test_choice.strip()
-
-                        if test_choice == "1":
-                            # Test text input
-                            self.console.print()
-                            self.console.print("[bold green]📝 Test Text Input[/bold green]")
-                            self.console.print("[dim]Please enter some text for testing...[/dim]")
-                            text_input = await asyncio.to_thread(
-                                self.user_input.text_input,
-                                "[cyan]Please enter text[/cyan]"
-                            )
-                            self.console.print(f"[green]✅ Your input text is: {text_input}[/green]")
-
-                        elif test_choice == "2":
-                            # Test multi-select input
-                            self.console.print()
-                            self.console.print("[bold green]☑️  Test Multi-select Input[/bold green]")
-                            test_items = ["Apple", "Banana", "Orange", "Grape", "Strawberry"]
-                            selected_indices = await asyncio.to_thread(
-                                self.user_input.select_multiple,
-                                options=test_items,
-                                title="Please select your favorite fruits (multiple selection)",
-                                prompt="Enter option numbers (comma-separated, e.g., 1,3,5)"
-                            )
-                            if selected_indices:
-                                selected_items = [test_items[i] for i in selected_indices]
-                                self.console.print(f"[green]✅ You selected: {', '.join(selected_items)}[/green]")
-                            else:
-                                self.console.print("[yellow]⚠️ No options selected[/yellow]")
-
-                        elif test_choice == "3":
-                            # Test confirmation input
-                            self.console.print()
-                            self.console.print("[bold green]❓ Test Confirmation Input[/bold green]")
-                            from rich.prompt import Confirm
-                            confirmed = await asyncio.to_thread(
-                                Confirm.ask,
-                                "[cyan]Are you sure you want to continue?[/cyan]",
-                                default=True,
-                                console=self.console
-                            )
-                            if confirmed:
-                                self.console.print("[green]✅ You chose to confirm[/green]")
-                            else:
-                                self.console.print("[yellow]⚠️ You chose to cancel[/yellow]")
-
-                        elif test_choice == "4":
-                            # Test composite menu
-                            self.console.print()
-                            self.console.print("[bold green]📋 Test Composite Menu[/bold green]")
-
-                            # Create test tabs
-                            test_tabs = [
-                                {
-                                    'type': 'multi_select',
-                                    'name': 'product_type',
-                                    'title': 'What is your product type?',
-                                    'options': [
-                                        {'label': 'Software/Application Product',
-                                         'description': 'Mobile apps, web apps, desktop software and other digital products'},
-                                        {'label': 'Hardware Device', 'description': 'Electronic devices, smart hardware, IoT products, etc.'},
-                                        {'label': 'Service Platform', 'description': 'SaaS services, online platforms, cloud services, etc.'},
-                                        {'label': 'Physical Product', 'description': 'Consumer goods, industrial products, daily necessities, etc.'},
-                                    ]
-                                },
-                                {
-                                    'type': 'text_input',
-                                    'name': 'product_name',
-                                    'title': 'Product Name',
-                                    'prompt': 'Please enter product name',
-                                    'default': '',
-                                    'placeholder': 'Search...'
-                                },
-                                {
-                                    'type': 'submit',
-                                    'name': 'confirm',
-                                    'title': 'Review your answers',
-                                    'message': 'Ready to submit your answers?',
-                                    'default': True
-                                }
-                            ]
-
-                            try:
-                                results = await asyncio.to_thread(
-                                    self.user_input.composite_menu,
-                                    tabs=test_tabs,
-                                    title="Create Product Introduction PPT"
-                                )
-
-                                if results:
-                                    self.console.print()
-                                    self.console.print("[green]✅ Composite menu test completed[/green]")
-                                    self.console.print("[bold]Returned results:[/bold]")
-                                    for tab_name, value in results.items():
-                                        self.console.print(f"  [cyan]{tab_name}[/cyan]: {value}")
-                                else:
-                                    self.console.print("[yellow]⚠️ User cancelled the operation[/yellow]")
-                            except Exception as e:
-                                self.console.print(f"[red]Error during test: {e}[/red]")
-                                import traceback
-                                self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
-
-                        elif test_choice == "5":
-                            # Test single-select list
-                            self.console.print()
-                            self.console.print("[bold green]📋 Test Single-select List[/bold green]")
-
-                            # Create test navigation bar items
-                            nav_items = [
-                                {'label': 'PPT Theme', 'type': 'checkbox', 'checked': False, 'highlight': False},
-                                {'label': 'Template Style', 'type': 'checkbox', 'checked': False, 'highlight': False},
-                                {'label': 'Submit', 'type': 'button', 'highlight': True}
-                            ]
-
-                            # Create test options
-                            test_options = [
-                                {'label': 'Submit answers', 'description': ''},
-                                {'label': 'Cancel', 'description': ''}
-                            ]
-
-                            selected_index = await asyncio.to_thread(
-                                self.user_input.single_select,
-                                options=test_options,
-                                title="Review your answers",
-                                warning="You have not answered all questions",
-                                question="Ready to submit your answers?",
-                                nav_items=nav_items
-                            )
-
-                            if selected_index is not None:
-                                selected_option = test_options[selected_index]['label']
-                                self.console.print(f"[green]✅ You selected: {selected_option}[/green]")
-                            else:
-                                self.console.print("[yellow]⚠️ User cancelled the selection[/yellow]")
-
-                        elif test_choice == "6":
-                            self.console.print("[dim]Exit test[/dim]")
-                        else:
-                            self.console.print(f"[red]Invalid option: {test_choice}[/red]")
-
-                        self.console.print()
-                    except KeyboardInterrupt:
-                        self.console.print("\n[yellow]Test cancelled[/yellow]")
-                    except Exception as e:
-                        # logger.error(f"Error during test: {e} {traceback.format_exc()}")
-                        self.console.print(f"[red]Error during test: {e}[/red]\n{traceback.format_exc()}")
                     continue
 
                 # Handle agents command

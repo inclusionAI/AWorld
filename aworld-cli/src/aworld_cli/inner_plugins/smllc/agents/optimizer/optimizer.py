@@ -8,12 +8,12 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation, ActionModel
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
-from aworld.logs.util import logger
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
-from aworld_cli.core import agent
 from aworld.sandbox.base import Sandbox
+from aworld_cli.core import agent
 from .mcp_config import mcp_config
+
 
 @HookFactory.register(name="pre_optimizer_hook")
 class PreOptimizerHook(PreLLMCallHook):
@@ -76,7 +76,7 @@ def build_optimizer_swarm():
         name="optimizer",
         desc="Analyzes and automatically optimizes existing agents by improving system prompts and tool configuration.",
         conf=agent_config,
-        system_prompt=(Path(__file__).resolve().parent / "prompt.py").read_text(encoding="utf-8"),
+        system_prompt=(Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8"),
         tool_names=tool_names,
         mcp_servers=mcp_servers,
         mcp_config=mcp_config,
