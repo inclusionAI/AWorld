@@ -1,0 +1,4 @@
+mcp_config = {
+    "mcpServers": {
+    }
+}
