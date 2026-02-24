@@ -241,68 +241,10 @@ class AWorldCLI:
         if not agents:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
             return None
-        
-        table = Table(title="Available Agents", box=box.ROUNDED)
-        table.add_column("No.", style="cyan", justify="right")
-        table.add_column("Name", style="magenta")
-        table.add_column("Description", style="green")
-        table.add_column("SourceType", style="cyan")
-        table.add_column("Address", style="blue", overflow="wrap")
 
-        for idx, agent in enumerate(agents, 1):
-            desc = getattr(agent, "desc", "No description") or "No description"
-            # Always use agent's own source_type and source_location if they exist and are valid
-            # Fallback to provided parameters only if agent doesn't have these attributes
-            agent_source_type = getattr(agent, "source_type", None)
-            agent_source_location = getattr(agent, "source_location", None)
-            
-            # Use agent's source_type if it exists and is valid, otherwise use fallback
-            if agent_source_type and agent_source_type != "UNKNOWN" and agent_source_type.strip() != "":
-                # Use agent's own source_type
-                pass
-            else:
-                # Use fallback
-                agent_source_type = source_type
-            
-            # Use agent's source_location if it exists and is valid, otherwise use fallback
-            if agent_source_location and agent_source_location.strip() != "":
-                # Use agent's own source_location
-                pass
-            else:
-                # Use fallback
-                agent_source_location = source_location
-            
-            table.add_row(str(idx), agent.name, desc, agent_source_type, agent_source_location)
-
-        self.console.print(table)
-        self.console.print("[dim]Type 'exit' to cancel selection.[/dim]")
-
-        # Check if we're in a real terminal
-        is_terminal = sys.stdin.isatty()
-        
-        while True:
-            if is_terminal:
-                choice = Prompt.ask("Select an agent number", default="1")
-            else:
-                # Fallback for non-terminal environments
-                self.console.print("Select an agent number [default: 1]: ", end="")
-                choice = input().strip() or "1"
-
-            # Check for exit command
-            if choice.lower() in ("exit", "quit", "q"):
-                self.console.print("[yellow]Selection cancelled.[/yellow]")
-                return None
-
-            try:
-                idx = int(choice) - 1
-                if 0 <= idx < len(agents):
-                    selected_agent = agents[idx]
-                    self.console.print(f"[green]Selected agent: [bold]{selected_agent.name}[/bold][/green]")
-                    return selected_agent
-                else:
-                    self.console.print("[red]Invalid selection. Please try again.[/red]")
-            except ValueError:
-                self.console.print("[red]Please enter a valid number or 'exit' to cancel.[/red]")
+        # Default: use first agent (Aworld) without prompting or showing the agents table
+        selected_agent = agents[0]
+        return selected_agent
     
     def select_team(self, teams: List[AgentInfo], source_type: str = "LOCAL", source_location: str = "") -> Optional[AgentInfo]:
         """
