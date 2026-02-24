@@ -721,24 +721,19 @@ class AWorldCLI:
                             logger.info("[yellow]No skills available.[/yellow]")
                             continue
                         
-                        # Build rows with source: users vs plugins
-                        rows = []
-                        for skill_name, skill_data in all_skills.items():
-                            skill_path = skill_data.get("skill_path", "")
-                            source = "plugins" if (skill_path and "inner_plugins" in skill_path) else "users"
-                            rows.append((skill_name, skill_data, source))
-                        rows.sort(key=lambda x: (x[2], x[0]))  # sort by source then name
+                        # Build rows
+                        rows = [(skill_name, skill_data) for skill_name, skill_data in all_skills.items()]
+                        rows.sort(key=lambda x: x[0])  # sort by name
                         
-                        # Single table with Source and Address columns
+                        # Single table with Name, Description, Address
                         table = Table(title="Skills", box=box.ROUNDED)
                         table.add_column("Name", style="magenta")
                         table.add_column("Description", style="green")
-                        table.add_column("Source", style="cyan")
                         # Address column: truncate when long; full path shown on hover via link (OSC 8)
                         _addr_max = 48
                         table.add_column("Address", style="dim", no_wrap=False, max_width=_addr_max)
                         
-                        for skill_name, skill_data, source in rows:
+                        for skill_name, skill_data in rows:
                             desc = skill_data.get("description") or skill_data.get("desc") or "No description"
                             # if len(desc) > 60:
                             #     desc = desc[:57] + "..."
@@ -755,7 +750,7 @@ class AWorldCLI:
                                     addr_cell = Text(addr_display, style=Style(dim=True, link=link_url))
                                 else:
                                     addr_cell = Text(address, style=Style(dim=True, link=link_url))
-                            table.add_row(skill_name, desc, source, addr_cell)
+                            table.add_row(skill_name, desc, addr_cell)
                         
                         self.console.print(table)
                         self.console.print(f"[dim]Total: {len(all_skills)} skill(s)[/dim]")
