@@ -42,10 +42,10 @@ AWorld 的论点是：AI 的真正扩展，来自让像你这样的专家在这�
 AWorld-CLI 就是为此设计的平台。我们提供一套基础「配方」，让你把知识和洞察注入一支支自主智能体，从通用承诺走向在你领域里精准可用的应用。
 </p>
 
-
-![](./readme_assets/aworld_loop.png)
-
-> 💡 更多信息请访问[官网](https://www.aworldagents.com/)，或体验在线[环境](https://www.aworldagents.com/environments)与[智能体](https://playground.aworldagents.com/)。 
+<!-- 
+![](./readme_assets/aworld_loop.png) -->
+<!-- 
+> 💡 更多信息请访问[官网](https://www.aworldagents.com/)，或体验在线[环境](https://www.aworldagents.com/environments)与[智能体](https://playground.aworldagents.com/)。  -->
 
 
 <a id="your-journey-with-aworld-cli"></a>
@@ -77,7 +77,8 @@ aworld-cli
 
 ## 创建智能体
 <p align="justify">
-用自然语言描述任务，即可一键搭好智能体骨架；AWorld-CLI 负责样板代码，你专注逻辑即可。
+通过自然语言描述您的任务，例如“创建一个能生成HTML报告的智能体”，即可快速为您的任务搭建好智能体。AWorld-CLI 会处理所有样板代码，让您可以专注于核心逻辑。
+
 </p>
 
 
@@ -116,12 +117,12 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
   </thead>
   <tbody>
     <tr>
-      <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch 智能体</td>
-      <td style="padding: 8px; vertical-align: top;">对指定主题进行全面、多源的研究，并整合生成一份结构化的报告。</td>
-    </tr>
-    <tr>
       <td style="padding: 8px; vertical-align: top;">🚀 PPT 智能体</td>
       <td style="padding: 8px; vertical-align: top;">根据文档、大纲或数据，创建精美的演示文稿。</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch 智能体</td>
+      <td style="padding: 8px; vertical-align: top;">对指定主题进行全面、多源的研究，并整合生成一份结构化的报告。</td>
     </tr>
   </tbody>
 </table>
@@ -129,7 +130,7 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
 
 ## 运行智能体
 <p align="justify">
-向 AWorld Agent 发出指令，让它用你刚创建的智能体执行任务；每次调用、动作与观测都会写入详细轨迹日志，保存在本地目录。
+向 AWorld Agent 发出指令，让它用你刚创建的智能体执行任务，比如“让html智能体制作一个贝克汉姆的介绍报告”；每次调用、动作与观测都会写入详细轨迹日志，保存在本地目录。
 </p>
 
 
@@ -148,20 +149,20 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
 
 **一颗赛艇：AI 辅助进化**
 <p align="justify">
-这里才是 AWorld-CLI 的亮点！用自然语言描述你想要的改动，AWorld Agent 会把任务交给预置的 Optimizer Agent，作为你的 AI 结对程序员，一起调优智能体。
+这正是 AWorld 的真正强大之处！用您期望的修改来提示 AWorld，例如“帮我优化这个HTML智能体，让它能够浏览网页、下载并插入图片到HTML中”。然后，它会将任务分配给我们内置的 Optimizer Agent（优化器智能体）——一个专门的代码智能体，来作为您的 AI 结对程序员。因为您创建的所有智能体都继承自一个统一的 AWorld 基类，所以 Optimizer Agent 对智能体的结构有全局的理解能力。这使其能够对智能体的代码进行推理并进行精确修改，以实现您的逻辑，使其能力进化——这远非简单的提示词调优所能及。
 </p>
 
-
+<!-- 
 ***AI 辅助进化示意图***
-![](./readme_assets/mas_meta_learning_v2.png) 
+![](./readme_assets/mas_meta_learning_v2.png)  -->
 
 
-***优化你的智能体***
+***AI 优化你的智能体并让它更专业***
 ![](./readme_assets/aworld_cli_demo_step3.gif)
 
 
-***让优化后的智能体为你做更复杂的工作***
-![](./readme_assets/aworld_cli_demo_step4.gif)
+<!-- ***让优化后的智能体为你做更复杂的工作***
+![](./readme_assets/aworld_cli_demo_step4.gif) -->
 
 **愿景：自进化**
 <p align="justify">
@@ -178,11 +179,11 @@ Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
 在 AWorld 中，智能体即「模型 + 工具」。但真实场景常需多智能体协作。为此，AWorld 提供灵活构建路径，让你手动搭建复杂多智能体系统。
 </p>
 
-1. 端到端设计自动化工作流 [文档](https://inclusionai.github.io/AWorld/Quickstart/workflow_construction/)
+1. 灵活的多智能构建和编排, 丰富的开箱即用沙盒环境, 详尽的运行时日志记录 [Docs](https://inclusionai.github.io/AWorld/Get%20Start/Core%20Capabilities/)
 
-2. 启动支持 MCP 的智能体 [文档](https://inclusionai.github.io/AWorld/Quickstart/agent_construction/)
+2. 多任务并行执行, 流式模型返回 [Docs](https://inclusionai.github.io/AWorld/Get%20Start/Parallel%20Tasks/)
 
-3. 编排多智能体系统 (MAS) [文档](https://inclusionai.github.io/AWorld/Quickstart/multi-agent_system_construction/)
+3. 人和Agent全双工互动 [Docs](https://inclusionai.github.io/AWorld/Get%20Start/HITL/)
 
 
 想直接体验？在 AWorld [Playground](https://playground.aworldagents.com/) 加载预置 DeepResearch 团队，查看源码并端到端运行。
