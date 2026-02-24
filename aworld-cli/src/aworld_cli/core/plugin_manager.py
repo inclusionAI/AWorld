@@ -18,6 +18,25 @@ DEFAULT_PLUGIN_DIR = Path.home() / ".aworld" / "plugins"
 PLUGIN_MANIFEST_FILE = DEFAULT_PLUGIN_DIR / ".manifest.json"
 
 
+def get_plugin_skills_dir(plugin_path: Path) -> Path:
+    """
+    Return the skills directory for a plugin (plugin root path + "skills").
+
+    This is the directory where aworld built-in/plugin skills are stored.
+
+    Args:
+        plugin_path: Root path of the plugin (e.g. inner_plugins/smllc or ~/.aworld/plugins/foo).
+
+    Returns:
+        Path to the plugin's skills subdirectory.
+
+    Example:
+        >>> get_plugin_skills_dir(Path("/path/to/smllc"))
+        PosixPath('/path/to/smllc/skills')
+    """
+    return Path(plugin_path) / "skills"
+
+
 class PluginManager:
     """
     Manager for AWorld CLI plugins.
@@ -327,7 +346,7 @@ class PluginManager:
             
             # Verify plugin structure (at least agents directory should exist)
             agents_dir = plugin_path / "agents"
-            skills_dir = plugin_path / "skills"
+            skills_dir = get_plugin_skills_dir(plugin_path)
             
             if not agents_dir.exists():
                 logger.warning(f"⚠️ Plugin '{plugin_name}' does not have an 'agents' directory. "
@@ -418,8 +437,8 @@ class PluginManager:
             
             # Get plugin info
             agents_dir = plugin_path / "agents"
-            skills_dir = plugin_path / "skills"
-            
+            skills_dir = get_plugin_skills_dir(plugin_path)
+
             plugin_data = {
                 "name": plugin_name,
                 "path": str(plugin_path),
@@ -434,8 +453,8 @@ class PluginManager:
             for item in self.plugin_dir.iterdir():
                 if item.is_dir() and not item.name.startswith('.') and item.name not in self._manifest:
                     agents_dir = item / "agents"
-                    skills_dir = item / "skills"
-                    
+                    skills_dir = get_plugin_skills_dir(item)
+
                     plugin_data = {
                         "name": item.name,
                         "path": str(item),
@@ -493,8 +512,8 @@ class PluginManager:
         loaded_skills: Dict[str, int] = {}
         
         for plugin_dir in plugin_dirs:
-            skills_dir = plugin_dir / "skills"
-            
+            skills_dir = get_plugin_skills_dir(plugin_dir)
+
             if not skills_dir.exists() or not skills_dir.is_dir():
                 continue
             

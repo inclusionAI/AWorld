@@ -803,11 +803,16 @@ class AWorldCLI:
                             address = skill_data.get("skill_path", "") or "—"
                             if address == "—":
                                 addr_cell = Text("—", style="dim")
-                            elif len(address) > _addr_max:
-                                addr_display = address[: _addr_max - 3] + "..."
-                                addr_cell = Text(addr_display, style=Style(dim=True, link=address))
                             else:
-                                addr_cell = Text(address, style=Style(dim=True, link=address))
+                                # Link to parent folder so click opens file manager, not default app for file
+                                p = Path(address)
+                                link_target = p.parent if p.suffix else p
+                                link_url = link_target.resolve().as_uri()
+                                if len(address) > _addr_max:
+                                    addr_display = address[: _addr_max - 3] + "..."
+                                    addr_cell = Text(addr_display, style=Style(dim=True, link=link_url))
+                                else:
+                                    addr_cell = Text(address, style=Style(dim=True, link=link_url))
                             table.add_row(skill_name, desc, source, addr_cell)
                         
                         self.console.print(table)
