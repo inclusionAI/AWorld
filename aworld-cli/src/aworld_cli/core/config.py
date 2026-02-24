@@ -165,20 +165,40 @@ def load_config_with_env(env_file: str = ".env") -> tuple[Dict[str, Any], str, s
     
     # Otherwise load from global config
     global_config = config.load_config()
-    # Apply global config to environment if needed
+    # Apply global config to environment (provider-specific + LLM_API_KEY, LLM_MODEL_NAME, LLM_BASE_URL)
     if 'models' in global_config:
         models_config = global_config['models']
+        llm_primary_set = False
         for provider, provider_config in models_config.items():
-            if isinstance(provider_config, dict) and 'api_key' in provider_config:
-                api_key = provider_config['api_key']
-                # Map provider names to environment variable names
+            if not isinstance(provider_config, dict):
+                continue
+            api_key = (provider_config.get('api_key') or '').strip()
+            model_name = (provider_config.get('model') or '').strip()
+            base_url = (provider_config.get('base_url') or '').strip()
+            if api_key:
                 if provider.lower() == 'openai':
                     os.environ['OPENAI_API_KEY'] = api_key
                 elif provider.lower() == 'anthropic':
                     os.environ['ANTHROPIC_API_KEY'] = api_key
                 elif provider.lower() == 'gemini':
                     os.environ['GEMINI_API_KEY'] = api_key
-    
+                if not llm_primary_set:
+                    os.environ['LLM_API_KEY'] = api_key
+                    if model_name:
+                        os.environ['LLM_MODEL_NAME'] = model_name
+                    if base_url:
+                        os.environ['LLM_BASE_URL'] = base_url
+                    llm_primary_set = True
+            if base_url:
+                if provider.lower() == 'openai':
+                    os.environ['OPENAI_BASE_URL'] = base_url
+                elif provider.lower() == 'anthropic':
+                    os.environ['ANTHROPIC_BASE_URL'] = base_url
+                elif provider.lower() == 'gemini':
+                    os.environ['GEMINI_BASE_URL'] = base_url
+                if not os.environ.get('LLM_BASE_URL'):
+                    os.environ['LLM_BASE_URL'] = base_url
+
     return global_config, source_type, source_path
 
 
