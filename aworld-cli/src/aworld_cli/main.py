@@ -546,7 +546,7 @@ Batch Jobs:
     )
     
     parser.add_argument(
-        '--global-config',
+        '--config',
         action='store_true',
         help='Launch interactive global configuration editor (model provider, API key, etc.) and exit.'
     )
@@ -554,12 +554,12 @@ Batch Jobs:
     # Parse arguments normally, but keep unknown args for inner plugin commands
     args, remaining_argv = parser.parse_known_args()
     
-    # Handle --global-config: run interactive config editor and exit
-    if getattr(args, 'global_config', False):
-        async def _run_global_config():
+    # Handle --config: run interactive config editor and exit
+    if getattr(args, 'config', False):
+        async def _run_config():
             cli = AWorldCLI()
             await cli._interactive_config_editor()
-        asyncio.run(_run_global_config())
+        asyncio.run(_run_config())
         return
     
     # Handle --examples flag: show examples and exit
@@ -602,7 +602,7 @@ Batch Jobs:
         parser_zh.add_argument('--mcp-transport', type=str, choices=['stdio', 'sse', 'streamable-http'], default='stdio', help='MCP 传输类型：stdio、sse 或 streamable-http（默认：stdio）')
         parser_zh.add_argument('--mcp-host', type=str, default='0.0.0.0', help='MCP 服务器主机（用于 SSE/streamable-http 传输，默认：0.0.0.0）')
         parser_zh.add_argument('--mcp-port', type=int, default=8001, help='MCP 服务器端口（用于 SSE/streamable-http 传输，默认：8001）')
-        parser_zh.add_argument('--global-config', action='store_true', help='启动交互式全局配置编辑器（模型提供商、API 密钥等）并退出。')
+        parser_zh.add_argument('--config', action='store_true', help='启动交互式全局配置编辑器（模型提供商、API 密钥等）并退出。')
         parser_zh.print_help()
         return
     
@@ -620,7 +620,7 @@ Batch Jobs:
     # Require model config for commands that use the agent (skip for 'list' and plugin)
     if args.command != "list" and not has_model_config(config_dict):
         console.print("[yellow]未检测到模型配置（API Key 等）。请先配置后再启动。[/yellow]")
-        console.print("[dim]Run: aworld-cli --global-config[/dim]")
+        console.print("[dim]Run: aworld-cli --config[/dim]")
         sys.exit(1)
     
     # Initialize skill registry early with command-line arguments (overrides env vars)

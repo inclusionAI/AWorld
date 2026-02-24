@@ -22,6 +22,39 @@ ENV_SKILLS_DIR = "SKILLS_DIR"    # Single skills directory (legacy, for backward
 ENV_SKILLS_CACHE_DIR = "SKILLS_CACHE_DIR"  # Custom cache directory for GitHub repos
 
 
+def get_user_skills_paths() -> List[Path]:
+    """
+    Return the list of directories where user skills are stored.
+
+    Resolution order:
+    1. SKILLS_PATH env (semicolon-separated list of paths)
+    2. If unset, default to ~/.aworld/skills
+    3. SKILLS_DIR env (legacy, single directory) is appended if set
+
+    Returns:
+        List of resolved Paths; directories may or may not exist.
+
+    Example:
+        >>> paths = get_user_skills_paths()
+        >>> for p in paths:
+        ...     collect_skill_docs(p)
+    """
+    paths: List[Path] = []
+    skills_path_env = os.getenv(ENV_SKILLS_PATH)
+    if skills_path_env:
+        paths = [
+            Path(os.path.expanduser(s.strip())).resolve()
+            for s in skills_path_env.split(";")
+            if s.strip()
+        ]
+    else:
+        paths = [Path.home() / ".aworld" / "skills"]
+    skills_dir_env = os.getenv(ENV_SKILLS_DIR)
+    if skills_dir_env:
+        paths.append(Path(os.path.expanduser(skills_dir_env)).resolve())
+    return paths
+
+
 def get_skill_registry(
     skills_dir: Optional[Path] = None,
     cache_dir: Optional[Path] = None,
