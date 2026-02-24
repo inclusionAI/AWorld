@@ -982,7 +982,7 @@ if __name__ == "__main__":
     arguments = ActionArguments(
         name="video",
         transport="stdio",
-        workspace=os.getenv("AWORLD_WORKSPACE", "~"),
+        workspace=os.getenv("AWORLD_WORKSPACE", "./"),
     )
 
     try:

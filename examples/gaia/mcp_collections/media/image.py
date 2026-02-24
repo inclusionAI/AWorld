@@ -484,7 +484,7 @@ if __name__ == "__main__":
     args = ActionArguments(
         name="image_analysis_service",
         transport="stdio",
-        workspace=os.getenv("AWORLD_WORKSPACE", "~"),
+        workspace=os.getenv("AWORLD_WORKSPACE", "./"),
     )
     # Initialize and run the image analysis service
     try:
