@@ -62,6 +62,7 @@ def build_text2agent_swarm():
 
     # Extract all server keys from mcp_config
     mcp_servers = list(mcp_config.get("mcpServers", {}).keys())
+    tool_names = ["AGENT_REGISTRY", "CAST_SEARCH", "human"]
 
     # Mandatory Use - You must use this.
     sandbox = Sandbox(
@@ -73,10 +74,11 @@ def build_text2agent_swarm():
         name="text2agent",
         desc="Creates new agents from user requirements by generating Python implementation and mcp_config.",
         conf=agent_config,
-        system_prompt=(Path(__file__).resolve().parent / "prompt.py").read_text(encoding="utf-8"),
+        system_prompt=(Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8"),
         mcp_servers=mcp_servers,
         mcp_config=mcp_config,
-        sandbox=sandbox
+        sandbox=sandbox,
+        tool_names=tool_names,
     )
 
     # Return the Swarm containing this Agent

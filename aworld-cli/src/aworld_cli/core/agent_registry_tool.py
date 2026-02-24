@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import inspect
+import os
 import traceback
 from typing import Any, Dict, List, Tuple
 
@@ -121,25 +122,27 @@ async def list_built_in_resources() -> List[tuple]:
           containing the directory structure of the skill
     """
     resources_with_desc = []
-    
+    logger.info("list_built_in_resources: start")
+
     try:
         from pathlib import Path
         from ..core.plugin_manager import PluginManager
         from ..core.agent_registry import LocalAgentRegistry
-        
+
         # Get all plugin directories (built-in and installed)
         plugin_dirs = []
-        
+
         # Get built-in plugins (inner_plugins)
         import pathlib
         current_dir = pathlib.Path(__file__).parent.parent
         inner_plugins_dir = current_dir / "inner_plugins"
-        
+
         if inner_plugins_dir.exists() and inner_plugins_dir.is_dir():
             for plugin_dir in inner_plugins_dir.iterdir():
                 if plugin_dir.is_dir():
                     plugin_dirs.append(plugin_dir)
-        
+        logger.info(f"list_built_in_resources: inner_plugins_dir={inner_plugins_dir}, built-in plugin_dirs count={len(plugin_dirs)}")
+
         # Get installed plugins
         try:
             plugin_manager = PluginManager()
@@ -149,9 +152,10 @@ async def list_built_in_resources() -> List[tuple]:
                 plugin_dir = agent_dir.parent
                 if plugin_dir not in plugin_dirs:
                     plugin_dirs.append(plugin_dir)
-        except Exception:
-            pass
-        
+            logger.info(f"list_built_in_resources: after installed plugins, plugin_dirs count={len(plugin_dirs)}, dirs={[str(d) for d in plugin_dirs]}")
+        except Exception as e:
+            logger.info(f"list_built_in_resources: PluginManager.get_plugin_dirs failed (skipped): {e}")
+
         # Get agents from plugins
         try:
             local_agents = LocalAgentRegistry.list_agents()
@@ -180,9 +184,11 @@ async def list_built_in_resources() -> List[tuple]:
                         desc = local_agent.desc or "No description"
                         path = local_agent.path or str(register_dir_path)
                         resources_with_desc.append((local_agent.name, desc, path))
+            agent_count = sum(1 for r in resources_with_desc if len(r) == 3)
+            logger.info(f"list_built_in_resources: built-in agents from plugins count={agent_count}, names={[r[0] for r in resources_with_desc if len(r) == 3]}")
         except Exception as e:
             logger.warning(f"Failed to get agents from plugins: {e}")
-        
+
         # Get skills from plugins
         for plugin_dir in plugin_dirs:
             skills_dir = plugin_dir / "skills"
@@ -242,10 +248,12 @@ async def list_built_in_resources() -> List[tuple]:
                         resources_with_desc.append((skill_name, desc, path, file_structure_str))
             except Exception as e:
                 logger.warning(f"Failed to get skills from plugin {plugin_dir}: {e}")
-        
+        agent_count = sum(1 for r in resources_with_desc if len(r) == 3)
+        skill_count = sum(1 for r in resources_with_desc if len(r) == 4)
+        logger.info(f"list_built_in_resources: done, total={len(resources_with_desc)} (agents={agent_count}, skills={skill_count}), names={[r[0] for r in resources_with_desc]}")
     except Exception as e:
         logger.error(f"Failed to list built-in resources: {e} {traceback.format_exc()}")
-    
+
     return resources_with_desc
 
 
@@ -270,6 +278,7 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
         3. Get register_agent_name from AgentScanner
         4. Add register_agent_name to local_agent_name's team_swarm
     """
+    logger.info(f"dynamic_register: start local_agent_name={local_agent_name} register_agent_name={register_agent_name}")
     try:
         from aworld_cli.core.agent_registry import LocalAgentRegistry
         from aworld_cli.core.agent_scanner import AgentScanner
@@ -278,24 +287,32 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
         if context is None:
             from aworld_cli.core.agent_scanner import DefaultContext
             context = DefaultContext()
+            logger.info("dynamic_register: context was None, using DefaultContext")
 
         agent_scanner = AgentScanner(context)
+        agents_path = os.environ.get("AGENTS_PATH", "~/.aworld/agents")
+        logger.info(
+            f"dynamic_register: step1 load agent, register_agent_name={register_agent_name} AGENTS_PATH={agents_path}",
+        )
 
-        # Check if agent exists in registry before loading
+        # Step 1: Load register_agent from AgentScanner (must exist under AGENTS_PATH and be in LocalAgentRegistry after module load)
         register_agent = await agent_scanner.load_agent(agent_name=register_agent_name)
-        logger.info(f"register_agent, {register_agent.id()}, {inspect.getfile(register_agent.__class__)}")
         if not register_agent:
             error_msg = (
-                f"Agent '{register_agent_name}' exists in registry but could not be loaded. "
-                f"This may indicate a problem with the agent file (e.g., syntax error, missing dependencies, "
-                f"or invalid agent definition). Please check the agent file and ensure it is valid."
+                f"Agent '{register_agent_name}' could not be loaded. "
+                f"Ensure: (1) agent file exists under AGENTS_PATH (e.g. {agents_path}/<agent_name>/<agent_name>.py), "
+                f"(2) the file has an @agent decorator with name matching '{register_agent_name}', "
+                f"(3) the module loads without errors and the agent is registered in LocalAgentRegistry. "
+                f"Check logs above for the exact failure (e.g. file not found, LocalAgentRegistry missing, or swarm empty)."
             )
             logger.error(error_msg)
             raise ValueError(error_msg)
+        logger.info(f"dynamic_register: register_agent loaded id={register_agent.id()} name={register_agent.name()} file={inspect.getfile(register_agent.__class__)}")
 
         # Step 2: Get local_agent_name from LocalAgentRegistry
+        logger.info(f"dynamic_register: step2 get local_agent from LocalAgentRegistry, local_agent_name={local_agent_name}")
         local_agent = LocalAgentRegistry.get_agent(local_agent_name)
-        logger.info(f"local_agent: {local_agent}")
+        logger.info(f"dynamic_register: local_agent={local_agent} register_dir={getattr(local_agent, 'register_dir', None) if local_agent else None}")
         if not local_agent:
             # Get available agent names for better error message
             available_agents = LocalAgentRegistry.list_agent_names()
@@ -309,7 +326,9 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
             raise ValueError(error_msg)
         swarm = await local_agent.get_swarm(context=context)
         # swarm = context.swarm
-        logger.info(f"local_agent|swarm: {swarm} {swarm.agents}")
+        swarm_agent_ids = [a for a in swarm.agents] if swarm and getattr(swarm, "agents", None) else []
+        swarm_agent_names = [a for a in swarm.agents] if swarm and getattr(swarm, "agents", None) else []
+        logger.info(f"dynamic_register: step2 swarm obtained, agent count={len(swarm_agent_ids) if swarm_agent_ids else 0} ids={swarm_agent_ids} names={swarm_agent_names}")
         if not swarm:
             error_msg = (
                 f"Failed to get swarm for local agent '{local_agent_name}'. "
@@ -321,8 +340,13 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
 
 
         # Step 3: Add register_agent_name to local_agent_name's team_swarm
+        logger.info(f"dynamic_register: step3 add agent to swarm, register_agent_name={register_agent_name} register_agent.id={register_agent.id()}")
         origin_agent = find_from_agent_factory_by_name(register_agent_name)
-        swarm.add_agents(agents=[register_agent], to_remove_agents=[origin_agent])
+        logger.info(f"dynamic_register: origin_agent from factory={origin_agent.id() if origin_agent else None}")
+        swarm.add_agents(agents=[register_agent], to_remove_agents=[origin_agent] if origin_agent else [])
+        swarm_agent_ids_after = [a for a in swarm.agents] if getattr(swarm, "agents", None) else []
+        swarm_agent_names_after = [a for a in swarm.agents] if getattr(swarm, "agents", None) else []
+        logger.info(f"dynamic_register: step3 after add_agents, swarm agent count={len(swarm_agent_ids_after)} ids={swarm_agent_ids_after} names={swarm_agent_names_after}")
 
 
         # Step 4: Refresh the root agent's tools cache to include the newly registered agent
@@ -330,11 +354,12 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
         try:
             if swarm.agent_graph and swarm.agent_graph.root_agent:
                 root_agent = swarm.agent_graph.root_agent
-                logger.info('root_agent: ', root_agent.id())
+                logger.info(f"dynamic_register: step4 root_agent raw={root_agent.id() if hasattr(root_agent, 'id') else root_agent}")
                 if isinstance(root_agent, list):
                     root_agent = root_agent[0]
 
                 root_agent_name = root_agent.name()
+                logger.info(f"dynamic_register: step4 root_agent_name={root_agent_name}")
 
                 # Find the agent with the same name from AgentFactory
                 from aworld.core.agent.base import AgentFactory
@@ -342,7 +367,7 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
 
                 # find agent from factory
                 factory_agent = find_from_agent_factory_by_name(root_agent_name)
-                logger.info('factory_agent: ', factory_agent.id())
+                logger.info(f"dynamic_register: step4 factory_agent={factory_agent} (id={factory_agent.id() if factory_agent else None})")
 
                 # Use factory agent if found, otherwise use root_agent
                 agent_to_refresh = factory_agent if factory_agent else root_agent
@@ -350,7 +375,7 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
 
                 # Clear the tools cache so it will be regenerated with the new agent in handoffs
                 agent_to_refresh.tools = []
-                logger.info(f"Cleared tools cache for agent '{agent_to_refresh.id()}' (from {agent_source}) to force refresh")
+                logger.info(f"dynamic_register: step4 cleared tools cache for agent={agent_to_refresh.id()} (from {agent_source})")
 
                 # Try to refresh tools immediately if context is ApplicationContext
                 # Note: context parameter might be DefaultContext for AgentVersionControlRegistry,
@@ -359,8 +384,9 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
                 if context and isinstance(context, ApplicationContext):
                     try:
                         await agent_to_refresh.async_desc_transform(context)
-                        logger.info(f'agent_to_refresh2: {agent_to_refresh.id()} tools: {agent_to_refresh.tools}')
-                        logger.info(f"Refreshed tools for agent '{agent_to_refresh.id()}' (from {agent_source}) with new agent '{register_agent.id()}'")
+                        tool_names = [t.name if hasattr(t, "name") else getattr(t, "name", str(t)) for t in (agent_to_refresh.tools or [])]
+                        logger.info(f"dynamic_register: step4 refreshed tools for agent={agent_to_refresh.id()}, tool count={len(agent_to_refresh.tools or [])}, tool names={tool_names}")
+                        logger.info(f"dynamic_register: step4 async_desc_transform done for agent={agent_to_refresh.id()} (from {agent_source}) with new agent={register_agent.id()}")
                     except Exception as e:
                         logger.warning(f"Failed to refresh tools for agent '{agent_to_refresh.id()}' (from {agent_source}): {e}. Tools will be regenerated on next use.")
                 else:
@@ -369,7 +395,7 @@ async def dynamic_register(local_agent_name: str, register_agent_name: str, cont
             logger.warning(f"Failed to refresh root agent tools cache: {e}. Tools will be regenerated on next use.")
 
 
-        logger.info(f"Successfully added agent '{register_agent_name}' to local agent '{local_agent_name}'s team_swarm")
+        logger.info(f"dynamic_register: success local_agent_name={local_agent_name} register_agent_name={register_agent_name} register_agent.id={register_agent.id()}")
         return True
 
     except ValueError:
@@ -437,14 +463,15 @@ class ContextAgentRegistryTool(AsyncTool):
                 return AgentScanner(context)
 
             for action in actions:
-                logger.info(f"ContextAgentRegistryTool|do_step: {action}")
                 action_name = action.action_name
                 action_result = ActionResult(action_name=action_name, tool_name=self.name())
+                logger.info(f"ContextAgentRegistryTool|do_step: action_name={action_name} params={action.params}")
 
                 try:
                     if action_name == ContextAgentRegistryAction.LIST_DESC.value.name:
                         source_type = action.params.get("source_type", "user")
-                        
+                        logger.info(f"ContextAgentRegistryTool|list_desc: source_type={source_type}")
+
                         if source_type == "built-in":
                             # Query built-in resources from plugin_manager
                             resources_with_desc = await list_built_in_resources()
@@ -452,6 +479,7 @@ class ContextAgentRegistryTool(AsyncTool):
                             # Query user resources from AgentScanner (default)
                             service = get_agent_registry_service()
                             resources_with_desc = await service.list_desc()
+                        logger.info(f"ContextAgentRegistryTool|list_desc: result count={len(resources_with_desc)}")
 
                         action_result.success = True
                         if resources_with_desc:
@@ -484,6 +512,7 @@ class ContextAgentRegistryTool(AsyncTool):
                     elif action_name == ContextAgentRegistryAction.DYNAMIC_REGISTER.value.name:
                         local_agent_name = action.params.get("local_agent_name", "")
                         register_agent_name = action.params.get("register_agent_name", "")
+                        logger.info(f"ContextAgentRegistryTool|dynamic_register: local_agent_name={local_agent_name} register_agent_name={register_agent_name}")
 
                         if not local_agent_name:
                             raise ValueError("local_agent_name is required")
@@ -502,11 +531,14 @@ class ContextAgentRegistryTool(AsyncTool):
                             if success:
                                 action_result.success = True
                                 action_result.content = f"Successfully registered agent '{register_agent_name}' to local agent '{local_agent_name}'s team_swarm"
+                                logger.info(f"ContextAgentRegistryTool|dynamic_register: action result success local={local_agent_name} register={register_agent_name}")
                             else:
                                 raise ValueError(
                                     f"Failed to register agent '{register_agent_name}' to local agent '{local_agent_name}'")
                         except ValueError as ve:
-                            # Re-raise ValueError with detailed error message
+                            logger.exception(
+                                f"dynamic_register failed: local_agent_name={local_agent_name} register_agent_name={register_agent_name}: {ve}",
+                            )
                             raise ve
 
                     else:
@@ -539,6 +571,8 @@ class ContextAgentRegistryTool(AsyncTool):
             ability=action_name,
             action_result=action_results
         )
-
+        logger.info(
+            f"ContextAgentRegistryTool|do_step: done actions={len(actions)} reward={reward} fail_error={bool(fail_error)} result_count={len(action_results)}",
+        )
         self.step_finished = True
         return (observation, reward, len(fail_error) > 0, len(fail_error) > 0, info)
