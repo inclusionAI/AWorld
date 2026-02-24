@@ -253,6 +253,7 @@ from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
 from aworld_cli.core import agent
 from aworld.sandbox.base import Sandbox
+# The prefix simple_agent is required and must match the agent name
 from simple_agent.mcp_config import mcp_config
 
 @HookFactory.register(name="pre_simple_agent_hook")

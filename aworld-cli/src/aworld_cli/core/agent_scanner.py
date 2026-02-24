@@ -81,21 +81,26 @@ class AgentCodeScanner(Scanner):
             )
             
             if not attachment:
+                logger.warning(
+                    "load_agent: no .py resource found for agent_name=%s under base_path=%s",
+                    agent_name, base_path,
+                )
                 return None
             
             file_path = Path(dir_artifact.base_path) / attachment.path
             
             if not file_path.exists():
-                logger.error(f"Python agent file not found: {file_path}")
+                logger.error("load_agent: Python agent file not found: %s (base_path=%s)", file_path, base_path)
                 return None
             
             if not self._has_agent_decorator_fast(file_path):
+                logger.warning("load_agent: file has no @agent decorator: %s", file_path)
                 return None
             
             module_name = file_path.stem
             spec = importlib.util.spec_from_file_location(module_name, file_path)
             if spec is None or spec.loader is None:
-                logger.error(f"Could not create spec for {file_path}")
+                logger.error("load_agent: could not create spec for %s", file_path)
                 return None
             
             module = importlib.util.module_from_spec(spec)
@@ -105,14 +110,22 @@ class AgentCodeScanner(Scanner):
             local_agent = LocalAgentRegistry.get_agent(agent_name)
 
             if not local_agent:
+                logger.warning(
+                    "load_agent: LocalAgentRegistry.get_agent(%s) returned None after loading module from %s. "
+                    "Ensure the @agent decorator name matches '%s' and the module registered the agent.",
+                    agent_name, file_path, agent_name,
+                )
                 return None
 
             swarm = await local_agent.get_swarm()
-            if swarm and swarm.agents:
-                agent_id, agent = next(iter(swarm.agents.items()))
-                return agent
-            
-            return None
+            if not swarm or not swarm.agents:
+                logger.warning(
+                    "load_agent: local_agent '%s' has no swarm or empty swarm.agents (path=%s)",
+                    agent_name, getattr(local_agent, "path", None),
+                )
+                return None
+            agent_id, agent = next(iter(swarm.agents.items()))
+            return agent
             
         except Exception as e:
             logger.error(f"Failed to load Python agent from base_path {base_path}: {e} {traceback.format_exc()}")
