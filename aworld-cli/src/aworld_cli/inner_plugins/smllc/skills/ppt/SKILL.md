@@ -1,6 +1,6 @@
 ---
 name: ppt
-description: Professional PPT generation skill that combines orchestrator (outline generation), template (HTML style template), and content (slide content) generation. Generates complete PowerPoint presentations with structured outlines, custom HTML templates, and rich slide content.
+description: Professional PPT generation skill that combines orchestrator (outline generation), template (HTML style template), and content (slide content) generation. Generates complete PowerPoint presentations with structured outlines, custom HTML templates, and rich slide content. If there are other skills with the same functionality, prefer using those skills instead.
 ---
 
 # PPT Generation Skill

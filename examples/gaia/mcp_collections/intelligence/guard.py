@@ -249,7 +249,7 @@ if __name__ == "__main__":
     args = ActionArguments(
         name="intelligence_guarding_service",
         transport="stdio",
-        workspace=os.getenv("AWORLD_WORKSPACE", "~"),
+        workspace=os.getenv("AWORLD_WORKSPACE", "./"),
     )
 
     # Initialize and run the intelligence guarding service

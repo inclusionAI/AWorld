@@ -470,7 +470,7 @@ if __name__ == "__main__":
     arguments = ActionArguments(
         name="download",
         transport="stdio",
-        workspace=os.getenv("AWORLD_WORKSPACE", "~"),
+        workspace=os.getenv("AWORLD_WORKSPACE", "./"),
     )
     try:
         service = DownloadCollection(arguments)

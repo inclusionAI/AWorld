@@ -338,7 +338,7 @@ if __name__ == "__main__":
     args = ActionArguments(
         name="code_generation_service",
         transport="stdio",
-        workspace=os.getenv("AWORLD_WORKSPACE", "~"),
+        workspace=os.getenv("AWORLD_WORKSPACE", "./"),
     )
 
     # Initialize and run the code generation service

@@ -246,7 +246,7 @@ def load_all_registered_agents(
 
     # Get all registered agents
     registered_agents = LocalAgentRegistry.list_agents()
-    logger.info(f"📋 Found {len(registered_agents)} registered agent(s) in LocalAgentRegistry")
+    logger.info(f"📋 Found {len(registered_agents)} registered agent(s) in LocalAgentRegistry {registered_agents}")
     
     all_agent_instances = []
     skipped_count = 0
@@ -479,21 +479,39 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         else:
             logger.debug(f"✅ Skill '{skill_name}' has skill_path: {skill_config['skill_path']}")
 
-    # Combine all skills
-    ALL_SKILLS = CUSTOM_SKILLS
+    # Apply metadata.aworld: only include skills that are eligible (or have no aworld_metadata)
+    ALL_SKILLS = {}
+    for skill_name, skill_config in CUSTOM_SKILLS.items():
+        aworld_meta = skill_config.get("aworld_metadata")
+        if aworld_meta is None:
+            ALL_SKILLS[skill_name] = skill_config
+            continue
+        if aworld_meta.get("eligible", True):
+            ALL_SKILLS[skill_name] = skill_config
+        else:
+            missing = aworld_meta.get("missing") or {}
+            install_opts = aworld_meta.get("install_options") or []
+            install_hint = ""
+            if install_opts:
+                labels = [o.get("label") or o.get("kind") for o in install_opts if o.get("label") or o.get("kind")]
+                if labels:
+                    install_hint = f" Install: {'; '.join(labels)}."
+            logger.warning(
+                f"⚠️ Skill '{skill_name}' skipped (requirements not satisfied): missing={missing}.{install_hint}"
+            )
 
-    # Configure agent
+    # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
     agent_config = AgentConfig(
         llm_config=ModelConfig(
             llm_temperature=0.1,  # Lower temperature for more consistent task execution
-            llm_model_name=os.environ.get("LLM_MODEL_NAME"),
-            llm_provider=os.environ.get("LLM_PROVIDER"),
-            llm_api_key=os.environ.get("LLM_API_KEY"),
-            llm_base_url=os.environ.get("LLM_BASE_URL"),
-            params={"max_completion_tokens": os.environ.get("MAX_COMPLETION_TOKENS", 10240)}
+            llm_model_name=os.getenv("LLM_MODEL_NAME"),
+            llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+            llm_api_key=os.getenv("LLM_API_KEY"),
+            llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
+            params={"max_completion_tokens": int(os.getenv("MAX_COMPLETION_TOKENS", "10240"))}
         ),
         use_vision=False,  # Enable if needed for image analysis
-        # skill_configs=ALL_SKILLS
+        skill_configs=ALL_SKILLS
     )
 
     # Get current working directory for filesystem-server
