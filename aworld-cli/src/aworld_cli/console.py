@@ -1,14 +1,16 @@
 import asyncio
+import json
 import sys
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import NestedCompleter
+from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from rich import box
 from rich.color import Color
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
@@ -74,6 +76,119 @@ class AWorldCLI:
         
         self.console.print(Text.assemble(subtitle, version))
         self.console.print() # Padding
+
+    async def _interactive_config_editor(self):
+        """Interactive configuration editor. First menu: choose config type (e.g. model)."""
+        from .core.config import get_config
+        from rich.panel import Panel
+        from rich.table import Table
+        
+        config = get_config()
+        current_config = config.load_config()
+        
+        self.console.print(Panel(
+            "[bold cyan]Configuration Editor[/bold cyan]\n\n"
+            f"Config file: [dim]{config.get_config_path()}[/dim]",
+            title="Config",
+            border_style="cyan"
+        ))
+        
+        # First menu: select configuration type (Back/cancel uses largest number)
+        config_types = [
+            ("1", "Model configuration", self._edit_models_config),
+        ]
+        back_key = str(len(config_types) + 1)
+        self.console.print("\n[bold]Select configuration type:[/bold]")
+        for key, label, _ in config_types:
+            self.console.print(f"  {key}. {label}")
+        self.console.print(f"  {back_key}. Back (cancel)")
+        
+        choice = Prompt.ask("\nChoice", default="1")
+        if choice == back_key:
+            self.console.print("[dim]Cancelled.[/dim]")
+            return
+        
+        handler = None
+        for key, label, fn in config_types:
+            if choice == key:
+                handler = fn
+                break
+        if not handler:
+            self.console.print("[red]Invalid selection.[/red]")
+            return
+        
+        await handler(config, current_config)
+    
+    async def _edit_models_config(self, config, current_config: dict):
+        """Edit models section of config (providers, api_key, model, base_url)."""
+        from rich.table import Table
+        
+        if 'models' not in current_config:
+            current_config['models'] = {}
+        
+        providers = ['openai', 'anthropic', 'gemini']
+        self.console.print("\n[bold]Model provider:[/bold]")
+        for i, provider in enumerate(providers, 1):
+            self.console.print(f"  {i}. {provider}")
+        
+        provider_choice = Prompt.ask("\nSelect provider (1-3)", default="1")
+        try:
+            provider_idx = int(provider_choice) - 1
+            if provider_idx < 0 or provider_idx >= len(providers):
+                self.console.print("[red]Invalid selection[/red]")
+                return
+            selected_provider = providers[provider_idx]
+        except ValueError:
+            self.console.print("[red]Invalid selection[/red]")
+            return
+        
+        if selected_provider not in current_config['models']:
+            current_config['models'][selected_provider] = {}
+        
+        provider_config = current_config['models'][selected_provider]
+        
+        self.console.print(f"\n[bold]Configuring {selected_provider}[/bold]")
+        current_api_key = provider_config.get('api_key', '')
+        if current_api_key:
+            masked_key = current_api_key[:8] + "..." if len(current_api_key) > 8 else "***"
+            self.console.print(f"  [dim]Current API key: {masked_key}[/dim]")
+        api_key = Prompt.ask(
+            f"  {selected_provider.upper()}_API_KEY",
+            default=current_api_key,
+            password=True
+        )
+        if api_key:
+            provider_config['api_key'] = api_key
+        
+        current_model = provider_config.get('model', '')
+        if current_model:
+            self.console.print(f"  [dim]Default: {current_model}[/dim]")
+        else:
+            self.console.print("  [dim]e.g. gpt-4, claude-3-opus · press Enter to leave empty[/dim]")
+        model = Prompt.ask("  Model name", default=current_model)
+        if model:
+            provider_config['model'] = model
+        
+        current_base_url = provider_config.get('base_url', '')
+        self.console.print("  [dim]Optional · press Enter to leave empty[/dim]")
+        base_url = Prompt.ask("  Base URL", default=current_base_url)
+        if base_url:
+            provider_config['base_url'] = base_url
+        
+        config.save_config(current_config)
+        self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
+        
+        table = Table(title=f"{selected_provider.upper()} Configuration", box=box.ROUNDED)
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+        for key, value in provider_config.items():
+            if key == 'api_key':
+                masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
+                table.add_row(key, masked_value)
+            else:
+                table.add_row(key, str(value))
+        self.console.print()
+        self.console.print(table)
 
     def display_agents(self, agents: List[AgentInfo], source_type: str = "LOCAL", source_location: str = ""):
         """
@@ -530,21 +645,38 @@ class AWorldCLI:
         session = None
         
         if is_terminal:
-            completer = NestedCompleter.from_nested_dict({
-                '/switch': {name: None for name in agent_names},
-                '/new': None,
-                '/restore': None,
-                '/latest': None,
-                '/skills': None,
-                '/agents': None,
-                '/test': None,
-                '/exit': None,
-                '/quit': None,
-                'exit': None,
-                'quit': None
-
-            })
-            session = PromptSession(completer=completer)
+            # 用整行前缀匹配：/ski → /skills、/age → /agents；meta_dict 在补全菜单中显示描述（命令左、描述右）
+            slash_cmds = [
+                "/agents", "/skills", "/new", "/restore", "/latest",
+                "/test", "/exit", "/quit", "/switch",
+            ]
+            switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
+            all_words = slash_cmds + switch_with_agents + ["exit", "quit"]
+            meta_dict = {
+                "/agents": "List available agents",
+                "/skills": "List available skills",
+                "/new": "Create a new session",
+                "/restore": "Restore to the latest session",
+                "/latest": "Restore to the latest session",
+                "/test": "Test user input functionality",
+                "/exit": "Exit chat",
+                "/quit": "Exit chat",
+                "/switch": "Switch to another agent",
+                "exit": "Exit chat",
+                "quit": "Exit chat",
+            }
+            for n in agent_names:
+                meta_dict[f"/switch {n}"] = f"Switch to agent: {n}"
+            completer = WordCompleter(
+                all_words,
+                ignore_case=True,
+                sentence=True,
+                meta_dict=meta_dict,
+            )
+            session = PromptSession(
+                completer=completer,
+                complete_while_typing=True,  # 输入时即显示补全列表（带描述）
+            )
 
         while True:
             try:
@@ -647,51 +779,39 @@ class AWorldCLI:
                             logger.info("[yellow]No skills available.[/yellow]")
                             continue
                         
-                        # Separate skills into plugin and user skills
-                        plugin_skills = {}
-                        user_skills = {}
-                        
+                        # Build rows with source: users vs plugins
+                        rows = []
                         for skill_name, skill_data in all_skills.items():
                             skill_path = skill_data.get("skill_path", "")
-                            # Determine if skill is from plugin or user
-                            # Plugin skills: from inner_plugins or .aworld directories
-                            if skill_path and ("inner_plugins" in skill_path or ".aworld" in skill_path):
-                                plugin_skills[skill_name] = skill_data
+                            source = "plugins" if (skill_path and "inner_plugins" in skill_path) else "users"
+                            rows.append((skill_name, skill_data, source))
+                        rows.sort(key=lambda x: (x[2], x[0]))  # sort by source then name
+                        
+                        # Single table with Source and Address columns
+                        table = Table(title="Skills", box=box.ROUNDED)
+                        table.add_column("Name", style="magenta")
+                        table.add_column("Description", style="green")
+                        table.add_column("Source", style="cyan")
+                        # Address column: truncate when long; full path shown on hover via link (OSC 8)
+                        _addr_max = 48
+                        table.add_column("Address", style="dim", no_wrap=False, max_width=_addr_max)
+                        
+                        for skill_name, skill_data, source in rows:
+                            desc = skill_data.get("description") or skill_data.get("desc") or "No description"
+                            # if len(desc) > 60:
+                            #     desc = desc[:57] + "..."
+                            address = skill_data.get("skill_path", "") or "—"
+                            if address == "—":
+                                addr_cell = Text("—", style="dim")
+                            elif len(address) > _addr_max:
+                                addr_display = address[: _addr_max - 3] + "..."
+                                addr_cell = Text(addr_display, style=Style(dim=True, link=address))
                             else:
-                                user_skills[skill_name] = skill_data
+                                addr_cell = Text(address, style=Style(dim=True, link=address))
+                            table.add_row(skill_name, desc, source, addr_cell)
                         
-                        # Helper function to create and display a skills table
-                        def display_skills_table(skills_dict, title):
-                            if not skills_dict:
-                                return
-
-                            table = Table(title=title, box=box.ROUNDED)
-                            table.add_column("Name", style="magenta")
-                            table.add_column("Description", style="green")
-                            
-                            for skill_name, skill_data in sorted(skills_dict.items()):
-                                desc = skill_data.get("description") or skill_data.get("desc") or "No description"
-                                # Truncate description if too long
-                                if len(desc) > 60:
-                                    desc = desc[:57] + "..."
-                                
-                                table.add_row(skill_name, desc)
-
-                            self.console.print(table)
-                            self.console.print(f"[dim]Total: {len(skills_dict)} skill(s)[/dim]")
-                        
-                        # Display User skills first
-                        if user_skills:
-                            display_skills_table(user_skills, "User Skills")
-                            self.console.print()  # Add spacing between tables
-                        
-                        # Display Plugin skills
-                        if plugin_skills:
-                            display_skills_table(plugin_skills, "Plugin Skills")
-                        
-                        # Display overall total
-                        if plugin_skills and user_skills:
-                            self.console.print(f"[dim]Overall Total: {len(all_skills)} skill(s)[/dim]")
+                        self.console.print(table)
+                        self.console.print(f"[dim]Total: {len(all_skills)} skill(s)[/dim]")
                     except Exception as e:
                         self.console.print(f"[red]Error loading skills: {e}[/red]")
                     continue

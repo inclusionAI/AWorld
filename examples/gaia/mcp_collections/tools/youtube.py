@@ -539,7 +539,7 @@ if __name__ == "__main__":
     arguments = ActionArguments(
         name="youtube_service",
         transport="stdio",
-        workspace=os.getenv("AWORLD_WORKSPACE", "~"),
+        workspace=os.getenv("AWORLD_WORKSPACE", "./"),
     )
 
     try:

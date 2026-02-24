@@ -32,26 +32,28 @@ def _has_agent_decorator(file_path: Path) -> bool:
         return False
 
 
-def init_agents(agents_dir: Union[str, Path] = None) -> None:
-    """Initialize and register all agents decorated with @agent and from markdown files.
+def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool = False) -> None:
+    """Initialize and register all agents decorated with @agent and optionally from markdown files.
     
     This function automatically discovers and imports:
     1. Python files with @agent decorator
-    2. Markdown files with YAML front matter containing agent definitions
+    2. Markdown files with YAML front matter containing agent definitions (optional, disabled by default)
     
     Args:
         agents_dir: Path to the agents directory (can be str or Path object)
+        load_markdown_agents: If True, load markdown agents. Defaults to False.
     
     Example:
         >>> from aworld_cli.core.loader import init_agents
         >>> init_agents("./agents")
+        >>> # To enable markdown agent loading:
+        >>> init_agents("./agents", load_markdown_agents=True)
     """
     if not agents_dir:
         # Default to current working directory if not specified
         agents_dir = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or os.getcwd()
 
     from .agent_registry import LocalAgentRegistry
-    from .markdown_agent_loader import load_markdown_agents
     from .._globals import console
 
     # Convert to Path object if it's a string
@@ -61,23 +63,27 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
         console.print(f"[yellow]⚠️ Agents directory not found: {agents_dir}[/yellow]")
         return
     
-    # Load markdown agents first
-    from rich.status import Status
-    with Status(f"[dim]📂 Loading agents from: {agents_dir}[/dim]", console=console):
-        markdown_agents = load_markdown_agents(agents_dir)
+    # Load markdown agents only if explicitly enabled
     markdown_loaded_count = 0
     markdown_failed_count = 0
+    markdown_agents = []
     
-    for agent in markdown_agents:
-        try:
-            LocalAgentRegistry.register(agent)
-            markdown_loaded_count += 1
-            # Get file path from metadata if available
-            file_path = agent.metadata.get("file_path", "unknown") if agent.metadata else "unknown"
-            logger.info(f"[dim]✅ Loaded markdown agent: {agent.name} from {file_path}[/dim]")
-        except Exception as e:
-            markdown_failed_count += 1
-            console.print(f"[dim]❌ Failed to register markdown agent {agent.name}: {e}[/dim]")
+    if load_markdown_agents:
+        from .markdown_agent_loader import load_markdown_agents as load_md_agents
+        from rich.status import Status
+        with Status(f"[dim]📂 Loading agents from: {agents_dir}[/dim]", console=console):
+            markdown_agents = load_md_agents(agents_dir)
+        
+        for agent in markdown_agents:
+            try:
+                LocalAgentRegistry.register(agent)
+                markdown_loaded_count += 1
+                # Get file path from metadata if available
+                file_path = agent.metadata.get("file_path", "unknown") if agent.metadata else "unknown"
+                logger.info(f"[dim]✅ Loaded markdown agent: {agent.name} from {file_path}[/dim]")
+            except Exception as e:
+                markdown_failed_count += 1
+                console.print(f"[dim]❌ Failed to register markdown agent {agent.name}: {e}[/dim]")
     
     # Find all Python files recursively, excluding __init__.py, private modules, and plugin_manager
     all_python_files = [
@@ -134,6 +140,7 @@ def init_agents(agents_dir: Union[str, Path] = None) -> None:
         sys.path.insert(0, project_root_str)
     
     # Import modules with status indicator
+    from rich.status import Status
     with Status(f"[dim]📦 Loading {len(python_files)} agent module(s)...[/dim]", console=console):
         for py_file in python_files:
             try:

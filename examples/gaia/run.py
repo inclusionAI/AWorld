@@ -23,8 +23,8 @@ from examples.gaia.utils import (
 )
 
 # Create log directory if it doesn't exist
-if not os.path.exists(os.getenv("AWORLD_WORKSPACE", "~")):
-    os.makedirs(os.getenv("AWORLD_WORKSPACE", "~"))
+if not os.path.exists(os.getenv("AWORLD_WORKSPACE", "./")):
+    os.makedirs(os.getenv("AWORLD_WORKSPACE", "./"))
 
 parser = argparse.ArgumentParser()
 parser.add_argument(
@@ -70,7 +70,7 @@ def setup_logging():
 
     log_file_name = f"/super_agent_{args.q}.log" if args.q else f"/super_agent_{args.start}_{args.end}.log"
     file_handler = logging.FileHandler(
-        os.getenv("AWORLD_WORKSPACE", "~") + log_file_name,
+        os.getenv("AWORLD_WORKSPACE", "./") + log_file_name,
         mode="a",
         encoding="utf-8",
     )
@@ -115,8 +115,8 @@ if __name__ == "__main__":
     )
 
     # load results from the checkpoint file
-    if os.path.exists(os.getenv("AWORLD_WORKSPACE", "~") + "/results.json"):
-        with open(os.getenv("AWORLD_WORKSPACE", "~") + "/results.json", "r", encoding="utf-8") as results_f:
+    if os.path.exists(os.getenv("AWORLD_WORKSPACE", "./") + "/results.json"):
+        with open(os.getenv("AWORLD_WORKSPACE", "./") + "/results.json", "r", encoding="utf-8") as results_f:
             results: List[Dict[str, Any]] = json.load(results_f)
     else:
         results: List[Dict[str, Any]] = []
@@ -224,5 +224,5 @@ if __name__ == "__main__":
     finally:
         # report
         report_results(results)
-        with open(os.getenv("AWORLD_WORKSPACE", "~") + "/results.json", "w", encoding="utf-8") as f:
+        with open(os.getenv("AWORLD_WORKSPACE", "./") + "/results.json", "w", encoding="utf-8") as f:
             json.dump(results, f, indent=4, ensure_ascii=False)
