@@ -619,7 +619,7 @@ Batch Jobs:
     
     # Require model config for commands that use the agent (skip for 'list' and plugin)
     if args.command != "list" and not has_model_config(config_dict):
-        console.print("[yellow]未检测到模型配置（API Key 等）。请先配置后再启动。[/yellow]")
+        console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
         console.print("[dim]Run: aworld-cli --config[/dim]")
         sys.exit(1)
     
