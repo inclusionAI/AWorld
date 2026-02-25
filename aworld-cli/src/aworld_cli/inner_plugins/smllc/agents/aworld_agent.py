@@ -447,7 +447,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_api_key=os.getenv("LLM_API_KEY"),
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
-            params={"max_completion_tokens": 1024000}
+            params={"max_completion_tokens": 59000}
         ),
         use_vision=False,  # Enable if needed for image analysis
         skill_configs=ALL_SKILLS
