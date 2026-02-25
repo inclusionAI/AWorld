@@ -28,7 +28,6 @@ from aworld_cli.core.loader import init_agents
 from aworld_cli.core.agent_scanner import global_agent_registry
 import asyncio
 from aworld.config import AgentConfig, ModelConfig
-from aworld.utils.skill_loader import collect_skill_docs
 # for skills use
 CAST_ANALYSIS, CAST_CODER, AGENT_REGISTRY
 
@@ -53,22 +52,24 @@ You are AWorldAgent, a sophisticated AI agent acting as a central coordinator. Y
 
 ## 2. Core Operational Workflow
 You must tackle every user request by following this iterative, step-by-step process:
-
 1.  **Analyze & Decompose:** Break down the user's complex request into a sequence of smaller, manageable sub-tasks.
 2.  **Select & Execute:** For the immediate sub-task, select **one and only one** assistant (tool) best suited to complete it.
 3.  **Report & Plan:** After the tool executes, clearly explain the results of that step and state your plan for the next action.
 4.  **Iterate:** Repeat this process until the user's overall request is fully resolved.
 
-## 3. Available Assistants (Tools)
+## 3. Available Assistants/Tools
 You are equipped with multiple assistants. It is your job to know which to use and when. Your key assistants include:
+*   `text2agent`: a sub-agent that creates a new agent from a user's description.
+*   `optimizer`: a sub-agent that optimizes an existing agent to better meet user requirements.
+*   `explorer`: a sub-agent that can deeply analyze codebases like Github, by using terminal and professional code analysis tools.
+*   `terminal_tool`: A tool set that can execute terminal commands.
+*   `SKILL_tool`: A tool set that can activate, deactivate skills, and so on.
 
-*   `search_agent`: Handles reasoning, and document analysis tasks.
-*   `text2agent`: Creates a new agent from a user's description.
-*   `optimizer_agent`: Optimizes an existing agent to better meet user requirements.
-*    specialized agents/tools: Please be aware of other specialized assistants/tools equiped for you, call them to do the appropriate job while the user call them.
+## 4. Available Skills
+*    Please be aware that if you need to have access to a particular skill to help you to complete the task, you MUST use the appropriate `SKILL_tool` to activate the skill, which returns you the exact skill content.
+*    You MUST NOT call the skill as a tool, since the skill is not a tool. You have to use the `SKILL_tool` to activate the skill.
 
-
-## 4. Critical Guardrails
+## 5. Critical Guardrails
 - **One Tool Per Step:** You **must** call only one tool at a time. Do not chain multiple tool calls in a single response.
 - **True to Task:** While calling your assistant, you must pass the user's raw request/details to the assistant, without any modification.
 - **Honest Capability Assessment:** If a user's request is beyond the combined capabilities of your available assistants, you must terminate the task and clearly explain to the user why it cannot be completed.
@@ -431,84 +432,20 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     """
     from pathlib import Path
 
-    from aworld_cli.core.plugin_manager import get_plugin_skills_dir
-    from aworld_cli.core.skill_registry import get_user_skills_paths
+    from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
 
-    # 1) Plugin skills dir: built-in aworld skills (e.g. inner_plugins/smllc/skills)
-    cur_dir = Path(__file__).resolve().parents[1]
-    plugin_skills_dir = get_plugin_skills_dir(cur_dir)
-    logger.info(f"agent_config: {cur_dir}")
-
-    CUSTOM_SKILLS = {}
-    if plugin_skills_dir.exists() and plugin_skills_dir.is_dir():
-        CUSTOM_SKILLS = collect_skill_docs(plugin_skills_dir)
-
-    # 2) User skills dirs: SKILLS_PATH / SKILLS_DIR / ~/.aworld/skills
-    for user_skills_path in get_user_skills_paths():
-        if not user_skills_path.exists() or not user_skills_path.is_dir():
-            continue
-        try:
-            logger.info(f"📚 Loading skills from user path: {user_skills_path}")
-            additional_skills = collect_skill_docs(str(user_skills_path))
-            if additional_skills:
-                for skill_name, skill_data in additional_skills.items():
-                    if skill_name in CUSTOM_SKILLS:
-                        logger.warning(
-                            f"⚠️ Duplicate skill name '{skill_name}' in user path '{user_skills_path}', skipping"
-                        )
-                    else:
-                        CUSTOM_SKILLS[skill_name] = skill_data
-                logger.info(f"✅ Loaded {len(additional_skills)} skill(s) from {user_skills_path}")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to load skills from '{user_skills_path}': {e}")
-
-    # Ensure all skills have skill_path for context_skill_tool to work
-    # collect_skill_docs already includes skill_path, but we verify and add if missing
-    for skill_name, skill_config in CUSTOM_SKILLS.items():
-        if "skill_path" not in skill_config:
-            # Try to infer skill_path from skill name and plugin skills dir
-            potential_skill_path = plugin_skills_dir / skill_name / "SKILL.md"
-            if not potential_skill_path.exists():
-                potential_skill_path = plugin_skills_dir / skill_name / "skill.md"
-            if potential_skill_path.exists():
-                skill_config["skill_path"] = str(potential_skill_path.resolve())
-                logger.debug(f"✅ Added skill_path for skill '{skill_name}': {skill_config['skill_path']}")
-            else:
-                logger.warning(
-                    f"⚠️ Skill '{skill_name}' has no skill_path and cannot be found in {plugin_skills_dir}, context_skill_tool may not work for this skill")
-        else:
-            logger.debug(f"✅ Skill '{skill_name}' has skill_path: {skill_config['skill_path']}")
-
-    # Apply metadata.aworld: only include skills that are eligible (or have no aworld_metadata)
-    ALL_SKILLS = {}
-    for skill_name, skill_config in CUSTOM_SKILLS.items():
-        aworld_meta = skill_config.get("aworld_metadata")
-        if aworld_meta is None:
-            ALL_SKILLS[skill_name] = skill_config
-            continue
-        if aworld_meta.get("eligible", True):
-            ALL_SKILLS[skill_name] = skill_config
-        else:
-            missing = aworld_meta.get("missing") or {}
-            install_opts = aworld_meta.get("install_options") or []
-            install_hint = ""
-            if install_opts:
-                labels = [o.get("label") or o.get("kind") for o in install_opts if o.get("label") or o.get("kind")]
-                if labels:
-                    install_hint = f" Install: {'; '.join(labels)}."
-            logger.warning(
-                f"⚠️ Skill '{skill_name}' skipped (requirements not satisfied): missing={missing}.{install_hint}"
-            )
+    plugin_base_dir = Path(__file__).resolve().parents[1]
+    ALL_SKILLS = collect_plugin_and_user_skills(plugin_base_dir)
 
     # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
     agent_config = AgentConfig(
         llm_config=ModelConfig(
-            llm_temperature=0.1,  # Lower temperature for more consistent task execution
             llm_model_name=os.getenv("LLM_MODEL_NAME"),
             llm_provider=os.getenv("LLM_PROVIDER", "openai"),
             llm_api_key=os.getenv("LLM_API_KEY"),
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
-            params={"max_completion_tokens": int(os.getenv("MAX_COMPLETION_TOKENS", "10240"))}
+            llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
+            params={"max_completion_tokens": 40960}
         ),
         use_vision=False,  # Enable if needed for image analysis
         skill_configs=ALL_SKILLS

@@ -50,6 +50,7 @@ class OptimizerAgent(Agent):
 def build_optimizer_swarm():
     # Create Agent configuration
     agent_config = AgentConfig(
+        # DO NOT MODIFY: LLM config block below must be preserved exactly (env vars + defaults).
         llm_config=ModelConfig(
             llm_model_name=os.environ.get("LLM_MODEL_NAME", "gpt-3.5-turbo"),
             llm_provider=os.environ.get("LLM_PROVIDER", "openai"),

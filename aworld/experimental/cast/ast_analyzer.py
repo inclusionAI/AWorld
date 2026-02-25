@@ -133,7 +133,6 @@ class DefaultASTAnalyzer(ASTAnalyzer):
             logic_layer=logic_layer,
             skeleton_layer=skeleton_layer,
             implementation_layer=implementation_layer,
-            code_nodes=code_nodes,
             pagerank_scores=pagerank_scores,
             last_updated=time.time()
         )
@@ -508,52 +507,44 @@ class ASTContextBuilder:
         return layered_content
 
     def _generate_skeleton_context(self, repo_map: RepositoryMap, user_mentions: List[str]) -> str:
-        """Generate code skeleton layer context"""
+        """Generate code skeleton layer context by recalling matched content from skeleton_layer."""
         lines = ["# Code Skeleton"]
 
-        # Generate skeleton for most relevant files
+        # Build list of (file_path, score) from skeleton_layer only
         relevant_files = []
-
-        # Filter relevant files based on user mentions (using regex matching)
         import re
-        if user_mentions:
-            for file_path, node in repo_map.code_nodes.items():
+        for file_path, skeleton_text in repo_map.skeleton_layer.file_skeletons.items():
+            if user_mentions:
                 score = 0
                 for mention in user_mentions:
                     try:
                         if re.search(mention, file_path.name, re.IGNORECASE):
                             score += 10
-                        for symbol in node.symbols:
-                            if re.search(mention, symbol.name, re.IGNORECASE):
-                                score += 5
+                        if skeleton_text and re.search(mention, skeleton_text, re.IGNORECASE):
+                            score += 5
                     except re.error:
-                        # If regex is invalid, fallback to simple string matching
                         mention_lower = mention.lower()
                         if mention_lower in file_path.name.lower():
                             score += 10
-                        for symbol in node.symbols:
-                            if mention_lower in symbol.name.lower():
-                                score += 5
+                        if skeleton_text and mention_lower in skeleton_text.lower():
+                            score += 5
                 if score > 0:
                     relevant_files.append((file_path, score))
-
-        if not relevant_files:
-            # If no explicitly relevant files, select top 3 files by symbol count
-            relevant_files = [(fp, len(node.symbols)) for fp, node in repo_map.code_nodes.items()]
+            else:
+                # No mentions: use skeleton length as relevance proxy
+                relevant_files.append((file_path, len(skeleton_text) if skeleton_text else 0))
 
         relevant_files.sort(key=lambda x: x[1], reverse=True)
 
         for i, (file_path, score) in enumerate(relevant_files[:3], 1):
             lines.append(f"\n## {file_path.name}")
+            skeleton = repo_map.skeleton_layer.get_skeleton(file_path)
+            if skeleton:
+                lines.append("```")
+                lines.append(skeleton.strip())
+                lines.append("```")
 
-            # Simple skeleton generation
-            node = repo_map.code_nodes[file_path]
-            for symbol in node.symbols[:10]:
-                lines.append(f"  {symbol.symbol_type.value} {symbol.name}")
-                if symbol.signature:
-                    lines.append(f"    {symbol.signature}")
-
-        return '\n'.join(lines) + '\n'
+        return "\n".join(lines) + "\n"
 
     def _generate_implementation_context(self, repo_map: RepositoryMap, user_mentions: List[str]) -> str:
         """

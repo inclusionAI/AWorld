@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 
 from rich.console import Console
+from rich.markup import escape as markup_escape
+from aworld.logs.util import logger
 from rich.panel import Panel
 from rich.text import Text
 from rich.markdown import Markdown
@@ -656,11 +658,11 @@ class BaseAgentExecutor(ABC, AgentExecutor):
 
             # Add reasoning to response lines if available
             if reasoning_text.strip():
-                response_lines.extend(["[dim]💭 Thinking process：[/dim]", ""])
+                response_lines.extend(["💭 Thinking process：", ""])
                 reasoning_lines = reasoning_text.split('\n')
                 for line in reasoning_lines:
                     if line.strip():
-                        response_lines.append(f"[dim]{line}[/dim]")
+                        response_lines.append(f"{line}")
                     else:
                         response_lines.append("")
                 response_lines.append("")  # Add spacing after reasoning
