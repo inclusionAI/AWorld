@@ -1,14 +1,14 @@
-"""路径工具函数"""
+"""Path utility functions."""
 
 from pathlib import Path
 import os
 
 
 def normalize_path(p: str) -> str:
-    """规范化路径"""
+    """Normalize a path string (trim, dequote, expand ~, resolve to absolute)."""
     p = p.strip().strip('"\'')
     
-    # 展开 ~
+    # Expand ~
     if p.startswith("~/") or p == "~":
         p = str(Path.home() / p[1:])
     
@@ -22,7 +22,7 @@ def normalize_path(p: str) -> str:
 
 
 def is_path_allowed(path: str, allowed_dirs: list[str]) -> bool:
-    """检查路径是否在允许的目录内"""
+    """Check whether a path is inside one of the allowed directories."""
     if not path or not allowed_dirs:
         return False
     
@@ -52,21 +52,21 @@ def is_path_allowed(path: str, allowed_dirs: list[str]) -> bool:
 
 
 async def validate_path(path: str, allowed_dirs: list[str]) -> str:
-    """验证并解析路径"""
+    """Normalize, validate, and resolve a path, ensuring it is inside allowed_dirs."""
     normalized = normalize_path(path)
     
-    # 检查是否在允许目录内
+    # Check whether normalized path is inside allowed directories
     if not is_path_allowed(normalized, allowed_dirs):
         raise ValueError(f"Access denied: {path} not in allowed directories")
     
-    # 解析符号链接
+    # Resolve symlinks
     try:
         real_path = Path(normalized).resolve()
         if not is_path_allowed(str(real_path), allowed_dirs):
             raise ValueError(f"Access denied: symlink target outside allowed directories")
         return str(real_path)
     except OSError:
-        # 文件不存在，检查父目录
+        # File does not exist yet, check its parent directory instead
         parent = Path(normalized).parent
         try:
             real_parent = parent.resolve()
@@ -78,7 +78,7 @@ async def validate_path(path: str, allowed_dirs: list[str]) -> str:
 
 
 def resolve_and_require_file(path: str) -> str:
-    """解析路径并校验存在且为文件（不校验允许目录，用于 upload 的 source_path）"""
+    """Resolve a path and require it to exist and be a file (no allowed_dirs check, for upload source_path)."""
     normalized = normalize_path(path)
     try:
         real = Path(normalized).resolve()
