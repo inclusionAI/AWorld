@@ -530,7 +530,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
                     "client_session_timeout_seconds": 9999.0,
                 }
             }
-        }
+        },
+        tool_names=["CAST_ANALYSIS", "CAST_SEARCH"]
     )
 
     # Load all registered agents as sub-agents
