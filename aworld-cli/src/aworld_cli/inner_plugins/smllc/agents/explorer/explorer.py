@@ -74,7 +74,7 @@ def build_explorer_swarm():
             llm_api_key=os.environ.get("LLM_API_KEY"),
             llm_base_url=os.environ.get("LLM_BASE_URL"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
-            params={"max_completion_tokens": 40960}
+            params={"max_completion_tokens": 1024000}
         ),
         skill_configs=skill_configs
     )
