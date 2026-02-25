@@ -28,7 +28,6 @@ from aworld_cli.core.loader import init_agents
 from aworld_cli.core.agent_scanner import global_agent_registry
 import asyncio
 from aworld.config import AgentConfig, ModelConfig
-from aworld.utils.skill_loader import collect_skill_docs
 # for skills use
 CAST_ANALYSIS, CAST_CODER, AGENT_REGISTRY
 
@@ -428,84 +427,20 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     """
     from pathlib import Path
 
-    from aworld_cli.core.plugin_manager import get_plugin_skills_dir
-    from aworld_cli.core.skill_registry import get_user_skills_paths
+    from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
 
-    # 1) Plugin skills dir: built-in aworld skills (e.g. inner_plugins/smllc/skills)
-    cur_dir = Path(__file__).resolve().parents[1]
-    plugin_skills_dir = get_plugin_skills_dir(cur_dir)
-    logger.info(f"agent_config: {cur_dir}")
-
-    CUSTOM_SKILLS = {}
-    if plugin_skills_dir.exists() and plugin_skills_dir.is_dir():
-        CUSTOM_SKILLS = collect_skill_docs(plugin_skills_dir)
-
-    # 2) User skills dirs: SKILLS_PATH / SKILLS_DIR / ~/.aworld/skills
-    for user_skills_path in get_user_skills_paths():
-        if not user_skills_path.exists() or not user_skills_path.is_dir():
-            continue
-        try:
-            logger.info(f"📚 Loading skills from user path: {user_skills_path}")
-            additional_skills = collect_skill_docs(str(user_skills_path))
-            if additional_skills:
-                for skill_name, skill_data in additional_skills.items():
-                    if skill_name in CUSTOM_SKILLS:
-                        logger.warning(
-                            f"⚠️ Duplicate skill name '{skill_name}' in user path '{user_skills_path}', skipping"
-                        )
-                    else:
-                        CUSTOM_SKILLS[skill_name] = skill_data
-                logger.info(f"✅ Loaded {len(additional_skills)} skill(s) from {user_skills_path}")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to load skills from '{user_skills_path}': {e}")
-
-    # Ensure all skills have skill_path for context_skill_tool to work
-    # collect_skill_docs already includes skill_path, but we verify and add if missing
-    for skill_name, skill_config in CUSTOM_SKILLS.items():
-        if "skill_path" not in skill_config:
-            # Try to infer skill_path from skill name and plugin skills dir
-            potential_skill_path = plugin_skills_dir / skill_name / "SKILL.md"
-            if not potential_skill_path.exists():
-                potential_skill_path = plugin_skills_dir / skill_name / "skill.md"
-            if potential_skill_path.exists():
-                skill_config["skill_path"] = str(potential_skill_path.resolve())
-                logger.debug(f"✅ Added skill_path for skill '{skill_name}': {skill_config['skill_path']}")
-            else:
-                logger.warning(
-                    f"⚠️ Skill '{skill_name}' has no skill_path and cannot be found in {plugin_skills_dir}, context_skill_tool may not work for this skill")
-        else:
-            logger.debug(f"✅ Skill '{skill_name}' has skill_path: {skill_config['skill_path']}")
-
-    # Apply metadata.aworld: only include skills that are eligible (or have no aworld_metadata)
-    ALL_SKILLS = {}
-    for skill_name, skill_config in CUSTOM_SKILLS.items():
-        aworld_meta = skill_config.get("aworld_metadata")
-        if aworld_meta is None:
-            ALL_SKILLS[skill_name] = skill_config
-            continue
-        if aworld_meta.get("eligible", True):
-            ALL_SKILLS[skill_name] = skill_config
-        else:
-            missing = aworld_meta.get("missing") or {}
-            install_opts = aworld_meta.get("install_options") or []
-            install_hint = ""
-            if install_opts:
-                labels = [o.get("label") or o.get("kind") for o in install_opts if o.get("label") or o.get("kind")]
-                if labels:
-                    install_hint = f" Install: {'; '.join(labels)}."
-            logger.warning(
-                f"⚠️ Skill '{skill_name}' skipped (requirements not satisfied): missing={missing}.{install_hint}"
-            )
+    plugin_base_dir = Path(__file__).resolve().parents[1]
+    ALL_SKILLS = collect_plugin_and_user_skills(plugin_base_dir)
 
     # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
     agent_config = AgentConfig(
         llm_config=ModelConfig(
-            llm_temperature=0.1,  # Lower temperature for more consistent task execution
             llm_model_name=os.getenv("LLM_MODEL_NAME"),
             llm_provider=os.getenv("LLM_PROVIDER", "openai"),
             llm_api_key=os.getenv("LLM_API_KEY"),
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
-            params={"max_completion_tokens": int(os.getenv("MAX_COMPLETION_TOKENS", "10240"))}
+            llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
+            params={"max_completion_tokens": 40960}
         ),
         use_vision=False,  # Enable if needed for image analysis
         skill_configs=ALL_SKILLS

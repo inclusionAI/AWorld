@@ -60,7 +60,7 @@ class CAstAnalysisAction(ToolAction):
                 name="user_query",
                 type="string",
                 required=True,
-                desc="User query for implementation code recall (supports regular expressions)"
+                desc="MUST be a regular expression for symbol/line recall (e.g. .*MyClass.*|.*my_function.*). Natural language is not supported."
             ),
             "max_tokens": ParamInfo(
                 name="max_tokens",
