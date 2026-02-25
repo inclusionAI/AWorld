@@ -32,24 +32,29 @@ class FileNamespace(ToolNamespace):
         """Write content to file."""
         return await self._call_tool("write_file", path=path, content=content)
 
-    async def replace_in_file(
+    async def edit_file(
         self,
         path: str,
-        edits: List[dict],
+        start_line: int,
+        end_line: int,
+        new_content: str = "",
         dryRun: bool = False,
     ) -> Dict[str, Any]:
-        """Replace strings in file (oldText -> newText)."""
-        return await self._call_tool("replace_in_file", path=path, edits=edits, dryRun=dryRun)
+        """
+        Edit file by line range [start_line, end_line] (1-based, inclusive).
 
-    async def edit_file_range(
-        self,
-        path: str,
-        start: int,
-        end: int,
-        new_content: str = "",
-    ) -> Dict[str, Any]:
-        """Edit file by character range [start, end). start==end inserts; empty new_content deletes."""
-        return await self._call_tool("edit_file_range", path=path, start=start, end=end, new_content=new_content)
+        - start_line / end_line 为行号（从 1 开始，含头含尾）
+        - new_content 为空字符串时表示删除这些行
+        - dryRun=True 时仅返回 git 风格 diff，不真正落盘
+        """
+        return await self._call_tool(
+            "edit_file",
+            path=path,
+            start_line=start_line,
+            end_line=end_line,
+            new_content=new_content,
+            dryRun=dryRun,
+        )
 
     async def upload_file(self, source_path: str, target_path: str) -> Dict[str, Any]:
         """Copy file from source_path to target_path (target must be in allowed directories)."""

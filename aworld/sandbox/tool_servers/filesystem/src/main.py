@@ -1,4 +1,4 @@
-"""Filesystem MCP Server - 使用 FastMCP"""
+"""Filesystem MCP Server - powered by FastMCP"""
 
 import os
 import sys
@@ -33,24 +33,25 @@ from utils.file_ops import (
     read_media_file as read_media_file_content,
     get_file_stats,
     format_size,
+    edit_file_by_line_range,
 )
 
-# 允许的目录列表
+# List of allowed directories for all tools
 allowed_directories: list[str] = []
 
 
 async def set_allowed_directories(dirs: list[str]) -> None:
-    """设置允许的目录"""
+    """Configure the directories that filesystem tools are allowed to access."""
     global allowed_directories
     allowed_directories = [normalize_path(d) for d in dirs]
 
 
 def get_allowed_directories() -> list[str]:
-    """获取允许的目录"""
+    """Return a copy of the currently allowed directories."""
     return allowed_directories.copy()
 
 
-# 初始化 FastMCP server
+# Initialize FastMCP server
 mcp = FastMCP(
     "filesystem-server",
     log_level="DEBUG",
@@ -59,7 +60,7 @@ mcp = FastMCP(
 )
 
 
-# ==================== 启用的工具函数 ====================
+# ==================== Enabled MCP tools ====================
 
 @mcp.tool(
     description="Read file content. Use output='text' for text (supports head/tail); use output='base64' for binary. "
@@ -178,35 +179,30 @@ async def list_allowed_directories(
     return TextContent(type="text", text=text)
 
 @mcp.tool(
-    description="Replace strings in file. List of edits with oldText and newText. dryRun previews changes without applying. Returns git-style diff."
+    description=(
+        "Edit file by line range. start_line/end_line are 1-based (inclusive). "
+        "Replace lines [start_line, end_line] with new_content; empty new_content deletes those lines. "
+        "dryRun previews the git-style diff without writing changes."
+    )
 )
-async def replace_in_file(
+async def edit_file(
     ctx: Context,
     path: str = Field(description="File path to edit"),
-    edits: list[dict] = Field(description="List of edit operations with oldText and newText"),
-    dryRun: bool = Field(False, description="Preview changes without applying"),
+    start_line: int = Field(description="Start line number (1-based, inclusive)"),
+    end_line: int = Field(description="End line number (1-based, inclusive)"),
+    new_content: str = Field("", description="New content to replace these lines; empty to delete"),
+    dryRun: bool = Field(False, description="Preview diff without applying changes"),
 ) -> TextContent:
-    """Replace strings in file (find oldText, replace with newText)."""
+    """Edit file by line range: replace lines [start_line, end_line] with new_content."""
     valid_path = await validate_path(path, allowed_directories)
-    result = await apply_edits(valid_path, edits, dryRun)
-    return TextContent(type="text", text=result)
-
-
-@mcp.tool(
-    description="Edit file by character range. start/end are 0-based character offsets. Replace [start, end) with new_content; empty new_content deletes; start==end inserts."
-)
-async def edit_file_range(
-    ctx: Context,
-    path: str = Field(description="File path to edit"),
-    start: int = Field(description="Start offset (0-based, inclusive)"),
-    end: int = Field(description="End offset (0-based, exclusive)"),
-    new_content: str = Field("", description="New content to put in range; empty to delete"),
-) -> TextContent:
-    """Edit file by position: replace content[start:end] with new_content."""
-    valid_path = await validate_path(path, allowed_directories)
-    await apply_edits_range(valid_path, start, end, new_content)
-    return TextContent(type="text", text=f"Successfully updated {path}")
-
+    diff_text = await edit_file_by_line_range(
+        valid_path,
+        start_line=start_line,
+        end_line=end_line,
+        new_content=new_content,
+        dry_run=dryRun,
+    )
+    return TextContent(type="text", text=diff_text)
 
 @mcp.tool(
     description="Copy file from source_path to target_path (server-side). source_path can be any readable path; target_path must be inside allowed directories. Overwrites if target exists."
@@ -288,7 +284,7 @@ async def parse_file(
         )
 
 
-# ==================== 已禁用的工具函数 ====================
+# ==================== Disabled MCP tools (not exposed) ====================
 
 #@mcp.tool(description="Read image or audio file as base64 encoded data. Returns base64 data, MIME type, and media type (image/audio/blob).")
 async def read_media_file(
@@ -469,10 +465,10 @@ async def get_file_info(
 if __name__ == "__main__":
     import asyncio
 
-    # 配置日志
+    # Configure logging
     logging.basicConfig(level=logging.INFO, format='%(message)s')
 
-    # 允许的目录：从环境变量 AWORLD_WORKSPACE 读取（逗号分隔），未设置则用默认
+    # Allowed directories: read from AWORLD_WORKSPACE (comma-separated); fall back to defaults if unset
     home_dir = Path.home()
     DEFAULT_WORKSPACES = [
         str(home_dir / "workspace"),
@@ -487,12 +483,12 @@ if __name__ == "__main__":
 
     asyncio.run(set_allowed_directories(args))
 
-    # 统一打印允许使用的目录
+    # Print allowed directories for visibility
     allowed_dirs = get_allowed_directories()
     logging.info("Allowed directories:")
     for i, dir_path in enumerate(allowed_dirs, 1):
         logging.info(f"  {i}. {dir_path}")
     
-    # 运行服务器
+    # Run the server
     #mcp.run(transport="stdio")
     mcp.run(transport="streamable-http")

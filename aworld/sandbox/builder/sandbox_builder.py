@@ -237,15 +237,23 @@ class SandboxBuilder:
         instance = self.build()
         return await instance.file.write_file(path=path, content=content)
 
-    async def replace_in_file(self, path: str, edits: List[dict], dryRun: bool = False):
-        """Proxy to Sandbox.file.replace_in_file for IDE completion."""
+    async def edit_file(
+        self,
+        path: str,
+        start_line: int,
+        end_line: int,
+        new_content: str = "",
+        dryRun: bool = False,
+    ):
+        """Proxy to Sandbox.file.edit_file (line range edit) for IDE completion."""
         instance = self.build()
-        return await instance.file.replace_in_file(path=path, edits=edits, dryRun=dryRun)
-
-    async def edit_file_range(self, path: str, start: int, end: int, new_content: str = ""):
-        """Proxy to Sandbox.file.edit_file_range for IDE completion."""
-        instance = self.build()
-        return await instance.file.edit_file_range(path=path, start=start, end=end, new_content=new_content)
+        return await instance.file.edit_file(
+            path=path,
+            start_line=start_line,
+            end_line=end_line,
+            new_content=new_content,
+            dryRun=dryRun,
+        )
 
     async def upload_file(self, source_path: str, target_path: str):
         """Proxy to Sandbox.file.upload_file for IDE completion."""
