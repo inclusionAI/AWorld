@@ -12,6 +12,8 @@ from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
 from aworld.sandbox.base import Sandbox
 from aworld_cli.core import agent
+from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
+
 from .mcp_config import mcp_config
 
 
@@ -55,11 +57,15 @@ class MultiTaskExplorerAgent(Agent):
 
 @agent(
     name="explorer",
-    desc="A versatile intelligent assistant that can deeply analyze codebases, retrieve real-time stock market information, fetch daily news updates, and provide comprehensive information exploration services for users"
+    desc="""A versatile intelligent assistant, When to use:
+- Code: find files by pattern, search code by keyword/regex, answer "how does X work?", map architecture. Prefer thoroughness: "quick" for basic search, "medium" for moderate exploration, "very thorough" for full analysis.
+- provide comprehensive information exploration services"""
 )
 def build_explorer_swarm():
     """Build and configure the multi-task explorer agent swarm."""
-    
+    plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
+    skill_configs = collect_plugin_and_user_skills(plugin_base_dir)
+
     # Create Agent configuration with Claude Sonnet model
     agent_config = AgentConfig(
         llm_config=ModelConfig(
@@ -69,7 +75,8 @@ def build_explorer_swarm():
             llm_base_url=os.environ.get("LLM_BASE_URL"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
             params={"max_completion_tokens": 40960}
-        )
+        ),
+        skill_configs=skill_configs
     )
 
     # Extract all server keys from mcp_config
