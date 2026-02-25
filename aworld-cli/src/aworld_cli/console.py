@@ -201,11 +201,13 @@ class AWorldCLI:
         if not agents:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
             return
-            
+
+        from pathlib import Path
         table = Table(title="Available Agents", box=box.ROUNDED)
         table.add_column("Name", style="magenta")
         table.add_column("Description", style="green")
-        table.add_column("Address", style="blue")
+        _addr_max = 48
+        table.add_column("Address", style="dim", no_wrap=False, max_width=_addr_max)
 
         for agent in agents:
             desc = getattr(agent, "desc", "No description") or "No description"
@@ -220,8 +222,27 @@ class AWorldCLI:
             else:
                 # Use fallback
                 agent_source_location = source_location
-            
-            table.add_row(agent.name, desc, agent_source_location)
+
+            if not agent_source_location or agent_source_location.strip() == "":
+                addr_cell = Text("—", style="dim")
+            else:
+                address = agent_source_location.strip()
+                p = Path(address)
+                link_target = p.parent if p.suffix else p
+                try:
+                    link_url = link_target.resolve().as_uri()
+                except (OSError, RuntimeError):
+                    link_url = ""
+                if link_url and len(address) > _addr_max:
+                    addr_display = address[: _addr_max - 3] + "..."
+                    addr_cell = Text(addr_display, style=Style(dim=True, link=link_url))
+                elif link_url:
+                    addr_cell = Text(address, style=Style(dim=True, link=link_url))
+                else:
+                    addr_display = address[: _addr_max - 3] + "..." if len(address) > _addr_max else address
+                    addr_cell = Text(addr_display, style="dim")
+
+            table.add_row(agent.name, desc, addr_cell)
 
         self.console.print(table)
 
@@ -877,14 +898,18 @@ class AWorldCLI:
                     response = await executor(user_input)
                     # Response is returned for potential future use, but content is already printed by executor
                 except Exception as e:
-                    self.console.print(f"[bold red]Error executing task:[/bold red] {e}")
+                    import traceback
+                    logger.error(f"Error executing task: {e} {traceback.format_exc()}")
+                    self.console.print("[bold red]Error executing task:[/bold red]", end=" ")
                     continue
 
             except KeyboardInterrupt:
                 self.console.print("\n[yellow]Session interrupted.[/yellow]")
                 break
             except Exception as e:
-                self.console.print(f"[red]An unexpected error occurred:[/red] {e}\n{traceback.format_exc()}")
+                import traceback
+                logger.error(f"Error executing task: {e} {traceback.format_exc()}")
+                self.console.print("[red]An unexpected error occurred:[/red]", end=" ")
 
         return False
 

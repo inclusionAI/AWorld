@@ -12,6 +12,8 @@ from dotenv import load_dotenv
 from rich.console import Console
 from rich.panel import Panel
 from rich.status import Status
+from rich.text import Text
+from aworld.logs.util import logger
 
 from aworld.config import TaskConfig
 from aworld.core.agent.swarm import Swarm
@@ -576,6 +578,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
                                     last_message_output = output
                                     # Pass agent_name and is_handoff parameters
+                                    logger.info(f"Rendering message output for agent: {current_agent_name}")
+                                    logger.info(f"Output: {output}")
+                                    logger.info(f"Answer: {answer}")
+                                    logger.info(f"Is handoff: {is_handoff}")
                                     answer, _ = self._render_simple_message_output(output, answer, agent_name=current_agent_name, is_handoff=is_handoff)
 
                                     # Update last_agent_name for next iteration
@@ -672,8 +678,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         # Stop loading status on error
                         _stop_loading_status()
                         if self.console:
+                            error_body = Text("Error in stream consumption: ")
+                            error_body.append(str(e))
                             error_panel = Panel(
-                                f"Error in stream consumption: {str(e)}",
+                                error_body,
                                 title="[bold red]❌ Stream Error[/bold red]",
                                 border_style="red",
                                 padding=(1, 2)
@@ -760,7 +768,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
                 error_msg = f"Error: {err}, traceback: {traceback.format_exc()}"
                 if self.console:
-                    self.console.print(f"[red]❌ {error_msg}[/red]")
+                    self.console.print("[red]❌ [/red]", end=" ")
+                    self.console.print(error_msg, markup=False)
                 raise
     
     # Note: _format_tool_call, _format_tool_calls, _render_message_output,
