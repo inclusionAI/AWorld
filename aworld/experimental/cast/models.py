@@ -207,11 +207,12 @@ class ImplementationLayer:
 
 @dataclass
 class RepositoryMap:
-    """Complete repository mapping, including three-layer structure"""
+    """Complete repository mapping, including three-layer structure.
+    code_nodes lives only inside implementation_layer; it is no longer kept at the outer level.
+    """
     logic_layer: LogicLayer
     skeleton_layer: SkeletonLayer
     implementation_layer: ImplementationLayer
-    code_nodes: Dict[Path, CodeNode]
     pagerank_scores: Dict[Path, float] = field(default_factory=dict)
     trajectory_mapping: Dict[str, List[Tuple[Path, int]]] = field(default_factory=dict)
     last_updated: Optional[float] = None
@@ -225,7 +226,7 @@ class RepositoryMap:
 
         # If user mentions content, increase weight
         if user_mentions:
-            for file_path, node in self.code_nodes.items():
+            for file_path, node in self.implementation_layer.code_nodes.items():
                 for symbol in node.symbols:
                     if any(mention.lower() in symbol.name.lower() for mention in user_mentions):
                         scores[file_path] = scores.get(file_path, 0.0) + 10.0
@@ -308,7 +309,6 @@ class RepositoryMap:
             'logic_layer': serialize_value(self.logic_layer),
             'skeleton_layer': serialize_value(self.skeleton_layer),
             'implementation_layer': serialize_value(self.implementation_layer),
-            'code_nodes': serialize_value(self.code_nodes),
             'pagerank_scores': serialize_value(self.pagerank_scores),
             'trajectory_mapping': serialize_value(self.trajectory_mapping),
             'last_updated': self.last_updated
@@ -420,13 +420,13 @@ class RepositoryMap:
             else:
                 return value
 
+        impl_data = data.get('implementation_layer') or {'code_nodes': data.get('code_nodes', {})}
         return cls(
             logic_layer=deserialize_value(data['logic_layer'], LogicLayer),
             skeleton_layer=deserialize_value(data['skeleton_layer'], SkeletonLayer),
-            implementation_layer=deserialize_value(data['implementation_layer'], ImplementationLayer),
-            code_nodes={Path(k): deserialize_value(v, CodeNode) for k, v in data.get('code_nodes', {}).items()},
+            implementation_layer=deserialize_value(impl_data, ImplementationLayer),
             pagerank_scores={Path(k): v for k, v in data.get('pagerank_scores', {}).items()},
-            trajectory_mapping={k: [(Path(path), line) for path, line in v] 
+            trajectory_mapping={k: [(Path(path), line) for path, line in v]
                                for k, v in data.get('trajectory_mapping', {}).items()},
             last_updated=data.get('last_updated')
         )
