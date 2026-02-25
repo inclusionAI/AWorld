@@ -49,19 +49,29 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
         >>> # To enable markdown agent loading:
         >>> init_agents("./agents", load_markdown_agents=True)
     """
-    if not agents_dir:
-        # Default to current working directory if not specified
-        agents_dir = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or os.getcwd()
-
     from .agent_registry import LocalAgentRegistry
     from .._globals import console
 
+    if not agents_dir:
+        # Do not default to current directory; require explicit path or env
+        agents_dir = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR")
+        if not agents_dir:
+            console.print("[yellow]⚠️ Agents directory not set. Set LOCAL_AGENTS_DIR or AGENTS_DIR, or pass agents_dir explicitly. Current directory is not scanned.[/yellow]")
+            return []
+
     # Convert to Path object if it's a string
     agents_dir = Path(agents_dir) if isinstance(agents_dir, str) else agents_dir
-    
+    agents_dir_resolved = agents_dir.resolve()
+    cwd_resolved = Path.cwd().resolve()
+
     if not agents_dir.exists():
         console.print(f"[yellow]⚠️ Agents directory not found: {agents_dir}[/yellow]")
-        return
+        return []
+
+    # Do not scan the current working directory (avoid loading from cwd by mistake)
+    if agents_dir_resolved == cwd_resolved:
+        console.print("[yellow]⚠️ Refusing to scan current directory. Use an explicit agents path or set LOCAL_AGENTS_DIR/AGENTS_DIR.[/yellow]")
+        return []
     
     # Load markdown agents only if explicitly enabled
     markdown_loaded_count = 0

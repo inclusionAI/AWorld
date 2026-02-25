@@ -240,10 +240,10 @@ def load_all_registered_agents(
             logger.warning(f"⚠️ Failed to initialize agents from {agents_dir}: {e}")
     else:
         # Try to initialize from current working directory
-        logger.debug(f"📁 Attempting to initialize agents from current working directory")
+        logger.info(f"📁 Attempting to initialize agents from current working directory")
         try:
             init_agents()
-            logger.debug(f"✅ Successfully initialized agents from current directory")
+            logger.info(f"✅ Successfully initialized agents from current directory")
         except Exception as e:
             logger.debug(f"ℹ️ Could not initialize agents from current directory: {e} (this is usually fine)")
 
