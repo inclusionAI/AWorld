@@ -7,9 +7,11 @@ from environment variables or programmatic configuration.
 """
 import os
 from pathlib import Path
-from typing import Optional, List
+from typing import Any, Dict, List, Optional
 
-from aworld.utils.skill_loader import SkillRegistry, DEFAULT_CACHE_DIR
+from aworld.utils.skill_loader import SkillRegistry, DEFAULT_CACHE_DIR, collect_skill_docs
+
+from aworld_cli.core.plugin_manager import get_plugin_skills_dir
 
 from aworld.logs.util import logger
 
@@ -20,6 +22,118 @@ _global_registry: Optional[SkillRegistry] = None
 ENV_SKILLS_PATH = "SKILLS_PATH"  # Semicolon-separated list of skill sources
 ENV_SKILLS_DIR = "SKILLS_DIR"    # Single skills directory (legacy, for backward compatibility)
 ENV_SKILLS_CACHE_DIR = "SKILLS_CACHE_DIR"  # Custom cache directory for GitHub repos
+
+
+def get_user_skills_paths() -> List[Path]:
+    """
+    Return the list of directories where user skills are stored.
+
+    Resolution order:
+    1. SKILLS_PATH env (semicolon-separated list of paths)
+    2. If unset, default to ~/.aworld/skills
+    3. SKILLS_DIR env (legacy, single directory) is appended if set
+
+    Returns:
+        List of resolved Paths; directories may or may not exist.
+
+    Example:
+        >>> paths = get_user_skills_paths()
+        >>> for p in paths:
+        ...     collect_skill_docs(p)
+    """
+    paths: List[Path] = []
+    skills_path_env = os.getenv(ENV_SKILLS_PATH)
+    if skills_path_env:
+        paths = [
+            Path(os.path.expanduser(s.strip())).resolve()
+            for s in skills_path_env.split(";")
+            if s.strip()
+        ]
+    else:
+        paths = [Path.home() / ".aworld" / "skills"]
+    skills_dir_env = os.getenv(ENV_SKILLS_DIR)
+    if skills_dir_env:
+        paths.append(Path(os.path.expanduser(skills_dir_env)).resolve())
+    return paths
+
+
+def collect_plugin_and_user_skills(plugin_base_dir: Path) -> Dict[str, Any]:
+    """
+    Collect skills from plugin skills dir and user skills dirs, with dedup, skill_path fix, and aworld_metadata filter.
+
+    Resolution order:
+    1. Plugin skills dir: plugin_base_dir/skills (e.g. inner_plugins/smllc/skills)
+    2. User skills dirs: SKILLS_PATH / SKILLS_DIR / ~/.aworld/skills (user path overrides plugin on conflict)
+    3. Each skill gets skill_path ensured for context_skill_tool
+    4. Only skills with aworld_metadata.eligible=True (or no aworld_metadata) are included
+
+    Args:
+        plugin_base_dir: Plugin root path (e.g. Path(__file__).resolve().parents[1] for smllc).
+
+    Returns:
+        Dict mapping skill name to skill config (ready for AgentConfig.skill_configs).
+    """
+    plugin_skills_dir = get_plugin_skills_dir(plugin_base_dir)
+    logger.info(f"agent_config: {plugin_base_dir}")
+
+    custom_skills: Dict[str, Any] = {}
+    if plugin_skills_dir.exists() and plugin_skills_dir.is_dir():
+        custom_skills = collect_skill_docs(plugin_skills_dir)
+
+    for user_skills_path in get_user_skills_paths():
+        if not user_skills_path.exists() or not user_skills_path.is_dir():
+            continue
+        try:
+            logger.info(f"📚 Loading skills from user path: {user_skills_path}")
+            additional_skills = collect_skill_docs(str(user_skills_path))
+            if additional_skills:
+                for skill_name, skill_data in additional_skills.items():
+                    if skill_name in custom_skills:
+                        logger.warning(
+                            f"⚠️ Duplicate skill name '{skill_name}' in user path '{user_skills_path}', skipping"
+                        )
+                    else:
+                        custom_skills[skill_name] = skill_data
+                logger.info(f"✅ Loaded {len(additional_skills)} skill(s) from {user_skills_path}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load skills from '{user_skills_path}': {e}")
+
+    for skill_name, skill_config in custom_skills.items():
+        if "skill_path" not in skill_config:
+            potential_skill_path = plugin_skills_dir / skill_name / "SKILL.md"
+            if not potential_skill_path.exists():
+                potential_skill_path = plugin_skills_dir / skill_name / "skill.md"
+            if potential_skill_path.exists():
+                skill_config["skill_path"] = str(potential_skill_path.resolve())
+                logger.debug(f"✅ Added skill_path for skill '{skill_name}': {skill_config['skill_path']}")
+            else:
+                logger.warning(
+                    f"⚠️ Skill '{skill_name}' has no skill_path and cannot be found in {plugin_skills_dir}, "
+                    "context_skill_tool may not work for this skill"
+                )
+        else:
+            logger.debug(f"✅ Skill '{skill_name}' has skill_path: {skill_config['skill_path']}")
+
+    all_skills: Dict[str, Any] = {}
+    for skill_name, skill_config in custom_skills.items():
+        aworld_meta = skill_config.get("aworld_metadata")
+        if aworld_meta is None:
+            all_skills[skill_name] = skill_config
+            continue
+        if aworld_meta.get("eligible", True):
+            all_skills[skill_name] = skill_config
+        else:
+            missing = aworld_meta.get("missing") or {}
+            install_opts = aworld_meta.get("install_options") or []
+            install_hint = ""
+            if install_opts:
+                labels = [o.get("label") or o.get("kind") for o in install_opts if o.get("label") or o.get("kind")]
+                if labels:
+                    install_hint = f" Install: {'; '.join(labels)}."
+            logger.warning(
+                f"⚠️ Skill '{skill_name}' skipped (requirements not satisfied): missing={missing}.{install_hint}"
+            )
+    return all_skills
 
 
 def get_skill_registry(
@@ -64,24 +178,28 @@ def get_skill_registry(
         # Determine cache directory
         if cache_dir is None:
             env_cache_dir = os.getenv(ENV_SKILLS_CACHE_DIR)
-            cache_dir = Path(env_cache_dir) if env_cache_dir else DEFAULT_CACHE_DIR
+            if env_cache_dir:
+                # Expand ~ in path if present
+                cache_dir = Path(os.path.expanduser(env_cache_dir))
+            else:
+                cache_dir = DEFAULT_CACHE_DIR
         
         _global_registry = SkillRegistry(cache_dir=cache_dir)
         
         if auto_init:
             # Register skills from environment variables
             _register_from_env(_global_registry)
-            
+
             # Register skills from provided skill_paths parameter
             if skill_paths:
                 for skill_path in skill_paths:
                     try:
                         count = _global_registry.register_source(skill_path, source_name=skill_path)
                         if count > 0:
-                            print(f"📚 Registered skill source: {skill_path} ({count} skills)")
-                        logger.debug(f"📚 Registered skill source from parameter: {skill_path}")
+                            logger.info(f"📚 Registered skill source: {skill_path} ({count} skills)")
+                        logger.info(f"📚 Registered skill source from parameter: {skill_path}")
                     except Exception as e:
-                        print(f"⚠️ Failed to register skill source '{skill_path}': {e}")
+                        logger.error(f"⚠️ Failed to register skill source '{skill_path}': {e}")
                         logger.warning(f"⚠️ Failed to register skill source '{skill_path}': {e}")
             
             # Register default skills directory if provided or exists
@@ -131,12 +249,26 @@ def _register_from_env(registry: SkillRegistry) -> None:
             except Exception as e:
                 print(f"⚠️ Failed to register skill source from env '{source}': {e}")
                 logger.warning(f"⚠️ Failed to register skill source from env '{source}': {e}")
+    else:
+        # Default to ~/.aworld/skills if ENV_SKILLS_PATH is not set
+        default_skills_path = Path.home() / ".aworld" / "skills"
+        try:
+            # Create directory if it doesn't exist
+            default_skills_path.mkdir(parents=True, exist_ok=True)
+            # Register the default directory
+            count = registry.register_source(str(default_skills_path), source_name=str(default_skills_path))
+            if count > 0:
+                print(f"📚 Registered default skill source: {default_skills_path} ({count} skills)")
+            logger.info(f"📚 Registered default skill source: {default_skills_path} ({count} skills)")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register default skill source '{default_skills_path}': {e}")
     
     # Register from SKILLS_DIR (legacy, single directory for backward compatibility)
     skills_dir_env = os.getenv(ENV_SKILLS_DIR)
     if skills_dir_env:
         try:
-            skills_dir_path = Path(skills_dir_env).resolve()
+            # Expand ~ in path if present
+            skills_dir_path = Path(os.path.expanduser(skills_dir_env)).resolve()
             if skills_dir_path.exists() and skills_dir_path.is_dir():
                 count = registry.register_source(str(skills_dir_path), source_name=str(skills_dir_path))
                 if count > 0:

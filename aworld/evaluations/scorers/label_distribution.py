@@ -3,8 +3,9 @@
 from collections import Counter
 from typing import Optional
 
-from aworld.evaluations.base import Scorer, ScorerResult, EvalDataCase, EvalCaseResult, MetricNames
+from aworld.evaluations.base import Scorer, ScorerResult, EvalDataCase, EvalCaseResult
 from aworld.evaluations.scorers import scorer_register
+from aworld.evaluations.types import MetricNames
 
 from aworld.utils.import_package import import_package
 

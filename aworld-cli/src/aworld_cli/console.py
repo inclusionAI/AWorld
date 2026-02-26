@@ -3,26 +3,32 @@ import sys
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import NestedCompleter
+from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory
 from rich import box
-from rich.panel import Panel
-from rich.prompt import Prompt, Confirm
-from rich.table import Table
-
-from .models import AgentInfo
-from ._globals import console
-
-# ... existing imports ...
-
-from rich.text import Text
 from rich.color import Color
+from rich.panel import Panel
+from rich.prompt import Prompt
+from rich.style import Style
+from rich.table import Table
+from rich.text import Text
+
+from aworld.logs.util import logger
+from ._globals import console
+from .core.skill_registry import get_skill_registry
+from .models import AgentInfo
+from .user_input import UserInputHandler
+
 
 # ... existing imports ...
 
 class AWorldCLI:
     def __init__(self):
         self.console = console
+        self.user_input = UserInputHandler(console)
+        # Track whether this is the first session startup, used to control the display of motivational messages
+        self._is_first_session = True
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -71,6 +77,118 @@ class AWorldCLI:
         self.console.print(Text.assemble(subtitle, version))
         self.console.print() # Padding
 
+    async def _interactive_config_editor(self):
+        """Interactive configuration editor. First menu: choose config type (e.g. model)."""
+        from .core.config import get_config
+        from rich.panel import Panel
+
+        config = get_config()
+        current_config = config.load_config()
+        
+        self.console.print(Panel(
+            "[bold cyan]Configuration Editor[/bold cyan]\n\n"
+            f"Config file: [dim]{config.get_config_path()}[/dim]",
+            title="Config",
+            border_style="cyan"
+        ))
+        
+        # First menu: select configuration type (Back/cancel uses largest number)
+        config_types = [
+            ("1", "Model configuration", self._edit_models_config),
+        ]
+        back_key = str(len(config_types) + 1)
+        self.console.print("\n[bold]Select configuration type:[/bold]")
+        for key, label, _ in config_types:
+            self.console.print(f"  {key}. {label}")
+        self.console.print(f"  {back_key}. Back (cancel)")
+        
+        choice = Prompt.ask("\nChoice", default="1")
+        if choice == back_key:
+            self.console.print("[dim]Cancelled.[/dim]")
+            return
+        
+        handler = None
+        for key, label, fn in config_types:
+            if choice == key:
+                handler = fn
+                break
+        if not handler:
+            self.console.print("[red]Invalid selection.[/red]")
+            return
+        
+        await handler(config, current_config)
+    
+    async def _edit_models_config(self, config, current_config: dict):
+        """Edit models section of config (providers, api_key, model, base_url)."""
+        from rich.table import Table
+        
+        if 'models' not in current_config:
+            current_config['models'] = {}
+        
+        providers = ['openai', 'anthropic', 'gemini']
+        self.console.print("\n[bold]Model provider:[/bold]")
+        for i, provider in enumerate(providers, 1):
+            self.console.print(f"  {i}. {provider}")
+        
+        provider_choice = Prompt.ask("\nSelect provider (1-3)", default="1")
+        try:
+            provider_idx = int(provider_choice) - 1
+            if provider_idx < 0 or provider_idx >= len(providers):
+                self.console.print("[red]Invalid selection[/red]")
+                return
+            selected_provider = providers[provider_idx]
+        except ValueError:
+            self.console.print("[red]Invalid selection[/red]")
+            return
+        
+        if selected_provider not in current_config['models']:
+            current_config['models'][selected_provider] = {}
+        
+        provider_config = current_config['models'][selected_provider]
+        
+        self.console.print(f"\n[bold]Configuring {selected_provider}[/bold]")
+        current_api_key = provider_config.get('api_key', '')
+        if current_api_key:
+            masked_key = current_api_key[:8] + "..." if len(current_api_key) > 8 else "***"
+            self.console.print(f"  [dim]Current API key: {masked_key}[/dim]")
+        api_key = Prompt.ask(
+            f"  {selected_provider.upper()}_API_KEY",
+            default=current_api_key,
+            password=True
+        )
+        if api_key:
+            provider_config['api_key'] = api_key
+        
+        current_model = provider_config.get('model', '')
+        if current_model:
+            self.console.print(f"  [dim]Default: {current_model}[/dim]")
+        else:
+            self.console.print("  [dim]e.g. gpt-4, claude-3-opus · press Enter to leave empty[/dim]")
+        model = Prompt.ask("  Model name", default=current_model)
+        if model:
+            provider_config['model'] = model
+        
+        current_base_url = provider_config.get('base_url', '')
+        self.console.print("  [dim]Optional · press Enter to leave empty[/dim]")
+        base_url = Prompt.ask("  Base URL", default=current_base_url)
+        if base_url:
+            provider_config['base_url'] = base_url
+        
+        config.save_config(current_config)
+        self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
+        
+        table = Table(title=f"{selected_provider.upper()} Configuration", box=box.ROUNDED)
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+        for key, value in provider_config.items():
+            if key == 'api_key':
+                masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
+                table.add_row(key, masked_value)
+            else:
+                table.add_row(key, str(value))
+        self.console.print()
+        self.console.print(table)
+
     def display_agents(self, agents: List[AgentInfo], source_type: str = "LOCAL", source_location: str = ""):
         """
         Display available agents in a table.
@@ -83,28 +201,20 @@ class AWorldCLI:
         if not agents:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
             return
-            
+
+        from pathlib import Path
         table = Table(title="Available Agents", box=box.ROUNDED)
         table.add_column("Name", style="magenta")
         table.add_column("Description", style="green")
-        table.add_column("SourceType", style="cyan")
-        table.add_column("Address", style="blue")
+        _addr_max = 48
+        table.add_column("Address", style="dim", no_wrap=False, max_width=_addr_max)
 
         for agent in agents:
             desc = getattr(agent, "desc", "No description") or "No description"
-            # Always use agent's own source_type and source_location if they exist and are valid
-            # Fallback to provided parameters only if agent doesn't have these attributes
-            agent_source_type = getattr(agent, "source_type", None)
+            # Always use agent's own source_location if it exists and is valid
+            # Fallback to provided parameters only if agent doesn't have this attribute
             agent_source_location = getattr(agent, "source_location", None)
-            
-            # Use agent's source_type if it exists and is valid, otherwise use fallback
-            if agent_source_type and agent_source_type != "UNKNOWN" and agent_source_type.strip() != "":
-                # Use agent's own source_type
-                pass
-            else:
-                # Use fallback
-                agent_source_type = source_type
-            
+
             # Use agent's source_location if it exists and is valid, otherwise use fallback
             if agent_source_location and agent_source_location.strip() != "":
                 # Use agent's own source_location
@@ -112,8 +222,27 @@ class AWorldCLI:
             else:
                 # Use fallback
                 agent_source_location = source_location
-            
-            table.add_row(agent.name, desc, agent_source_type, agent_source_location)
+
+            if not agent_source_location or agent_source_location.strip() == "":
+                addr_cell = Text("—", style="dim")
+            else:
+                address = agent_source_location.strip()
+                p = Path(address)
+                link_target = p.parent if p.suffix else p
+                try:
+                    link_url = link_target.resolve().as_uri()
+                except (OSError, RuntimeError):
+                    link_url = ""
+                if link_url and len(address) > _addr_max:
+                    addr_display = address[: _addr_max - 3] + "..."
+                    addr_cell = Text(addr_display, style=Style(dim=True, link=link_url))
+                elif link_url:
+                    addr_cell = Text(address, style=Style(dim=True, link=link_url))
+                else:
+                    addr_display = address[: _addr_max - 3] + "..." if len(address) > _addr_max else address
+                    addr_cell = Text(addr_display, style="dim")
+
+            table.add_row(agent.name, desc, addr_cell)
 
         self.console.print(table)
 
@@ -132,68 +261,10 @@ class AWorldCLI:
         if not agents:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
             return None
-        
-        table = Table(title="Available Agents", box=box.ROUNDED)
-        table.add_column("No.", style="cyan", justify="right")
-        table.add_column("Name", style="magenta")
-        table.add_column("Description", style="green")
-        table.add_column("SourceType", style="cyan")
-        table.add_column("Address", style="blue")
 
-        for idx, agent in enumerate(agents, 1):
-            desc = getattr(agent, "desc", "No description") or "No description"
-            # Always use agent's own source_type and source_location if they exist and are valid
-            # Fallback to provided parameters only if agent doesn't have these attributes
-            agent_source_type = getattr(agent, "source_type", None)
-            agent_source_location = getattr(agent, "source_location", None)
-            
-            # Use agent's source_type if it exists and is valid, otherwise use fallback
-            if agent_source_type and agent_source_type != "UNKNOWN" and agent_source_type.strip() != "":
-                # Use agent's own source_type
-                pass
-            else:
-                # Use fallback
-                agent_source_type = source_type
-            
-            # Use agent's source_location if it exists and is valid, otherwise use fallback
-            if agent_source_location and agent_source_location.strip() != "":
-                # Use agent's own source_location
-                pass
-            else:
-                # Use fallback
-                agent_source_location = source_location
-            
-            table.add_row(str(idx), agent.name, desc, agent_source_type, agent_source_location)
-
-        self.console.print(table)
-        self.console.print("[dim]Type 'exit' to cancel selection.[/dim]")
-
-        # Check if we're in a real terminal
-        is_terminal = sys.stdin.isatty()
-        
-        while True:
-            if is_terminal:
-                choice = Prompt.ask("Select an agent number", default="1")
-            else:
-                # Fallback for non-terminal environments
-                self.console.print("Select an agent number [default: 1]: ", end="")
-                choice = input().strip() or "1"
-            
-            # Check for exit command
-            if choice.lower() in ("exit", "quit", "q"):
-                self.console.print("[yellow]Selection cancelled.[/yellow]")
-                return None
-            
-            try:
-                idx = int(choice) - 1
-                if 0 <= idx < len(agents):
-                    selected_agent = agents[idx]
-                    self.console.print(f"[green]Selected agent: [bold]{selected_agent.name}[/bold][/green]")
-                    return selected_agent
-                else:
-                    self.console.print("[red]Invalid selection. Please try again.[/red]")
-            except ValueError:
-                self.console.print("[red]Please enter a valid number or 'exit' to cancel.[/red]")
+        # Default: use first agent (Aworld) without prompting or showing the agents table
+        selected_agent = agents[0]
+        return selected_agent
     
     def select_team(self, teams: List[AgentInfo], source_type: str = "LOCAL", source_location: str = "") -> Optional[AgentInfo]:
         """
@@ -201,6 +272,253 @@ class AWorldCLI:
         Use select_agent instead.
         """
         return self.select_agent(teams, source_type, source_location)
+
+    def _visualize_team(self, executor_instance: Any):
+        """Visualize the structure of the current team in a full-width split-screen layout."""
+        from rich.columns import Columns
+        try:
+            from rich.console import Group
+        except ImportError:
+            try:
+                from rich import Group
+            except ImportError:
+                # Fallback for older Rich versions
+                class Group:
+                    """Fallback Group class for older Rich versions."""
+                    def __init__(self, *renderables):
+                        self.renderables = renderables
+                    
+                    def __rich_console__(self, console, options):
+                        for renderable in self.renderables:
+                            yield renderable
+        from rich.layout import Layout
+        from rich.panel import Panel
+        from rich.align import Align
+        from rich import box
+
+        # 1. Get swarm from executor
+        swarm = getattr(executor_instance, "swarm", None)
+        if not swarm:
+            self.console.print("[yellow]Current agent does not support visualization (not a swarm).[/yellow]")
+            return
+
+        # 2. Get agent graph
+        graph = getattr(swarm, "agent_graph", None)
+        if not graph:
+            self.console.print("[yellow]No agent graph found in swarm.[/yellow]")
+            return
+
+        # --- Gather Data ---
+
+        # Goal
+        goal_text = "Run task"
+        if hasattr(executor_instance, "task"):
+            task = executor_instance.task
+            if hasattr(task, "input") and task.input:
+                 goal_text = str(task.input)
+            elif hasattr(task, "name") and task.name:
+                 goal_text = task.name
+
+        if goal_text == "Run task" and hasattr(swarm, "task") and swarm.task:
+             goal_text = str(swarm.task)
+
+        if len(goal_text) > 100:
+            goal_text = goal_text[:97] + "..."
+
+        # Active skills
+        active_skill_names = set()
+        if hasattr(executor_instance, 'get_skill_status'):
+             try:
+                 status = executor_instance.get_skill_status()
+                 active_names = status.get('active_names', [])
+                 if active_names:
+                     active_skill_names = set(active_names)
+             except:
+                 pass
+
+        # Build Agent Panels
+        agent_panels = []
+        if graph and graph.agents:
+            for agent in graph.agents.values():
+                agent_skills = set()
+                if hasattr(agent, "skill_configs") and agent.skill_configs:
+                     for skill_name in agent.skill_configs.keys():
+                         agent_skills.add(skill_name)
+
+                agent_tools = set()
+                mcp_tools = set()
+                if hasattr(agent, "tools") and agent.tools:
+                    for tool in agent.tools:
+                        if isinstance(tool, dict) and "function" in tool:
+                            agent_tools.add(tool["function"].get("name", "unknown"))
+                        elif hasattr(tool, "name"):
+                             agent_tools.add(tool.name)
+
+                if hasattr(agent, "mcp_servers") and agent.mcp_servers:
+                    for s in agent.mcp_servers:
+                         mcp_tools.add(s)
+
+                content_parts = []
+                if agent_skills:
+                    skills_list = []
+                    for s in list(agent_skills)[:5]:
+                        if s in active_skill_names:
+                             skills_list.append(f"[bold green]• {s}[/bold green]")
+                        else:
+                             skills_list.append(f"• {s}")
+                    if len(agent_skills) > 5:
+                        skills_list.append(f"[dim]...({len(agent_skills)-5})[/dim]")
+                    content_parts.append(f"[bold cyan]Skills:[/bold cyan]\n" + "\n".join(skills_list))
+
+                tools_list = []
+                built_in_list = ["Read", "Write", "Bash", "Grep"]
+                has_builtins = any(t in agent_tools for t in built_in_list)
+                if has_builtins:
+                     tools_list.append("Built-in")
+                if mcp_tools:
+                     tools_list.append(f"MCP: {len(mcp_tools)}")
+                custom_tools = [t for t in agent_tools if t not in built_in_list]
+                if custom_tools:
+                     tools_list.append(f"Custom: {len(custom_tools)}")
+
+                if tools_list:
+                    content_parts.append(f"[bold yellow]Tools:[/bold yellow]\n" + ", ".join(tools_list))
+
+                agent_content = "\n".join(content_parts) if content_parts else "[dim]-[/dim]"
+
+                agent_panel = Panel(
+                    agent_content,
+                    title=f"[bold]{agent.name()}[/bold]",
+                    box=box.ROUNDED,
+                    border_style="blue",
+                    padding=(0, 1),
+                    expand=True
+                )
+                agent_panels.append(agent_panel)
+
+        # --- Build Layout ---
+
+        layout = Layout()
+        layout.split_row(
+            Layout(name="process", ratio=1),
+            Layout(name="team", ratio=1)
+        )
+
+        # --- Process Column (Left) ---
+
+        goal_panel = Panel(
+            Align.center(f"[bold]GOAL[/bold]\n\"{goal_text}\""),
+            box=box.ROUNDED,
+            style="white",
+            border_style="green"
+        )
+
+        loop_panel = Panel(
+             Align.center("[bold]AGENT LOOP[/bold]\n[dim]observe → think → act → learn → repeat[/dim]"),
+             box=box.ROUNDED,
+             style="white"
+        )
+
+        hooks_panel = Panel(
+             Align.center("[bold]HOOKS[/bold]\n[dim]guard rails, logging, human-in-the-loop[/dim]"),
+             box=box.ROUNDED,
+             style="white"
+        )
+
+        output_panel = Panel(
+             Align.center("[bold]STRUCTURED OUTPUT[/bold]\n[dim]validated JSON matching your schema[/dim]"),
+             box=box.ROUNDED,
+             style="white",
+             border_style="green"
+        )
+
+        arrow_down = Align.center("│\n▼")
+
+        process_content = Group(
+            goal_panel,
+            arrow_down,
+            loop_panel,
+            arrow_down,
+            hooks_panel,
+            arrow_down,
+            output_panel
+        )
+
+        layout["process"].update(Panel(process_content, title="Process Flow", box=box.ROUNDED))
+
+        # --- Team Column (Right) ---
+
+        swarm_label = Align.center("[bold]SWARM[/bold]")
+
+        # Use Columns for agents if there are many, or Stack if few
+        # Using Columns with expand=True to fill width
+        if len(agent_panels) > 1:
+             agents_display = Columns(agent_panels, expand=True, equal=True)
+        else:
+             agents_display = Group(*[Align.center(p) for p in agent_panels])
+
+        team_content = Group(
+            swarm_label,
+            Align.center("│\n▼"),
+            agents_display
+        )
+
+        layout["team"].update(Panel(team_content, title="Team Structure", box=box.ROUNDED))
+
+        # Print layout full width
+        self.console.print(layout)
+    
+    async def _esc_key_listener(self):
+        """
+        Background listener for Esc key to interrupt currently executing tasks.
+        This function runs in the background, continuously listening for keyboard input.
+        """
+        try:
+            from prompt_toolkit import Application
+            from prompt_toolkit.key_binding import KeyBindings
+            from prompt_toolkit.layout import Layout
+            from prompt_toolkit.layout.containers import Window
+            from prompt_toolkit.layout.controls import FormattedTextControl
+            from prompt_toolkit.formatted_text import FormattedText
+            
+            # Create a hidden window to capture Esc key
+            kb = KeyBindings()
+            
+            # Store reference to currently executing task
+            if not hasattr(self, '_current_executor_task'):
+                self._current_executor_task = None
+            
+            def handle_esc(event):
+                """Handle Esc key press"""
+                if hasattr(self, '_current_executor_task') and self._current_executor_task:
+                    if not self._current_executor_task.done():
+                        self._current_executor_task.cancel()
+                        self.console.print("\n[yellow]⚠️ Task interrupted by Esc key[/yellow]")
+            
+            kb.add("escape")(handle_esc)
+            
+            # Create an invisible control
+            control = FormattedTextControl(
+                text=FormattedText([("", "")]),
+                focusable=True
+            )
+            
+            window = Window(content=control, height=0)
+            layout = Layout(window)
+            
+            # Create a hidden application to listen for keyboard
+            app = Application(
+                layout=layout,
+                key_bindings=kb,
+                full_screen=False,
+                mouse_support=False
+            )
+            
+            # Run application in background
+            await asyncio.to_thread(app.run)
+        except Exception:
+            # If prompt_toolkit is not available or error occurs, fail silently
+            pass
 
     async def run_chat_session(self, agent_name: str, executor: Callable[[str], Any], available_agents: List[AgentInfo] = None, executor_instance: Any = None) -> Union[bool, str]:
         """
@@ -274,10 +592,12 @@ class AWorldCLI:
             f"Type '/switch [agent_name]' to switch agent.\n"
             f"Type '/new' to create a new session.\n"
             f"Type '/restore' or '/latest' to restore to the latest session.\n"
+            f"Type '/skills' to list all available skills.\n"
+            f"Type '/agents' to list all available agents.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
         self.console.print(Panel(help_text, style="blue"))
-        
+
         # Check if we're in a real terminal (not IDE debugger or redirected input)
         is_terminal = sys.stdin.isatty()
         
@@ -286,17 +606,42 @@ class AWorldCLI:
         session = None
         
         if is_terminal:
-            completer = NestedCompleter.from_nested_dict({
-                '/switch': {name: None for name in agent_names},
-                '/new': None,
-                '/restore': None,
-                '/latest': None,
-                '/exit': None,
-                '/quit': None,
-                'exit': None,
-                'quit': None
-            })
-            session = PromptSession(completer=completer)
+            # 用整行前缀匹配：/ski → /skills、/age → /agents；meta_dict 在补全菜单中显示描述（命令左、描述右）
+            slash_cmds = [
+                "/agents", "/skills", "/new", "/restore", "/latest",
+                "/exit", "/quit", "/switch",
+            ]
+            switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
+            all_words = slash_cmds + switch_with_agents + ["exit", "quit"]
+            meta_dict = {
+                "/agents": "List available agents",
+                "/skills": "List available skills",
+                "/new": "Create a new session",
+                "/restore": "Restore to the latest session",
+                "/latest": "Restore to the latest session",
+                "/exit": "Exit chat",
+                "/quit": "Exit chat",
+                "/switch": "Switch to another agent",
+                "exit": "Exit chat",
+                "quit": "Exit chat",
+            }
+            for n in agent_names:
+                meta_dict[f"/switch {n}"] = f"Switch to agent: {n}"
+            completer = WordCompleter(
+                all_words,
+                ignore_case=True,
+                sentence=True,
+                meta_dict=meta_dict,
+            )
+            # 历史记录文件：上/下方向键可浏览并加载已执行过的指令
+            from pathlib import Path
+            history_path = Path.home() / ".aworld" / "cli_history"
+            history_path.parent.mkdir(parents=True, exist_ok=True)
+            session = PromptSession(
+                completer=completer,
+                complete_while_typing=True,  # 输入时即显示补全列表（带描述）
+                history=FileHistory(str(history_path)),
+            )
 
         while True:
             try:
@@ -304,9 +649,21 @@ class AWorldCLI:
                 if is_terminal and session:
                     # Use prompt_toolkit for input with completion
                     # We use HTML for basic coloring of the prompt
-                    user_input = await asyncio.to_thread(session.prompt, HTML("<b><cyan>You</cyan></b>: "))
+                    # Show inspirational message only on first session
+                    if self._is_first_session:
+                        prompt_text = "<b>✨ Create an agent to do anything!</b>\n<b><cyan>You</cyan></b>: "
+                        # Mark as no longer first session after showing the message
+                        self._is_first_session = False
+                    else:
+                        prompt_text = "<b><cyan>You</cyan></b>: "
+
+                    user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text))
                 else:
                     # Fallback to plain input() for non-terminal environments
+                    if self._is_first_session:
+                        self.console.print("[cyan]✨ Create an agent to do anything![/cyan]")
+                        # Mark as no longer first session after showing the message
+                        self._is_first_session = False
                     self.console.print("[cyan]You[/cyan]: ", end="")
                     user_input = await asyncio.to_thread(input)
                 
@@ -359,6 +716,177 @@ class AWorldCLI:
                              continue
                     else:
                         return True # Return True to switch agent (show list)
+                
+                # Handle skills command
+                if user_input.lower() in ("/skills", "skills"):
+                    try:
+                        # First, load skills from plugin directories
+                        from .runtime.cli import CliRuntime
+                        from pathlib import Path
+
+                        runtime = CliRuntime()
+                        runtime.cli = self  # Set cli reference for console output
+                        loaded_skills = await runtime._load_skills()
+                        
+                        # Display loading results from plugins
+                        if loaded_skills:
+                            total_loaded = sum(loaded_skills.values())
+                            if total_loaded > 0:
+                                logger.info(f"[green]✅ Loaded {total_loaded} skill(s) from {len([k for k, v in loaded_skills.items() if v > 0])} plugin(s)[/green]")
+                            else:
+                                logger.info("[dim]No new skills loaded from plugins.[/dim]")
+                        
+                        # Get all skills from registry (including newly loaded ones)
+                        registry = get_skill_registry()
+                        all_skills = registry.get_all_skills()
+                        
+                        if not all_skills:
+                            logger.info("[yellow]No skills available.[/yellow]")
+                            continue
+                        
+                        # Build rows
+                        rows = [(skill_name, skill_data) for skill_name, skill_data in all_skills.items()]
+                        rows.sort(key=lambda x: x[0])  # sort by name
+                        
+                        # Single table with Name, Description, Address
+                        table = Table(title="Skills", box=box.ROUNDED)
+                        table.add_column("Name", style="magenta")
+                        table.add_column("Description", style="green")
+                        # Address column: truncate when long; full path shown on hover via link (OSC 8)
+                        _addr_max = 48
+                        table.add_column("Address", style="dim", no_wrap=False, max_width=_addr_max)
+                        
+                        for skill_name, skill_data in rows:
+                            desc = skill_data.get("description") or skill_data.get("desc") or "No description"
+                            # if len(desc) > 60:
+                            #     desc = desc[:57] + "..."
+                            address = skill_data.get("skill_path", "") or "—"
+                            if address == "—":
+                                addr_cell = Text("—", style="dim")
+                            else:
+                                # Link to parent folder so click opens file manager, not default app for file
+                                p = Path(address)
+                                link_target = p.parent if p.suffix else p
+                                link_url = link_target.resolve().as_uri()
+                                if len(address) > _addr_max:
+                                    addr_display = address[: _addr_max - 3] + "..."
+                                    addr_cell = Text(addr_display, style=Style(dim=True, link=link_url))
+                                else:
+                                    addr_cell = Text(address, style=Style(dim=True, link=link_url))
+                            table.add_row(skill_name, desc, addr_cell)
+                        
+                        self.console.print(table)
+                        self.console.print(f"[dim]Total: {len(all_skills)} skill(s)[/dim]")
+                    except Exception as e:
+                        self.console.print(f"[red]Error loading skills: {e}[/red]")
+                    continue
+
+                # Handle agents command
+                if user_input.lower() in ("/agents", "agents"):
+                    try:
+                        from .runtime.cli import CliRuntime
+                        from .runtime.loaders import PluginLoader
+                        from aworld_cli.core.agent_scanner import global_agent_registry
+                        from pathlib import Path
+                        import os
+
+                        built_in_agents = []
+                        user_agents = []
+                        base_path = os.path.expanduser(
+                            os.environ.get('AGENTS_PATH', '~/.aworld/agents'))
+
+                        # Load Built-in agents from plugins using PluginLoader
+                        try:
+                            # Get built-in plugin directories
+                            runtime = CliRuntime()
+                            plugin_dirs = runtime.plugin_dirs
+
+                            # Load agents from each plugin using PluginLoader
+                            for plugin_dir in plugin_dirs:
+                                try:
+                                    loader = PluginLoader(plugin_dir, console=self.console)
+                                    # Load agents from plugin (this also loads skills internally)
+                                    plugin_agents = await loader.load_agents()
+                                    # Mark as Built-in agents
+                                    for agent in plugin_agents:
+                                        if not hasattr(agent, 'source_type') or not agent.source_type:
+                                            agent.source_type = "BUILT-IN"
+                                    built_in_agents.extend(plugin_agents)
+                                except Exception as e:
+                                    logger.info(f"Failed to load Built-in agents from plugin {plugin_dir.name}: {e}")
+                                    import traceback
+                                    logger.debug(traceback.format_exc())
+                        except Exception as e:
+                            logger.info(f"Failed to load Built-in agents from plugins: {e}")
+                        
+                        # Load User agents from AgentScanner default instance
+                        try:
+                            agent_list = await global_agent_registry.list_desc()
+                            for item in agent_list:
+                                # Handle both old format (4-tuple with version) and new format (3-tuple)
+                                if len(item) == 4:
+                                    name, desc, path, version = item
+                                else:
+                                    name, desc, path = item
+                                    version = None
+                                agent_info = AgentInfo(
+                                    name=name,
+                                    desc=desc,
+                                    metadata={"version": version} if version else {},
+                                    source_type="USER",
+                                    source_location=base_path
+                                )
+                                user_agents.append(agent_info)
+                        except Exception as e:
+                            logger.info(f"Failed to load User agents from registry: {e}")
+                        
+                        # Log summary
+                        total_agents = len(built_in_agents) + len(user_agents)
+                        logger.info(f"Loaded {total_agents} agent(s): {len(built_in_agents)} from Built-in plugins, {len(user_agents)} from User registry ({base_path})")
+                        
+                        # Display Built-in agents in a separate table
+                        if built_in_agents:
+                            self.console.print("\n[bold cyan]Built-in Agents:[/bold cyan]")
+                            self.display_agents(built_in_agents, source_type="BUILT-IN")
+                        else:
+                            self.console.print("[dim]No Built-in agents available.[/dim]")
+                        
+                        # Display User agents in a separate table
+                        if user_agents:
+                            self.console.print("\n[bold cyan]User Agents:[/bold cyan]")
+                            self.display_agents(user_agents, source_type="USER", source_location=base_path)
+                        else:
+                            self.console.print("[dim]No User agents available.[/dim]")
+                        
+                        if not built_in_agents and not user_agents:
+                            self.console.print("[yellow]⚠️  No agents available.[/yellow]")
+                    except Exception as e:
+                        logger.info(f"Error loading agents: {e}")
+                        import traceback
+                        logger.debug(traceback.format_exc())
+                    continue
+
+                # Handle visualize command
+                if user_input.lower() in ("/visualize_trajectory", "visualize_trajectory"):
+                    self._visualize_team(executor_instance)
+                    continue
+
+                # Handle sessions command
+                if user_input.lower() in ("/sessions", "sessions"):
+                    if executor_instance:
+                        # Debug: Print session related attributes
+                        session_attrs = {k: v for k, v in executor_instance.__dict__.items() if 'session' in k.lower()}
+                        # Also check if context has session info
+                        if hasattr(executor_instance, 'context') and executor_instance.context:
+                            context_session_attrs = {k: v for k, v in executor_instance.context.__dict__.items() if
+                                                     'session' in k.lower()}
+                            session_attrs.update({f"context.{k}": v for k, v in context_session_attrs.items()})
+
+                        if session_attrs:
+                            self.console.print(f"[dim]Session Info: {session_attrs}[/dim]")
+                    else:
+                        self.console.print("[yellow]No executor instance available.[/yellow]")
+                    continue
 
                 # Print agent name before response
                 self.console.print(f"[bold green]{agent_name}[/bold green]:")
@@ -370,14 +898,18 @@ class AWorldCLI:
                     response = await executor(user_input)
                     # Response is returned for potential future use, but content is already printed by executor
                 except Exception as e:
-                    self.console.print(f"[bold red]Error executing task:[/bold red] {e}")
+                    import traceback
+                    logger.error(f"Error executing task: {e} {traceback.format_exc()}")
+                    self.console.print("[bold red]Error executing task:[/bold red]", end=" ")
                     continue
 
             except KeyboardInterrupt:
                 self.console.print("\n[yellow]Session interrupted.[/yellow]")
                 break
             except Exception as e:
-                self.console.print(f"[red]An unexpected error occurred:[/red] {e}")
+                import traceback
+                logger.error(f"Error executing task: {e} {traceback.format_exc()}")
+                self.console.print("[red]An unexpected error occurred:[/red]", end=" ")
 
         return False
 

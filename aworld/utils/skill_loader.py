@@ -6,6 +6,7 @@ Export structured metadata for all skill documentation files.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -247,8 +248,126 @@ def resolve_skill_path(skill_path: Union[str, Path], cache_dir: Optional[Path] =
         
         return cache_path
     else:
-        # Local path
-        return Path(skill_path).resolve()
+        # Local path - expand ~ if present
+        skill_path_str = str(skill_path)
+        if '~' in skill_path_str:
+            skill_path_str = os.path.expanduser(skill_path_str)
+        return Path(skill_path_str).resolve()
+
+
+def _parse_string_list(raw: Any) -> List[str]:
+    """Normalize input to list of non-empty strings."""
+    if not raw:
+        return []
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    if isinstance(raw, str):
+        return [x.strip() for x in raw.split(",") if x.strip()]
+    return []
+
+
+def _resolve_metadata_block(raw: Any) -> Optional[Dict[str, Any]]:
+    """
+    Resolve the 'aworld' block from frontmatter metadata (JSON or dict).
+    Expects either a JSON string (with optional 'metadata' wrapper) or a dict with 'aworld' key.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        obj = raw
+    else:
+        try:
+            s = raw.strip() if isinstance(raw, str) else str(raw)
+            obj = json.loads(s)
+        except (json.JSONDecodeError, TypeError):
+            return None
+    if not isinstance(obj, dict):
+        return None
+    # Support both top-level "aworld" and nested under "metadata"
+    aworld = obj.get("aworld") or (obj.get("metadata") or {}).get("aworld")
+    if aworld and isinstance(aworld, dict):
+        return aworld
+    return None
+
+
+def resolve_aworld_metadata(front_matter: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Extract and normalize metadata.aworld from skill frontmatter.
+    Returns dict with: always (bool), requires (bins, anyBins, env, config), install (list of install specs).
+    """
+    raw = front_matter.get("metadata")
+    block = _resolve_metadata_block(raw)
+    if not block:
+        return None
+    requires_raw = block.get("requires")
+    if isinstance(requires_raw, dict):
+        requires = {
+            "bins": _parse_string_list(requires_raw.get("bins")),
+            "anyBins": _parse_string_list(requires_raw.get("anyBins")),
+            "env": _parse_string_list(requires_raw.get("env")),
+            "config": _parse_string_list(requires_raw.get("config")),
+        }
+    else:
+        requires = {"bins": [], "anyBins": [], "env": [], "config": []}
+    install_raw = block.get("install")
+    install_specs: List[Dict[str, Any]] = []
+    if isinstance(install_raw, list):
+        for item in install_raw:
+            if isinstance(item, dict) and item.get("kind"):
+                install_specs.append({
+                    "id": item.get("id"),
+                    "kind": str(item.get("kind")).strip().lower(),
+                    "label": item.get("label"),
+                    "bins": _parse_string_list(item.get("bins")),
+                    "formula": item.get("formula"),
+                    "package": item.get("package"),
+                    "module": item.get("module"),
+                    "url": item.get("url"),
+                    "os": _parse_string_list(item.get("os")),
+                })
+    return {
+        "always": bool(block.get("always")),
+        "requires": requires,
+        "install": install_specs,
+    }
+
+
+def _has_bin(bin_name: str) -> bool:
+    return shutil.which(bin_name) is not None
+
+
+def evaluate_skill_requirements(aworld_meta: Dict[str, Any]) -> Tuple[bool, Dict[str, List[str]]]:
+    """
+    Evaluate requires against current environment. Returns (eligible, missing).
+    If always is True, returns (True, {}). Otherwise checks bins, anyBins, env.
+    """
+    if aworld_meta.get("always"):
+        return True, {}
+    requires = aworld_meta.get("requires") or {}
+    missing: Dict[str, List[str]] = {"bins": [], "anyBins": [], "env": [], "config": []}
+    # bins: all required
+    for b in requires.get("bins") or []:
+        if not _has_bin(b):
+            missing["bins"].append(b)
+    # anyBins: at least one required
+    any_bins = requires.get("anyBins") or []
+    if any_bins and not any(_has_bin(b) for b in any_bins):
+        missing["anyBins"] = list(any_bins)
+    # env: all required
+    for e in requires.get("env") or []:
+        if not os.environ.get(e):
+            missing["env"].append(e)
+    # config: optional path existence (simplified: we don't have config paths in aworld yet)
+    for c in requires.get("config") or []:
+        if not os.path.exists(os.path.expanduser(c)):
+            missing["config"].append(c)
+    eligible = (
+        len(missing["bins"]) == 0
+        and len(missing["anyBins"]) == 0
+        and len(missing["env"]) == 0
+        and len(missing["config"]) == 0
+    )
+    return eligible, missing
 
 
 def extract_front_matter(content_lines: List[str]) -> Tuple[Dict[str, Any], int]:
@@ -274,22 +393,46 @@ def extract_front_matter(content_lines: List[str]) -> Tuple[Dict[str, Any], int]
 
     end_index = 1
     while end_index < len(content_lines) and content_lines[end_index].strip() != "---":
-        line = content_lines[end_index].strip()
-        if ":" in line:
-            key, value = line.split(":", 1)
+        line = content_lines[end_index]
+        line_stripped = line.strip()
+        if ":" in line_stripped:
+            key, value = line_stripped.split(":", 1)
             key = key.strip()
             value = value.strip()
-            
-            # Try to parse JSON values (for tool_list and other structured data)
-            if key == "tool_list" and value:
-                try:
-                    front_matter[key] = json.loads(value)
-                    logger.debug(f"✅ Successfully parsed tool_list as JSON: {front_matter[key]}")
-                except json.JSONDecodeError as e:
-                    logger.warning(f"⚠️ Failed to parse tool_list as JSON: {e}, keeping as string")
-                    front_matter[key] = value
+            # "metadata" key: multi-line JSON or inline JSON
+            if key == "metadata":
+                if not value or value == "{":
+                    chunk = [value] if value else []
+                    i = end_index + 1
+                    while i < len(content_lines) and content_lines[i].strip() != "---":
+                        next_line = content_lines[i]
+                        if next_line and (next_line.startswith(" ") or next_line.startswith("\t")):
+                            chunk.append(next_line)
+                            i += 1
+                        else:
+                            break
+                    value = "\n".join(chunk).strip()
+                    end_index = i
+                else:
+                    end_index += 1
+                if value:
+                    try:
+                        front_matter[key] = json.loads(value)
+                    except json.JSONDecodeError:
+                        front_matter[key] = value
             else:
-                front_matter[key] = value
+                end_index += 1
+                # Try to parse JSON values (for tool_list and other structured data)
+                if key == "tool_list" and value:
+                    try:
+                        front_matter[key] = json.loads(value)
+                        logger.debug(f"✅ Successfully parsed tool_list as JSON: {front_matter[key]}")
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"⚠️ Failed to parse tool_list as JSON: {e}, keeping as string")
+                        front_matter[key] = value
+                else:
+                    front_matter[key] = value
+            continue
         end_index += 1
 
     if end_index >= len(content_lines):
@@ -366,15 +509,31 @@ def collect_skill_docs(
                     logger.warning(f"⚠️ Duplicate skill name '{skill_name}' found at {skill_file}, skipping")
                     continue
 
-                results[skill_name] = {
+                skill_data = {
                     "name": skill_name,
                     "description": desc,
                     "tool_list": tool_list,
                     "usage": usage,
                     "type": front_matter.get("type", ""),
-                    "active": front_matter.get("active", "False").lower() == "true",
+                    "active": str(front_matter.get("active", "False")).lower() == "true",
                     "skill_path": skill_file.as_posix(),
                 }
+                aworld_meta = resolve_aworld_metadata(front_matter)
+                if aworld_meta:
+                    eligible, missing = evaluate_skill_requirements(aworld_meta)
+                    skill_data["aworld_metadata"] = {
+                        "always": aworld_meta["always"],
+                        "requires": aworld_meta["requires"],
+                        "install": aworld_meta["install"],
+                        "eligible": eligible,
+                        "missing": missing,
+                        "install_options": aworld_meta["install"],
+                    }
+                    if not eligible and missing:
+                        logger.debug(
+                            f"Skill '{skill_name}' requirements not satisfied: missing={missing}"
+                        )
+                results[skill_name] = skill_data
                 logger.debug(f"✅ Collected skill: {skill_name}")
             except Exception as e:
                 logger.error(f"❌ Failed to process skill file {skill_file}: {e}")
