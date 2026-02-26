@@ -720,11 +720,8 @@ class PluginManager:
         remote_count = len([a for a in all_agents if agent_sources_map.get(a.name, {}).get("type") == "remote"])
         
         if all_agents:
-            if console:
-                console.print(f"[green]✅ Agent loading complete: {len(all_agents)} total agent(s) (plugin: {plugin_count}, local: {local_count}, remote: {remote_count})[/green]")
-        
+            logger.info(f"Agent loading complete: {len(all_agents)} total agent(s) (plugin: {plugin_count}, local: {local_count}, remote: {remote_count})")
         if not all_agents:
-            if console:
-                console.print("[red]❌ No agents found from any source.[/red]")
+            logger.info("No agents found from any source.")
         
         return all_agents, agent_sources_map
