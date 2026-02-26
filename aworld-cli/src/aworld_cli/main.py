@@ -62,6 +62,33 @@ async def load_all_agents(
     return await runtime._load_agents()
 
 
+def _resolve_agent_dirs(cli_agent_dirs: Optional[list[str]]) -> list[str]:
+    """
+    Resolve agent directories: CLI args > env (LOCAL_AGENTS_DIR/AGENTS_DIR) > default.
+
+    When neither --agent-dir nor env is set, uses AWORLD_DEFAULT_AGENT_DIR (default: ./agents).
+
+    Args:
+        cli_agent_dirs: List from --agent-dir (None or [] when not specified).
+
+    Returns:
+        Non-empty list of directory paths.
+
+    Example:
+        >>> _resolve_agent_dirs(None)  # no CLI, no env -> ["./agents"]
+        ["./agents"]
+        >>> _resolve_agent_dirs(["./my_agents"])  # CLI wins
+        ["./my_agents"]
+    """
+    if cli_agent_dirs:
+        return [d.strip() for d in cli_agent_dirs if d and d.strip()]
+    env_val = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or ""
+    if env_val:
+        return [d.strip() for d in env_val.split(";") if d.strip()]
+    default = os.getenv("AWORLD_DEFAULT_AGENT_DIR", "./agents")
+    return [default.strip()] if default.strip() else ["./agents"]
+
+
 def main():
     """
     Entry point for the AWorld CLI.
@@ -473,7 +500,7 @@ Batch Jobs:
         '--agent-dir',
         type=str,
         action='append',
-        help='Directory containing agents (can be specified multiple times). Overrides LOCAL_AGENTS_DIR environment variable.'
+        help='Directory containing agents (can be specified multiple times). Default: LOCAL_AGENTS_DIR or AWORLD_DEFAULT_AGENT_DIR (./agents) when not set.'
     )
     
     parser.add_argument(
@@ -592,7 +619,7 @@ Batch Jobs:
         parser_zh.add_argument('--non-interactive', action='store_true', help='以非交互模式运行（无用户输入）')
         parser_zh.add_argument('--env-file', type=str, default='.env', help='.env 文件路径（默认：.env）')
         parser_zh.add_argument('--remote-backend', type=str, action='append', help='远程后端 URL（可指定多次）。覆盖 REMOTE_AGENT_BACKEND 环境变量。')
-        parser_zh.add_argument('--agent-dir', type=str, action='append', help='包含 agents 的目录（可指定多次）。覆盖 LOCAL_AGENTS_DIR 环境变量。')
+        parser_zh.add_argument('--agent-dir', type=str, action='append', help='包含 agents 的目录（可指定多次）。未指定时默认使用 LOCAL_AGENTS_DIR 或 AWORLD_DEFAULT_AGENT_DIR（默认 ./agents）。')
         parser_zh.add_argument('--agent-file', type=str, action='append', help='单个 agent 文件路径（Python .py 或 Markdown .md，可指定多次）。')
         parser_zh.add_argument('--skill-path', type=str, action='append', help='技能源路径（本地目录或 GitHub URL，可指定多次）。覆盖 SKILLS_PATH 环境变量。')
         parser_zh.add_argument('--http', action='store_true', help='启动 HTTP 服务器（用于 serve 命令）')
@@ -641,6 +668,9 @@ Batch Jobs:
     if all_skills:
         skill_names = list(all_skills.keys())
         logger.info("Loaded %d global skill(s): %s", len(skill_names), ", ".join(skill_names))
+
+    # Resolve default agent_dir when --agent-dir not specified (env LOCAL_AGENTS_DIR / AWORLD_DEFAULT_AGENT_DIR)
+    args.agent_dir = _resolve_agent_dirs(args.agent_dir)
 
     # Handle 'list' command separately before setting up the full app loop if possible
     if args.command == "list":

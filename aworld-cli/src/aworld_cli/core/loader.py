@@ -9,6 +9,41 @@ from typing import Union, Optional
 from aworld.logs.util import logger
 
 
+def _ensure_parent_packages_in_sys_modules(module_name: str, project_root: Union[str, Path]) -> None:
+    """
+    Register parent packages in sys.modules so relative imports (e.g. from ..mcp_tools) resolve correctly.
+
+    When loading skill_agent.agents.swarm via importlib without going through the normal importer,
+    parent packages (skill_agent, skill_agent.agents) may not be in sys.modules, so "from ..mcp_tools"
+    can be resolved wrongly as skill_agent.agents.mcp_tools. This adds placeholder package modules.
+
+    Args:
+        module_name: Full module name, e.g. "skill_agent.agents.swarm".
+        project_root: Directory that contains the top-level package (e.g. .../examples).
+
+    Example:
+        >>> _ensure_parent_packages_in_sys_modules("skill_agent.agents.swarm", Path("/path/to/examples"))
+    """
+    root = Path(project_root).resolve()
+    parts = module_name.split(".")
+    # Only register the top-level package (e.g. skill_agent) so "from ..mcp_tools" resolves to skill_agent.mcp_tools
+    if len(parts) < 2:
+        return
+    top_level = parts[0]
+    pkg_path = root / top_level
+    if top_level in sys.modules:
+        logger.info(f"📦 _ensure_parent_packages: skip (already in sys.modules): {top_level}")
+        return
+    if not pkg_path.is_dir():
+        logger.info(f"📦 _ensure_parent_packages: skip (not a dir): {top_level} path={pkg_path}")
+        return
+    pkg = type(sys)(top_level)
+    pkg.__path__ = [str(pkg_path)]
+    pkg.__package__ = top_level
+    sys.modules[top_level] = pkg
+    logger.info(f"📦 _ensure_parent_packages: registered top-level {top_level} -> {pkg_path}")
+
+
 def _has_agent_decorator(file_path: Path) -> bool:
     """Check if a Python file contains @agent decorator.
     
@@ -125,50 +160,81 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
     failed_count = 0
     failed_files = []  # Track failed files with error messages
     
-    # Try to find the project root by checking sys.path
-    # Usually the project root is in sys.path
-    project_root = None
+    # Resolve project root so that relative imports like "from ..mcp_tools.mcp_config" work.
+    # Default: use "local project folder" - the parent of agents_dir is the project (e.g. skill_agent),
+    # so sys.path needs the parent of that (e.g. examples/) and module name = skill_agent.agents.swarm.
     agents_dir_abs = agents_dir.resolve()
-    
-    # Try to find the project root
-    for path in sys.path:
-        try:
-            path_obj = Path(path).resolve()
-            if agents_dir_abs.is_relative_to(path_obj):
-                project_root = path_obj
-                break
-        except Exception:
-            continue
-    
-    # If project root not found, use agents_dir's parent as fallback
+    project_folder = agents_dir_abs.parent  # e.g. .../skill_agent
+    project_root = None
+    use_local_package_layout = False
+
+    # Prefer local package layout: agents_dir is inside a project (e.g. skill_agent/agents)
+    # so "from ..mcp_tools.xxx" works: sys.path has parent of project folder, module = project.agents.stem
+    parent_of_project = project_folder.parent
+    try:
+        if (
+            parent_of_project
+            and str(parent_of_project.resolve()) != str(project_folder.resolve())
+            and str(parent_of_project.resolve()) != str(agents_dir_abs.resolve())
+        ):
+            project_root = parent_of_project
+            use_local_package_layout = True
+            logger.info(f"📂 init_agents: use_local_package_layout=True, project_root( parent_of_project)={parent_of_project}, project_folder={project_folder}")
+    except Exception as e:
+        logger.info(f"📂 init_agents: local layout check failed: {e}")
+
+    # Fallback: find project root from sys.path or use agents_dir's parent
+    if project_root is None:
+        for path in sys.path:
+            try:
+                path_obj = Path(path).resolve()
+                if agents_dir_abs.is_relative_to(path_obj):
+                    project_root = path_obj
+                    logger.info(f"📂 init_agents: project_root from sys.path: {project_root}, use_local_package_layout=False")
+                    break
+            except Exception:
+                continue
     if project_root is None:
         project_root = agents_dir_abs.parent
-    
-    # Add project root to sys.path if not already there
+        use_local_package_layout = False
+        logger.info(f"📂 init_agents: project_root=agents_dir.parent: {project_root}, use_local_package_layout=False")
+
+    if use_local_package_layout:
+        logger.info(f"📂 init_agents: use_local_package_layout=True, agents_dir_abs={agents_dir_abs}, project_folder={project_folder}, project_root={project_root}")
+
+    # Add project root to sys.path if not already there (default: local folder as base for imports)
     project_root_str = str(project_root)
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
-    
+    logger.info(f"📂 init_agents: sys.path[0]={sys.path[0]}")
+
     # Import modules with status indicator
     from rich.status import Status
     with Status(f"[dim]📦 Loading {len(python_files)} agent module(s)...[/dim]", console=console):
         for py_file in python_files:
             try:
-                # Calculate relative path from project root for module name
-                try:
-                    rel_path = py_file.relative_to(project_root)
-                except ValueError:
-                    # If file is not relative to project root, use absolute path
-                    rel_path = py_file
-
-                # Convert path to module name (e.g., agents/my_agent.py -> agents.my_agent)
-                module_parts = list(rel_path.parts[:-1]) + [rel_path.stem]
-                module_name = '.'.join(module_parts)
+                # Module name: project_folder-relative path so we get skill_agent.agents.swarm (not skill_agent.agents.agents.swarm)
+                if use_local_package_layout:
+                    try:
+                        rel_to_project = py_file.relative_to(project_folder)
+                    except ValueError:
+                        rel_to_project = py_file
+                    module_parts = list(rel_to_project.parts[:-1]) + [rel_to_project.stem]
+                    module_name = project_folder.name + '.' + '.'.join(module_parts)
+                else:
+                    try:
+                        rel_path = py_file.relative_to(project_root)
+                    except ValueError:
+                        rel_path = py_file
+                    module_parts = list(rel_path.parts[:-1]) + [rel_path.stem]
+                    module_name = '.'.join(module_parts)
 
                 # Skip if module name starts with a number (invalid Python module name)
                 if module_name and module_name[0].isdigit():
                     console.print(f"[dim]⚠️ Skipping invalid module name: {module_name}[/dim]")
                     continue
+
+                logger.info(f"📦 Loading module: py_file={py_file.name}, module_name={module_name}, use_local_package_layout={use_local_package_layout}")
 
                 # Use importlib to load the module
                 spec = importlib.util.spec_from_file_location(module_name, py_file)
@@ -180,6 +246,12 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
                     continue
 
                 module = importlib.util.module_from_spec(spec)
+                # So that "from ..mcp_tools" resolves to skill_agent.mcp_tools, register parent packages
+                if use_local_package_layout and "." in module_name:
+                    _ensure_parent_packages_in_sys_modules(module_name, project_root)
+                    logger.info(f"📦 Before exec_module: sys.modules keys (skill_agent*): {[k for k in sys.modules if k.startswith('skill_agent')]}")
+                else:
+                    logger.info(f"📦 Skip _ensure_parent_packages: use_local_package_layout={use_local_package_layout}, dots_in_name={'.' in module_name}")
 
                 # Execute the module to trigger decorator registration
                 # Note: We don't use Status here because the module execution might create its own Status
@@ -209,6 +281,7 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
                     failed_files.append((str(py_file), error_msg))
                     file_path = str(py_file.resolve())
                     logger.info(f"[dim]❌ Failed to load {file_path}: {error_msg}[/dim]")
+                    logger.info(f"  (module_name={module_name}, use_local_package_layout={use_local_package_layout}, project_root={project_root_str}, sys.path[0]={sys.path[0] if sys.path else 'N/A'})")
                     continue
 
             except Exception as e:
@@ -223,10 +296,14 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
     total_registered = len(LocalAgentRegistry.list_agents())
     total_loaded = loaded_count + markdown_loaded_count
     total_failed = failed_count + markdown_failed_count
-    logger.info(f"Summary: Loaded {total_loaded} file(s) ({loaded_count} Python, {markdown_loaded_count} markdown), {total_failed} failed, {total_registered} agent(s) registered")
+    logger.info(f"[dim]📊 Summary: Loaded {total_loaded} file(s) ({loaded_count} Python, {markdown_loaded_count} markdown), {total_failed} failed, {total_registered} agent(s) registered[/dim]")
+
     if failed_files:
         logger.info("Failed files: %s", [(fp, err) for fp, err in failed_files])
 
+    return python_files
+
+    # Return loaded Python files for debugging
     return python_files
 
 
@@ -279,28 +356,42 @@ def init_agent_file(agent_file: Union[str, Path]) -> Optional[str]:
         # Load Python agent
         if not _has_agent_decorator(agent_file):
             console.print(f"[yellow]⚠️ Python file {agent_file} does not contain @agent decorator, skipping[/yellow]")
-            return
-        
+            return None
+
+        agent_file_abs = agent_file.resolve()
+        # Support "from ..mcp_tools.xxx": use project_folder.parent on sys.path and load as project.agents.stem
+        project_folder = agent_file_abs.parent.parent  # e.g. .../skill_agent when file is .../skill_agent/agents/swarm.py
+        parent_of_project = project_folder.parent if project_folder else None
         try:
-            # Find project root (parent directory containing the file)
-            project_root = agent_file.parent
-            project_root_str = str(project_root.absolute())
-            
-            # Add project root to sys.path if not already there
+            use_local_package_layout = (
+                parent_of_project is not None
+                and str(parent_of_project) != str(project_folder)
+                and parent_of_project.resolve() != project_folder.resolve()
+            )
+        except Exception:
+            use_local_package_layout = False
+        try:
+            if use_local_package_layout:
+                project_root_str = str(parent_of_project)
+                module_name = f"{project_folder.name}.{agent_file_abs.parent.name}.{agent_file.stem}"
+            else:
+                project_root_str = str(agent_file_abs.parent)
+                module_name = agent_file.stem
+
             if project_root_str not in sys.path:
                 sys.path.insert(0, project_root_str)
-            
-            # Calculate module name
-            module_name = agent_file.stem
-            
+
             # Use importlib to load the module
             spec = importlib.util.spec_from_file_location(module_name, agent_file)
             if spec is None or spec.loader is None:
                 console.print(f"[yellow]⚠️ Could not create spec for {agent_file}[/yellow]")
-                return
-            
+                return None
+
             module = importlib.util.module_from_spec(spec)
-            
+            # So that "from ..mcp_tools" resolves to skill_agent.mcp_tools, register parent packages
+            if use_local_package_layout and "." in module_name:
+                _ensure_parent_packages_in_sys_modules(module_name, project_root_str)
+
             # Execute the module to trigger decorator registration
             # Note: We don't use Status here because the module execution might create its own Status
             spec.loader.exec_module(module)
