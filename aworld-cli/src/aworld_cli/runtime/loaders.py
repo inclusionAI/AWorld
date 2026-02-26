@@ -200,8 +200,7 @@ class LocalAgentLoader(AgentLoader):
             from ..core.loader import init_agents
             from ..core.agent_registry import LocalAgentRegistry
             
-            if self.console:
-                self.console.print(f"[dim]📂 Loading local agents from: {self.agent_dir}[/dim]")
+            logger.info(f"Loading local agents from: {self.agent_dir}")
             
             # Load agents from directory
             init_agents(self.agent_dir)
