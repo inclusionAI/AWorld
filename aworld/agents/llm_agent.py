@@ -1050,7 +1050,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return
         resp_output = MessageOutput(
             source=response,
-            metadata={"agent_id": agent.id(), "agent_name": agent.name(), "is_finished": agent.finished}
+            metadata={"agent_id": agent.id(), "agent_name": agent.name(), "is_finished": agent._finished}
         )
         if eventbus is not None:
             await send_message(Message(

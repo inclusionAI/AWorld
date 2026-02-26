@@ -250,7 +250,7 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         if not agent_name:
             agent_name = source.receiver
         agent = AgentFactory.agent_instance(agent_name)
-        action = TrajectoryAction(content=action_content, tool_calls=tool_calls, is_agent_finished=agent.finished)
+        action = TrajectoryAction(content=action_content, tool_calls=tool_calls, is_agent_finished=agent._finished)
         return action
 
     async def build_trajectory_reward(self, source: Any, **kwargs) -> Optional[TrajectoryReward]:
