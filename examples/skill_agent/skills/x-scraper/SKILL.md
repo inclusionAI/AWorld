@@ -16,8 +16,8 @@ description: X (Twitter) 抓取 skill - 通过 agent-browser (CDP) 抓取指定�
 
 ## 工具路径
 
-- 用户抓取：`.claude/skills/x-scraper/scrape_x_user.sh`
-- 首页推荐：`.claude/skills/x-scraper/scrape_x_home.sh`
+- 用户抓取：`./scrape_x_user.sh`
+- 首页推荐：`./scrape_x_home.sh`
 - 依赖：`agent-browser`（CDP 已连接且已登录 X）、`python3`
 
 ---
@@ -29,7 +29,7 @@ description: X (Twitter) 抓取 skill - 通过 agent-browser (CDP) 抓取指定�
 ### 用法
 
 ```bash
-./.claude/skills/x-scraper/scrape_x_user.sh [-u <username>] [-k <keyword>] [-p <cdp_port>] [-n <max_scrolls>] [-o <output_file>] [-f <format>]
+././scrape_x_user.sh [-u <username>] [-k <keyword>] [-p <cdp_port>] [-n <max_scrolls>] [-o <output_file>] [-f <format>]
 ```
 
 ### 参数
@@ -46,10 +46,10 @@ description: X (Twitter) 抓取 skill - 通过 agent-browser (CDP) 抓取指定�
 ### 示例
 
 ```bash
-./.claude/skills/x-scraper/scrape_x_user.sh
-./.claude/skills/x-scraper/scrape_x_user.sh -k qwen3
-./.claude/skills/x-scraper/scrape_x_user.sh -u chenchengpro -k claw -f rss -o feed.xml
-./.claude/skills/x-scraper/scrape_x_user.sh -u chenchengpro -f json -n 20 -o data.json
+././scrape_x_user.sh
+././scrape_x_user.sh -k qwen3
+././scrape_x_user.sh -u chenchengpro -k claw -f rss -o feed.xml
+././scrape_x_user.sh -u chenchengpro -f json -n 20 -o data.json
 ```
 
 ---
@@ -61,7 +61,7 @@ description: X (Twitter) 抓取 skill - 通过 agent-browser (CDP) 抓取指定�
 ### 用法
 
 ```bash
-./.claude/skills/x-scraper/scrape_x_home.sh [-t <tab>] [-p <cdp_port>] [-n <max_scrolls>] [-o <output_file>] [-f <format>]
+././scrape_x_home.sh [-t <tab>] [-p <cdp_port>] [-n <max_scrolls>] [-o <output_file>] [-f <format>]
 ```
 
 ### 参数
@@ -81,8 +81,8 @@ description: X (Twitter) 抓取 skill - 通过 agent-browser (CDP) 抓取指定�
 ### 示例
 
 ```bash
-./.claude/skills/x-scraper/scrape_x_home.sh                           # 抓取 For you 推荐流
-./.claude/skills/x-scraper/scrape_x_home.sh -t following -n 10        # 抓取 Following 时间线
-./.claude/skills/x-scraper/scrape_x_home.sh -f json -o feed.json      # JSON 输出到文件
-./.claude/skills/x-scraper/scrape_x_home.sh -n 3 -f rss -o home.xml   # 少量抓取，RSS 输出
+././scrape_x_home.sh                           # 抓取 For you 推荐流
+././scrape_x_home.sh -t following -n 10        # 抓取 Following 时间线
+././scrape_x_home.sh -f json -o feed.json      # JSON 输出到文件
+././scrape_x_home.sh -n 3 -f rss -o home.xml   # 少量抓取，RSS 输出
 ```

@@ -17,7 +17,7 @@ description: 小红书搜索抓取 skill - 通过 agent-browser (CDP) 抓取小�
 ## 用法
 
 ```bash
-./.claude/skills/xhs-scraper/scrape_xhs.sh -k <keyword> [-p <cdp_port>] [-n <max_scrolls>] [-d <detail_count>] [-o <output_file>] [-f <format>]
+./scrape_xhs.sh -k <keyword> [-p <cdp_port>] [-n <max_scrolls>] [-d <detail_count>] [-o <output_file>] [-f <format>]
 ```
 
 ### 参数
@@ -34,7 +34,7 @@ description: 小红书搜索抓取 skill - 通过 agent-browser (CDP) 抓取小�
 ### 示例
 
 ```bash
-./.claude/skills/xhs-scraper/scrape_xhs.sh -k "Agent开发工程师"
-./.claude/skills/xhs-scraper/scrape_xhs.sh -k "AI Agent岗位" -d 5 -f rss -o feed.xml
-./.claude/skills/xhs-scraper/scrape_xhs.sh -k "大模型面经" -n 10 -d 20 -f json -o data.json
+./scrape_xhs.sh -k "Agent开发工程师"
+./scrape_xhs.sh -k "AI Agent岗位" -d 5 -f rss -o feed.xml
+./scrape_xhs.sh -k "大模型面经" -n 10 -d 20 -f json -o data.json
 ```
