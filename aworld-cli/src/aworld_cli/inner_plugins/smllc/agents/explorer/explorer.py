@@ -64,7 +64,8 @@ class MultiTaskExplorerAgent(Agent):
 def build_explorer_swarm():
     """Build and configure the multi-task explorer agent swarm."""
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
-    skill_configs = collect_plugin_and_user_skills(plugin_base_dir)
+    user_dir = Path(os.environ.get("EXPLORER_SKILLS_PATH")).resolve() if os.environ.get("EXPLORER_SKILLS_PATH") else None
+    skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=user_dir)
 
     # Create Agent configuration with Claude Sonnet model
     agent_config = AgentConfig(
