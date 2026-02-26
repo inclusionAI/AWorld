@@ -56,7 +56,7 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
         # Do not default to current directory; require explicit path or env
         agents_dir = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR")
         if not agents_dir:
-            console.print("[yellow]⚠️ Agents directory not set. Set LOCAL_AGENTS_DIR or AGENTS_DIR, or pass agents_dir explicitly. Current directory is not scanned.[/yellow]")
+            logger.warn("[yellow]⚠️ Agents directory not set. Set LOCAL_AGENTS_DIR or AGENTS_DIR, or pass agents_dir explicitly. Current directory is not scanned.[/yellow]")
             return []
 
     # Convert to Path object if it's a string

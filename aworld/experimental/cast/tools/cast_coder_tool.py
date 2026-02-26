@@ -44,7 +44,7 @@ class CAstCoderAction(ToolAction):
                 desc="Whether to show detailed generation information"
             )
         },
-        desc="Generate compressed snapshot of target directory"
+        desc="Creates a compressed (`.tar.gz`) backup of a directory before modifications are applied."
     )
 
     DEPLOY_PATCHES = ToolActionInfo(
@@ -146,13 +146,26 @@ class CAstCoderAction(ToolAction):
                 name="operation_json",
                 type="string",
                 required=True,
-                desc="JSON format precise search and replace operation instruction, format: {\"operation\": {\"type\": \"search_replace\", \"file_path\": \"relative_path\", \"search\": \"code_to_search\", \"replace\": \"replacement_code\", \"exact_match_only\": true}}"
+                desc="""JSON format precise search and replace operation instruction. Format:
+{
+    "operation": {
+        "type": "search_replace",
+        "file_path": "path/to/your/file.py",
+        "search": "CODE_BLOCK_TO_FIND",
+        "replace": "NEW_CODE_BLOCK",
+        "exact_match_only": true
+    }
+}
+
+Parameters: type (string, required) Must be "search_replace"; file_path (string, required) Relative path from source_dir; search (string, required) One or more complete lines of source code, must not be blank; replace (string, required) Multi-line code block to replace with; exact_match_only (boolean, optional) Fixed as true.
+
+Best Practices for search: Use multi-line blocks with structural context (def/class) for accuracy; content must be continuous and match source code."""
             ),
             "source_dir": ParamInfo(
                 name="source_dir",
                 type="string",
                 required=True,
-                desc="Source directory path"
+                desc="Source directory path /path/to/agent/root"
             ),
             "show_details": ParamInfo(
                 name="show_details",
@@ -161,7 +174,12 @@ class CAstCoderAction(ToolAction):
                 desc="Whether to show detailed operation information (default: True)"
             )
         },
-        desc="Perform precise search and replace operations using exact matching only - no fuzzy matching allowed for guaranteed code accuracy"
+        desc="""Intelligently finds and replaces a block of code in a specified file. Preferred method for applying patches, robust against minor formatting differences. Based on aider's core matching algorithm.
+
+Key Features:
+- Exact Match: First attempts a direct, character-for-character match.
+- Whitespace Flexible Match: If exact match fails, retries while ignoring differences in leading whitespace and indentation. Handles most copy-paste formatting issues.
+- Similarity Match: (Optional) If other methods fail, uses a fuzzy text similarity algorithm to find the best match."""
     )
 
 

@@ -44,7 +44,12 @@ class CAstAnalysisAction(ToolAction):
                 desc="Whether to show detailed analysis information"
             )
         },
-        desc="Analyze the repository and build the three-tier index: L1 logic (project structure, call/dependency graph, heatmap), L2 skeleton (signatures and docstrings only, no body), L3 implementation (full source on-demand). Returns logic_layer always; skeleton_layer and implementation_layer when within length limits."
+        desc="""Analyze the repository and build the three-tier index:
+        - L1 logic (project structure, call/dependency graph, heatmap)
+        - L2 skeleton (signatures and docstrings only, no body)
+        - L3 implementation (full source on-demand).
+        Returns logic_layer always; skeleton_layer and implementation_layer when within length limits.
+        """
     )
 
     SEARCH_AST = ToolActionInfo(
@@ -60,7 +65,7 @@ class CAstAnalysisAction(ToolAction):
                 name="user_query",
                 type="string",
                 required=True,
-                desc="MUST be a regular expression for symbol/line recall (e.g. .*MyClass.*|.*my_function.*). Natural language is not supported."
+                desc="MUST be a regular expression for symbol/line recall (e.g. .*MyClass.*|.*my_function.*). Natural language is not supported. Incorrect: 'Find the MyClass class and the my_function function', '.*mcp_config\\.py.', '.*'"
             ),
             "max_tokens": ParamInfo(
                 name="max_tokens",
@@ -75,7 +80,7 @@ class CAstAnalysisAction(ToolAction):
                 desc="Whether to show detailed recall information"
             )
         },
-        desc="Retrieve skeleton_layer and implementation_layer to gain insights into implementation details of the repository."
+        desc="Retrieve skeleton_layer and implementation_layer to gain insights into implementation details of the repository. Fetch the precise source code for specific symbols (classes, functions) or line ranges."
     )
 
 
