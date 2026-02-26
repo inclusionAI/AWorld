@@ -11,13 +11,13 @@ description: 小红书发布 skill - 通过 agent-browser (CDP) 自动发布小�
 
 ## 工具路径
 
-- 脚本：`.claude/skills/xhs-publisher/publish_xhs.sh`
+- 脚本：`./publish_xhs.sh`
 - 依赖：`agent-browser`（CDP 已连接且已登录小红书）、`python3`
 
 ## 用法
 
 ```bash
-./.claude/skills/xhs-publisher/publish_xhs.sh -t <title> -i <images> [-c <content> | -f <content_file>] [-p <cdp_port>]
+././publish_xhs.sh -t <title> -i <images> [-c <content> | -f <content_file>] [-p <cdp_port>]
 ```
 
 ### 参数
@@ -34,19 +34,19 @@ description: 小红书发布 skill - 通过 agent-browser (CDP) 自动发布小�
 
 ```bash
 # 单图 + 短正文
-./.claude/skills/xhs-publisher/publish_xhs.sh \
+././publish_xhs.sh \
   -t "测试帖子" \
   -c "这是一条测试帖子" \
   -i /path/to/test.png
 
 # 多图 + 文件正文
-./.claude/skills/xhs-publisher/publish_xhs.sh \
+././publish_xhs.sh \
   -t "多图测试" \
   -f content.txt \
   -i img1.png,img2.png,img3.png
 
 # 多次 -i 指定图片
-./.claude/skills/xhs-publisher/publish_xhs.sh \
+././publish_xhs.sh \
   -t "分享日记" \
   -c "今天的风景真好" \
   -i photo1.jpg -i photo2.jpg

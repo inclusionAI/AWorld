@@ -17,7 +17,7 @@ description: HTML 转图片 skill - 将 HTML 文件或内容通过 agent-browser
 ## 用法
 
 ```bash
-./.claude/skills/html-to-image/html_to_image.sh -o <output> [-f <html_file> | -c <html_content>] [-w <width>] [-p <cdp_port>] [--full]
+./html_to_image.sh -o <output> [-f <html_file> | -c <html_content>] [-w <width>] [-p <cdp_port>] [--full]
 ```
 
 ### 参数
@@ -36,20 +36,20 @@ description: HTML 转图片 skill - 将 HTML 文件或内容通过 agent-browser
 
 ```bash
 # 从 HTML 文件截图
-./.claude/skills/html-to-image/html_to_image.sh \
+./html_to_image.sh \
   -f card.html -o card.png
 
 # 直接传入 HTML 内容
-./.claude/skills/html-to-image/html_to_image.sh \
+./html_to_image.sh \
   -c '<html><body><h1>Hello</h1></body></html>' \
   -o hello.png
 
 # 指定宽度（适配手机尺寸）
-./.claude/skills/html-to-image/html_to_image.sh \
+./html_to_image.sh \
   -f infographic.html -o output.png -w 750
 
 # 固定视口截图（非全页）
-./.claude/skills/html-to-image/html_to_image.sh \
+./html_to_image.sh \
   -f page.html -o output.png -w 1080 -e 1920 --no-full
 ```
 
@@ -61,7 +61,7 @@ description: HTML 转图片 skill - 将 HTML 文件或内容通过 agent-browser
 
 ```bash
 # 生成图片
-./.claude/skills/html-to-image/html_to_image.sh -f card.html -o card.png
+./html_to_image.sh -f card.html -o card.png
 
 # 发布到小红书
 ./.claude/skills/xhs-publisher/publish_xhs.sh -t "标题" -c "正文" -i card.png
