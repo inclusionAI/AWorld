@@ -1,5 +1,4 @@
 import asyncio
-import os
 import sys
 from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
@@ -29,8 +28,6 @@ class AWorldCLI:
     def __init__(self):
         self.console = console
         self.user_input = UserInputHandler(console)
-        # Track whether this is the first session startup, used to control the display of motivational messages
-        self._is_first_session = True
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -72,8 +69,16 @@ class AWorldCLI:
         # Display the Logo standalone (without a box), left aligned
         self.console.print(banner)
         
+        # Config source
+        from .core.config import get_config
+        source_type, source_path = get_config().get_config_source(".env")
+        if source_type == "local":
+            self.console.print(f"[dim]📁 Using local config: {source_path}[/dim]")
+        else:
+            self.console.print(f"[dim]🌐 Using global config: {source_path}[/dim]")
+
         # Subtitle / Version
-        subtitle = Text("\n🤖 Interact with your agents directly from the terminal", style="italic #875fff")
+        subtitle = Text("🤖 Interact with your agents directly from the terminal", style="italic #875fff")
         version = Text("\n v0.1.0", style="dim white")
         
         self.console.print(Text.assemble(subtitle, version))
@@ -702,21 +707,10 @@ class AWorldCLI:
                 if is_terminal and session:
                     # Use prompt_toolkit for input with completion
                     # We use HTML for basic coloring of the prompt
-                    # Show inspirational message only on first session
-                    if self._is_first_session:
-                        prompt_text = "<b>✨ Create an agent to do anything!</b>\n<b><cyan>You</cyan></b>: "
-                        # Mark as no longer first session after showing the message
-                        self._is_first_session = False
-                    else:
-                        prompt_text = "<b><cyan>You</cyan></b>: "
-
+                    prompt_text = "<b><cyan>You</cyan></b>: "
                     user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text))
                 else:
                     # Fallback to plain input() for non-terminal environments
-                    if self._is_first_session:
-                        self.console.print("[cyan]✨ Create an agent to do anything![/cyan]")
-                        # Mark as no longer first session after showing the message
-                        self._is_first_session = False
                     self.console.print("[cyan]You[/cyan]: ", end="")
                     user_input = await asyncio.to_thread(input)
                 

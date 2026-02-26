@@ -640,11 +640,6 @@ Batch Jobs:
     
     # Display configuration source
     from ._globals import console
-    if source_type == "local":
-        console.print(f"[dim]📁 Using local config: {source_path}[/dim]")
-    else:
-        console.print(f"[dim]🌐 Using global config: {source_path}[/dim]")
-    
     # Require model config for commands that use the agent (skip for 'list' and plugin)
     if args.command != "list" and not has_model_config(config_dict):
         console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")

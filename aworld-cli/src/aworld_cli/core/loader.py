@@ -100,7 +100,7 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
     cwd_resolved = Path.cwd().resolve()
 
     if not agents_dir.exists():
-        console.print(f"[yellow]⚠️ Agents directory not found: {agents_dir}[/yellow]")
+        logger.warning(f"Agents directory not found: {agents_dir}")
         return []
 
     # Do not scan the current working directory (avoid loading from cwd by mistake)
