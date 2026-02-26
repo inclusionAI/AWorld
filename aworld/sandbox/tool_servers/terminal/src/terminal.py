@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Union
 import uuid
 import os
+import re
+import tempfile
 
 from dotenv import load_dotenv
 from pydantic.fields import FieldInfo
@@ -17,15 +19,10 @@ from mcp.server import FastMCP
 from mcp.types import TextContent
 from pydantic import Field, BaseModel
 
+from background_keywords import LONG_RUNNING_KEYWORDS
 
 load_dotenv()
-# 工作目录：从环境变量 AWORLD_WORKSPACE 读取（与 filesystem 一致，可为逗号分隔多路径；terminal 只取第一个）
-_env_workspace = os.environ.get("AWORLD_WORKSPACE", "").strip()
-if _env_workspace:
-    _first = next((p.strip() for p in _env_workspace.split(",") if p.strip()), None)
-    workspace = Path(_first) if _first else Path.home() / "workspace"
-else:
-    workspace = Path.home() / "workspace"
+workspace = Path.home() / "workspace"
 
 # Allow customizing the leading icon in the terminal card output
 TERMINAL_ICON = os.getenv("TERMINAL_ICON", "🖥️")
@@ -171,8 +168,9 @@ async def run_code(
     output_format: str = Field(
         default="markdown", description="Output format: 'markdown', 'json', or 'text'"
     ),
-) -> Union[str, TextContent]:
-    # 处理参数：如果是 FieldInfo 则使用默认值，否则使用传入的值
+    ) -> Union[str, TextContent]:
+    # Normalize parameters: when using MCP tool schemas, the raw values may be
+    # FieldInfo instances. In that case, fall back to their default values.
     if isinstance(code, FieldInfo):
         command = code.default
     else:
@@ -323,6 +321,41 @@ def _check_command_safety(command: str) -> tuple[bool, str | None]:
     return True, None
 
 
+# Match background-execution ampersand '&', while excluding 2>&1, &&, &>, etc.
+# - `\s+&` ensures there is a space before '&' (excludes 2>&1, &>)
+# - `(?!\s*&)` ensures the '&' is not followed by another '&' (excludes &&)
+# This matches anywhere in the line, including patterns like
+#   "cmd1 & cmd2" or "cmd & echo done".
+_BACKGROUND_AMPERSAND_RE = re.compile(r"\s+&(?!\s*&)")
+
+
+def _is_background_process(command: str) -> bool:
+    """Determine whether a command should be treated as a background process.
+
+    Detection rules:
+    1. Contains a background '&' operator (excluding 2>&1, &&, &>):
+       - At the end: `cmd &`
+       - In the middle: `cmd1 & cmd2`, `nohup npm run dev ... & echo hello`
+    2. Contains any keyword from LONG_RUNNING_KEYWORDS
+       (e.g. nohup, npm run dev, docker compose up).
+
+    Args:
+        command: The command string to inspect.
+
+    Returns:
+        True if the command is likely to spawn a background or long-running
+        process; otherwise False.
+    """
+    cmd_stripped = command.rstrip()
+    if _BACKGROUND_AMPERSAND_RE.search(cmd_stripped):
+        return True
+    cmd_lower = cmd_stripped.lower()
+    for keyword in LONG_RUNNING_KEYWORDS:
+        if keyword.lower() in cmd_lower:
+            return True
+    return False
+
+
 def _format_command_output(
     result: CommandResult, output_format: str = "markdown"
 ) -> str:
@@ -380,6 +413,9 @@ def _format_command_output(
 async def _execute_command_async(command: str, timeout: int) -> CommandResult:
     """Execute command asynchronously with timeout.
 
+    后台命令使用临时文件捕获输出，避免 PIPE 导致管道阻塞。
+    普通命令使用标准 PIPE 方式。
+
     Args:
         command: Command to execute
         timeout: Timeout in seconds
@@ -390,46 +426,104 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
     start_time = datetime.now()
 
     try:
-        # Create appropriate subprocess for platform
-        if platform_info["system"] == "Windows":
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                shell=True,
-            )
-        else:
-            process = await asyncio.create_subprocess_shell(
-                command,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                shell=True,
-                executable="/bin/bash",
-            )
+        is_background = _is_background_process(command) and platform_info["system"] != "Windows"
 
-        try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
-            stdout = stdout.decode("utf-8", errors="replace")
-            stderr = stderr.decode("utf-8", errors="replace")
-            return_code = process.returncode
+        if is_background:
+            # ========== 后台命令：使用临时文件，避免 PIPE 阻塞 ==========
+            stdout_file = tempfile.NamedTemporaryFile(mode='w+', suffix='.stdout', delete=False)
+            stderr_file = tempfile.NamedTemporaryFile(mode='w+', suffix='.stderr', delete=False)
+            stdout_path = stdout_file.name
+            stderr_path = stderr_file.name
+            stdout_file.close()
+            stderr_file.close()
 
-        except asyncio.TimeoutError:
             try:
-                process.kill()
-            except Exception:
-                pass
+                wrapped_command = f"( {command} ) > {stdout_path} 2> {stderr_path}"
 
-            duration = str(datetime.now() - start_time)
-            return CommandResult(
-                command=command,
-                success=False,
-                stdout="",
-                stderr=f"Command timed out after {timeout} seconds",
-                return_code=-1,
-                duration=duration,
-                timestamp=start_time.isoformat(),
-            )
+                process = await asyncio.create_subprocess_shell(
+                    wrapped_command,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    shell=True,
+                    executable="/bin/bash",
+                    start_new_session=True,
+                )
 
+                try:
+                    await asyncio.wait_for(process.wait(), timeout)
+                    return_code = process.returncode
+
+                    with open(stdout_path, 'r', encoding='utf-8', errors='replace') as f:
+                        stdout = f.read()
+                    with open(stderr_path, 'r', encoding='utf-8', errors='replace') as f:
+                        stderr = f.read()
+
+                except asyncio.TimeoutError:
+                    try:
+                        process.kill()
+                    except Exception:
+                        pass
+                    duration = str(datetime.now() - start_time)
+                    return CommandResult(
+                        command=command,
+                        success=False,
+                        stdout="",
+                        stderr=f"Command timed out after {timeout} seconds",
+                        return_code=-1,
+                        duration=duration,
+                        timestamp=start_time.isoformat(),
+                    )
+            finally:
+                try:
+                    os.unlink(stdout_path)
+                except Exception:
+                    pass
+                try:
+                    os.unlink(stderr_path)
+                except Exception:
+                    pass
+
+        else:
+            # ========== 普通命令：使用标准 PIPE 方式 ==========
+            if platform_info["system"] == "Windows":
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    shell=True,
+                )
+            else:
+                process = await asyncio.create_subprocess_shell(
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    shell=True,
+                    executable="/bin/bash",
+                )
+
+            try:
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout)
+                stdout = stdout.decode("utf-8", errors="replace")
+                stderr = stderr.decode("utf-8", errors="replace")
+                return_code = process.returncode
+
+            except asyncio.TimeoutError:
+                try:
+                    process.kill()
+                except Exception:
+                    pass
+                duration = str(datetime.now() - start_time)
+                return CommandResult(
+                    command=command,
+                    success=False,
+                    stdout="",
+                    stderr=f"Command timed out after {timeout} seconds",
+                    return_code=-1,
+                    duration=duration,
+                    timestamp=start_time.isoformat(),
+                )
+
+        # 构建结果
         duration = str(datetime.now() - start_time)
         result = CommandResult(
             command=command,

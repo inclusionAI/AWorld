@@ -1,5 +1,159 @@
 # Filesystem MCP Server
 
+Filesystem MCP server implemented with FastMCP. It exposes a rich set of file and directory operations over the MCP protocol.
+
+## Features
+
+- Read and write files  
+- Create / list / delete directories  
+- Move / rename files  
+- Search files  
+- Get file metadata  
+- Dynamic allowed-directories access control  
+
+## Installation
+
+Using `uv` (recommended):
+
+```bash
+uv pip install -e .
+```
+
+Or using `pip`:
+
+```bash
+pip install -e .
+```
+
+## Usage
+
+### Run from command line
+
+```bash
+# Using uv
+uv run python -m src [ALLOWED_DIR] [OTHER_DIR ...]
+
+# Or using plain Python / pip env
+python -m src [ALLOWED_DIR] [OTHER_DIR ...]
+```
+
+Each argument is treated as an allowed root directory; all file operations must stay under at least one of them.
+
+### MCP client configuration
+
+Add to your MCP client config (for example `~/.cursor/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "uv",
+      "args": [
+        "run",
+        "python",
+        "-m",
+        "src",
+        "/path/to/allowed/directory"
+      ]
+    }
+  }
+}
+```
+
+## Tools
+
+The server exposes the following tools (exact signatures are defined in `src/main.py`):
+
+### `read_text_file`
+Read a text file.
+
+- Supports `head` parameter: read only the first N lines  
+- Supports `tail` parameter: read only the last N lines  
+- `head` and `tail` cannot be used at the same time  
+
+### `read_media_file`
+Read an image or audio file.
+
+- Returns base64-encoded data and MIME type  
+- Supported image formats: PNG, JPG, GIF, WebP, BMP, SVG  
+- Supported audio formats: MP3, WAV, OGG, FLAC  
+
+### `read_multiple_files`
+Read multiple files in one call.
+
+- Reads several files concurrently for better performance  
+- Failure on one file does not affect the others  
+
+### `write_file`
+Create or overwrite a file.
+
+- Completely overwrites the existing file content  
+- Automatically creates parent directories  
+
+### `edit_file`
+Edit file content.
+
+- Line-based or range-based edits (see tool schema for exact parameters)  
+- Supports `dryRun` mode: preview the change without applying it  
+- Returns a git-style diff preview of the changes  
+
+### `create_directory`
+Create a directory.
+
+- Automatically creates parent directories (recursive)  
+- Succeeds silently if the directory already exists  
+
+### `list_directory`
+List the contents of a directory.
+
+- Shows both files and subdirectories  
+- Uses `[FILE]` and `[DIR]` prefixes to distinguish types  
+
+### `list_directory_with_sizes`
+List directory contents with size information.
+
+- Shows file sizes  
+- Supports sorting by name or size  
+- Returns aggregate statistics (total files, total directories, total size)  
+
+### `directory_tree`
+Get a recursive directory tree.
+
+- Returns a JSON representation of the directory tree  
+- Supports exclude patterns (glob)  
+- Each node includes name, type, and children  
+
+### `move_file`
+Move or rename a file.
+
+- Can move files between directories  
+- Can rename files within the same directory  
+- Fails if the destination path already exists  
+
+### `search_files`
+Search for files.
+
+- Uses glob patterns for matching  
+- Recursively searches subdirectories  
+- Supports exclude patterns  
+- Returns a list of full paths for all matches  
+
+### `get_file_info`
+Get file metadata.
+
+- File size  
+- Creation / modification / access times  
+- File type (file / directory)  
+- Permission info  
+
+### `list_allowed_directories`
+List all allowed directories.
+
+- Shows all directories that the server is currently configured to allow  
+- Useful to understand the accessible scope  
+
+# Filesystem MCP Server
+
 基于 FastMCP 实现的文件系统 MCP 服务器。
 
 ## 功能特性
