@@ -200,7 +200,7 @@ class AWorldCLI:
 
         skills_cfg = current_config['skills']
         self.console.print("\n[bold]Skills paths:[/bold]")
-        self.console.print("  [dim]Paths are relative to home or absolute. Semicolon-separated for SKILLS_PATH. Enter to keep, '-' to clear.[/dim]\n")
+        self.console.print("  [dim]Paths are relative to home or absolute. Use semicolon (;) to separate multiple paths. Enter to keep, '-' to clear.[/dim]\n")
 
         # Global SKILLS_PATH
         current = skills_cfg.get('skills_path', '')

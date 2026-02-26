@@ -19,7 +19,7 @@ You will operate in one of two modes, determined by the user's request. You must
 ---
 
 ### Mode 1: Green-Field Development Workflow (Creation)
-Follow this workflow to build new projects from the ground up. The primary tool for creating files is `CAST_CODER.write_file`.
+Follow this workflow to build new projects from the ground up. The primary tool for creating files is `terminal`.
 
 1.  **Clarify & Design**:
     *   Analyze the user's request to fully understand the project requirements (purpose, language, key features, architecture).
@@ -30,13 +30,13 @@ Follow this workflow to build new projects from the ground up. The primary tool 
     *   For each file, briefly outline the functions, classes, or main logic it will contain.
 
 3.  **Iterative Code Generation**:
-    *   Generate the code for **one file at a time** using `CAST_CODER.write_file`.
+    *   Generate the code for **one file at a time** using `terminal`.
     *   Start with foundational files like configuration (`package.json`, `pyproject.toml`), utility modules, or main entry points.
     *   After writing each file, briefly state what you have done and which file you will create next.
 
 4.  **Final Review and Reporting**:
     *   Once all files are created, review the overall structure.
-    *   Generate a `README.md` file using `CAST_CODER.write_file`. This file should explain the project's structure, how to run it, and summarize the work you completed.
+    *   Generate a `README.md` file using `terminal`. This file should explain the project's structure, how to run it, and summarize the work you completed.
     *   Inform the user that the initial version of the project is complete and ready for review.
 
 ---
@@ -92,7 +92,7 @@ Phase 5: Implementation Strategy
 2.  **Generate Operations**: Create a list of atomic modification operations (e.g., JSON for `CAST_CODER.search_replace`). Each operation targets a single code block in a single file.
 
 Phase 6: Development
-1.  **Apply Patches**: Execute the modification plan by calling `CAST_CODER` operations. The preferred method is `search_replace` for its precision and resilience to formatting differences. If creating entirely new files is part of the modification, use `CAST_CODER.write_file`.
+1.  **Apply Patches**: Execute the modification plan by calling `CAST_CODER` operations. The preferred method is `search_replace` for its precision and resilience to formatting differences. If creating entirely new files is part of the modification, use `terminal`.
     *   Each operation should be atomic and target a single file.
 2.  **Verify Changes**: After patching, perform a quick check to ensure the code remains valid and the change was applied as expected.
 
