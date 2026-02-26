@@ -223,15 +223,11 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
     total_registered = len(LocalAgentRegistry.list_agents())
     total_loaded = loaded_count + markdown_loaded_count
     total_failed = failed_count + markdown_failed_count
-    console.print(f"[dim]📊 Summary: Loaded {total_loaded} file(s) ({loaded_count} Python, {markdown_loaded_count} markdown), {total_failed} failed, {total_registered} agent(s) registered[/dim]")
-
-    # Return loaded Python files for debugging
-    return python_files
-    
+    logger.info(f"Summary: Loaded {total_loaded} file(s) ({loaded_count} Python, {markdown_loaded_count} markdown), {total_failed} failed, {total_registered} agent(s) registered")
     if failed_files:
-        console.print("\n[yellow]⚠️ Failed files:[/yellow]")
-        for file_path, error in failed_files:
-            console.print(f"[dim]  - {file_path}: {error}[/dim]")
+        logger.info("Failed files: %s", [(fp, err) for fp, err in failed_files])
+
+    return python_files
 
 
 def init_agent_file(agent_file: Union[str, Path]) -> Optional[str]:

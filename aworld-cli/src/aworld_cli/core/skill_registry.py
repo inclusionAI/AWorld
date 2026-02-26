@@ -252,7 +252,7 @@ def _register_from_env(registry: SkillRegistry) -> None:
             try:
                 count = registry.register_source(source, source_name=source)
                 if count > 0:
-                    print(f"📚 Registered skill source from {ENV_SKILLS_PATH}: {source} ({count} skills)")
+                    logger.info(f"📚 Registered skill source from {ENV_SKILLS_PATH}: {source} ({count} skills)")
                 logger.info(f"📚 Registered skill source from {ENV_SKILLS_PATH}: {source}")
             except Exception as e:
                 print(f"⚠️ Failed to register skill source from env '{source}': {e}")
@@ -280,7 +280,7 @@ def _register_from_env(registry: SkillRegistry) -> None:
             if skills_dir_path.exists() and skills_dir_path.is_dir():
                 count = registry.register_source(str(skills_dir_path), source_name=str(skills_dir_path))
                 if count > 0:
-                    print(f"📚 Registered skill source from {ENV_SKILLS_DIR}: {skills_dir_path} ({count} skills)")
+                    logger.info(f"📚 Registered skill source from {ENV_SKILLS_DIR}: {skills_dir_path} ({count} skills)")
                 logger.info(f"📚 Registered skill source from {ENV_SKILLS_DIR}: {skills_dir_path}")
             else:
                 logger.warning(f"⚠️ {ENV_SKILLS_DIR} directory not found: {skills_dir_path}")
