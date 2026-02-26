@@ -7,7 +7,7 @@ from environment variables or programmatic configuration.
 """
 import os
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from aworld.utils.skill_loader import SkillRegistry, DEFAULT_CACHE_DIR, collect_skill_docs
 
@@ -57,33 +57,36 @@ def get_user_skills_paths() -> List[Path]:
     return paths
 
 
-def collect_plugin_and_user_skills(plugin_base_dir: Path, user_dir: Optional[Path] = None) -> Dict[str, Any]:
+def collect_plugin_and_user_skills(plugin_base_dir: Path, user_dir: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
     """
     Collect skills from plugin skills dir and user skills dirs, with dedup, skill_path fix, and aworld_metadata filter.
 
     Resolution order:
     1. Plugin skills dir: plugin_base_dir/skills (e.g. inner_plugins/smllc/skills)
-    2. User skills dirs: user_dir (if set) + SKILLS_PATH / SKILLS_DIR / ~/.aworld/skills (user path overrides plugin on conflict)
+    2. User skills dirs: user_dir (if set, semicolon-separated) + SKILLS_PATH / SKILLS_DIR / ~/.aworld/skills (user path overrides plugin on conflict)
     3. Each skill gets skill_path ensured for context_skill_tool
     4. Only skills with aworld_metadata.eligible=True (or no aworld_metadata) are included
 
     Args:
         plugin_base_dir: Plugin root path (e.g. Path(__file__).resolve().parents[1] for smllc).
-        user_dir: Optional user skills directory; when set, loaded first (highest priority). Default None.
+        user_dir: Optional user skills dir(s); semicolon-separated for multiple paths. Loaded first (highest priority). Default None.
 
     Returns:
         Dict mapping skill name to skill config (ready for AgentConfig.skill_configs).
     """
     plugin_skills_dir = get_plugin_skills_dir(plugin_base_dir)
-    logger.info(f"agent_config: {plugin_base_dir}")
+    logger.info(f"agent_config: {plugin_base_dir} user_dir: {user_dir}")
 
     custom_skills: Dict[str, Any] = {}
     if plugin_skills_dir.exists() and plugin_skills_dir.is_dir():
         custom_skills = collect_skill_docs(plugin_skills_dir)
 
     user_paths: List[Path] = list(get_user_skills_paths())
-    if user_dir is not None:
-        user_paths.insert(0, Path(user_dir).resolve())
+    if user_dir:
+        # Parse semicolon-separated paths (same as SKILLS_PATH)
+        parts = [s.strip() for s in str(user_dir).split(";") if s.strip()]
+        for p in reversed(parts):
+            user_paths.insert(0, Path(os.path.expanduser(p)).resolve())
 
     for user_skills_path in user_paths:
         if not user_skills_path.exists() or not user_skills_path.is_dir():

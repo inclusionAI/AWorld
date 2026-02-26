@@ -440,8 +440,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
 
     plugin_base_dir = Path(__file__).resolve().parents[1]
-    user_dir = os.environ.get("AWORLD_SKILLS_PATH")
-    user_dir = Path(user_dir).resolve() if user_dir else None
+    user_dir = os.environ.get("AWORLD_SKILLS_PATH")  # semicolon-separated paths
     ALL_SKILLS = collect_plugin_and_user_skills(plugin_base_dir, user_dir=user_dir)
 
     # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
