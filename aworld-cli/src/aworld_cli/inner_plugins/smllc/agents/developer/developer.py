@@ -12,6 +12,7 @@ from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
 from aworld.sandbox.base import Sandbox
 from aworld_cli.core import agent
+from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
 from .mcp_config import mcp_config
 
 
@@ -48,6 +49,10 @@ class DeveloperAgent(Agent):
     desc="Edits code, HTML, and other files for development work; can develop apps; supports code refactoring and optimization.",
 )
 def build_developer_swarm():
+    plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
+    env_skills_dir = Path(os.path.expanduser(os.environ.get("DEVELOPER_SKILLS_PATH"))).resolve()
+    skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
+
     # Create Agent configuration
     agent_config = AgentConfig(
         # DO NOT MODIFY: LLM config block below must be preserved exactly (env vars + defaults).
@@ -58,7 +63,8 @@ def build_developer_swarm():
             llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
             params={"max_completion_tokens": 59000}
-        )
+        ),
+        skill_configs=skill_configs
     )
 
     # Extract all server keys from mcp_config

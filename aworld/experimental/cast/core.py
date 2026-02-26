@@ -483,11 +483,12 @@ class ACast:
 
         Args:
             target_dir: Target directory path, directory to create snapshot for
-            version: Version string, defaults to "v0"
+            version: Version string (e.g. 'v0', 'v1'). If empty/None, auto-increments from max version in snapshot dir.
 
         Returns:
             Path to saved snapshot file
         """
+        import re
         import tarfile
 
         target_dir = Path(target_dir)
@@ -498,8 +499,20 @@ class ACast:
         tmp_dir = self.tmp_path
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate snapshot filename: {path_suffix}_{version}.tar.gz
         path_suffix = target_dir.name or "default"
+        # Auto-increment version when empty: find max vN in snapshot dir and use v(max+1)
+        if not version or not str(version).strip():
+            pattern = re.compile(rf"^{re.escape(path_suffix)}_v(\d+)\.tar\.gz$")
+            max_n = -1
+            if tmp_dir.exists():
+                for f in tmp_dir.iterdir():
+                    if f.is_file():
+                        m = pattern.match(f.name)
+                        if m:
+                            max_n = max(max_n, int(m.group(1)))
+            version = f"v{max_n + 1}"
+
+        # Generate snapshot filename: {path_suffix}_{version}.tar.gz
         snapshot_filename = f"{path_suffix}_{version}.tar.gz"
         snapshot_path = tmp_dir / snapshot_filename
 

@@ -63,8 +63,10 @@ class MultiTaskEvaluatorAgent(Agent):
 )
 def build_evaluator_swarm():
     """Build and configure the multi-task evaluator agent swarm."""
+    # APP_EVALUATOR_SKILLS_DIR: override skill read directory (plugin root with skills/ subdir)
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
-    skill_configs = collect_plugin_and_user_skills(plugin_base_dir)
+    env_skills_dir = Path(os.path.expanduser(os.environ.get("EVALUATOR_SKILLS_PATH"))).resolve()
+    skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
 
     # Create Agent configuration with Claude Sonnet model
     agent_config = AgentConfig(
@@ -76,7 +78,7 @@ def build_evaluator_swarm():
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
             params={"max_completion_tokens": 59000}
         ),
-        # skill_configs=skill_configs
+        skill_configs=skill_configs
     )
 
     # Extract all server keys from mcp_config
