@@ -11,8 +11,8 @@ from aworld.core.event.base import Message
 from aworld.logs.util import logger
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
+from aworld.sandbox import Sandbox
 from aworld_cli.core import agent
-from aworld.sandbox.base import Sandbox
 from .mcp_config import mcp_config
 
 @HookFactory.register(name="pre_text2agent_hook")

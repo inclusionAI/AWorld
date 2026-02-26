@@ -91,7 +91,7 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
         # Do not default to current directory; require explicit path or env
         agents_dir = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR")
         if not agents_dir:
-            console.print("[yellow]⚠️ Agents directory not set. Set LOCAL_AGENTS_DIR or AGENTS_DIR, or pass agents_dir explicitly. Current directory is not scanned.[/yellow]")
+            logger.warn("[yellow]⚠️ Agents directory not set. Set LOCAL_AGENTS_DIR or AGENTS_DIR, or pass agents_dir explicitly. Current directory is not scanned.[/yellow]")
             return []
 
     # Convert to Path object if it's a string
@@ -207,7 +207,7 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
     logger.info(f"📂 init_agents: sys.path[0]={sys.path[0]}")
-    
+
     # Import modules with status indicator
     from rich.status import Status
     with Status(f"[dim]📦 Loading {len(python_files)} agent module(s)...[/dim]", console=console):
@@ -296,12 +296,10 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
     total_registered = len(LocalAgentRegistry.list_agents())
     total_loaded = loaded_count + markdown_loaded_count
     total_failed = failed_count + markdown_failed_count
-    console.print(f"[dim]📊 Summary: Loaded {total_loaded} file(s) ({loaded_count} Python, {markdown_loaded_count} markdown), {total_failed} failed, {total_registered} agent(s) registered[/dim]")
+    logger.info(f"[dim]📊 Summary: Loaded {total_loaded} file(s) ({loaded_count} Python, {markdown_loaded_count} markdown), {total_failed} failed, {total_registered} agent(s) registered[/dim]")
 
     if failed_files:
-        console.print("\n[yellow]⚠️ Failed files:[/yellow]")
-        for file_path, error in failed_files:
-            console.print(f"[dim]  - {file_path}: {error}[/dim]")
+        logger.info("Failed files: %s", [(fp, err) for fp, err in failed_files])
 
     # Return loaded Python files for debugging
     return python_files

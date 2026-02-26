@@ -130,10 +130,25 @@ def load_config_with_env(env_file: str = ".env") -> tuple[Dict[str, Any], str, s
     config = get_config()
     source_type, source_path = config.get_config_source(env_file)
     
-    # Load from .env if exists (highest priority)
+    # Load from .env if exists (highest priority for models)
     env_path = Path(env_file).resolve()
     if env_path.exists():
         load_dotenv(env_path)
+        # Apply skills from global config even when using .env (skills not in .env by default)
+        global_config = config.load_config()
+        if 'skills' in global_config:
+            skills_cfg = global_config['skills']
+            if isinstance(skills_cfg, dict):
+                if skills_cfg.get('skills_path'):
+                    os.environ['SKILLS_PATH'] = str(skills_cfg['skills_path']).strip()
+                if skills_cfg.get('evaluator_skills_path'):
+                    os.environ['EVALUATOR_SKILLS_PATH'] = str(skills_cfg['evaluator_skills_path']).strip()
+                if skills_cfg.get('explorer_skills_path'):
+                    os.environ['EXPLORER_SKILLS_PATH'] = str(skills_cfg['explorer_skills_path']).strip()
+                if skills_cfg.get('aworld_skills_path'):
+                    os.environ['AWORLD_SKILLS_PATH'] = str(skills_cfg['aworld_skills_path']).strip()
+                if skills_cfg.get('developer_skills_path'):
+                    os.environ['DEVELOPER_SKILLS_PATH'] = str(skills_cfg['developer_skills_path']).strip()
         # Convert .env to config dict format for consistency
         env_config = {}
         for key, value in os.environ.items():
@@ -165,6 +180,20 @@ def load_config_with_env(env_file: str = ".env") -> tuple[Dict[str, Any], str, s
     
     # Otherwise load from global config
     global_config = config.load_config()
+    # Apply skills config to environment
+    if 'skills' in global_config:
+        skills_cfg = global_config['skills']
+        if isinstance(skills_cfg, dict):
+            if skills_cfg.get('skills_path'):
+                os.environ['SKILLS_PATH'] = str(skills_cfg['skills_path']).strip()
+            if skills_cfg.get('evaluator_skills_path'):
+                os.environ['EVALUATOR_SKILLS_PATH'] = str(skills_cfg['evaluator_skills_path']).strip()
+            if skills_cfg.get('explorer_skills_path'):
+                os.environ['EXPLORER_SKILLS_PATH'] = str(skills_cfg['explorer_skills_path']).strip()
+            if skills_cfg.get('aworld_skills_path'):
+                os.environ['AWORLD_SKILLS_PATH'] = str(skills_cfg['aworld_skills_path']).strip()
+            if skills_cfg.get('developer_skills_path'):
+                os.environ['DEVELOPER_SKILLS_PATH'] = str(skills_cfg['developer_skills_path']).strip()
     # Apply global config to environment (provider-specific + LLM_API_KEY, LLM_MODEL_NAME, LLM_BASE_URL)
     if 'models' in global_config:
         models_config = global_config['models']

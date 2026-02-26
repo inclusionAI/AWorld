@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 
 import json
+import re
 import traceback
 from pathlib import Path
 from typing import Dict, Any, Tuple
@@ -35,7 +36,7 @@ class CAstCoderAction(ToolAction):
                 name="version",
                 type="string",
                 required=False,
-                desc="Version string for the snapshot (e.g., 'v0', 'v1'), default is 'v0'"
+                desc="Version string (e.g. 'v0', 'v1'). Not recommended to fill; leave empty for auto-increment (max+1 in snapshot dir)."
             ),
             "show_details": ParamInfo(
                 name="show_details",
@@ -44,7 +45,7 @@ class CAstCoderAction(ToolAction):
                 desc="Whether to show detailed generation information"
             )
         },
-        desc="Generate compressed snapshot of target directory"
+        desc="Creates a compressed (`.tar.gz`) backup of a directory before modifications are applied."
     )
 
     DEPLOY_PATCHES = ToolActionInfo(
@@ -54,7 +55,15 @@ class CAstCoderAction(ToolAction):
                 name="patch_content",
                 type="string",
                 required=True,
-                desc="Patch content to deploy"
+                desc="""Unified diff patch content to deploy. Example:
+--- a/src/foo.py
++++ b/src/foo.py
+@@ -5,3 +5,4 @@
+ def bar():
+-    x = 1
++    x = 2
++    y = 3
+"""
             ),
             "source_dir": ParamInfo(
                 name="source_dir",
@@ -93,7 +102,7 @@ class CAstCoderAction(ToolAction):
                 desc="Whether to show detailed deployment information"
             )
         },
-        desc="Deploy patches from patch content to source directory in-place with optional validation"
+        desc="Deploy patches from patch content to source directory in-place with optional validation. Not recommended; prefer search_replace for precision and path clarity."
     )
 
     DEPLOY_OPS = ToolActionInfo(
@@ -136,7 +145,7 @@ class CAstCoderAction(ToolAction):
                 desc="Whether to show detailed deployment information"
             )
         },
-        desc="Deploy code changes based on JSON operation instructions (insert/replace/delete)"
+        desc="Deploy code changes based on JSON operation instructions (insert/replace/delete). Not recommended; prefer search_replace for precision and path clarity."
     )
 
     SEARCH_REPLACE = ToolActionInfo(
@@ -146,13 +155,26 @@ class CAstCoderAction(ToolAction):
                 name="operation_json",
                 type="string",
                 required=True,
-                desc="JSON format precise search and replace operation instruction, format: {\"operation\": {\"type\": \"search_replace\", \"file_path\": \"relative_path\", \"search\": \"code_to_search\", \"replace\": \"replacement_code\", \"exact_match_only\": true}}"
+                desc="""JSON format precise search and replace operation instruction. Format:
+{
+    "operation": {
+        "type": "search_replace",
+        "file_path": "path/to/your/file.py",
+        "search": "CODE_BLOCK_TO_FIND",
+        "replace": "NEW_CODE_BLOCK",
+        "exact_match_only": true
+    }
+}
+
+Parameters: type (string, required) Must be "search_replace"; file_path (string, required) Relative path from source_dir; search (string, required) One or more complete lines of source code, must not be blank; replace (string, required) Multi-line code block to replace with; exact_match_only (boolean, optional) Fixed as true.
+
+Best Practices for search: Use multi-line blocks with structural context (def/class) for accuracy; content must be continuous and match source code."""
             ),
             "source_dir": ParamInfo(
                 name="source_dir",
                 type="string",
                 required=True,
-                desc="Source directory path"
+                desc="Source directory path /path/to/agent/root"
             ),
             "show_details": ParamInfo(
                 name="show_details",
@@ -161,7 +183,12 @@ class CAstCoderAction(ToolAction):
                 desc="Whether to show detailed operation information (default: True)"
             )
         },
-        desc="Perform precise search and replace operations using exact matching only - no fuzzy matching allowed for guaranteed code accuracy"
+        desc="""Intelligently finds and replaces a block of code in a specified file. Preferred method for applying patches, robust against minor formatting differences. Based on aider's core matching algorithm.
+
+Key Features:
+- Exact Match: First attempts a direct, character-for-character match.
+- Whitespace Flexible Match: If exact match fails, retries while ignoring differences in leading whitespace and indentation. Handles most copy-paste formatting issues.
+- Similarity Match: (Optional) If other methods fail, uses a fuzzy text similarity algorithm to find the best match."""
     )
 
 
@@ -236,23 +263,27 @@ class CAstCoderTool(AsyncTool):
                 if action_name == CAstCoderAction.GENERATE_SNAPSHOT.value.name:
                     # Generate snapshot
                     target_dir = Path(action.params.get("target_dir"))
-                    version = action.params.get("version", "v0")
+                    version = action.params.get("version") or ""
                     show_details = action.params.get("show_details", True)
 
-                    # Generate compressed snapshot and get file path
+                    # Generate compressed snapshot (version empty => auto-increment max+1 in snapshot dir)
                     snapshot_path = self.acast.generate_snapshot(
                         target_dir=target_dir,
                         version=version
                     )
 
+                    # Resolve actual version from snapshot path (e.g. foo_v2.tar.gz -> v2)
+                    m = re.search(r"_v(\d+)\.tar\.gz$", str(snapshot_path))
+                    resolved_version = f"v{m.group(1)}" if m else version or "v0"
+
                     result = {
                         "snapshot_path": str(snapshot_path),
-                        "version": version,
+                        "version": resolved_version,
                         "target_dir": str(target_dir)
                     }
 
                     if show_details:
-                        logger.info(f"Generated snapshot: {snapshot_path} (version: {version})")
+                        logger.info(f"Generated snapshot: {snapshot_path} (version: {resolved_version})")
 
                     action_result.content = json.dumps(result, ensure_ascii=False, default=str)
                     action_result.success = True

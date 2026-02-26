@@ -14,6 +14,7 @@ from typing import Optional
 os.environ['AWORLD_DISABLE_CONSOLE_LOG'] = 'true'
 
 # Import aworld modules (they will respect the environment variable)
+from aworld.logs.util import logger
 from .runtime.cli import CliRuntime
 from .console import AWorldCLI
 from .models import AgentInfo
@@ -666,7 +667,7 @@ Batch Jobs:
     all_skills = registry.get_all_skills()
     if all_skills:
         skill_names = list(all_skills.keys())
-        console.print(f"[dim]📚 Loaded {len(skill_names)} global skill(s): {', '.join(skill_names)}[/dim]")
+        logger.info("Loaded %d global skill(s): %s", len(skill_names), ", ".join(skill_names))
 
     # Resolve default agent_dir when --agent-dir not specified (env LOCAL_AGENTS_DIR / AWORLD_DEFAULT_AGENT_DIR)
     args.agent_dir = _resolve_agent_dirs(args.agent_dir)

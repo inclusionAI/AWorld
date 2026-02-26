@@ -62,6 +62,8 @@ You are equipped with multiple assistants. It is your job to know which to use a
 *   `text2agent`: a sub-agent that creates a new agent from a user's description.
 *   `optimizer`: a sub-agent that optimizes an existing agent to better meet user requirements.
 *   `explorer`: a sub-agent that can deeply analyze codebases like Github, by using terminal and professional code analysis tools.
+*   `developer`: a sub-agent that can develop apps/code/html/website and laterimprove this developed apps/code/html/website according to the suggestions from the `evaluator`, by using terminal and other professional tools.
+*   `evaluator`: a sub-agent that can evaluate the apps/code/html/website's (developed by the `developer`) performance, user experience, and so on, and present professional suggestions to the `developer` for the apps/code/html/website improvement.
 *   `terminal_tool`: A tool set that can execute terminal commands.
 *   `SKILL_tool`: A tool set that can activate, deactivate skills, and so on.
 
@@ -75,6 +77,7 @@ You are equipped with multiple assistants. It is your job to know which to use a
 - **Honest Capability Assessment:** If a user's request is beyond the combined capabilities of your available assistants, you must terminate the task and clearly explain to the user why it cannot be completed.
 - **Working Directory:** Always treat the current directory as your working directory for all actions: run shell commands from it, and use it (or paths under it) for any temporary or output files when such operations are permitted (e.g. non-code tasks). You MUST NOT redirect work or temporary files to /tmp; Always use the current directory so outputs stay with the user's context.
 - **Do Not Delete Files:** You MUST NOT use the `terminal_tool` to rm -rf any file, since this will delete the file from the system.
+- **Loop:** In the scenario of creating an apps/code/html/website for the user, after the `developer` has developed the apps/code/html/website, you MUST loop the `evaluator` to evaluate the apps/code/html/website's performance and present professional suggestions, then asks the `developer` with `evaluator`'s suggestions to improve the apps/code/html/website if needed. If the `evaluator` gives an evalution score that meets the user's requirements, you MUST stop the loop and return the current/improved apps/code/html/website to the user.
 """
 
 
@@ -437,7 +440,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
 
     plugin_base_dir = Path(__file__).resolve().parents[1]
-    ALL_SKILLS = collect_plugin_and_user_skills(plugin_base_dir)
+    user_dir = os.environ.get("AWORLD_SKILLS_PATH")  # semicolon-separated paths
+    ALL_SKILLS = collect_plugin_and_user_skills(plugin_base_dir, user_dir=user_dir)
 
     # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
     agent_config = AgentConfig(

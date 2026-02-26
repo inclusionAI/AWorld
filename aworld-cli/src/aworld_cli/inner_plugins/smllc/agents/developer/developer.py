@@ -12,30 +12,31 @@ from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
 from aworld.sandbox import Sandbox
 from aworld_cli.core import agent
+from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
 from .mcp_config import mcp_config
 
 
-@HookFactory.register(name="pre_optimizer_hook")
-class PreOptimizerHook(PreLLMCallHook):
+@HookFactory.register(name="pre_developer_hook")
+class PreDeveloperHook(PreLLMCallHook):
     """Hook triggered before LLM execution. Used for monitoring, logging, etc. Should NOT modify input/output content."""
     
     async def exec(self, message: Message, context: Context = None) -> Message:
-        if message.sender.startswith("optimizer"):
+        if message.sender.startswith("developer"):
             pass
         return message
 
 
-@HookFactory.register(name="post_optimizer_hook")
-class PostOptimizerHook(PostLLMCallHook):
+@HookFactory.register(name="post_developer_hook")
+class PostDeveloperHook(PostLLMCallHook):
     """Hook triggered after LLM execution. Used for monitoring, logging, etc. Should NOT modify input/output content."""
     
     async def exec(self, message: Message, context: Context = None) -> Message:
-        if message.sender.startswith("optimizer"):
+        if message.sender.startswith("developer"):
             pass
         return message
 
 
-class OptimizerAgent(Agent):
+class DeveloperAgent(Agent):
     """Analyzes and optimizes existing agents by patching system prompts and tool configuration."""
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
@@ -44,10 +45,14 @@ class OptimizerAgent(Agent):
 
 
 @agent(
-    name="optimizer",
-    desc="Analyzes and automatically optimizes existing agents by improving system prompts and tool configuration.",
+    name="developer",
+    desc="Edits code, HTML, and other files for development work; can develop apps; supports code refactoring and optimization.",
 )
-def build_optimizer_swarm():
+def build_developer_swarm():
+    plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
+    env_skills_dir = Path(os.path.expanduser(os.environ.get("DEVELOPER_SKILLS_PATH"))).resolve()
+    skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
+
     # Create Agent configuration
     agent_config = AgentConfig(
         # DO NOT MODIFY: LLM config block below must be preserved exactly (env vars + defaults).
@@ -58,7 +63,8 @@ def build_optimizer_swarm():
             llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
             params={"max_completion_tokens": 59000}
-        )
+        ),
+        skill_configs=skill_configs
     )
 
     # Extract all server keys from mcp_config
@@ -71,11 +77,11 @@ def build_optimizer_swarm():
     sandbox.reuse = True
 
     # Skill tool_list: AGENT_REGISTRY, CAST_ANALYSIS, CAST_CODER, CAST_SEARCH
-    tool_names = ["AGENT_REGISTRY", "CAST_ANALYSIS", "CAST_CODER", "CAST_SEARCH"]
+    tool_names = ["CAST_ANALYSIS", "CAST_CODER", "CAST_SEARCH"]
 
-    optimizer_agent = OptimizerAgent(
-        name="optimizer",
-        desc="Analyzes and automatically optimizes existing agents by improving system prompts and tool configuration.",
+    developer_agent = DeveloperAgent(
+        name="developer",
+        desc="Edits code, HTML, and other files for development work; can develop apps; supports code refactoring and optimization.",
         conf=agent_config,
         system_prompt=(Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8"),
         tool_names=tool_names,
@@ -85,4 +91,4 @@ def build_optimizer_swarm():
     )
 
     # Return the Swarm containing this Agent
-    return Swarm(optimizer_agent)
+    return Swarm(developer_agent)
