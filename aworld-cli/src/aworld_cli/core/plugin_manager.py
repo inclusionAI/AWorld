@@ -3,7 +3,6 @@ Plugin manager for AWorld CLI.
 Handles plugin installation, removal, and listing.
 """
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -600,8 +599,7 @@ class PluginManager:
                         }
                         all_agents.append(agent)
                     else:
-                        if console:
-                            console.print(f"[dim]⚠️ Duplicate agent '{agent.name}' from plugin, keeping first[/dim]")
+                        logger.warning(f"Duplicate agent '{agent.name}' from plugin, keeping first")
                         
             except Exception as e:
                 if console:
@@ -609,26 +607,22 @@ class PluginManager:
         
         # ========== Lifecycle Step 2: Load Local Agents ==========
         if local_dirs:
-            if console:
-                console.print(f"[dim]📂 Loading local agents from {len(local_dirs)} directory(ies)...[/dim]")
+            logger.info(f"Loading local agents from {len(local_dirs)} directory(ies)...")
         
         local_agents_count = 0
         for local_dir in local_dirs or []:
             try:
-                if console:
-                    console.print(f"[dim]  📁 Scanning local directory: {local_dir}[/dim]")
+                logger.info(f"Scanning local directory: {local_dir}")
                 loader = LocalAgentLoader(local_dir, console=console)
                 
                 # Load agents from local directory
                 local_agents = await loader.load_agents()
                 
                 if local_agents:
-                    if console:
-                        console.print(f"[dim]  ✅ Found {len(local_agents)} agent(s) in {local_dir}[/dim]")
+                    logger.info(f"Found {len(local_agents)} agent(s) in {local_dir}")
                     local_agents_count += len(local_agents)
                 else:
-                    if console:
-                        console.print(f"[dim]  ℹ️  No agents found in {local_dir}[/dim]")
+                    logger.info(f"No agents found in {local_dir}")
                 
                 # Track source information (prioritize local over remote)
                 for agent in local_agents:
@@ -643,8 +637,7 @@ class PluginManager:
                     else:
                         existing_source = agent_sources_map[agent.name]
                         if existing_source["type"] == "local":
-                            if console:
-                                console.print(f"[dim]    ⚠️ Duplicate agent '{agent.name}' found, keeping first occurrence[/dim]")
+                            logger.warning(f"Duplicate agent '{agent.name}' found, keeping first occurrence")
                         else:
                             # Replace remote/plugin with local (prioritize LOCAL)
                             agent_sources_map[agent.name] = {
@@ -656,16 +649,14 @@ class PluginManager:
                                 if a.name == agent.name:
                                     all_agents[i] = agent
                                     break
-                            if console:
-                                console.print(f"[dim]    ⚠️ Duplicate agent '{agent.name}' found, replacing {existing_source['type']} version with local[/dim]")
+                            logger.warning(f"Duplicate agent '{agent.name}' found, replacing {existing_source['type']} version with local")
                         
             except Exception as e:
                 if console:
                     console.print(f"[yellow]⚠️ Failed to load from {local_dir}: {e}[/yellow]")
         
         if local_dirs and local_agents_count > 0:
-            if console:
-                console.print(f"[dim]📊 Total local agents loaded: {local_agents_count}[/dim]")
+            logger.info(f"Total local agents loaded: {local_agents_count}")
         
         # ========== Lifecycle Step 3: Load Remote Agents ==========
         if remote_backends:
@@ -703,8 +694,7 @@ class PluginManager:
                     else:
                         # Local/plugin source exists, skip remote duplicate
                         existing_source = agent_sources_map[agent.name]
-                        if console:
-                            console.print(f"[dim]    ⚠️ Duplicate agent '{agent.name}' found (remote), keeping {existing_source['type']} version[/dim]")
+                        logger.warning(f"Duplicate agent '{agent.name}' found (remote), keeping {existing_source['type']} version")
                         
             except Exception as e:
                 if console:
