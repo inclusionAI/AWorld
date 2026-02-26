@@ -2,7 +2,7 @@
 from typing import Dict, List, Any, Optional, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from aworld.sandbox.base import Sandbox
+    from aworld.sandbox.implementations.sandbox import Sandbox
 
 # Import here to avoid circular import
 from aworld.sandbox.builder.agents_builder import AgentsBuilder
@@ -29,6 +29,8 @@ class SandboxBuilder:
         self._env_content_name: Optional[str] = None
         self._env_content: Optional[Dict[str, Any]] = None
         self._workspace: Optional[List[str]] = None
+        self._reuse: bool = True
+        self._builtin_tools: Any = None
         self._agents_builder = AgentsBuilder(self)
     
     def sandbox_id(self, sandbox_id: str) -> 'SandboxBuilder':
@@ -190,53 +192,108 @@ class SandboxBuilder:
         self._workspace = workspace
         return self
     
+    def reuse(self, reuse: bool) -> 'SandboxBuilder':
+        """Set whether to reuse existing sandbox.
+        
+        Args:
+            reuse: If True, reuse existing sandbox with same ID. If False, create new sandbox.
+        
+        Returns:
+            SandboxBuilder: Self for method chaining.
+        """
+        self._auto_commit_current_agent()
+        self._reuse = reuse
+        return self
+    
+    def builtin_tools(self, builtin_tools: Any) -> 'SandboxBuilder':
+        """Set which builtin tool servers to enable.
+        
+        Args:
+            builtin_tools: List of names, e.g. ["filesystem", "terminal"], ["filesystem"], ["terminal"],
+                or None to disable all. Default (if not called) is None — no builtin tools; user must set explicitly.
+        
+        Returns:
+            SandboxBuilder: Self for method chaining.
+        """
+        self._auto_commit_current_agent()
+        self._builtin_tools = builtin_tools
+        return self
+    
     def _add_agent(self, name: str, config: Dict[str, Any]):
         """Internal method to add an agent configuration."""
         if self._agents is None:
             self._agents = {}
         self._agents[name] = config
 
-    # ==================== Builtin tools proxies (for IDE completion) ====================
+    # ==================== Tool namespace proxies (for IDE completion) ====================
 
-    async def read_file(self, path: str, head: Optional[int] = None, tail: Optional[int] = None) -> str:
-        """Proxy to Sandbox.read_file for IDE completion."""
+    async def read_file(self, path: str, head: Optional[int] = None, tail: Optional[int] = None, output: str = "text"):
+        """Proxy to Sandbox.file.read_file for IDE completion."""
         instance = self.build()
-        return await instance.read_file(path=path, head=head, tail=tail)
+        return await instance.file.read_file(path=path, head=head, tail=tail, output=output)
 
-    async def write_file(self, path: str, content: str) -> str:
-        """Proxy to Sandbox.write_file for IDE completion."""
+    async def write_file(self, path: str, content: str):
+        """Proxy to Sandbox.file.write_file for IDE completion."""
         instance = self.build()
-        return await instance.write_file(path=path, content=content)
+        return await instance.file.write_file(path=path, content=content)
 
-    async def edit_file(self, path: str, edits: List[dict], dryRun: bool = False) -> str:
-        """Proxy to Sandbox.edit_file for IDE completion."""
+    async def edit_file(
+        self,
+        path: str,
+        start_line: int,
+        end_line: int,
+        new_content: str = "",
+        dryRun: bool = False,
+    ):
+        """Proxy to Sandbox.file.edit_file (line range edit) for IDE completion."""
         instance = self.build()
-        return await instance.edit_file(path=path, edits=edits, dryRun=dryRun)
+        return await instance.file.edit_file(
+            path=path,
+            start_line=start_line,
+            end_line=end_line,
+            new_content=new_content,
+            dryRun=dryRun,
+        )
 
-    async def create_directory(self, path: str) -> str:
-        """Proxy to Sandbox.create_directory for IDE completion."""
+    async def upload_file(self, source_path: str, target_path: str):
+        """Proxy to Sandbox.file.upload_file for IDE completion."""
         instance = self.build()
-        return await instance.create_directory(path=path)
+        return await instance.file.upload_file(source_path=source_path, target_path=target_path)
 
-    async def list_directory(self, path: str) -> str:
-        """Proxy to Sandbox.list_directory for IDE completion."""
+    async def download_file(self, path: str):
+        """Proxy to Sandbox.file.download_file for IDE completion."""
         instance = self.build()
-        return await instance.list_directory(path=path)
+        return await instance.file.download_file(path=path)
 
-    async def move_file(self, source: str, destination: str) -> str:
-        """Proxy to Sandbox.move_file for IDE completion."""
+    async def parse_file(self, file_path: str, file_type: str, output_path: Optional[str] = None):
+        """Proxy to Sandbox.file.parse_file for IDE completion."""
         instance = self.build()
-        return await instance.move_file(source=source, destination=destination)
+        return await instance.file.parse_file(file_path=file_path, file_type=file_type, output_path=output_path)
 
-    async def list_allowed_directories(self) -> str:
-        """Proxy to Sandbox.list_allowed_directories for IDE completion."""
+    async def create_directory(self, path: str):
+        """Proxy to Sandbox.file.create_directory for IDE completion."""
         instance = self.build()
-        return await instance.list_allowed_directories()
+        return await instance.file.create_directory(path=path)
 
-    async def run_code(self, code: str, timeout: int = 30, output_format: str = "markdown") -> str:
-        """Proxy to Sandbox.run_code for IDE completion."""
+    async def list_directory(self, path: str):
+        """Proxy to Sandbox.file.list_directory for IDE completion."""
         instance = self.build()
-        return await instance.run_code(code=code, timeout=timeout, output_format=output_format)
+        return await instance.file.list_directory(path=path)
+
+    async def move_file(self, source: str, destination: str):
+        """Proxy to Sandbox.file.move_file for IDE completion."""
+        instance = self.build()
+        return await instance.file.move_file(source=source, destination=destination)
+
+    async def list_allowed_directories(self):
+        """Proxy to Sandbox.file.list_allowed_directories for IDE completion."""
+        instance = self.build()
+        return await instance.file.list_allowed_directories()
+
+    async def run_code(self, code: str, timeout: int = 30, output_format: str = "markdown"):
+        """Proxy to Sandbox.terminal.run_code for IDE completion."""
+        instance = self.build()
+        return await instance.terminal.run_code(code=code, timeout=timeout, output_format=output_format)
 
     def build(self) -> 'Sandbox':
         """Build and return the Sandbox instance.
@@ -284,6 +341,9 @@ class SandboxBuilder:
             kwargs['env_content'] = self._env_content
         if self._workspace is not None:
             kwargs['workspace'] = self._workspace
+        if self._reuse is not True:  # reuse defaults to True, only pass if explicitly set to False
+            kwargs['reuse'] = self._reuse
+        kwargs['builtin_tools'] = self._builtin_tools
         
         # Ensure at least mcp_config is provided to avoid Sandbox() returning Builder
         # mcp_config defaults to {} in Sandbox.__init__ if not provided
@@ -309,6 +369,7 @@ class SandboxBuilder:
             'build', 'sandbox_id', 'env_type', 'metadata', 'timeout',
             'mcp_servers', 'mcp_config', 'black_tool_actions', 'skill_configs',
             'tools', 'registry_url', 'custom_env_tools', 'agents', 'streaming',
+            'builtin_tools',
             'env_content_name', 'env_content', 'workspace', '_auto_commit_current_agent',
             '_add_agent', '_agents_builder'
         }

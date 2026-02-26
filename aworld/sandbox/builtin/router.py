@@ -10,7 +10,7 @@ from aworld.logs.util import logger
 from aworld.sandbox.builtin.validator import BuiltinToolValidator
 
 if TYPE_CHECKING:
-    from aworld.sandbox.base import Sandbox
+    from aworld.sandbox.implementations.sandbox import Sandbox
 
 
 class BuiltinToolRouter:
