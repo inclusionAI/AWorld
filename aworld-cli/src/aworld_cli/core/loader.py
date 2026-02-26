@@ -301,8 +301,6 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
     if failed_files:
         logger.info("Failed files: %s", [(fp, err) for fp, err in failed_files])
 
-    return python_files
-
     # Return loaded Python files for debugging
     return python_files
 

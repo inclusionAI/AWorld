@@ -10,7 +10,7 @@ from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
-from aworld.sandbox.base import Sandbox
+from aworld.sandbox import Sandbox
 from aworld_cli.core import agent
 from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
 from .mcp_config import mcp_config
