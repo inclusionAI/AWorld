@@ -1,9 +1,13 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import asyncio
 import json
+import traceback
 from enum import Enum
 
 import numpy as np
+
+from aworld.logs.util import logger
 
 
 class NumpyEncoder(json.JSONEncoder):
@@ -27,6 +31,14 @@ def to_serializable(obj, _memo=None):
         return [to_serializable(i, _memo) for i in obj]
     elif isinstance(obj, Enum):
         return obj.value
+    elif isinstance(obj, asyncio.Task):
+        # asyncio.Task is not JSON-serializable; often appears when serializing context/trajectory
+        name = obj.get_name() if hasattr(obj, "get_name") else ""
+        logger.debug("to_serializable: asyncio.Task replaced with string (name=%s)", name)
+        return repr(obj)
+    elif asyncio.iscoroutine(obj):
+        logger.debug("to_serializable: coroutine replaced with string: %s", obj)
+        return repr(obj)
     elif hasattr(obj, "to_dict"):
         return obj.to_dict()
     elif hasattr(obj, "model_dump"):
@@ -44,4 +56,11 @@ def to_serializable(obj, _memo=None):
             json.dumps(obj)
             return obj
         except TypeError as e:
+            logger.error(
+                "Failed to serialize object: type=%s obj_repr=%s error=%s\n%s",
+                type(obj).__name__,
+                repr(obj)[:200],
+                e,
+                traceback.format_exc(),
+            )
             raise RuntimeError(f"{e}")

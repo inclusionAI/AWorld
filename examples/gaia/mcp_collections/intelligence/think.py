@@ -226,7 +226,7 @@ if __name__ == "__main__":
     args = ActionArguments(
         name="intelligence_reasoning_service",
         transport="stdio",
-        workspace=os.getenv("AWORLD_WORKSPACE", "~"),
+        workspace=os.getenv("AWORLD_WORKSPACE", "./"),
     )
 
     # Initialize and run the intelligence reasoning service

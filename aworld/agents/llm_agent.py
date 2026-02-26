@@ -851,7 +851,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             LLM response
         """
         llm_response = None
-        
+
         # Prepare parameters once before retry loop
         try:
             tools = await self._filter_tools(message.context)
@@ -859,19 +859,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 # Some model must be clearly defined as None
                 tools = None
             self._log_messages(messages, tools=tools, context=message.context)
-            
+
             stream_mode = kwargs.get("stream",
                                      False) or self.conf.llm_config.llm_stream_call if self.conf.llm_config else False
             float_temperature = float(self.conf.llm_config.llm_temperature)
-            
+
             # Retry loop for LLM call
             attempt = 1
             last_exception = None
-            
+
             while attempt <= self.llm_max_attempts:
                 try:
                     logger.info(f"🔄 Attempt {attempt}/{self.llm_max_attempts} for LLM call")
-                    
+
                     if stream_mode:
                         llm_response = ModelResponse(
                             id="", model="", content="", tool_calls=[])
@@ -931,7 +931,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             continue
                         else:
                             raise AWorldRuntimeException(error_msg)
-                            
+
                 except Exception as e:
                     last_exception = e
                     logger.warn(f"❌[attempt {attempt}/{self.llm_max_attempts}] LLM call failed : {str(e)}")
@@ -958,7 +958,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             headers={"context": message.context}
                         ))
                         return ModelResponse(id=uuid.uuid4().hex, model=self.model_name, content=to_serializable(messages))
-                    
+
                     # If we haven't reached max attempts, try again
                     if attempt < self.llm_max_attempts:
                         attempt += 1
@@ -976,12 +976,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             headers={"context": message.context}
                         ))
                         raise e
-            
+
             # This should not be reached, but just in case
             if last_exception:
                 raise last_exception
             return llm_response
-            
+
         except Exception as e:
             logger.warn(f"Failed to call llm model: {e}")
             await send_message(Message(

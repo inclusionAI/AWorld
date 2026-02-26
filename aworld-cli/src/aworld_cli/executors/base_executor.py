@@ -18,12 +18,34 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 
-from rich.console import Console, Group
+from rich.console import Console
+from rich.markup import escape as markup_escape
+from aworld.logs.util import logger
 from rich.panel import Panel
 from rich.text import Text
 from rich.markdown import Markdown
 from rich.syntax import Syntax
 from rich.status import Status
+
+# Try to import Group from rich.console, with fallback for older Rich versions
+try:
+    from rich.console import Group
+except ImportError:
+    # Fallback for older Rich versions - try importing from rich directly
+    try:
+        from rich import Group
+    except ImportError:
+        # If Group is not available, create a simple wrapper class
+        # Group is used to combine multiple renderables
+        class Group:
+            """Fallback Group class for older Rich versions."""
+            def __init__(self, *renderables):
+                self.renderables = renderables
+            
+            def __rich_console__(self, console, options):
+                from rich.console import RenderableType
+                for renderable in self.renderables:
+                    yield renderable
 
 from .base import AgentExecutor
 
@@ -53,17 +75,23 @@ class BaseAgentExecutor(ABC, AgentExecutor):
     ):
         """
         Initialize base executor.
-        
+
         Args:
             console: Optional Rich console for output
             session_id: Optional session ID. If None, will generate one automatically.
         """
         self.console = console or Console()
         self.session_id = session_id or self._generate_session_id()
+        # Initialize content collapse states (adaptive display for CLI)
+        self._collapsed_sections = {
+            'message': False,   # 💬 message content - show full by default
+            'tools': False,     # 🔧 tool calls content - show full by default
+            'results': True     # ⚡ tool results content - collapse by default (often verbose)
+        }
         self._init_session_management()
         self._setup_logging()
     
-    # ========== Session Management (通用能力) ==========
+    # ========== Session Management (Common Capabilities) ==========
     
     def _init_session_management(self) -> None:
         """Initialize session history management."""
@@ -257,7 +285,94 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                 self.console.print(f"[dim]Previous session: {old_session_id}[/dim]")
         return self.session_id
     
-    # ========== Output Rendering (通用能力) ==========
+    # ========== Output Rendering (Common Capabilities) ==========
+
+    def _render_collapsible_content(self, section_type: str, header: str, content_lines: List[str], max_lines: int = 3) -> None:
+        """
+        Render collapsible content with expand/collapse functionality.
+
+        Args:
+            section_type: Type of section ('message', 'tools', 'results')
+            header: Header text to display (e.g., "💬 AgentName")
+            content_lines: List of content lines to display
+            max_lines: Maximum lines to show when collapsed
+        """
+        if not content_lines:
+            return
+
+        is_collapsed = self._collapsed_sections.get(section_type, False)
+        total_lines = len(content_lines)
+
+        # Show header
+        if total_lines > max_lines:
+            # Add collapse/expand indicator
+            indicator = "[dim]▼[/dim]" if not is_collapsed else "[dim]▶[/dim]"
+            self.console.print(f"{header} {indicator}")
+        else:
+            # No collapse needed for short content
+            self.console.print(header)
+
+        # Show content with proper indentation for wrapped lines
+        if is_collapsed and total_lines > max_lines:
+            # Show only first few lines + summary
+            for line in content_lines[:max_lines]:
+                if line.strip():
+                    self._print_indented_line(line)
+                else:
+                    self.console.print()
+            self.console.print(f"   [dim italic]... ({total_lines - max_lines} more lines)[/dim italic]")
+        else:
+            # Show all content
+            for line in content_lines:
+                if line.strip():
+                    self._print_indented_line(line)
+                else:
+                    self.console.print()
+
+        # No extra spacing here - let caller control spacing
+
+    def _print_indented_line(self, line: str, indent: str = "   ") -> None:
+        """
+        Print a line with proper indentation, handling line wrapping.
+
+        When a line is too long and wraps to the next line, the wrapped
+        portion should also be indented to maintain visual consistency.
+
+        Args:
+            line: The line to print
+            indent: The indentation string (default: 3 spaces)
+        """
+        if not self.console:
+            return
+
+        # Get console width and calculate available width for content
+        console_width = self.console.size.width if self.console.size else 80
+        available_width = console_width - len(indent)
+
+        # If line fits within available width, print normally
+        if len(line) <= available_width:
+            self.console.print(f"{indent}{line}")
+            return
+
+        # Handle long lines by splitting and indenting wrapped portions
+        import textwrap
+
+        # Wrap the line, preserving existing indentation in the original line
+        wrapped_lines = textwrap.fill(
+            line,
+            width=available_width,
+            subsequent_indent='',
+            break_long_words=False,
+            break_on_hyphens=False
+        ).split('\n')
+
+        # Print first line with original indent
+        if wrapped_lines:
+            self.console.print(f"{indent}{wrapped_lines[0]}")
+
+            # Print subsequent lines with additional indentation
+            for wrapped_line in wrapped_lines[1:]:
+                self.console.print(f"{indent}{wrapped_line}")
     
     def _format_tool_call(self, tool_call, idx: int):
         """
@@ -487,7 +602,199 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                 padding=(1, 2)
             )
             return tool_calls_panel
-    
+
+    def _render_simple_message_output(self, output, answer: str, agent_name: str = None, is_handoff: bool = False) -> tuple[str, str]:
+        """
+        Simplified message output rendering with modern, clean Claude Code style.
+
+        Features:
+        - Remove heavy Panel borders
+        - Use clean emoji and text markers
+        - Reduce color usage, focus on content
+        - Add whitespace for better readability
+        - Show agent name and handoff notifications
+
+        Args:
+            output: MessageOutput instance
+            answer: Current answer string
+            agent_name: Name of the current agent
+            is_handoff: Whether this is a handoff to a new agent
+
+        Returns:
+            Tuple of (updated_answer, rendered_content)
+        """
+        from aworld.output.base import MessageOutput
+
+        if not isinstance(output, MessageOutput) or not self.console:
+            return answer, ""
+
+        # Extract agent name from metadata if not provided
+        if not agent_name and hasattr(output, 'metadata') and output.metadata:
+            agent_name = output.metadata.get('agent_name') or output.metadata.get('from_agent')
+
+        # Default agent name
+        if not agent_name:
+            agent_name = "Assistant"
+
+        # Extract content
+        response_text = str(output.response) if hasattr(output, 'response') and output.response else ""
+        reasoning_text = str(output.reasoning) if hasattr(output, 'reasoning') and output.reasoning else ""
+        tool_calls = output.tool_calls if hasattr(output, 'tool_calls') and output.tool_calls else []
+
+        # Update answer
+        if response_text.strip():
+            if not answer:
+                answer = response_text
+            elif response_text not in answer:
+                answer = response_text
+
+        # Build display content
+        display_parts = []
+
+        # Add main response with collapsible content
+        if response_text.strip():
+            # Prepare content lines for collapsible rendering
+            response_lines = []
+
+            # Add reasoning to response lines if available
+            if reasoning_text.strip():
+                response_lines.extend(["💭 Thinking process：", ""])
+                reasoning_lines = reasoning_text.split('\n')
+                for line in reasoning_lines:
+                    if line.strip():
+                        response_lines.append(f"{line}")
+                    else:
+                        response_lines.append("")
+                response_lines.append("")  # Add spacing after reasoning
+
+            # Add main response content
+            content_lines = response_text.split('\n')
+            for line in content_lines:
+                response_lines.append(line)
+
+            # Use collapsible rendering
+            header = f"🤖 [bold]{agent_name}[/bold]"
+            self._render_collapsible_content('message', header, response_lines, max_lines=10)
+            self.console.print()  # Add spacing after message
+
+        # Handle tool calls with collapsible display
+        if tool_calls:
+            # Filter out human tools
+            filtered_tool_calls = []
+            for tool_call_output in tool_calls:
+                tool_call = None
+                if hasattr(tool_call_output, 'data'):
+                    tool_call = tool_call_output.data
+                elif hasattr(tool_call_output, '__class__') and 'ToolCall' in str(tool_call_output.__class__):
+                    tool_call = tool_call_output
+
+                if tool_call:
+                    function_name = ""
+                    if hasattr(tool_call, 'function') and tool_call.function:
+                        function_name = getattr(tool_call.function, 'name', '')
+                    if 'human' not in function_name.lower():
+                        filtered_tool_calls.append((tool_call_output, tool_call))
+
+            # Render filtered tool calls with collapsible content
+            if filtered_tool_calls:
+                tool_lines = []
+
+                for idx, (tool_call_output, tool_call) in enumerate(filtered_tool_calls):
+                    function_name = "Unknown"
+                    if hasattr(tool_call, 'function') and tool_call.function:
+                        function_name = getattr(tool_call.function, 'name', 'Unknown')
+
+                    # Add tool call entry with icon
+                    tool_lines.append(f"▶ [cyan]{function_name}[/cyan]")
+
+                    # Special handling for code execution
+                    if function_name == "execute_ptc_code" or function_name.endswith("__execute_ptc_code"):
+                        function_args = getattr(tool_call.function, 'arguments', '') if hasattr(tool_call, 'function') and tool_call.function else ''
+
+                        try:
+                            # Extract code
+                            code = ""
+                            if function_args:
+                                if isinstance(function_args, str):
+                                    try:
+                                        args_dict = json.loads(function_args)
+                                    except json.JSONDecodeError:
+                                        code = function_args
+                                        args_dict = None
+                                else:
+                                    args_dict = function_args
+
+                                if isinstance(args_dict, dict):
+                                    code = args_dict.get('code', '') or args_dict.get('ptc_code', '') or ''
+                                elif not code and isinstance(function_args, str):
+                                    code = function_args
+
+                            # Add code content with proper indentation
+                            if code and code.strip():
+                                tool_lines.append("   [dim]Code：[/dim]")
+                                code_lines = code.strip().split('\n')
+                                for code_line in code_lines:
+                                    tool_lines.append(f"      {code_line}")
+                        except Exception:
+                            # Fallback for parsing errors
+                            tool_lines.append("   [dim red]Code parsing failed[/dim red]")
+                    else:
+                        # For non-code tools, display arguments
+                        function_args = getattr(tool_call.function, 'arguments', '') if hasattr(tool_call, 'function') and tool_call.function else ''
+
+                        if function_args:
+                            try:
+                                # Try to parse and format arguments nicely
+                                if isinstance(function_args, str):
+                                    try:
+                                        args_dict = json.loads(function_args)
+                                        if isinstance(args_dict, dict) and args_dict:
+                                            tool_lines.append("   [dim]Arguments：[/dim]")
+                                            for key, value in args_dict.items():
+                                                # Truncate long values for readability
+                                                if isinstance(value, str) and len(value) > 50:
+                                                    display_value = value[:47] + "..."
+                                                else:
+                                                    display_value = str(value)
+                                                tool_lines.append(f"      {key}: {display_value}")
+                                    except json.JSONDecodeError:
+                                        # If not valid JSON, show as raw text (truncated)
+                                        if len(function_args) > 100:
+                                            display_args = function_args[:97] + "..."
+                                        else:
+                                            display_args = function_args
+                                        tool_lines.append("   [dim]Arguments：[/dim]")
+                                        tool_lines.append(f"      {display_args}")
+                                else:
+                                    # Non-string arguments
+                                    tool_lines.append("   [dim]Arguments：[/dim]")
+                                    tool_lines.append(f"      {str(function_args)}")
+                            except Exception:
+                                # Fallback for any parsing errors
+                                tool_lines.append("   [dim]Arguments：[/dim]")
+                                tool_lines.append("      [dim red]Argument parsing failed[/dim red]")
+
+                    tool_lines.append("")  # Add spacing between tools
+
+                # Use collapsible rendering for tool calls
+                header = "🔧 [bold]Tool calls[/bold]"
+                self._render_collapsible_content('tools', header, tool_lines, max_lines=15)
+                # No extra spacing here - let next element control spacing
+
+        # Build message_content for return value
+        message_parts = []
+        if reasoning_text.strip():
+            message_parts.append(f"Thinking process：{reasoning_text}")
+        if response_text.strip():
+            message_parts.append(response_text)
+        if tool_calls:
+            tool_summary = f"Used {len(tool_calls)} tools"
+            message_parts.append(tool_summary)
+
+        message_content = "\n\n".join(message_parts).strip()
+
+        return answer, message_content
+
     def _render_message_output(self, output, answer: str) -> tuple[str, str]:
         """
         Render MessageOutput to console and extract answer.
@@ -616,10 +923,150 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                 self.console.print()
         
         return answer, message_content
-    
+
+    def _filter_file_line_info(self, content: str) -> str:
+        """
+        Filter out file:line information and other unwanted text from tool result content.
+        Removes patterns like "server.py:619", "main.py:123", "Processing request of type", etc.
+
+        Args:
+            content: Original content string
+
+        Returns:
+            Filtered content string
+        """
+        import re
+        if not content:
+            return content
+
+        # Pattern to match file:line references (e.g., "server.py:619", "main.py:123")
+        # Matches: filename.extension:number
+        file_line_pattern = r'\b[a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z0-9]+:\d+\b'
+
+        # Remove file:line patterns
+        filtered_content = re.sub(file_line_pattern, '', content)
+
+        # Remove "Processing request of type" lines
+        # This removes the entire line containing this text
+        processing_pattern = r'.*Processing request of type.*\n?'
+        filtered_content = re.sub(processing_pattern, '', filtered_content, flags=re.IGNORECASE)
+
+        # Clean up extra whitespace and empty lines that might be left behind
+        filtered_content = re.sub(r'\n\s*\n', '\n', filtered_content)  # Remove empty lines
+        filtered_content = re.sub(r'\s+', ' ', filtered_content)  # Normalize whitespace
+        filtered_content = filtered_content.strip()
+
+        return filtered_content
+
+    def _render_simple_tool_result_output(self, output) -> None:
+        """
+        Simplified tool result output rendering with modern, clean Claude Code style.
+
+        Features:
+        - Remove heavy Panel borders
+        - Use clean emoji and text markers
+        - Reduce color usage, focus on content
+        - Add whitespace for better readability
+        - Smart content truncation and summarization
+        - Collapsible content display
+
+        Args:
+            output: ToolResultOutput instance
+        """
+        from aworld.output.base import ToolResultOutput
+
+        if not isinstance(output, ToolResultOutput) or not self.console:
+            return
+
+        # Extract tool information
+        tool_name = getattr(output, 'tool_name', 'Unknown Tool')
+        action_name = getattr(output, 'action_name', '')
+        tool_type = getattr(output, 'tool_type', '')
+
+        # Skip rendering for human tools - user input doesn't need to be displayed
+        if 'human' in tool_name.lower() or 'human' in action_name.lower():
+            return
+
+        # Get tool_call_id
+        tool_call_id = ""
+        if hasattr(output, 'metadata') and output.metadata:
+            tool_call_id = output.metadata.get('tool_call_id', '')
+        if not tool_call_id and hasattr(output, 'origin_tool_call') and output.origin_tool_call:
+            tool_call_id = getattr(output.origin_tool_call, 'id', '')
+
+        # Get summary from metadata first
+        summary = None
+        if hasattr(output, 'metadata') and output.metadata:
+            summary = output.metadata.get('summary')
+
+        # Get result content and filter file:line info
+        result_content = ""
+        if hasattr(output, 'data') and output.data:
+            data_str = str(output.data)
+            if data_str.strip():
+                # Filter out file:line information
+                result_content = self._filter_file_line_info(data_str)
+
+        # Build simple tool info line
+        tool_parts = []
+        if tool_name:
+            tool_parts.append(tool_name)
+        if action_name and action_name != tool_name:
+            tool_parts.append(f"→ {action_name}")
+        tool_info = " ".join(tool_parts)
+
+        # Determine what content to show
+        display_content = None
+        if summary:
+            # Use provided summary and filter it too
+            display_content = self._filter_file_line_info(summary)
+        elif result_content:
+            # Smart content truncation
+            max_chars = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_SUMMARY_MAX_CHARS", "300"))
+            max_lines = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_SUMMARY_MAX_LINES", "3"))
+
+            lines = result_content.split('\n')
+
+            # Check if it's JSON and try to format nicely
+            is_json = False
+            try:
+                import json
+                parsed = json.loads(result_content)
+                if isinstance(parsed, dict):
+                    # Show key info from JSON
+                    key_info = []
+                    for key, value in list(parsed.items())[:3]:  # First 3 keys
+                        if isinstance(value, (str, int, float, bool)):
+                            key_info.append(f"{key}: {value}")
+                        elif isinstance(value, (list, dict)):
+                            key_info.append(f"{key}: [{len(value)} items]" if isinstance(value, list) else f"{key}: {{object}}")
+
+                    if key_info:
+                        display_content = "\n".join(key_info)
+                        if len(parsed) > 3:
+                            display_content += f"\n... ({len(parsed) - 3} more fields)"
+                        is_json = True
+            except:
+                pass
+
+            # If not JSON or JSON parsing failed, use line-based truncation
+            if not is_json:
+                display_content = result_content
+
+        # Use collapsible rendering for tool results
+        if display_content:
+            content_lines = display_content.split('\n')
+            header = f"⚡ [bold]{tool_info}[/bold]"
+            self._render_collapsible_content('results', header, content_lines, max_lines=3)
+        else:
+            # No content case - still show header but indicate no output
+            self.console.print(f"⚡ [bold]{tool_info}[/bold]", style="dim")
+            self.console.print("   [dim italic]No output[/dim italic]")
+            self.console.print()
+
     def _render_tool_result_output(self, output) -> None:
         """
-        Render ToolResultOutput to console with collapsible content for long results.
+        Render ToolResultOutput to console with summary information by default.
         Skips rendering for human tools as their results are user input and don't need to be displayed.
         
         Args:
@@ -648,6 +1095,11 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         if not tool_call_id and hasattr(output, 'origin_tool_call') and output.origin_tool_call:
             tool_call_id = getattr(output.origin_tool_call, 'id', '')
         
+        # Get summary from metadata first, fallback to generating a summary from data
+        summary = None
+        if hasattr(output, 'metadata') and output.metadata:
+            summary = output.metadata.get('summary')
+        
         # Get result content
         result_content = ""
         if hasattr(output, 'data') and output.data:
@@ -664,44 +1116,42 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         if tool_call_id:
             tool_info += f" [ID: {tool_call_id}]"
         
-        if not result_content:
+        # Default to showing summary only
+        if summary:
+            # Use provided summary
+            display_content = summary
+        elif result_content:
+            # Generate a brief summary from content (first few lines or truncated)
+            max_summary_length = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_SUMMARY_MAX_CHARS", "500"))
+            max_summary_lines = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_SUMMARY_MAX_LINES", "5"))
+            
+            lines = result_content.split('\n')
+            if len(lines) > max_summary_lines:
+                # Show first few lines as summary
+                summary_lines = lines[:max_summary_lines]
+                display_content = '\n'.join(summary_lines)
+                content_length = len(result_content)
+                remaining_lines = len(lines) - max_summary_lines
+                display_content += f"\n\n[dim]... ({remaining_lines} more lines, {content_length} total characters) ...[/dim]"
+            elif len(result_content) > max_summary_length:
+                # Show truncated summary
+                display_content = result_content[:max_summary_length] + f"\n\n[dim]... ({len(result_content) - max_summary_length} more characters) ...[/dim]"
+            else:
+                # Short content, show as-is
+                display_content = result_content
+        else:
+            # No content, just show tool info
             self.console.print(f"[yellow]🔧 Tool: {tool_info}[/yellow]")
             return
         
-        # Render based on content length. Use env for limits so long results (e.g. PPT outline JSON) display fully.
-        content_length = len(result_content)
-        max_preview_length = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_MAX_CHARS", "20000"))
-        max_preview_lines = int(os.environ.get("AWORLD_CLI_TOOL_RESULT_MAX_LINES", "200"))
-        
-        if content_length > max_preview_length:
-            # Show preview for long content
-            lines = result_content.split('\n')
-            if len(lines) > max_preview_lines:
-                # Show first few lines as preview
-                preview_lines = lines[:max_preview_lines]
-                preview_content = '\n'.join(preview_lines)
-                remaining_lines = len(lines) - max_preview_lines
-                preview_content += f"\n\n[dim]... ({remaining_lines} more lines, {content_length - len(preview_content)} more characters) ...[/dim]"
-            else:
-                # Show truncated preview
-                preview_content = result_content[:max_preview_length] + f"\n\n[dim]... ({content_length - max_preview_length} more characters) ...[/dim]"
-            
-            tool_panel = Panel(
-                preview_content,
-                title=f"[bold yellow]🔧 Tool Result: {tool_info}[/bold yellow]",
-                title_align="left",
-                border_style="yellow",
-                padding=(1, 2)
-            )
-        else:
-            # Short content, display directly
-            tool_panel = Panel(
-                result_content,
-                title=f"[bold yellow]🔧 Tool Result: {tool_info}[/bold yellow]",
-                title_align="left",
-                border_style="yellow",
-                padding=(1, 2)
-            )
+        # Render summary panel
+        tool_panel = Panel(
+            display_content,
+            title=f"[bold yellow]🔧 Tool Result: {tool_info}[/bold yellow]",
+            title_align="left",
+            border_style="yellow",
+            padding=(1, 2)
+        )
         
         self.console.print(tool_panel)
         self.console.print()
@@ -724,7 +1174,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             return output.get('answer', '')
         return ""
     
-    # ========== Logging (通用能力) ==========
+    # ========== Logging (Common Capabilities) ==========
     
     def _setup_logging(self) -> None:
         """
@@ -808,7 +1258,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             logging.getLogger().setLevel(logging.ERROR)
             logging.getLogger("aworld").setLevel(logging.ERROR)
     
-    # ========== Abstract Methods (子类实现) ==========
+    # ========== Abstract Methods (Subclass Implementation) ==========
     
     @abstractmethod
     async def chat(self, message: Union[str, tuple[str, List[str]]]) -> str:

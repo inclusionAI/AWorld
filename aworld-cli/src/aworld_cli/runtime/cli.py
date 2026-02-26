@@ -153,6 +153,24 @@ class CliRuntime(BaseCliRuntime):
         
         return plugin_dirs
     
+    async def _load_skills(self) -> Dict[str, int]:
+        """
+        Load skills from all plugin directories.
+        
+        Searches for skills in plugin_dir/skills directory for each plugin.
+        Only directories containing SKILL.md file are considered as skills.
+        Skills are registered into the global skill registry.
+        
+        Returns:
+            Dictionary mapping plugin names to number of skills loaded
+        """
+        from ..core.plugin_manager import PluginManager
+        
+        plugin_manager = PluginManager()
+        console = self.cli.console if hasattr(self, 'cli') and hasattr(self.cli, 'console') and self.cli.console else None
+        
+        return await plugin_manager._load_skills(self.plugin_dirs, console=console)
+    
     async def _load_agents(self) -> List[AgentInfo]:
         """
         Load agents following unified lifecycle (Load phase):
@@ -166,100 +184,24 @@ class CliRuntime(BaseCliRuntime):
         Returns:
             List of all loaded AgentInfo objects (deduplicated, prioritizing local over remote)
         """
-        all_agents: List[AgentInfo] = []
-        agent_sources_map: Dict[str, Dict] = {}  # Track sources for executor creation
+        from ..core.plugin_manager import PluginManager
         
-        # ========== Lifecycle Step 1: Load Plugins ==========
-        # For each plugin: load skills, then load agents
-        for plugin_dir in self.plugin_dirs:
-            try:
-                loader = PluginLoader(plugin_dir, console=self.cli.console)
-                
-                # Load agents from plugin (this also loads skills internally)
-                plugin_agents = await loader.load_agents()
-                
-                # Track source information
-                for agent in plugin_agents:
-                    if agent.name not in agent_sources_map:
-                        agent_sources_map[agent.name] = {
-                            "type": "plugin",
-                            "location": str(plugin_dir),
-                            "agents_dir": str(plugin_dir / "agents")  # Store agents dir for executor creation
-                        }
-                        all_agents.append(agent)
-                    else:
-                        self.cli.console.print(f"[dim]⚠️ Duplicate agent '{agent.name}' from plugin, keeping first[/dim]")
-                        
-            except Exception as e:
-                self.cli.console.print(f"[yellow]⚠️ Failed to load plugin {plugin_dir}: {e}[/yellow]")
+        plugin_manager = PluginManager()
+        console = self.cli.console if hasattr(self, 'cli') and hasattr(self.cli, 'console') and self.cli.console else None
         
-        # ========== Lifecycle Step 2: Load Local Agents ==========
-        for local_dir in self.local_dirs:
-            try:
-                loader = LocalAgentLoader(local_dir, console=self.cli.console)
-                
-                # Load agents from local directory
-                local_agents = await loader.load_agents()
-                
-                # Track source information (prioritize local over remote)
-                for agent in local_agents:
-                    if agent.name not in agent_sources_map:
-                        agent_sources_map[agent.name] = {
-                            "type": "local",
-                            "location": local_dir
-                        }
-                        all_agents.append(agent)
-                    else:
-                        existing_source = agent_sources_map[agent.name]
-                        if existing_source["type"] == "local":
-                            self.cli.console.print(f"[dim]⚠️ Duplicate agent '{agent.name}' found, keeping first occurrence[/dim]")
-                        else:
-                            # Replace remote/plugin with local (prioritize LOCAL)
-                            agent_sources_map[agent.name] = {
-                                "type": "local",
-                                "location": local_dir
-                            }
-                            # Replace in all_agents list
-                            for i, a in enumerate(all_agents):
-                                if a.name == agent.name:
-                                    all_agents[i] = agent
-                                    break
-                            self.cli.console.print(f"[dim]⚠️ Duplicate agent '{agent.name}' found, replacing with local version[/dim]")
-                        
-            except Exception as e:
-                self.cli.console.print(f"[yellow]⚠️ Failed to load from {local_dir}: {e}[/yellow]")
-        
-        # ========== Lifecycle Step 3: Load Remote Agents ==========
-        for backend_url in self.remote_backends:
-            try:
-                loader = RemoteAgentLoader(backend_url, console=self.cli.console)
-                
-                # Load agents from remote backend
-                remote_agents = await loader.load_agents()
-                
-                # Track source information (only if local doesn't exist)
-                for agent in remote_agents:
-                    if agent.name not in agent_sources_map:
-                        agent_sources_map[agent.name] = {
-                            "type": "remote",
-                            "location": backend_url
-                        }
-                        all_agents.append(agent)
-                    else:
-                        # Local/plugin source exists, skip remote duplicate
-                        self.cli.console.print(f"[dim]⚠️ Duplicate agent '{agent.name}' found (remote), keeping local/plugin version[/dim]")
-                        
-            except Exception as e:
-                self.cli.console.print(f"[yellow]⚠️ Failed to load from {backend_url}: {e}[/yellow]")
+        # Load agents using plugin_manager
+        all_agents, agent_sources_map = await plugin_manager._load_agents(
+            self.plugin_dirs,
+            local_dirs=self.local_dirs,
+            remote_backends=self.remote_backends,
+            console=console
+        )
         
         # Update _agent_sources based on final agents
         self._agent_sources.clear()
         for agent in all_agents:
             if agent.name in agent_sources_map:
                 self._agent_sources[agent.name] = agent_sources_map[agent.name]
-        
-        if not all_agents:
-            self.cli.console.print("[red]❌ No agents found from any source.[/red]")
         
         return all_agents
     

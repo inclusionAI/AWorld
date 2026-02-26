@@ -1,4 +1,3 @@
-import os
 
 MCP_CONFIG = {
     "mcpServers": {

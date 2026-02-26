@@ -32,14 +32,6 @@ class EvalStatus(Enum):
 MetricValueType = Union[int, float, bool]
 
 
-class MetricNames:
-    """Supported metrics name in AWorld."""
-    LABEL_DISTRIBUTION = 'label_distribution'
-    SUMMARIZE_QUALITY = 'summarize_quality'
-    ANSWER_ACCURACY = 'answer_accuracy'
-    PREDICT_TIME_COST_MS = 'predict_time_cost_ms'
-
-
 @dataclass
 class EvalCriteria:
     metric_name: str = field(default_factory=str)
@@ -184,7 +176,7 @@ class Scorer(abc.ABC, Generic[EvalCaseDataType]):
         """Judge the status."""
         scorer_result = await self.score(index, input, output)
         for metric_name, metric_result in scorer_result.metric_results.items():
-            if metric_name in self.eval_criterias:
+            if metric_result.get('eval_status', None) is None and metric_name in self.eval_criterias:
                 metric_result['eval_status'] = self.eval_criterias[metric_name].judge(metric_result['value'])
         return scorer_result
 

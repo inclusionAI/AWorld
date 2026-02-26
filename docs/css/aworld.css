@@ -5,6 +5,16 @@
    Modern, Clean, Professional Documentation
    ============================================ */
 
+/* Prevent horizontal overflow at any viewport; layout stays within screen */
+html {
+  overflow-x: hidden;
+}
+
+body {
+  overflow-x: hidden;
+  min-width: 0;
+}
+
 :root {
   /* Primary Colors - Refined Blues & Purples */
   --aw-primary: #3b82f6;
@@ -315,28 +325,72 @@
 
 
 /* ============================================
-   Main Content Layout - Clean & Spacious
+   Main Content Layout - Left / Center / Right 比例自适应
+   左中右按比例分配宽度，栏间距随视口等比缩放。
    ============================================ */
+:root {
+  /* 栏间距：左右一致，随视口宽度变化，约 2.5% 屏宽 */
+  --aw-grid-gap: clamp(1rem, 2.5vw, 3rem);
+  /* 左右侧栏统一宽度，保证左右红框（栏间距）视觉一致 */
+  --aw-sidebar-min: 12rem;
+  --aw-sidebar-max: 15rem;
+}
+
+.md-container {
+  min-width: 0 !important;
+  max-width: 100vw !important;
+}
+
+.md-main {
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+}
+
 .md-main__inner {
-  margin-top: 0;
-  padding-top: 2rem;
-  max-width: 1440px;
-  margin-left: auto;
-  margin-right: auto;
+  margin-top: 0 !important;
+  padding-top: 2rem !important;
+  padding-left: var(--aw-grid-gap) !important;
+  padding-right: var(--aw-grid-gap) !important;
+  max-width: 100% !important;
+  width: 100% !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  min-width: 0 !important;
+  box-sizing: border-box !important;
+}
+
+/* 三栏网格：左 1 份 : 中 3 份 : 右 1 份，左右侧栏等宽，栏间距统一 */
+.md-main__inner .md-grid,
+.md-main__inner > .md-grid {
+  display: grid !important;
+  grid-template-columns: minmax(var(--aw-sidebar-min), 1fr) minmax(0, 3fr) minmax(var(--aw-sidebar-min), 1fr) !important;
+  gap: var(--aw-grid-gap) !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  width: 100% !important;
+  box-sizing: border-box !important;
 }
 
 .md-content {
-  max-width: 100%;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: stretch !important;
+  box-sizing: border-box !important;
 }
 
+/* 中间区域随中间列宽度自适应，填满可用空间 */
 .md-content__inner {
   background: var(--aw-background);
   border-radius: 12px;
   box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
   border: 1px solid #e5e7eb;
-  padding: 2.5rem 3rem;
-  margin: 0 auto 2rem;
-  max-width: 850px;
+  padding: clamp(1rem, 4vw, 2.5rem) clamp(1.25rem, 4vw, 3rem) !important;
+  margin: 0 0 2rem 0 !important;
+  width: 100% !important;
+  max-width: 100% !important;
+  box-sizing: border-box !important;
   transition: box-shadow 0.2s ease;
 }
 
@@ -344,28 +398,17 @@
   box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.08);
 }
 
-/* Adjust sidebar widths for better balance */
-.md-sidebar--primary {
-  width: 15rem;
-}
-
+/* 左右侧栏等宽、居中于各自单元格，使左右栏间距（红框）完全一致 */
+.md-sidebar--primary,
 .md-sidebar--secondary {
-  width: 14rem;
+  width: 100% !important;
+  min-width: 0 !important;
+  max-width: var(--aw-sidebar-max) !important;
+  justify-self: center !important;
+  box-sizing: border-box !important;
 }
 
-@media screen and (min-width: 76.25em) {
-  .md-sidebar--primary {
-    width: 16rem;
-  }
-
-  .md-sidebar--secondary {
-    width: 15rem;
-  }
-
-  .md-content__inner {
-    max-width: 900px;
-  }
-}
+/* 中间区域不再限制最大宽度，已随列宽自适应 */
 
 /* ============================================
    Sidebar Navigation - Left
@@ -713,7 +756,7 @@
   font-weight: 500;
 }
 
-/* Code block container - Clean Light Style */
+/* Code block container - Clean Light Style (responsive, no layout break) */
 .md-typeset pre {
   position: relative;
   background: #f9fafb;
@@ -723,18 +766,24 @@
   padding: 0;
   overflow: hidden;
   margin: 1.5rem 0;
+  min-width: 0; /* allow shrink in flex/grid */
+  max-width: 100%;
 }
 
 .md-typeset pre code {
   background: transparent;
   border: none;
-  padding: 1.25rem;
+  padding: clamp(0.75rem, 2vw, 1.25rem);
   color: #1f2937;
   font-weight: 400;
   display: block;
   overflow-x: auto;
-  font-size: 0.875em;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  font-size: clamp(0.8125em, 1.5vw, 0.875em);
   line-height: 1.6;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .md-typeset pre > code {
@@ -900,8 +949,10 @@
 
 .md-typeset .highlighttable {
   border-radius: var(--aw-radius-lg);
-  overflow: hidden;
+  overflow: auto;
   box-shadow: var(--aw-shadow);
+  min-width: 0;
+  max-width: 100%;
 }
 
 /* ============================================
@@ -1210,26 +1261,47 @@
 }
 
 /* ============================================
-   Responsive Adjustments
+   Responsive Adjustments (adaptive screen sizes)
    ============================================ */
+/* Tables: Material wraps tables; allow horizontal scroll when wide */
+.md-typeset .md-typeset__table,
+.md-typeset table:not([class]) {
+  max-width: 100%;
+}
+
+.md-typeset .md-typeset__table {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
 @media screen and (max-width: 76.1875em) {
+  :root {
+    --aw-grid-gap: clamp(0.75rem, 2vw, 2rem);
+  }
+
   .md-content__inner {
-    padding: 2rem 1.5rem;
+    padding: clamp(1.25rem, 3vw, 2rem) clamp(1rem, 3vw, 1.5rem) !important;
   }
 
   .md-typeset h1 {
-    font-size: 1.875rem;
+    font-size: clamp(1.5rem, 4vw, 1.875rem);
   }
 
   .md-typeset h2 {
-    font-size: 1.375rem;
+    font-size: clamp(1.25rem, 3vw, 1.375rem);
   }
 }
 
 @media screen and (max-width: 60em) {
+  .md-main__inner {
+    padding-left: clamp(0.5rem, 1.5vw, 1rem) !important;
+    padding-right: clamp(0.5rem, 1.5vw, 1rem) !important;
+  }
+
   .md-content__inner {
-    padding: 1.5rem 1rem;
+    padding: clamp(1rem, 2.5vw, 1.5rem) clamp(0.75rem, 2vw, 1rem) !important;
     border-radius: var(--aw-radius-lg);
+    max-width: 100% !important;
   }
 
   .aw-hero {
@@ -1239,7 +1311,26 @@
   .aw-feature-grid {
     grid-template-columns: 1fr;
   }
+
+  .md-main__inner .md-grid,
+  .md-main__inner > .md-grid {
+    grid-template-columns: minmax(0, 1fr) !important;
+    gap: 0.5rem !important;
+  }
 }
+
+/* Very small screens: reduce padding further */
+@media screen and (max-width: 44.9375em) {
+  .md-content__inner {
+    padding: 0.75rem 1rem;
+  }
+
+  .md-header__inner {
+    padding: 0 0.5rem;
+  }
+}
+
+/* 大屏下侧栏宽度已由 :root 的 --aw-sidebar-*-max 限制，无需额外规则 */
 
 /* ============================================
    Dark Mode Specific Adjustments

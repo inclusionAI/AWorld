@@ -92,6 +92,8 @@ class FileParseHook(PostInputParseHook):
                 image_urls = []
             
             # Parse @filename references
+            # Improved pattern: exclude patterns that are clearly not file references
+            # Exclude: ending with ), ], }, or starting with definition. (code definition markers)
             pattern = r'@([^\s@]+)'
             matches = list(re.finditer(pattern, user_message))
             
@@ -101,9 +103,29 @@ class FileParseHook(PostInputParseHook):
                 logger.debug("🔍 [FileParseHook] No @filename references found")
                 return message
             
+            # Filter out matches that are clearly not file references
+            valid_matches = []
+            for match in matches:
+                file_ref = match.group(1)
+                # Skip patterns that are clearly not file references:
+                # - Ending with closing brackets/parentheses: name), value], etc.
+                # - Starting with "definition." (code definition markers)
+                # - Single character references (likely code symbols)
+                if (file_ref.endswith((')', ']', '}')) or 
+                    file_ref.startswith('definition.') or
+                    len(file_ref) <= 1):
+                    continue
+                valid_matches.append(match)
+            
+            if not valid_matches:
+                if console:
+                    console.print("[dim]🔍 [FileParseHook] No valid @filename references found[/dim]")
+                logger.debug("🔍 [FileParseHook] No valid @filename references found")
+                return message
+            
             if console:
-                console.print(f"[dim]📁 [FileParseHook] Processing {len(matches)} file reference(s)[/dim]")
-            logger.info(f"📁 [FileParseHook] Processing {len(matches)} file reference(s)")
+                console.print(f"[dim]📁 [FileParseHook] Processing {len(valid_matches)} file reference(s)[/dim]")
+            logger.info(f"📁 [FileParseHook] Processing {len(valid_matches)} file reference(s)")
             
             # Store text file replacements: (start_pos, end_pos, content, filename)
             # Store image removals: (start_pos, end_pos) - images are removed, not replaced
@@ -112,7 +134,7 @@ class FileParseHook(PostInputParseHook):
             cleaned_text = user_message
             
             # First pass: collect all file information (images and text files)
-            for match in matches:
+            for match in valid_matches:
                 file_ref = match.group(1)
                 start, end = match.span()
                 
@@ -237,9 +259,20 @@ class FileParseHook(PostInputParseHook):
                                     console.print(f"[yellow]⚠️ [FileParseHook] Failed to read text file {file_path}: {e}[/yellow]")
                                 logger.warning(f"⚠️ [FileParseHook] Failed to read text file {file_path}: {e}")
                     else:
-                        if console:
-                            console.print(f"[yellow]⚠️ [FileParseHook] File not found: {file_path} (resolved from: {file_ref})[/yellow]")
-                        logger.warning(f"⚠️ [FileParseHook] File not found: {file_path} (resolved from: {file_ref})")
+                        # Only warn if the reference looks like a valid file path
+                        # (has extension or contains path separators)
+                        looks_like_file = (
+                            '.' in file_ref and len(file_ref.split('.')[-1]) <= 5  # Has extension
+                            or '/' in file_ref or '\\' in file_ref  # Has path separators
+                            or file_ref.startswith(('./', '../'))  # Relative path
+                        )
+                        if looks_like_file:
+                            if console:
+                                console.print(f"[yellow]⚠️ [FileParseHook] File not found: {file_path} (resolved from: {file_ref})[/yellow]")
+                            logger.warning(f"⚠️ [FileParseHook] File not found: {file_path} (resolved from: {file_ref})")
+                        else:
+                            # Silently skip - likely not a file reference
+                            logger.debug(f"🔍 [FileParseHook] Skipping non-file reference: {file_ref}")
             
             # Second pass: Apply all replacements and removals in reverse order
             # Combine all operations and sort by start position in reverse order

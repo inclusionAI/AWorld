@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
 
-# from aworld.ralph_loop.state.types import LoopState, LoopContext
-# from aworld.ralph_loop.types import CompletionCriteria
+from aworld.ralph_loop.state.types import LoopState, LoopContext
+from aworld.ralph_loop.types import CompletionCriteria
 
 
 class StopType(Enum):
@@ -73,9 +73,9 @@ class StopType(Enum):
 
 @dataclass
 class StopState:
-    loop_state: 'LoopState'
-    loop_context: 'LoopContext'
-    completion_criteria: 'CompletionCriteria'
+    loop_state: LoopState
+    loop_context: LoopContext
+    completion_criteria: CompletionCriteria
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def elapsed_time(self) -> float:
