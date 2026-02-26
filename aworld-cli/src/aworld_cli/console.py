@@ -1,5 +1,7 @@
 import asyncio
+import os
 import sys
+from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
@@ -95,6 +97,7 @@ class AWorldCLI:
         # First menu: select configuration type (Back/cancel uses largest number)
         config_types = [
             ("1", "Model configuration", self._edit_models_config),
+            ("2", "Skills configuration", self._edit_skills_config),
         ]
         back_key = str(len(config_types) + 1)
         self.console.print("\n[bold]Select configuration type:[/bold]")
@@ -188,6 +191,56 @@ class AWorldCLI:
                 table.add_row(key, str(value))
         self.console.print()
         self.console.print(table)
+
+    async def _edit_skills_config(self, config, current_config: dict):
+        """Edit skills section of config (global SKILLS_PATH and per-agent XXX_SKILLS_PATH)."""
+        default_skills_path = str(Path.home() / ".aworld" / "skills")
+        if 'skills' not in current_config:
+            current_config['skills'] = {}
+
+        skills_cfg = current_config['skills']
+        self.console.print("\n[bold]Skills paths:[/bold]")
+        self.console.print("  [dim]Paths are relative to home or absolute. Use semicolon (;) to separate multiple paths. Enter to keep, '-' to clear.[/dim]\n")
+
+        # Global SKILLS_PATH
+        current = skills_cfg.get('skills_path', '')
+        val = Prompt.ask("  SKILLS_PATH (global)", default=current or default_skills_path)
+        v = val.strip() if val else ''
+        if v and v != '-':
+            skills_cfg['skills_path'] = v
+        elif v == '-' or (not v and current):
+            skills_cfg.pop('skills_path', None)
+
+        # Per-agent paths (same default as SKILLS_PATH)
+        for label, key in [
+            ("EVALUATOR_SKILLS_PATH (evaluator)", "evaluator_skills_path"),
+            ("EXPLORER_SKILLS_PATH (explorer)", "explorer_skills_path"),
+            ("AWORLD_SKILLS_PATH (aworld)", "aworld_skills_path"),
+            ("DEVELOPER_SKILLS_PATH (developer)", "developer_skills_path"),
+        ]:
+            current = skills_cfg.get(key, '')
+            val = Prompt.ask(f"  {label}", default=current or default_skills_path)
+            v = val.strip() if val else ''
+            if v and v != '-':
+                skills_cfg[key] = v
+            elif v == '-' or (not v and current):
+                skills_cfg.pop(key, None)
+
+        if not skills_cfg:
+            current_config.pop('skills', None)
+        else:
+            current_config['skills'] = skills_cfg
+
+        config.save_config(current_config)
+        self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
+        table = Table(title="Skills Configuration", box=box.ROUNDED)
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+        for k, v in (current_config.get('skills') or {}).items():
+            table.add_row(k, str(v)[:60] + ("..." if len(str(v)) > 60 else ""))
+        if current_config.get('skills'):
+            self.console.print()
+            self.console.print(table)
 
     def display_agents(self, agents: List[AgentInfo], source_type: str = "LOCAL", source_location: str = ""):
         """

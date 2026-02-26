@@ -17,55 +17,56 @@ from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
 from .mcp_config import mcp_config
 
 
-@HookFactory.register(name="pre_explorer_hook")
-class PreMultiTaskExplorerHook(PreLLMCallHook):
+@HookFactory.register(name="pre_evaluator_hook")
+class PreMultiTaskEvaluatorHook(PreLLMCallHook):
     """Hook triggered before LLM execution. Used for monitoring, logging, etc. Should NOT modify input/output content."""
     
     async def exec(self, message: Message, context: Context = None) -> Message:
-        if message.sender.startswith('explorer'):
+        if message.sender.startswith('evaluator'):
             # Logging and monitoring only - do not modify content
             pass
         return message
 
 
-@HookFactory.register(name="post_explorer_hook")
-class PostMultiTaskExplorerHook(PostLLMCallHook):
+@HookFactory.register(name="post_evaluator_hook")
+class PostMultiTaskEvaluatorHook(PostLLMCallHook):
     """Hook triggered after LLM execution. Used for monitoring, logging, etc. Should NOT modify input/output content."""
     
     async def exec(self, message: Message, context: Context = None) -> Message:
-        if message.sender.startswith('explorer'):
+        if message.sender.startswith('evaluator'):
             # Logging and monitoring only - do not modify content
             pass
         return message
 
 
-class MultiTaskExplorerAgent(Agent):
-    """A versatile agent specializing in code exploration, financial market research, and news aggregation."""
+class MultiTaskEvaluatorAgent(Agent):
+    """A versatile agent specializing in evaluation and presenting professional suggestions for the apps/code/html/website improvement."""
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
                            **kwargs) -> List[ActionModel]:
         """
         Execute the agent's policy for multi-domain tasks.
         
-        This agent handles three primary domains:
-        1. Code Exploration: Analyze codebases, trace implementations, map architectures
-        2. Stock Market Research: Retrieve market data, analyze trends, track stocks
-        3. News Aggregation: Fetch and summarize news from multiple sources
+        This agent handles two primary domains:
+        1. Evaluation: Analyze the app/code/html/website's performance, user experience, and so on.
+        2. Improvement: Present professional suggestions for the app/code/html/website improvement.
         """
         return await super().async_policy(observation, info, message, **kwargs)
 
 
 @agent(
-    name="explorer",
-    desc="""A versatile intelligent assistant, When to use:
-- Code: find files by pattern, search code by keyword/regex, answer "how does X work?", map architecture. Prefer thoroughness: "quick" for basic search, "medium" for moderate exploration, "very thorough" for full analysis.
-- provide comprehensive information exploration services"""
+    name="evaluator",
+    desc="""A versatile intelligent assistant for evaluation, when to use:
+- Evaluation: Analyze the app/code/html/website's performance, user experience, and so on.
+- Improvement: Present professional suggestions for the app/code/html/website improvement.
+"""
 )
-def build_explorer_swarm():
-    """Build and configure the multi-task explorer agent swarm."""
+def build_evaluator_swarm():
+    """Build and configure the multi-task evaluator agent swarm."""
+    # APP_EVALUATOR_SKILLS_DIR: override skill read directory (plugin root with skills/ subdir)
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
-    user_dir = os.environ.get("EXPLORER_SKILLS_PATH")  # semicolon-separated paths
-    skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=user_dir)
+    env_skills_dir = Path(os.path.expanduser(os.environ.get("EVALUATOR_SKILLS_PATH"))).resolve()
+    skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
 
     # Create Agent configuration with Claude Sonnet model
     agent_config = AgentConfig(
@@ -92,10 +93,10 @@ def build_explorer_swarm():
     _prompt_path = Path(__file__).resolve().parent / "prompt.txt"
     _system_prompt = _prompt_path.read_text(encoding="utf-8")
 
-    # Create MultiTaskExplorerAgent instance
-    explorer = MultiTaskExplorerAgent(
-        name="explorer",
-        desc="A versatile intelligent assistant that can deeply analyze codebases, retrieve real-time stock market information, fetch daily news updates, and provide comprehensive information exploration services for users",
+    # Create MultiTaskEvaluatorAgent instance
+    evaluator = MultiTaskEvaluatorAgent(
+        name="evaluator",
+        desc="A versatile intelligent assistant that can evaluate the apps/code/html/website's performance, user experience, and so on, and present professional suggestions for the apps/code/html/website improvement.",
         conf=agent_config,
         system_prompt=_system_prompt,
         mcp_servers=mcp_servers,
@@ -105,4 +106,4 @@ def build_explorer_swarm():
     )
 
     # Return the Swarm containing this Agent
-    return Swarm(explorer)
+    return Swarm(evaluator)
