@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import datetime
+import os
+import threading
 from datetime import timedelta
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from pathlib import Path
@@ -10,6 +13,7 @@ from typing import Any, Literal
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp import ClientSession, StdioServerParameters, Tool as MCPTool, stdio_client
 from mcp.client.sse import sse_client
+
 from mcp.client.streamable_http import GetSessionIdCallback, streamablehttp_client
 from mcp.shared.session import ProgressFnT
 from mcp.types import CallToolResult, JSONRPCMessage, InitializeResult
@@ -121,11 +125,7 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
         """Connect to the server."""
         try:
             transport = await self.exit_stack.enter_async_context(self.create_streams())
-            # streamablehttp_client returns (read, write, get_session_id)
-            # sse_client returns (read, write)
-
             read, write, *_ = transport
-
             session = await self.exit_stack.enter_async_context(
                 ClientSession(
                     read,
@@ -178,20 +178,20 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
 
     async def cleanup(self):
         """Cleanup the server."""
+        server_label = getattr(self, "name", id(self))
+        logger.info(
+            f"[sandbox cleanup] server={server_label!r} pid={os.getpid()} tid={threading.get_ident()} at={datetime.datetime.utcnow().strftime('%H:%M:%S.%f')[:-3]}"
+        )
         async with self._cleanup_lock:
             try:
-                # Ensure cleanup operations occur in the same task context
                 session = self.session
                 self.session = None  # Remove reference first
 
-                # Wait briefly to ensure any pending operations complete
                 try:
                     await asyncio.sleep(0.1)
                 except asyncio.CancelledError:
-                    # Ignore cancellation exceptions, continue cleaning resources
                     pass
 
-                # Clean up exit_stack, ensuring all resources are properly closed
                 exit_stack = self.exit_stack
                 if exit_stack:
                     try:
