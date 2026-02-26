@@ -1,6 +1,5 @@
 import argparse
 import json
-import logging
 import os
 import re
 import traceback
@@ -11,9 +10,9 @@ from dotenv import load_dotenv
 
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, TaskConfig
-from aworld.core.task import Task
 from aworld.runner import Runners
 from aworld.core.task import Task
+from aworld.logs.util import AWorldLogger, monkey_logger
 from examples.gaia.prompt import system_prompt
 from examples.gaia.utils import (
     add_file_path,
@@ -64,29 +63,19 @@ parser.add_argument(
 args = parser.parse_args()
 
 
+logging = None
+
 def setup_logging():
-    logging_logger = logging.getLogger()
-    logging_logger.setLevel(logging.INFO)
-
-    log_file_name = f"/super_agent_{args.q}.log" if args.q else f"/super_agent_{args.start}_{args.end}.log"
-    file_handler = logging.FileHandler(
-        os.getenv("AWORLD_WORKSPACE", "~") + log_file_name,
-        mode="a",
-        encoding="utf-8",
-    )
-    file_handler.setLevel(logging.INFO)
-
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    file_handler.setFormatter(formatter)
-
-    logging_logger.addHandler(file_handler)
-
+    global logging
+    logging = AWorldLogger(tag=f"super_agent_{args.q}", formatter="{time:YYYY-MM-DD HH:mm:ss.SSS} - <bold>{name}.{function}:{line}</bold> - {level} - {message}")
+    monkey_logger(logging)
 
 if __name__ == "__main__":
     load_dotenv()
     setup_logging()
 
-    gaia_dataset_path = os.getenv("GAIA_DATASET_PATH", "./gaia_dataset")
+    # gaia_dataset_path = os.getenv("GAIA_DATASET_PATH", "./gaia_dataset")
+    gaia_dataset_path = "/Users/gain/datasets/gaia-benchmark/GAIA/2023"
     full_dataset = load_dataset_meta(gaia_dataset_path, split=args.split)
     logging.info(f"Total questions: {len(full_dataset)}")
 
@@ -180,6 +169,7 @@ if __name__ == "__main__":
                 task = Task(input=question, agent=super_agent, conf=TaskConfig())
                 result = Runners.sync_run_task(task=task)
 
+                logging.info(f"answer: {result[task.id].answer}")
                 match = re.search(r"<answer>(.*?)</answer>", result[task.id].answer)
                 if match:
                     answer = match.group(1)

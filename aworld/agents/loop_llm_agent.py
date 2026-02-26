@@ -1,8 +1,9 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-from typing import Any, Callable
+from typing import Any, Callable, List, Dict, Optional
 
 from aworld.agents.llm_agent import Agent
+from aworld.core.context.base import Context
 
 
 class LoopableAgent(Agent):
@@ -43,6 +44,16 @@ class LoopableAgent(Agent):
         self.loop_point = loop_point
         self.loop_point_finder = loop_point_finder
         self.stop_func = stop_func
+
+    def _process_messages(self, messages: List[Dict[str, Any]],
+                          context: Context = None) -> Optional[List[Dict[str, Any]]]:
+        # The content of the last two messages is the same
+        if len(messages) > 1 and messages[-1]["content"] == messages[-2]["content"]:
+            # modify message
+            messages[-1]['content'] = "Your answer is either incorrect or not fully completed. Please read the original question carefully, check and analyze it, and try to answer it again."
+            # modify memory
+            
+        return messages
 
     @property
     def goto(self):
