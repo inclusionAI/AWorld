@@ -67,4 +67,4 @@ async def run(user_input: str):
 
 
 if __name__ == '__main__':
-    asyncio.run(run(user_input="Help me find the latest week stock price of BABA. And Analysis the trend of news."))
+    asyncio.run(run(user_input="访问 https://github.com/auto10x 然后 发一篇小红书"))
