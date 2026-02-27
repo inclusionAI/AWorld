@@ -188,24 +188,7 @@ class ContextKnowledgeAction(ToolAction):
         desc="Search knowledge using semantic search. Returns relevant knowledge artifacts based on the query."
     )
 
-    GET_KNOWLEDGE_CHUNK = ToolActionInfo(
-        name="get_knowledge_chunk",
-        input_params={
-            "knowledge_id": ParamInfo(
-                name="knowledge_id",
-                type="string",
-                required=True,
-                desc="The unique identifier of the knowledge artifact"
-            ),
-            "chunk_index": ParamInfo(
-                name="chunk_index",
-                type="integer",
-                required=True,
-                desc="The index of the specific chunk to retrieve (zero-based)"
-            )
-        },
-        desc="Get a specific chunk from a knowledge artifact. Useful for accessing large knowledge artifacts in smaller pieces."
-    )
+    # NOTE: get_knowledge_chunk has been removed; use get_knowledge_by_lines / grep_knowledge instead.
 
 
 @ToolFactory.register(name=CONTEXT_KNOWLEDGE,
@@ -422,19 +405,6 @@ class ContextKnowledgeTool(AsyncTool):
                         result_lines.append("=" * 80)
                         result_lines.append(f"\n💡 Use get_knowledge_by_id(knowledge_id) to retrieve full content")
                         result = "\n".join(result_lines)
-                    
-                elif action_name == ContextKnowledgeAction.GET_KNOWLEDGE_CHUNK.value.name:
-                    knowledge_id = action.params.get("knowledge_id", "")
-                    chunk_index = action.params.get("chunk_index")
-                    
-                    if not knowledge_id or chunk_index is None:
-                        raise ValueError("knowledge_id and chunk_index are required")
-                    
-                    chunk = await message.context.knowledge_service.get_knowledge_chunk(knowledge_id, chunk_index)
-                    if not chunk:
-                        result = f"❌ Chunk not found: knowledge_id={knowledge_id}, chunk_index={chunk_index}"
-                    else:
-                        result = f"📄 Chunk #{chunk_index} from Knowledge #{knowledge_id}:\n\n{chunk.content}"
                     
                 else:
                     raise ValueError(f"Unknown action: {action_name}")
