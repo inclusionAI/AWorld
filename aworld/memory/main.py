@@ -800,7 +800,7 @@ class AworldMemory(Memory):
         ).rstrip()  # Remove trailing whitespace as OpenAI API requires
         summary_messages = [
             {
-                "role": "assistant",
+                "role": "user",
                 "content": content
             }
         ]
