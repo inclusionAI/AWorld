@@ -8,11 +8,9 @@ from pydantic import BaseModel, Field
 
 from aworld.config import ModelConfig
 from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy
-from aworld.core.memory import MemoryConfig
+from aworld.core.memory import MemoryConfig, MemoryStore
 from aworld.memory.db.sqlite import SQLiteMemoryStore
-# from aworld.memory.db import SQLiteMemoryStore  # Temporarily commented out to avoid import errors
-from aworld.memory.main import MemoryFactory
-from .retrieval.base import RetrieverFactory
+from aworld.memory.main import MemoryFactory, InMemoryMemoryStore
 from ...event.base import TopicType
 
 
@@ -228,18 +226,35 @@ class AmniContextConfig(BaseConfig):
                 return agent_context_config.to_memory_config()
         return DEFAULT_AGENT_CONFIG.to_memory_config()
 
-def init_middlewares(init_memory: bool = True, init_retriever: bool = True) -> None:
+def _create_memory_store() -> MemoryStore:
+    """
+    Create memory store backend instance.
 
+    Backend selection strategy:
+        - If MEMORY_BACKEND=sqlite, use SQLiteMemoryStore with DB_PATH (default: ./data/amni_context.db).
+        - Otherwise, default to InMemoryMemoryStore for lightweight, ephemeral usage.
+    """
+    backend = os.getenv("MEMORY_BACKEND", "inmemory").lower()
+    if backend == "sqlite":
+        db_path = os.getenv("DB_PATH", "./data/amni_context.db")
+        return SQLiteMemoryStore(db_path=db_path)
+    return InMemoryMemoryStore()
+
+
+def init_middlewares(init_memory: bool = True, init_retriever: bool = True) -> None:
+    """
+    Initialize Amni middlewares.
+
+    Args:
+        init_memory: Whether to initialize memory subsystem.
+        init_retriever: Deprecated, kept for compatibility; RAG / retriever is no longer initialized here.
+    """
     # 1. Initialize memory
     if init_memory:
         MemoryFactory.init(
-            custom_memory_store=SQLiteMemoryStore(db_path=os.getenv("DB_PATH", "./data/amni_context.db")),
+            custom_memory_store=_create_memory_store(),
             config=build_memory_config()
         )
-
-    # 2. Initialize retriever
-    if init_retriever:
-        RetrieverFactory.init()
 
 def build_memory_config():
     return MemoryConfig(
