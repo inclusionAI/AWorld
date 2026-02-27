@@ -22,7 +22,6 @@ from .contexts import ContextManager
 from .prompt.prompts import AMNI_CONTEXT_PROMPT
 from .retrieval.artifacts import SearchArtifact
 from .retrieval.artifacts.file import DirArtifact
-from .retrieval.chunker import Chunk
 from .retrieval.embeddings import EmbeddingsMetadata, SearchResults
 from .state import ApplicationTaskContextState, ApplicationAgentState, TaskOutput, TaskWorkingState
 from .state.agent_state import AgentWorkingState
@@ -255,7 +254,8 @@ class AmniContext(Context):
         pass
 
     @abc.abstractmethod
-    async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Chunk]:
+    async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Any]:
+        """Deprecated: chunk-based retrieval is no longer supported."""
         pass
 
     # @abc.abstractmethod
@@ -1334,13 +1334,7 @@ class ApplicationContext(AmniContext):
         """
         return await self.knowledge_service.offload_by_workspace(artifacts, namespace, biz_id)
 
-    def need_index(self, artifact: Artifact):
-        """
-        Check if artifact needs indexing.
-
-        Delegates to KnowledgeService._need_index().
-        """
-        return self.knowledge_service._need_index(artifact)
+    # NOTE: need_index is deprecated since retrieval indexing has been removed.
 
 
     async def load_context_by_workspace(
@@ -1592,11 +1586,12 @@ class ApplicationContext(AmniContext):
         """
         return await self.knowledge_service.get_knowledge_by_id(knowledge_id, namespace)
 
-    async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Chunk]:
+    async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Any]:
         """
-        Get a specific chunk from a knowledge artifact.
+        Deprecated: Get a specific chunk from a knowledge artifact.
 
-        Delegates to KnowledgeService.get_knowledge_chunk().
+        Chunk-based retrieval has been disabled; this method is kept for
+        backward compatibility and will always return None.
         """
         return await self.knowledge_service.get_knowledge_chunk(knowledge_id, chunk_index)
 
