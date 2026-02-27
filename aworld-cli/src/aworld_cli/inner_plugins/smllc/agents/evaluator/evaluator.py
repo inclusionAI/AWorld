@@ -102,7 +102,7 @@ def build_evaluator_swarm():
         mcp_servers=mcp_servers,
         mcp_config=mcp_config,
         sandbox=sandbox,
-        tool_names = ["CAST_SEARCH", "CAST_ANALYSIS", "human"]
+        tool_names = ["CAST_SEARCH", "CAST_ANALYSIS"]
     )
 
     # Return the Swarm containing this Agent
