@@ -94,29 +94,19 @@ async def get_knowledge_chunk(
     logger.info(f"🔍 Retrieving knowledge chunk: knowledge_id={knowledge_id}, chunk_index={chunk_index}, session_id={session_id}")
     
     try:
-        workspace = await workspace_repo.get_session_workspace(session_id=session_id)
-        logger.info(f"✅ Workspace retrieved successfully for session: {session_id}")
-        
-        chunk = await workspace.get_artifact_chunk(knowledge_id, chunk_index=chunk_index)
-        if not chunk:
-            logger.warning(f"⚠️ Knowledge chunk not found: knowledge_id={knowledge_id}, chunk_index={chunk_index}, session_id={session_id}")
-            return f"Not found knowledge#{knowledge_id}, chunk_index={chunk_index}"
-
-        logger.info(f"✅ Knowledge chunk retrieved successfully: knowledge_id={knowledge_id}, chunk_index={chunk_index}, content_length={len(chunk.content)} , trace is {traceback.format_exc()}")
-        search_output_dict = {
-            "artifact_type": "TEXT",
-            "artifact_data": chunk.content
-        }
-
-        # Initialize TextContent with additional parameters
-        return TextContent(
-            type="text",
-            text=chunk.content,
-            **{"metadata": search_output_dict}  # Pass processed data as metadata
+        # Chunk-based retrieval is deprecated; fallback to line-based retrieval.
+        logger.info(f"get_knowledge_chunk is deprecated, fallback to get_knowledge_by_lines. "
+                    f"knowledge_id={knowledge_id}, chunk_index={chunk_index}, session_id={session_id}")
+        return await get_knowledge_by_lines(
+            knowledge_id=knowledge_id,
+            start_line=1,
+            end_line=200,
+            session_id=session_id,
         )
 
     except Exception as e:
-        logger.error(f"❌ Error retrieving knowledge chunk: knowledge_id={knowledge_id}, chunk_index={chunk_index}, session_id={session_id}, error={str(e)}")
+        logger.error(f"❌ Error retrieving knowledge chunk (fallback by lines): "
+                     f"knowledge_id={knowledge_id}, chunk_index={chunk_index}, session_id={session_id}, error={str(e)}")
         return f"Error retrieving knowledge chunk: {str(e)}"
 
 @mcp.tool(description="Retrieve knowledge content by line range from the current session workspace")
