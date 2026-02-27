@@ -561,10 +561,33 @@ class AworldMemory(Memory):
         # save to vector store
         self._save_to_vector_db(memory_item)
 
-        # Check if we need to create or update summary
+        # Check if we need to create or update summary in background to avoid blocking caller
         if agent_memory_config and agent_memory_config.enable_summary:
             if memory_item.memory_type == "message":
-                await self._summary_agent_task_memory(memory_item, agent_memory_config)
+                asyncio.create_task(
+                    self._run_summary_in_background(memory_item=memory_item, agent_memory_config=agent_memory_config)
+                )
+
+    async def _run_summary_in_background(self,
+                                         memory_item: MemoryItem,
+                                         agent_memory_config: AgentMemoryConfig) -> None:
+        """
+        Run summary generation as a background task to avoid blocking the caller.
+
+        Args:
+            memory_item (MemoryItem): The memory item that may trigger summary generation.
+            agent_memory_config (AgentMemoryConfig): Agent memory configuration.
+
+        Returns:
+            None
+        """
+        try:
+            await self._summary_agent_task_memory(memory_item, agent_memory_config)
+        except Exception as err:
+            logger.error(
+                f"🧠 [MEMORY:short-term] [Summary] Background summary task failed: {err}, "
+                f"traceback is {traceback.format_exc()}"
+            )
 
     async def _summary_agent_task_memory(self, memory_item: MemoryItem, agent_memory_config: AgentMemoryConfig):
         # obtain assistant un summary messages
