@@ -59,49 +59,48 @@ class BaseCliRuntime:
             self.cli.console.print("[red]❌ No agents available.[/red]")
             return
         
-        while self._running:
-            # Select agent
-            selected_agent = await self._select_agent(agents)
-            if not selected_agent:
-                return
-            
-            # Start chat session
-            executor = await self._create_executor(selected_agent)
-            if not executor:
-                self.cli.console.print("[red]❌ Failed to create executor for agent.[/red]")
-                continue
-            
-            result = await self.cli.run_chat_session(
-                selected_agent.name, 
-                executor.chat, 
-                available_agents=agents,
-                executor_instance=executor
-            )
-            
-            # Handle session result
-            if result is False:
-                # User wants to exit app: close MCP connections in same event loop to avoid
-                # "Attempted to exit cancel scope in a different task" on shutdown
-                if hasattr(executor, "cleanup_resources") and callable(getattr(executor, "cleanup_resources")):
-                    try:
-                        await executor.cleanup_resources()
-                    except Exception:
-                        pass
-                break
-            elif result is True:
-                # User wants to switch agent (show list)
-                if len(agents) == 1:
-                    self.cli.console.print("[yellow]ℹ️ Only one agent available. Cannot switch.[/yellow]")
-                    # Continue with the same agent
+        executor = None
+        try:
+            while self._running:
+                # Select agent
+                selected_agent = await self._select_agent(agents)
+                if not selected_agent:
+                    return
+                
+                # Start chat session
+                executor = await self._create_executor(selected_agent)
+                if not executor:
+                    self.cli.console.print("[red]❌ Failed to create executor for agent.[/red]")
                     continue
-                # Multiple agents available, will show list in next iteration
-                selected_agent = None
-                continue
-            elif isinstance(result, str):
-                # User wants to switch to specific agent
-                self.agent_name = result
-                # Loop will handle selection
-                continue
+                
+                result = await self.cli.run_chat_session(
+                    selected_agent.name,
+                    executor.chat,
+                    available_agents=agents,
+                    executor_instance=executor
+                )
+                
+                # Handle session result
+                if result is False:
+                    break
+                elif result is True:
+                    # User wants to switch agent (show list)
+                    if len(agents) == 1:
+                        self.cli.console.print("[yellow]ℹ️ Only one agent available. Cannot switch.[/yellow]")
+                        continue
+                    selected_agent = None
+                    continue
+                elif isinstance(result, str):
+                    # User wants to switch to specific agent
+                    self.agent_name = result
+                    continue
+        finally:
+            # Always run cleanup on exit (user exit, KeyboardInterrupt, etc.)
+            if executor is not None and hasattr(executor, "cleanup_resources") and callable(getattr(executor, "cleanup_resources")):
+                try:
+                    await executor.cleanup_resources()
+                except Exception:
+                    pass
     
     async def stop(self) -> None:
         """Stop the CLI loop."""
