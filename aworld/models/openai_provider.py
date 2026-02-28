@@ -181,6 +181,7 @@ class OpenAIProvider(LLMProviderBase):
             if (hasattr(chunk_choice, 'delta') and chunk_choice.delta and chunk_choice.delta.tool_calls) or (
                     isinstance(chunk_choice, dict) and chunk_choice.get("delta", {}).get("tool_calls")):
                 tool_calls = chunk_choice.delta.tool_calls if hasattr(chunk_choice, 'delta') else chunk_choice.get("delta", {}).get("tool_calls")
+                logger.debug(f"[stream] tool_calls chunk received, count={len(tool_calls)}, buffer_len={len(self.stream_tool_buffer)}")
 
                 for tool_call in tool_calls:
                     index = tool_call.index if hasattr(tool_call, 'index') else tool_call["index"]
@@ -207,6 +208,7 @@ class OpenAIProvider(LLMProviderBase):
                     processed_chunk["choices"][0]["delta"]["tool_calls"] = None
                 resp = ModelResponse.from_openai_stream_chunk(processed_chunk)
                 if (not resp.content and not resp.usage.get("total_tokens", 0)):
+                    logger.debug("[stream] skip chunk: no content and no usage")
                     return None, None
             finish_reason = ModelResponse._get_item_from_openai_message(chunk_choice, "finish_reason")
             if finish_reason:
@@ -219,7 +221,7 @@ class OpenAIProvider(LLMProviderBase):
                             {
                                 "delta": {
                                     "role": "assistant",
-                                    "content": "",
+                                    "content": chunk.choices[0].delta.content if hasattr(chunk.choices[0].delta, 'content') else chunk.choices[0].delta.get("content"),
                                     "tool_calls": self.stream_tool_buffer
                                 }
                             }
@@ -227,8 +229,10 @@ class OpenAIProvider(LLMProviderBase):
                     }
                     self.stream_tool_buffer = []
                     chunk_resp = ModelResponse.from_openai_stream_chunk(tool_call_chunk)
+                    logger.debug(f"[stream] chunk_resp: {chunk_resp}, finish_reason={finish_reason}")
                     return chunk_resp, finish_reason
             resp = ModelResponse.from_openai_stream_chunk(chunk)
+            logger.debug(f"[stream] chunk: {chunk} resp: {resp}, finish_reason={finish_reason}, no tool_calls in buffer")
             return resp, finish_reason
         except Exception as e:
             logger.error(f"postprocess_stream_response error: {e}, traceback is {traceback.format_exc()}")

@@ -895,7 +895,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
 
                         async for chunk in resp_stream:
-                            # print(chunk, end="", flush=True)
+                            logger.info(f"llm_agent chunk: {chunk}")
                             if chunk.content:
                                 llm_response.content += chunk.content
                             if chunk.tool_calls:

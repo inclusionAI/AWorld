@@ -499,6 +499,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     def _render_stream_display():
                         """Build combined renderable: stats line, agent name, content, tool_calls (refreshed together)."""
                         nonlocal accumulated_stream_content, accumulated_tool_calls, stream_token_stats, status_start_time
+                        logger.info(f"accumulated_stream_content {accumulated_stream_content}")
                         parts = [Text("")]
                         elapsed_str = format_elapsed((datetime.now() - status_start_time).total_seconds()) if status_start_time else "0.0s"
                         msg = stream_token_stats.format_streaming_line(elapsed_str)
@@ -724,6 +725,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     tc_content_est = meta.get("tool_calls_content_estimated", False)
                                     agent_id = meta.get("agent_id")
                                     agent_name = meta.get("agent_name")
+                                    logger.info(f"agent_name: {agent_name} output: {output} accumulated_tool_calls: {accumulated_tool_calls}")
                                     if out_tok is None or inp_tok is None or tc_count is None:
                                         chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
                                         if chunk:
