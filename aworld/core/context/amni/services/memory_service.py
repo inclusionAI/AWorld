@@ -9,6 +9,7 @@ providing a clean interface for managing conversation history, facts, user profi
 import abc
 from typing import Optional, List
 
+from aworld.logs.util import logger
 from aworld.memory.models import MemoryMessage, UserProfile, Fact
 from aworld.core.context.amni.state.common import WorkingState
 
@@ -32,12 +33,12 @@ class IMemoryService(abc.ABC):
     @abc.abstractmethod
     def get_memory_messages(self, last_n: int = 100, namespace: str = "default") -> List[MemoryMessage]:
         """
-        Get memory messages from working state (short-term memory).
-        
+        Get memory messages from MemoryFactory instance (persistent memory store).
+
         Args:
             last_n: Number of recent messages to retrieve
-            namespace: Namespace for retrieval
-            
+            namespace: Namespace (agent_id) for retrieval
+
         Returns:
             List of memory messages
         """
@@ -143,11 +144,28 @@ class MemoryService(IMemoryService):
         self._get_working_state(namespace).history_messages.append(memory_message)
     
     def get_memory_messages(self, last_n: int = 100, namespace: str = "default") -> List[MemoryMessage]:
-        """Get memory messages from working state (short-term memory)."""
-        working_state = self._get_working_state(namespace)
-        if not working_state or not working_state.history_messages:
-            return []
-        return working_state.history_messages[:last_n]
+        """Get memory messages from MemoryFactory instance (persistent memory store)."""
+        from aworld.memory.main import MemoryFactory
+
+        memory = MemoryFactory.instance()
+        filters = {"agent_id": namespace, "memory_type": "message"}
+        ctx = self._context
+        try:
+            agent_memory_config = ctx.get_agent_memory_config(namespace)
+        except Exception:
+            agent_memory_config = None
+        query_scope = (
+            getattr(agent_memory_config, "history_scope", None) if agent_memory_config else None
+        ) or "task"
+        if query_scope == "user" and getattr(ctx, "user_id", None):
+            filters["user_id"] = ctx.user_id
+        elif query_scope == "session" and getattr(ctx, "session_id", None):
+            filters["session_id"] = ctx.session_id
+        elif getattr(ctx, "task_id", None):
+            filters["task_id"] = ctx.task_id
+        logger.info(f"get_memory_messages filters: {filters}, agent_memory_config: {agent_memory_config}")
+        items = memory.get_last_n(last_n, filters=filters, agent_memory_config=agent_memory_config)
+        return list(items) if items else []
     
     # Long-term Memory Operations
     
