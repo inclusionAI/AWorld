@@ -234,7 +234,7 @@ def _create_memory_store() -> MemoryStore:
         - If MEMORY_BACKEND=sqlite, use SQLiteMemoryStore with DB_PATH (default: ./data/amni_context.db).
         - Otherwise, default to InMemoryMemoryStore for lightweight, ephemeral usage.
     """
-    backend = os.getenv("MEMORY_BACKEND", "inmemory").lower()
+    backend = os.getenv("MEMORY_BACKEND", "sqlite").lower()
     if backend == "sqlite":
         db_path = os.getenv("DB_PATH", "./data/amni_context.db")
         return SQLiteMemoryStore(db_path=db_path)
