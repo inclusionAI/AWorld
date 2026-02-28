@@ -965,8 +965,8 @@ class AWorldCLI:
                     continue
 
             except KeyboardInterrupt:
-                self.console.print("\n[yellow]Session interrupted.[/yellow]")
-                break
+                self.console.print("\n[yellow]Interrupted. Waiting for new input...[/yellow]")
+                continue  # Stay in chat loop, show prompt again
             except Exception as e:
                 import traceback
                 logger.error(f"Error executing task: {e} {traceback.format_exc()}")
