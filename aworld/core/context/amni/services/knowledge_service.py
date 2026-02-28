@@ -9,11 +9,11 @@ providing a clean interface for adding, updating, retrieving, and searching know
 import abc
 from typing import Optional, List, Dict, Any
 
-from aworld.output import Artifact, ArtifactType
-from aworld.core.context.amni.retrieval.chunker import Chunk
 from aworld.core.context.amni.retrieval.embeddings import SearchResults
 from aworld.core.context.amni.state.common import WorkingState
 from aworld.logs.util import logger
+from aworld.output import Artifact, ArtifactType
+
 
 class IKnowledgeService(abc.ABC):
     """Interface for knowledge management operations."""
@@ -79,7 +79,7 @@ class IKnowledgeService(abc.ABC):
         pass
     
     @abc.abstractmethod
-    async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Chunk]:
+    async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Any]:
         """
         Get a specific chunk from a knowledge artifact.
         
@@ -348,10 +348,16 @@ class KnowledgeService(IKnowledgeService):
         workspace = await self._context._ensure_workspace()
         return workspace.get_latest_artifact(knowledge_id)
     
-    async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Chunk]:
-        """Get a specific chunk from a knowledge artifact."""
-        workspace = await self._context._ensure_workspace()
-        return await workspace.get_artifact_chunk(knowledge_id, chunk_index=chunk_index)
+    async def get_knowledge_chunk(self, knowledge_id: str, chunk_index: int) -> Optional[Any]:
+        """Get a specific chunk from a knowledge artifact.
+
+        Note:
+            Chunk-based retrieval is no longer supported. This method is kept for
+            backward compatibility and will always return None.
+        """
+        logger.info(f"get_knowledge_chunk is deprecated, chunk retrieval disabled. "
+                    f"knowledge_id={knowledge_id}, chunk_index={chunk_index}")
+        return None
     
     async def get_knowledge_by_lines(self, knowledge_id: str, start_line: int, end_line: int, namespace: str = "default") -> Optional[str]:
         """
@@ -593,299 +599,103 @@ class KnowledgeService(IKnowledgeService):
             )
         return None
     
-    def _need_index(self, artifact: Artifact) -> bool:
-        """Check if artifact needs indexing."""
-        from aworld.core.context.amni.retrieval.artifacts import SearchArtifact
-        return isinstance(artifact, SearchArtifact)
-    
-    def _format_chunk_content(self, chunk) -> str:
-        """Format chunk content for display."""
-        return (
-            f"<knowledge_chunk>\n"
-            f"<chunk_id>{chunk.chunk_id}</chunk_id>\n"
-            f"<chunk_index>{chunk.chunk_metadata.chunk_index}</chunk_index>\n"
-            f"<origin_knowledge_id>{chunk.chunk_metadata.artifact_id}</origin_knowledge_id>\n"
-            f"<origin_knowledge_type>{chunk.chunk_metadata.artifact_type}</origin_knowledge_type>\n"
-            f"<chunk_content>{chunk.content}</chunk_content>\n"
-            f"</knowledge_chunk>\n"
-        )
-    
-    async def _get_knowledge_index_context(self, knowledge: Artifact, load_chunk_content_size: int = 5) -> str:
-        """Get knowledge index context for a single artifact."""
-        from aworld.core.context.amni.retrieval.chunker import Chunk
-        from aworld.core.context.amni.utils.text_cleaner import truncate_content
-        
-        knowledge_context = "<knowledge>\n"
-        knowledge_context += f"<id>{knowledge.artifact_id}</id>\n"
-        
-        if knowledge.summary:
-            knowledge_context += f"{knowledge.summary}\n"
-        
-        knowledge_chunk_context = ""
-        if knowledge.metadata.get("chunked"):
-            total_chunk = knowledge.metadata.get("chunks")
-            chunk_count_desc = f"Total is {total_chunk} chunks"
-            knowledge_context += f"<chunks description='{chunk_count_desc}'>\n"
-            
-            # Load head and tail chunks
-            if load_chunk_content_size:
-                def _format_chunk_content_internal(_chunk: Chunk) -> str:
-                    return (
-                        f"  <knowledge_chunk>\n"
-                        f"    <chunk_id>{_chunk.chunk_id}</chunk_id>\n"
-                        f"    <chunk_index>{_chunk.chunk_metadata.chunk_index}</chunk_index>\n"
-                        f"    <chunk_content>{truncate_content(_chunk.content, 1000)}</chunk_content>\n"
-                        f"  </knowledge_chunk>\n"
-                    )
-                
-                # Ensure workspace is initialized
-                workspace = await self._context._ensure_workspace()
-                head_chunks, tail_chunks = await workspace.get_artifact_chunks_head_and_tail(
-                    knowledge.artifact_id,
-                    load_chunk_content_size
-                )
-                # Add head chunks
-                if head_chunks:
-                    knowledge_chunk_context += f"\n<head_chunks start='{head_chunks[0].chunk_id}' end='{head_chunks[len(head_chunks)-1].chunk_id}'>\n"
-                    for chunk in head_chunks:
-                        knowledge_chunk_context += _format_chunk_content_internal(chunk)
-                    knowledge_chunk_context += f"\n</head_chunks>\n"
-                
-                # Add tail chunks
-                if tail_chunks:
-                    knowledge_chunk_context += f"<tail_chunks  start='{tail_chunks[0].chunk_id}' end='{tail_chunks[len(tail_chunks)-1].chunk_id}'>\n"
-                    for chunk in tail_chunks:
-                        knowledge_chunk_context += _format_chunk_content_internal(chunk)
-                    knowledge_chunk_context += f"\n</tail_chunks>\n"
-            knowledge_context += f"{knowledge_chunk_context}\n</chunks>\n"
-        knowledge_context += "</knowledge>\n"
-        return knowledge_context
-    
-    async def _get_artifact_statistics(self, chunk_indicis: list) -> str:
-        """Get artifact statistics information."""
-        if not chunk_indicis:
-            return ""
-        # Generate statistics info
-        artifact_count_info = ", ".join(
-            [f"{item.artifact_id}: {item.chunk_count} chunks " for item in chunk_indicis[:100]]
-        )
-        
-        summary_prompt = (
-            f"📊 Total {len(chunk_indicis)} artifacts.\n"
-            f"📈 details is: \n {artifact_count_info}"
-        )
-        
-        return summary_prompt
-    
-    async def _load_artifact_index_context(self, artifact_chunk_indicis: list, top_k: int) -> str:
-        """Load artifact index context."""
-        import asyncio
-        
-        if not artifact_chunk_indicis:
-            return ""
-        
-        # Ensure workspace is initialized
-        workspace = await self._context._ensure_workspace()
-        
-        # Group by artifact_id
-        artifact_chunks = {}
-        for chunk_item in artifact_chunk_indicis:
-            if hasattr(chunk_item, "artifact_id"):
-                artifact_id = chunk_item.artifact_id
-                if artifact_id not in artifact_chunks:
-                    artifact_chunks[artifact_id] = []
-                artifact_chunks[artifact_id].append(chunk_item)
-        
-        # Get middle range indices for each artifact using efficient range queries
-        tasks = []
-        for artifact_id in artifact_chunks.keys():
-            task = workspace.get_artifact_chunk_indices_middle_range(artifact_id, top_k)
-            tasks.append(task)
-        knowledge_index_context = ""
-        if tasks:
-            middle_range_indices = await asyncio.gather(*tasks)
-            for artifact_id, indices in zip(artifact_chunks.keys(), middle_range_indices):
-                if indices:
-                    knowledge_index_context += f"\n📄 Artifact {artifact_id} (chunks {top_k} to {2*top_k}): index :\n"
-                    for item in indices:
-                        knowledge_index_context += f"{item.model_dump()}\n"
-        
-        return knowledge_index_context
-    
-    async def _load_artifact_content_context(self, chunk_indicis: list, top_k: int) -> str:
-        """Load artifact content context."""
-        import asyncio
-        
-        if not chunk_indicis:
-            return ""
-        
-        knowledge_chunk_context = ""
-        
-        # Group by artifact_id
-        artifact_chunks = {}
-        for chunk_item in chunk_indicis:
-            if hasattr(chunk_item, "artifact_id"):
-                artifact_id = chunk_item.artifact_id
-                if artifact_id not in artifact_chunks:
-                    artifact_chunks[artifact_id] = []
-                artifact_chunks[artifact_id].append(chunk_item)
-        
-        # Ensure workspace is initialized
-        workspace = await self._context._ensure_workspace()
-        
-        # Get head and tail chunks for each artifact using efficient range queries
-        tasks = []
-        for artifact_id in artifact_chunks.keys():
-            task = workspace.get_artifact_chunks_head_and_tail(artifact_id, top_k)
-            tasks.append(task)
-        
-        if tasks:
-            head_tail_chunks = await asyncio.gather(*tasks)
-            for artifact_id, (head_chunks, tail_chunks) in zip(artifact_chunks.keys(), head_tail_chunks):
-                if head_chunks or tail_chunks:
-                    knowledge_chunk_context += f"\n📄 Artifact {artifact_id} content:\n"
-                    
-                    # Add head chunks
-                    if head_chunks:
-                        knowledge_chunk_context += f"🔝 head chunks ({len(head_chunks)} chunks):\n"
-                        for chunk in head_chunks:
-                            knowledge_chunk_context += self._format_chunk_content(chunk)
-                    
-                    # Add tail chunks
-                    if tail_chunks:
-                        knowledge_chunk_context += f"🔚 tail chunks ({len(tail_chunks)} chunks):\n"
-                        for chunk in tail_chunks:
-                            knowledge_chunk_context += self._format_chunk_content(chunk)
-        
-        return knowledge_chunk_context
-    
-    async def _load_artifact_chunks_by_workspace(self, search_filter: Dict[str, Any], namespace: str = "default", top_k: int = 20) -> str:
-        """Load artifact chunks from workspace."""
-        knowledge_chunk_context = ""
-        knowledge_chunks = await self.search_knowledge(
-            user_query=self._context.task_input,
-            namespace=namespace,
-            search_filter=search_filter,
-            top_k=top_k
-        )
-        if not knowledge_chunks:
-            return knowledge_chunk_context
-        
-        from aworld.core.context.amni.retrieval.embeddings import EmbeddingsMetadata
-        
-        for item in knowledge_chunks.docs:
-            metadata: EmbeddingsMetadata = item.metadata
-            knowledge_chunk_context += (
-                f"<knowledge_chunk>\n"
-                f"<chunk_id>{item.id}</chunk_id>\n"
-                f"<chunk_index>{metadata.chunk_index}</chunk_id>\n"
-                f"<relevant_score>{item.score:.3f}</relevant_score>\n"
-                f"<origin_knowledge_id>{metadata.artifact_id}</origin_knowledge_id>\n"
-                f"<origin_knowledge_type>{metadata.artifact_type}</origin_knowledge_type>\n"
-                f"<chunk_content>{item.content}</chunk_content>\n"
-                f"</knowledge_chunk>\n"
-            )
-        return knowledge_chunk_context
-    
     async def offload_by_workspace(self, artifacts: List[Artifact], namespace: str = "default", biz_id: str = None) -> str:
         """Offload artifacts to workspace (context offloading)."""
         import uuid
-        import asyncio
         
         
         if not artifacts:
             return ""
         
-        use_index = self._need_index(artifacts[0])
-        # 1. add knowledge to workspace
+        # 1. add knowledge to workspace (indexing disabled)
         if not biz_id:
             biz_id = str(uuid.uuid4())
         for artifact in artifacts:
+            # keep existing metadata and ensure biz_id is set
             artifact.metadata.update({
                 "biz_id": biz_id
             })
-        await self.add_knowledge_list(artifacts, namespace=namespace, build_index=use_index)
+        await self.add_knowledge_list(artifacts, namespace=namespace, build_index=False)
         
         # Add a strategy: single page should not exceed 40K
-        if len(artifacts) == 1 and len(artifacts[0].content) < 40_000:
-            logger.info(f"directly return artifacts content: {len(artifacts[0].content)}")
-            return f"{artifacts[0].content}"
+        first_content = artifacts[0].content
+        if len(artifacts) == 1 and isinstance(first_content, str) and len(first_content) < 40_000:
+            logger.info(f"directly return artifacts content: {len(first_content)}")
+            return f"{first_content}"
         
+        # 2. build lightweight knowledge index without chunk details
         logger.info(f"add artifacts to context: {[artifact.artifact_id for artifact in artifacts]}")
-        artifact_context = "This is cur action result: a list of knowledge artifacts:"
-        artifact_context += "\n<knowledge_list>\n"
-        search_tasks = []
+        artifact_context = "This is current tool result, a list of knowledge artifacts:"
+        artifact_context += "\n<knowledge_list description='This is a list of knowledge artifacts'>\n"
+        
         for artifact in artifacts:
-            search_tasks.append(self._get_knowledge_index_context(artifact, load_chunk_content_size=5))
-        search_task_results = await asyncio.gather(*search_tasks)
-        artifact_context += "\n".join(search_task_results)
+            summary = artifact.summary
+            if not summary:
+                # fallback: truncate content as summary if it's a string
+                if isinstance(artifact.content, str):
+                    content_str = artifact.content
+                else:
+                    content_str = str(artifact.content)
+
+                if len(content_str) > 500:
+                    summary = f"{content_str[:500]}... you can use get_knowledge_by_lines(artifact_id, start_line, end_line) or grep_knowledge(artifact_id, pattern, ...) to get more content"
+                else:
+                    summary = content_str
+            
+            artifact_context += (
+                f"<knowledge id='{artifact.artifact_id}' type='{artifact.artifact_type.name}' desc>\n"
+                f"{summary}\n"
+                f"</knowledge>\n"
+            )
+        
         artifact_context += "</knowledge_list>"
         return f"{artifact_context}"
     
     async def load_context_by_workspace(self, search_filter: Dict[str, Any] = None, namespace: str = "default", 
                                         top_k: int = 20, load_content: bool = True, load_index: bool = True, 
                                         search_by_index: bool = True) -> str:
-        """Load knowledge context from workspace."""
-        import time
-        
+        """Load knowledge context from workspace.
+
+        Note:
+            The new implementation no longer relies on chunk-level retrieval.
+            It builds a lightweight knowledge index based on artifacts only.
+        """
         from aworld.core.context.amni.prompt.prompts import AMNI_CONTEXT_PROMPT
-        
+
         # Ensure workspace is initialized
         workspace = await self._context._ensure_workspace()
-        
+
         if not search_filter:
             search_filter = {}
-        
-        # 1. Get knowledge_chunk_index with biz_id
+
+        # Query artifacts directly by metadata filter
+        artifacts = await workspace.query_artifacts(search_filter=search_filter)
+
         knowledge_index_context = ""
-        knowledge_chunk_context = ""
-        if search_by_index:
-            if load_index:
-                artifacts_indicis = await workspace.search_artifact_chunks_index(
-                    self._context.task_input,
-                    search_filter=search_filter,
-                    top_k=top_k * 3
+        if artifacts:
+            lines: list[str] = []
+            # only keep top_k artifacts to control context size
+            for artifact in artifacts[:top_k]:
+                summary = artifact.summary
+                if not summary:
+                    if isinstance(artifact.content, str):
+                        summary = artifact.content[:500]
+                    else:
+                        summary = str(artifact.content)[:500]
+
+                lines.append(
+                    f"<knowledge id='{artifact.artifact_id}' type='{artifact.artifact_type.name}' desc>\n"
+                    f"{summary}\n"
+                    f"</knowledge>\n"
                 )
-                if artifacts_indicis:
-                    for item in artifacts_indicis:
-                        knowledge_index_context += f"{item.model_dump()}\n"
-            if load_content:
-                knowledge_chunk_context = await self._load_artifact_chunks_by_workspace(
-                    search_filter=search_filter,
-                    namespace=namespace,
-                    top_k=top_k
-                )
-        else:
-            start_time = time.time()
-            artifacts_indicis = await workspace.async_query_artifact_index(search_filter=search_filter)
-            logger.info(f"📊 artifacts_indicis loaded successfully in {time.time() - start_time:.3f} seconds")
-            
-            if artifacts_indicis:
-                # 1. Get artifact statistics info
-                artifact_stats = await self._get_artifact_statistics(artifacts_indicis)
-                if artifact_stats:
-                    knowledge_index_context += artifact_stats
-                
-                # 2. Process load_index logic - each artifact read the index from topk to 2*topk
-                if load_index:
-                    knowledge_index_context += await self._load_artifact_index_context(
-                        artifact_chunk_indicis=artifacts_indicis,
-                        top_k=top_k
-                    )
-                
-                # 3. Process load_content logic - each artifact keep head-topk and tail-topk chunks
-                if load_content:
-                    knowledge_chunk_context += await self._load_artifact_content_context(
-                        chunk_indicis=artifacts_indicis,
-                        top_k=top_k
-                    )
-        
-        # 3. Format context
+            knowledge_index_context = "\n".join(lines)
+
+        # No chunk-level context anymore
         knowledge_context = AMNI_CONTEXT_PROMPT["KNOWLEDGE_PART"].format(
             knowledge_index=knowledge_index_context,
-            knowledge_chunks=knowledge_chunk_context
+            knowledge_chunks=""
         )
-        
+
         return knowledge_context
     
     async def build_knowledge_context(self, namespace: str = "default", search_filter: Dict[str, Any] = None, top_k: int = 20) -> str:
@@ -951,8 +761,7 @@ class KnowledgeService(IKnowledgeService):
         Returns:
             Todo content string if found, None otherwise
         """
-        from aworld.logs.util import logger
-        
+
         workspace = await self._context._ensure_workspace()
         
         todo_artifact_id = f"session_{self._context.session_id}_todo"
