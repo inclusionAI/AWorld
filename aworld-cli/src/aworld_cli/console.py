@@ -965,8 +965,20 @@ class AWorldCLI:
                     continue
 
             except KeyboardInterrupt:
-                self.console.print("\n[yellow]Interrupted. Waiting for new input...[/yellow]")
-                continue  # Stay in chat loop, show prompt again
+                buf_content = ""
+                if is_terminal and session is not None:
+                    try:
+                        buf = getattr(session, "default_buffer", None)
+                        if buf is not None:
+                            buf_content = (buf.text or "").strip()
+                    except Exception:
+                        pass
+                if buf_content:
+                    logger.info(f"\n[yellow]Interrupted. Input buffer: {buf_content!r}[/yellow]")
+                    continue  # Stay in chat loop, show prompt again
+                else:
+                    logger.info("\n[yellow]Interrupted. Exiting...[/yellow]")
+                    return False  # Exit CLI when buffer is empty
             except Exception as e:
                 import traceback
                 logger.error(f"Error executing task: {e} {traceback.format_exc()}")
