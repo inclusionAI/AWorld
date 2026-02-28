@@ -168,14 +168,31 @@ class LocalAgentExecutor(BaseAgentExecutor):
             if not agents and hasattr(self.swarm, "agents"):
                 ag = self.swarm.agents
                 agents = list(ag.values()) if isinstance(ag, dict) else list(ag) if ag else []
+        seen_sandboxes = set()
         for agent in agents:
+            # 1. Cleanup sandbox.mcpservers (MCP connections) - dedupe by id
+            sandbox = getattr(agent, "sandbox", None)
+            if sandbox is not None and id(sandbox) not in seen_sandboxes:
+                seen_sandboxes.add(id(sandbox))
+                mcpservers = getattr(sandbox, "mcpservers", None) or getattr(sandbox, "_mcpservers", None)
+                if mcpservers is not None and hasattr(mcpservers, "cleanup") and callable(mcpservers.cleanup):
+                    try:
+                        await mcpservers.cleanup()
+                    except Exception as e:
+                        logger.warning(f"MCP cleanup on exit: {e}")
+                elif hasattr(sandbox, "cleanup") and callable(sandbox.cleanup):
+                    try:
+                        await sandbox.cleanup()
+                    except Exception as e:
+                        logger.warning(f"Sandbox cleanup on exit: {e}")
+            # 2. Cleanup tool.action_executor (legacy path)
             for tool in getattr(agent, "tools", []) or []:
                 action_exec = getattr(tool, "action_executor", None)
                 if action_exec is not None and hasattr(action_exec, "cleanup") and callable(getattr(action_exec, "cleanup")):
                     try:
                         await action_exec.cleanup()
                     except Exception as e:
-                        logger.warn(f"MCP cleanup on exit: {e}")
+                        logger.warning(f"MCP cleanup on exit: {e}")
 
     async def _execute_hooks(self, hook_point: str, **kwargs) -> Any:
         """

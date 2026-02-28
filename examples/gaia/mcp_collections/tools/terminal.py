@@ -513,5 +513,7 @@ if __name__ == "__main__":
     try:
         service = TerminalActionCollection(arguments)
         service.run()
+    except (KeyboardInterrupt, asyncio.CancelledError) as e:
+        logger.error(f"Silently exit on Ctrl+C: {e}: {traceback.format_exc()}")
     except Exception as e:
         logger.error(f"An error occurred: {e}: {traceback.format_exc()}")
