@@ -31,6 +31,15 @@ class AWorldCLI:
         self.console = console
         self.user_input = UserInputHandler(console)
 
+    def get_all_skills(self):
+        """
+        Return all skills from the global skill registry (already loaded at runtime.start()).
+
+        Returns:
+            Dict mapping skill name to skill metadata (description, skill_path, etc.).
+        """
+        return get_skill_registry().get_all_skills()
+
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
         result = Text()
