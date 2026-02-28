@@ -232,9 +232,15 @@ class CliRuntime(BaseCliRuntime):
         
         # Create executor based on source type
         if source_type in ["plugin", "local"]:
-            return await self._create_local_executor(agent, source_info)
+            executor = await self._create_local_executor(agent, source_info)
+            if executor is not None:
+                setattr(executor, "cli", self.cli)
+            return executor
         elif source_type == "remote":
-            return self._create_remote_executor(agent, source_info)
+            executor = self._create_remote_executor(agent, source_info)
+            if executor is not None:
+                setattr(executor, "cli", self.cli)
+            return executor
         else:
             self.cli.console.print(f"[red]❌ Unknown source type '{source_type}' for agent '{agent.name}'[/red]")
             return None

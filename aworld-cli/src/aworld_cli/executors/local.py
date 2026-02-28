@@ -84,6 +84,48 @@ class LocalAgentExecutor(BaseAgentExecutor):
         self.context_config = context_config
         self._hooks_config = hooks or []
         self._hooks = self._load_hooks()
+        # Expose latest ApplicationContext for session commands (e.g. /<skill_name>)
+        self.context: Optional[ApplicationContext] = None
+        # Expose latest Task for CLI helpers (e.g. get_active_task)
+        self._active_task: Optional[Task] = None
+
+    async def ensure_context(self) -> Optional[ApplicationContext]:
+        """
+        Ensure executor has an initialized ApplicationContext.
+
+        This is primarily used by session commands that need context APIs
+        (e.g. context.active_skill) before the first user message is sent.
+
+        Returns:
+            ApplicationContext if available, else None.
+        """
+        if self.context and hasattr(self.context, "active_skill"):
+            return self.context
+        try:
+            # Build a minimal task to bootstrap context. _build_task will set self.context.
+            await self._build_task(task_content="", session_id=self.session_id, task_id="bootstrap_context")
+            return self.context
+        except Exception as e:
+            if self.console:
+                self.console.print(f"[yellow]⚠️ Failed to initialize context: {e}[/yellow]")
+            return None
+
+    def get_active_agent_id(self) -> Optional[str]:
+        """
+        Return current active agent id (for memory namespace / context).
+
+        Returns:
+            Agent id string from swarm.cur_agent, or None.
+        """
+        cur = getattr(self.swarm, "cur_agent", None)
+        if cur is None:
+            return None
+        agent = cur[0] if isinstance(cur, (list, tuple)) and len(cur) else cur
+        if not agent:
+            return None
+        if hasattr(agent, "id") and callable(getattr(agent, "id", None)):
+            return agent.id()
+        return getattr(agent, "name", None)
 
     def _load_hooks(self) -> Dict[str, List[ExecutorHook]]:
         """
@@ -326,7 +368,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 context_config=self.context_config
             )
             _context.get_config().debug_mode=True
-            await _context.init_swarm_state(_swarm)
             return _context
         
         context = await build_context(task_input, self.swarm, workspace)
@@ -378,6 +419,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
         if 'task_content' in hook_kwargs:
             task_input.task_content = hook_kwargs['task_content']
 
+        # Expose context for session commands and status queries
+        self.context = context
+
         # 6. Build task with context and observation
         task = Task(
             id=context.task_id,
@@ -403,6 +447,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
         # Get updated task from kwargs
         task = hook_kwargs.get('task', task)
 
+        # Expose task for session commands and CLI get_active_task()
+        self._active_task = task
         return task
 
     async def chat(self, message: Union[str, tuple[str, List[str]]]) -> str:

@@ -10,9 +10,13 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Dict, Any, Tuple
 
-from aworld_cli.core.session_commands import register_session_command
+from aworld_cli.core.session_commands import (
+    register_session_command,
+    register_session_command_dynamic_provider,
+)
 from aworld_cli.core.skill_registry import get_skill_registry
 from aworld.logs.util import logger
+from rich import box
 from rich.table import Table
 from rich.text import Text
 from rich.style import Style
@@ -25,16 +29,21 @@ def _make_skill_activate_handler(skill_name: str):
     """Build an async handler that activates one skill via context.active_skill."""
 
     async def _handler(cli: "AWorldCLI", context: Any = None) -> None:
-        agent_name = getattr(cli, "_session_agent_name", "") or "default"
+        agent_id = cli.get_active_agent_id() or "default"
         # Prefer context passed from console; fallback to executor.context
         if not context or not hasattr(context, "active_skill"):
-            executor = getattr(cli, "_session_executor_instance", None)
+            executor = getattr(cli, "_active_executor", None)
             context = getattr(executor, "context", None) if executor else None
+            if (not context or not hasattr(context, "active_skill")) and executor and hasattr(executor, "ensure_context"):
+                try:
+                    context = await executor.ensure_context()
+                except Exception as e:
+                    logger.warning(f"⚠️ ensure_context() failed: {e}")
         if not context or not hasattr(context, "active_skill"):
             cli.console.print("[yellow]⚠️ No context.active_skill available; cannot activate skill.[/yellow]")
             return
         try:
-            await context.active_skill(skill_name, namespace=agent_name)
+            await context.active_skill(skill_name, namespace=agent_id)
             cli.console.print(f"[green]✅ Activated skill: {skill_name}[/green]")
         except Exception as e:
             logger.exception(f"active_skill({skill_name}) failed")
@@ -55,18 +64,7 @@ async def register_skill_commands_into(
     Each command is "/<skill_name>"; when selected, calls context.active_skill(skill_name, namespace).
     Mutates session_commands in place.
     """
-    cli._session_executor_instance = executor_instance  # noqa: SLF001
-    cli._session_agent_name = agent_name  # noqa: SLF001
-    try:
-        from aworld_cli.runtime.cli import CliRuntime
-
-        runtime = CliRuntime()
-        runtime.cli = cli
-        await runtime._load_skills()
-    except Exception as e:
-        logger.debug(f"Load skills for command registration: {e}")
-    registry = get_skill_registry()
-    all_skills = registry.get_all_skills()
+    all_skills = cli.get_all_skills()
     for name, data in (all_skills or {}).items():
         cmd = f"/{name}"
         if cmd in session_commands:
@@ -78,31 +76,13 @@ async def register_skill_commands_into(
 
 async def handle_skills(cli: "AWorldCLI", context: Any = None) -> None:
     """
-    Handle /skills: load skills from plugins and display current skills list.
+    Handle /skills: display current skills list (skills are loaded once at runtime.start()).
 
     Shows in recommended (/) commands so users can see available skills.
     context: current executor.context, passed by console (optional, unused here).
     """
     try:
-        from aworld_cli.runtime.cli import CliRuntime
-
-        runtime = CliRuntime()
-        runtime.cli = cli
-        loaded_skills = await runtime._load_skills()
-
-        if loaded_skills:
-            total_loaded = sum(loaded_skills.values())
-            if total_loaded > 0:
-                logger.info(
-                    f"[green]✅ Loaded {total_loaded} skill(s) from "
-                    f"{len([k for k, v in loaded_skills.items() if v > 0])} plugin(s)[/green]"
-                )
-            else:
-                logger.info("[dim]No new skills loaded from plugins.[/dim]")
-
-        registry = get_skill_registry()
-        all_skills = registry.get_all_skills()
-
+        all_skills = cli.get_all_skills()
         if not all_skills:
             cli.console.print("[yellow]📭 No skills available.[/yellow]")
             return
@@ -110,7 +90,7 @@ async def handle_skills(cli: "AWorldCLI", context: Any = None) -> None:
         rows = [(name, data) for name, data in all_skills.items()]
         rows.sort(key=lambda x: x[0])
 
-        table = Table(title="📚 Skills (当前技能列表)", box="rounded")
+        table = Table(title="📚 Skills", box=box.ROUNDED)
         table.add_column("Name", style="magenta")
         table.add_column("Description", style="green")
         _addr_max = 48
@@ -165,8 +145,11 @@ def _register_commands() -> None:
     register_session_command(
         "/skills",
         handle_skills,
-        "List available skills (当前技能列表)",
+        "List available skills",
     )
+    # Auto-load: when session starts, merge_dynamic_session_commands runs and invokes
+    # this provider to add /<skill_name> commands.
+    register_session_command_dynamic_provider(register_skill_commands_into)
 
 
 _register_commands()

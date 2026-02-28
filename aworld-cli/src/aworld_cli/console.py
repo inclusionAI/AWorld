@@ -1,7 +1,7 @@
 import asyncio
 import sys
 from pathlib import Path
-from typing import List, Callable, Any, Union, Optional
+from typing import List, Callable, Any, Union, Optional, Dict
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import WordCompleter
@@ -21,7 +21,7 @@ from .core.skill_registry import get_skill_registry
 from .models import AgentInfo
 from .user_input import UserInputHandler
 from .ui import select_menu_option
-from .core.session_commands import get_all_session_commands
+from .core.session_commands import get_all_session_commands, merge_dynamic_session_commands
 
 
 # ... existing imports ...
@@ -30,6 +30,7 @@ class AWorldCLI:
     def __init__(self):
         self.console = console
         self.user_input = UserInputHandler(console)
+        self._active_executor: Any = None
 
     def get_all_skills(self):
         """
@@ -39,6 +40,72 @@ class AWorldCLI:
             Dict mapping skill name to skill metadata (description, skill_path, etc.).
         """
         return get_skill_registry().get_all_skills()
+
+    def get_active_session_id(self) -> Optional[str]:
+        """
+        Return current active session_id if an executor is attached.
+
+        Returns:
+            session_id string, or None when no executor is active.
+        """
+        executor = getattr(self, "_active_executor", None)
+        return getattr(executor, "session_id", None) if executor else None
+
+    async def get_active_context(self) -> Any:
+        """
+        Return current active context (executor.context). If missing and executor supports
+        ensure_context(), bootstrap it.
+
+        Returns:
+            Context object or None.
+        """
+        executor = getattr(self, "_active_executor", None)
+        if not executor:
+            return None
+        ctx = getattr(executor, "context", None)
+        if ctx is not None:
+            return ctx
+        if hasattr(executor, "ensure_context"):
+            try:
+                return await executor.ensure_context()
+            except Exception:
+                return None
+        return None
+
+    def get_active_task(self) -> Any:
+        """
+        Return latest task from active executor (local executors expose _active_task).
+
+        Returns:
+            Task object or None.
+        """
+        executor = getattr(self, "_active_executor", None)
+        if not executor:
+            return None
+        return getattr(executor, "_active_task", None) or getattr(executor, "task", None)
+
+    def get_active_agent_id(self) -> Optional[str]:
+        """
+        Return current active agent id (for memory namespace / context).
+
+        Prefers executor.get_active_agent_id() or executor's current agent from swarm;
+        falls back to session agent name set at chat start.
+
+        Returns:
+            Agent id string, or None when no executor/agent.
+        """
+        executor = getattr(self, "_active_executor", None)
+        if executor and hasattr(executor, "get_active_agent_id"):
+            return executor.get_active_agent_id()
+        if executor and getattr(executor, "swarm", None):
+            cur = getattr(executor.swarm, "cur_agent", None)
+            if cur is not None:
+                agent = (cur[0] if isinstance(cur, (list, tuple)) and len(cur) else cur)
+                if agent and hasattr(agent, "id") and callable(getattr(agent, "id", None)):
+                    return agent.id()
+                if agent and hasattr(agent, "name"):
+                    return getattr(agent, "name", None)
+        return getattr(self, "_session_agent_name", None) or "default"
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -655,6 +722,10 @@ class AWorldCLI:
                 # If getting skill status fails, don't show skill info
                 pass
         
+        # Attach active executor and agent for commands/helpers (may be None for some executors)
+        self._active_executor = executor_instance  # noqa: SLF001
+        self._session_agent_name = agent_name  # noqa: SLF001
+
         help_text = (
             f"Starting chat session with [bold]{agent_name}[/bold].{session_id_info}{config_info}{skill_info}\n"
             f"Type 'exit' to quit.\n"
@@ -663,18 +734,15 @@ class AWorldCLI:
             f"Type '/restore' or '/latest' to restore to the latest session.\n"
             f"Type '/memory' to edit project or global MEMORY.md.\n"
             f"Type '/skills' to list all available skills.\n"
+            f"Type '/messages' to view current agent memory messages.\n"
             f"Type '/agents' to list all available agents.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
         self.console.print(Panel(help_text, style="blue"))
-        # Session commands already loaded in runtime.start(); merge per-session skill commands
+        # Session commands already loaded in runtime.start(); dynamic providers (e.g. skills)
+        # merge per-session commands automatically when load_session_command_plugins ran.
         session_commands = get_all_session_commands()
-        # Register each loaded skill as a slash command; selecting one calls context.active_skill
-        try:
-            from aworld_cli.inner_plugins.skills.commands import register_skill_commands_into
-            await register_skill_commands_into(session_commands, self, executor_instance, agent_name)
-        except Exception:
-            pass
+        await merge_dynamic_session_commands(session_commands, self, executor_instance, agent_name)
 
         # Check if we're in a real terminal (not IDE debugger or redirected input)
         is_terminal = sys.stdin.isatty()
