@@ -196,7 +196,7 @@ class OpenAIProvider(LLMProviderBase):
                                 "name": func_name,
                                 "arguments": func_args
                             },
-                            "extra_content": tool_call.extra_content if hasattr(tool_call, 'extra_content') else tool_call.get("extra_content")
+                            "extra_content": tool_call.get("extra_content") if isinstance(tool_call, dict) else getattr(tool_call, "extra_content", None)
                         })
                     else:
                         existing = self.stream_tool_buffer[index]["function"]["arguments"]

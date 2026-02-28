@@ -736,12 +736,8 @@ class AWorldCLI:
                 
                 # Handle explicit exit commands
                 if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
-                    if is_terminal:
-                        return False
-                    else:
-                        # In non-terminal, just exit without confirmation
-                        return False
-                    continue
+                    self.console.print("[dim]Bye[/dim]")
+                    return False
 
                 # Handle new session command
                 if user_input.lower() in ("/new", "new"):
@@ -978,6 +974,7 @@ class AWorldCLI:
                     continue  # Stay in chat loop, show prompt again
                 else:
                     logger.info("\n[yellow]Interrupted. Exiting...[/yellow]")
+                    self.console.print("[dim]Bye[/dim]")
                     return False  # Exit CLI when buffer is empty
             except Exception as e:
                 import traceback
