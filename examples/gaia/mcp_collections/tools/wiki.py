@@ -1047,7 +1047,7 @@ if __name__ == "__main__":
     arguments = ActionArguments(
         name="wikipedia",
         transport="stdio",
-        workspace=os.getenv("AWORLD_WORKSPACE", "~"),
+        workspace=os.getenv("AWORLD_WORKSPACE", "./"),
     )
 
     try:

@@ -1,14 +1,17 @@
 import asyncio
 import sys
+from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import NestedCompleter
+from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.formatted_text import HTML
+from prompt_toolkit.history import FileHistory
 from rich import box
 from rich.color import Color
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.style import Style
 from rich.table import Table
 from rich.text import Text
 
@@ -25,8 +28,6 @@ class AWorldCLI:
     def __init__(self):
         self.console = console
         self.user_input = UserInputHandler(console)
-        # Track whether this is the first session startup, used to control the display of motivational messages
-        self._is_first_session = True
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -68,12 +69,183 @@ class AWorldCLI:
         # Display the Logo standalone (without a box), left aligned
         self.console.print(banner)
         
+        # Config source
+        from .core.config import get_config
+        source_type, source_path = get_config().get_config_source(".env")
+        if source_type == "local":
+            self.console.print(f"[dim]📁 Using local config: {source_path}[/dim]")
+        else:
+            self.console.print(f"[dim]🌐 Using global config: {source_path}[/dim]")
+
         # Subtitle / Version
-        subtitle = Text("\n🤖 Interact with your agents directly from the terminal", style="italic #875fff")
+        subtitle = Text("🤖 Interact with your agents directly from the terminal", style="italic #875fff")
         version = Text("\n v0.1.0", style="dim white")
         
         self.console.print(Text.assemble(subtitle, version))
         self.console.print() # Padding
+
+    async def _interactive_config_editor(self):
+        """Interactive configuration editor. First menu: choose config type (e.g. model)."""
+        from .core.config import get_config
+        from rich.panel import Panel
+
+        config = get_config()
+        current_config = config.load_config()
+        
+        self.console.print(Panel(
+            "[bold cyan]Configuration Editor[/bold cyan]\n\n"
+            f"Config file: [dim]{config.get_config_path()}[/dim]",
+            title="Config",
+            border_style="cyan"
+        ))
+        
+        # First menu: select configuration type (Back/cancel uses largest number)
+        config_types = [
+            ("1", "Model configuration", self._edit_models_config),
+            ("2", "Skills configuration", self._edit_skills_config),
+        ]
+        back_key = str(len(config_types) + 1)
+        self.console.print("\n[bold]Select configuration type:[/bold]")
+        for key, label, _ in config_types:
+            self.console.print(f"  {key}. {label}")
+        self.console.print(f"  {back_key}. Back (cancel)")
+        
+        choice = Prompt.ask("\nChoice", default="1")
+        if choice == back_key:
+            self.console.print("[dim]Cancelled.[/dim]")
+            return
+        
+        handler = None
+        for key, label, fn in config_types:
+            if choice == key:
+                handler = fn
+                break
+        if not handler:
+            self.console.print("[red]Invalid selection.[/red]")
+            return
+        
+        await handler(config, current_config)
+    
+    async def _edit_models_config(self, config, current_config: dict):
+        """Edit models section of config (providers, api_key, model, base_url)."""
+        from rich.table import Table
+        
+        if 'models' not in current_config:
+            current_config['models'] = {}
+        
+        providers = ['openai', 'anthropic', 'gemini']
+        self.console.print("\n[bold]Model provider:[/bold]")
+        for i, provider in enumerate(providers, 1):
+            self.console.print(f"  {i}. {provider}")
+        
+        provider_choice = Prompt.ask("\nSelect provider (1-3)", default="1")
+        try:
+            provider_idx = int(provider_choice) - 1
+            if provider_idx < 0 or provider_idx >= len(providers):
+                self.console.print("[red]Invalid selection[/red]")
+                return
+            selected_provider = providers[provider_idx]
+        except ValueError:
+            self.console.print("[red]Invalid selection[/red]")
+            return
+        
+        if selected_provider not in current_config['models']:
+            current_config['models'][selected_provider] = {}
+        
+        provider_config = current_config['models'][selected_provider]
+        
+        self.console.print(f"\n[bold]Configuring {selected_provider}[/bold]")
+        current_api_key = provider_config.get('api_key', '')
+        if current_api_key:
+            masked_key = current_api_key[:8] + "..." if len(current_api_key) > 8 else "***"
+            self.console.print(f"  [dim]Current API key: {masked_key}[/dim]")
+        api_key = Prompt.ask(
+            f"  {selected_provider.upper()}_API_KEY",
+            default=current_api_key,
+            password=True
+        )
+        if api_key:
+            provider_config['api_key'] = api_key
+        
+        current_model = provider_config.get('model', '')
+        if current_model:
+            self.console.print(f"  [dim]Default: {current_model}[/dim]")
+        else:
+            self.console.print("  [dim]e.g. gpt-4, claude-3-opus · press Enter to leave empty[/dim]")
+        model = Prompt.ask("  Model name", default=current_model)
+        if model:
+            provider_config['model'] = model
+        
+        current_base_url = provider_config.get('base_url', '')
+        self.console.print("  [dim]Optional · press Enter to leave empty[/dim]")
+        base_url = Prompt.ask("  Base URL", default=current_base_url)
+        if base_url:
+            provider_config['base_url'] = base_url
+        
+        config.save_config(current_config)
+        self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
+        
+        table = Table(title=f"{selected_provider.upper()} Configuration", box=box.ROUNDED)
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+        for key, value in provider_config.items():
+            if key == 'api_key':
+                masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
+                table.add_row(key, masked_value)
+            else:
+                table.add_row(key, str(value))
+        self.console.print()
+        self.console.print(table)
+
+    async def _edit_skills_config(self, config, current_config: dict):
+        """Edit skills section of config (global SKILLS_PATH and per-agent XXX_SKILLS_PATH)."""
+        default_skills_path = str(Path.home() / ".aworld" / "skills")
+        if 'skills' not in current_config:
+            current_config['skills'] = {}
+
+        skills_cfg = current_config['skills']
+        self.console.print("\n[bold]Skills paths:[/bold]")
+        self.console.print("  [dim]Paths are relative to home or absolute. Use semicolon (;) to separate multiple paths. Enter to keep, '-' to clear.[/dim]\n")
+
+        # Global SKILLS_PATH
+        current = skills_cfg.get('skills_path', '')
+        val = Prompt.ask("  SKILLS_PATH (global)", default=current or default_skills_path)
+        v = val.strip() if val else ''
+        if v and v != '-':
+            skills_cfg['skills_path'] = v
+        elif v == '-' or (not v and current):
+            skills_cfg.pop('skills_path', None)
+
+        # Per-agent paths (same default as SKILLS_PATH)
+        for label, key in [
+            ("EVALUATOR_SKILLS_PATH (evaluator)", "evaluator_skills_path"),
+            ("EXPLORER_SKILLS_PATH (explorer)", "explorer_skills_path"),
+            ("AWORLD_SKILLS_PATH (aworld)", "aworld_skills_path"),
+            ("DEVELOPER_SKILLS_PATH (developer)", "developer_skills_path"),
+        ]:
+            current = skills_cfg.get(key, '')
+            val = Prompt.ask(f"  {label}", default=current or default_skills_path)
+            v = val.strip() if val else ''
+            if v and v != '-':
+                skills_cfg[key] = v
+            elif v == '-' or (not v and current):
+                skills_cfg.pop(key, None)
+
+        if not skills_cfg:
+            current_config.pop('skills', None)
+        else:
+            current_config['skills'] = skills_cfg
+
+        config.save_config(current_config)
+        self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
+        table = Table(title="Skills Configuration", box=box.ROUNDED)
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+        for k, v in (current_config.get('skills') or {}).items():
+            table.add_row(k, str(v)[:60] + ("..." if len(str(v)) > 60 else ""))
+        if current_config.get('skills'):
+            self.console.print()
+            self.console.print(table)
 
     def display_agents(self, agents: List[AgentInfo], source_type: str = "LOCAL", source_location: str = ""):
         """
@@ -87,11 +259,13 @@ class AWorldCLI:
         if not agents:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
             return
-            
+
+        from pathlib import Path
         table = Table(title="Available Agents", box=box.ROUNDED)
         table.add_column("Name", style="magenta")
         table.add_column("Description", style="green")
-        table.add_column("Address", style="blue")
+        _addr_max = 48
+        table.add_column("Address", style="dim", no_wrap=False, max_width=_addr_max)
 
         for agent in agents:
             desc = getattr(agent, "desc", "No description") or "No description"
@@ -106,8 +280,27 @@ class AWorldCLI:
             else:
                 # Use fallback
                 agent_source_location = source_location
-            
-            table.add_row(agent.name, desc, agent_source_location)
+
+            if not agent_source_location or agent_source_location.strip() == "":
+                addr_cell = Text("—", style="dim")
+            else:
+                address = agent_source_location.strip()
+                p = Path(address)
+                link_target = p.parent if p.suffix else p
+                try:
+                    link_url = link_target.resolve().as_uri()
+                except (OSError, RuntimeError):
+                    link_url = ""
+                if link_url and len(address) > _addr_max:
+                    addr_display = address[: _addr_max - 3] + "..."
+                    addr_cell = Text(addr_display, style=Style(dim=True, link=link_url))
+                elif link_url:
+                    addr_cell = Text(address, style=Style(dim=True, link=link_url))
+                else:
+                    addr_display = address[: _addr_max - 3] + "..." if len(address) > _addr_max else address
+                    addr_cell = Text(addr_display, style="dim")
+
+            table.add_row(agent.name, desc, addr_cell)
 
         self.console.print(table)
 
@@ -126,68 +319,10 @@ class AWorldCLI:
         if not agents:
             self.console.print(f"[red]No agents available ({source_type}: {source_location}).[/red]")
             return None
-        
-        table = Table(title="Available Agents", box=box.ROUNDED)
-        table.add_column("No.", style="cyan", justify="right")
-        table.add_column("Name", style="magenta")
-        table.add_column("Description", style="green")
-        table.add_column("SourceType", style="cyan")
-        table.add_column("Address", style="blue", overflow="wrap")
 
-        for idx, agent in enumerate(agents, 1):
-            desc = getattr(agent, "desc", "No description") or "No description"
-            # Always use agent's own source_type and source_location if they exist and are valid
-            # Fallback to provided parameters only if agent doesn't have these attributes
-            agent_source_type = getattr(agent, "source_type", None)
-            agent_source_location = getattr(agent, "source_location", None)
-            
-            # Use agent's source_type if it exists and is valid, otherwise use fallback
-            if agent_source_type and agent_source_type != "UNKNOWN" and agent_source_type.strip() != "":
-                # Use agent's own source_type
-                pass
-            else:
-                # Use fallback
-                agent_source_type = source_type
-            
-            # Use agent's source_location if it exists and is valid, otherwise use fallback
-            if agent_source_location and agent_source_location.strip() != "":
-                # Use agent's own source_location
-                pass
-            else:
-                # Use fallback
-                agent_source_location = source_location
-            
-            table.add_row(str(idx), agent.name, desc, agent_source_type, agent_source_location)
-
-        self.console.print(table)
-        self.console.print("[dim]Type 'exit' to cancel selection.[/dim]")
-
-        # Check if we're in a real terminal
-        is_terminal = sys.stdin.isatty()
-        
-        while True:
-            if is_terminal:
-                choice = Prompt.ask("Select an agent number", default="1")
-            else:
-                # Fallback for non-terminal environments
-                self.console.print("Select an agent number [default: 1]: ", end="")
-                choice = input().strip() or "1"
-
-            # Check for exit command
-            if choice.lower() in ("exit", "quit", "q"):
-                self.console.print("[yellow]Selection cancelled.[/yellow]")
-                return None
-
-            try:
-                idx = int(choice) - 1
-                if 0 <= idx < len(agents):
-                    selected_agent = agents[idx]
-                    self.console.print(f"[green]Selected agent: [bold]{selected_agent.name}[/bold][/green]")
-                    return selected_agent
-                else:
-                    self.console.print("[red]Invalid selection. Please try again.[/red]")
-            except ValueError:
-                self.console.print("[red]Please enter a valid number or 'exit' to cancel.[/red]")
+        # Default: use first agent (Aworld) without prompting or showing the agents table
+        selected_agent = agents[0]
+        return selected_agent
     
     def select_team(self, teams: List[AgentInfo], source_type: str = "LOCAL", source_location: str = "") -> Optional[AgentInfo]:
         """
@@ -517,7 +652,6 @@ class AWorldCLI:
             f"Type '/restore' or '/latest' to restore to the latest session.\n"
             f"Type '/skills' to list all available skills.\n"
             f"Type '/agents' to list all available agents.\n"
-            f"Type '/test' to test user input functionality.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
         self.console.print(Panel(help_text, style="blue"))
@@ -530,21 +664,42 @@ class AWorldCLI:
         session = None
         
         if is_terminal:
-            completer = NestedCompleter.from_nested_dict({
-                '/switch': {name: None for name in agent_names},
-                '/new': None,
-                '/restore': None,
-                '/latest': None,
-                '/skills': None,
-                '/agents': None,
-                '/test': None,
-                '/exit': None,
-                '/quit': None,
-                'exit': None,
-                'quit': None
-
-            })
-            session = PromptSession(completer=completer)
+            # 用整行前缀匹配：/ski → /skills、/age → /agents；meta_dict 在补全菜单中显示描述（命令左、描述右）
+            slash_cmds = [
+                "/agents", "/skills", "/new", "/restore", "/latest",
+                "/exit", "/quit", "/switch",
+            ]
+            switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
+            all_words = slash_cmds + switch_with_agents + ["exit", "quit"]
+            meta_dict = {
+                "/agents": "List available agents",
+                "/skills": "List available skills",
+                "/new": "Create a new session",
+                "/restore": "Restore to the latest session",
+                "/latest": "Restore to the latest session",
+                "/exit": "Exit chat",
+                "/quit": "Exit chat",
+                "/switch": "Switch to another agent",
+                "exit": "Exit chat",
+                "quit": "Exit chat",
+            }
+            for n in agent_names:
+                meta_dict[f"/switch {n}"] = f"Switch to agent: {n}"
+            completer = WordCompleter(
+                all_words,
+                ignore_case=True,
+                sentence=True,
+                meta_dict=meta_dict,
+            )
+            # 历史记录文件：上/下方向键可浏览并加载已执行过的指令
+            from pathlib import Path
+            history_path = Path.home() / ".aworld" / "cli_history"
+            history_path.parent.mkdir(parents=True, exist_ok=True)
+            session = PromptSession(
+                completer=completer,
+                complete_while_typing=True,  # 输入时即显示补全列表（带描述）
+                history=FileHistory(str(history_path)),
+            )
 
         while True:
             try:
@@ -552,21 +707,10 @@ class AWorldCLI:
                 if is_terminal and session:
                     # Use prompt_toolkit for input with completion
                     # We use HTML for basic coloring of the prompt
-                    # Show inspirational message only on first session
-                    if self._is_first_session:
-                        prompt_text = "<b>✨ Create an agent to do anything!</b>\n<b><cyan>You</cyan></b>: "
-                        # Mark as no longer first session after showing the message
-                        self._is_first_session = False
-                    else:
-                        prompt_text = "<b><cyan>You</cyan></b>: "
-
+                    prompt_text = "<b><cyan>You</cyan></b>: "
                     user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text))
                 else:
                     # Fallback to plain input() for non-terminal environments
-                    if self._is_first_session:
-                        self.console.print("[cyan]✨ Create an agent to do anything![/cyan]")
-                        # Mark as no longer first session after showing the message
-                        self._is_first_session = False
                     self.console.print("[cyan]You[/cyan]: ", end="")
                     user_input = await asyncio.to_thread(input)
                 
@@ -647,229 +791,41 @@ class AWorldCLI:
                             logger.info("[yellow]No skills available.[/yellow]")
                             continue
                         
-                        # Separate skills into plugin and user skills
-                        plugin_skills = {}
-                        user_skills = {}
+                        # Build rows
+                        rows = [(skill_name, skill_data) for skill_name, skill_data in all_skills.items()]
+                        rows.sort(key=lambda x: x[0])  # sort by name
                         
-                        for skill_name, skill_data in all_skills.items():
-                            skill_path = skill_data.get("skill_path", "")
-                            # Determine if skill is from plugin or user
-                            # Plugin skills: from inner_plugins or .aworld directories
-                            if skill_path and ("inner_plugins" in skill_path or ".aworld" in skill_path):
-                                plugin_skills[skill_name] = skill_data
+                        # Single table with Name, Description, Address
+                        table = Table(title="Skills", box=box.ROUNDED)
+                        table.add_column("Name", style="magenta")
+                        table.add_column("Description", style="green")
+                        # Address column: truncate when long; full path shown on hover via link (OSC 8)
+                        _addr_max = 48
+                        table.add_column("Address", style="dim", no_wrap=False, max_width=_addr_max)
+                        
+                        for skill_name, skill_data in rows:
+                            desc = skill_data.get("description") or skill_data.get("desc") or "No description"
+                            # if len(desc) > 60:
+                            #     desc = desc[:57] + "..."
+                            address = skill_data.get("skill_path", "") or "—"
+                            if address == "—":
+                                addr_cell = Text("—", style="dim")
                             else:
-                                user_skills[skill_name] = skill_data
+                                # Link to parent folder so click opens file manager, not default app for file
+                                p = Path(address)
+                                link_target = p.parent if p.suffix else p
+                                link_url = link_target.resolve().as_uri()
+                                if len(address) > _addr_max:
+                                    addr_display = address[: _addr_max - 3] + "..."
+                                    addr_cell = Text(addr_display, style=Style(dim=True, link=link_url))
+                                else:
+                                    addr_cell = Text(address, style=Style(dim=True, link=link_url))
+                            table.add_row(skill_name, desc, addr_cell)
                         
-                        # Helper function to create and display a skills table
-                        def display_skills_table(skills_dict, title):
-                            if not skills_dict:
-                                return
-
-                            table = Table(title=title, box=box.ROUNDED)
-                            table.add_column("Name", style="magenta")
-                            table.add_column("Description", style="green")
-                            
-                            for skill_name, skill_data in sorted(skills_dict.items()):
-                                desc = skill_data.get("description") or skill_data.get("desc") or "No description"
-                                # Truncate description if too long
-                                if len(desc) > 60:
-                                    desc = desc[:57] + "..."
-                                
-                                table.add_row(skill_name, desc)
-
-                            self.console.print(table)
-                            self.console.print(f"[dim]Total: {len(skills_dict)} skill(s)[/dim]")
-                        
-                        # Display User skills first
-                        if user_skills:
-                            display_skills_table(user_skills, "User Skills")
-                            self.console.print()  # Add spacing between tables
-                        
-                        # Display Plugin skills
-                        if plugin_skills:
-                            display_skills_table(plugin_skills, "Plugin Skills")
-                        
-                        # Display overall total
-                        if plugin_skills and user_skills:
-                            self.console.print(f"[dim]Overall Total: {len(all_skills)} skill(s)[/dim]")
+                        self.console.print(table)
+                        self.console.print(f"[dim]Total: {len(all_skills)} skill(s)[/dim]")
                     except Exception as e:
                         self.console.print(f"[red]Error loading skills: {e}[/red]")
-                    continue
-
-                # Handle test command
-                if user_input.lower() in ("/test", "test"):
-                    try:
-                        self.console.print("[bold cyan]🧪 User Input Test Function[/bold cyan]")
-                        self.console.print()
-
-                        # Test options
-                        test_options = [
-                            "1. Test text input",
-                            "2. Test multi-select input",
-                            "3. Test confirmation input",
-                            "4. Test composite menu",
-                            "5. Test single-select list",
-                            "6. Exit test"
-                        ]
-
-                        self.console.print("[bold]Please select a function to test:[/bold]")
-                        for option in test_options:
-                            self.console.print(f"  {option}")
-                        self.console.print()
-
-                        test_choice = await asyncio.to_thread(
-                            Prompt.ask,
-                            "[cyan]Please enter option number (1-6)[/cyan]",
-                            default="1",
-                            console=self.console
-                        )
-
-                        test_choice = test_choice.strip()
-
-                        if test_choice == "1":
-                            # Test text input
-                            self.console.print()
-                            self.console.print("[bold green]📝 Test Text Input[/bold green]")
-                            self.console.print("[dim]Please enter some text for testing...[/dim]")
-                            text_input = await asyncio.to_thread(
-                                self.user_input.text_input,
-                                "[cyan]Please enter text[/cyan]"
-                            )
-                            self.console.print(f"[green]✅ Your input text is: {text_input}[/green]")
-
-                        elif test_choice == "2":
-                            # Test multi-select input
-                            self.console.print()
-                            self.console.print("[bold green]☑️  Test Multi-select Input[/bold green]")
-                            test_items = ["Apple", "Banana", "Orange", "Grape", "Strawberry"]
-                            selected_indices = await asyncio.to_thread(
-                                self.user_input.select_multiple,
-                                options=test_items,
-                                title="Please select your favorite fruits (multiple selection)",
-                                prompt="Enter option numbers (comma-separated, e.g., 1,3,5)"
-                            )
-                            if selected_indices:
-                                selected_items = [test_items[i] for i in selected_indices]
-                                self.console.print(f"[green]✅ You selected: {', '.join(selected_items)}[/green]")
-                            else:
-                                self.console.print("[yellow]⚠️ No options selected[/yellow]")
-
-                        elif test_choice == "3":
-                            # Test confirmation input
-                            self.console.print()
-                            self.console.print("[bold green]❓ Test Confirmation Input[/bold green]")
-                            from rich.prompt import Confirm
-                            confirmed = await asyncio.to_thread(
-                                Confirm.ask,
-                                "[cyan]Are you sure you want to continue?[/cyan]",
-                                default=True,
-                                console=self.console
-                            )
-                            if confirmed:
-                                self.console.print("[green]✅ You chose to confirm[/green]")
-                            else:
-                                self.console.print("[yellow]⚠️ You chose to cancel[/yellow]")
-
-                        elif test_choice == "4":
-                            # Test composite menu
-                            self.console.print()
-                            self.console.print("[bold green]📋 Test Composite Menu[/bold green]")
-
-                            # Create test tabs
-                            test_tabs = [
-                                {
-                                    'type': 'multi_select',
-                                    'name': 'product_type',
-                                    'title': 'What is your product type?',
-                                    'options': [
-                                        {'label': 'Software/Application Product',
-                                         'description': 'Mobile apps, web apps, desktop software and other digital products'},
-                                        {'label': 'Hardware Device', 'description': 'Electronic devices, smart hardware, IoT products, etc.'},
-                                        {'label': 'Service Platform', 'description': 'SaaS services, online platforms, cloud services, etc.'},
-                                        {'label': 'Physical Product', 'description': 'Consumer goods, industrial products, daily necessities, etc.'},
-                                    ]
-                                },
-                                {
-                                    'type': 'text_input',
-                                    'name': 'product_name',
-                                    'title': 'Product Name',
-                                    'prompt': 'Please enter product name',
-                                    'default': '',
-                                    'placeholder': 'Search...'
-                                },
-                                {
-                                    'type': 'submit',
-                                    'name': 'confirm',
-                                    'title': 'Review your answers',
-                                    'message': 'Ready to submit your answers?',
-                                    'default': True
-                                }
-                            ]
-
-                            try:
-                                results = await asyncio.to_thread(
-                                    self.user_input.composite_menu,
-                                    tabs=test_tabs,
-                                    title="Create Product Introduction PPT"
-                                )
-
-                                if results:
-                                    self.console.print()
-                                    self.console.print("[green]✅ Composite menu test completed[/green]")
-                                    self.console.print("[bold]Returned results:[/bold]")
-                                    for tab_name, value in results.items():
-                                        self.console.print(f"  [cyan]{tab_name}[/cyan]: {value}")
-                                else:
-                                    self.console.print("[yellow]⚠️ User cancelled the operation[/yellow]")
-                            except Exception as e:
-                                self.console.print(f"[red]Error during test: {e}[/red]")
-                                import traceback
-                                self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
-
-                        elif test_choice == "5":
-                            # Test single-select list
-                            self.console.print()
-                            self.console.print("[bold green]📋 Test Single-select List[/bold green]")
-
-                            # Create test navigation bar items
-                            nav_items = [
-                                {'label': 'PPT Theme', 'type': 'checkbox', 'checked': False, 'highlight': False},
-                                {'label': 'Template Style', 'type': 'checkbox', 'checked': False, 'highlight': False},
-                                {'label': 'Submit', 'type': 'button', 'highlight': True}
-                            ]
-
-                            # Create test options
-                            test_options = [
-                                {'label': 'Submit answers', 'description': ''},
-                                {'label': 'Cancel', 'description': ''}
-                            ]
-
-                            selected_index = await asyncio.to_thread(
-                                self.user_input.single_select,
-                                options=test_options,
-                                title="Review your answers",
-                                warning="You have not answered all questions",
-                                question="Ready to submit your answers?",
-                                nav_items=nav_items
-                            )
-
-                            if selected_index is not None:
-                                selected_option = test_options[selected_index]['label']
-                                self.console.print(f"[green]✅ You selected: {selected_option}[/green]")
-                            else:
-                                self.console.print("[yellow]⚠️ User cancelled the selection[/yellow]")
-
-                        elif test_choice == "6":
-                            self.console.print("[dim]Exit test[/dim]")
-                        else:
-                            self.console.print(f"[red]Invalid option: {test_choice}[/red]")
-
-                        self.console.print()
-                    except KeyboardInterrupt:
-                        self.console.print("\n[yellow]Test cancelled[/yellow]")
-                    except Exception as e:
-                        # logger.error(f"Error during test: {e} {traceback.format_exc()}")
-                        self.console.print(f"[red]Error during test: {e}[/red]\n{traceback.format_exc()}")
                     continue
 
                 # Handle agents command
@@ -989,14 +945,18 @@ class AWorldCLI:
                     response = await executor(user_input)
                     # Response is returned for potential future use, but content is already printed by executor
                 except Exception as e:
-                    self.console.print(f"[bold red]Error executing task:[/bold red] {e}")
+                    import traceback
+                    logger.error(f"Error executing task: {e} {traceback.format_exc()}")
+                    self.console.print("[bold red]Error executing task:[/bold red]", end=" ")
                     continue
 
             except KeyboardInterrupt:
                 self.console.print("\n[yellow]Session interrupted.[/yellow]")
                 break
             except Exception as e:
-                self.console.print(f"[red]An unexpected error occurred:[/red] {e}\n{traceback.format_exc()}")
+                import traceback
+                logger.error(f"Error executing task: {e} {traceback.format_exc()}")
+                self.console.print("[red]An unexpected error occurred:[/red]", end=" ")
 
         return False
 

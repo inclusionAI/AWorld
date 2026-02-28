@@ -8,7 +8,7 @@ from functools import partial
 from typing import List, Callable, Any, AsyncGenerator
 
 import aworld.trace as trace
-from aworld.core.agent.base import BaseAgent, is_agent_by_name
+from aworld.core.agent.base import BaseAgent, is_agent_by_name, AgentFactory
 from aworld.core.common import TaskItem, ActionModel
 from aworld.core.context.amni import AmniContext, ApplicationContext
 from aworld.core.context.base import Context
@@ -52,6 +52,7 @@ class TaskEventRunner(TaskRunner):
         async with trace.task_span(self.init_messages[0].session_id,
                                    task=self.task,
                                    attributes={semconv.TRACE_ID: self.context.trace_id}):
+            resp = None
             try:
                 for msg in self.init_messages:
                     await self.event_mng.emit_message(msg)
@@ -66,6 +67,11 @@ class TaskEventRunner(TaskRunner):
                 if not self.task.is_sub_task:
                     logger.info(f'main task {self.task.id} will mark outputs finished')
                     await self.task.outputs.mark_completed(resp)
+                    for _, agent in AgentFactory._agent_instance.items():
+                        if agent and agent.sandbox:
+                            await agent.sandbox.cleanup()
+
+
 
     async def pre_run(self):
         logger.debug(f"task {self.task.id} pre run start...")

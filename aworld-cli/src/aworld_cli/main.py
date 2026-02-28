@@ -14,6 +14,7 @@ from typing import Optional
 os.environ['AWORLD_DISABLE_CONSOLE_LOG'] = 'true'
 
 # Import aworld modules (they will respect the environment variable)
+from aworld.logs.util import logger
 from .runtime.cli import CliRuntime
 from .console import AWorldCLI
 from .models import AgentInfo
@@ -59,6 +60,33 @@ async def load_all_agents(
     # Create a temporary runtime instance just for loading agents
     runtime = CliRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
     return await runtime._load_agents()
+
+
+def _resolve_agent_dirs(cli_agent_dirs: Optional[list[str]]) -> list[str]:
+    """
+    Resolve agent directories: CLI args > env (LOCAL_AGENTS_DIR/AGENTS_DIR) > default.
+
+    When neither --agent-dir nor env is set, uses AWORLD_DEFAULT_AGENT_DIR (default: ./agents).
+
+    Args:
+        cli_agent_dirs: List from --agent-dir (None or [] when not specified).
+
+    Returns:
+        Non-empty list of directory paths.
+
+    Example:
+        >>> _resolve_agent_dirs(None)  # no CLI, no env -> ["./agents"]
+        ["./agents"]
+        >>> _resolve_agent_dirs(["./my_agents"])  # CLI wins
+        ["./my_agents"]
+    """
+    if cli_agent_dirs:
+        return [d.strip() for d in cli_agent_dirs if d and d.strip()]
+    env_val = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or ""
+    if env_val:
+        return [d.strip() for d in env_val.split(";") if d.strip()]
+    default = os.getenv("AWORLD_DEFAULT_AGENT_DIR", "./agents")
+    return [default.strip()] if default.strip() else ["./agents"]
 
 
 def main():
@@ -472,7 +500,7 @@ Batch Jobs:
         '--agent-dir',
         type=str,
         action='append',
-        help='Directory containing agents (can be specified multiple times). Overrides LOCAL_AGENTS_DIR environment variable.'
+        help='Directory containing agents (can be specified multiple times). Default: LOCAL_AGENTS_DIR or AWORLD_DEFAULT_AGENT_DIR (./agents) when not set.'
     )
     
     parser.add_argument(
@@ -545,8 +573,22 @@ Batch Jobs:
         help='MCP server port for SSE/streamable-http transport (default: 8001)'
     )
     
+    parser.add_argument(
+        '--config',
+        action='store_true',
+        help='Launch interactive global configuration editor (model provider, API key, etc.) and exit.'
+    )
+    
     # Parse arguments normally, but keep unknown args for inner plugin commands
     args, remaining_argv = parser.parse_known_args()
+    
+    # Handle --config: run interactive config editor and exit
+    if getattr(args, 'config', False):
+        async def _run_config():
+            cli = AWorldCLI()
+            await cli._interactive_config_editor()
+        asyncio.run(_run_config())
+        return
     
     # Handle --examples flag: show examples and exit
     if args.examples:
@@ -577,7 +619,7 @@ Batch Jobs:
         parser_zh.add_argument('--non-interactive', action='store_true', help='以非交互模式运行（无用户输入）')
         parser_zh.add_argument('--env-file', type=str, default='.env', help='.env 文件路径（默认：.env）')
         parser_zh.add_argument('--remote-backend', type=str, action='append', help='远程后端 URL（可指定多次）。覆盖 REMOTE_AGENT_BACKEND 环境变量。')
-        parser_zh.add_argument('--agent-dir', type=str, action='append', help='包含 agents 的目录（可指定多次）。覆盖 LOCAL_AGENTS_DIR 环境变量。')
+        parser_zh.add_argument('--agent-dir', type=str, action='append', help='包含 agents 的目录（可指定多次）。未指定时默认使用 LOCAL_AGENTS_DIR 或 AWORLD_DEFAULT_AGENT_DIR（默认 ./agents）。')
         parser_zh.add_argument('--agent-file', type=str, action='append', help='单个 agent 文件路径（Python .py 或 Markdown .md，可指定多次）。')
         parser_zh.add_argument('--skill-path', type=str, action='append', help='技能源路径（本地目录或 GitHub URL，可指定多次）。覆盖 SKILLS_PATH 环境变量。')
         parser_zh.add_argument('--http', action='store_true', help='启动 HTTP 服务器（用于 serve 命令）')
@@ -588,12 +630,21 @@ Batch Jobs:
         parser_zh.add_argument('--mcp-transport', type=str, choices=['stdio', 'sse', 'streamable-http'], default='stdio', help='MCP 传输类型：stdio、sse 或 streamable-http（默认：stdio）')
         parser_zh.add_argument('--mcp-host', type=str, default='0.0.0.0', help='MCP 服务器主机（用于 SSE/streamable-http 传输，默认：0.0.0.0）')
         parser_zh.add_argument('--mcp-port', type=int, default=8001, help='MCP 服务器端口（用于 SSE/streamable-http 传输，默认：8001）')
+        parser_zh.add_argument('--config', action='store_true', help='启动交互式全局配置编辑器（模型提供商、API 密钥等）并退出。')
         parser_zh.print_help()
         return
     
-    # Load environment variables
-    from dotenv import load_dotenv
-    load_dotenv(args.env_file)
+    # Load configuration (priority: local .env > global config)
+    from .core.config import load_config_with_env, has_model_config
+    config_dict, source_type, source_path = load_config_with_env(args.env_file)
+    
+    # Display configuration source
+    from ._globals import console
+    # Require model config for commands that use the agent (skip for 'list' and plugin)
+    if args.command != "list" and not has_model_config(config_dict):
+        console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
+        console.print("[dim]Run: aworld-cli --config[/dim]")
+        sys.exit(1)
     
     # Initialize skill registry early with command-line arguments (overrides env vars)
     # This ensures skill registry is ready before agents are loaded
@@ -611,7 +662,10 @@ Batch Jobs:
     all_skills = registry.get_all_skills()
     if all_skills:
         skill_names = list(all_skills.keys())
-        console.print(f"[dim]📚 Loaded {len(skill_names)} global skill(s): {', '.join(skill_names)}[/dim]")
+        logger.info("Loaded %d global skill(s): %s", len(skill_names), ", ".join(skill_names))
+
+    # Resolve default agent_dir when --agent-dir not specified (env LOCAL_AGENTS_DIR / AWORLD_DEFAULT_AGENT_DIR)
+    args.agent_dir = _resolve_agent_dirs(args.agent_dir)
 
     # Handle 'list' command separately before setting up the full app loop if possible
     if args.command == "list":

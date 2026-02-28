@@ -11,7 +11,12 @@ from functools import wraps
 FILESYSTEM_TOOL_MAPPING = {
     "read_file": "read_file",
     "write_file": "write_file",
-    "edit_file": "edit_file",
+    "edit_file": "replace_in_file",
+    "replace_in_file": "replace_in_file",
+    "edit_file_range": "edit_file_range",
+    "upload_file": "upload_file",
+    "download_file": "download_file",
+    "parse_file": "parse_file",
     "create_directory": "create_directory",
     "list_directory": "list_directory",
     "move_file": "move_file",

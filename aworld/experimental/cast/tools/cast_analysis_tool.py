@@ -44,7 +44,12 @@ class CAstAnalysisAction(ToolAction):
                 desc="Whether to show detailed analysis information"
             )
         },
-        desc="Analyze the entire repository and generate RepositoryMap"
+        desc="""Analyze the repository and build the three-tier index:
+        - L1 logic (project structure, call/dependency graph, heatmap)
+        - L2 skeleton (signatures and docstrings only, no body)
+        - L3 implementation (full source on-demand).
+        Returns logic_layer always; skeleton_layer and implementation_layer when within length limits.
+        """
     )
 
     SEARCH_AST = ToolActionInfo(
@@ -60,7 +65,7 @@ class CAstAnalysisAction(ToolAction):
                 name="user_query",
                 type="string",
                 required=True,
-                desc="User query for implementation code recall (supports regular expressions)"
+                desc="MUST be a regular expression for symbol/line recall (e.g. .*MyClass.*|.*my_function.*). Natural language is not supported. Incorrect: 'Find the MyClass class and the my_function function', '.*mcp_config\\.py.', '.*'"
             ),
             "max_tokens": ParamInfo(
                 name="max_tokens",
@@ -75,7 +80,7 @@ class CAstAnalysisAction(ToolAction):
                 desc="Whether to show detailed recall information"
             )
         },
-        desc="Recall implementation layer code based on user query. Logic and skeleton layers are already returned by analyze_repository interface."
+        desc="Retrieve skeleton_layer and implementation_layer to gain insights into implementation details of the repository. Fetch the precise source code for specific symbols (classes, functions) or line ranges."
     )
 
 
@@ -272,14 +277,35 @@ class CAstAnalysisTool(AsyncTool):
                     # Save complete repo_map for later use (contains implementation layer)
                     self._repo_map = repo_map
 
-                    # Create a copy without implementation layer for return (ANALYZE_REPOSITORY doesn't return implementation layer)
+                    # Return logic_layer always; include skeleton_layer/implementation_layer only if length is short enough
                     from dataclasses import replace
-                    from aworld.experimental.cast.models import ImplementationLayer
-                    repo_map_without_impl = replace(
+                    from aworld.experimental.cast.models import (
+                        ImplementationLayer,
+                        SkeletonLayer,
+                    )
+                    # Length thresholds (chars): only include layer in return when under threshold
+                    SKELETON_MAX_CHARS = 80_000
+                    IMPL_MAX_CHARS = 100_000
+                    skeleton_len = sum(
+                        len(s) for s in repo_map.skeleton_layer.file_skeletons.values()
+                    )
+                    impl_len = sum(
+                        len(s.content or "")
+                        for node in repo_map.implementation_layer.code_nodes.values()
+                        for s in node.symbols
+                    )
+                    repo_map_for_return = replace(
                         repo_map,
-                        implementation_layer=ImplementationLayer(
-                            code_nodes={}
-                        )
+                        skeleton_layer=repo_map.skeleton_layer
+                        if skeleton_len <= SKELETON_MAX_CHARS
+                        else SkeletonLayer(
+                            file_skeletons={},
+                            symbol_signatures={},
+                            line_mappings={},
+                        ),
+                        implementation_layer=repo_map.implementation_layer
+                        if impl_len <= IMPL_MAX_CHARS
+                        else ImplementationLayer(code_nodes={}),
                     )
 
                     # Analyze statistics
@@ -288,7 +314,7 @@ class CAstAnalysisTool(AsyncTool):
                     result = {
                         "root_path": str(root_path),
                         "ignore_patterns": ignore_patterns,
-                        "repository_map": repo_map_without_impl.to_dict(),  # Use to_dict() to convert to JSON serializable object
+                        "repository_map": repo_map_for_return.to_dict(),  # Use to_dict() to convert to JSON serializable object
                         "analysis_stats": analysis_stats,
                         "analysis_success": True,
                         "analysis_time": datetime.now().isoformat()

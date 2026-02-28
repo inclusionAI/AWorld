@@ -17,8 +17,7 @@ class ActionArguments(BaseModel):
     transport: Literal["stdio", "sse"] = Field(default="stdio", description="The transport of the action")
     workspace: str | None = Field(
         default=None,
-        description="The workspace of the action."
-        " If not specified or invalid, the workspace will be read from the environment variable AWORLD_WORKSPACE.",
+        description="The workspace of the action. If not specified or invalid, defaults to current working directory.",
     )
     unittest: bool = Field(default=False, description="Whether to run in unittest mode")
 
@@ -57,7 +56,8 @@ class ActionCollection:
             self.server.run(transport=self.transport)
 
     def _color_log(self, value: str, color: Color = None, level: str = "info"):
-        return color_log(self.logger, value, color, level=level)
+        # return color_log(self.logger, value, color, level=level)
+        pass
 
     def _obtain_valid_workspace(self, workspace: str | None = None) -> Path:
         r"""
@@ -65,13 +65,13 @@ class ActionCollection:
         Priority:
           1. user defined workspace
           2. environment variable AWORLD_WORKSPACE
-          3. home directory
+          3. home directorya
         """
-        path = Path(workspace) if workspace else os.getenv("AWORLD_WORKSPACE", "~")
+        path = Path(workspace) if workspace else os.getenv("AWORLD_WORKSPACE", "./")
         if path and path.expanduser().is_dir():
             return path.expanduser().resolve()
 
-        # self._color_log("Invalid workspace path, using home directory instead.", Color.yellow)
+        self._color_log("Invalid workspace path, using home directory instead.", Color.yellow)
         return Path.home().expanduser().resolve()
 
     def _validate_file_path(self, file_path: str) -> Path:

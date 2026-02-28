@@ -543,7 +543,7 @@ if __name__ == "__main__":
     args = ActionArguments(
         name="audio_processing_service",
         transport="stdio",
-        workspace=os.getenv("AWORLD_WORKSPACE", "~"),
+        workspace=os.getenv("AWORLD_WORKSPACE", "./"),
     )
 
     # Initialize and run the audio processing service

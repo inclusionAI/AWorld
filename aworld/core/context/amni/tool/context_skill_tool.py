@@ -25,7 +25,7 @@ class ContextExecuteAction(ToolAction):
                                               type="str",
                                               required=True,
                                               desc="name of the skill to be activated")},
-        desc="activate a skill help agent to perform a task")
+        desc="dynamically insert a specified and pre-designed skill to help you to conduct the current task, while the current tools cannot handle the current task professionally")
 
     OFFLOAD_SKILL = ToolActionInfo(
         name="offload_skill",
@@ -33,7 +33,7 @@ class ContextExecuteAction(ToolAction):
                                               type="str",
                                               required=True,
                                               desc="name of the skill to be offloaded")},
-        desc="offload a skill help agent to perform a task")
+        desc="dynamically delete a particular skill from your current context to save memory")
 
     READ_SKILL_FILE = ToolActionInfo(
         name="read_skill_file",

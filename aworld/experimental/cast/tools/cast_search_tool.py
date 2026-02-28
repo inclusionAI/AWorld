@@ -125,7 +125,7 @@ class CastSearchAction(ToolAction):
                 desc="Whether to show detailed search information (default: True)"
             )
         },
-        desc="Execute file pattern matching search"
+        desc="Execute file pattern matching search (e.g. `*.py`, `src/**/*.js`)."
     )
 
     READ_FILE = ToolActionInfo(

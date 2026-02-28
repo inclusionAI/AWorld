@@ -67,4 +67,4 @@ async def run(user_input: str):
 
 
 if __name__ == '__main__':
-    asyncio.run(run(user_input="Help me find the latest week stock price of BABA. And Analysis the trend of news."))
+    asyncio.run(run(user_input="截至2024年12月31日，2024年上海黄金交易所Au(T+D)合约的“最高价”与“最低价”之差约为多少元/克？"))

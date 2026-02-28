@@ -119,10 +119,10 @@ class BaseConfig(BaseModel):
 class ModelConfig(BaseConfig):
     model_config = ConfigDict(extra='allow')
     llm_provider: str = "openai"
-    llm_model_name: str = None
+    llm_model_name: Optional[str] = None
     llm_temperature: float = 1.
     llm_base_url: str = "https://api.openai.com/v1"
-    llm_api_key: str = None
+    llm_api_key: Optional[str] = None
     llm_client_type: ClientType = ClientType.SDK
     llm_sync_enabled: bool = True
     llm_async_enabled: bool = True
