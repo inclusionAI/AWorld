@@ -30,7 +30,7 @@ class CAstCoderAction(ToolAction):
                 name="target_dir",
                 type="string",
                 required=True,
-                desc="Target directory path to create snapshot from"
+                desc="Target directory path to create snapshot from. Must be an absolute path."
             ),
             "version": ParamInfo(
                 name="version",

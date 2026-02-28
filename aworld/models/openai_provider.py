@@ -186,6 +186,7 @@ class OpenAIProvider(LLMProviderBase):
                     index = tool_call.index if hasattr(tool_call, 'index') else tool_call["index"]
                     func_name = tool_call.function.name if hasattr(tool_call, 'function') else tool_call.get("function", {}).get("name")
                     func_args = tool_call.function.arguments if hasattr(tool_call, 'function') else tool_call.get("function", {}).get("arguments")
+                    func_args = func_args or ""  # API may send None in early chunks
                     if index >= len(self.stream_tool_buffer):
                         self.stream_tool_buffer.append({
                             "id": tool_call.id if hasattr(tool_call, 'id') else tool_call.get("id"),
@@ -196,7 +197,8 @@ class OpenAIProvider(LLMProviderBase):
                             }
                         })
                     else:
-                        self.stream_tool_buffer[index]["function"]["arguments"] += func_args
+                        existing = self.stream_tool_buffer[index]["function"]["arguments"]
+                        self.stream_tool_buffer[index]["function"]["arguments"] = (existing or "") + func_args
                 processed_chunk = chunk
                 if hasattr(processed_chunk, 'choices'):
                     processed_chunk.choices[0].delta.tool_calls = None

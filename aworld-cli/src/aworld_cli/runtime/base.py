@@ -80,7 +80,13 @@ class BaseCliRuntime:
             
             # Handle session result
             if result is False:
-                # User wants to exit app
+                # User wants to exit app: close MCP connections in same event loop to avoid
+                # "Attempted to exit cancel scope in a different task" on shutdown
+                if hasattr(executor, "cleanup_resources") and callable(getattr(executor, "cleanup_resources")):
+                    try:
+                        await executor.cleanup_resources()
+                    except Exception:
+                        pass
                 break
             elif result is True:
                 # User wants to switch agent (show list)

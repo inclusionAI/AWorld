@@ -33,7 +33,7 @@ from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, Mem
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template, \
     ModelResponseParser
 from aworld.models.model_response import ModelResponse
-from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process
+from aworld.models.utils import tool_desc_transform, agent_desc_transform, usage_process, ModelUtils
 from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
 from aworld.runners.hook.hooks import HookPoint
@@ -873,6 +873,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     logger.info(f"🔄 Attempt {attempt}/{self.llm_max_attempts} for LLM call")
 
                     if stream_mode:
+                        # Pre-calc prompt tokens for display (API often does not return in stream chunks)
+                        prompt_tokens_est = 0
+                        try:
+                            breakdown = ModelUtils.calculate_token_breakdown(messages, self.model_name or "gpt-4o")
+                            prompt_tokens_est = breakdown.get("total", 0) or 0
+                        except Exception:
+                            pass
+
                         llm_response = ModelResponse(
                             id="", model="", content="", tool_calls=[])
                         resp_stream = acall_llm_model_stream(
@@ -887,10 +895,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                         )
 
                         async for chunk in resp_stream:
+                            # print(chunk, end="", flush=True)
                             if chunk.content:
                                 llm_response.content += chunk.content
                             if chunk.tool_calls:
-                                llm_response.tool_calls.extend(chunk.tool_calls)
+                                for tc in chunk.tool_calls:
+                                    if tc.function.name == "unknown" and llm_response.tool_calls:
+                                        last = llm_response.tool_calls[-1]
+                                        last.function.arguments = (last.function.arguments or "") + (tc.function.arguments or "")
+                                    else:
+                                        llm_response.tool_calls.append(tc)
                             if chunk.error:
                                 llm_response.error = chunk.error
                             llm_response.id = chunk.id
@@ -898,10 +912,49 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                             llm_response.usage = nest_dict_counter(
                                 llm_response.usage, chunk.usage, ignore_zero=False)
                             llm_response.message.update(chunk.message)
+                            if llm_response.tool_calls:
+                                llm_response.message["tool_calls"] = [tc.to_dict() for tc in llm_response.tool_calls]
+
                             await send_message(ChunkMessage(payload=chunk,
                                                             source_type="llm",
                                                             session_id=message.context.session_id,
                                                             headers=message.headers))
+                            # Add chunk to task outputs for local executor to display (with token/tool_calls stats)
+                            task = message.context.get_task() if message.context else None
+                            if task and hasattr(task, "outputs") and hasattr(task.outputs, "add_output"):
+                                from aworld.output.base import ChunkOutput
+                                u = llm_response.usage or {}
+                                out_tok = u.get("completion_tokens")
+                                out_estimated = False
+                                if out_tok is None or out_tok == 0:
+                                    out_tok = max(0, len(llm_response.content or "") // 4)
+                                    out_estimated = True
+                                inp_tok = u.get("prompt_tokens")
+                                inp_estimated = False
+                                if inp_tok is None or inp_tok == 0:
+                                    inp_tok = prompt_tokens_est
+                                    inp_estimated = True
+                                tc_count = len(llm_response.tool_calls) if llm_response.tool_calls else 0
+                                tc_estimated = True  # streaming: count may be incomplete until stream ends
+                                tc_content_len = 0
+                                if llm_response.tool_calls:
+                                    tc_content_len = sum(
+                                        len(getattr(getattr(tc, "function"), "arguments", None) or "")
+                                        for tc in llm_response.tool_calls
+                                    )
+                                meta = {
+                                    "output_tokens": out_tok,
+                                    "input_tokens": inp_tok,
+                                    "tool_calls_count": tc_count,
+                                    "tool_calls_content_length": tc_content_len,
+                                    "output_tokens_estimated": out_estimated,
+                                    "input_tokens_estimated": inp_estimated,
+                                    "tool_calls_count_estimated": tc_estimated,
+                                    "tool_calls_content_estimated": True,  # char count, approx
+                                    "agent_id": self.id(),
+                                    "agent_name": self.name(),
+                                }
+                                await task.outputs.add_output(ChunkOutput(data=chunk, metadata=meta))
 
                     else:
                         llm_response = await acall_llm_model(
@@ -1046,8 +1099,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
     @staticmethod
     async def send_agent_response_output(agent: BaseAgent, response: Any, context: Context, outputs: Outputs = None):
-        if not response:
-            return
         resp_output = MessageOutput(
             source=response,
             metadata={"agent_id": agent.id(), "agent_name": agent.name(), "is_finished": agent.finished}

@@ -64,7 +64,7 @@ You are equipped with multiple assistants. It is your job to know which to use a
 *   `explorer`: a sub-agent that can deeply analyze codebases like Github, by using terminal and professional code analysis tools.
 *   `developer`: a sub-agent that can develop apps/code/html/website and laterimprove this developed apps/code/html/website according to the suggestions from the `evaluator`, by using terminal and other professional tools.
 *   `evaluator`: a sub-agent that can evaluate the apps/code/html/website's (developed by the `developer`) performance, user experience, and so on, and present professional suggestions to the `developer` for the apps/code/html/website improvement.
-*   `terminal_tool`: A tool set that can execute terminal commands.
+*   `terminal_tool`: A tool set that can execute terminal commands. **Path restriction:** Do not `cd` to other directories; always operate from the current working directory. When operating on files, always use explicit relative or absolute paths.
 *   `SKILL_tool`: A tool set that can activate, deactivate skills, and so on.
 
 ## 4. Available Skills
@@ -451,7 +451,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_api_key=os.getenv("LLM_API_KEY"),
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
-            params={"max_completion_tokens": 59000}
+            params={"max_completion_tokens": 59000},
+            llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
         use_vision=False,  # Enable if needed for image analysis
         skill_configs=ALL_SKILLS
