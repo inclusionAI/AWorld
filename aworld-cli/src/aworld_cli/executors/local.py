@@ -161,38 +161,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         Close MCP and other resources in the same event loop to avoid
         "Attempted to exit cancel scope in a different task" on exit.
         """
-        agents = []
-        if getattr(self, "swarm", None):
-            if hasattr(self.swarm, "agent_graph") and self.swarm.agent_graph and hasattr(self.swarm.agent_graph, "agents"):
-                agents = list(self.swarm.agent_graph.agents.values())
-            if not agents and hasattr(self.swarm, "agents"):
-                ag = self.swarm.agents
-                agents = list(ag.values()) if isinstance(ag, dict) else list(ag) if ag else []
-        seen_sandboxes = set()
-        for agent in agents:
-            # 1. Cleanup sandbox.mcpservers (MCP connections) - dedupe by id
-            sandbox = getattr(agent, "sandbox", None)
-            if sandbox is not None and id(sandbox) not in seen_sandboxes:
-                seen_sandboxes.add(id(sandbox))
-                mcpservers = getattr(sandbox, "mcpservers", None) or getattr(sandbox, "_mcpservers", None)
-                if mcpservers is not None and hasattr(mcpservers, "cleanup") and callable(mcpservers.cleanup):
-                    try:
-                        await mcpservers.cleanup()
-                    except Exception as e:
-                        logger.warning(f"MCP cleanup on exit: {e}")
-                elif hasattr(sandbox, "cleanup") and callable(sandbox.cleanup):
-                    try:
-                        await sandbox.cleanup()
-                    except Exception as e:
-                        logger.warning(f"Sandbox cleanup on exit: {e}")
-            # 2. Cleanup tool.action_executor (legacy path)
-            for tool in getattr(agent, "tools", []) or []:
-                action_exec = getattr(tool, "action_executor", None)
-                if action_exec is not None and hasattr(action_exec, "cleanup") and callable(getattr(action_exec, "cleanup")):
-                    try:
-                        await action_exec.cleanup()
-                    except Exception as e:
-                        logger.warning(f"MCP cleanup on exit: {e}")
+        pass
 
     async def _execute_hooks(self, hook_point: str, **kwargs) -> Any:
         """
@@ -576,7 +545,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     
                     def _start_loading_status(message: str):
                         """Start or update loading status."""
-                        nonlocal loading_status, status_start_time, status_update_task, base_message
+                        nonlocal loading_status, status_start_time, status_update_task, base_message, stream_live
                         if not self.console:
                             return
                         
@@ -592,6 +561,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         if loading_status:
                             loading_status.update(f"[dim]{message_with_time}[/dim]")
                         else:
+                            # Stop stream_live first to avoid "Only one live display may be active at once"
+                            if stream_live:
+                                stream_live.stop()
+                                stream_live = None
                             loading_status = Status(f"[dim]{message_with_time}[/dim]", console=self.console)
                             loading_status.start()
                         
@@ -711,8 +684,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 
                                 # Handle ToolResultOutput
                                 elif isinstance(output, ToolResultOutput):
-                                    # Stop "Calling tool..." status before rendering result
-                                    # _stop_loading_status()
+                                    # Stop stream_live/loading_status before rendering; avoid "Only one live display" error
+                                    _stop_loading_status()
                                     
                                     # Render tool result
                                     self._render_simple_tool_result_output(output)
@@ -835,10 +808,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             self.console.print(generic_panel)
                                             self.console.print()
                         finally:
-                            pass
+                            # Always stop status/stream_live on exit (normal, exception, or Ctrl+C)
+                            _stop_loading_status()
                     
+                    except (asyncio.CancelledError, KeyboardInterrupt):
+                        raise  # Re-raise so caller can handle (e.g. continue to next prompt)
                     except Exception as e:
-                        _stop_loading_status()
                         if self.console:
                             error_body = Text("Error in stream consumption: ")
                             error_body.append(str(e))
@@ -852,8 +827,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                             self.console.print()
                         raise
                 
-                # Consume all stream events
-                await consume_stream()
+                # Consume all stream events (Ctrl+C raises CancelledError/KeyboardInterrupt → abort and return)
+                try:
+                    await consume_stream()
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    if self.console:
+                        self.console.print("\n[yellow]⏹ Interrupted.[/yellow]")
+                    return answer or ""
                 
                 # 🔥 Hook: POST_RUN_TASK
                 hook_kwargs = {
