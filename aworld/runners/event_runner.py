@@ -52,6 +52,7 @@ class TaskEventRunner(TaskRunner):
         async with trace.task_span(self.init_messages[0].session_id,
                                    task=self.task,
                                    attributes={semconv.TRACE_ID: self.context.trace_id}):
+            resp = None
             try:
                 for msg in self.init_messages:
                     await self.event_mng.emit_message(msg)
@@ -65,7 +66,7 @@ class TaskEventRunner(TaskRunner):
                 # the last step mark output finished
                 if not self.task.is_sub_task:
                     logger.info(f'main task {self.task.id} will mark outputs finished')
-                    await self.task.outputs.mark_completed(resp)
+                    await self.task.outputs.mark_completed(resp if resp is not None else self._response())
                     for _, agent in AgentFactory._agent_instance.items():
                         if agent and agent.sandbox:
                             await agent.sandbox.cleanup()
