@@ -7,9 +7,9 @@ from openai import OpenAI, AsyncOpenAI
 
 from aworld.config.conf import ClientType
 from aworld.core.llm_provider import LLMProviderBase
+from aworld.logs.util import logger
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError
-from aworld.logs.util import logger
 
 
 class OpenAIProvider(LLMProviderBase):
@@ -194,7 +194,8 @@ class OpenAIProvider(LLMProviderBase):
                             "function": {
                                 "name": func_name,
                                 "arguments": func_args
-                            }
+                            },
+                            "extra_content": tool_call.extra_content if hasattr(tool_call, 'extra_content') else tool_call.get("extra_content")
                         })
                     else:
                         existing = self.stream_tool_buffer[index]["function"]["arguments"]
