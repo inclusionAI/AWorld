@@ -2,6 +2,7 @@
 Base runtime for CLI protocols.
 Provides common functionality for both local and remote runtimes.
 """
+import asyncio
 from typing import List, Optional
 from ..console import AWorldCLI
 from ..models import AgentInfo
@@ -52,12 +53,19 @@ class BaseCliRuntime:
         self._running = True
         self.cli.display_welcome()
         
-        # Load agents (implemented by subclasses)
+        # 1. Load agents (implemented by subclasses)
         agents = await self._load_agents()
-        
         if not agents:
             self.cli.console.print("[red]❌ No agents available.[/red]")
             return
+
+        # 2. Load skills (optional; e.g. CliRuntime loads from plugin_dirs)
+        if hasattr(self, "_load_skills") and asyncio.iscoroutinefunction(self._load_skills):
+            await self._load_skills()
+
+        # 3. Load session command plugins (/memory, /skills, etc.)
+        from ..core.session_commands import load_session_command_plugins
+        load_session_command_plugins()
         
         while self._running:
             # Select agent

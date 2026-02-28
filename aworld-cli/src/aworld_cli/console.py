@@ -20,6 +20,8 @@ from ._globals import console
 from .core.skill_registry import get_skill_registry
 from .models import AgentInfo
 from .user_input import UserInputHandler
+from .ui import select_menu_option
+from .core.session_commands import get_all_session_commands
 
 
 # ... existing imports ...
@@ -650,11 +652,20 @@ class AWorldCLI:
             f"Type '/switch [agent_name]' to switch agent.\n"
             f"Type '/new' to create a new session.\n"
             f"Type '/restore' or '/latest' to restore to the latest session.\n"
+            f"Type '/memory' to edit project or global MEMORY.md.\n"
             f"Type '/skills' to list all available skills.\n"
             f"Type '/agents' to list all available agents.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
         self.console.print(Panel(help_text, style="blue"))
+        # Session commands already loaded in runtime.start(); merge per-session skill commands
+        session_commands = get_all_session_commands()
+        # Register each loaded skill as a slash command; selecting one calls context.active_skill
+        try:
+            from aworld_cli.inner_plugins.skills.commands import register_skill_commands_into
+            await register_skill_commands_into(session_commands, self, executor_instance, agent_name)
+        except Exception:
+            pass
 
         # Check if we're in a real terminal (not IDE debugger or redirected input)
         is_terminal = sys.stdin.isatty()
@@ -666,14 +677,14 @@ class AWorldCLI:
         if is_terminal:
             # 用整行前缀匹配：/ski → /skills、/age → /agents；meta_dict 在补全菜单中显示描述（命令左、描述右）
             slash_cmds = [
-                "/agents", "/skills", "/new", "/restore", "/latest",
+                "/agents", "/new", "/restore", "/latest",
                 "/exit", "/quit", "/switch",
             ]
+            slash_cmds.extend(session_commands.keys())
             switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
             all_words = slash_cmds + switch_with_agents + ["exit", "quit"]
             meta_dict = {
                 "/agents": "List available agents",
-                "/skills": "List available skills",
                 "/new": "Create a new session",
                 "/restore": "Restore to the latest session",
                 "/latest": "Restore to the latest session",
@@ -683,6 +694,13 @@ class AWorldCLI:
                 "exit": "Exit chat",
                 "quit": "Exit chat",
             }
+            for cmd_name, (_, desc) in session_commands.items():
+                meta_dict[cmd_name] = desc
+            # Aliases without leading slash for natural input
+            for cmd_name in session_commands:
+                alias = cmd_name.lstrip("/")
+                if alias and alias not in meta_dict:
+                    meta_dict[alias] = meta_dict.get(cmd_name, cmd_name)
             for n in agent_names:
                 meta_dict[f"/switch {n}"] = f"Switch to agent: {n}"
             completer = WordCompleter(
@@ -764,68 +782,16 @@ class AWorldCLI:
                     else:
                         return True # Return True to switch agent (show list)
                 
-                # Handle skills command
-                if user_input.lower() in ("/skills", "skills"):
-                    try:
-                        # First, load skills from plugin directories
-                        from .runtime.cli import CliRuntime
-                        from pathlib import Path
-
-                        runtime = CliRuntime()
-                        runtime.cli = self  # Set cli reference for console output
-                        loaded_skills = await runtime._load_skills()
-                        
-                        # Display loading results from plugins
-                        if loaded_skills:
-                            total_loaded = sum(loaded_skills.values())
-                            if total_loaded > 0:
-                                logger.info(f"[green]✅ Loaded {total_loaded} skill(s) from {len([k for k, v in loaded_skills.items() if v > 0])} plugin(s)[/green]")
-                            else:
-                                logger.info("[dim]No new skills loaded from plugins.[/dim]")
-                        
-                        # Get all skills from registry (including newly loaded ones)
-                        registry = get_skill_registry()
-                        all_skills = registry.get_all_skills()
-                        
-                        if not all_skills:
-                            logger.info("[yellow]No skills available.[/yellow]")
-                            continue
-                        
-                        # Build rows
-                        rows = [(skill_name, skill_data) for skill_name, skill_data in all_skills.items()]
-                        rows.sort(key=lambda x: x[0])  # sort by name
-                        
-                        # Single table with Name, Description, Address
-                        table = Table(title="Skills", box=box.ROUNDED)
-                        table.add_column("Name", style="magenta")
-                        table.add_column("Description", style="green")
-                        # Address column: truncate when long; full path shown on hover via link (OSC 8)
-                        _addr_max = 48
-                        table.add_column("Address", style="dim", no_wrap=False, max_width=_addr_max)
-                        
-                        for skill_name, skill_data in rows:
-                            desc = skill_data.get("description") or skill_data.get("desc") or "No description"
-                            # if len(desc) > 60:
-                            #     desc = desc[:57] + "..."
-                            address = skill_data.get("skill_path", "") or "—"
-                            if address == "—":
-                                addr_cell = Text("—", style="dim")
-                            else:
-                                # Link to parent folder so click opens file manager, not default app for file
-                                p = Path(address)
-                                link_target = p.parent if p.suffix else p
-                                link_url = link_target.resolve().as_uri()
-                                if len(address) > _addr_max:
-                                    addr_display = address[: _addr_max - 3] + "..."
-                                    addr_cell = Text(addr_display, style=Style(dim=True, link=link_url))
-                                else:
-                                    addr_cell = Text(address, style=Style(dim=True, link=link_url))
-                            table.add_row(skill_name, desc, addr_cell)
-                        
-                        self.console.print(table)
-                        self.console.print(f"[dim]Total: {len(all_skills)} skill(s)[/dim]")
-                    except Exception as e:
-                        self.console.print(f"[red]Error loading skills: {e}[/red]")
+                # Dispatch to session command plugins (e.g. /memory, /skills); pass current context
+                session_handled = False
+                current_context = getattr(executor_instance, "context", None) if executor_instance else None
+                for cmd_name, (handler, _) in session_commands.items():
+                    alias = cmd_name.lstrip("/")
+                    if user_input.lower() in (cmd_name.lower(), alias.lower()):
+                        await handler(self, current_context)
+                        session_handled = True
+                        break
+                if session_handled:
                     continue
 
                 # Handle agents command
