@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
@@ -129,6 +130,8 @@ class AWorldCLI:
     async def _edit_models_config(self, config, current_config: dict):
         """Edit models section of config (providers, api_key, model, base_url)."""
         from rich.table import Table
+
+        from .core.config import resolve_stream_value
         
         if 'models' not in current_config:
             current_config['models'] = {}
@@ -181,6 +184,17 @@ class AWorldCLI:
         base_url = Prompt.ask("  Base URL", default=current_base_url)
         if base_url:
             provider_config['base_url'] = base_url
+
+        # Stream switch (controls STREAM env, streaming display in CLI)
+        stream_str = 'true' if resolve_stream_value(current_config) == '1' else 'false'
+        self.console.print("  [dim]Enable streaming display (sets STREAM=1)[/dim]")
+        stream_choice = Prompt.ask("  Stream (true/false)", default=stream_str)
+        if str(stream_choice).lower() in ('true', '1', 'yes'):
+            current_config['stream'] = True
+            os.environ['STREAM'] = '1'
+        else:
+            current_config['stream'] = False
+            os.environ['STREAM'] = '0'
         
         config.save_config(current_config)
         self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
@@ -722,12 +736,8 @@ class AWorldCLI:
                 
                 # Handle explicit exit commands
                 if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
-                    if is_terminal:
-                        return False
-                    else:
-                        # In non-terminal, just exit without confirmation
-                        return False
-                    continue
+                    self.console.print("[dim]Bye[/dim]")
+                    return False
 
                 # Handle new session command
                 if user_input.lower() in ("/new", "new"):
@@ -951,8 +961,21 @@ class AWorldCLI:
                     continue
 
             except KeyboardInterrupt:
-                self.console.print("\n[yellow]Session interrupted.[/yellow]")
-                break
+                buf_content = ""
+                if is_terminal and session is not None:
+                    try:
+                        buf = getattr(session, "default_buffer", None)
+                        if buf is not None:
+                            buf_content = (buf.text or "").strip()
+                    except Exception:
+                        pass
+                if buf_content:
+                    logger.info(f"\n[yellow]Interrupted. Input buffer: {buf_content!r}[/yellow]")
+                    continue  # Stay in chat loop, show prompt again
+                else:
+                    logger.info("\n[yellow]Interrupted. Exiting...[/yellow]")
+                    self.console.print("[dim]Bye[/dim]")
+                    return False  # Exit CLI when buffer is empty
             except Exception as e:
                 import traceback
                 logger.error(f"Error executing task: {e} {traceback.format_exc()}")

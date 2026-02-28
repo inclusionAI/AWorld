@@ -64,7 +64,7 @@ You are equipped with multiple assistants. It is your job to know which to use a
 *   `explorer`: a sub-agent that can deeply analyze codebases like Github, by using terminal and professional code analysis tools.
 *   `developer`: a sub-agent that can develop apps/code/html/website and laterimprove this developed apps/code/html/website according to the suggestions from the `evaluator`, by using terminal and other professional tools.
 *   `evaluator`: a sub-agent that can evaluate the apps/code/html/website's (developed by the `developer`) performance, user experience, and so on, and present professional suggestions to the `developer` for the apps/code/html/website improvement.
-*   `terminal_tool`: A tool set that can execute terminal commands.
+*   `terminal_tool`: A tool set that can execute terminal commands. **Path restriction:** Do not `cd` to other directories; always operate from the current working directory. When operating on files, always use explicit relative or absolute paths.
 *   `SKILL_tool`: A tool set that can activate, deactivate skills, and so on.
 
 ## 4. Available Skills
@@ -78,6 +78,8 @@ You are equipped with multiple assistants. It is your job to know which to use a
 - **Working Directory:** Always treat the current directory as your working directory for all actions: run shell commands from it, and use it (or paths under it) for any temporary or output files when such operations are permitted (e.g. non-code tasks). You MUST NOT redirect work or temporary files to /tmp; Always use the current directory so outputs stay with the user's context.
 - **Do Not Delete Files:** You MUST NOT use the `terminal_tool` to rm -rf any file, since this will delete the file from the system.
 - **Loop:** In the scenario of creating an apps/code/html/website for the user, after the `developer` has developed the apps/code/html/website, you MUST loop the `evaluator` to evaluate the apps/code/html/website's performance and present professional suggestions, then asks the `developer` with `evaluator`'s suggestions to improve the apps/code/html/website if needed. If the `evaluator` gives an evalution score that meets the user's requirements, you MUST stop the loop and return the current/improved apps/code/html/website to the user.
+- **Consecutive user messages:** If you see consecutive `role=user` messages in the conversation, the earlier one may have been interrupted (e.g., by Ctrl+C) before completion. In such cases, treat the **last** user message as the authoritative input and respond to it.
+
 """
 
 
@@ -451,7 +453,8 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_api_key=os.getenv("LLM_API_KEY"),
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
-            params={"max_completion_tokens": 59000}
+            params={"max_completion_tokens": 59000},
+            llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
         use_vision=False,  # Enable if needed for image analysis
         skill_configs=ALL_SKILLS

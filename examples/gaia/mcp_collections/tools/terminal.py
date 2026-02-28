@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import platform
+import subprocess
 import time
 import traceback
 from datetime import datetime
@@ -29,7 +30,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
 
-from aworld.logs.util import Color
+from aworld.logs.util import Color, logger
 from examples.gaia.mcp_collections.base import ActionArguments, ActionCollection, ActionResponse
 
 # pylint: disable=C0301
@@ -183,10 +184,17 @@ class TerminalActionCollection(ActionCollection):
         start_time = datetime.now()
 
         try:
-            # Create appropriate subprocess for platform
+            # Create appropriate subprocess for platform.
+            # On Unix: start_new_session=True runs command in new process group so it survives
+            # Ctrl+C (SIGINT) to the parent; the command keeps running in background when interrupted.
+            # On Windows: creationflags for similar isolation (CREATE_NEW_PROCESS_GROUP).
             if self.platform_info["system"] == "Windows":
                 process = await asyncio.create_subprocess_shell(
-                    command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, shell=True
+                    command,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    shell=True,
+                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
                 )
             else:
                 process = await asyncio.create_subprocess_shell(
@@ -195,6 +203,7 @@ class TerminalActionCollection(ActionCollection):
                     stderr=asyncio.subprocess.PIPE,
                     shell=True,
                     executable="/bin/bash",
+                    start_new_session=True,
                 )
 
             try:
@@ -499,6 +508,11 @@ class TerminalActionCollection(ActionCollection):
 # Default arguments for testing
 if __name__ == "__main__":
     load_dotenv()
+    import logging
+    # Reduce MCP SDK log level to suppress "Processing request of type" INFO messages
+    logging.getLogger("mcp.server.lowlevel.server").setLevel(logging.WARNING)
+    # Or silence the entire mcp package
+    logging.getLogger("mcp").setLevel(logging.WARNING)
 
     arguments = ActionArguments(
         name="terminal",
@@ -508,5 +522,8 @@ if __name__ == "__main__":
     try:
         service = TerminalActionCollection(arguments)
         service.run()
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        # Exit silently on Ctrl+C; do not log traceback to avoid noisy output
+        pass
     except Exception as e:
-        print(f"An error occurred: {e}: {traceback.format_exc()}")
+        logger.error(f"An error occurred: {e}: {traceback.format_exc()}")

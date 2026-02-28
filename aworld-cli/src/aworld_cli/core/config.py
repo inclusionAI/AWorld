@@ -119,6 +119,26 @@ def get_config() -> AWorldConfig:
     return _global_config
 
 
+def resolve_stream_value(global_config: Dict[str, Any]) -> str:
+    """
+    Resolve stream setting from config to STREAM env value ('1' or '0').
+    Priority: stream > models.stream. Default: '1'.
+    """
+    stream_val = global_config.get('stream')
+    if stream_val is None:
+        stream_val = (global_config.get('models') or {}).get('stream')
+    if stream_val in (True, 'true', '1', 'yes'):
+        return '1'
+    if stream_val in (False, 'false', '0', 'no'):
+        return '0'
+    return '1'
+
+
+def apply_stream_env(global_config: Dict[str, Any]) -> None:
+    """Apply stream config to os.environ['STREAM']."""
+    os.environ['STREAM'] = resolve_stream_value(global_config)
+
+
 def load_config_with_env(env_file: str = ".env") -> tuple[Dict[str, Any], str, str]:
     """
     Load configuration with environment variable support.
@@ -149,6 +169,8 @@ def load_config_with_env(env_file: str = ".env") -> tuple[Dict[str, Any], str, s
                     os.environ['AWORLD_SKILLS_PATH'] = str(skills_cfg['aworld_skills_path']).strip()
                 if skills_cfg.get('developer_skills_path'):
                     os.environ['DEVELOPER_SKILLS_PATH'] = str(skills_cfg['developer_skills_path']).strip()
+        apply_stream_env(global_config)
+
         # Convert .env to config dict format for consistency
         env_config = {}
         for key, value in os.environ.items():
@@ -173,9 +195,9 @@ def load_config_with_env(env_file: str = ".env") -> tuple[Dict[str, Any], str, s
                         env_config['models'] = {}
                     if 'gemini' not in env_config['models']:
                         env_config['models']['gemini'] = {}
-                    if key == 'GEMINI_API_KEY':
-                        env_config['models']['gemini']['api_key'] = value
-        
+                if key == 'GEMINI_API_KEY':
+                    env_config['models']['gemini']['api_key'] = value
+
         return env_config, source_type, source_path
     
     # Otherwise load from global config
@@ -227,6 +249,7 @@ def load_config_with_env(env_file: str = ".env") -> tuple[Dict[str, Any], str, s
                     os.environ['GEMINI_BASE_URL'] = base_url
                 if not os.environ.get('LLM_BASE_URL'):
                     os.environ['LLM_BASE_URL'] = base_url
+        apply_stream_env(global_config)
 
     return global_config, source_type, source_path
 

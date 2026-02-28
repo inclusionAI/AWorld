@@ -58,8 +58,7 @@ class MultiTaskExplorerAgent(Agent):
 @agent(
     name="explorer",
     desc="""A versatile intelligent assistant, When to use:
-- Code: find files by pattern, search code by keyword/regex, answer "how does X work?", map architecture. Prefer thoroughness: "quick" for basic search, "medium" for moderate exploration, "very thorough" for full analysis.
-- provide comprehensive information exploration services"""
+- Code: find files by pattern, search code by keyword/regex, answer "how does X work?", map architecture. Prefer thoroughness: "quick" for basic search, "medium" for moderate exploration, "very thorough" for full analysis."""
 )
 def build_explorer_swarm():
     """Build and configure the multi-task explorer agent swarm."""
@@ -75,7 +74,8 @@ def build_explorer_swarm():
             llm_api_key=os.environ.get("LLM_API_KEY"),
             llm_base_url=os.environ.get("LLM_BASE_URL"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
-            params={"max_completion_tokens": 59000}
+            params={"max_completion_tokens": 59000},
+            llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
         skill_configs=skill_configs
     )

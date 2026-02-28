@@ -1,6 +1,7 @@
+import json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-import json
+
 from pydantic import BaseModel
 
 from aworld.logs.util import logger
@@ -383,9 +384,10 @@ class ModelResponse:
             return cls(
                 id=chunk.id if hasattr(chunk, 'id') else chunk.get('id', 'unknown'),
                 model=chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
-                content="",
+                content=chunk.choices[0].delta.content if hasattr(chunk.choices[0].delta, 'content') else chunk.choices[0].delta.get("content"),
                 usage=usage,
                 raw_response=chunk,
+                tool_calls=chunk.choices[0].delta.tool_calls,
                 message={"role": "assistant", "content": "", "finish_reason": chunk.choices[0].finish_reason},
                 finish_reason=finish_reason
             )

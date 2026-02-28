@@ -88,6 +88,15 @@ class RunFinishedSignal(Output):
         return self
 
 
+class ChunkOutput(Output):
+    """Output for streaming LLM chunks (ModelResponse). Used for real-time display."""
+
+    @model_validator(mode='after')
+    def set_meta(self):
+        self.metadata["type"] = "chunk"
+        return self
+
+
 RUN_FINISHED_SIGNAL = RunFinishedSignal()
 
 
