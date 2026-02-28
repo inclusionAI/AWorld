@@ -58,8 +58,7 @@ class MultiTaskExplorerAgent(Agent):
 @agent(
     name="explorer",
     desc="""A versatile intelligent assistant, When to use:
-- Code: find files by pattern, search code by keyword/regex, answer "how does X work?", map architecture. Prefer thoroughness: "quick" for basic search, "medium" for moderate exploration, "very thorough" for full analysis.
-- provide comprehensive information exploration services"""
+- Code: find files by pattern, search code by keyword/regex, answer "how does X work?", map architecture. Prefer thoroughness: "quick" for basic search, "medium" for moderate exploration, "very thorough" for full analysis."""
 )
 def build_explorer_swarm():
     """Build and configure the multi-task explorer agent swarm."""
