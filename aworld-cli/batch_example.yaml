@@ -1,0 +1,28 @@
+# Minimal batch job configuration
+# Example: aworld-cli batch batch_example.yaml
+
+input:
+  path: eval.csv
+  query_column: query  # Column name containing the query/prompt
+  encoding: utf-8
+  delimiter: ","
+
+agent:
+  name: PPTTeam
+  remote_backend: http://localhost:8000  # Optional: remote backend URL
+
+output:
+  path: ./result/output.csv
+  encoding: utf-8
+  delimiter: ","
+
+execution:
+  parallel: 4  # Number of concurrent tasks
+  max_retries: 0  # Number of retries for failed tasks (0 = no retry)
+  timeout_per_task: null  # Timeout per task in seconds (null = no timeout)
+
+# Optional: digest_logger statistics (agent_run, run_task, llm_call, success rate)
+# Path to digest_logger.log from remote backend (relative to cwd or absolute)
+# e.g. aworld-xbench: ../../aworldapp/logs/digest_logger.log (from benchmark/ppt)
+digest_log:
+  path: null  # e.g. aworldapp/logs/digest_logger.log
