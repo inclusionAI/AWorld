@@ -28,7 +28,6 @@ from aworld_cli.core.loader import init_agents
 from aworld_cli.core.agent_scanner import global_agent_registry
 import asyncio
 from aworld.config import AgentConfig, ModelConfig
-from aworld.utils.skill_loader import collect_skill_docs
 # for skills use
 CAST_ANALYSIS, CAST_CODER, AGENT_REGISTRY
 
@@ -53,25 +52,32 @@ You are AWorldAgent, a sophisticated AI agent acting as a central coordinator. Y
 
 ## 2. Core Operational Workflow
 You must tackle every user request by following this iterative, step-by-step process:
-
 1.  **Analyze & Decompose:** Break down the user's complex request into a sequence of smaller, manageable sub-tasks.
 2.  **Select & Execute:** For the immediate sub-task, select **one and only one** assistant (tool) best suited to complete it.
 3.  **Report & Plan:** After the tool executes, clearly explain the results of that step and state your plan for the next action.
 4.  **Iterate:** Repeat this process until the user's overall request is fully resolved.
 
-## 3. Available Assistants (Tools)
+## 3. Available Assistants/Tools
 You are equipped with multiple assistants. It is your job to know which to use and when. Your key assistants include:
+*   `text2agent`: a sub-agent that creates a new agent from a user's description.
+*   `optimizer`: a sub-agent that optimizes an existing agent to better meet user requirements.
+*   `explorer`: a sub-agent that can deeply analyze codebases like Github, by using terminal and professional code analysis tools.
+*   `developer`: a sub-agent that can develop apps/code/html/website and laterimprove this developed apps/code/html/website according to the suggestions from the `evaluator`, by using terminal and other professional tools.
+*   `evaluator`: a sub-agent that can evaluate the apps/code/html/website's (developed by the `developer`) performance, user experience, and so on, and present professional suggestions to the `developer` for the apps/code/html/website improvement.
+*   `terminal_tool`: A tool set that can execute terminal commands.
+*   `SKILL_tool`: A tool set that can activate, deactivate skills, and so on.
 
-*   `search_agent`: Handles reasoning, and document analysis tasks.
-*   `text2agent`: Creates a new agent from a user's description.
-*   `optimizer_agent`: Optimizes an existing agent to better meet user requirements.
-*    specialized agents/tools: Please be aware of other specialized assistants/tools equiped for you, call them to do the appropriate job while the user call them.
+## 4. Available Skills
+*    Please be aware that if you need to have access to a particular skill to help you to complete the task, you MUST use the appropriate `SKILL_tool` to activate the skill, which returns you the exact skill content.
+*    You MUST NOT call the skill as a tool, since the skill is not a tool. You have to use the `SKILL_tool` to activate the skill.
 
-
-## 4. Critical Guardrails
+## 5. Critical Guardrails
 - **One Tool Per Step:** You **must** call only one tool at a time. Do not chain multiple tool calls in a single response.
 - **True to Task:** While calling your assistant, you must pass the user's raw request/details to the assistant, without any modification.
 - **Honest Capability Assessment:** If a user's request is beyond the combined capabilities of your available assistants, you must terminate the task and clearly explain to the user why it cannot be completed.
+- **Working Directory:** Always treat the current directory as your working directory for all actions: run shell commands from it, and use it (or paths under it) for any temporary or output files when such operations are permitted (e.g. non-code tasks). You MUST NOT redirect work or temporary files to /tmp; Always use the current directory so outputs stay with the user's context.
+- **Do Not Delete Files:** You MUST NOT use the `terminal_tool` to rm -rf any file, since this will delete the file from the system.
+- **Loop:** In the scenario of creating an apps/code/html/website for the user, after the `developer` has developed the apps/code/html/website, you MUST loop the `evaluator` to evaluate the apps/code/html/website's performance and present professional suggestions, then asks the `developer` with `evaluator`'s suggestions to improve the apps/code/html/website if needed. If the `evaluator` gives an evalution score that meets the user's requirements, you MUST stop the loop and return the current/improved apps/code/html/website to the user.
 """
 
 
@@ -237,16 +243,16 @@ def load_all_registered_agents(
             logger.warning(f"⚠️ Failed to initialize agents from {agents_dir}: {e}")
     else:
         # Try to initialize from current working directory
-        logger.debug(f"📁 Attempting to initialize agents from current working directory")
+        logger.info(f"📁 Attempting to initialize agents from current working directory")
         try:
             init_agents()
-            logger.debug(f"✅ Successfully initialized agents from current directory")
+            logger.info(f"✅ Successfully initialized agents from current directory")
         except Exception as e:
             logger.debug(f"ℹ️ Could not initialize agents from current directory: {e} (this is usually fine)")
 
     # Get all registered agents
     registered_agents = LocalAgentRegistry.list_agents()
-    logger.info(f"📋 Found {len(registered_agents)} registered agent(s) in LocalAgentRegistry")
+    logger.info(f"📋 Found {len(registered_agents)} registered agent(s) in LocalAgentRegistry {registered_agents}")
     
     all_agent_instances = []
     skipped_count = 0
@@ -429,75 +435,27 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         >>> agent = build_aworld_agent()
         >>> # Agent can execute tasks directly or delegate to teams
     """
-    import os
     from pathlib import Path
 
-    cur_dir = Path(__file__).resolve().parents[1]
-    # Load custom skills from skills directory
-    SKILLS_DIR = cur_dir / "skills"
+    from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
 
-    logger.info(f"agent_config: {cur_dir}")
+    plugin_base_dir = Path(__file__).resolve().parents[1]
+    user_dir = os.environ.get("AWORLD_SKILLS_PATH")  # semicolon-separated paths
+    ALL_SKILLS = collect_plugin_and_user_skills(plugin_base_dir, user_dir=user_dir)
 
-    # Load custom skills from skills directory
-    CUSTOM_SKILLS = collect_skill_docs(SKILLS_DIR)
-
-    # Load additional skills from SKILLS_PATH environment variable (single directory)
-    skills_path_env = os.environ.get("SKILLS_PATH")
-    if skills_path_env:
-        try:
-            logger.info(f"📚 Loading skills from SKILLS_PATH: {skills_path_env}")
-            additional_skills = collect_skill_docs(skills_path_env)
-            if additional_skills:
-                # Merge additional skills into CUSTOM_SKILLS
-                # If skill name already exists, log a warning but keep the first one found
-                for skill_name, skill_data in additional_skills.items():
-                    if skill_name in CUSTOM_SKILLS:
-                        logger.warning(
-                            f"⚠️ Duplicate skill name '{skill_name}' found in SKILLS_PATH '{skills_path_env}', skipping")
-                    else:
-                        CUSTOM_SKILLS[skill_name] = skill_data
-                logger.info(f"✅ Loaded {len(additional_skills)} skill(s) from SKILLS_PATH")
-            else:
-                logger.debug(f"ℹ️ No skills found in SKILLS_PATH: {skills_path_env}")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to load skills from SKILLS_PATH '{skills_path_env}': {e}")
-
-    # Ensure all skills have skill_path for context_skill_tool to work
-    # collect_skill_docs already includes skill_path, but we verify and add if missing
-    for skill_name, skill_config in CUSTOM_SKILLS.items():
-        if "skill_path" not in skill_config:
-            # Try to infer skill_path from skill name and SKILLS_DIR
-            potential_skill_path = SKILLS_DIR / skill_name / "SKILL.md"
-            if not potential_skill_path.exists():
-                potential_skill_path = SKILLS_DIR / skill_name / "skill.md"
-            if potential_skill_path.exists():
-                skill_config["skill_path"] = str(potential_skill_path.resolve())
-                logger.debug(f"✅ Added skill_path for skill '{skill_name}': {skill_config['skill_path']}")
-            else:
-                logger.warning(
-                    f"⚠️ Skill '{skill_name}' has no skill_path and cannot be found in {SKILLS_DIR}, context_skill_tool may not work for this skill")
-        else:
-            logger.debug(f"✅ Skill '{skill_name}' has skill_path: {skill_config['skill_path']}")
-
-    # Combine all skills
-    ALL_SKILLS = CUSTOM_SKILLS
-
-    # Configure agent
+    # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
     agent_config = AgentConfig(
         llm_config=ModelConfig(
-            llm_temperature=0.1,  # Lower temperature for more consistent task execution
-            llm_model_name=os.environ.get("LLM_MODEL_NAME"),
-            llm_provider=os.environ.get("LLM_PROVIDER"),
-            llm_api_key=os.environ.get("LLM_API_KEY"),
-            llm_base_url=os.environ.get("LLM_BASE_URL"),
-            params={"max_completion_tokens": os.environ.get("MAX_COMPLETION_TOKENS", 10240)}
+            llm_model_name=os.getenv("LLM_MODEL_NAME"),
+            llm_provider=os.getenv("LLM_PROVIDER", "openai"),
+            llm_api_key=os.getenv("LLM_API_KEY"),
+            llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
+            llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
+            params={"max_completion_tokens": 59000}
         ),
         use_vision=False,  # Enable if needed for image analysis
-        # skill_configs=ALL_SKILLS
+        skill_configs=ALL_SKILLS
     )
-
-    # Get current working directory for filesystem-server
-    current_working_dir = os.getcwd()
 
     # Create the Aworld agent
     aworld_agent = Agent(
@@ -505,6 +463,17 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
         system_prompt=aworld_system_prompt,
+        mcp_servers=["terminal"],
+        mcp_config={
+            "mcpServers": {
+                "terminal": {
+                    "command": "python",
+                    "args": ["-m", "examples.gaia.mcp_collections.tools.terminal"],
+                    "env": {},
+                    "client_session_timeout_seconds": 9999.0,
+                }
+            }
+        }
     )
 
     # Load all registered agents as sub-agents

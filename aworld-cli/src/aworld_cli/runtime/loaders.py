@@ -16,6 +16,8 @@ from abc import ABC, abstractmethod
 from typing import List, Dict
 from pathlib import Path
 from ..models import AgentInfo
+from aworld.logs.util import logger
+import traceback
 
 
 class AgentLoader(ABC):
@@ -145,6 +147,7 @@ class PluginLoader(AgentLoader):
         except Exception as e:
             if self.console:
                 self.console.print(f"[yellow]⚠️ Failed to load agents from {self.agents_dir}: {e}[/yellow]")
+            logger.error(f"Failed to load agents from {self.agents_dir}: {e} {traceback.format_exc()}")
             return []
     
     async def load_agents(self) -> List[AgentInfo]:
@@ -197,8 +200,7 @@ class LocalAgentLoader(AgentLoader):
             from ..core.loader import init_agents
             from ..core.agent_registry import LocalAgentRegistry
             
-            if self.console:
-                self.console.print(f"[dim]📂 Loading local agents from: {self.agent_dir}[/dim]")
+            logger.info(f"Loading local agents from: {self.agent_dir}")
             
             # Load agents from directory
             init_agents(self.agent_dir)

@@ -38,7 +38,7 @@ from aworld.output import Outputs
 from aworld.output.base import MessageOutput, Output
 from aworld.runners.hook.hooks import HookPoint
 from aworld.runners.hook.utils import run_hooks
-from aworld.sandbox.base import Sandbox
+from aworld.sandbox import Sandbox
 from aworld.utils.common import sync_exec, nest_dict_counter
 from aworld.utils.serialized_util import to_serializable
 import aworld.runners.hook.agent_hooks
@@ -917,7 +917,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
                     # Check if we got a valid response
                     if llm_response and (llm_response.content or llm_response.tool_calls or llm_response.reasoning_content):
-                        logger.info(f"LLM Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False)}")
+                        logger.info(f"LLM Execute response: {json.dumps(llm_response.to_dict(), ensure_ascii=False, default=str)}")
                         if llm_response:
                             usage_process(llm_response.usage, message.context)
                         return llm_response

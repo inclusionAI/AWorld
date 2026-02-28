@@ -5,7 +5,7 @@ from aworld.sandbox.api.base_sandbox_api import BaseSandboxApi
 from aworld.sandbox.models import SandboxStatus, SandboxEnvType, SandboxLocalResponse
 
 
-class LocalSandboxApi(BaseSandboxApi):
+class SandboxApi(BaseSandboxApi):
     """
     API implementation for local sandbox operations.
     """

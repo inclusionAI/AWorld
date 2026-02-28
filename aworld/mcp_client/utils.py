@@ -1,8 +1,10 @@
 import asyncio
 import json
+import os
+import threading
 import traceback
 from contextlib import AsyncExitStack
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
 import requests
@@ -250,10 +252,6 @@ async def run(mcp_servers: list[MCPServer], black_tool_actions: Dict[str, List[s
                         "function": openai_function_schema,
                     }
                 )
-            logger.info(
-                f"✅ server #{i + 1} ({server.name}) connected success，tools: {len(tools)}"
-            )
-
         except Exception as e:
             logger.warning(
                 f"❌ server #{i + 1} ({server.name}) connect fail: {e}\n"
@@ -276,27 +274,10 @@ async def skill_translate_tools(
     if not skill_configs:
         return tools
 
-    # If skills is empty, exclude all tools in tool_mapping (only keep non-MCP tools)
+    # If skills is empty, keep all tools (do not filter out MCP tools)
     if not skills:
-        filtered_tools = []
-        for tool in tools:
-            if not isinstance(tool, dict) or "function" not in tool:
-                filtered_tools.append(tool)  # non-conforming, keep
-                continue
-
-            function_info = tool["function"]
-            if not isinstance(function_info, dict) or "name" not in function_info:
-                filtered_tools.append(tool)
-                continue
-
-            tool_name = function_info["name"]
-
-            # Only keep tools that are NOT in tool_mapping
-            if not tool_mapping or tool_name not in tool_mapping:
-                filtered_tools.append(tool)
-
-        logger.info(f"Skills is empty, excluded {len(tools) - len(filtered_tools)} MCP tools, kept {len(filtered_tools)} non-MCP tools")
-        return filtered_tools
+        logger.info(f"Skills is empty, keeping all {len(tools)} tools")
+        return tools or []
 
     # Collect all tool filters from skill configs
     tool_filter = {}  # {server_name: set(tool_names)} or {server_name: None} means all tools
@@ -366,8 +347,10 @@ async def skill_translate_tools(
             tool_seen.add(tool_name)
             continue
 
-        # If tool belongs to a known MCP server but not in selected skills, drop it
+        # If tool belongs to a known MCP server but not in selected skills, keep it (do not filter out non-skill tools)
         if server_name in known_mcp_servers and server_name not in selected_servers:
+            filtered_tools.append(tool)
+            tool_seen.add(tool_name)
             continue
 
         # If the server is selected, apply per-server tool filtering
@@ -748,7 +731,6 @@ async def mcp_tool_desc_transform_v2_reuse(
             )
             if _mcp_openai_tools:
                 mcp_openai_tools.extend(_mcp_openai_tools)
-            logger.info(f"✅ server ({server_name}) connected success")
         except BaseException as err:
             logger.warning(
                 f"❌ server ({server_name}) connect fail: {err}\n"
@@ -1140,7 +1122,9 @@ async def get_server_instance(
                 },
             )
             await server.connect()
-            logger.info(f"Successfully connected to STREAMABLE-HTTP server: {server_name}")
+            logger.info(
+                f"[sandbox list_tools] server={server_name} pid={os.getpid()} tid={threading.get_ident()} at={datetime.utcnow().strftime('%H:%M:%S.%f')[:-3]}"
+            )
             return server, _SESSION_ID
         else:  # stdio type
             params = {
@@ -1169,14 +1153,12 @@ async def cleanup_server(server):
     Args:
         server: Server instance
     """
+    name = getattr(server, "name", "unknown")
     try:
         if hasattr(server, "cleanup"):
             await server.cleanup()
         elif hasattr(server, "close"):
             await server.close()
-        logger.info(
-            f"Successfully cleaned up server: {getattr(server, 'name', 'unknown')}"
-        )
     except RuntimeError as e:
         # RuntimeError about cancel scope usually means cleanup is being called
         # from a different task context. Log it but don't fail.
@@ -1456,4 +1438,5 @@ def replace_mcp_servers_variables(skill_configs: Dict[str, Any] = None,
 
     if not server_set:
         return current_servers or default_servers
-    return list(server_set)
+    # Merge skill-derived servers with explicitly passed current_servers (e.g. terminal)
+    return list(server_set | set(current_servers))
