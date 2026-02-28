@@ -67,4 +67,4 @@ async def run(user_input: str):
 
 
 if __name__ == '__main__':
-    asyncio.run(run(user_input="访问 https://github.com/auto10x 然后 发一篇小红书"))
+    asyncio.run(run(user_input="截至2024年12月31日，2024年上海黄金交易所Au(T+D)合约的“最高价”与“最低价”之差约为多少元/克？"))
