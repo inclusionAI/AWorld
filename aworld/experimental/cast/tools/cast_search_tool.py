@@ -67,7 +67,8 @@ class CastSearchAction(ToolAction):
                 name="include_patterns",
                 type="array",
                 required=False,
-                desc="List of file patterns to include"
+                desc="List of file patterns to include",
+                items={"type": "string"}
             ),
             "show_details": ParamInfo(
                 name="show_details",
