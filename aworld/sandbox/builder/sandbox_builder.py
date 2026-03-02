@@ -296,6 +296,8 @@ class SandboxBuilder:
         pattern: str,
         max_matches: Optional[int] = None,
         max_per_file: Optional[int] = None,
+        before: int = 0,
+        after: int = 0,
     ):
         """Proxy to Sandbox.file.search_content for IDE completion."""
         instance = self.build()
@@ -304,6 +306,8 @@ class SandboxBuilder:
             pattern=pattern,
             max_matches=max_matches,
             max_per_file=max_per_file,
+            before=before,
+            after=after,
         )
 
     async def search_files(
