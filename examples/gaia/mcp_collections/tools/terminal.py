@@ -184,17 +184,10 @@ class TerminalActionCollection(ActionCollection):
         start_time = datetime.now()
 
         try:
-            # Create appropriate subprocess for platform.
-            # On Unix: start_new_session=True runs command in new process group so it survives
-            # Ctrl+C (SIGINT) to the parent; the command keeps running in background when interrupted.
-            # On Windows: creationflags for similar isolation (CREATE_NEW_PROCESS_GROUP).
+            # Create appropriate subprocess for platform
             if self.platform_info["system"] == "Windows":
                 process = await asyncio.create_subprocess_shell(
-                    command,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE,
-                    shell=True,
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, shell=True
                 )
             else:
                 process = await asyncio.create_subprocess_shell(
@@ -203,7 +196,6 @@ class TerminalActionCollection(ActionCollection):
                     stderr=asyncio.subprocess.PIPE,
                     shell=True,
                     executable="/bin/bash",
-                    start_new_session=True,
                 )
 
             try:

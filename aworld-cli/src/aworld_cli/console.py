@@ -128,64 +128,54 @@ class AWorldCLI:
         await handler(config, current_config)
     
     async def _edit_models_config(self, config, current_config: dict):
-        """Edit models section of config (providers, api_key, model, base_url)."""
+        """Edit models.default (flat: provider, api_key, model, base_url)."""
         from rich.table import Table
 
         from .core.config import resolve_stream_value
         
         if 'models' not in current_config:
             current_config['models'] = {}
-        
-        providers = ['openai', 'anthropic', 'gemini']
-        self.console.print("\n[bold]Model provider:[/bold]")
-        for i, provider in enumerate(providers, 1):
-            self.console.print(f"  {i}. {provider}")
-        
-        provider_choice = Prompt.ask("\nSelect provider (1-3)", default="1")
-        try:
-            provider_idx = int(provider_choice) - 1
-            if provider_idx < 0 or provider_idx >= len(providers):
-                self.console.print("[red]Invalid selection[/red]")
-                return
-            selected_provider = providers[provider_idx]
-        except ValueError:
-            self.console.print("[red]Invalid selection[/red]")
-            return
-        
-        if selected_provider not in current_config['models']:
-            current_config['models'][selected_provider] = {}
-        
-        provider_config = current_config['models'][selected_provider]
-        
-        self.console.print(f"\n[bold]Configuring {selected_provider}[/bold]")
-        current_api_key = provider_config.get('api_key', '')
+        if 'default' not in current_config['models']:
+            current_config['models']['default'] = {}
+        default_cfg = current_config['models']['default']
+        # Migrate legacy nested format to flat (take openai first, then anthropic, gemini)
+        if not default_cfg.get('api_key') and isinstance(default_cfg, dict):
+            for p in ('openai', 'anthropic', 'gemini'):
+                if isinstance(default_cfg.get(p), dict) and default_cfg[p].get('api_key'):
+                    default_cfg['api_key'] = default_cfg[p].get('api_key', '')
+                    default_cfg['model'] = default_cfg[p].get('model', '')
+                    default_cfg['base_url'] = default_cfg[p].get('base_url', '')
+                    for k in ('openai', 'anthropic', 'gemini'):
+                        default_cfg.pop(k, None)
+                    break
+
+        self.console.print("\n[bold]Default LLM configuration[/bold]")
+        self.console.print("  [dim]Provider: openai (default)[/dim]\n")
+        current_api_key = default_cfg.get('api_key', '')
         if current_api_key:
             masked_key = current_api_key[:8] + "..." if len(current_api_key) > 8 else "***"
             self.console.print(f"  [dim]Current API key: {masked_key}[/dim]")
-        api_key = Prompt.ask(
-            f"  {selected_provider.upper()}_API_KEY",
-            default=current_api_key,
-            password=True
-        )
+        api_key = Prompt.ask("  OPENAI_API_KEY", default=current_api_key, password=True)
         if api_key:
-            provider_config['api_key'] = api_key
-        
-        current_model = provider_config.get('model', '')
-        if current_model:
-            self.console.print(f"  [dim]Default: {current_model}[/dim]")
-        else:
-            self.console.print("  [dim]e.g. gpt-4, claude-3-opus · press Enter to leave empty[/dim]")
+            default_cfg['api_key'] = api_key
+
+        current_model = default_cfg.get('model', '')
+        self.console.print("  [dim]e.g. gpt-4, claude-3-opus · Enter to leave empty[/dim]")
         model = Prompt.ask("  Model name", default=current_model)
         if model:
-            provider_config['model'] = model
-        
-        current_base_url = provider_config.get('base_url', '')
-        self.console.print("  [dim]Optional · press Enter to leave empty[/dim]")
+            default_cfg['model'] = model
+        else:
+            default_cfg.pop('model', None)
+
+        current_base_url = default_cfg.get('base_url', '')
+        self.console.print("  [dim]Optional · Enter to leave empty[/dim]")
         base_url = Prompt.ask("  Base URL", default=current_base_url)
         if base_url:
-            provider_config['base_url'] = base_url
+            default_cfg['base_url'] = base_url
+        else:
+            default_cfg.pop('base_url', None)
 
-        # Stream switch (controls STREAM env, streaming display in CLI)
+        # Stream switch
         stream_str = 'true' if resolve_stream_value(current_config) == '1' else 'false'
         self.console.print("  [dim]Enable streaming display (sets STREAM=1)[/dim]")
         stream_choice = Prompt.ask("  Stream (true/false)", default=stream_str)
@@ -195,14 +185,15 @@ class AWorldCLI:
         else:
             current_config['stream'] = False
             os.environ['STREAM'] = '0'
-        
+
         config.save_config(current_config)
         self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
-        
-        table = Table(title=f"{selected_provider.upper()} Configuration", box=box.ROUNDED)
+        table = Table(title="Default LLM Configuration", box=box.ROUNDED)
         table.add_column("Setting", style="cyan")
         table.add_column("Value", style="green")
-        for key, value in provider_config.items():
+        for key, value in default_cfg.items():
+            if key == 'provider':
+                continue  # Not exposed, defaults to openai
             if key == 'api_key':
                 masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
                 table.add_row(key, masked_value)
@@ -218,17 +209,18 @@ class AWorldCLI:
             current_config['skills'] = {}
 
         skills_cfg = current_config['skills']
+        print('skills_cfg: ', skills_cfg)
         self.console.print("\n[bold]Skills paths:[/bold]")
         self.console.print("  [dim]Paths are relative to home or absolute. Use semicolon (;) to separate multiple paths. Enter to keep, '-' to clear.[/dim]\n")
 
         # Global SKILLS_PATH
-        current = skills_cfg.get('skills_path', '')
-        val = Prompt.ask("  SKILLS_PATH (global)", default=current or default_skills_path)
+        current = skills_cfg.get('default_skills_path', '')
+        val = Prompt.ask("  SKILLS_PATH (default)", default=current or default_skills_path)
         v = val.strip() if val else ''
         if v and v != '-':
-            skills_cfg['skills_path'] = v
+            skills_cfg['default_skills_path'] = v
         elif v == '-' or (not v and current):
-            skills_cfg.pop('skills_path', None)
+            skills_cfg.pop('default_skills_path', None)
 
         # Per-agent paths (same default as SKILLS_PATH)
         for label, key in [
