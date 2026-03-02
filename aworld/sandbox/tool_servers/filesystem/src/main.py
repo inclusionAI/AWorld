@@ -34,6 +34,7 @@ from utils.file_ops import (
     get_file_stats,
     format_size,
     edit_file_by_line_range,
+    search_content as search_content_impl,
 )
 
 # List of allowed directories for all tools
@@ -284,6 +285,34 @@ async def parse_file(
         )
 
 
+@mcp.tool(
+    description=(
+        "Search file or directory for lines matching a pattern (regex). "
+        "path can be a file or directory; if directory, recurses. "
+        "Returns one line per match: absolute_path:line_number:line_content. "
+        "Optional max_matches / max_per_file cap the number of results."
+    )
+)
+async def search_content(
+    ctx: Context,
+    path: str = Field(description="File or directory path to search"),
+    pattern: str = Field(description="Regex pattern to match in line content (e.g. keyword or full regex)"),
+    max_matches: Optional[int] = Field(None, description="Maximum total matching lines to return; default no limit"),
+    max_per_file: Optional[int] = Field(None, description="Maximum matching lines per file; default no limit"),
+) -> TextContent:
+    """Search content in file(s) by regex; path may be file or directory."""
+    valid_path = await validate_path(path, allowed_directories)
+    if not Path(valid_path).exists():
+        raise ValueError(f"Path does not exist: {path}")
+    text = await search_content_impl(
+        valid_path,
+        pattern=pattern,
+        max_matches=max_matches,
+        max_per_file=max_per_file,
+    )
+    return TextContent(type="text", text=text)
+
+
 # ==================== Disabled MCP tools (not exposed) ====================
 
 #@mcp.tool(description="Read image or audio file as base64 encoded data. Returns base64 data, MIME type, and media type (image/audio/blob).")
@@ -409,7 +438,7 @@ async def directory_tree(
     return TextContent(type="text", text=json.dumps(tree_data, indent=2))
 
 
-#@mcp.tool(description="Search for files matching pattern. Uses glob pattern matching. Recursively searches subdirectories. Supports exclude patterns. Returns list of full paths to matching files.")
+@mcp.tool(description="Search for files matching pattern. Uses glob pattern matching. Recursively searches subdirectories. Supports exclude patterns. Returns list of full paths to matching files.")
 async def search_files(
     ctx: Context,
     path: str = Field(description="Search root path"),
