@@ -290,6 +290,36 @@ class SandboxBuilder:
         instance = self.build()
         return await instance.file.list_allowed_directories()
 
+    async def search_content(
+        self,
+        path: str,
+        pattern: str,
+        max_matches: Optional[int] = None,
+        max_per_file: Optional[int] = None,
+    ):
+        """Proxy to Sandbox.file.search_content for IDE completion."""
+        instance = self.build()
+        return await instance.file.search_content(
+            path=path,
+            pattern=pattern,
+            max_matches=max_matches,
+            max_per_file=max_per_file,
+        )
+
+    async def search_files(
+        self,
+        path: str,
+        pattern: str,
+        exclude_patterns: Optional[List[str]] = None,
+    ):
+        """Proxy to Sandbox.file.search_files for IDE completion."""
+        instance = self.build()
+        return await instance.file.search_files(
+            path=path,
+            pattern=pattern,
+            exclude_patterns=exclude_patterns,
+        )
+
     async def run_code(self, code: str, timeout: int = 30, output_format: str = "markdown"):
         """Proxy to Sandbox.terminal.run_code for IDE completion."""
         instance = self.build()
