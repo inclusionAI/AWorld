@@ -1087,12 +1087,14 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             if not is_json:
                 display_content = result_content
 
-        # Tool results: single line, truncated at end; each line indented
+        # Tool results: up to 3 lines, truncated at end; each line indented
         if display_content:
-            first_line = display_content.split('\n')[0].strip()
-            first_line = first_line[:100] + "..." if len(first_line) > 100 else first_line
+            lines = [ln.strip() for ln in display_content.split('\n')[:3] if ln.strip()]
+            for i, ln in enumerate(lines):
+                lines[i] = ln[:500] + "..." if len(ln) > 100 else ln
             self.console.print(f"⚡ [bold]{tool_info}[/bold]")
-            self._print_indented_line(first_line)
+            for ln in lines:
+                self._print_indented_line(ln)
         else:
             # No content case - still show header but indicate no output
             self.console.print(f"⚡ [bold]{tool_info}[/bold]", style="dim")
