@@ -499,7 +499,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     def _render_stream_display():
                         """Build combined renderable: stats line, agent name, content, tool_calls (refreshed together)."""
                         nonlocal accumulated_stream_content, accumulated_tool_calls, stream_token_stats, status_start_time
-                        logger.info(f"accumulated_stream_content {accumulated_stream_content}")
                         parts = [Text("")]
                         elapsed_str = format_elapsed((datetime.now() - status_start_time).total_seconds()) if status_start_time else "0.0s"
                         msg = stream_token_stats.format_streaming_line(elapsed_str)
