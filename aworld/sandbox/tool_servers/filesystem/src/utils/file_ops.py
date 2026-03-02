@@ -1,7 +1,11 @@
 """File operation helper functions."""
 
 import asyncio
+import os
+import re
 from pathlib import Path
+from typing import Optional
+
 import tempfile
 import base64
 import mimetypes
@@ -298,6 +302,74 @@ async def edit_file_by_line_range(
         await write_file(path, modified_norm)
 
     return formatted_diff
+
+
+def _search_content_sync(
+    path: str,
+    pattern: str,
+    max_matches: Optional[int],
+    max_per_file: Optional[int],
+) -> str:
+    """Synchronously search file(s) for lines matching a regex. path may be file or directory."""
+    try:
+        re_obj = re.compile(pattern)
+    except re.error as e:
+        raise ValueError(f"Invalid regex pattern: {pattern}") from e
+
+    results: list[tuple[str, int, str]] = []
+    path_obj = Path(path).resolve()
+
+    def search_one_file(file_path: str) -> bool:
+        """Search one file; return True if caller should stop (max_matches reached)."""
+        count_in_file = 0
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                for line_no, line in enumerate(f, 1):
+                    if re_obj.search(line):
+                        results.append((file_path, line_no, line.rstrip("\n\r")))
+                        count_in_file += 1
+                        if max_per_file is not None and count_in_file >= max_per_file:
+                            break
+                        if max_matches is not None and len(results) >= max_matches:
+                            return True
+        except (UnicodeDecodeError, OSError):
+            pass
+        return False
+
+    if path_obj.is_file():
+        search_one_file(str(path_obj))
+    else:
+        for root, _, files in os.walk(str(path_obj)):
+            for name in files:
+                full = Path(root) / name
+                if not full.is_file() or not _is_text_file_sync(str(full)):
+                    continue
+                if search_one_file(str(full)):
+                    return (
+                        "\n".join(f"{p}:{n}:{c}" for (p, n, c) in results)
+                        if results
+                        else "No matches found"
+                    )
+
+    return "\n".join(f"{p}:{n}:{c}" for (p, n, c) in results) if results else "No matches found"
+
+
+async def search_content(
+    path: str,
+    pattern: str,
+    max_matches: Optional[int] = None,
+    max_per_file: Optional[int] = None,
+) -> str:
+    """Search file or directory for lines matching pattern (regex). Returns path:line_no:content per line."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        _search_content_sync,
+        path,
+        pattern,
+        max_matches,
+        max_per_file,
+    )
 
 
 async def read_media_file(path: str) -> tuple[str, str, str]:
