@@ -72,8 +72,18 @@ Once configured, simply type aworld-cli in your terminal to start your journey.
 
 ## Automate Creation with AWorld-CLI
 <p align="justify">
-AWorld-CLI goes beyond simple scaffolding. It acts as a central brain, orchestrating specialized sub-agents—<b>the Developer</b> and <b>the Evaluator</b>—to build, test, and refine applications autonomously.
+AWorld-CLI goes beyond simple scaffolding. It acts as a central brain, the AWorld Agent, which orchestrates a team of specialized sub-agents to build, evaluate, and even evolve other agents autonomously.
+
+This multi-agent system works in concert to turn your ideas into reality:
 </p>
+
+| Agent Name | Role & Core Function |
+|------------|----------------------|
+| 👑 AWorld Agent | **The Orchestrator**: The central brain that interprets user goals, creates a plan, and delegates tasks to the appropriate sub-agents. It manages the entire workflow from start to finish. |
+| 🧑‍💻 Developer | **The Builder**: The master craftsman responsible for writing, debugging, and refactoring code. It leverages the CAST toolset to understand and modify complex codebases with high precision. |
+| 🧐 Evaluator | **The Judge**: The quality assurance expert. It assesses the Developer's output against objective criteria defined by Skills (e.g., UI score), providing the critical feedback required for the evolution loop. |
+| 🧙 Text2Agent | **The Agent Architect**: Creates entirely new agents from a simple natural language description. It automates the boilerplate and setup, allowing you to bootstrap new capabilities instantly. |
+| 🚀 Optimizer | **The Performance Tuner**: Analyzes and refines existing agents. It can improve an agent's prompts, tool selection, and overall workflow to enhance its efficiency and effectiveness, evolving your agent workforce itself. |
 
 ### The Evolution Loop: Build -> Evaluate -> Evolve
 
