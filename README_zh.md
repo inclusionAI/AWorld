@@ -1,12 +1,12 @@
 <div align="center">
 
-# AWorld：为你的领域打造智能体
+# AWorld：为你的世界打造的智能体工坊
 
 </div>
 
 <h4 align="center">
 
-*「AI 的下一站，是你的专业能力」*
+*「AI 的下一个前沿，是你的专业领域」*
 
 [![Twitter Follow][twitter-image]][twitter-url]
 [![WeChat QR Code][wechat-image]][wechat-url]
@@ -22,221 +22,159 @@
 <h4 align="center">
 
 [English](./README.md) |
-[自动化](#your-journey-with-aworld-cli) |
-[手动构建](#total-control-manually-crafting-agent-systems) |
+[自动化](#使用-aworld-cli-自动化创建) |
+[手动](#完全掌控手动构建智能体系统) |
 [演进](#evolution) |
 [参与贡献](#contributing) |
 
-<!-- [经验与样本](#experience-to-samples) |
-[训练](#training) | -->
 
 </h4>
 
 ---
 
 <p align="justify">
-通用 AI 再强，也会撞上「语境之墙」——这堵墙由细粒度工作流、领域数据和长期积累的直觉砌成，构成了你的专业世界。从科研、金融到复杂工程，通用模型翻不过这道墙，也说不了你的「行话」。
+通用 AI 再强大，也有一道「语境之墙」——它由你领域里细碎的工作流、专属数据和来之不易的直觉砌成。从科研、金融分析到复杂工程，通用模型翻不过这道墙，也说不了你的「行话」。
 
-AWorld 的论点是：AI 的真正扩展，来自让像你这样的专家在这堵墙上开一扇门。
+越来越多共识指出：AI 智能体的真正力量，不仅来自核心模型，更来自协调其工具、记忆与执行循环的**智能体缰绳（Agent Harness）**。AWorld 的立场与此一致：只有当像你这样的专家能为自己的领域打造专属的 Harness、在这道墙上开一扇门时，真正的 AI 规模化才会发生。
 
-AWorld-CLI 就是为此设计的平台。我们提供一套基础「配方」，让你把知识和洞察注入一支支自主智能体，从通用承诺走向在你领域里精准可用的应用。
+AWorld 及其 CLI 模式正是为此设计的平台。我们提供基础配方，让你——作为专家——把知识与洞察注入一支支自主智能体，从而从「通用承诺」走向在你世界中精准落地的、稳健的应用。
 </p>
 
-<!-- 
-![](./readme_assets/aworld_loop.png) -->
-<!-- 
-> 💡 更多信息请访问[官网](https://www.aworldagents.com/)，或体验在线[环境](https://www.aworldagents.com/environments)与[智能体](https://playground.aworldagents.com/)。  -->
 
-
-<a id="your-journey-with-aworld-cli"></a>
-# 开启你的 AWorld-CLI 之旅
-从深思熟虑到可进化的自主智能体，从你指尖开始。
+# 使用 AWorld-CLI 开启你的旅程
+从想法到可演进、可自主运行的智能体，一切从你的指尖开始。
 
 
 ## 安装与激活
 
-在 AWorld/aworld-cli 下创建 .env，配置 AWorld Agent 及其所创建智能体的基础模型，例如：
-```bash
-LLM_MODEL_NAME="your_model_name, Claude-Sonnet-4 or above suggested"
-LLM_PROVIDER="openai"
-LLM_API_KEY="your_model_api_key"
-LLM_BASE_URL="your_model_base_url"
-```
+一次安装，全局配置，随处运行。
 
-**安装并进入 AWorld-CLI：**
+**安装 AWorld-CLI**
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
 conda create -n aworld_env python=3.11 -y && conda activate aworld_env 
 
 pip install -e . && cd aworld-cli && pip install -e .
-
-aworld-cli
 ```
 
 
-## 创建智能体
-<p align="justify">
-通过自然语言描述您的任务，例如“创建一个能生成HTML报告的智能体”，即可快速为您的任务搭建好智能体。AWorld-CLI 会处理所有样板代码，让您可以专注于核心逻辑。
+**配置与启动**
 
+```bash
+cd 你的工作目录
+
+aworld-cli --config
+```
+
+配置完成后，在终端输入 `aworld-cli` 即可开始使用。
+
+你也可以在工作目录下创建 `.env` 文件来配置模型与 API。详见 [环境配置](./README_env_config.md)。
+
+
+## 使用 AWorld-CLI 自动化创建
+<p align="justify">
+AWorld-CLI 不止于简单脚手架。它作为中枢大脑——AWorld Agent——协调一组专职子智能体，自主地构建、评估乃至演进其他智能体。
+
+这套多智能体系统协同工作，将你的想法变为现实：
 </p>
 
-
-<!-- ![](./readme_assets/aworld_cli_text2agent.png) -->
-***让 AWorld Agent 为你构建智能体***
-![](./readme_assets/aworld_cli_demo_step1.gif)
-
-<p align="justify">
-该命令会生成可直接运行的智能体文件，以我们精选的 Verified Skills 为底座，并挂载全局配置，生成后即可执行。
-
-智能体一旦生成，会持久保存在 ~/.agents 目录，可重复使用。
-</p>
-
-
-### Verified Skills：自动化创建智能体的「基因库」
-<div align="justify">
-Verified Skills 不仅是模板集合，更是经过验证的专家能力池。
-</div>
-
-<br>
-
-<p align="justify">
-自动化创建新智能体时，AWorld-CLI 不会从零开始，而是智能引用这些久经考验的 Skills（见<a href="#evolution">演进</a>），以确保其稳健性，同时也会从您位于 ~/agents 文件夹中的自定义 Skills 中学习。这种双重继承机制，确保了每个智能体不仅从诞生之初就稳定可靠，适应您的特定需求。
-</p>
-
-<table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
-  <colgroup>
-    <col style="width: 40%;">
-    <col style="width: 60%;">
-  </colgroup>
-  <thead>
-    <tr>
-      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">技能</th>
-      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">描述</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td style="padding: 8px; vertical-align: top;">🚀 PPT 智能体</td>
-      <td style="padding: 8px; vertical-align: top;">根据文档、大纲或数据，创建精美的演示文稿。</td>
-    </tr>
-    <tr>
-      <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch 智能体</td>
-      <td style="padding: 8px; vertical-align: top;">对指定主题进行全面、多源的研究，并整合生成一份结构化的报告。</td>
-    </tr>
-  </tbody>
+<table>
+<colgroup>
+<col style="width: 400px">
+<col>
+</colgroup>
+<thead>
+<tr><th>智能体名称</th><th>角色与核心职能</th></tr>
+</thead>
+<tbody>
+<tr><td>👑 AWorld Agent</td><td><strong>编排者</strong>：中枢大脑，理解用户目标、制定计划并将任务分派给合适的子智能体，从头到尾管理整个工作流。</td></tr>
+<tr><td>🧑‍💻 Developer</td><td><strong>构建者</strong>：负责编写、调试与重构代码（如适用的 HTML）的主工匠。</td></tr>
+<tr><td>🧐 Evaluator</td><td><strong>评判者</strong>：质量保障专家。根据由 Skill 定义的客观标准（如 UI 分数）评估 Developer 的输出，为演进循环提供关键反馈。</td></tr>
+</tbody>
 </table>
 
+### 演进循环：构建 → 评估 → 演进
 
-## 运行智能体
+假设你提出：*「帮我做一个英语单词学习小应用，UI 质量分数要高于 0.9。」*
+
+*   **Developer 构建**：`Developer` 智能体分析需求并编写代码（如 HTML/JS），使用 **CAST**——我们专为代码分析与压缩设计的工具集，让智能体能以手术级精度阅读和修改复杂仓库。
+*   **Evaluator 评判**：`Evaluator` 智能体使用经过验证的 Skill（如专业 UI 评估 Skill）检查输出。
+*   **循环精修**：若分数未达目标（如 0.7），AWorld 会指示 Developer 根据 Evaluator 指出的具体问题修复。该循环持续直到满足你的标准。
+
+***观看自演进循环演示***
+
+[![在 YouTube 观看](https://img.shields.io/badge/观看-自演进循环-red?style=for-the-badge&logo=youtube)](https://youtube.com/shorts/F7INIq5HG1g?feature=share)
+
+
+### 无评估则无演进
+<div align="justify">
+智能体要进步，必须先知道「好」长什么样。Skill 就是答案——它们是可复用、可验证的领域知识模块。
+
+
+AWorld 引入<b>共享 Skill 体系</b>，让你的知识直接驱动整个演进循环：
+<ul>
+    <li><b>对 Evaluator</b>：Skill（如<i>法律合同审查、UI 美学评分、金融风险评估</i>）提供具体指标，教 Evaluator 如何自主评判表现并发现缺陷。</li>
+    <li><b>对 Developer</b>：Developer 也可直接调用这些 Skill 作为工具，提升自身能力，确保产出从一开始就符合高标准。</li>
+</ul>
+
+由此形成强协同：Evaluator 设定目标，Developer 用同一套知识库去达成。
+</div>
+
+*   **官方库**：位于 `AWorld/aworld-skills` 的优质、已验证 Skill 集合（如 UI 美学评估），开箱即用。
+*   **把你的专长变成 Skill**：这是 AWorld 拓展新领域的方式。将你的知识编码成 Skill 并放入 `~/.aworld/skills`，CLI 会自动索引，立即升级你的 Developer 与 Evaluator。**你的贡献是解锁新智能体能力、惠及所有人的关键。**
+
+
+### 你才是终极评判者
 <p align="justify">
-向 AWorld Agent 发出指令，让它用你刚创建的智能体执行任务，比如“让html智能体制作一个贝克汉姆的介绍报告”；每次调用、动作与观测都会写入详细轨迹日志，保存在本地目录。
+Evaluator 自动化精修循环，但你的直觉仍是天花板。AWorld 旨在放大你的专长，而非取代它。
+</p>
+
+<p align="justify">
+你可以在任意阶段介入。对生成的视频、应用或报告给出自然语言反馈。AWorld Agent 将你的批评视为高优先级约束，把你的主观品味或细微要求解读为对 Developer 的直接指令。无论是来自 Skill 的自动分数，还是你的人工指导，精准反馈驱动精准演进。
 </p>
 
 
-<!-- ![](./readme_assets/aworld_cli_run_task.png) -->
-***让新创建的智能体为你工作***
-![](./readme_assets/aworld_cli_demo_step2.gif)
-
-## 进化智能体
+### CAST：强大的文件管理工具
 <p align="justify">
-若智能体的表现未达预期，你可以用多种方式迭代改进它。
-
-**手动进化**
-<p align="justify">
-你是专家。直接打开生成的智能体 Python 文件，按需调整提示词、逻辑或工具使用，完全可控。
+LLM 智能体在真实代码仓库中常常失败，因为被代码复杂度和有限上下文窗口压垮。为此我们构建了 <b>CAST</b>——让智能体以超高效理解与修改大型代码库的专用引擎。
 </p>
 
-**一颗赛艇：AI 辅助进化**
 <p align="justify">
-这正是 AWorld 的真正强大之处！用您期望的修改来提示 AWorld，例如“帮我优化这个HTML智能体，让它能够浏览网页、下载并插入图片到HTML中”。然后，它会将任务分配给我们内置的 Optimizer Agent（优化器智能体）——一个专门的代码智能体，来作为您的 AI 结对程序员。因为您创建的所有智能体都继承自一个统一的 AWorld 基类，所以 Optimizer Agent 对智能体的结构有全局的理解能力。这使其能够对智能体的代码进行推理并进行精确修改，以实现您的逻辑，使其能力进化——这远非简单的提示词调优所能及。
+CAST 不是让智能体读扁平文本，而是提供压缩的、层次化的代码理解，相当于给智能体一套建筑蓝图而非一堆砖块。它实现：
 </p>
 
-<!-- 
-***AI 辅助进化示意图***
-![](./readme_assets/mas_meta_learning_v2.png)  -->
+*   **层次化导航**：智能体可从高层架构（逻辑/骨架层）瞬间下钻到具体实现，理解代码意图而不迷失细节。
+*   **近乎无限的上下文**：CAST 智能压缩代码，只喂给智能体相关信息，有效打破上下文窗口限制，使其能对海量代码库进行推理。
+*   **精准代码修改**：在理解代码结构与依赖后，Developer 可做精确修改、应用复杂补丁并以 pinpoint 精度重构，避免「盲目」文本替换的常见错误。
 
 
-***AI 优化你的智能体并让它更专业***
-![](./readme_assets/aworld_cli_demo_step3.gif)
-
-
-<!-- ***让优化后的智能体为你做更复杂的工作***
-![](./readme_assets/aworld_cli_demo_step4.gif) -->
-
-**愿景：自进化**
-<p align="justify">
-未来形态：无需你写具体提示，系统根据奖励信号（如校验失败、偏离某 Verified Skill）自动发现次优表现，触发自主优化循环，让智能体在评估驱动下自进化，减少持续人工干预。
-</p>
-
-优化满意后，智能体会持久保存在 ~/.agents，可重复使用。
-</p>
-
-
-<a id="total-control-manually-crafting-agent-systems"></a>
 # 完全掌控：手动构建智能体系统
+
 <p align="justify">
-在 AWorld 中，智能体即「模型 + 工具」。但真实场景常需多智能体协作。为此，AWorld 提供灵活构建路径，让你手动搭建复杂多智能体系统。
+在 AWorld 中，一个智能体即「模型 + 工具」。但现实问题往往需要不止一个智能体。AWorld 通过灵活构建路径给你完全控制权，让你手动打造复杂的多智能体协作系统。
 </p>
 
-1. 灵活的多智能构建和编排, 丰富的开箱即用沙盒环境, 详尽的运行时日志记录 [Docs](https://inclusionai.github.io/AWorld/Get%20Start/Core%20Capabilities/)
+1. 灵活的多智能体编排、丰富环境沙箱、完整可观测性追踪 [文档](https://inclusionai.github.io/AWorld/Get%20Start/Core%20Capabilities/)
 
-2. 多任务并行执行, 流式模型返回 [Docs](https://inclusionai.github.io/AWorld/Get%20Start/Parallel%20Tasks/)
+2. 并行任务运行时、流式响应 [文档](https://inclusionai.github.io/AWorld/Get%20Start/Parallel%20Tasks/)
 
-3. 人和Agent全双工互动 [Docs](https://inclusionai.github.io/AWorld/Get%20Start/HITL/)
-
-
-想直接体验？在 AWorld [Playground](https://playground.aworldagents.com/) 加载预置 DeepResearch 团队，查看源码并端到端运行。
-
-# MAS演练场: 即刻运行，亲眼见证
-
-在 AWorld [Playground](https://playground.aworldagents.com/) 启动官方 DeepResearch 团队，实时观摩 AI 协作。你可以检视其源码、运行全过程，并从中获取灵感。
-
-![](./readme_assets/playground_gaiateam.gif)
-
-**从用户到创造者：让你的智能体登上舞台！**
-
-准备好构建你自己的智能体了吗？使用 aworld-cli 将你的专业知识铸造成一个强大的智能体，并将其核心能力定义在 skill.md 文件中。
-
-想让你的作品登上这个舞台？只需提交一个 Pull Request，将你的 skill.md 添加至：
-AWorld/examples/Custom_Skills/
-
-我们会在这里展示最出色的社区智能体，让你的杰作大放异彩，赋能整个社区！
+3. 人在回路（HITL）[文档](https://inclusionai.github.io/AWorld/Get%20Start/HITL/)
 
 
-<!-- 
-<a id="experience-to-samples"></a>
-# 从经验到样本
+# Evolution（演进）
 <p align="justify">
-放心迭代。运行时为每次任务记录完整历史（每次 LLM 调用、动作与奖励），可用于审计表现并生成高质量训练样本。
-</p>
-[文档](https://inclusionai.github.io/AWorld/Training/Trajectory/)
-
-
-<a id="training"></a>
-# 模型训练
-<p align="justify">
-当智能体能在环境中自由运行后，AWorld 用两种互补的训练模式形成闭环、持续提升。可接入主流 LLM 训练框架（如 AReal、Swift、Verl、Slime 等），在运行时中直接更新模型参数；适配器轻量，同一环境与智能体代码可在不同训练器间复用。
-</p>
-[文档](https://inclusionai.github.io/AWorld/Training/Trainer/)
-
-> 💡 可参考[真实案例](./train/examples/train_gaia_with_aworld_verl/main.py)，内含完整智能体训练配置。 -->
-
-
-<a id="evolution"></a>
-# 演进
-<p align="justify">
-AWorld 的目标是扛住复杂度，让你专注创新。本节展示基于 AWorld 构建的前沿多智能体成果，向 AGI 迈进。
+AWorld 的使命是承担复杂性，让你专注创新。本节展示基于 AWorld 构建的尖端多智能体系统，向 AGI 迈进。
 </p>
 
 
-#### 智能体评测
+#### 智能体基准
 
 <table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
   <thead>
     <tr>
       <th style="width: 30%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">类别</th>
-      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">成果</th>
+      <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">成就</th>
       <th style="width: 20%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">表现</th>
       <th style="width: 25%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">关键创新</th>
       <th style="width: 5%; text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">日期</th>
@@ -251,7 +189,7 @@ AWorld 的目标是扛住复杂度，让你专注创新。本节展示基于 AWo
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>GAIA Benchmark <br>Excellence</strong>
+        <strong>GAIA 基准 <br>卓越表现</strong>
         <br>
         <a href="https://huggingface.co/spaces/gaia-benchmark/leaderboard" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/GAIA-Leaderboard-blue" alt="GAIA">
@@ -266,7 +204,7 @@ AWorld 的目标是扛住复杂度，让你专注创新。本节展示基于 AWo
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-        Multi-agent system <br>stability & orchestration
+        多智能体系统 <br>稳定性与编排
         <br>
         <a href="https://arxiv.org/abs/2508.09889" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Paper-arXiv-red" alt="Paper">
@@ -277,58 +215,58 @@ AWorld 的目标是扛住复杂度，让你专注创新。本节展示基于 AWo
     <tr>
       <td style="padding: 8px; vertical-align: top;">🧠 Reasoning</td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>IMO 2025 <br>Problem Solving</strong>
+        <strong>IMO 2025 <br>解题</strong>
         <br>
         <a href="https://www.imo-official.org/year_info.aspx?year=2025" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/IMO-2025-blue" alt="IMO">
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>5/6</strong> problems <br>solved in 6 hours
+        <strong>5/6</strong> 题 <br>6 小时内解决
         <br>
         <a href="examples/imo/README.md" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
         </a>
       </td>
-      <td style="padding: 8px; vertical-align: top;">Multi-agent collaboration <br>beats solo models</td>
+      <td style="padding: 8px; vertical-align: top;">多智能体协作 <br>优于单模型</td>
       <td style="padding: 8px; vertical-align: top;">2025/07/25</td>
     </tr>
     <tr>
       <td style="padding: 8px; vertical-align: top;">🖼️ Multi-Modal</td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>OSWorld <br>Rank 1st</strong>
+        <strong>OSWorld <br>榜首</strong>
         <br>
         <a href="https://os-world.github.io/" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/OSWorld-Leaderboard-green" alt="OSWorld">
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>58.0%</strong> <br> Success Rate
+        <strong>58.0%</strong> <br> 成功率
         <br>
         <a href="examples/osworld/README.md" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
         </a>
       </td>
-      <td style="padding: 8px; vertical-align: top;">The more tools the better?</td>
+      <td style="padding: 8px; vertical-align: top;">工具越多越好？</td>
       <td style="padding: 8px; vertical-align: top;">2025/09/18</td>
     </tr>
     <tr>
       <td style="padding: 8px; vertical-align: top;">🖼️ Multi-Modal</td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>VisualWebArena Rank 1st in September</strong>
+        <strong>VisualWebArena 九月榜首</strong>
         <br>
         <a href="https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=2044883967#gid=2044883967" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/VWA-Leaderboard-green" alt="VWA">
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>36.5%</strong> <br> Success Rate
+        <strong>36.5%</strong> <br> 成功率
         <br>
         <a href="examples/visualwebarena/README.md" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Code-README-green" alt="Code">
         </a>
       </td>
-      <td style="padding: 8px; vertical-align: top;">Automated tool generation <br>
+      <td style="padding: 8px; vertical-align: top;">自动化工具生成 <br>
         <a href="https://arxiv.org/pdf/2509.21072" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/Paper-arXiv-red" alt="Paper"></td>
       <td style="padding: 8px; vertical-align: top;">2025/09/25</td>
@@ -336,7 +274,7 @@ AWorld 的目标是扛住复杂度，让你专注创新。本节展示基于 AWo
     <tr>
       <td style="padding: 8px; vertical-align: top;">🔍 Deep-Search</td>
       <td style="padding: 8px; vertical-align: top;">
-        <strong>Xbench Excellence</strong>
+        <strong>Xbench 卓越表现</strong>
         <br>
         <a href="https://xbench.org/" target="_blank" style="text-decoration: none;">
           <img src="https://img.shields.io/badge/xbench-Leaderboard-green" alt="xbench">
@@ -350,70 +288,69 @@ AWorld 的目标是扛住复杂度，让你专注创新。本节展示基于 AWo
         </a>
       </td>
       <td style="padding: 8px; vertical-align: top;">
-          AWorld has its own context engine: Amni.
+          AWorld 自有上下文引擎：Amni。
       </td>
       <td style="padding: 8px; vertical-align: top;">2025/10/23</td>
     </tr>
   </tbody>
 </table>
 
-#### 数据合成
+#### 数据与综合
 
-1. **FunReason-MT Technical Report: Overcoming the Complexity Barrier in Multi-Turn Function Calling** arxiv, 2025. [paper](https://arxiv.org/abs/2510.24645), [code](https://github.com/inclusionAI/AWorld-RL), [model](https://huggingface.co/Bingguang/FunReason-MT), [dataset](https://huggingface.co/datasets/Bingguang/FunReason-MT)
+1. **FunReason-MT 技术报告：克服多轮函数调用中的复杂度壁垒** arxiv, 2025. [论文](https://arxiv.org/abs/2510.24645), [代码](https://github.com/inclusionAI/AWorld-RL), [模型](https://huggingface.co/Bingguang/FunReason-MT), [数据集](https://huggingface.co/datasets/Bingguang/FunReason-MT)
 
     *Zengzhuang Xu, Bingguang Hao, Zechuan Wang, Yuntao Wen, Maolin Wang, etc.*
    
-2. **From Failure to Mastery: Generating Hard Samples for Tool-use Agents** arxiv, 2026. [paper](https://arxiv.org/abs/2601.01498), [code](https://github.com/inclusionAI/AWorld-RL), [model](https://huggingface.co/Bingguang/FunReason-MT), [dataset](https://huggingface.co/datasets/Bingguang/FunReason-MT)
+2. **From Failure to Mastery: Generating Hard Samples for Tool-use Agents** arxiv, 2026. [论文](https://arxiv.org/abs/2601.01498), [代码](https://github.com/inclusionAI/AWorld-RL), [模型](https://huggingface.co/Bingguang/FunReason-MT), [数据集](https://huggingface.co/datasets/Bingguang/FunReason-MT)
 
     *Bingguang Hao, Zengzhuang Xu, Yuntao Wen, Xinyi Xu, Yang Liu, etc.*
 
 
 #### 模型训练
 
-1. **AWorld: Orchestrating the Training Recipe for Agentic AI.** arxiv, 2025. [paper](https://arxiv.org/abs/2508.20404), [code](https://github.com/inclusionAI/AWorld/tree/main/train), [model](https://huggingface.co/inclusionAI/Qwen3-32B-AWorld)
+1. **AWorld: Orchestrating the Training Recipe for Agentic AI.** arxiv, 2025. [论文](https://arxiv.org/abs/2508.20404), [代码](https://github.com/inclusionAI/AWorld/tree/main/train), [模型](https://huggingface.co/inclusionAI/Qwen3-32B-AWorld)
 
     *Chengyue Yu, Siyuan Lu, Chenyi Zhuang, Dong Wang, Qintong Wu, etc.*
 
-2. **FunReason: Enhancing Large Language Models' Function Calling via Self-Refinement Multiscale Loss and Automated Data Refinement.** arxiv, 2025. [paper](https://arxiv.org/abs/2505.20192), [model](https://huggingface.co/Bingguang/FunReason)
+2. **FunReason: Enhancing Large Language Models' Function Calling via Self-Refinement Multiscale Loss and Automated Data Refinement.** arxiv, 2025. [论文](https://arxiv.org/abs/2505.20192), [模型](https://huggingface.co/Bingguang/FunReason)
 
     *Bingguang Hao, Maolin Wang, Zengzhuang Xu, Cunyin Peng, etc.*
 
-3. **Exploring Superior Function Calls via Reinforcement Learning.** arxiv, 2025. [paper](https://arxiv.org/abs/2508.05118), [code](https://github.com/BingguangHao/RLFC)
+3. **Exploring Superior Function Calls via Reinforcement Learning.** arxiv, 2025. [论文](https://arxiv.org/abs/2508.05118), [代码](https://github.com/BingguangHao/RLFC)
 
     *Bingguang Hao, Maolin Wang, Zengzhuang Xu, Yicheng Chen, etc.*
 
-4. **RAG-R1 : Incentivize the Search and Reasoning Capabilities of LLMs through Multi-query Parallelism.** arxiv, 2025. [paper](https://arxiv.org/abs/2507.02962), [code](https://github.com/inclusionAI/AgenticLearning), [model](https://huggingface.co/collections/endertzw/rag-r1-68481d7694b3fca8b809aa29)
+4. **RAG-R1 : Incentivize the Search and Reasoning Capabilities of LLMs through Multi-query Parallelism.** arxiv, 2025. [论文](https://arxiv.org/abs/2507.02962), [代码](https://github.com/inclusionAI/AgenticLearning), [模型](https://huggingface.co/collections/endertzw/rag-r1-68481d7694b3fca8b809aa29)
 
     *Zhiwen Tan, Jiaming Huang, Qintong Wu, Hongxuan Zhang, Chenyi Zhuang, Jinjie Gu*
 
-5. **V2P: From Background Suppression to Center Peaking for Robust GUI Grounding Task.** arxiv, 2025. [paper](https://arxiv.org/abs/2508.13634), [code](https://github.com/inclusionAI/AgenticLearning/tree/main/V2P)
+5. **V2P: From Background Suppression to Center Peaking for Robust GUI Grounding Task.** arxiv, 2025. [论文](https://arxiv.org/abs/2508.13634), [代码](https://github.com/inclusionAI/AgenticLearning/tree/main/V2P)
 
     *Jikai Chen, Long Chen, Dong Wang, Leilei Gan, Chenyi Zhuang, Jinjie Gu*
 
-6. **Don't Just Fine-tune the Agent, Tune the Environment** arxiv, 2025. [paper](https://arxiv.org/abs/2510.10197)
+6. **Don't Just Fine-tune the Agent, Tune the Environment** arxiv, 2025. [论文](https://arxiv.org/abs/2510.10197)
 
     *Siyuan Lu, Zechuan Wang, Hongxuan Zhang, Qintong Wu, Leilei Gan, Chenyi Zhuang, etc.*
 
 
-#### 元学习
+#### 元学习与系统
 
-1. **Profile-Aware Maneuvering: A Dynamic Multi-Agent System for Robust GAIA Problem Solving by AWorld.** arxiv, 2025. [paper](https://arxiv.org/abs/2508.09889), [code](https://github.com/inclusionAI/AWorld/blob/main/examples/gaia/README_GUARD.md)
+1. **Profile-Aware Maneuvering: A Dynamic Multi-Agent System for Robust GAIA Problem Solving by AWorld.** arxiv, 2025. [论文](https://arxiv.org/abs/2508.09889), [代码](https://github.com/inclusionAI/AWorld/blob/main/examples/gaia/README_GUARD.md)
 
     *Zhitian Xie, Qintong Wu, Chengyue Yu, Chenyi Zhuang, Jinjie Gu*
 
-2. **Recon-Act: A Self-Evolving Multi-Agent Browser-Use System via Web Reconnaissance, Tool Generation, and Task Execution.** arxiv, 2025. [paper](https://arxiv.org/pdf/2509.21072), [code](https://github.com/inclusionAI/AWorld/tree/main/examples/visualwebarena)
+2. **Recon-Act: A Self-Evolving Multi-Agent Browser-Use System via Web Reconnaissance, Tool Generation, and Task Execution.** arxiv, 2025. [论文](https://arxiv.org/pdf/2509.21072), [代码](https://github.com/inclusionAI/AWorld/tree/main/examples/visualwebarena)
 
     *Kaiwen He, Zhiwei Wang, Chenyi Zhuang, Jinjie Gu*
 
 </p>
 
 
-<a id="contributing"></a>
-# 参与贡献
+# Contributing（参与贡献）
 <p align="justify">
-我们的愿景包括：拓展 AI for Science & Business、深化自进化能力、扩充社区贡献的 Skills 库。
+我们的路线图包括扩展 AI for Science & Business 计划、深化自演进能力，以及壮大社区贡献的 Skill 库。
 
-我们欢迎开发者、研究者与领域专家加入——无论是改进框架，还是贡献你所在领域的 Skill，都很有价值。
+我们热烈欢迎开发者、研究者和领域专家加入。无论你是增强框架还是贡献本领域的 Skill，你的工作都有价值。
 
 学术引用或联系我们，请使用以下 BibTeX：
 </p>
@@ -429,6 +366,10 @@ AWorld 的目标是扛住复杂度，让你专注创新。本节展示基于 AWo
       url={https://arxiv.org/abs/2508.20404}, 
 }
 ```
+
+<!-- # Star History
+![](https://api.star-history.com/svg?repos=inclusionAI/AWorld&type=Date) -->
+
 
 <!-- resource section start -->
 <!-- image links -->
@@ -459,6 +400,8 @@ AWorld 的目标是扛住复杂度，让你专注创新。本节展示基于 AWo
 [funreason-code-url]: https://github.com/BingguangHao/FunReason
 [funreason-model-url]: https://huggingface.co/Bingguang/FunReason
 [funreason-paper-url]: https://arxiv.org/pdf/2505.20192
+<!-- [funreason-dataset-url]: https://github.com/BingguangHao/FunReason -->
+<!-- [funreason-blog-url]: https://github.com/BingguangHao/FunReason -->
 
 <!-- deepsearch links -->
 [deepsearch-code-url]: https://github.com/inclusionAI/AgenticLearning
