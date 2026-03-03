@@ -340,10 +340,8 @@ class BaseAgentExecutor(ABC, AgentExecutor):
 
     def _print_indented_line(self, line: str, indent: str = "   ") -> None:
         """
-        Print a line with proper indentation, handling line wrapping.
-
-        When a line is too long and wraps to the next line, the wrapped
-        portion should also be indented to maintain visual consistency.
+        Print a line with wrapping. Each wrapped line has the same indent and
+        content width for consistent alignment. Replaces embedded newlines.
 
         Args:
             line: The line to print
@@ -352,34 +350,21 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         if not self.console:
             return
 
-        # Get console width and calculate available width for content
-        console_width = self.console.size.width if self.console.size else 80
-        available_width = console_width - len(indent)
-
-        # If line fits within available width, print normally
-        if len(line) <= available_width:
-            self.console.print(f"{indent}{line}")
-            return
-
-        # Handle long lines by splitting and indenting wrapped portions
         import textwrap
 
-        # Wrap the line, preserving existing indentation in the original line
-        wrapped_lines = textwrap.fill(
+        line = line.replace("\n", " ").replace("\r", "").strip()
+        console_width = self.console.size.width if self.console.size else 80
+
+        wrapped = textwrap.fill(
             line,
-            width=available_width,
-            subsequent_indent='',
+            width=console_width,
+            initial_indent=indent,
+            subsequent_indent=indent,
             break_long_words=False,
-            break_on_hyphens=False
-        ).split('\n')
-
-        # Print first line with original indent
-        if wrapped_lines:
-            self.console.print(f"{indent}{wrapped_lines[0]}")
-
-            # Print subsequent lines with additional indentation
-            for wrapped_line in wrapped_lines[1:]:
-                self.console.print(f"{indent}{wrapped_line}")
+            break_on_hyphens=False,
+        )
+        # soft_wrap=True prevents Rich from re-wrapping on top of textwrap's breaks
+        self.console.print(wrapped, soft_wrap=True)
     
     def _format_tool_call(self, tool_call, idx: int):
         """
@@ -610,6 +595,24 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             )
             return tool_calls_panel
 
+    def _format_arg_display(self, value: Any, key: str | None = None, max_len: int = 100) -> List[str]:
+        """
+        Truncate value to max_len chars, then format for display with unified indent when multi-line.
+        Returns list of display lines.
+        """
+        sv = str(value)
+        if len(sv) > max_len:
+            sv = sv[:max_len - 3] + "..."
+        lines = [l.strip() for l in sv.split("\n") if l.strip()]
+        prefix = f"   {key}: " if key else "   "
+        indent = " " * len(prefix)
+        if not lines:
+            return [f"{prefix}{sv.strip()}"]
+        result = []
+        for i, line in enumerate(lines):
+            result.append(f"{prefix}{line}" if i == 0 else f"{indent}{line}")
+        return result
+
     def _format_tool_calls_display_lines(self, tool_calls, merged_args_override=None) -> List[str]:
         """
         Format tool calls into display lines (markup strings). Used by stream display and message output.
@@ -695,9 +698,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                     if args_dict:
                         # tool_lines.append("   [dim]Arguments：[/dim]")
                         for key, value in args_dict.items():
-                            sv = str(value).replace('\n', ' ').strip()
-                            display = sv[:47] + "..." if len(sv) > 50 else sv
-                            tool_lines.append(f"   {key}: {display}")
+                            tool_lines.extend(self._format_arg_display(value, key=key))
                 else:
                     function_args = getattr(tool_call.function, 'arguments', '') if hasattr(tool_call, 'function') and tool_call.function else ''
                     if function_args:
@@ -708,19 +709,13 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                                     if isinstance(args_dict, dict) and args_dict:
                                         # tool_lines.append("   [dim]Arguments：[/dim]")
                                         for key, value in args_dict.items():
-                                            sv = str(value).replace('\n', ' ').strip()
-                                            display = sv[:47] + "..." if len(sv) > 50 else sv
-                                            tool_lines.append(f"   {key}: {display}")
+                                            tool_lines.extend(self._format_arg_display(value, key=key))
                                 except json.JSONDecodeError:
                                     # tool_lines.append("   [dim]Arguments：[/dim]")
-                                    sv = function_args.replace('\n', ' ').strip()
-                                    display = sv[:97] + "..." if len(sv) > 100 else sv
-                                    tool_lines.append(f"   {display}")
+                                    tool_lines.extend(self._format_arg_display(function_args, key=None))
                             else:
                                 # tool_lines.append("   [dim]Arguments：[/dim]")
-                                sv = str(function_args).replace('\n', ' ').strip()
-                                display = sv[:97] + "..." if len(sv) > 100 else sv
-                                tool_lines.append(f"   {display}")
+                                tool_lines.extend(self._format_arg_display(function_args, key=None))
                         except Exception:
                             # tool_lines.append("   [dim]Arguments：[/dim]")
                             tool_lines.append("   [dim red]Argument parsing failed[/dim red]")
