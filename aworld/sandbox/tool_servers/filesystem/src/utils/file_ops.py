@@ -309,6 +309,8 @@ def _search_content_sync(
     pattern: str,
     max_matches: Optional[int],
     max_per_file: Optional[int],
+    before: int,
+    after: int,
 ) -> str:
     """Synchronously search file(s) for lines matching a regex. path may be file or directory."""
     try:
@@ -316,42 +318,68 @@ def _search_content_sync(
     except re.error as e:
         raise ValueError(f"Invalid regex pattern: {pattern}") from e
 
-    results: list[tuple[str, int, str]] = []
+    results: list[str] = []
+    total_matches = 0
     path_obj = Path(path).resolve()
 
-    def search_one_file(file_path: str) -> bool:
-        """Search one file; return True if caller should stop (max_matches reached)."""
-        count_in_file = 0
+    def process_file(file_path: str) -> None:
+        nonlocal total_matches
+
         try:
             with open(file_path, "r", encoding="utf-8") as f:
-                for line_no, line in enumerate(f, 1):
-                    if re_obj.search(line):
-                        results.append((file_path, line_no, line.rstrip("\n\r")))
-                        count_in_file += 1
-                        if max_per_file is not None and count_in_file >= max_per_file:
-                            break
-                        if max_matches is not None and len(results) >= max_matches:
-                            return True
+                lines = f.readlines()
         except (UnicodeDecodeError, OSError):
-            pass
-        return False
+            return
+
+        if not lines:
+            return
+
+        match_indices: list[int] = []
+
+        for idx, line in enumerate(lines):
+            if re_obj.search(line):
+                # Respect per-file limit
+                if max_per_file is not None and len(match_indices) >= max_per_file:
+                    break
+                # Respect global limit
+                if max_matches is not None and total_matches >= max_matches:
+                    break
+
+                match_indices.append(idx)
+                total_matches += 1
+
+        if not match_indices:
+            return
+
+        # Collect context lines around matches, inclusive of the match line
+        indices: set[int] = set()
+        last_index = len(lines) - 1
+
+        for m in match_indices:
+            start_idx = max(0, m - before)
+            end_idx = min(last_index, m + after)
+            for i in range(start_idx, end_idx + 1):
+                indices.add(i)
+
+        for i in sorted(indices):
+            line_no = i + 1
+            content = lines[i].rstrip("\n\r")
+            results.append(f"{file_path}:{line_no}:{content}")
 
     if path_obj.is_file():
-        search_one_file(str(path_obj))
+        process_file(str(path_obj))
     else:
         for root, _, files in os.walk(str(path_obj)):
             for name in files:
                 full = Path(root) / name
                 if not full.is_file() or not _is_text_file_sync(str(full)):
                     continue
-                if search_one_file(str(full)):
-                    return (
-                        "\n".join(f"{p}:{n}:{c}" for (p, n, c) in results)
-                        if results
-                        else "No matches found"
-                    )
+                # Stop early if global limit already reached
+                if max_matches is not None and total_matches >= max_matches:
+                    break
+                process_file(str(full))
 
-    return "\n".join(f"{p}:{n}:{c}" for (p, n, c) in results) if results else "No matches found"
+    return "\n".join(results) if results else "No matches found"
 
 
 async def search_content(
@@ -359,8 +387,10 @@ async def search_content(
     pattern: str,
     max_matches: Optional[int] = None,
     max_per_file: Optional[int] = None,
+    before: int = 0,
+    after: int = 0,
 ) -> str:
-    """Search file or directory for lines matching pattern (regex). Returns path:line_no:content per line."""
+    """Search file or directory for lines matching pattern (regex). Returns path:line_no:content per line, with optional context before/after."""
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(
         None,
@@ -369,6 +399,8 @@ async def search_content(
         pattern,
         max_matches,
         max_per_file,
+        before,
+        after,
     )
 
 
