@@ -77,36 +77,33 @@ AWorld-CLI goes beyond simple scaffolding. It acts as a central brain, the AWorl
 This multi-agent system works in concert to turn your ideas into reality:
 </p>
 
-| Agent Name | Role & Core Function |
-|------------|----------------------|
-| 👑 AWorld Agent | **The Orchestrator**: The central brain that interprets user goals, creates a plan, and delegates tasks to the appropriate sub-agents. It manages the entire workflow from start to finish. |
-| 🧑‍💻 Developer | **The Builder**: The master craftsman responsible for writing, debugging, and refactoring code. It leverages the CAST toolset to understand and modify complex codebases with high precision. |
-| 🧐 Evaluator | **The Judge**: The quality assurance expert. It assesses the Developer's output against objective criteria defined by Skills (e.g., UI score), providing the critical feedback required for the evolution loop. |
-| 🧙 Text2Agent | **The Agent Architect**: Creates entirely new agents from a simple natural language description. It automates the boilerplate and setup, allowing you to bootstrap new capabilities instantly. |
-| 🚀 Optimizer | **The Performance Tuner**: Analyzes and refines existing agents. It can improve an agent's prompts, tool selection, and overall workflow to enhance its efficiency and effectiveness, evolving your agent workforce itself. |
+<table>
+<colgroup>
+<col style="width: 220px">
+<col>
+</colgroup>
+<thead>
+<tr><th>Agent Name</th><th>Role & Core Function</th></tr>
+</thead>
+<tbody>
+<tr><td>👑 AWorld Agent</td><td><strong>The Orchestrator</strong>: The central brain that interprets user goals, creates a plan, and delegates tasks to the appropriate sub-agents. It manages the entire workflow from start to finish.</td></tr>
+<tr><td>🧑‍💻 Developer</td><td><strong>The Builder</strong>: The master craftsman responsible for writing, debugging, and refactoring code. It leverages the CAST toolset to understand and modify complex codebases with high precision.</td></tr>
+<tr><td>🧐 Evaluator</td><td><strong>The Judge</strong>: The quality assurance expert. It assesses the Developer's output against objective criteria defined by Skills (e.g., UI score), providing the critical feedback required for the evolution loop.</td></tr>
+<tr><td>🧙 Text2Agent</td><td><strong>The Agent Architect</strong>: Creates entirely new agents from a simple natural language description. It automates the boilerplate and setup, allowing you to bootstrap new capabilities instantly.</td></tr>
+<tr><td>🚀 Optimizer</td><td><strong>The Performance Tuner</strong>: Analyzes and refines existing agents. It can improve an agent's prompts, tool selection, and overall workflow to enhance its efficiency and effectiveness, evolving your agent workforce itself.</td></tr>
+</tbody>
+</table>
 
 ### The Evolution Loop: Build -> Evaluate -> Evolve
 
 Imagine you ask: *"Help me create an English word learning mini-app with a UI quality score above 0.9."*
 
-1.  **The Developer Builds**: The `Developer` agent analyzes requirements and writes code (e.g., HTML/JS) using **CAST**, our specialized code analysis and compression toolset that allows agents to read and modify complex repositories with surgical precision.
-2.  **The Evaluator Judges**: The `Evaluator` agent inspects the output using verified Skills (e.g., a professional UI Assessment Skill).
-3.  **The Loop Refines**: If the score is below target (e.g., 0.7), AWorld instructs the Developer to fix specific issues identified by the Evaluator. This loop continues until your criteria are met.
+*   **The Developer Builds**: The `Developer` agent analyzes requirements and writes code (e.g., HTML/JS) using **CAST**, our specialized code analysis and compression toolset that allows agents to read and modify complex repositories with surgical precision.
+*   **The Evaluator Judges**: The `Evaluator` agent inspects the output using verified Skills (e.g., a professional UI Assessment Skill).
+*   **The Loop Refines**: If the score is below target (e.g., 0.7), AWorld instructs the Developer to fix specific issues identified by the Evaluator. This loop continues until your criteria are met.
 
 ***See the Self-Evolution Loop in Action***
 ![](./readme_assets/aworld_cli_demo_loop.gif)
-<!-- *Note: Please update the GIF to show the new dev/eval interaction* -->
-
-<!-- ### Verified Skills: The DNA of Evolution
-<div align="justify">
-<b>No Evaluation, No Evolution.</b> To build professional-grade agents, we need professional-grade standards. For an agent to improve, it must know what "good" looks like in your specific domain.
-
-AWorld introduces a <b> Dual-Layer Skill System </b> that turns your expertise into automated evaluation metrics. By defining a Skill (e.g., Legal Contract Review, React Component Optimization, or Financial Risk Assessment), you aren't just giving the agent a tool; you are teaching the <b> Evaluator Agent </b> how to critique and refine work autonomously.
-</div>
-
-<br>
-*   **Official Library**: High-quality, verified skills (like UI Aesthetics Assessment) located in `AWorld/aworld-skills`.
-*   **User Extensions**: Your expertise, codified. Simply drop your custom definitions into `~/.aworld/skills`. The CLI automatically indexes them, allowing the Evaluator to apply your specific domain standards to drive evolution in new fields. -->
 
 
 ### No Evaluation, No Evolution
@@ -136,19 +133,6 @@ While the Evaluator automates the refinement loop, your intuition remains the ce
 You can intervene at any stage. Provide natural language feedback on a generated video, application, or report. The AWorld agent accepts your critique as a high-priority constraint, interpreting your subjective taste or nuance as a direct instruction to the Developer agent. Whether it's an automated score derived from a Skill or your manual guidance, precise feedback drives precise evolution.
 </p>
 
-<!-- ### Powering the Developer: The CAST Toolset
-<p align="justify">
-To enable agents to work on complex codebases, we built <b>CAST </b> —a proprietary engine that sees code structure, not just text.
-</p>
-
-<p align="justify">
-Unlike standard file readers, CAST provides agents with a hierarchical view of code (Logic, Skeleton, Implementation layers). It allows the Developer agent to:
-</p>
-
-*   **Hierarchical Vision:**: Agents zoom out to see architecture (Logic/Skeleton) and zoom in for implementation details.
-*   **Infinite Context**: Understand massive codebases by compressing context without losing semantic meaning.
-*   **Surgical Precision**: Navigate dependency graphs and apply complex patches with pin-point accuracy. -->
-
 
 ### CAST: A Powerful File Manage Tool
 <p align="justify">
@@ -176,22 +160,6 @@ In AWorld, an agent is a model enhanced with tools. But real-world problems ofte
 
 3. Human in the Loop (HITL) [Docs](https://inclusionai.github.io/AWorld/Get%20Start/HITL/)
 
-
-# Playground: See a Multi-Agent System in Action
-Launch our official DeepResearch team in the AWorld [Playground](https://playground.aworldagents.com/) to see AI collaboration live. Inspect its source, run it end-to-end, and get inspired.
-
-![](./readme_assets/playground_gaiateam.gif)
-
-**From User to Creator: Get Your Agent Featured!**
-
-Ready to build your own? Use the aworld-cli to forge an agent with your unique expertise, captured in its skill.md file.
-
-To get your creation featured, simply submit a Pull Request with your skill.md to:
-AWorld/examples/Custom_Skills/
-
-<p align="justify">
-We'll showcase the best community agents here in the Playground. Let your expertise evolve into a professional agent, gain recognition, and empower the entire community to experience the amazing tools you've built.
-</p>
 
 # Evolution
 <p align="justify">
