@@ -1,0 +1,5 @@
+# terminal-server dependencies (from pyproject.toml)
+# Install: pip install -r requirements.txt
+mcp
+requests~=2.32.4
+fastmcp~=2.11.3
