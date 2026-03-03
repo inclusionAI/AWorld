@@ -1349,6 +1349,7 @@ async def call_mcp_tool_with_reuse(
             logger.warning(
                 f"Error calling tool {server_name}__{tool_name} "
                 f"(attempt {attempt + 1}/{max_retry}): {e}"
+                f"Traceback:\n{traceback.format_exc()}"
             )
 
     return call_result_raw

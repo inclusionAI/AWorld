@@ -421,10 +421,16 @@ def tool_desc_transform(tool_dict: Dict[str, Any],
                 properties = {}
                 required = []
                 for param_name, param_info in action["params"].items():
-                    properties[param_name] = {
+                    param_type = param_info["type"] if param_info["type"] != "str" else "string"
+                    prop = {
                         "description": param_info["desc"],
-                        "type": param_info["type"] if param_info["type"] != "str" else "string"
+                        "type": param_type
                     }
+                    if param_type == "array" and param_info.get("items"):
+                        prop["items"] = param_info["items"]
+                    elif param_type == "array":
+                        prop["items"] = {"type": "string"}  # Default for Gemini API compatibility
+                    properties[param_name] = prop
                     if param_info.get("required", False):
                         required.append(param_name)
 

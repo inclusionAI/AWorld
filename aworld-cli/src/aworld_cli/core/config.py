@@ -119,6 +119,26 @@ def get_config() -> AWorldConfig:
     return _global_config
 
 
+def resolve_stream_value(global_config: Dict[str, Any]) -> str:
+    """
+    Resolve stream setting from config to STREAM env value ('1' or '0').
+    Priority: stream > models.stream. Default: '1'.
+    """
+    stream_val = global_config.get('stream')
+    if stream_val is None:
+        stream_val = (global_config.get('models') or {}).get('stream')
+    if stream_val in (True, 'true', '1', 'yes'):
+        return '1'
+    if stream_val in (False, 'false', '0', 'no'):
+        return '0'
+    return '1'
+
+
+def apply_stream_env(global_config: Dict[str, Any]) -> None:
+    """Apply stream config to os.environ['STREAM']."""
+    os.environ['STREAM'] = resolve_stream_value(global_config)
+
+
 def load_config_with_env(env_file: str = ".env") -> tuple[Dict[str, Any], str, str]:
     """
     Load configuration with environment variable support.
@@ -130,25 +150,10 @@ def load_config_with_env(env_file: str = ".env") -> tuple[Dict[str, Any], str, s
     config = get_config()
     source_type, source_path = config.get_config_source(env_file)
     
-    # Load from .env if exists (highest priority for models)
+    # Load from .env if exists: use .env only, ignore global aworld.json
     env_path = Path(env_file).resolve()
     if env_path.exists():
         load_dotenv(env_path)
-        # Apply skills from global config even when using .env (skills not in .env by default)
-        global_config = config.load_config()
-        if 'skills' in global_config:
-            skills_cfg = global_config['skills']
-            if isinstance(skills_cfg, dict):
-                if skills_cfg.get('skills_path'):
-                    os.environ['SKILLS_PATH'] = str(skills_cfg['skills_path']).strip()
-                if skills_cfg.get('evaluator_skills_path'):
-                    os.environ['EVALUATOR_SKILLS_PATH'] = str(skills_cfg['evaluator_skills_path']).strip()
-                if skills_cfg.get('explorer_skills_path'):
-                    os.environ['EXPLORER_SKILLS_PATH'] = str(skills_cfg['explorer_skills_path']).strip()
-                if skills_cfg.get('aworld_skills_path'):
-                    os.environ['AWORLD_SKILLS_PATH'] = str(skills_cfg['aworld_skills_path']).strip()
-                if skills_cfg.get('developer_skills_path'):
-                    os.environ['DEVELOPER_SKILLS_PATH'] = str(skills_cfg['developer_skills_path']).strip()
         # Convert .env to config dict format for consistency
         env_config = {}
         for key, value in os.environ.items():
@@ -173,60 +178,93 @@ def load_config_with_env(env_file: str = ".env") -> tuple[Dict[str, Any], str, s
                         env_config['models'] = {}
                     if 'gemini' not in env_config['models']:
                         env_config['models']['gemini'] = {}
-                    if key == 'GEMINI_API_KEY':
-                        env_config['models']['gemini']['api_key'] = value
-        
+                if key == 'GEMINI_API_KEY':
+                    env_config['models']['gemini']['api_key'] = value
+
         return env_config, source_type, source_path
     
     # Otherwise load from global config
     global_config = config.load_config()
-    # Apply skills config to environment
+    # Apply skills config to environment (config value > env value > hardcoded default)
+    default_skills_base = str(Path.home() / ".aworld" / "skills")
+    _skill_keys = [
+        ('default_skills_path', 'SKILLS_PATH'),
+        ('evaluator_skills_path', 'EVALUATOR_SKILLS_PATH'),
+        ('explorer_skills_path', 'EXPLORER_SKILLS_PATH'),
+        ('aworld_skills_path', 'AWORLD_SKILLS_PATH'),
+        ('developer_skills_path', 'DEVELOPER_SKILLS_PATH'),
+    ]
     if 'skills' in global_config:
         skills_cfg = global_config['skills']
         if isinstance(skills_cfg, dict):
-            if skills_cfg.get('skills_path'):
-                os.environ['SKILLS_PATH'] = str(skills_cfg['skills_path']).strip()
-            if skills_cfg.get('evaluator_skills_path'):
-                os.environ['EVALUATOR_SKILLS_PATH'] = str(skills_cfg['evaluator_skills_path']).strip()
-            if skills_cfg.get('explorer_skills_path'):
-                os.environ['EXPLORER_SKILLS_PATH'] = str(skills_cfg['explorer_skills_path']).strip()
-            if skills_cfg.get('aworld_skills_path'):
-                os.environ['AWORLD_SKILLS_PATH'] = str(skills_cfg['aworld_skills_path']).strip()
-            if skills_cfg.get('developer_skills_path'):
-                os.environ['DEVELOPER_SKILLS_PATH'] = str(skills_cfg['developer_skills_path']).strip()
+            for cfg_key, env_key in _skill_keys:
+                val = (skills_cfg.get(cfg_key) or '').strip()
+                if not val:
+                    val = (os.environ.get(env_key) or '').strip()
+                if not val:
+                    val = default_skills_base
+                if val:
+                    os.environ[env_key] = val
     # Apply global config to environment (provider-specific + LLM_API_KEY, LLM_MODEL_NAME, LLM_BASE_URL)
     if 'models' in global_config:
         models_config = global_config['models']
-        llm_primary_set = False
-        for provider, provider_config in models_config.items():
-            if not isinstance(provider_config, dict):
-                continue
-            api_key = (provider_config.get('api_key') or '').strip()
-            model_name = (provider_config.get('model') or '').strip()
-            base_url = (provider_config.get('base_url') or '').strip()
-            if api_key:
-                if provider.lower() == 'openai':
-                    os.environ['OPENAI_API_KEY'] = api_key
-                elif provider.lower() == 'anthropic':
-                    os.environ['ANTHROPIC_API_KEY'] = api_key
-                elif provider.lower() == 'gemini':
-                    os.environ['GEMINI_API_KEY'] = api_key
-                if not llm_primary_set:
-                    os.environ['LLM_API_KEY'] = api_key
-                    if model_name:
-                        os.environ['LLM_MODEL_NAME'] = model_name
-                    if base_url:
-                        os.environ['LLM_BASE_URL'] = base_url
-                    llm_primary_set = True
+        # Default LLM: models.default (flat: api_key, model, base_url)
+        # Legacy: models.default.{openai|anthropic|gemini} or models.{provider}
+        default_cfg = models_config.get('default') or {}
+        if not isinstance(default_cfg, dict):
+            default_cfg = {}
+        # New format: default has api_key, model, base_url (provider defaults to openai)
+        if (default_cfg.get('api_key') or '').strip():
+            api_key = (default_cfg.get('api_key') or '').strip()
+            model_name = (default_cfg.get('model') or '').strip()
+            base_url = (default_cfg.get('base_url') or '').strip()
+            os.environ['OPENAI_API_KEY'] = api_key
             if base_url:
-                if provider.lower() == 'openai':
-                    os.environ['OPENAI_BASE_URL'] = base_url
-                elif provider.lower() == 'anthropic':
-                    os.environ['ANTHROPIC_BASE_URL'] = base_url
-                elif provider.lower() == 'gemini':
-                    os.environ['GEMINI_BASE_URL'] = base_url
-                if not os.environ.get('LLM_BASE_URL'):
-                    os.environ['LLM_BASE_URL'] = base_url
+                os.environ['OPENAI_BASE_URL'] = base_url
+            os.environ['LLM_API_KEY'] = api_key
+            if model_name:
+                os.environ['LLM_MODEL_NAME'] = model_name
+            if base_url:
+                os.environ['LLM_BASE_URL'] = base_url
+        else:
+            # Legacy: nested models.default.{provider} or models.{provider}
+            default_providers = {k: v for k, v in default_cfg.items()
+                                if k in ('openai', 'anthropic', 'gemini') and isinstance(v, dict)}
+            if not default_providers:
+                for p in ('openai', 'anthropic', 'gemini'):
+                    if p in models_config and isinstance(models_config[p], dict):
+                        default_providers[p] = models_config[p]
+            llm_primary_set = False
+            for provider, provider_config in default_providers.items():
+                if not isinstance(provider_config, dict):
+                    continue
+                api_key = (provider_config.get('api_key') or '').strip()
+                model_name = (provider_config.get('model') or '').strip()
+                base_url = (provider_config.get('base_url') or '').strip()
+                if api_key:
+                    if provider.lower() == 'openai':
+                        os.environ['OPENAI_API_KEY'] = api_key
+                    elif provider.lower() == 'anthropic':
+                        os.environ['ANTHROPIC_API_KEY'] = api_key
+                    elif provider.lower() == 'gemini':
+                        os.environ['GEMINI_API_KEY'] = api_key
+                    if not llm_primary_set:
+                        os.environ['LLM_API_KEY'] = api_key
+                        if model_name:
+                            os.environ['LLM_MODEL_NAME'] = model_name
+                        if base_url:
+                            os.environ['LLM_BASE_URL'] = base_url
+                        llm_primary_set = True
+                if base_url:
+                    if provider.lower() == 'openai':
+                        os.environ['OPENAI_BASE_URL'] = base_url
+                    elif provider.lower() == 'anthropic':
+                        os.environ['ANTHROPIC_BASE_URL'] = base_url
+                    elif provider.lower() == 'gemini':
+                        os.environ['GEMINI_BASE_URL'] = base_url
+                    if not os.environ.get('LLM_BASE_URL'):
+                        os.environ['LLM_BASE_URL'] = base_url
+        apply_stream_env(global_config)
 
     return global_config, source_type, source_path
 
@@ -246,9 +284,19 @@ def has_model_config(config_dict: Dict[str, Any]) -> bool:
     for key in env_keys:
         if os.environ.get(key, "").strip():
             return True
-    # Global config: at least one provider with api_key
+    # Global config: models.default (flat or nested)
     models = config_dict.get("models") or {}
-    for provider_cfg in models.values():
-        if isinstance(provider_cfg, dict) and (provider_cfg.get("api_key") or "").strip():
+    default_cfg = models.get("default") or {}
+    # New format: default has api_key
+    if isinstance(default_cfg, dict) and (default_cfg.get("api_key") or "").strip():
+        return True
+    # Legacy: default.openai etc
+    if isinstance(default_cfg, dict):
+        for p in ('openai', 'anthropic', 'gemini'):
+            if isinstance(default_cfg.get(p), dict) and (default_cfg[p].get("api_key") or "").strip():
+                return True
+    # Legacy: models.openai etc
+    for p in ('openai', 'anthropic', 'gemini'):
+        if isinstance(models.get(p), dict) and (models[p].get("api_key") or "").strip():
             return True
     return False
