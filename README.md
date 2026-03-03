@@ -79,7 +79,7 @@ This multi-agent system works in concert to turn your ideas into reality:
 
 <table>
 <colgroup>
-<col style="width: 260px">
+<col style="width: 320px">
 <col>
 </colgroup>
 <thead>
