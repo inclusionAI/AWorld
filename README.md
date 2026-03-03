@@ -26,10 +26,14 @@
 [Manual](#total-control-manually-crafting-agent-systems) |
 [Evolution](#evolution) |
 [Contributing](#contributing) |
-<!-- [Experience](#experience-to-samples) |
-[Training](#training) | -->
+
 
 </h4>
+
+
+<h3 align="center">
+Build -> Evaluate -> Evolve. The Autonomous Agent Development Loop.
+</h3>
 
 ---
 
@@ -40,9 +44,6 @@ The AWorld Thesis is that the true scaling of AI is achieved by enabling experts
 
 AWorld with its CLI mode is the platform designed for this. We provide the fundamental recipe for you, the expert, to infuse your knowledge and craft unique insights into fleets of autonomous agents. This is how we move beyond generic promise to specific, robust applications that navigate your world with precision.
 </p>
-
-<!-- 
-> 💡 Visit our [homepage](https://www.aworldagents.com/) for more details, or try our online [environments](https://www.aworldagents.com/environments) and [agents](https://playground.aworldagents.com/).  -->
 
 
 # Your Journey with AWorld-CLI
@@ -68,7 +69,6 @@ pip install -e . && cd aworld-cli && pip install -e .
 Configure AWorld-CLI globally, allowing you to seamlessly work across different project directories:
 
 ```bash
-# Enter your working directory, launch CLI and set up your model provider (e.g., OpenAI, Claude)
 cd your working directory
 
 aworld-cli --config
@@ -94,40 +94,71 @@ Imagine you ask: *"Help me create an English word learning mini-app with a UI qu
 ![](./readme_assets/aworld_cli_demo_loop.gif)
 <!-- *Note: Please update the GIF to show the new dev/eval interaction* -->
 
-### Verified Skills: The DNA of Evolution
+<!-- ### Verified Skills: The DNA of Evolution
 <div align="justify">
-<b>No Evaluation, No Evolution.</b> To build professional-grade agents, we need professional-grade standards.
+<b>No Evaluation, No Evolution.</b> To build professional-grade agents, we need professional-grade standards. For an agent to improve, it must know what "good" looks like in your specific domain.
+
+AWorld introduces a <b> Dual-Layer Skill System </b> that turns your expertise into automated evaluation metrics. By defining a Skill (e.g., Legal Contract Review, React Component Optimization, or Financial Risk Assessment), you aren't just giving the agent a tool; you are teaching the <b> Evaluator Agent </b> how to critique and refine work autonomously.
 </div>
 
 <br>
-
-AWorld provides a dual-layer skill system:
 *   **Official Library**: High-quality, verified skills (like UI Aesthetics Assessment) located in `AWorld/aworld-skills`.
-*   **User Extensions**: Drop your own expert skills or into `~/.aworld/skills`. The CLI automatically indexes these and apply *your* domain expertise to improve AWorld-Cli's scope.
+*   **User Extensions**: Your expertise, codified. Simply drop your custom definitions into `~/.aworld/skills`. The CLI automatically indexes them, allowing the Evaluator to apply your specific domain standards to drive evolution in new fields. -->
+
+
+### Verified Skills: The Engine of Evolution
+<div align="justify">
+<b>No Evaluation, No Evolution.</b> For an agent to improve, it must first understand what "good" looks like. Skills are the answer. They are reusable, verifiable modules of your domain expertise.
+
+AWorld introduces a <b> Shared Skill System </b> where your knowledge directly powers the entire evolution loop:
+<ul>
+    <li><b>For the Evaluator</b>: A Skill (e.g., <i>Legal Contract Review, UI Aesthetics Score, Financial Risk Assessment</i>) provides a concrete metric, teaching the Evaluator how to judge performance and identify flaws autonomously. </li>
+    <li><b>For the Developer</b>: The Developer can also directly invoke these Skills as tools to enhance its own capabilities, ensuring its creations meet high standards from the start.</li>
+</ul>
+
+This creates a powerful synergy: The Evaluator sets the target, and the Developer uses the same knowledge base to hit it.
+</div>
+
+<br>
+*   **Official Library**: A growing collection of high-quality, verified skills (like UI Aesthetics Assessment) ready to use, located in `AWorld/aworld-skills`.
+*   **Your Expertise as a Skill**: This is how AWorld scales to new domains. Codify your knowledge into a Skill and drop it into `~/.aworld/skills`. The CLI automatically indexes it, instantly upgrading both your Developer and Evaluator agents. <b>Your contribution is the key to unlocking new agent capabilities for everyone.</b>
+
 
 ### Human-in-the-Loop: You are the Ultimate Evaluator
 <p align="justify">
-While the automated Evaluator handles the heavy lifting, your expertise remains the ceiling. You can intervene at any stage of the loop.
+While the Evaluator automates the refinement loop, your intuition remains the ceiling. AWorld is designed to amplify your expertise, not replace it.
 </p>
 
 <p align="justify">
-Provide natural language feedback on the generated video, app, or report. The AWorld agent interprets your critique as a new set of constraints and tasks the Developer to refine the output. Whether it's an automated score or your subjective taste, accurate feedback drives precise evolution.
+You can intervene at any stage. Provide natural language feedback on a generated video, application, or report. The AWorld agent accepts your critique as a high-priority constraint, interpreting your subjective taste or nuance as a direct instruction to the Developer agent. Whether it's an automated score derived from a Skill or your manual guidance, precise feedback drives precise evolution.
 </p>
 
-### Powering the Developer: The CAST Toolset
+<!-- ### Powering the Developer: The CAST Toolset
 <p align="justify">
-To enable agents to work on complex codebases, we built <b>CAST (Code Analysis & Search Toolset)</b>.
+To enable agents to work on complex codebases, we built <b>CAST </b> —a proprietary engine that sees code structure, not just text.
 </p>
 
 <p align="justify">
 Unlike standard file readers, CAST provides agents with a hierarchical view of code (Logic, Skeleton, Implementation layers). It allows the Developer agent to:
 </p>
 
+*   **Hierarchical Vision:**: Agents zoom out to see architecture (Logic/Skeleton) and zoom in for implementation details.
+*   **Infinite Context**: Understand massive codebases by compressing context without losing semantic meaning.
+*   **Surgical Precision**: Navigate dependency graphs and apply complex patches with pin-point accuracy. -->
+
+
+### Powering the Developer: The CAST Toolset for Complex Codebases
 <p align="justify">
-*   **Compress Context**: Understand massive repositories without exceeding token limits.
-*   **Navigate Structurally**: Jump through dependency graphs and call flows.
-*   **Edit Surgically**: Apply precise patches and search-replace operations.
+LLM agents often fail in real-world repositories because they are overwhelmed by code complexity and limited context windows. To solve this, we built <b>CAST (Code Abstract Syntax Tree)</b> — a specialized engine that allows agents to comprehend and modify large codebases with superhuman efficiency.
 </p>
+
+<p align="justify">
+Instead of reading flat text files, CAST provides the Developer with a compressed, hierarchical understanding of the code. This is like giving the agent a set of architectural blueprints instead of a pile of bricks. It enables:
+</p>
+
+*   **Hierarchical Navigation**: Agents can instantly zoom from a high-level architectural view (Logic/Skeleton layers) down to specific implementation details, understanding the purpose of code without getting lost in the weeds.
+*   **Infinite Context Window**: CAST intelligently compresses code, feeding the agent only the relevant information. This effectively breaks the context window limitation, allowing agents to reason about massive codebases.
+*   **Surgical Code Modification**: By understanding the code's structure and dependencies, the Developer can perform precise modifications, apply complex patches, and refactor code with pinpoint accuracy, avoiding the common mistakes of "blind" text replacement.
 
 
 # Total Control: Manually Crafting Agent Systems
