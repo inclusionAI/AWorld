@@ -79,7 +79,7 @@ This multi-agent system works in concert to turn your ideas into reality:
 
 <table>
 <colgroup>
-<col style="width: 220px">
+<col style="width: 260px">
 <col>
 </colgroup>
 <thead>
@@ -87,10 +87,10 @@ This multi-agent system works in concert to turn your ideas into reality:
 </thead>
 <tbody>
 <tr><td>👑 AWorld Agent</td><td><strong>The Orchestrator</strong>: The central brain that interprets user goals, creates a plan, and delegates tasks to the appropriate sub-agents. It manages the entire workflow from start to finish.</td></tr>
-<tr><td>🧑‍💻 Developer</td><td><strong>The Builder</strong>: The master craftsman responsible for writing, debugging, and refactoring code. It leverages the CAST toolset to understand and modify complex codebases with high precision.</td></tr>
+<tr><td>🧑‍💻 Developer</td><td><strong>The Builder</strong>: The master craftsman responsible for writing, debugging, and refactoring code, such as applicable html.
 <tr><td>🧐 Evaluator</td><td><strong>The Judge</strong>: The quality assurance expert. It assesses the Developer's output against objective criteria defined by Skills (e.g., UI score), providing the critical feedback required for the evolution loop.</td></tr>
 <tr><td>🧙 Text2Agent</td><td><strong>The Agent Architect</strong>: Creates entirely new agents from a simple natural language description. It automates the boilerplate and setup, allowing you to bootstrap new capabilities instantly.</td></tr>
-<tr><td>🚀 Optimizer</td><td><strong>The Performance Tuner</strong>: Analyzes and refines existing agents. It can improve an agent's prompts, tool selection, and overall workflow to enhance its efficiency and effectiveness, evolving your agent workforce itself.</td></tr>
+<tr><td>🚀 Optimizer</td><td><strong>The Performance Tuner</strong>: Analyzes and refines existing agents. It can improve an agent's prompts, tool selection, and overall workflow to enhance its efficiency and effectiveness.</td></tr>
 </tbody>
 </table>
 
