@@ -7,7 +7,7 @@ import abc
 from typing import Dict, Any, Callable, Optional
 from functools import wraps
 
-# 工具名映射：Sandbox方法名 -> MCP工具名
+# Tool name mapping: Sandbox method name -> MCP tool name
 FILESYSTEM_TOOL_MAPPING = {
     "read_file": "read_file",
     "write_file": "write_file",
@@ -27,11 +27,11 @@ TERMINAL_TOOL_MAPPING = {
     "run_code": "run_code",
 }
 
-# 服务名称
+# Service names
 SERVICE_FILESYSTEM = "filesystem"
 SERVICE_TERMINAL = "terminal"
 
-# 服务到工具映射的映射
+# Mapping from service name to its tool mapping
 SERVICE_TOOL_MAPPING = {
     SERVICE_FILESYSTEM: FILESYSTEM_TOOL_MAPPING,
     SERVICE_TERMINAL: TERMINAL_TOOL_MAPPING,
