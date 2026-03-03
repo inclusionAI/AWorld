@@ -523,6 +523,9 @@ if __name__ == "__main__":
     for i, dir_path in enumerate(allowed_dirs, 1):
         logging.info(f"  {i}. {dir_path}")
     
-    # Run the server
-    #mcp.run(transport="stdio")
-    mcp.run(transport="streamable-http")
+    # Run the server: default streamable-http (compat with start_tool_servers.sh); use stdio when --stdio or MCP_TRANSPORT=stdio
+    use_stdio = "--stdio" in sys.argv or os.environ.get("MCP_TRANSPORT", "").strip().lower() == "stdio"
+    if use_stdio:
+        mcp.run(transport="stdio")
+    else:
+        mcp.run(transport="streamable-http")

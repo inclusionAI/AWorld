@@ -43,9 +43,9 @@ class FileNamespace(ToolNamespace):
         """
         Edit file by line range [start_line, end_line] (1-based, inclusive).
 
-        - start_line / end_line 为行号（从 1 开始，含头含尾）
-        - new_content 为空字符串时表示删除这些行
-        - dryRun=True 时仅返回 git 风格 diff，不真正落盘
+        - start_line / end_line are line numbers (starting from 1, inclusive at both ends)
+        - Empty new_content means deleting the specified lines
+        - When dryRun=True, only a git-style diff is returned and nothing is written to disk
         """
         return await self._call_tool(
             "edit_file",
