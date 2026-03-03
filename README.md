@@ -51,117 +51,80 @@ The journey from an idea to an evolved, autonomous agent begins at your fingerti
 
 ## Install and Activate
 
-Create a .env file in the AWorld/aworld-cli to configure the base model for both the AWorld Agent and any agents it creates. Add the following content:
-```bash
-LLM_MODEL_NAME="your_model_name, Claude-Sonnet-4 or above suggested"
-LLM_PROVIDER="openai"
-LLM_API_KEY="your_model_api_key"
-LLM_BASE_URL="your_base_url"
-```
+Install once, configure globally, and run anywhere.
 
-**Install and Enter AWorld-CLI**
+**Install AWorld-CLI**
 ```bash
 git clone https://github.com/inclusionAI/AWorld && cd AWorld
 
 conda create -n aworld_env python=3.11 -y && conda activate aworld_env 
 
 pip install -e . && cd aworld-cli && pip install -e .
-
-aworld-cli
 ```
 
 
-## Create Your Agent
-<p align="justify">
-Instantly scaffold an agent from a natural language description of your task, such as "create an agent that can generate HTML report". AWorld-CLI handles the boilerplate, so you can focus on the logic.
+**Config & Launch**
 
+Initialize and configure your AWorld-CLI globally, allowing you to seamlessly work across different project directories:
+
+```bash
+# Enter your working directory, launch CLI and set up your model provider (e.g., OpenAI, Claude)
+cd your working directory
+
+aworld-cli --config
+```
+
+Once configured, simply type aworld-cli in your terminal to start your journey.
+
+
+## Automate Creation with AWorld-CLI
+<p align="justify">
+AWorld-CLI goes beyond simple scaffolding. It acts as a central brain, orchestrating specialized sub-agents—<b>the Developer</b> and <b>the Evaluator</b>—to build, test, and refine applications autonomously.
 </p>
 
+### The Cycle: Build -> Evaluate -> Evolve
 
-***Let AWorld Agent make an agent for you***
-![](./readme_assets/aworld_cli_demo_step1.gif)
+Imagine you need an application: *"Help me create an English word learning mini-app with a UI quality score above 0.9."*
 
-<p align="justify">
-This command generates a fully operational agent file referencing our carefully curated Verified Skills as the solid foundation and a global configuration, ready for immediate execution.
+1.  **The Developer Builds**: The `Developer` agent analyzes requirements and writes code (e.g., HTML/JS) using **CAST**, our specialized code analysis and compression toolset that allows agents to read and modify complex repositories with surgical precision.
+2.  **The Evaluator Judges**: The `Evaluator` agent inspects the output using verified Skills (e.g., a professional UI Assessment Skill).
+3.  **The Loop Refines**: If the score is below target (e.g., 0.7), AWorld instructs the Developer to fix specific issues identified by the Evaluator. This loop continues until your criteria are met.
 
-Once it's generated, your agent is a permanent, reusable tool in your ~/.agents folder.
-</p>
+***See the Self-Evolution Loop in Action***
+![](./readme_assets/aworld_cli_demo_loop.gif)
+<!-- *Note: Please update the GIF to show the new dev/eval interaction* -->
 
-
-### Verified Skills: The DNA for Automated Agent Creation
+### Verified Skills: The DNA of Evaluation
 <div align="justify">
-Our library of Verified Skills is more than a collection of blueprints; it's a gene pool of expert capabilities.
+<b>No Evaluation, No Evolution.</b> To build professional-grade agents, we need professional-grade standards.
 </div>
 
 <br>
 
+AWorld provides a dual-layer skill system:
+*   **Official Library**: High-quality, verified skills (like UI Aesthetics Assessment) located in `AWorld/aworld-skills`.
+*   **User Extensions**: Drop your own expert skills into `~/.aworld/skills`. The CLI automatically indexes these, allowing the Evaluator to apply *your* domain expertise to critique and improve the Developer's work.
+
+### Human-in-the-Loop: You are the Ultimate Evaluator
 <p align="justify">
-When you automate the creation of a new agent, AWorld-CLI doesn't start from scratch. It intelligently references these battle-tested Skills for robutsness, and simultaneously learns from your custom skills in the ~/agents folder. This dual inheritance ensures every agent is not only reliable from the start, adapted to your requirements.
+While the automated Evaluator handles the heavy lifting, your expertise remains the ceiling. You can intervene at any stage of the loop.
+
+Provide natural language feedback on the generated video, app, or report. The AWorld agent interprets your critique as a new set of constraints and tasks the Developer to refine the output. Whether it's an automated score or your subjective taste, accurate feedback drives precise evolution.
 </p>
 
-<table style="width: 100%; border-collapse: collapse; table-layout: fixed;">
-  <colgroup>
-    <col style="width: 40%;">
-    <col style="width: 60%;">
-  </colgroup>
-  <thead>
-    <tr>
-      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Skills</th>
-      <th style="text-align: left; border-bottom: 2px solid #ddd; padding: 8px;">Description</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td style="padding: 8px; vertical-align: top;">🚀 PPT Agent</td>
-      <td style="padding: 8px; vertical-align: top;">Creates polished presentations from documents, outlines, or data.</td>
-    </tr>
-    <tr>
-      <td style="padding: 8px; vertical-align: top;">🧠 DeepSearch Agent</td>
-      <td style="padding: 8px; vertical-align: top;">Conducts comprehensive, multi-source research on a topic and synthesizes a structured report.</td>
-    </tr>
-  </tbody>
-</table>
-
-
-## Run Your Agent
+### Powering the Developer: The CAST Toolset
 <p align="justify">
-Prompt the AWorld Agent to execute your newly created agent on a task and watch it work, such as "Let the html agent generate an html report introducing Beckham". Every call, action, and observation is captured in a detailed trajectory log, saved right to your local directory.
-</p>
+To enable agents to work on complex codebases, we built <b>CAST (Code Analysis & Search Toolset)</b>.
 
-
-***Let the created agent do your job***
-![](./readme_assets/aworld_cli_demo_step2.gif)
-<!-- ![](./readme_assets/aworld_cli_run_task.png) -->
-
-## Evolve Your Agent
-<p align="justify">
-If the agent's performance isn't perfect in your opinion, you have a spectrum of powerful options for refinement.
-
-**Manual Evolution**
-<p align="justify">
-You are the expert. Open the generated Python file and fine-tune the prompts, logic, or tool usage directly. You have full control.
-</p>
-
-**Exciting: AI-Assisted Evolution**
-<p align="justify">
-This is where AWorld truly shines! Prompt AWorld with your expertise and desired changes, such as "help me optimize the html agent so that it can browse web, download and insert image into the html". It then tasks our built-in Optimizer Agent—a specialized code agent—to act as your AI pair programmer. Because all agents you create extend from a unified AWorld base class, the Optimizer Agent has a global understanding of the agent's structure. This allows it to reason about and precisely modify the agent's code to implement your logic, evolving its capabilities far beyond simple prompt tuning.
-</p>
-
-
-***AI evolve your agent to make it more professional***
-![](./readme_assets/aworld_cli_demo_step3.gif)
-
-
-**Our Vista: Self-Evolution**
-<p align="justify">
-This is the future. Instead of you providing explicit prompts, the system automatically detects sub-optimal performance based on a reward signal (e.g., failed validation, deviation from a verified Skill). It then triggers an autonomous optimization loop, evolving the agent on its own. This is evaluation-driven evolution, where the agent gains true self-awareness and improves without constant human intervention.
-</p>
-
-Once you're satisfied with your optimized agent, it is permanent and reusable in your ~/agents folder.
+Unlike standard file readers, CAST provides agents with a hierarchical view of code (Logic, Skeleton, Implementation layers). It allows the Developer agent to:
+*   **Compress Context**: Understand massive repositories without exceeding token limits.
+*   **Navigate Structurally**: Jump through dependency graphs and call flows.
+*   **Edit Surgically**: Apply precise patches and search-replace operations.
 </p>
 
 
 # Total Control: Manually Crafting Agent Systems
+
 <p align="justify">
 In AWorld, an agent is a model enhanced with tools. But real-world problems often demand more than a single agent. To solve this, AWorld gives you full control with flexible build paths, allowing you to manually craft complex, multi-agent systems for collaboration.
 </p>
@@ -188,18 +151,6 @@ AWorld/examples/Custom_Skills/
 <p align="justify">
 We'll showcase the best community agents here in the Playground. Let your expertise evolve into a professional agent, gain recognition, and empower the entire community to experience the amazing tools you've built.
 </p>
-
-<!-- # Experience to Samples
-Iterate with confidence. Our runtime records a complete history for every task, capturing each LLM call, action, and reward. Use this data to audit performance and generate high-quality training samples.
-[Docs](https://inclusionai.github.io/AWorld/Training/Trajectory/)
-
-
-# Model Training
-Once agents can roam across environments, AWorld closes the loop with two complementary training modes that drive continuous improvement. Plug any mainstream LLM trainer—AReal, Swift, Verl, Slime, etc.—into the runtime to update model parameters directly. Adapters are lightweight, so you can reuse the same environment and agent code across trainers.
-[Docs](https://inclusionai.github.io/AWorld/Training/Trainer/)
-
-> 💡 Check the [real case](./train/examples/train_gaia_with_aworld_verl/main.py) which includes the full training config to run agentic training.
- -->
 
 # Evolution
 <p align="justify">
