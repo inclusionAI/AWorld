@@ -28,7 +28,7 @@ class SandboxBuilder:
         self._streaming: bool = False
         self._env_content_name: Optional[str] = None
         self._env_content: Optional[Dict[str, Any]] = None
-        self._workspace: Optional[List[str]] = None
+        self._workspaces: Optional[List[str]] = None
         self._reuse: bool = True
         self._builtin_tools: Any = None
         self._agents_builder = AgentsBuilder(self)
@@ -170,26 +170,26 @@ class SandboxBuilder:
         self._env_content = env_content
         return self
     
-    def workspace(self, workspace: List[str]) -> 'SandboxBuilder':
-        """Set workspace directories for filesystem tool.
-        
+    def workspaces(self, workspaces: List[str]) -> 'SandboxBuilder':
+        """Set workspace directories for filesystem / terminal tools.
+
         Args:
-            workspace: List of allowed workspace directory paths. If None, uses default workspaces 
-                (~/workspace, ~/aworld_workspace). Can also be set via environment variable 
-                AWORLD_WORKSPACE_PATH (comma-separated paths).
-        
+            workspaces: List of allowed workspace directory paths. If None, uses default
+                workspaces (~/workspace, ~/aworld_workspace). Can also be set via
+                environment variable AWORLD_WORKSPACE_PATH (comma-separated paths).
+
         Returns:
             SandboxBuilder: Self for method chaining.
-        
+
         Examples:
             # Single workspace
-            builder.workspace(["~/workspace"])
-            
+            builder.workspaces(["~/workspace"])
+
             # Multiple workspaces
-            builder.workspace(["~/workspace", "~/projects", "/custom/path"])
+            builder.workspaces(["~/workspace", "~/projects", "/custom/path"])
         """
         self._auto_commit_current_agent()
-        self._workspace = workspace
+        self._workspaces = workspaces
         return self
     
     def reuse(self, reuse: bool) -> 'SandboxBuilder':
@@ -373,8 +373,8 @@ class SandboxBuilder:
             kwargs['env_content_name'] = self._env_content_name
         if self._env_content is not None:
             kwargs['env_content'] = self._env_content
-        if self._workspace is not None:
-            kwargs['workspace'] = self._workspace
+        if self._workspaces is not None:
+            kwargs['workspaces'] = self._workspaces
         if self._reuse is not True:  # reuse defaults to True, only pass if explicitly set to False
             kwargs['reuse'] = self._reuse
         kwargs['builtin_tools'] = self._builtin_tools
@@ -404,7 +404,7 @@ class SandboxBuilder:
             'mcp_servers', 'mcp_config', 'black_tool_actions', 'skill_configs',
             'tools', 'registry_url', 'custom_env_tools', 'agents', 'streaming',
             'builtin_tools',
-            'env_content_name', 'env_content', 'workspace', '_auto_commit_current_agent',
+            'env_content_name', 'env_content', 'workspaces', '_auto_commit_current_agent',
             '_add_agent', '_agents_builder'
         }
         
