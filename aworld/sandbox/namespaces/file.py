@@ -100,14 +100,24 @@ class FileNamespace(ToolNamespace):
         pattern: str,
         max_matches: Optional[int] = None,
         max_per_file: Optional[int] = None,
+        before: int = 0,
+        after: int = 0,
     ) -> Dict[str, Any]:
-        """Search file or directory for lines matching regex. path can be file or directory (recurses). Returns lines as absolute_path:line_number:line_content."""
+        """
+        Search file or directory for lines matching a regex pattern.
+
+        - path can be a single file or a directory (directory is searched recursively)
+        - max_matches / max_per_file cap the number of matches
+        - before / after control how many context lines are included around each match
+        """
         return await self._call_tool(
             "search_content",
             path=path,
             pattern=pattern,
             max_matches=max_matches,
             max_per_file=max_per_file,
+            before=before,
+            after=after,
         )
 
     async def search_files(
