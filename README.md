@@ -35,7 +35,7 @@
 <p align="justify">
 For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. From scientific research, financial analysis, to complex engineering, generic models can't climb this wall. They can't speak your language. 
 
-The AWorld Thesis is that the true scaling of AI is achieved by enabling experts like you to build a gate in that wall.
+A growing community consensus reveals that the true power of AI Agents lies not just in the core model, but in the sophisticated framework—the <b>Agent Harness</b>—that orchestrates its tools, memory, and execution loop. The AWorld Thesis aligns perfectly with this: true AI scaling is achieved when experts like you can craft a bespoke Harness for your domain, building a gate in that wall of context.
 
 AWorld with its CLI mode is the platform designed for this. We provide the fundamental recipe for you, the expert, to infuse your knowledge and craft unique insights into fleets of autonomous agents. This is how we move beyond generic promise to specific, robust applications that navigate your world with precision.
 </p>
@@ -69,6 +69,8 @@ aworld-cli --config
 
 Once configured, simply type aworld-cli in your terminal to start your journey.
 
+Alternatively, you can configure by creating a `.env` file in your working directory with your model and API settings. See [Environment configuration](./README_env_config.md) for details.
+
 
 ## Automate Creation with AWorld-CLI
 <p align="justify">
@@ -89,8 +91,6 @@ This multi-agent system works in concert to turn your ideas into reality:
 <tr><td>👑 AWorld Agent</td><td><strong>The Orchestrator</strong>: The central brain that interprets user goals, creates a plan, and delegates tasks to the appropriate sub-agents. It manages the entire workflow from start to finish.</td></tr>
 <tr><td>🧑‍💻 Developer</td><td><strong>The Builder</strong>: The master craftsman responsible for writing, debugging, and refactoring code, such as applicable html.</td></tr>
 <tr><td>🧐 Evaluator</td><td><strong>The Judge</strong>: The quality assurance expert. It assesses the Developer's output against objective criteria defined by Skills (e.g., UI score), providing the critical feedback required for the evolution loop.</td></tr>
-<tr><td>🧙 Text2Agent</td><td><strong>The Agent Architect</strong>: Creates entirely new agents from a simple natural language description. It automates the boilerplate and setup, allowing you to bootstrap new capabilities instantly.</td></tr>
-<tr><td>🚀 Optimizer</td><td><strong>The Performance Tuner</strong>: Analyzes and refines existing agents. It can improve an agent's prompts, tool selection, and overall workflow to enhance its efficiency and effectiveness.</td></tr>
 </tbody>
 </table>
 
@@ -103,7 +103,8 @@ Imagine you ask: *"Help me create an English word learning mini-app with a UI qu
 *   **The Loop Refines**: If the score is below target (e.g., 0.7), AWorld instructs the Developer to fix specific issues identified by the Evaluator. This loop continues until your criteria are met.
 
 ***See the Self-Evolution Loop in Action***
-![](./readme_assets/aworld_cli_demo_loop.gif)
+
+[![Watch on YouTube](https://img.shields.io/badge/Watch-Self--Evolution%20Loop-red?style=for-the-badge&logo=youtube)](https://youtube.com/shorts/F7INIq5HG1g?feature=share)
 
 
 ### No Evaluation, No Evolution
