@@ -3,11 +3,20 @@ Command-line entry point for aworld-cli.
 Provides CLI interface without requiring aworldappinfra.
 """
 import argparse
+import asyncio
 import os
 import sys
-import time
-import asyncio
 from typing import Optional
+
+
+def _suppress_keyboard_interrupt_traceback(exc_type, exc_value, exc_tb):
+    """Suppress KeyboardInterrupt traceback; exit cleanly."""
+    if exc_type is KeyboardInterrupt:
+        sys.exit(0)
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _suppress_keyboard_interrupt_traceback
 
 # Set environment variable to disable console logging before importing aworld modules
 # This ensures all AWorldLogger instances will disable console output
@@ -648,7 +657,6 @@ Batch Jobs:
     
     # Initialize skill registry early with command-line arguments (overrides env vars)
     # This ensures skill registry is ready before agents are loaded
-    from ._globals import console
     from .core.skill_registry import get_skill_registry
 
     if args.skill_path:
