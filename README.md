@@ -30,11 +30,6 @@
 
 </h4>
 
-
-<h3 align="center">
-Build -> Evaluate -> Evolve. The Autonomous Agent Development Loop.
-</h3>
-
 ---
 
 <p align="justify">
@@ -65,8 +60,6 @@ pip install -e . && cd aworld-cli && pip install -e .
 
 
 **Config & Launch**
-
-Configure AWorld-CLI globally, allowing you to seamlessly work across different project directories:
 
 ```bash
 cd your working directory
@@ -106,9 +99,10 @@ AWorld introduces a <b> Dual-Layer Skill System </b> that turns your expertise i
 *   **User Extensions**: Your expertise, codified. Simply drop your custom definitions into `~/.aworld/skills`. The CLI automatically indexes them, allowing the Evaluator to apply your specific domain standards to drive evolution in new fields. -->
 
 
-### Verified Skills: The Engine of Evolution
+### No Evaluation, No Evolution
 <div align="justify">
-<b>No Evaluation, No Evolution.</b> For an agent to improve, it must first understand what "good" looks like. Skills are the answer. They are reusable, verifiable modules of your domain expertise.
+For an agent to improve, it must first understand what "good" looks like. Skills are the answer. They are reusable, verifiable modules of your domain expertise.
+
 
 AWorld introduces a <b> Shared Skill System </b> where your knowledge directly powers the entire evolution loop:
 <ul>
@@ -119,12 +113,11 @@ AWorld introduces a <b> Shared Skill System </b> where your knowledge directly p
 This creates a powerful synergy: The Evaluator sets the target, and the Developer uses the same knowledge base to hit it.
 </div>
 
-<br>
 *   **Official Library**: A growing collection of high-quality, verified skills (like UI Aesthetics Assessment) ready to use, located in `AWorld/aworld-skills`.
-*   **Your Expertise as a Skill**: This is how AWorld scales to new domains. Codify your knowledge into a Skill and drop it into `~/.aworld/skills`. The CLI automatically indexes it, instantly upgrading both your Developer and Evaluator agents. <b>Your contribution is the key to unlocking new agent capabilities for everyone.</b>
+*   **Your Expertise as a Skill**: This is how AWorld scales to new domains. Codify your knowledge into a Skill and drop it into `~/.aworld/skills`. The CLI automatically indexes it, instantly upgrading both your Developer and Evaluator agents. **Your contribution is the key to unlocking new agent capabilities for everyone.**
 
 
-### Human-in-the-Loop: You are the Ultimate Evaluator
+### You are the Ultimate Evaluator
 <p align="justify">
 While the Evaluator automates the refinement loop, your intuition remains the ceiling. AWorld is designed to amplify your expertise, not replace it.
 </p>
@@ -147,9 +140,9 @@ Unlike standard file readers, CAST provides agents with a hierarchical view of c
 *   **Surgical Precision**: Navigate dependency graphs and apply complex patches with pin-point accuracy. -->
 
 
-### Powering the Developer: The CAST Toolset for Complex Codebases
+### CAST: A Powerful File Manage Tool
 <p align="justify">
-LLM agents often fail in real-world repositories because they are overwhelmed by code complexity and limited context windows. To solve this, we built <b>CAST (Code Abstract Syntax Tree)</b> — a specialized engine that allows agents to comprehend and modify large codebases with superhuman efficiency.
+LLM agents often fail in real-world repositories because they are overwhelmed by code complexity and limited context windows. To solve this, we built <b>CAST</b> — a specialized engine that allows agents to comprehend and modify large codebases with superhuman efficiency.
 </p>
 
 <p align="justify">
@@ -157,7 +150,7 @@ Instead of reading flat text files, CAST provides the Developer with a compresse
 </p>
 
 *   **Hierarchical Navigation**: Agents can instantly zoom from a high-level architectural view (Logic/Skeleton layers) down to specific implementation details, understanding the purpose of code without getting lost in the weeds.
-*   **Infinite Context Window**: CAST intelligently compresses code, feeding the agent only the relevant information. This effectively breaks the context window limitation, allowing agents to reason about massive codebases.
+*   **Nearly Infinite Context**: CAST intelligently compresses code, feeding the agent only the relevant information. This effectively breaks the context window limitation, allowing agents to reason about massive codebases.
 *   **Surgical Code Modification**: By understanding the code's structure and dependencies, the Developer can perform precise modifications, apply complex patches, and refactor code with pinpoint accuracy, avoiding the common mistakes of "blind" text replacement.
 
 
