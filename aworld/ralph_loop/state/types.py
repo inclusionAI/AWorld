@@ -14,6 +14,8 @@ from aworld.core.context.base import Context
 from aworld.core.task import Task
 from aworld.logs.util import logger
 from aworld.output import Artifact, ArtifactType, WorkSpace
+from aworld.sandbox import Sandbox
+from aworld.utils.common import convert_to_subclass
 
 
 @dataclass
@@ -55,12 +57,17 @@ class LoopState:
 class LoopContext(Context):
     """Loop context records the global information of the entire process."""
 
-    def __init__(self, work_dir: str = ".", repo_root: str = ".", **kwargs):
-        super().__init__()
+    def __init__(self, work_dir: str = ".", **kwargs):
+        super().__init__(**kwargs)
+        self.loop_init(work_dir=work_dir)
+
+    def loop_init(self, work_dir: str):
         self._id = uuid.uuid4().hex
         self.work_dir = work_dir
-        self.repo_root = repo_root
         self.workspace = WorkSpace(workspace_id=self.work_dir)
+        self.checkpoints_dir()
+        # use sandbox to manager file IO
+        self.sand_box = Sandbox.builder().builtin_tools(["filesystem"]).workspace([work_dir]).build()
 
     def loop_dir(self) -> Path:
         return Path(self.work_dir) / "loop"
@@ -85,7 +92,7 @@ class LoopContext(Context):
         return self.loop_dir() / "tasks.jsonl"
 
     def loop_lock_path(self) -> Path:
-        return Path(self.repo_root) / "loop" / "loop.lock"
+        return self.loop_dir() / "loop" / "loop.lock"
 
     def check_directories(self):
         """Create necessary directories."""
@@ -150,3 +157,15 @@ class LoopContext(Context):
         else:
             # for non-text content, currently don't have a good way to handle
             pass
+
+
+def to_loop_context(context: Context, work_dir: str = ".") -> LoopContext:
+    """Convert a general context to a loop context."""
+    if isinstance(context, LoopContext):
+        return context
+    elif isinstance(context, ApplicationContext):
+        loop_context = convert_to_subclass(context, LoopContext)
+        loop_context.loop_init(work_dir)
+        return loop_context
+    else:
+        raise ValueError(f"Unsupported context type: {type(context)}")
