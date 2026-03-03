@@ -15,7 +15,7 @@ class CompositeStopDetector:
     """
 
     def __init__(self, conditions: Optional[List[StopCondition]] = None):
-        conditions = build_stop_conditions(custom_conditions=conditions)
+        conditions = conditions or build_stop_conditions()
         # low value first
         self.detectors = sorted(conditions, key=lambda d: d.priority)
 
