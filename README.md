@@ -65,7 +65,7 @@ pip install -e . && cd aworld-cli && pip install -e .
 
 **Config & Launch**
 
-Initialize and configure your AWorld-CLI globally, allowing you to seamlessly work across different project directories:
+Configure AWorld-CLI globally, allowing you to seamlessly work across different project directories:
 
 ```bash
 # Enter your working directory, launch CLI and set up your model provider (e.g., OpenAI, Claude)
@@ -82,9 +82,9 @@ Once configured, simply type aworld-cli in your terminal to start your journey.
 AWorld-CLI goes beyond simple scaffolding. It acts as a central brain, orchestrating specialized sub-agents—<b>the Developer</b> and <b>the Evaluator</b>—to build, test, and refine applications autonomously.
 </p>
 
-### The Cycle: Build -> Evaluate -> Evolve
+### The Evolution Loop: Build -> Evaluate -> Evolve
 
-Imagine you need an application: *"Help me create an English word learning mini-app with a UI quality score above 0.9."*
+Imagine you ask: *"Help me create an English word learning mini-app with a UI quality score above 0.9."*
 
 1.  **The Developer Builds**: The `Developer` agent analyzes requirements and writes code (e.g., HTML/JS) using **CAST**, our specialized code analysis and compression toolset that allows agents to read and modify complex repositories with surgical precision.
 2.  **The Evaluator Judges**: The `Evaluator` agent inspects the output using verified Skills (e.g., a professional UI Assessment Skill).
@@ -94,7 +94,7 @@ Imagine you need an application: *"Help me create an English word learning mini-
 ![](./readme_assets/aworld_cli_demo_loop.gif)
 <!-- *Note: Please update the GIF to show the new dev/eval interaction* -->
 
-### Verified Skills: The DNA of Evaluation
+### Verified Skills: The DNA of Evolution
 <div align="justify">
 <b>No Evaluation, No Evolution.</b> To build professional-grade agents, we need professional-grade standards.
 </div>
@@ -103,20 +103,27 @@ Imagine you need an application: *"Help me create an English word learning mini-
 
 AWorld provides a dual-layer skill system:
 *   **Official Library**: High-quality, verified skills (like UI Aesthetics Assessment) located in `AWorld/aworld-skills`.
-*   **User Extensions**: Drop your own expert skills into `~/.aworld/skills`. The CLI automatically indexes these, allowing the Evaluator to apply *your* domain expertise to critique and improve the Developer's work.
+*   **User Extensions**: Drop your own expert skills or into `~/.aworld/skills`. The CLI automatically indexes these and apply *your* domain expertise to improve AWorld-Cli's scope.
 
 ### Human-in-the-Loop: You are the Ultimate Evaluator
 <p align="justify">
 While the automated Evaluator handles the heavy lifting, your expertise remains the ceiling. You can intervene at any stage of the loop.
+</p>
 
+<p align="justify">
 Provide natural language feedback on the generated video, app, or report. The AWorld agent interprets your critique as a new set of constraints and tasks the Developer to refine the output. Whether it's an automated score or your subjective taste, accurate feedback drives precise evolution.
 </p>
 
 ### Powering the Developer: The CAST Toolset
 <p align="justify">
 To enable agents to work on complex codebases, we built <b>CAST (Code Analysis & Search Toolset)</b>.
+</p>
 
+<p align="justify">
 Unlike standard file readers, CAST provides agents with a hierarchical view of code (Logic, Skeleton, Implementation layers). It allows the Developer agent to:
+</p>
+
+<p align="justify">
 *   **Compress Context**: Understand massive repositories without exceeding token limits.
 *   **Navigate Structurally**: Jump through dependency graphs and call flows.
 *   **Edit Surgically**: Apply precise patches and search-replace operations.
