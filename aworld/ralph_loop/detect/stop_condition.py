@@ -286,7 +286,7 @@ class ResourceExhaustedCondition(ErrorCondition):
                 )
 
             # disk
-            disk = psutil.disk_usage(state.loop_context.workspace)
+            disk = psutil.disk_usage(state.loop_context.work_dir)
             if disk.free < self.disk_threshold:
                 return StopDecision(
                     should_stop=True,
