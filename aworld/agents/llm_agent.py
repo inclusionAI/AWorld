@@ -508,7 +508,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
     def _agent_result(self, actions: List[ActionModel], caller: str, input_message: Message):
         if not actions:
-            raise Exception(f'{self.id()} no action decision has been made.')
+            return Message(payload=[ActionModel(agent_name=self.id(),
+                                                policy_info=f'{self.id()} no action decision has been made.')],
+                           caller=caller,
+                           sender=self.id(),
+                           category=self.event_handler_name,
+                           session_id=input_message.context.session_id if input_message.context else "",
+                           headers=self._update_headers(input_message))
         if self.event_handler_name:
             return Message(payload=actions,
                            caller=caller,
@@ -660,7 +666,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 events.append(event)
         except Exception as e:
             logger.error(f"{self.id()} failed to run PRE_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
-            raise e
 
         try:
             response_parse_args = {
@@ -671,7 +676,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
             logger.warn(f"{self.id()} result error: {e}")
-            raise e
+            raise AWorldRuntimeException(str(e))
         finally:
             if llm_response:
                 if llm_response.error:
@@ -716,10 +721,10 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     except Exception as e:
                         logger.error(
                             f"{self.id()} failed to run POST_LLM_CALL hooks: {e}, traceback is {traceback.format_exc()}")
-                        raise e
+                        raise AWorldRuntimeException(str(e))
             else:
                 logger.error(f"{self.id()} failed to get LLM response")
-                raise RuntimeError(f"{self.id()} failed to get LLM response")
+                raise AWorldRuntimeException(f"{self.id()} failed to get LLM response")
 
         logger.info(f"agent_result: {agent_result}")
 

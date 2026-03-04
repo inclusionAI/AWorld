@@ -4,9 +4,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from aworld.ralph_loop.state.types import LoopState, LoopContext
-from aworld.ralph_loop.types import CompletionCriteria
-
 
 class StopType(Enum):
     NONE = "none"
