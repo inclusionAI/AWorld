@@ -62,14 +62,14 @@ Before diving deep into the framework, see what AWorld-CLI can build for you rig
 <tbody>
 <tr>
   <td>Create App</td>
-  <td>• Auto-creation by <a href="aworld-skills/frontend_design">AWorld Official Skill</a><br>• Auto-evaluation by <a href="aworld-skills/app_evaluator">AWorld Official Skill</a></td>
-  <td style="width:26%"><img src="readme_assets/aworld_cli_app_create.gif" alt="App create demo" width="280"></td>
+  <td>• Auto-creation by <a href="aworld-skills/frontend_design">AWorld Skill</a><br>• Auto-evaluation by <a href="aworld-skills/app_evaluator">AWorld Skill</a></td>
+  <td style="width:26%"><img src="readme_assets/aworld_cli_app_create.gif" alt="App create demo" width="240"></td>
   <td><a href="docs/Recipe/miniapp_build_recipe.md">View Recipe</a></td>
 </tr>
 <tr>
   <td>Create Video</td>
   <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• Human evaluation</td>
-  <td style="width:26%"><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video create demo" width="280"></td>
+  <td style="width:26%"><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video create demo" width="240"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr>
 </tbody>
