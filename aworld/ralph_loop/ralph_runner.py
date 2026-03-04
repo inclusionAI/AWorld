@@ -33,6 +33,7 @@ class RalphRunner(Runner):
 
         # State management
         self.loop_context = None
+        self.task_context = None
         self.loop_state = LoopState(confirmation_threshold=1)
 
         # Initialize components
@@ -55,6 +56,13 @@ class RalphRunner(Runner):
             if stop_decision.should_stop:
                 logger.info(f"Loop terminated: {stop_decision.stop_type}, Reason: {stop_decision.reason}")
                 break
+            else:
+                await self.loop_context.write_to_loop_context(
+                    content='',
+                    task_context=self.task_context,
+                    iter_num=iter_num,
+                    reuse_context=self.ralph_config.reuse_context
+                )
 
             # 2. Execute task
             logger.info(f"Iteration {iter_num} Executing task...")
@@ -78,12 +86,12 @@ class RalphRunner(Runner):
         return await self.stop_detector.should_stop(stop_state)
 
     async def _execute_task(self, task: Task, iter_num: int) -> TaskResponse:
-        if self.ralph_config.reuse_context:
-            if iter_num > 1:
-                task.input = "Your answer is either incorrect. Please read the original question carefully, check and analyze it, and try to answer it again."
-            self.task.context = self.loop_context
-        else:
-            task.context = await self.loop_context.read_to_task_context(task=task, iter_num=iter_num)
+        self.task_context = to_loop_context(
+            await self.loop_context.read_to_task_context(task=task, iter_num=iter_num,
+                                                         reuse_context=self.ralph_config.reuse_context),
+            work_dir=self.ralph_config.workspace
+        )
+        task.context = self.task_context
 
         results = await exec_tasks(tasks=[task])
         execution_result: TaskResponse = results.get(task.id)
