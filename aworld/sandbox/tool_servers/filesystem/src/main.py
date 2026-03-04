@@ -320,7 +320,7 @@ async def search_content(
 
 # ==================== Disabled MCP tools (not exposed) ====================
 
-#@mcp.tool(description="Read image or audio file as base64 encoded data. Returns base64 data, MIME type, and media type (image/audio/blob).")
+@mcp.tool(description="Read image or audio file as base64 encoded data. Returns base64 data, MIME type, and media type (image/audio/blob).")
 async def read_media_file(
     ctx: Context,
     path: str = Field(description="Media file path"),
