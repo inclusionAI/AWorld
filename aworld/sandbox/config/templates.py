@@ -2,26 +2,20 @@
 # Copyright (c) 2025 inclusionAI.
 
 """
-MCP config for builtin tools: streamable-http, URL / TOKEN / WORKSPACE from env.
+Sandbox and the tool servers read configuration from environment variables.
+When you run script/start_tool_servers.sh or start the tool server processes manually,
+they also rely on these env vars (for example WORKSPACE for filesystem/terminal).
 
-Sandbox 连接工具服务时从环境变量读取配置；
-启动 script/start_tool_servers.sh 或工具服务进程时，也会读取这些变量（如 WORKSPACE 传给 filesystem/terminal）。
-
-.env 填写示例（项目根或 script 同层）：
-  # 内置工具服务 URL（本地启动脚本会默认 http://127.0.0.1:8084 / 8081）
-  AWORLD_FILESYSTEM_ENDPOINT=http://127.0.0.1:8084
-  AWORLD_TERMINAL_ENDPOINT=http://127.0.0.1:8081
-  # 可选：认证 Token
-  AWORLD_FILESYSTEM_TOKEN=
-  AWORLD_TERMINAL_TOKEN=
-  # 工作目录：filesystem 允许访问的目录（逗号分隔），terminal 的工作目录
+Example .env (at project root or next to the script):
+  # Workspace: comma-separated directories allowed by filesystem and used as working dir for terminal
   AWORLD_WORKSPACE=/path/to/workspace
 """
 
 import os
+from pathlib import Path
 from typing import Optional, Dict, Any
 
-# ============ 环境变量名（与 .env、start_tool_servers.sh、tool_servers 内一致）============
+# ============ Environment variable names (shared with .env, start_tool_servers.sh, and tool_servers) ============
 ENV_FILESYSTEM_ENDPOINT = "AWORLD_FILESYSTEM_ENDPOINT"
 ENV_FILESYSTEM_TOKEN = "AWORLD_FILESYSTEM_TOKEN"
 ENV_TERMINAL_ENDPOINT = "AWORLD_TERMINAL_ENDPOINT"
@@ -30,13 +24,31 @@ ENV_WORKSPACE = "AWORLD_WORKSPACE"
 
 # Server type and timeouts
 STREAMABLE_HTTP_TYPE = "streamable-http"
+STDIO_TYPE = "stdio"
 DEFAULT_TIMEOUT = 9999.0
 DEFAULT_SSE_READ_TIMEOUT = 9999.0
 DEFAULT_CLIENT_SESSION_TIMEOUT = 9999.0
 
+# Placeholder resolved at spawn time by mcp_client
+PYTHON_CMD_PLACEHOLDER = "${PYTHON_CMD}"
+
+# Builtin server script paths (relative to sandbox config package: .../aworld/sandbox/config/)
+def _tool_servers_root() -> Path:
+    return Path(__file__).resolve().parent.parent / "tool_servers"
+
+
+def get_filesystem_script_path() -> str:
+    """Absolute path to filesystem server main.py."""
+    return str(_tool_servers_root() / "filesystem" / "src" / "main.py")
+
+
+def get_terminal_script_path() -> str:
+    """Absolute path to terminal server terminal.py."""
+    return str(_tool_servers_root() / "terminal" / "src" / "terminal.py")
+
 
 def get_server_env() -> Dict[str, str]:
-    """从当前环境读取要传给 MCP 服务进程的 env（如 workspace）。启动脚本需导出这些变量，服务内从 os.getenv 读取。"""
+    """Read env values that should be forwarded to MCP server processes (e.g. workspace)."""
     env: Dict[str, str] = {}
     v = os.environ.get(ENV_WORKSPACE, "").strip()
     if v:
@@ -49,7 +61,7 @@ def build_server_config(
     token: Optional[str] = None,
     env: Optional[Dict[str, str]] = None,
 ) -> dict:
-    """Build one mcpServer entry: streamable-http with url, optional Bearer token, and optional env 供服务端读取。"""
+    """Build one mcpServer entry: streamable-http with url, optional Bearer token, and optional env for the server."""
     cfg: Dict[str, Any] = {
         "type": STREAMABLE_HTTP_TYPE,
         "url": url,
@@ -61,4 +73,25 @@ def build_server_config(
         cfg["headers"] = {"Authorization": f"Bearer {token.strip()}"}
     if env:
         cfg["env"] = dict(env)
+    return cfg
+
+
+def build_stdio_server_config(
+    command: str,
+    args: list,
+    env: Optional[Dict[str, str]] = None,
+    cwd: Optional[str] = None,
+    client_session_timeout_seconds: float = DEFAULT_CLIENT_SESSION_TIMEOUT,
+) -> Dict[str, Any]:
+    """Build one mcpServer entry for stdio transport. command may contain ${PYTHON_CMD}."""
+    cfg: Dict[str, Any] = {
+        "type": STDIO_TYPE,
+        "command": command,
+        "args": list(args),
+        "client_session_timeout_seconds": client_session_timeout_seconds,
+    }
+    if env:
+        cfg["env"] = dict(env)
+    if cwd:
+        cfg["cwd"] = cwd
     return cfg
