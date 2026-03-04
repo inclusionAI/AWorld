@@ -4,6 +4,8 @@
 """File operation functions."""
 
 import asyncio
+import base64
+import mimetypes
 from pathlib import Path
 import tempfile
 from difflib import unified_diff
@@ -124,4 +126,29 @@ async def apply_edits(path: str, edits: list[dict], dry_run: bool = False) -> st
         await write_file(path, modified)
     
     return formatted_diff
+
+
+def _read_media_file_sync(path: str) -> tuple[str, str, str]:
+    """Synchronously read a media file and return (base64, MIME type, media type)."""
+    mime_type, _ = mimetypes.guess_type(path)
+    if not mime_type:
+        mime_type = "application/octet-stream"
+
+    with open(path, "rb") as f:
+        data = base64.b64encode(f.read()).decode("utf-8")
+
+    if mime_type.startswith("image/"):
+        media_type = "image"
+    elif mime_type.startswith("audio/"):
+        media_type = "audio"
+    else:
+        media_type = "blob"
+
+    return data, mime_type, media_type
+
+
+async def read_media_file(path: str) -> tuple[str, str, str]:
+    """Read a media file and return (base64, MIME type, media type)."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _read_media_file_sync, path)
 
