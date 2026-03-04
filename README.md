@@ -150,7 +150,7 @@ AWorld provides the complete infrastructure for this loop, turning your expertis
 
 #### CAST: Conquering Code Complexity
 <p align="justify">
-Agents often fail because they are overwhelmed by code complexity. We built <b>CAST</b> (Code Abstract Syntax Tree) to solve this. Instead of seeing a flat text file, CAST gives the agent an architectural blueprint of the code. This enables:
+Agents often fail because of overwhelming code complexity. We built <b>CAST</b> (Code Abstract Syntax Tree) to solve this. Instead of seeing a flat text file, CAST gives the agent an architectural blueprint of the code. This enables:
 </p>
 
 *   **Hierarchical Navigation**: Instantly understand code structure and purpose without getting lost in implementation details.
