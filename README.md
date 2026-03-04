@@ -135,8 +135,12 @@ Imagine you ask: *"Help me create an English word learning mini-app with a UI qu
 
 ***📹  See the Self-Evolution Loop in Action***
 
-
-https://github.com/user-attachments/assets/ff56195e-e117-4d33-b709-9a2144680abd
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/ff56195e-e117-4d33-b709-9a2144680abd" 
+         poster="readme_assets/evolution_loop_poster.png" 
+         width="80%" controls style="max-width: 80%;">
+  </video>
+</p>
 
 
 ### No Evaluation, No Evolution
