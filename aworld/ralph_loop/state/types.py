@@ -8,7 +8,7 @@ from dataclasses import dataclass, field, asdict
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from aworld.core.context.amni import ApplicationContext, TaskInput, AmniConfigFactory
+from aworld.core.context.amni import ApplicationContext, TaskInput, AmniConfigFactory, AmniContext
 from aworld.core.context.amni.config import AmniConfigLevel
 from aworld.core.context.base import Context
 from aworld.core.task import Task
@@ -54,7 +54,7 @@ class LoopState:
         return asdict(self)
 
 
-class LoopContext(Context):
+class LoopContext(ApplicationContext):
     """Loop context records the global information of the entire process."""
 
     def __init__(self, work_dir: str = ".", **kwargs):
@@ -127,36 +127,129 @@ class LoopContext(Context):
         self.add_task_node(sub_task_id, self.task_id, caller_agent_info={}, **kwargs)
         return new_context
 
-    def merge_sub_context(self, sub_task_context: 'ApplicationContext', **kwargs):
-        # default no need to merge for loop context
-        pass
+    async def read_to_task_context(self, task: Task, iter_num: int = 0, strategy: str = None,
+                                   reuse_context: bool = False, **kwargs):
+        """Read feedback/reflection from previous iteration and inject into task context.
 
-    async def read_to_task_context(self, task: Task, iter_num: int = 0, strategy: str = None, **kwargs):
-        """Read strategy from a directory."""
-        info = self.workspace.get_artifact_data(f"{self.reflect_dir()}_{task.id}_{iter_num - 1}")
-        content = f'{info.get("content")}\n' if info else ''
-        sub_task_content = f"{content}{task.input}"
-        task.input = sub_task_content
+        Args:
+            task: Task to execute
+            iter_num: Current iteration number
+            strategy: Read strategy (e.g., 'feedback', 'reflect', 'decision')
+            **kwargs: Additional parameters
 
-        logger.info(f"Read for task {task.id} iteration {iter_num} content: {sub_task_content}")
-        return await self.build_sub_context(sub_task_content=sub_task_content, sub_task_id=task.id, task=task, **kwargs)
+        Returns:
+            Context with injected feedback
+        """
+        feedback_content = ""
+
+        if iter_num > 1:
+            # Read reflection/feedback from previous iteration
+            artifact_id = f"{self.reflect_dir()}_{task.id}_{iter_num - 1}"
+            info = self.workspace.get_artifact_data(artifact_id)
+
+            if info and info.get("content"):
+                feedback_content = info.get("content")
+                logger.info(f"Read feedback for task {task.id} iteration {iter_num}: {feedback_content[:100]}...")
+            else:
+                # Default feedback if no artifact found
+                feedback_content = "Your previous answer was incorrect. Please read the original question carefully, check and analyze it, and try to answer it again."
+                logger.info(f"No feedback artifact found, using default feedback for iteration {iter_num}")
+
+        # Inject feedback into task input
+        if feedback_content:
+            if reuse_context:
+                task_content = f"{feedback_content}"
+            else:
+                task_content = f"{feedback_content}\n\nOriginal task: {task.input}"
+        else:
+            task_content = task.input
+
+        task.input = task_content
+        logger.debug(f"Task input after feedback injection: {task_content[:200]}...")
+
+        if reuse_context:
+            return self
+        return await self.build_sub_context(sub_task_content=task_content, sub_task_id=task.id, task=task, **kwargs)
 
     async def write_to_loop_context(self,
                                     content: Any,
                                     task_context: 'ApplicationContext',
                                     iter_num: int = 0,
-                                    strategy: str = None):
-        """Custom context merge."""
-        self.merge_sub_context(task_context)
+                                    strategy: str = None,
+                                    content_type: str = "feedback",
+                                    reuse_context: bool = True):
+        """Write feedback/reflection to loop context for next iteration.
 
+        Args:
+            content: Content to write (string, dict, or list)
+            task_context: Task context
+            iter_num: Current iteration number
+            strategy: Write strategy
+            content_type: Type of content ('reflect', 'feedback', 'decision')
+        """
+
+        if iter_num < 2 or not content:
+            return
+
+        task_id = task_context.get_task().id if task_context.get_task() else "unknown"
+        artifact_id = f"{self.reflect_dir()}_{task_id}_{iter_num}"
+
+        # Handle different content types
         if isinstance(content, str):
-            artifact = Artifact(artifact_id=f"{self.reflect_dir()}_{task_context.get_task().id}_{iter_num}",
-                                artifact_type=ArtifactType.TEXT, content=content,
-                                metadata={"context_type": "reflect"})
-            await self.workspace.add_artifact(artifact, index=False)
+            artifact_content = content
+        elif isinstance(content, dict):
+            # Convert dict to formatted string
+            artifact_content = self._format_dict_content(content)
+        elif isinstance(content, list):
+            # Convert list to formatted string
+            artifact_content = self._format_list_content(content)
         else:
-            # for non-text content, currently don't have a good way to handle
-            pass
+            logger.warning(f"Unsupported content type: {type(content)}, converting to string")
+            artifact_content = str(content)
+
+        artifact = Artifact(
+            artifact_id=artifact_id,
+            artifact_type=ArtifactType.TEXT,
+            content=artifact_content,
+            metadata={
+                "context_type": content_type,
+                "iteration": iter_num,
+                "task_id": task_id,
+                "timestamp": time.time()
+            }
+        )
+
+        await self.workspace.add_artifact(artifact, index=False)
+        logger.info(f"Written {content_type} to loop context: {artifact_id} (length: {len(artifact_content)})")
+
+    def _format_dict_content(self, content: dict) -> str:
+        """Format dictionary content as readable text."""
+        lines = []
+        for key, value in content.items():
+            if isinstance(value, (list, dict)):
+                lines.append(f"{key}:")
+                if isinstance(value, list):
+                    for item in value:
+                        lines.append(f"  - {item}")
+                else:
+                    for k, v in value.items():
+                        lines.append(f"  {k}: {v}")
+            else:
+                lines.append(f"{key}: {value}")
+        return "\n".join(lines)
+
+    def _format_list_content(self, content: list) -> str:
+        """Format list content as readable text."""
+        lines = []
+        for i, item in enumerate(content, 1):
+            if isinstance(item, dict):
+                lines.append(f"{i}. {self._format_dict_content(item)}")
+            else:
+                lines.append(f"{i}. {item}")
+        return "\n".join(lines)
+
+    def deep_copy(self) -> 'LoopContext':
+        return self
 
 
 def to_loop_context(context: Context, work_dir: str = ".") -> LoopContext:
