@@ -163,7 +163,7 @@ CAST provides the technical capability for change, but your knowledge provides t
 </p>
 
 <p align="justify">
-<b>Automated Evaluation</b>: A [Skill](aworld-skills/app_evaluator/SKILL.md) teaches the <code>Evaluator</code> agent how to judge performance and identify flaws, setting a clear, objective target for the <code>Developer</code> agent. This creates a powerful synergy: the <code>Evaluator</code> sets the target, and the <code>Developer</code> uses the same knowledge to hit it.
+<b>Automated Evaluation</b>: <code>Evaluator</code> agent judge performance and identify flaws, setting a clear, objective target for the <code>Developer</code> agent. This creates a powerful synergy: the <code>Evaluator</code> sets the target, and the <code>Developer</code> uses the same knowledge to hit it.
 </p>
 
 <p align="justify">
