@@ -130,7 +130,7 @@ This multi-agent system works in concert to turn your ideas into reality:
 Imagine you ask: *"Help me create an English word learning mini-app with a UI quality score above 0.9."*
 
 *   **The Developer Builds**: The `Developer` agent analyzes requirements and writes code (e.g., HTML/JS) using [**CAST**](#cast-conquering-code-complexity).
-*   **The Evaluator Judges**: The `Evaluator` agent inspects the output using verified Skills (e.g., a [professional UI Assessment Skill](aworld-skills/app_evaluator)).
+*   **The Evaluator Judges**: The `Evaluator` agent inspects the output using verified Skills (see [our UI Assessment Skill](aworld-skills/app_evaluator)).
 *   **The Loop Refines**: If the score is below target (e.g., 0.9), AWorld instructs the Developer to fix specific issues identified by the Evaluator. This loop continues until your criteria are met.
 
 ***📹  See the Self-Evolution Loop in Action***
