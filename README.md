@@ -120,8 +120,8 @@ This multi-agent system works in concert to turn your ideas into reality:
 </thead>
 <tbody>
 <tr><td style="white-space:nowrap">👑 AWorld Agent</td><td><strong>The Orchestrator</strong>: The central brain that interprets user goals, creates a plan, and delegates tasks to the appropriate sub-agents. It manages the entire workflow from start to finish.</td></tr>
-<tr><td style="white-space:nowrap">🧑‍💻 Developer</td><td><strong>The Builder</strong>: The master craftsman responsible for writing, debugging, and refactoring code, such as applicable html.</td></tr>
-<tr><td style="white-space:nowrap">🧐 Evaluator</td><td><strong>The Judge</strong>: The quality assurance expert. It assesses the Developer's output against objective criteria defined by Skills (e.g., UI score), providing the critical feedback required for the evolution loop.</td></tr>
+<tr><td style="white-space:nowrap">🧑‍💻 Developer</td><td><strong>The Builder</strong>: The master craftsman responsible for writing, debugging, and refactoring code.</td></tr>
+<tr><td style="white-space:nowrap">🧐 Evaluator</td><td><strong>The Judge</strong>: The quality assurance expert. It assesses the Developer's output against objective criteria, providing the critical feedback required for the evolution loop.</td></tr>
 </tbody>
 </table>
 
