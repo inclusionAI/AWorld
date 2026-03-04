@@ -141,7 +141,7 @@ export PATH="/usr/local/bin:$PATH"
 cd openclaw
 node dist/index.js message send \
   --channel discord \
-  --target "user:1465280767801430026" \
+  --target "user:USER_ID" \
   --message "🦞 Hello from OpenClaw!"
 ```
 
