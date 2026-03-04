@@ -1,6 +1,6 @@
 <div align="center">
 
-# AWorld: Agentic Craft for Your World
+# AWorld: The Agent Harness for Your World
 
 </div>
 
@@ -33,12 +33,47 @@
 ---
 
 <p align="justify">
-For all its power, general AI hits a wall of context. It's a wall built from the nuanced workflows, domain-specific data, and hard-won intuition that define your world. From scientific research, financial analysis, to complex engineering, generic models can't climb this wall. They can't speak your language. 
+General AI often hits a "wall of context"—the nuanced data, workflows, and intuition that define <em>your</em> world. An agent's true power lies not in the model alone, but in its <b>Agent Harness</b>: the framework orchestrating its tools, memory, context, and execution.
 
-A growing community consensus reveals that the true power of AI Agents lies not just in the core model, but in the sophisticated framework—the <b>Agent Harness</b>—that orchestrates its tools, memory, and execution loop. The AWorld Thesis aligns perfectly with this: true AI scaling is achieved when experts like you can craft a bespoke Harness for your domain, building a gate in that wall of context.
+This is the <b>AWorld Thesis</b>: A powerful harness is not enough. True AI scaling is unlocked only when experts like you embed the invaluable knowledge, effectively building the gate in that wall. 
 
-AWorld with its CLI mode is the platform designed for this. We provide the fundamental recipe for you, the expert, to infuse your knowledge and craft unique insights into fleets of autonomous agents. This is how we move beyond generic promise to specific, robust applications that navigate your world with precision.
+AWorld is the platform designed for this singular purpose. We provide a complete, battle-tested Harness as the recipe for you, the expert, to forge your knowledge into a fleet of autonomous agents. Together, we move beyond AI's generic promise to create robust, precise applications that master <em>your</em> specific domain.
 </p>
+
+# From Prompt to Product: Instant Creations
+
+Before diving deep into the framework, see what AWorld-CLI can build for you right now. Turn a single prompt into a polished, functional product—all orchestrated by the AWorld Agent and its team. Here are what's possible with just one command.
+
+<table>
+<colgroup>
+  <col style="width:15%">
+  <col style="width:36%">
+  <col style="width:26%">
+  <col style="width:23%">
+</colgroup>
+<thead>
+<tr>
+  <th>Capability</th>
+  <th>Features</th>
+  <th>See it in Action</th>
+  <th>Recipe</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>Create App</td>
+  <td>• Auto-creation<br>• Auto-evaluation by <a href="aworld-skills/app_evaluator/SKILL.md">AWorld Skill</a></td>
+  <td style="width:26%"><img src="readme_assets/aworld_cli_app_create.gif" alt="App create demo" width="290"></td>
+  <td><a href="docs/Recipe/miniapp_build_recipe.md">View Recipe</a></td>
+</tr>
+<tr>
+  <td>Create Video</td>
+  <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• Human evaluation</td>
+  <td style="width:26%"><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video create demo" width="290"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+</tbody>
+</table>
 
 
 # Your Journey with AWorld-CLI
@@ -80,17 +115,13 @@ This multi-agent system works in concert to turn your ideas into reality:
 </p>
 
 <table>
-<colgroup>
-<col style="width: 400px">
-<col>
-</colgroup>
 <thead>
-<tr><th>Agent Name</th><th>Role & Core Function</th></tr>
+<tr><th style="white-space:nowrap">Agent Name</th><th>Role & Core Function</th></tr>
 </thead>
 <tbody>
-<tr><td>👑 AWorld Agent</td><td><strong>The Orchestrator</strong>: The central brain that interprets user goals, creates a plan, and delegates tasks to the appropriate sub-agents. It manages the entire workflow from start to finish.</td></tr>
-<tr><td>🧑‍💻 Developer</td><td><strong>The Builder</strong>: The master craftsman responsible for writing, debugging, and refactoring code, such as applicable html.</td></tr>
-<tr><td>🧐 Evaluator</td><td><strong>The Judge</strong>: The quality assurance expert. It assesses the Developer's output against objective criteria defined by Skills (e.g., UI score), providing the critical feedback required for the evolution loop.</td></tr>
+<tr><td style="white-space:nowrap">👑 AWorld Agent</td><td><strong>The Orchestrator</strong>: The central brain that interprets user goals, creates a plan, and delegates tasks to the appropriate sub-agents. It manages the entire workflow from start to finish.</td></tr>
+<tr><td style="white-space:nowrap">🧑‍💻 Developer</td><td><strong>The Builder</strong>: The master craftsman responsible for writing, debugging, and refactoring code.</td></tr>
+<tr><td style="white-space:nowrap">🧐 Evaluator</td><td><strong>The Judge</strong>: The quality assurance expert. It assesses the Developer's output against objective criteria, providing the critical feedback required for the evolution loop.</td></tr>
 </tbody>
 </table>
 
@@ -98,55 +129,54 @@ This multi-agent system works in concert to turn your ideas into reality:
 
 Imagine you ask: *"Help me create an English word learning mini-app with a UI quality score above 0.9."*
 
-*   **The Developer Builds**: The `Developer` agent analyzes requirements and writes code (e.g., HTML/JS) using **CAST**, our specialized code analysis and compression toolset that allows agents to read and modify complex repositories with surgical precision.
-*   **The Evaluator Judges**: The `Evaluator` agent inspects the output using verified Skills (e.g., a professional UI Assessment Skill).
-*   **The Loop Refines**: If the score is below target (e.g., 0.7), AWorld instructs the Developer to fix specific issues identified by the Evaluator. This loop continues until your criteria are met.
+*   **The Developer Builds**: The `Developer` analyzes requirements and writes code (e.g., HTML) using [CAST](#cast-conquering-code-complexity).
+*   **The Evaluator Judges**: The `Evaluator` inspects the output using [our verified Skill](aworld-skills/app_evaluator/SKILL.md).
+*   **The Loop Refines**: If the score is below target (e.g., 0.9), AWorld instructs the Developer to fix specific issues identified by the Evaluator. This loop continues until your criteria are met.
 
-***See the Self-Evolution Loop in Action***
+***📹  See the Self-Evolution Loop in Action***
 
-[![Watch on YouTube](https://img.shields.io/badge/Watch-Self--Evolution%20Loop-red?style=for-the-badge&logo=youtube)](https://youtube.com/shorts/F7INIq5HG1g?feature=share)
+<p align="center">
+  <video src="https://github.com/user-attachments/assets/ff56195e-e117-4d33-b709-9a2144680abd" 
+         poster="readme_assets/evolution_loop_poster.png" 
+         width="80%" controls style="max-width: 80%;">
+  </video>
+</p>
 
 
 ### No Evaluation, No Evolution
-<div align="justify">
-For an agent to improve, it must first understand what "good" looks like. Skills are the answer. They are reusable, verifiable modules of your domain expertise.
 
-
-AWorld introduces a <b> Shared Skill System </b> where your knowledge directly powers the entire evolution loop:
-<ul>
-    <li><b>For the Evaluator</b>: A Skill (e.g., <i>Legal Contract Review, UI Aesthetics Score, Financial Risk Assessment</i>) provides a concrete metric, teaching the Evaluator how to judge performance and identify flaws autonomously. </li>
-    <li><b>For the Developer</b>: The Developer can also directly invoke these Skills as tools to enhance its own capabilities, ensuring its creations meet high standards from the start.</li>
-</ul>
-
-This creates a powerful synergy: The Evaluator sets the target, and the Developer uses the same knowledge base to hit it.
-</div>
-
-*   **Official Library**: A growing collection of high-quality, verified skills (like UI Aesthetics Assessment) ready to use, located in `AWorld/aworld-skills`.
-*   **Your Expertise as a Skill**: This is how AWorld scales to new domains. Codify your knowledge into a Skill and drop it into `~/.aworld/skills`. The CLI automatically indexes it, instantly upgrading both your Developer and Evaluator agents. **Your contribution is the key to unlocking new agent capabilities for everyone.**
-
-
-### You are the Ultimate Evaluator
 <p align="justify">
-While the Evaluator automates the refinement loop, your intuition remains the ceiling. AWorld is designed to amplify your expertise, not replace it.
+For an agent to improve, it must first understand what "good" looks like. This is the core of AWorld's autonomous evolution loop. However, real-world evolution is hard: codebases are massive, context windows are limited, and tasks require precise, long-term iteration.
+</p>
+<p align="justify">
+AWorld provides the complete infrastructure for this loop, turning your expertise into the driving force of evolution.
+</p>
+
+#### CAST: Conquering Code Complexity
+<p align="justify">
+Agents often fail because of overwhelming code complexity. We built <b>CAST</b> (Code Abstract Syntax Tree) to solve this. Instead of seeing a flat text file, CAST gives the agent an architectural blueprint of the code. This enables:
+</p>
+
+*   **Hierarchical Navigation**: Instantly understand code structure and purpose without getting lost in implementation details.
+*   **Nearly Infinite Context**: Intelligently compresses code to feed the agent only relevant information, breaking the context window limitation.
+*   **Surgical Code Modification**: Perform precise changes with full dependency awareness, avoiding the clumsy errors of "blind" text replacement.
+
+#### Your Expertise as the Evaluator
+<p align="justify">
+CAST provides the technical capability for change, but your knowledge provides the direction. AWorld's <b>Shared Skill System</b> makes your expertise the ultimate measure of quality.
 </p>
 
 <p align="justify">
-You can intervene at any stage. Provide natural language feedback on a generated video, application, or report. The AWorld agent accepts your critique as a high-priority constraint, interpreting your subjective taste or nuance as a direct instruction to the Developer agent. Whether it's an automated score derived from a Skill or your manual guidance, precise feedback drives precise evolution.
-</p>
-
-
-### CAST: A Powerful File Manage Tool
-<p align="justify">
-LLM agents often fail in real-world repositories because they are overwhelmed by code complexity and limited context windows. To solve this, we built <b>CAST</b> — a specialized engine that allows agents to comprehend and modify large codebases with superhuman efficiency.
+<b>Automated Evaluation</b>: <code>Evaluator</code> agent judge performance and identify flaws, setting a clear, objective target for the <code>Developer</code> agent. This creates a powerful synergy: the <code>Evaluator</code> sets the target, and the <code>Developer</code> uses the same knowledge to hit it.
 </p>
 
 <p align="justify">
-Instead of reading flat text files, CAST provides the Developer with a compressed, hierarchical understanding of the code. This is like giving the agent a set of architectural blueprints instead of a pile of bricks. It enables:
+<b>Human Evaluation</b>: Your intuition is the ceiling. You are the ultimate evaluator. Provide natural language feedback at any stage, and the AWorld agent will interpret it as a high-priority instruction for the next evolutionary cycle.
 </p>
 
-*   **Hierarchical Navigation**: Agents can instantly zoom from a high-level architectural view (Logic/Skeleton layers) down to specific implementation details, understanding the purpose of code without getting lost in the weeds.
-*   **Nearly Infinite Context**: CAST intelligently compresses code, feeding the agent only the relevant information. This effectively breaks the context window limitation, allowing agents to reason about massive codebases.
-*   **Surgical Code Modification**: By understanding the code's structure and dependencies, the Developer can perform precise modifications, apply complex patches, and refactor code with pinpoint accuracy, avoiding the common mistakes of "blind" text replacement.
+<p align="justify">
+Whether it's an automated score from a Skill you contributed or your direct manual guidance, in AWorld, precise feedback drives precise evolution.
+</p>
 
 
 # Total Control: Manually Crafting Agent Systems
