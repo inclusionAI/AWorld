@@ -1,7 +1,11 @@
 """File operation helper functions."""
 
 import asyncio
+import os
+import re
 from pathlib import Path
+from typing import Optional
+
 import tempfile
 import base64
 import mimetypes
@@ -298,6 +302,106 @@ async def edit_file_by_line_range(
         await write_file(path, modified_norm)
 
     return formatted_diff
+
+
+def _search_content_sync(
+    path: str,
+    pattern: str,
+    max_matches: Optional[int],
+    max_per_file: Optional[int],
+    before: int,
+    after: int,
+) -> str:
+    """Synchronously search file(s) for lines matching a regex. path may be file or directory."""
+    try:
+        re_obj = re.compile(pattern)
+    except re.error as e:
+        raise ValueError(f"Invalid regex pattern: {pattern}") from e
+
+    results: list[str] = []
+    total_matches = 0
+    path_obj = Path(path).resolve()
+
+    def process_file(file_path: str) -> None:
+        nonlocal total_matches
+
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except (UnicodeDecodeError, OSError):
+            return
+
+        if not lines:
+            return
+
+        match_indices: list[int] = []
+
+        for idx, line in enumerate(lines):
+            if re_obj.search(line):
+                # Respect per-file limit
+                if max_per_file is not None and len(match_indices) >= max_per_file:
+                    break
+                # Respect global limit
+                if max_matches is not None and total_matches >= max_matches:
+                    break
+
+                match_indices.append(idx)
+                total_matches += 1
+
+        if not match_indices:
+            return
+
+        # Collect context lines around matches, inclusive of the match line
+        indices: set[int] = set()
+        last_index = len(lines) - 1
+
+        for m in match_indices:
+            start_idx = max(0, m - before)
+            end_idx = min(last_index, m + after)
+            for i in range(start_idx, end_idx + 1):
+                indices.add(i)
+
+        for i in sorted(indices):
+            line_no = i + 1
+            content = lines[i].rstrip("\n\r")
+            results.append(f"{file_path}:{line_no}:{content}")
+
+    if path_obj.is_file():
+        process_file(str(path_obj))
+    else:
+        for root, _, files in os.walk(str(path_obj)):
+            for name in files:
+                full = Path(root) / name
+                if not full.is_file() or not _is_text_file_sync(str(full)):
+                    continue
+                # Stop early if global limit already reached
+                if max_matches is not None and total_matches >= max_matches:
+                    break
+                process_file(str(full))
+
+    return "\n".join(results) if results else "No matches found"
+
+
+async def search_content(
+    path: str,
+    pattern: str,
+    max_matches: Optional[int] = None,
+    max_per_file: Optional[int] = None,
+    before: int = 0,
+    after: int = 0,
+) -> str:
+    """Search file or directory for lines matching pattern (regex). Returns path:line_no:content per line, with optional context before/after."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(
+        None,
+        _search_content_sync,
+        path,
+        pattern,
+        max_matches,
+        max_per_file,
+        before,
+        after,
+    )
 
 
 async def read_media_file(path: str) -> tuple[str, str, str]:

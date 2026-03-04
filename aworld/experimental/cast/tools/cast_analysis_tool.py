@@ -35,7 +35,8 @@ class CAstAnalysisAction(ToolAction):
                 name="ignore_patterns",
                 type="array",
                 required=False,
-                desc="Ignore patterns for files"
+                desc="Ignore patterns for files",
+                items={"type": "string"}
             ),
             "show_details": ParamInfo(
                 name="show_details",

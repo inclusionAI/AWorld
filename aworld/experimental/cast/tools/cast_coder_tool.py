@@ -30,7 +30,7 @@ class CAstCoderAction(ToolAction):
                 name="target_dir",
                 type="string",
                 required=True,
-                desc="Target directory path to create snapshot from"
+                desc="Target directory path to create snapshot from. Must be an existing path (e.g. ./app, ../parent/app). Bad: `.` alone."
             ),
             "version": ParamInfo(
                 name="version",
@@ -45,7 +45,7 @@ class CAstCoderAction(ToolAction):
                 desc="Whether to show detailed generation information"
             )
         },
-        desc="Creates a compressed (`.tar.gz`) backup of a directory before modifications are applied."
+        desc="Creates a compressed (`.tar.gz`) backup of a directory before modifications are applied. Target path must exist (e.g. ./app, ../parent/app). Bad: `.` alone."
     )
 
     DEPLOY_PATCHES = ToolActionInfo(

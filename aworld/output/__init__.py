@@ -1,5 +1,5 @@
 from aworld.output.base import Output, SearchOutput, SearchItem, ToolResultOutput, MessageOutput, ToolCallOutput, \
-    RUN_FINISHED_SIGNAL
+    ChunkOutput, RUN_FINISHED_SIGNAL
 from aworld.output.artifact import Artifact, ArtifactType
 from aworld.output.code_artifact import CodeArtifact, ShellArtifact
 from aworld.output.outputs import Outputs, StreamingOutputs
@@ -22,6 +22,7 @@ __all__ = [
     "SearchItem",
     "MessageOutput",
     "ToolCallOutput",
+    "ChunkOutput",
     "ToolResultOutput",
     "Outputs",
     "StreamingOutputs",

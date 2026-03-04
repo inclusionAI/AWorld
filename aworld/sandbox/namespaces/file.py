@@ -43,9 +43,9 @@ class FileNamespace(ToolNamespace):
         """
         Edit file by line range [start_line, end_line] (1-based, inclusive).
 
-        - start_line / end_line 为行号（从 1 开始，含头含尾）
-        - new_content 为空字符串时表示删除这些行
-        - dryRun=True 时仅返回 git 风格 diff，不真正落盘
+        - start_line / end_line are line numbers (starting from 1, inclusive at both ends)
+        - Empty new_content means deleting the specified lines
+        - When dryRun=True, only a git-style diff is returned and nothing is written to disk
         """
         return await self._call_tool(
             "edit_file",
@@ -63,6 +63,10 @@ class FileNamespace(ToolNamespace):
     async def download_file(self, path: str) -> Dict[str, Any]:
         """Download file; returns JSON with base64, mimeType, fileName."""
         return await self._call_tool("download_file", path=path)
+
+    async def read_media_file(self, path: str) -> Dict[str, Any]:
+        """Read image or audio file as base64. Returns JSON with type (image/audio/blob), data (base64), mimeType."""
+        return await self._call_tool("read_media_file", path=path)
 
     async def parse_file(
         self,
@@ -93,3 +97,43 @@ class FileNamespace(ToolNamespace):
     async def list_allowed_directories(self) -> Dict[str, Any]:
         """List allowed workspace directories."""
         return await self._call_tool("list_allowed_directories")
+
+    async def search_content(
+        self,
+        path: str,
+        pattern: str,
+        max_matches: Optional[int] = None,
+        max_per_file: Optional[int] = None,
+        before: int = 0,
+        after: int = 0,
+    ) -> Dict[str, Any]:
+        """
+        Search file or directory for lines matching a regex pattern.
+
+        - path can be a single file or a directory (directory is searched recursively)
+        - max_matches / max_per_file cap the number of matches
+        - before / after control how many context lines are included around each match
+        """
+        return await self._call_tool(
+            "search_content",
+            path=path,
+            pattern=pattern,
+            max_matches=max_matches,
+            max_per_file=max_per_file,
+            before=before,
+            after=after,
+        )
+
+    async def search_files(
+        self,
+        path: str,
+        pattern: str,
+        exclude_patterns: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Search for files matching glob pattern under path. Recursively searches subdirectories. exclude_patterns: optional list of glob patterns to exclude."""
+        return await self._call_tool(
+            "search_files",
+            path=path,
+            pattern=pattern,
+            excludePatterns=exclude_patterns or [],
+        )
