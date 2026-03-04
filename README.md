@@ -62,7 +62,7 @@ Before diving deep into the framework, see what AWorld-CLI can build for you rig
 <tbody>
 <tr>
   <td>Create App</td>
-  <td>• Auto-creation<br>• Auto-evaluation by <a href="aworld-skills/app_evaluator">AWorld Skill</a></td>
+  <td>• Auto-creation<br>• Auto-evaluation by <a href="aworld-skills/app_evaluator/SKILL.md">AWorld Skill</a></td>
   <td style="width:26%"><img src="readme_assets/aworld_cli_app_create.gif" alt="App create demo" width="290"></td>
   <td><a href="docs/Recipe/miniapp_build_recipe.md">View Recipe</a></td>
 </tr>
@@ -130,7 +130,7 @@ This multi-agent system works in concert to turn your ideas into reality:
 Imagine you ask: *"Help me create an English word learning mini-app with a UI quality score above 0.9."*
 
 *   **The Developer Builds**: The `Developer` analyzes requirements and writes code (e.g., HTML) using [CAST](#cast-conquering-code-complexity).
-*   **The Evaluator Judges**: The `Evaluator` inspects the output using [our verified Skill](aworld-skills/app_evaluator).
+*   **The Evaluator Judges**: The `Evaluator` inspects the output using [our verified Skill](aworld-skills/app_evaluator/SKILL.md).
 *   **The Loop Refines**: If the score is below target (e.g., 0.9), AWorld instructs the Developer to fix specific issues identified by the Evaluator. This loop continues until your criteria are met.
 
 ***📹  See the Self-Evolution Loop in Action***
@@ -163,7 +163,7 @@ CAST provides the technical capability for change, but your knowledge provides t
 </p>
 
 <p align="justify">
-<b>Automated Evaluation</b>: A [Skill](aworld-skills/app_evaluator) teaches the <code>Evaluator</code> agent how to judge performance and identify flaws, setting a clear, objective target for the <code>Developer</code> agent. This creates a powerful synergy: the <code>Evaluator</code> sets the target, and the <code>Developer</code> uses the same knowledge to hit it.
+<b>Automated Evaluation</b>: A [Skill](aworld-skills/app_evaluator/SKILL.md) teaches the <code>Evaluator</code> agent how to judge performance and identify flaws, setting a clear, objective target for the <code>Developer</code> agent. This creates a powerful synergy: the <code>Evaluator</code> sets the target, and the <code>Developer</code> uses the same knowledge to hit it.
 </p>
 
 <p align="justify">
