@@ -40,21 +40,23 @@ This is the <b>AWorld Thesis</b>: A powerful harness is not enough. True AI scal
 AWorld is the platform designed for this singular purpose. We provide a complete, battle-tested Harness as the recipe for you, the expert, to forge your knowledge into a fleet of autonomous agents. Together, we move beyond AI's generic promise to create robust, precise applications that master <em>your</em> specific domain.
 </p>
 
-# From Prompt to Product: Instant Creations
+# From Expertise to Product
 
-Before diving deep into the framework, see what AWorld-CLI can build for you right now. Turn a single prompt into a polished, functional product—all orchestrated by the AWorld Agent and its team. Here are what's possible with just one command.
+See what happens when expert knowledge is encoded into reusable **Skills**. The creations below are orchestrated by the AWorld Agent, demonstrating our core scaling law: as the community contributes more expertise, the entire ecosystem becomes more powerful.
+
+This is what's possible today. Imagine what we'll build with *your* expertise.
 
 <table>
 <colgroup>
   <col style="width:15%">
-  <col style="width:36%">
-  <col style="width:26%">
+  <col style="width:40%">
+  <col style="width:22%">
   <col style="width:23%">
 </colgroup>
 <thead>
 <tr>
   <th>Capability</th>
-  <th>Features</th>
+  <th>Expertise</th>
   <th>See it in Action</th>
   <th>Recipe</th>
 </tr>
@@ -62,14 +64,14 @@ Before diving deep into the framework, see what AWorld-CLI can build for you rig
 <tbody>
 <tr>
   <td>Create App</td>
-  <td>• Auto-creation<br>• Auto-evaluation by <a href="aworld-skills/app_evaluator/SKILL.md">AWorld Skill</a></td>
-  <td style="width:26%"><img src="readme_assets/aworld_cli_app_create.gif" alt="App create demo" width="290"></td>
+  <td>• Auto-creation by base model<br>• Auto-evaluation by <a href="aworld-skills/app_evaluator/SKILL.md">UI Evaluation Skill</a></td>
+  <td style="width:22%"><img src="readme_assets/aworld_cli_app_create.gif" alt="App create demo" width="270"></td>
   <td><a href="docs/Recipe/miniapp_build_recipe.md">View Recipe</a></td>
 </tr>
 <tr>
   <td>Create Video</td>
   <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• Human evaluation</td>
-  <td style="width:26%"><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video create demo" width="290"></td>
+  <td style="width:22%"><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video create demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr>
 </tbody>
@@ -104,7 +106,7 @@ aworld-cli --config
 
 Once configured, simply type aworld-cli in your terminal to start your journey.
 
-Alternatively, you can configure by creating a `.env` file in your working directory with your model and API settings. See [Environment configuration](./README_env_config.md) for details.
+Alternatively, you can configure by creating a `.env` file in your `working directory` with your model and API settings. See [Environment configuration](./README_env_config.md) for details.
 
 
 ## Automate Creation with AWorld-CLI
@@ -146,10 +148,10 @@ Imagine you ask: *"Help me create an English word learning mini-app with a UI qu
 ### No Evaluation, No Evolution
 
 <p align="justify">
-For an agent to improve, it must first understand what "good" looks like. This is the core of AWorld's autonomous evolution loop. However, real-world evolution is hard: codebases are massive, context windows are limited, and tasks require precise, long-term iteration.
+For an agent to improve, it must first understand what "good" looks like. This evaluation is the core of our autonomous evolution loop, but it's a complex challenge. It ranges from <b>objective</b> tasks with clear metrics (e.g., solving a math problem) to <b>subjective</b> ones requiring human preference. Real-world evolution is further complicated by massive codebases, limited context windows, and the need for precise iteration.
 </p>
 <p align="justify">
-AWorld provides the complete infrastructure for this loop, turning your expertise into the driving force of evolution.
+AWorld provides the complete infrastructure to master both evaluation scenarios, turning your expertise into the definitive driving force that steers an agent through the entire evolution loop.
 </p>
 
 #### CAST: Conquering Code Complexity
@@ -171,7 +173,7 @@ CAST provides the technical capability for change, but your knowledge provides t
 </p>
 
 <p align="justify">
-<b>Human Evaluation</b>: Your intuition is the ceiling. You are the ultimate evaluator. Provide natural language feedback at any stage, and the AWorld agent will interpret it as a high-priority instruction for the next evolutionary cycle.
+<b>Human Evaluation</b>: For tasks demanding subjective judgment, your intuition is the ceiling. You are the ultimate evaluator. Provide natural language feedback at any stage, and the AWorld agent will interpret it as a high-priority instruction for the next evolutionary cycle.
 </p>
 
 <p align="justify">
@@ -179,22 +181,9 @@ Whether it's an automated score from a Skill you contributed or your direct manu
 </p>
 
 
-# Total Control: Manually Crafting Agent Systems
-
+# A Proven Harness: Benchmark Excellence
 <p align="justify">
-In AWorld, an agent is a model enhanced with tools. But real-world problems often demand more than a single agent. To solve this, AWorld gives you full control with flexible build paths, allowing you to manually craft complex, multi-agent systems for collaboration.
-</p>
-
-1. Flexible Multi-Agent Orchestration, Rich Environment Sandbox, Comprehensive Observability Tracing [Docs](https://inclusionai.github.io/AWorld/Get%20Start/Core%20Capabilities/)
-
-2. Parallel Tasks Runtime, Streaming Response [Docs](https://inclusionai.github.io/AWorld/Get%20Start/Parallel%20Tasks/)
-
-3. Human in the Loop (HITL) [Docs](https://inclusionai.github.io/AWorld/Get%20Start/HITL/)
-
-
-# Evolution
-<p align="justify">
-AWorld's mission is to handle the complexity so you can focus on innovation. This section showcases cutting-edge multi-agent systems built with AWorld, advancing toward AGI.
+The following top rankings on competitive benchmarks are more than just agent achievements—they are direct validation of the AWorld **Harness**. They prove our robust, battle-tested infrastructure provides the essential foundation for building state-of-the-art AI.
 
 
 #### Agent Benchmarking
