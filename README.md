@@ -42,7 +42,7 @@ AWorld is the platform designed for this singular purpose. We provide a complete
 
 # From Prompt to Product: Instant Creations
 
-Before diving deep into the framework, see what AWorld-CLI can build for you right now. Turn a single prompt into a polished, functional product—all orchestrated by the AWorld Agent and its team. Here are a few examples of what's possible with just one command.
+Before diving deep into the framework, see what AWorld-CLI can build for you right now. Turn a single prompt into a polished, functional product—all orchestrated by the AWorld Agent and its team. Here are what's possible with just one command.
 
 <table>
 <colgroup>
@@ -116,8 +116,8 @@ This multi-agent system works in concert to turn your ideas into reality:
 
 <table>
 <colgroup>
-<col style="width: 400px">
-<col>
+  <col style="width:17%">
+  <col style="width:83%">
 </colgroup>
 <thead>
 <tr><th>Agent Name</th><th>Role & Core Function</th></tr>
