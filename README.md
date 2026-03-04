@@ -148,10 +148,10 @@ Imagine you ask: *"Help me create an English word learning mini-app with a UI qu
 ### No Evaluation, No Evolution
 
 <p align="justify">
-For an agent to improve, it must first understand what "good" looks like. This evaluation is the core of our autonomous evolution loop, but it's a complex challenge. It ranges from <b>objective</b> tasks with clear metrics (e.g., solving a math problem) to <b>subjective</b> ones requiring human preference (e.g., judging UI aesthetics). Real-world evolution is further complicated by massive codebases, limited context windows, and the need for precise iteration.
+For an agent to improve, it must first understand what "good" looks like. This evaluation is the core of our autonomous evolution loop, but it's a complex challenge. It ranges from <b>objective</b> tasks with clear metrics (e.g., solving a math problem) to <b>subjective</b> ones requiring human preference. Real-world evolution is further complicated by massive codebases, limited context windows, and the need for precise iteration.
 </p>
 <p align="justify">
-AWorld provides the complete infrastructure to solve this. Our system is engineered to master both evaluation scenarios, turning your expertise into the definitive driving force that steers an agent through the entire evolution loop.
+AWorld provides the complete infrastructure to master both evaluation scenarios, turning your expertise into the definitive driving force that steers an agent through the entire evolution loop.
 </p>
 
 #### CAST: Conquering Code Complexity
