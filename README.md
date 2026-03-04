@@ -129,8 +129,8 @@ This multi-agent system works in concert to turn your ideas into reality:
 
 Imagine you ask: *"Help me create an English word learning mini-app with a UI quality score above 0.9."*
 
-*   **The Developer Builds**: The `Developer` agent analyzes requirements and writes code (e.g., HTML/JS) using [**CAST**](#cast-conquering-code-complexity).
-*   **The Evaluator Judges**: The `Evaluator` agent inspects the output using verified Skills (see [our UI Assessment Skill](aworld-skills/app_evaluator)).
+*   **The Developer Builds**: The `Developer` analyzes requirements and writes code (e.g., HTML) using [CAST](#cast-conquering-code-complexity).
+*   **The Evaluator Judges**: The `Evaluator` inspects the output using [our verified Skill](aworld-skills/app_evaluator).
 *   **The Loop Refines**: If the score is below target (e.g., 0.9), AWorld instructs the Developer to fix specific issues identified by the Evaluator. This loop continues until your criteria are met.
 
 ***📹  See the Self-Evolution Loop in Action***
@@ -162,11 +162,13 @@ Agents often fail because they are overwhelmed by code complexity. We built <b>C
 CAST provides the technical capability for change, but your knowledge provides the direction. AWorld's <b>Shared Skill System</b> makes your expertise the ultimate measure of quality.
 </p>
 
-<ul style="text-align: justify">
-    <li style="text-align: justify"><b>Automated Evaluation</b>: A Skill (e.g., <i>UI Aesthetics Score</i>) teaches the <code>Evaluator</code> agent how to judge performance and identify flaws, setting a clear, objective target for the <code>Developer</code> agent. This creates a powerful synergy: the <code>Evaluator</code> sets the target, and the <code>Developer</code> uses the same knowledge to hit it.</li>
-    <br>
-    <li style="text-align: justify"><b>Human Evaluation</b>: Your intuition is the ceiling. You are the ultimate evaluator. Provide natural language feedback at any stage, and the AWorld agent will interpret it as a high-priority instruction for the next evolutionary cycle.</li>
-</ul>
+<p align="justify">
+<b>Automated Evaluation</b>: A [Skill](aworld-skills/app_evaluator) teaches the <code>Evaluator</code> agent how to judge performance and identify flaws, setting a clear, objective target for the <code>Developer</code> agent. This creates a powerful synergy: the <code>Evaluator</code> sets the target, and the <code>Developer</code> uses the same knowledge to hit it.
+</p>
+
+<p align="justify">
+<b>Human Evaluation</b>: Your intuition is the ceiling. You are the ultimate evaluator. Provide natural language feedback at any stage, and the AWorld agent will interpret it as a high-priority instruction for the next evolutionary cycle.
+</p>
 
 <p align="justify">
 Whether it's an automated score from a Skill you contributed or your direct manual guidance, in AWorld, precise feedback drives precise evolution.
