@@ -44,10 +44,36 @@ AWorld is the platform designed for this singular purpose. We provide a complete
 
 Before diving deep into the framework, see what AWorld-CLI can build for you right now. Turn a single prompt into a polished, functional product—all orchestrated by the AWorld Agent and its team. Here are a few examples of what's possible with just one command.
 
-| Capability | Features | See it in Action | Recipe |
-|------------|-------------|------------------|--------|
-| App Generation | • Auto-creation by [AWorld Frontend Design Skill](aworld-skills/frontend_design)<br>• Auto-evaluation by [AWorld UI Evaluation Skill](aworld-skills/app_evaluator) | ![App create demo](readme_assets/aworld_cli_app_create.gif) | [View App Recipe](docs/Recipe/miniapp_build_recipe.md) |
-| Video Generation | • Auto-creation by [Remotion Skill](https://www.skillhub.club/skills/remotion-dev-remotion-remotion)<br>• Human evaluation and feedback | ![Video create demo](readme_assets/aworld_cli_intro_fast.gif) | [View Video Recipe](docs/Recipe/video_create_recipe.md) |
+<table>
+<colgroup>
+  <col style="width:14%">
+  <col style="width:29%">
+  <col style="width:43%">
+  <col style="width:14%">
+</colgroup>
+<thead>
+<tr>
+  <th>Capability</th>
+  <th>Features</th>
+  <th>See it in Action</th>
+  <th>Recipe</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td>App Generation</td>
+  <td>• Auto-creation by <a href="aworld-skills/frontend_design">AWorld Frontend Design Skill</a><br>• Auto-evaluation by <a href="aworld-skills/app_evaluator">AWorld UI Evaluation Skill</a></td>
+  <td><img src="readme_assets/aworld_cli_app_create.gif" alt="App create demo"></td>
+  <td><a href="docs/Recipe/miniapp_build_recipe.md">View App Recipe</a></td>
+</tr>
+<tr>
+  <td>Video Generation</td>
+  <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• Human evaluation and feedback</td>
+  <td><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video create demo"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Video Recipe</a></td>
+</tr>
+</tbody>
+</table>
 
 
 # Your Journey with AWorld-CLI
@@ -115,58 +141,7 @@ Imagine you ask: *"Help me create an English word learning mini-app with a UI qu
 
 
 https://github.com/user-attachments/assets/ff56195e-e117-4d33-b709-9a2144680abd
-<!-- [![Watch on YouTube](https://img.shields.io/badge/Watch-Self--Evolution%20Loop-red?style=for-the-badge&logo=youtube)](https://youtube.com/shorts/F7INIq5HG1g?feature=share) -->
 
-
-<!-- 
-### No Evaluation, No Evolution
-<div align="justify">
-For an agent to improve, it must first understand what "good" looks like. Skills are the answer. They are reusable, verifiable modules of your domain expertise.
-
-
-AWorld introduces a <b> Shared Skill System </b> where your knowledge directly powers the entire evolution loop:
-<ul>
-    <li><b>For the Evaluator</b>: A Skill (e.g., <i>Legal Contract Review, UI Aesthetics Score, Financial Risk Assessment</i>) provides a concrete metric, teaching the Evaluator how to judge performance and identify flaws autonomously. </li>
-    <li><b>For the Developer</b>: The Developer can also directly invoke these Skills as tools to enhance its own capabilities, ensuring its creations meet high standards from the start.</li>
-</ul>
-
-This creates a powerful synergy: The Evaluator sets the target, and the Developer uses the same knowledge base to hit it.
-</div>
-
-*   **Official Library**: A growing collection of high-quality, verified skills (like UI Aesthetics Assessment) ready to use, located in `AWorld/aworld-skills`.
-*   **Your Expertise as a Skill**: This is how AWorld scales to new domains. Codify your knowledge into a Skill and drop it into `~/.aworld/skills`. The CLI automatically indexes it, instantly upgrading both your Developer and Evaluator agents. **Your contribution is the key to unlocking new agent capabilities for everyone.**
-
-
-### You are the Ultimate Evaluator
-<p align="justify">
-While the Evaluator automates the refinement loop, your intuition remains the ceiling. AWorld is designed to amplify your expertise, not replace it.
-</p>
-
-<p align="justify">
-You can intervene at any stage. Provide natural language feedback on a generated video, application, or report. The AWorld agent accepts your critique as a high-priority constraint, interpreting your subjective taste or nuance as a direct instruction to the Developer agent. Whether it's an automated score derived from a Skill or your manual guidance, precise feedback drives precise evolution.
-</p>
-
-
-### CAST: A Powerful File Manage Tool
-<p align="justify">
-LLM agents often fail in real-world repositories because they are overwhelmed by code complexity and limited context windows. To solve this, we built <b>CAST</b> — a specialized engine that allows agents to comprehend and modify large codebases with superhuman efficiency.
-</p>
-
-<p align="justify">
-Instead of reading flat text files, CAST provides the Developer with a compressed, hierarchical understanding of the code. This is like giving the agent a set of architectural blueprints instead of a pile of bricks. It enables:
-</p>
-
-*   **Hierarchical Navigation**: Agents can instantly zoom from a high-level architectural view (Logic/Skeleton layers) down to specific implementation details, understanding the purpose of code without getting lost in the weeds.
-*   **Nearly Infinite Context**: CAST intelligently compresses code, feeding the agent only the relevant information. This effectively breaks the context window limitation, allowing agents to reason about massive codebases.
-*   **Surgical Code Modification**: By understanding the code's structure and dependencies, the Developer can perform precise modifications, apply complex patches, and refactor code with pinpoint accuracy, avoiding the common mistakes of "blind" text replacement.
- -->
-
-
-好的，完全明白。我们采用 `###` 作为主标题，`####` 作为两个并列的子标题结构来呈现，以突出层次感和逻辑关系。
-
-这是最终版本：
-
----
 
 ### No Evaluation, No Evolution
 
@@ -198,7 +173,7 @@ CAST provides the technical capability for change, but your knowledge provides t
 </ul>
 
 <p align="justify">
-Whether it's an automated score from a Skill you contributed or your direct manual guidance, in AWorld, **precise feedback drives precise evolution.**
+Whether it's an automated score from a Skill you contributed or your direct manual guidance, in AWorld, precise feedback drives precise evolution.
 </p>
 
 
