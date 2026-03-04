@@ -64,6 +64,10 @@ class FileNamespace(ToolNamespace):
         """Download file; returns JSON with base64, mimeType, fileName."""
         return await self._call_tool("download_file", path=path)
 
+    async def read_media_file(self, path: str) -> Dict[str, Any]:
+        """Read image or audio file as base64. Returns JSON with type (image/audio/blob), data (base64), mimeType."""
+        return await self._call_tool("read_media_file", path=path)
+
     async def parse_file(
         self,
         file_path: str,
