@@ -327,7 +327,12 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         if histories:
             for history in histories:
                 if isinstance(history, MemoryMessage):
-                    messages.append(history.to_openai_message())
+                    openai_msg = history.to_openai_message()
+                    if history.role == "assistant":
+                        ext_info = history.metadata.get("ext_info", {}) if history.metadata else {}
+                        raw_response = ext_info.get("raw_response", "")
+                        openai_msg["raw_response"] = raw_response
+                    messages.append(openai_msg)
                 else:
                     if not use_tools_in_prompt and history.metadata.get('tool_calls'):
                         messages.append({'role': history.metadata['role'], 'content': history.content,

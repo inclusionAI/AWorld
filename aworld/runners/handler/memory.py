@@ -195,7 +195,8 @@ class DefaultMemoryHandler(DefaultHandler):
                 agent_id=agent.id(),
                 agent_name=agent.name(),
                 ext_info={
-                    "tools": agent.tools
+                    "tools": agent.tools,
+                    "raw_response": llm_response.to_dict() if hasattr(llm_response, 'to_dict') else llm_response,
                 }
             )
         )
