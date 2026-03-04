@@ -33,21 +33,21 @@
 ---
 
 <p align="justify">
-General AI often hits a "wall of context"—the nuanced data, workflows, and intuition that define <em>your</em> world. Generic models can't climb this wall; they don't speak your language.
+General AI often hits a "wall of context"—the nuanced data, workflows, and intuition that define <em>your</em> world. An agent's true power lies not in the model alone, but in its <b>Agent Harness</b>: the framework orchestrating its tools, memory, context, and execution.
 
-The industry consensus is clear: an agent's true power lies not in the model alone, but in its <b>Agent Harness</b>—the framework orchestrating its tools, memory, and execution. The AWorld Thesis is that true AI scaling happens when experts like you craft this Harness, effectively building a gate in that wall.
+This is the <b>AWorld Thesis</b>: A powerful harness is not enough. True AI scaling is unlocked only when experts like you embed the invaluable knowledge, effectively building the gate in that wall. 
 
-AWorld is the platform designed for this. We provide the recipe for you, the expert, to forge your knowledge into a fleet of autonomous agents. This moves beyond AI's generic promise to create robust, precise applications that master your specific domain.
+AWorld is the platform designed for this singular purpose. We provide a complete, battle-tested Harness as the recipe for you, the expert, to forge your knowledge into a fleet of autonomous agents. Together, we move beyond AI's generic promise to create robust, precise applications that master <em>your</em> specific domain.
 </p>
 
 # From Prompt to Product: Instant Creations
 
 Before diving deep into the framework, see what AWorld-CLI can build for you right now. Turn a single prompt into a polished, functional product—all orchestrated by the AWorld Agent and its team. Here are a few examples of what's possible with just one command.
 
-| Capability | Description | See it in Action | Recipe |
+| Capability | Features | See it in Action | Recipe |
 |------------|-------------|------------------|--------|
-| App Generation | Generate, evaluate, and self-evolve a complete mini-application from a single text prompt. | ![App create demo](readme_assets/aworld_cli_app_create.gif) | [View App Recipe](docs/Recipe/miniapp_build_recipe.md) |
-| Video Generation | Create and refine a short video based on your script, storyboard, or a high-level idea. | ![Video create demo](readme_assets/aworld_cli_intro_fast.gif) | [View Video Recipe](docs/Recipe/video_create_recipe.md) |
+| App Generation | • Auto-creation by [AWorld Frontend Design SKILL](aworld-skills/frontend_design)<br>• Auto-evaluation by [AWorld UI Evaluation Skill](aworld-skills/app_evaluator) | ![App create demo](readme_assets/aworld_cli_app_create.gif) | [View App Recipe](docs/Recipe/miniapp_build_recipe.md) |
+| Video Generation | • Auto-creation by [REMOTION SKILLs](https://www.skillhub.club/skills/remotion-dev-remotion-remotion)<br>• Human evaluation and feedback | ![Video create demo](readme_assets/aworld_cli_intro_fast.gif) | [View Video Recipe](docs/Recipe/video_create_recipe.md) |
 
 
 # Your Journey with AWorld-CLI
