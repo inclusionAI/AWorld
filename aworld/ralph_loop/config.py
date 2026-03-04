@@ -9,10 +9,6 @@ from aworld.config import ModelConfig, TaskConfig
 from aworld.evaluations.base import EvalCriteria, Scorer
 from aworld.evaluations.reflect import Reflector
 from aworld.ralph_loop.detect.stop_condition import StopCondition
-# from aworld.ralph_loop.mission.analyzer import Analyzer
-# from aworld.ralph_loop.mission.enhancer import ContextEnhancer
-# from aworld.ralph_loop.mission.types import MissionType
-# from aworld.ralph_loop.plan.base import BasePlanner, BasePlanReviewer, BasePlanOptimizer
 from aworld.ralph_loop.types import ConflictStrategy
 
 
@@ -105,9 +101,5 @@ class RalphConfig(TaskConfig):
 
         if model_config:
             config.llm_config = model_config
-            config.mission.model_config = model_config
-            config.planning.model_config = model_config
-            config.validation.model_config = model_config
-            config.reflection.model_config = model_config
 
         return config

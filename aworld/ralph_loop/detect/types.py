@@ -72,23 +72,6 @@ class StopType(Enum):
 
 
 @dataclass
-class StopState:
-    loop_state: LoopState
-    loop_context: LoopContext
-    completion_criteria: CompletionCriteria
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    def elapsed_time(self) -> float:
-        return self.loop_state.elapsed()
-
-    def is_within_budget(self) -> bool:
-        criteria = self.completion_criteria
-        if 0 < criteria.max_cost <= self.loop_state.cumulative_cost:
-            return False
-        return True
-
-
-@dataclass
 class StopDecision:
     should_stop: bool
     stop_type: StopType = StopType.NONE

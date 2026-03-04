@@ -1,14 +1,17 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
 import asyncio
+import time
 import traceback
 
 from abc import ABC, abstractmethod
 from typing import Optional, List
 
 import aworld
+from aworld.core.context.base import Context
 from aworld.logs.util import logger
-from aworld.ralph_loop.detect.types import StopState, StopDecision, StopType
+from aworld.ralph_loop.detect.types import StopDecision, StopType
+from aworld.ralph_loop.state.types import LoopContext
 
 
 class StopCondition(ABC):
@@ -22,7 +25,7 @@ class StopCondition(ABC):
         self.enabled = True
 
     @abstractmethod
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: Context) -> StopDecision:
         """Check if it should be terminated.
 
         Args:
@@ -35,7 +38,7 @@ class StopCondition(ABC):
             May throw exceptions, call `safe_check` can be used more safely.
         """
 
-    async def safe_check(self, state: StopState) -> StopDecision:
+    async def safe_check(self, state: Context) -> StopDecision:
         if not self.enabled:
             return StopDecision(should_stop=False)
 
@@ -55,7 +58,7 @@ class CompletionCondition(StopCondition):
     def __init__(self):
         super().__init__(priority=3)
 
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: LoopContext) -> StopDecision:
         """Complete Condition Detector - Check if the task has been successfully completed."""
         confirmations = state.loop_state.completion_confirmations
         confirmation_threshold = state.loop_state.confirmation_threshold
@@ -76,7 +79,7 @@ class CustomStopCondition(StopCondition):
     def __init__(self):
         super().__init__(priority=3)
 
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: LoopContext) -> StopDecision:
         custom_stop_fn = state.completion_criteria.custom_stop
 
         if custom_stop_fn and callable(custom_stop_fn):
@@ -100,7 +103,7 @@ class MaxIterationsCondition(StopCondition):
     def __init__(self):
         super().__init__(priority=4)
 
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: LoopContext) -> StopDecision:
         max_iters = state.completion_criteria.max_iterations
         current_iter = state.loop_state.iteration
 
@@ -119,9 +122,9 @@ class TimeoutCondition(StopCondition):
     def __init__(self):
         super().__init__(priority=4)
 
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: LoopContext) -> StopDecision:
         timeout = state.completion_criteria.timeout
-        elapsed = state.elapsed_time()
+        elapsed = time.time() - state.start_time
 
         if 0 < timeout <= elapsed:
             return StopDecision(
@@ -138,7 +141,7 @@ class MaxCostCondition(StopCondition):
     def __init__(self):
         super().__init__(priority=4)
 
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: LoopContext) -> StopDecision:
         max_cost = state.completion_criteria.max_cost
         current_cost = state.loop_state.cumulative_cost
 
@@ -157,7 +160,7 @@ class MaxEndlessCondition(StopCondition):
     def __init__(self):
         super().__init__(priority=4)
 
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: LoopContext) -> StopDecision:
         """Check if there is a progression free loop."""
         max_endless = state.completion_criteria.max_endless
         # todo
@@ -169,7 +172,7 @@ class ConsecutiveFailuresCondition(StopCondition):
     def __init__(self):
         super().__init__(priority=2)
 
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: LoopContext) -> StopDecision:
         max_failures = state.completion_criteria.max_consecutive_failures
         current_failures = state.loop_state.consecutive_failures
 
@@ -188,7 +191,7 @@ class ValidationFailureCondition(StopCondition):
     def __init__(self):
         super().__init__(priority=2)
 
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: Context) -> StopDecision:
         # TODO
         return StopDecision(should_stop=False)
 
@@ -199,9 +202,9 @@ class InterruptCondition(StopCondition):
 
 
 class UserInterruptCondition(InterruptCondition):
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: LoopContext) -> StopDecision:
         # check interrupt file
-        interrupt_marker = state.loop_context.loop_dir() / ".interrupt"
+        interrupt_marker = state.loop_dir() / ".interrupt"
 
         if interrupt_marker.exists():
             try:
@@ -235,7 +238,7 @@ class ExternalSignalCondition(InterruptCondition):
         self.signal_received = True
         # detail process...
 
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: Context) -> StopDecision:
         if self.signal_received:
             return StopDecision(
                 should_stop=True,
@@ -252,9 +255,9 @@ class ErrorCondition(StopCondition):
 
 
 class SystemErrorCondition(ErrorCondition):
-    async def should_stop(self, state: StopState) -> StopDecision:
-        if state.metadata.get("system_error"):
-            error_msg = state.metadata.get("error_message", "Unknown system error")
+    async def should_stop(self, state: Context) -> StopDecision:
+        if state.context_info.get("system_error"):
+            error_msg = state.context_info.get("error_message", "Unknown system error")
             return StopDecision(
                 should_stop=True,
                 stop_type=StopType.SYSTEM_ERROR,
@@ -271,7 +274,7 @@ class ResourceExhaustedCondition(ErrorCondition):
         self.memory_threshold = memory_threshold_mb * 1024 * 1024
         self.disk_threshold = disk_threshold_mb * 1024 * 1024
 
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: LoopContext) -> StopDecision:
         try:
             import psutil
 
@@ -286,7 +289,7 @@ class ResourceExhaustedCondition(ErrorCondition):
                 )
 
             # disk
-            disk = psutil.disk_usage(state.loop_context.work_dir)
+            disk = psutil.disk_usage(state.work_dir)
             if disk.free < self.disk_threshold:
                 return StopDecision(
                     should_stop=True,

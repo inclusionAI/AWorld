@@ -1,12 +1,13 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
-
+import json
+import os
 import time
 import uuid
 from copy import deepcopy
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from aworld.core.context.amni import ApplicationContext, TaskInput, AmniConfigFactory, AmniContext
 from aworld.core.context.amni.config import AmniConfigLevel
@@ -14,6 +15,7 @@ from aworld.core.context.base import Context
 from aworld.core.task import Task
 from aworld.logs.util import logger
 from aworld.output import Artifact, ArtifactType, WorkSpace
+from aworld.ralph_loop.types import CompletionCriteria
 from aworld.sandbox import Sandbox
 from aworld.utils.common import convert_to_subclass
 
@@ -57,17 +59,38 @@ class LoopState:
 class LoopContext(ApplicationContext):
     """Loop context records the global information of the entire process."""
 
-    def __init__(self, work_dir: str = ".", **kwargs):
+    def __init__(self, loop_state: LoopState = LoopState(), work_dir: str = ".", **kwargs):
         super().__init__(**kwargs)
-        self.loop_init(work_dir=work_dir)
+        self.loop_init(loop_state=loop_state, work_dir=work_dir)
 
-    def loop_init(self, work_dir: str):
+    def loop_init(self,
+                  completion_criteria: CompletionCriteria = CompletionCriteria(),
+                  loop_state: LoopState = LoopState(),
+                  work_dir: str = "."):
         self._id = uuid.uuid4().hex
+        self._completion_criteria = completion_criteria
+        self.loop_state = loop_state
         self.work_dir = work_dir
         self.workspace = WorkSpace(workspace_id=self.work_dir)
         self.checkpoints_dir()
         # use sandbox to manager file IO
-        self.sand_box = Sandbox.builder().builtin_tools(["filesystem"]).workspace([work_dir]).build()
+        self.sand_box = Sandbox.builder().builtin_tools(["filesystem"]).workspaces([work_dir]).build()
+
+    @property
+    def completion_criteria(self) -> CompletionCriteria:
+        return self._completion_criteria
+
+    @completion_criteria.setter
+    def completion_criteria(self, value: CompletionCriteria):
+        self._completion_criteria = value
+
+    @property
+    def iteration(self):
+        return self.loop_state.iteration
+
+    @iteration.setter
+    def iteration(self, value: int):
+        self.loop_state.iteration = value
 
     def loop_dir(self) -> Path:
         return Path(self.work_dir) / "loop"
@@ -141,8 +164,15 @@ class LoopContext(ApplicationContext):
             Context with injected feedback
         """
         feedback_content = ""
-
+        task_answer = ''
         if iter_num > 1:
+            # read answer
+            path = f"{self.work_dir}/{self.task_dir()}/answer/{task.id}_{iter_num - 1}"
+            if os.path.exists(path):
+                logger.info(f"Read answer for task {task.id} iteration {iter_num - 1}")
+                res = await self.sand_box.file.read_file(path)
+                task_answer = json.loads(res.get('data', '{}')).get('content', '')
+
             # Read reflection/feedback from previous iteration
             artifact_id = f"{self.reflect_dir()}_{task.id}_{iter_num - 1}"
             info = self.workspace.get_artifact_data(artifact_id)
@@ -158,9 +188,9 @@ class LoopContext(ApplicationContext):
         # Inject feedback into task input
         if feedback_content:
             if reuse_context:
-                task_content = f"{feedback_content}"
+                task_content = f"Previous answer: {task_answer}\n\n{feedback_content}"
             else:
-                task_content = f"{feedback_content}\n\nOriginal task: {task.input}"
+                task_content = f"Previous answer: {task_answer}\n\n{feedback_content}\n\nOriginal task: {task.input}"
         else:
             task_content = task.input
 
@@ -251,14 +281,20 @@ class LoopContext(ApplicationContext):
     def deep_copy(self) -> 'LoopContext':
         return self
 
+    async def add_file(self, filename: Optional[str], content: Optional[Any], mime_type: Optional[str] = "text",
+                       namespace: str = "default", origin_type: str = None, origin_path: str = None,
+                       refresh_workspace: bool = True) -> Tuple[bool, Optional[str], Optional[str]]:
+        res = await self.sand_box.file.write_file(path=f"{self.work_dir}/{self.task_dir()}/answer/{filename}", content=content)
+        return res.get('success'), filename, content
 
-def to_loop_context(context: Context, work_dir: str = ".") -> LoopContext:
+
+def to_loop_context(context: Context, **kwargs) -> LoopContext:
     """Convert a general context to a loop context."""
     if isinstance(context, LoopContext):
         return context
     elif isinstance(context, ApplicationContext):
         loop_context = convert_to_subclass(context, LoopContext)
-        loop_context.loop_init(work_dir)
+        loop_context.loop_init(**kwargs)
         return loop_context
     else:
         raise ValueError(f"Unsupported context type: {type(context)}")
