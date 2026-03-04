@@ -103,6 +103,8 @@ Imagine you ask: *"Help me create an English word learning mini-app with a UI qu
 *   **The Loop Refines**: If the score is below target (e.g., 0.7), AWorld instructs the Developer to fix specific issues identified by the Evaluator. This loop continues until your criteria are met.
 
 ***See the Self-Evolution Loop in Action***
+
+
 https://github.com/user-attachments/assets/ff56195e-e117-4d33-b709-9a2144680abd
 <!-- [![Watch on YouTube](https://img.shields.io/badge/Watch-Self--Evolution%20Loop-red?style=for-the-badge&logo=youtube)](https://youtube.com/shorts/F7INIq5HG1g?feature=share) -->
 
