@@ -16,6 +16,7 @@ FILESYSTEM_TOOL_MAPPING = {
     "edit_file_range": "edit_file_range",
     "upload_file": "upload_file",
     "download_file": "download_file",
+    "read_media_file": "read_media_file",
     "parse_file": "parse_file",
     "create_directory": "create_directory",
     "list_directory": "list_directory",
