@@ -265,6 +265,11 @@ class SandboxBuilder:
         instance = self.build()
         return await instance.file.download_file(path=path)
 
+    async def read_media_file(self, path: str):
+        """Proxy to Sandbox.file.read_media_file for IDE completion. Read image or audio as base64."""
+        instance = self.build()
+        return await instance.file.read_media_file(path=path)
+
     async def parse_file(self, file_path: str, file_type: str, output_path: Optional[str] = None):
         """Proxy to Sandbox.file.parse_file for IDE completion."""
         instance = self.build()
