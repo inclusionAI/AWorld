@@ -65,6 +65,7 @@ class ParamInfo(BaseModel):
     required: bool = False
     desc: str = None
     default_value: Any = None
+    items: Optional[Dict[str, Any]] = None  # For array type: e.g. {"type": "string"} for Gemini/OpenAI schema
 
 
 class ToolActionInfo(BaseModel):

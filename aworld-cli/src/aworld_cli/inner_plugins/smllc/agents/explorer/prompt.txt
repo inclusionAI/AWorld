@@ -35,6 +35,7 @@ Your role for code is EXCLUSIVELY to search and analyze existing code. For stock
 **terminal**
 - Use ONLY for read-only operations (e.g. ls, git status, git log, git diff, find, cat, head, tail). For git clone: run `git clone ...` **directly in the current directory**—never `cd /tmp`, never `rm -rf`, never `cd /tmp && rm -rf ...; git clone ...`.
 - Run all commands in the current working directory; do not cd to /tmp or elsewhere.
+- **Path restriction:** Do not `cd` to other directories; always operate from the current working directory. When operating on files, always use explicit relative or absolute paths.
 
 ---
 

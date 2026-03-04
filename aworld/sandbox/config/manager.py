@@ -1,44 +1,46 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 
-"""Tool config manager: build mcp_config from env (endpoint, token) for builtin tools."""
+"""Tool config manager: build mcp_config for builtin tools (stdio only)."""
 
-import os
 from typing import Any, Dict, List, Optional
 
 from aworld.logs.util import logger
 
 from aworld.sandbox.config.templates import (
-    ENV_FILESYSTEM_ENDPOINT,
-    ENV_FILESYSTEM_TOKEN,
-    ENV_TERMINAL_ENDPOINT,
-    ENV_TERMINAL_TOKEN,
-    build_server_config,
+    PYTHON_CMD_PLACEHOLDER,
+    build_stdio_server_config,
+    get_filesystem_script_path,
+    get_terminal_script_path,
     get_server_env,
+    ENV_WORKSPACE,
 )
 
 
 class ToolConfigManager:
     """
     Build mcp_config for builtin tools (filesystem, terminal).
-    Both local and remote: read endpoint (URL) and token from env, fill streamable-http config.
+
+    - builtin_tools always generate local stdio configurations (command + args, using the ${PYTHON_CMD} placeholder).
+    - If the user provides an mcp_config entry for the same server name (e.g. type=streamable-http, url=...),
+      the user config overrides the builtin defaults in Sandbox._merge_mcp_configs.
     """
 
-    def __init__(self, mode: str = "local", workspace: Optional[List[str]] = None):
+    def __init__(self, mode: str = "local", workspaces: Optional[List[str]] = None):
         self.mode = str(mode).lower().strip() if mode else "local"
-        self.workspace = workspace or []
+        self.workspaces = workspaces or []
 
     def get_mcp_config(self, enabled_tools: List[str]) -> Dict[str, Any]:
         """
-        Build mcp_config from env. Only add a tool if its endpoint env var is set.
+        Build mcp_config for each enabled builtin tool using stdio (spawn subprocess).
         """
         mcp_servers: Dict[str, Any] = {}
         for name in enabled_tools:
             try:
                 if name == "filesystem":
-                    cfg = self._server_config_from_env(ENV_FILESYSTEM_ENDPOINT, ENV_FILESYSTEM_TOKEN)
+                    cfg = self._config_for_filesystem()
                 elif name == "terminal":
-                    cfg = self._server_config_from_env(ENV_TERMINAL_ENDPOINT, ENV_TERMINAL_TOKEN)
+                    cfg = self._config_for_terminal()
                 else:
                     logger.warning(f"Unknown builtin tool: {name}")
                     continue
@@ -52,18 +54,32 @@ class ToolConfigManager:
                 )
         if not mcp_servers:
             logger.warning(
-                "No builtin tools configured. Set AWORLD_FILESYSTEM_ENDPOINT / "
-                "AWORLD_TERMINAL_ENDPOINT (and optional TOKEN) in env or .env."
+                "No builtin tools configured. Use builtin_tools e.g. ['filesystem','terminal'] "
+                "or pass an explicit mcp_config."
             )
         return {"mcpServers": mcp_servers}
 
-    def _server_config_from_env(
-        self, endpoint_var: str, token_var: str
-    ) -> Optional[Dict[str, Any]]:
-        url = os.getenv(endpoint_var)
-        if not url or not url.strip():
-            logger.debug(f"Skip: {endpoint_var} not set")
-            return None
-        token = os.getenv(token_var, "")
+    def _config_for_filesystem(self) -> Optional[Dict[str, Any]]:
+        script_path = get_filesystem_script_path()
         env = get_server_env()
-        return build_server_config(url.strip(), token or None, env=env or None)
+        # If workspaces is explicitly set on the sandbox, override AWORLD_WORKSPACE
+        if self.workspaces:
+            env = dict(env) if env else {}
+            env[ENV_WORKSPACE] = ",".join(self.workspaces)
+        return build_stdio_server_config(
+            command=PYTHON_CMD_PLACEHOLDER,
+            args=[script_path, "--stdio"],
+            env=env or None,
+        )
+
+    def _config_for_terminal(self) -> Optional[Dict[str, Any]]:
+        script_path = get_terminal_script_path()
+        env = get_server_env()
+        if self.workspaces:
+            env = dict(env) if env else {}
+            env[ENV_WORKSPACE] = ",".join(self.workspaces)
+        return build_stdio_server_config(
+            command=PYTHON_CMD_PLACEHOLDER,
+            args=[script_path, "--stdio"],
+            env=env or None,
+        )
