@@ -40,6 +40,15 @@ The industry consensus is clear: an agent's true power lies not in the model alo
 AWorld is the platform designed for this. We provide the recipe for you, the expert, to forge your knowledge into a fleet of autonomous agents. This moves beyond AI's generic promise to create robust, precise applications that master your specific domain.
 </p>
 
+# From Prompt to Product: Instant Creations
+
+Before diving deep into the framework, see what AWorld-CLI can build for you right now. Turn a single prompt into a polished, functional product—all orchestrated by the AWorld Agent and its team. Here are a few examples of what's possible with just one command.
+
+| Capability | Description | See it in Action | Recipe |
+|------------|-------------|------------------|--------|
+| App Generation | Generate, evaluate, and self-evolve a complete mini-application from a single text prompt. | ![App create demo](readme_assets/aworld_cli_app_create.gif) | [View App Recipe](docs/Recipe/miniapp_build_recipe.md) |
+| Video Generation | Create and refine a short video based on your script, storyboard, or a high-level idea. | ![Video create demo](readme_assets/aworld_cli_intro_fast.gif) | [View Video Recipe](docs/Recipe/video_create_recipe.md) |
+
 
 # Your Journey with AWorld-CLI
 The journey from an idea to an evolved, autonomous agent begins at your fingertips.
@@ -102,7 +111,7 @@ Imagine you ask: *"Help me create an English word learning mini-app with a UI qu
 *   **The Evaluator Judges**: The `Evaluator` agent inspects the output using verified Skills (e.g., a professional UI Assessment Skill).
 *   **The Loop Refines**: If the score is below target (e.g., 0.7), AWorld instructs the Developer to fix specific issues identified by the Evaluator. This loop continues until your criteria are met.
 
-***See the Self-Evolution Loop in Action***
+***📹  See the Self-Evolution Loop in Action***
 
 
 https://github.com/user-attachments/assets/ff56195e-e117-4d33-b709-9a2144680abd
