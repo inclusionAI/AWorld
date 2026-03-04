@@ -46,10 +46,10 @@ Before diving deep into the framework, see what AWorld-CLI can build for you rig
 
 <table>
 <colgroup>
-  <col style="width:12%">
-  <col style="width:42%">
+  <col style="width:15%">
+  <col style="width:36%">
   <col style="width:26%">
-  <col style="width:20%">
+  <col style="width:23%">
 </colgroup>
 <thead>
 <tr>
