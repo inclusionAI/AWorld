@@ -302,57 +302,6 @@ if os.getenv('AWORLD_LOG_ENDABLE_MONKEY', 'true') == 'true':
     # monkey_logger(llm_logger)
 
 
-
-def _safe_serialize(obj: Any, _memo=None):
-    if _memo is None:
-        _memo = set()
-    obj_id = id(obj)
-    if obj_id in _memo:
-        return str(obj)
-    _memo.add(obj_id)
-
-    if isinstance(obj, dict):
-        return {k: _safe_serialize(v, _memo) for k, v in obj.items()}
-    elif isinstance(obj, (list, set)):
-        return [_safe_serialize(i, _memo) for i in obj]
-    elif isinstance(obj, Enum):
-        return obj.value
-    elif isinstance(obj, asyncio.Task):
-        # asyncio.Task is not JSON-serializable; often appears when serializing context/trajectory
-        name = obj.get_name() if hasattr(obj, "get_name") else ""
-        logger.debug("_safe_serialize: asyncio.Task replaced with string (name=%s)", name)
-        return repr(obj)
-    elif asyncio.iscoroutine(obj):
-        logger.debug("_safe_serialize: coroutine replaced with string: %s", obj)
-        return repr(obj)
-    elif hasattr(obj, "to_dict"):
-        return obj.to_dict()
-    elif hasattr(obj, "model_dump"):
-        return obj.model_dump()
-    elif hasattr(obj, "dict"):
-        return obj.dict()
-    elif hasattr(obj, "__dataclass_fields__"):
-        return {field.name: _safe_serialize(getattr(obj, field.name), _memo)
-                for field in obj.__dataclass_fields__.values()}
-    elif hasattr(obj, "__dict__"):
-        return {k: _safe_serialize(v, _memo) for k, v in obj.__dict__.items()
-                if not k.startswith('_') and not callable(v)}
-    else:
-        try:
-            json.dumps(obj)
-            return obj
-        except TypeError as e:
-            logger.error(
-                "Failed to serialize object: type=%s obj_repr=%s error=%s\n%s",
-                type(obj).__name__,
-                repr(obj)[:200],
-                e,
-                traceback.format_exc(),
-            )
-            raise RuntimeError(f"{e}")
-
-
-
 def log_llm_record(
         direction: str,
         model_name: str,
@@ -369,6 +318,7 @@ def log_llm_record(
         trace_id: Optional trace ID; auto-resolved from context when omitted.
     """
     from aworld.trace.base import get_trace_id
+    from aworld.utils.serialized_util import to_serializable
 
     resolved_trace_id = trace_id or get_trace_id()
     meta_parts = []
@@ -376,7 +326,7 @@ def log_llm_record(
         meta_parts = [f"{k}={v}" for k, v in params.items()]
     meta_str = ", ".join(meta_parts) if meta_parts else ""
 
-    body = _safe_serialize(data)
+    body = to_serializable(data)
 
     llm_logger._logger.bind(
         trace_id=resolved_trace_id,
