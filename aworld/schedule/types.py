@@ -4,7 +4,7 @@ import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Set
 
-from aworld.core.common import TaskStatus, TaskStatusValue
+from aworld.core.common import TaskStatus
 from aworld.core.task import Task
 
 
@@ -218,18 +218,18 @@ class ScheduledTaskStatistics:
 
     def update_from_task(self, task: Task):
         """Update state from task."""
-        if task.task_status == TaskStatusValue.INIT:
+        if task.task_status == TaskStatus.INIT:
             self.pending_tasks += 1
-        elif task.task_status == TaskStatusValue.RUNNING:
+        elif task.task_status == TaskStatus.RUNNING:
             self.running_tasks += 1
             self.current_concurrent += 1
-        elif task.task_status == TaskStatusValue.SUCCESS:
+        elif task.task_status == TaskStatus.SUCCESS:
             self.completed_tasks += 1
             self.current_concurrent = max(0, self.current_concurrent - 1)
-        elif task.task_status == TaskStatusValue.FAILED:
+        elif task.task_status == TaskStatus.FAILED:
             self.failed_tasks += 1
             self.current_concurrent = max(0, self.current_concurrent - 1)
-        elif task.task_status in (TaskStatusValue.CANCELLED, TaskStatusValue.INTERRUPTED, TaskStatusValue.TIMEOUT):
+        elif task.task_status in (TaskStatus.CANCELLED, TaskStatus.INTERRUPTED, TaskStatus.TIMEOUT):
             self.abnormal_tasks += 1
             self.current_concurrent = max(0, self.current_concurrent - 1)
 

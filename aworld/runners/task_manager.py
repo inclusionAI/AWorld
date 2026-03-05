@@ -9,7 +9,7 @@ from aworld.core.storage.inmemory_store import InmemoryStorage
 from aworld.core.task import Task
 from aworld.logs.util import logger
 
-from aworld.core.common import TaskStatusValue
+from aworld.core.common import TaskStatus
 
 
 class TaskManager:
@@ -259,19 +259,19 @@ class TaskManager:
 
     async def get_pending(self, limit: Optional[int] = None) -> List[Task]:
         """Get all pending (INIT status) tasks."""
-        return await self.list(status=TaskStatusValue.INIT, limit=limit)
+        return await self.list(status=TaskStatus.INIT, limit=limit)
 
     async def get_running(self, limit: Optional[int] = None) -> List[Task]:
         """Get all running tasks."""
-        return await self.list(status=TaskStatusValue.RUNNING, limit=limit)
+        return await self.list(status=TaskStatus.RUNNING, limit=limit)
 
     async def get_completed(self, limit: Optional[int] = None) -> List[Task]:
         """Get all completed (SUCCESS status) tasks."""
-        return await self.list(status=TaskStatusValue.SUCCESS, limit=limit)
+        return await self.list(status=TaskStatus.SUCCESS, limit=limit)
 
     async def get_failed(self, limit: Optional[int] = None) -> List[Task]:
         """Get all failed tasks."""
-        return await self.list(status=TaskStatusValue.FAILED, limit=limit)
+        return await self.list(status=TaskStatus.FAILED, limit=limit)
 
     async def get_periodic(self) -> List[Task]:
         """Get all periodic tasks (with cron expression)."""
@@ -374,10 +374,10 @@ class TaskManager:
         """
         try:
             total = await self.count()
-            pending = await self.count(TaskStatusValue.INIT)
-            running = await self.count(TaskStatusValue.RUNNING)
-            completed = await self.count(TaskStatusValue.SUCCESS)
-            failed = await self.count(TaskStatusValue.FAILED)
+            pending = await self.count(TaskStatus.INIT)
+            running = await self.count(TaskStatus.RUNNING)
+            completed = await self.count(TaskStatus.SUCCESS)
+            failed = await self.count(TaskStatus.FAILED)
 
             return {
                 "total": total,
@@ -437,7 +437,7 @@ class TaskManager:
         """
         current_time = current_time if current_time else time.time()
         try:
-            pending_tasks = await self.get_tasks_by_status(TaskStatusValue.INIT)
+            pending_tasks = await self.get_tasks_by_status(TaskStatus.INIT)
             ready_tasks = []
             for task in pending_tasks:
                 # Check if task has is_ready method (for ScheduledTask compatibility)
