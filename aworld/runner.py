@@ -20,7 +20,6 @@ from aworld.core.task import Task, TaskResponse
 from aworld.evaluations.base import EvalTask
 from aworld.logs.util import logger
 from aworld.output import StreamingOutputs
-from aworld.ralph_loop.types import CompletionCriteria
 from aworld.runners.evaluate_runner import EvaluateRunner
 from aworld.runners.utils import execute_runner, choose_runners
 from aworld.utils.common import sync_exec
@@ -307,9 +306,9 @@ class Runners:
         return swarm
 
     @staticmethod
-    async def ralph_run(task: Task, completion_criteria: CompletionCriteria) -> TaskResponse:
+    async def ralph_run(task: Task, completion_criteria: 'CompletionCriteria') -> TaskResponse:
         """Run task on Ralph pattern."""
-        from aworld.ralph_loop.ralph_runner import RalphRunner
+        from aworld.runners.ralph_runner import RalphRunner
 
         if task.agent:
             swarm = Swarm(task.agent)

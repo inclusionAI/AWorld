@@ -8,7 +8,7 @@ from pydantic import Field
 from aworld.config import ModelConfig, TaskConfig
 from aworld.evaluations.base import EvalCriteria, Scorer
 from aworld.evaluations.reflect import Reflector
-from aworld.ralph_loop.detect.stop_condition import StopCondition
+from aworld.runners.ralph.detect.stop_condition import StopCondition
 from aworld.runners.ralph.types import ConflictStrategy
 
 
