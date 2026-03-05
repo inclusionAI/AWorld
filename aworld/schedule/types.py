@@ -9,8 +9,8 @@ from aworld.core.task import Task
 
 
 @dataclass
-class InstantTask(Task):
-    """Instant task with dependencies and metadata."""
+class SchedulableTask(Task):
+    """Instant schedulable task with dependencies and priority."""
     priority: int = 0
     retry_count: int = 0
     dependencies: List[str] = field(default_factory=list)
@@ -27,7 +27,7 @@ class InstantTask(Task):
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __lt__(self, other):
-        if not isinstance(other, InstantTask):
+        if not isinstance(other, SchedulableTask):
             return NotImplemented
         return self.priority < other.priority
 
@@ -51,7 +51,7 @@ class InstantTask(Task):
 
 
 @dataclass
-class ScheduledTask(InstantTask):
+class ScheduledTask(SchedulableTask):
     """Unified scheduled task supporting cron-like scheduling, one-time execution, and delayed execution.
 
     Scheduling modes (priority order):
