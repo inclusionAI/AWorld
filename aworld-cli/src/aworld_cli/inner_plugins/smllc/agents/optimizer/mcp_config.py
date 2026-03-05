@@ -1,4 +1,0 @@
-mcp_config = {
-    "mcpServers": {
-    }
-}
