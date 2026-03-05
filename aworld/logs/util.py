@@ -309,11 +309,12 @@ def log_llm_record(
         params: Optional[Dict[str, Any]] = None,
         trace_id: Optional[str] = None,
 ) -> None:
-    """Log LLM request input (messages and call parameters).
+    """Log LLM request/response record.
 
     Args:
+        direction: The direction of the data flow (e.g., "INPUT", "OUTPUT", "CHUNK").
         model_name: The model identifier being called (e.g. "gpt-4o").
-        messages: The list of message dicts sent to the model.
+        data: The data to be logged (e.g., messages list for input, ModelResponse for output).
         params: Optional dict of extra call parameters (temperature, max_tokens, etc.).
         trace_id: Optional trace ID; auto-resolved from context when omitted.
     """
