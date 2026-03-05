@@ -2,9 +2,10 @@
 # Copyright (c) inclusionAI.
 from typing import Optional, List
 
+from aworld.core.context.base import Context
 from aworld.logs.util import logger
-from aworld.ralph_loop.detect.stop_condition import StopCondition, build_stop_conditions
-from aworld.ralph_loop.detect.types import StopState, StopDecision
+from aworld.runners.ralph.detect.stop_condition import StopCondition, build_stop_conditions
+from aworld.runners.ralph.detect.types import StopDecision
 
 
 class CompositeStopDetector:
@@ -15,11 +16,11 @@ class CompositeStopDetector:
     """
 
     def __init__(self, conditions: Optional[List[StopCondition]] = None):
-        conditions = build_stop_conditions(custom_conditions=conditions)
+        conditions = conditions or build_stop_conditions()
         # low value first
         self.detectors = sorted(conditions, key=lambda d: d.priority)
 
-    async def should_stop(self, state: StopState) -> StopDecision:
+    async def should_stop(self, state: Context) -> StopDecision:
         """Use logical short-circuit mechanism to check if the execution should be stopped.
 
         Traverse all stop condition detectors in priority order, and return immediately once a detector returns a stop decision.

@@ -5,15 +5,11 @@ from typing import Optional, List, Dict, Any, Union
 
 from pydantic import Field
 
-from aworld.config import ModelConfig, TaskConfig, BaseConfig
+from aworld.config import ModelConfig, TaskConfig
 from aworld.evaluations.base import EvalCriteria, Scorer
 from aworld.evaluations.reflect import Reflector
-from aworld.ralph_loop.detect.stop_condition import StopCondition
-# from aworld.ralph_loop.mission.analyzer import Analyzer
-# from aworld.ralph_loop.mission.enhancer import ContextEnhancer
-# from aworld.ralph_loop.mission.types import MissionType
-# from aworld.ralph_loop.plan.base import BasePlanner, BasePlanReviewer, BasePlanOptimizer
-from aworld.ralph_loop.types import ConflictStrategy
+from aworld.runners.ralph.detect.stop_condition import StopCondition
+from aworld.runners.ralph.types import ConflictStrategy
 
 
 @dataclass
@@ -85,23 +81,18 @@ class StateConfig:
     enable_metrics: bool = True
 
 
-class RalphConfig(BaseConfig):
+class RalphConfig(TaskConfig):
     """Unified configuration for Ralph Loop.
 
     This configuration class combines all component configurations and provides sensible defaults for different use cases.
     """
-    model_config = {"arbitrary_types_allowed": True}
-    mission: MissionConfig = Field(default_factory=MissionConfig)
-    planning: PlanningConfig = Field(default_factory=PlanningConfig)
-    validation: ValidationConfig = Field(default_factory=ValidationConfig)
-    reflection: ReflectionConfig = Field(default_factory=ReflectionConfig)
     stop_condition: StopConditionConfig = Field(default_factory=StopConditionConfig)
     state: StateConfig = Field(default_factory=StateConfig)
+    reuse_context: bool = Field(default=True)
 
     workspace: str = "."
     # Global settings
     llm_config: ModelConfig = Field(default_factory=ModelConfig)
-    task_config: Optional[TaskConfig] = None
 
     @classmethod
     def create(cls, model_config: Optional[ModelConfig] = None) -> 'RalphConfig':
@@ -110,9 +101,5 @@ class RalphConfig(BaseConfig):
 
         if model_config:
             config.llm_config = model_config
-            config.mission.model_config = model_config
-            config.planning.model_config = model_config
-            config.validation.model_config = model_config
-            config.reflection.model_config = model_config
 
         return config
