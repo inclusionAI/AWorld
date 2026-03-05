@@ -343,13 +343,6 @@ Model Response: {answer}
 
 @scorer_register(
     MetricNames.OUTPUT_RELEVANCE,
-    model_config=ModelConfig(
-        llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER", "openai")),
-        llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
-        llm_temperature=float(os.getenv("VALIDATE_LLM_TEMPERATURE", os.getenv("LLM_TEMPERATURE", "0.7"))),
-        llm_base_url=os.getenv("VALIDATE_LLM_BASE_URL", os.getenv("LLM_BASE_URL")),
-        llm_api_key=os.getenv("VALIDATE_LLM_API_KEY", os.getenv("LLM_API_KEY")),
-    )
 )
 class OutputRelevanceScorer(OutputLlmScore):
     """Verify the correlation between the answer and the question
@@ -369,13 +362,6 @@ class OutputRelevanceScorer(OutputLlmScore):
 
 @scorer_register(
     MetricNames.OUTPUT_COMPLETENESS,
-    model_config=ModelConfig(
-        llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER", "openai")),
-        llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
-        llm_temperature=float(os.getenv("VALIDATE_LLM_TEMPERATURE", os.getenv("LLM_TEMPERATURE", "0.7"))),
-        llm_base_url=os.getenv("VALIDATE_LLM_BASE_URL", os.getenv("LLM_BASE_URL")),
-        llm_api_key=os.getenv("VALIDATE_LLM_API_KEY", os.getenv("LLM_API_KEY")),
-    )
 )
 class OutputCompletenessScorer(OutputLlmScore):
     """Verify the completeness of the answer
@@ -406,13 +392,13 @@ class OutputCompletenessScorer(OutputLlmScore):
 
 @scorer_register(
     MetricNames.OUTPUT_QUALITY,
-    model_config=ModelConfig(
-        llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER", "openai")),
-        llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
-        llm_temperature=float(os.getenv("VALIDATE_LLM_TEMPERATURE", os.getenv("LLM_TEMPERATURE", "0.7"))),
-        llm_base_url=os.getenv("VALIDATE_LLM_BASE_URL", os.getenv("LLM_BASE_URL")),
-        llm_api_key=os.getenv("VALIDATE_LLM_API_KEY", os.getenv("LLM_API_KEY")),
-    )
+    # model_config=ModelConfig(
+    #     llm_provider=os.getenv("VALIDATE_LLM_PROVIDER", os.getenv("LLM_PROVIDER", "openai")),
+    #     llm_model_name=os.getenv("VALIDATE_LLM_MODEL_NAME", os.getenv("LLM_MODEL_NAME")),
+    #     llm_temperature=float(os.getenv("VALIDATE_LLM_TEMPERATURE", os.getenv("LLM_TEMPERATURE", "0.7"))),
+    #     llm_base_url=os.getenv("VALIDATE_LLM_BASE_URL", os.getenv("LLM_BASE_URL")),
+    #     llm_api_key=os.getenv("VALIDATE_LLM_API_KEY", os.getenv("LLM_API_KEY")),
+    # )
 )
 class OutputQualityScorer(OutputLlmScore):
     """Comprehensive evaluation of answer quality
