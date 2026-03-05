@@ -56,7 +56,7 @@ class Task:
     max_retry_count: int = field(default=0)
     timeout: int = field(default=0)
     observation: Optional[Observation] = field(default=None)
-    task_status: str = field(default=TaskStatus.INIT)
+    task_status: TaskStatus = field(default=TaskStatus.INIT)
     # streaming support
     streaming_mode: StreamingMode = field(default=None)
 
