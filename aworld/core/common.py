@@ -133,5 +133,13 @@ class TaskStatusValue:
     CANCELLED = 'cancelled'
     INTERRUPTED = 'interrupted'
     TIMEOUT = 'timeout'
+    DISABLED = 'disabled'
+
+class TaskTypeValue:
+    """Task type constants."""
+    INSTANT = 'instant'
+    SCHEDULED = 'scheduled'
+
+
 
 TaskStatus = Literal['init', 'running', 'success', 'failed', 'cancelled', 'interrupted', 'timeout']
