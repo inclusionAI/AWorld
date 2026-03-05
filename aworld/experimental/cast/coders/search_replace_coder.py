@@ -94,14 +94,19 @@ class SearchReplaceCoder(BaseCoder):
                     f"Unsupported operation type: {operation['type']}, expected 'search_replace'"
                 )
 
-            # Validate file path
+            # Validate file path (file may not exist - will be auto-created with replace content)
             file_path = self.source_dir / operation["file_path"]
-            if not file_path.exists():
-                raise CoderValidationError(f"Target file does not exist: {file_path}")
 
-            # Validate search text is not empty
-            if not operation["search"].strip():
-                raise CoderValidationError("Search text cannot be empty")
+            # When file exists: search text cannot be empty
+            # When file does not exist: search should be empty (create-new-file semantics)
+            if file_path.exists():
+                if not operation["search"].strip():
+                    raise CoderValidationError("Search text cannot be empty when modifying existing file")
+            else:
+                if operation["search"].strip():
+                    raise CoderValidationError(
+                        "When creating new file, search must be empty. Use empty string for search and put full content in replace."
+                    )
 
             return True
 
@@ -157,6 +162,10 @@ class SearchReplaceCoder(BaseCoder):
             logger.debug(f"Search text length: {len(search_text)} chars")
             logger.debug(f"Replace text length: {len(replace_text)} chars")
             logger.debug(f"Fuzzy matching: {'enabled' if use_fuzzy else 'disabled'}")
+
+            # Auto-create file when it does not exist (create-new-file semantics)
+            if not file_path.exists():
+                return self._create_new_file(file_path, replace_text)
 
             # Read original file content
             try:
@@ -287,6 +296,36 @@ class SearchReplaceCoder(BaseCoder):
                 return result
 
         return None
+
+    def _create_new_file(self, file_path: Path, content: str) -> CoderResult:
+        """
+        Create a new file with the given content when target file does not exist.
+
+        Args:
+            file_path: Path to create
+            content: Initial file content
+
+        Returns:
+            CoderResult indicating success
+        """
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            if not self.dry_run:
+                file_path.write_text(content, encoding='utf-8')
+                logger.info(f"✅ Created new file: {file_path}")
+            else:
+                logger.info(f"🔍 Dry run: Would create new file: {file_path}")
+
+            return self._create_success_result(
+                modified=True,
+                message=f"New file {'simulated' if self.dry_run else 'created'} successfully",
+                original_content="",
+                new_content=content,
+                file_path=str(file_path),
+                file_created=True
+            )
+        except Exception as e:
+            raise CoderOperationError(f"Failed to create file {file_path}: {e}")
 
     def _prep_text(self, text: str) -> Tuple[str, List[str]]:
         """Prepare text ensuring it ends with newline and split into lines"""

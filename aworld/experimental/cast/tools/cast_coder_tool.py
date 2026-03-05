@@ -145,7 +145,7 @@ class CAstCoderAction(ToolAction):
                 desc="Whether to show detailed deployment information"
             )
         },
-        desc="Deploy code changes based on JSON operation instructions (insert/replace/delete). Not recommended; prefer search_replace for precision and path clarity."
+        desc="Deploy code changes based on JSON operation instructions (insert/replace/delete). Files that do not exist will be auto-created before applying operations. Not recommended; prefer search_replace for precision and path clarity."
     )
 
     SEARCH_REPLACE = ToolActionInfo(
@@ -166,9 +166,9 @@ class CAstCoderAction(ToolAction):
     }
 }
 
-Parameters: type (string, required) Must be "search_replace"; file_path (string, required) Relative path from source_dir; search (string, required) One or more complete lines of source code, must not be blank; replace (string, required) Multi-line code block to replace with; exact_match_only (boolean, optional) Fixed as true.
+Parameters: type (string, required) Must be "search_replace"; file_path (string, required) Relative path from source_dir; search (string, required) One or more complete lines of source code when modifying existing file, or empty string when creating new file; replace (string, required) Multi-line code block to replace with (or full content when creating new file); exact_match_only (boolean, optional) Fixed as true.
 
-Best Practices for search: Use multi-line blocks with structural context (def/class) for accuracy; content must be continuous and match source code."""
+Best Practices: When modifying existing file, use multi-line blocks with structural context (def/class) for accuracy. When creating new file, use search="" and put full content in replace; the file and parent dirs will be auto-created."""
             ),
             "source_dir": ParamInfo(
                 name="source_dir",
