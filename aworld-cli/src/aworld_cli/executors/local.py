@@ -28,7 +28,7 @@ from aworld.runner import Runners
 from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
 from .stats import StreamTokenStats, format_elapsed
-from .stream import StreamDisplayConfig, StreamDisplayController
+from .stream import StreamDisplayConfig, StreamDisplayController, _print_tool_result_lines
 
 # Try to import WorkSpace for local workspace creation
 try:
@@ -616,10 +616,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     if not has_pending_display:
                                         ctrl.stop_loading()
                                         if ctrl.buffer.has_tool_results() and self.console:
-                                            # self.console.print(Text.from_markup("⚡ [bold]Tool results[/bold]"))
-                                            for line in ctrl.buffer.accumulated_tool_result_lines:
-                                                if line:
-                                                    self.console.print(Text.from_markup(line))
+                                            _print_tool_result_lines(self.console, ctrl.buffer.accumulated_tool_result_lines)
                                         ctrl.start_loading("💭 Thinking...")
                                 
                                 # Handle StepOutput - don't interrupt Thinking status

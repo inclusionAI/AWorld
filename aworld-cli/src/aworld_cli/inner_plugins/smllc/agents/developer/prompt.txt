@@ -30,7 +30,7 @@ Follow this workflow to build new projects from the ground up. The primary tool 
 2.  **Implementation Plan**:
     *   Create a step-by-step plan to generate the code. List the files you will create in a logical order.
     *   For each file, briefly outline the functions, classes, or main logic it will contain.
-    *   **Write a development plan file** `DEVELOP_PLAN_xxx.md` in the target directory before starting implementation. This file tracks all planned items and their completion status.
+    *   **Write a development plan file** `DEVELOP_PLAN_xxx.md` in the target directory before starting implementation. This file tracks all planned items and their completion status. You should carefully analyze the requirements before drafting the plan; the plan must ensure functional completeness and executability.
 
 3.  **Iterative Code Generation**:
     *   Generate the code for one file at a time using `terminal`. **Path restriction:** Do not `cd` to other directories; always operate from the current working directory. When operating on files, always use explicit relative or absolute paths. **Large files:** Prohibit one-shot creation. Create large files in segments only; each segment must not exceed 50 lines or 5,000 characters.

@@ -7,6 +7,7 @@ for streaming content, tool calls, and tool results with gradual typewriter disp
 import asyncio
 import re
 import shutil
+import sys
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Callable, List, Optional
@@ -44,9 +45,14 @@ def truncate_lines_for_display(
 
 @dataclass
 class StreamDisplayConfig:
-    """Config for stream display behavior."""
+    """Config for stream display behavior.
+    Output rate scales up when buffer backlog is large (chars_per_render and line steps increase).
+    """
     render_interval: float = 0.02
     chars_per_render: int = 1
+    chars_per_render_max: int = 20  # Max chars per render when backlog is large
+    backlog_chars_threshold: int = 100  # Chars of backlog before scaling up
+    tool_lines_step_max: int = 5  # Max tool/tool_result lines per render when backlog is large
 
 
 @dataclass
@@ -70,19 +76,19 @@ class StreamDisplayBuffer:
                 len(self.accumulated_content),
             )
 
-    def advance_tool_lines(self, tool_lines: List[str]) -> None:
-        """Advance displayed tool lines by 1."""
+    def advance_tool_lines(self, tool_lines: List[str], step: int = 1) -> None:
+        """Advance displayed tool lines by step."""
         if tool_lines:
             self.displayed_tool_lines = min(
-                self.displayed_tool_lines + 1,
+                self.displayed_tool_lines + step,
                 len(tool_lines),
             )
 
-    def advance_tool_result_lines(self) -> None:
-        """Advance displayed tool result lines by 1."""
+    def advance_tool_result_lines(self, step: int = 1) -> None:
+        """Advance displayed tool result lines by step."""
         if self.accumulated_tool_result_lines:
             self.displayed_tool_result_lines = min(
-                self.displayed_tool_result_lines + 1,
+                self.displayed_tool_result_lines + step,
                 len(self.accumulated_tool_result_lines),
             )
 
@@ -123,6 +129,25 @@ class StreamDisplayBuffer:
         return bool(self.accumulated_tool_result_lines and self.displayed_tool_result_lines < len(self.accumulated_tool_result_lines))
 
 
+def _compute_chars_per_render(buffer: StreamDisplayBuffer, config: StreamDisplayConfig) -> int:
+    """Dynamically increase chars per render when content backlog is large."""
+    if not buffer.accumulated_content:
+        return config.chars_per_render
+    pending = len(buffer.accumulated_content) - buffer.displayed_content_chars
+    if pending <= config.backlog_chars_threshold:
+        return config.chars_per_render
+    extra = min(pending // config.backlog_chars_threshold, config.chars_per_render_max - config.chars_per_render)
+    return min(config.chars_per_render + extra, config.chars_per_render_max)
+
+
+def _compute_lines_step(displayed: int, total: int, config: StreamDisplayConfig) -> int:
+    """Dynamically increase lines per render when tool/tool_result backlog is large."""
+    pending = total - displayed
+    if pending <= 3:
+        return 1
+    return min(1 + pending // 5, config.tool_lines_step_max)
+
+
 def build_stream_renderable(
     buffer: StreamDisplayBuffer,
     stream_token_stats: StreamTokenStats,
@@ -156,9 +181,10 @@ def build_stream_renderable(
     tool_caught_up = buffer.tool_caught_up(tool_lines)
     tool_result_caught_up = buffer.tool_result_caught_up()
 
-    # Content: advance gradually
+    # Content: advance gradually, faster when backlog is large
     if buffer.accumulated_content:
-        buffer.advance_content(config.chars_per_render)
+        chars_this_frame = _compute_chars_per_render(buffer, config)
+        buffer.advance_content(chars_this_frame)
         content_caught_up = buffer.content_caught_up()
         content = buffer.accumulated_content[:buffer.displayed_content_chars].strip("\n")
         if content:
@@ -176,9 +202,10 @@ def build_stream_renderable(
             indented = "\n".join("   " + line for line in content_lines)
             parts.append(Text.from_markup(indented) if "[dim]" in indented else Text(indented))
 
-    # Tool calls: only show after content has finished streaming
+    # Tool calls: only show after content has finished streaming, faster when backlog is large
     if buffer.accumulated_tool_calls and tool_lines and content_caught_up:
-        buffer.advance_tool_lines(tool_lines)
+        tool_step = _compute_lines_step(buffer.displayed_tool_lines, len(tool_lines), config)
+        buffer.advance_tool_lines(tool_lines, tool_step)
         tool_caught_up = buffer.tool_caught_up(tool_lines)
         displayed_tool = tool_lines[:buffer.displayed_tool_lines]
         _, rows = get_terminal_size()
@@ -192,9 +219,10 @@ def build_stream_renderable(
         if tool_str:
             parts.append(Text.from_markup(tool_str))
 
-    # Tool results: only show after content and tool_calls have finished streaming
+    # Tool results: only show after content and tool_calls have finished streaming, faster when backlog is large
     if tool_result_lines and content_caught_up and tool_caught_up:
-        buffer.advance_tool_result_lines()
+        tr_step = _compute_lines_step(buffer.displayed_tool_result_lines, len(tool_result_lines), config)
+        buffer.advance_tool_result_lines(tr_step)
         displayed_tr = tool_result_lines[:buffer.displayed_tool_result_lines]
         _, rows = get_terminal_size()
         max_tr_lines = max(50, rows + 30)
@@ -207,6 +235,50 @@ def build_stream_renderable(
             parts.append(Text.from_markup(tr_str))
 
     return Group(*parts) if parts else Text("")
+
+
+def _split_to_fit_width(text: str, indent: str, width: int) -> List[str]:
+    """Compute max content per line from screen width, then split text into multiple lines for render."""
+    if not text:
+        return []
+    indent_len = len(indent)
+    max_content = max(20, width - indent_len)
+    if len(text) <= max_content:
+        return [indent + text]
+    result = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= max_content:
+            result.append(indent + remaining)
+            break
+        chunk = remaining[:max_content]
+        last_space = chunk.rfind(" ")
+        break_at = last_space + 1 if last_space > max_content // 2 else max_content
+        result.append(indent + remaining[:break_at].rstrip())
+        remaining = remaining[break_at:].lstrip()
+    return result
+
+
+def _print_tool_result_lines(console: Console, lines: List[str], indent: str = "   ") -> None:
+    """Print tool result lines. Content is split by screen width so each line fits (no terminal wrap)."""
+    cols, _ = get_terminal_size()
+    width = cols - 1
+    for line in lines:
+        if line:
+            if "⚡" in line:
+                console.print(Text.from_markup(line))
+            elif "\n" in line:
+                for sub in line.split("\n"):
+                    if sub.strip():
+                        for out in _split_to_fit_width(sub.strip(), indent, width):
+                            console.print(Text.from_markup(out))
+                    else:
+                        console.print(indent)
+            else:
+                stripped = line.strip()
+                if stripped:
+                    for out in _split_to_fit_width(stripped, indent, width):
+                        console.print(Text.from_markup(out))
 
 
 def print_buffer_to_console(
@@ -246,10 +318,7 @@ def print_buffer_to_console(
                 if line:
                     console.print("   " + line)
     if buffer.accumulated_tool_result_lines:
-        # console.print(Text.from_markup("⚡ [bold]Tool results[/bold]"))
-        for line in buffer.accumulated_tool_result_lines:
-            if line:
-                console.print(Text.from_markup(line))
+        _print_tool_result_lines(console, buffer.accumulated_tool_result_lines)
 
 
 class StreamDisplayController:
@@ -329,6 +398,7 @@ class StreamDisplayController:
                     status_start_time=self.status_start_time,
                     format_elapsed_fn=self.format_elapsed_fn,
                 )
+                self.buffer.clear()
             self.stream_live.stop()
             self.stream_live = None
         if self.loading_status:
@@ -345,9 +415,15 @@ class StreamDisplayController:
             self.loading_status = None
         cols, rows = get_terminal_size()
         live_console = Console(width=cols, height=rows)
+        # In non-TTY (piped/CI), Live prints each frame instead of updating in place; use lower refresh to reduce duplicate output
+        try:
+            is_tty = sys.stdout.isatty() if hasattr(sys.stdout, "isatty") else False
+        except Exception:
+            is_tty = False
+        refresh_rate = 1 if not is_tty else 10
         self.stream_live = Live(
             console=live_console,
-            refresh_per_second=10,
+            refresh_per_second=refresh_rate,
             vertical_overflow="crop",
         )
         self.stream_live.start()

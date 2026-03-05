@@ -1046,7 +1046,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         if display_content:
             content_lines = [ln.strip() for ln in display_content.split('\n')[:3] if ln.strip()]
             for ln in content_lines:
-                lines.append(f"   {ln[:100]}{'...' if len(ln) > 100 else ''}")
+                lines.append(f"   {ln[:500]}{'...' if len(ln) > 500 else ''}")
         else:
             lines.append("   [dim italic]No output[/dim italic]")
         return lines
@@ -1149,7 +1149,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         if display_content:
             lines = [ln.strip() for ln in display_content.split('\n')[:3] if ln.strip()]
             for i, ln in enumerate(lines):
-                lines[i] = ln[:500] + "..." if len(ln) > 100 else ln
+                lines[i] = ln[:500] + "..." if len(ln) > 500 else ln
             self.console.print(f"⚡ [bold]{tool_info}[/bold]")
             for ln in lines:
                 self._print_indented_line(ln)

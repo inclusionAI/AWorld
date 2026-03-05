@@ -231,10 +231,10 @@ class OpenAIProvider(LLMProviderBase):
                     }
                     self.stream_tool_buffer = []
                     chunk_resp = ModelResponse.from_openai_stream_chunk(tool_call_chunk)
-                    logger.info(f"[stream] finished chunk: {chunk} \n chunk_resp: {chunk_resp}, finish_reason={finish_reason}")
+                    logger.debug(f"[stream] finished chunk: {chunk} \n chunk_resp: {chunk_resp}, finish_reason={finish_reason}")
                     return chunk_resp, finish_reason
             resp = ModelResponse.from_openai_stream_chunk(chunk)
-            logger.info(f"[stream] chunk: {chunk} \n resp: {resp}\nfinish_reason:{finish_reason}")
+            logger.debug(f"[stream] chunk: {chunk} \n resp: {resp}\nfinish_reason:{finish_reason}")
             # Skip chunks with empty content and no tool_calls (unless finish_reason signals stream end)
             if (not resp.content and not resp.tool_calls) and not finish_reason:
                 logger.debug("[stream] skip chunk: empty content and no tool_calls")
