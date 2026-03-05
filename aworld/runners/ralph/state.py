@@ -15,7 +15,7 @@ from aworld.core.context.base import Context
 from aworld.core.task import Task
 from aworld.logs.util import logger
 from aworld.output import Artifact, ArtifactType, WorkSpace
-from aworld.ralph_loop.types import CompletionCriteria
+from aworld.runners.ralph.types import CompletionCriteria
 from aworld.sandbox import Sandbox
 from aworld.utils.common import convert_to_subclass
 
