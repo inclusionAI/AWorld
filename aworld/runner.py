@@ -35,7 +35,7 @@ class Runners:
 
         with trace.task_span("streamed_run_task",
                                    task=task,
-                                   attributes={"aworld.trace.id": task.context.trace_id}):
+                                   attributes={"aworld.trace.id": task.context.trace_id if task.context else task.trace_id}):
             if not task.conf:
                 task.conf = TaskConfig()
 
