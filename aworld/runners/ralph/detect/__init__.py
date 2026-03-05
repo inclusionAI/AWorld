@@ -28,4 +28,4 @@ Priority Levels (lower value = higher priority):
 
 """
 
-from aworld.ralph_loop.detect.detector import CompositeStopDetector
+from aworld.runners.ralph.detect.detector import CompositeStopDetector
