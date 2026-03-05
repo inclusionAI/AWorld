@@ -646,13 +646,13 @@ Batch Jobs:
     # Load configuration (priority: local .env > global config)
     from .core.config import load_config_with_env, has_model_config
     config_dict, source_type, source_path = load_config_with_env(args.env_file)
-    
     # Display configuration source
     from ._globals import console
     # Require model config for commands that use the agent (skip for 'list' and plugin)
     if args.command != "list" and not has_model_config(config_dict):
         console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
         console.print("[dim]Run: aworld-cli --config[/dim]")
+        console.print("[dim]Or create .env in the current directory. See: [link=https://github.com/inclusionAI/AWorld/blob/main/README.md]README[/link][/dim]")
         sys.exit(1)
     
     # Initialize skill registry early with command-line arguments (overrides env vars)

@@ -7,6 +7,7 @@ extracted from ACast.deploy_operations method.
 
 import difflib
 import json
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, Union, List
 
@@ -134,10 +135,8 @@ class OpCoder(BaseCoder):
                 f"expected one of: insert, replace, delete"
             )
 
-        # Validate file path
+        # Validate file path (file may not exist - will be auto-created before applying operations)
         file_path = self.source_dir / operation["file_path"]
-        if not file_path.exists():
-            raise CoderValidationError(f"Operation {index}: Target file does not exist: {file_path}")
 
         # Type-specific validation
         if op_type == "insert":
@@ -355,12 +354,15 @@ class OpCoder(BaseCoder):
         # Process each file
         for file_path, ops in file_operations.items():
             full_file_path = source_dir / file_path
-
-            if not full_file_path.exists():
-                logger.warning(f"File does not exist, skipping: {full_file_path}")
-                continue
+            is_temp = False
 
             try:
+                # Auto-create file when it does not exist
+                if not full_file_path.exists():
+                    full_file_path, is_temp = self._ensure_file_exists(
+                        full_file_path, ops, source_dir
+                    )
+
                 # Read original file content
                 with open(full_file_path, 'r', encoding='utf-8') as f:
                     original_lines = f.readlines()
@@ -371,31 +373,84 @@ class OpCoder(BaseCoder):
                 for op in ops:
                     modified_lines = self._apply_single_operation(modified_lines, op)
 
-                # Generate unified diff
+                # Generate unified diff (use /dev/null for new files)
                 original_content = ''.join(original_lines)
                 modified_content = ''.join(modified_lines)
+                fromfile = "/dev/null" if is_temp else f"a/{file_path}"
 
                 diff_lines = list(difflib.unified_diff(
                     original_content.splitlines(keepends=True),
                     modified_content.splitlines(keepends=True),
-                    fromfile=f"a/{file_path}",
+                    fromfile=fromfile,
                     tofile=f"b/{file_path}",
                     lineterm=''
                 ))
 
                 if diff_lines:  # Only add non-empty diffs
-                    # Ensure proper formatting with newlines
+                    # Ensure proper formatting with newlines (preserve context lines like " \n" for patch_ng)
                     diff_content = ''.join(line if line.endswith('\n') else line + '\n' for line in diff_lines)
-                    all_diffs.append(diff_content.rstrip())  # Remove trailing newline to avoid double newlines
+                    all_diffs.append(diff_content)
 
             except Exception as e:
                 logger.error(f"Error processing file {file_path}: {e}")
                 raise
+            finally:
+                if is_temp:
+                    try:
+                        import os
+                        os.unlink(full_file_path)
+                    except Exception as cleanup_err:
+                        logger.warning(f"Failed to clean up temp file: {cleanup_err}")
 
         if not all_diffs:
             return ""  # No changes
 
         return '\n'.join(all_diffs)
+
+    def _ensure_file_exists(
+        self, full_file_path: Path, operations: List[Dict[str, Any]], source_dir: Path
+    ) -> tuple:
+        """
+        Create file with placeholder content when it does not exist,
+        so that insert/replace/delete operations can be applied.
+
+        Args:
+            full_file_path: Path to create
+            operations: List of operations (used to determine required line count)
+            source_dir: Source directory (for dry_run temp file resolution)
+
+        Returns:
+            (path_to_read_from, temp_file_handle_or_None)
+            When dry_run and file is new: uses temp file, returns (temp_path, handle).
+            Otherwise: creates in place, returns (full_file_path, None).
+        """
+        max_line = 1
+        for op in operations:
+            if op["type"] == "insert":
+                max_line = max(max_line, op.get("after_line", 0) + 1)
+            elif op["type"] in ["replace", "delete"]:
+                max_line = max(max_line, op.get("end_line", 1), op.get("start_line", 1))
+
+        placeholder_lines = [""] * max_line
+        initial_content = "\n".join(placeholder_lines) + ("\n" if max_line > 0 else "")
+
+        if self.dry_run:
+            # Use temp file to avoid modifying source dir
+            fd, temp_path = tempfile.mkstemp(suffix=".tmp", prefix="op_coder_")
+            import os
+            try:
+                with os.fdopen(fd, 'w', encoding='utf-8') as f:
+                    f.write(initial_content)
+            except Exception:
+                os.unlink(temp_path)
+                raise
+            logger.info(f"Dry run: Using temp file for new file simulation: {full_file_path}")
+            return Path(temp_path), True  # True = is_temp, delete after use
+        else:
+            full_file_path.parent.mkdir(parents=True, exist_ok=True)
+            full_file_path.write_text(initial_content, encoding='utf-8')
+            logger.info(f"Created new file for operations: {full_file_path}")
+            return full_file_path, False  # False = not temp
 
     def _get_operation_sort_key(self, op: dict) -> int:
         """Get operation sort key for sorting by line number"""

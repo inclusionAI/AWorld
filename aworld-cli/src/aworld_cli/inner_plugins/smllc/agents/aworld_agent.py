@@ -33,6 +33,7 @@ CAST_ANALYSIS, CAST_CODER, AGENT_REGISTRY
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
+import traceback
 
 def _build_beijing_date_line() -> str:
     """Return a line stating today's Beijing date in Chinese format."""
@@ -59,13 +60,11 @@ You must tackle every user request by following this iterative, step-by-step pro
 
 ## 3. Available Assistants/Tools
 You are equipped with multiple assistants. It is your job to know which to use and when. Your key assistants include:
-*   `text2agent`: a sub-agent that creates a new agent from a user's description.
-*   `optimizer`: a sub-agent that optimizes an existing agent to better meet user requirements.
-*   `explorer`: a sub-agent that can deeply analyze codebases like Github, by using terminal and professional code analysis tools.
+**Note:** When invoking sub-agents, the assistant name may include an ID suffix (e.g. `developer_xyz`). Use the exact name shown in the available tools list.
+*   `SKILL_tool`: A tool set that can activate, deactivate skills, and so on.
 *   `developer`: a sub-agent that can develop apps/code/html/website and laterimprove this developed apps/code/html/website according to the suggestions from the `evaluator`, by using terminal and other professional tools.
 *   `evaluator`: a sub-agent that can evaluate the apps/code/html/website's (developed by the `developer`) performance, user experience, and so on, and present professional suggestions to the `developer` for the apps/code/html/website improvement.
-*   `terminal_tool`: A tool set that can execute terminal commands. **Path restriction:** Do not `cd` to other directories; always operate from the current working directory. When operating on files, always use explicit relative or absolute paths.
-*   `SKILL_tool`: A tool set that can activate, deactivate skills, and so on.
+*   `terminal`: A tool set that can execute terminal commands. **Path restriction:** Do not `cd` to other directories; always operate from the current working directory. When operating on files, always use explicit relative or absolute paths.
 
 ## 4. Available Skills
 *    Please be aware that if you need to have access to a particular skill to help you to complete the task, you MUST use the appropriate `SKILL_tool` to activate the skill, which returns you the exact skill content.
@@ -299,7 +298,7 @@ def load_all_registered_agents(
                         swarm_type = "callable (requires context)"
                         logger.debug(f"  ℹ️ Swarm is callable but requires context for {local_agent.name}")
             except Exception as e:
-                logger.debug(f"  ⚠️ Could not get swarm for {local_agent.name} without context: {e}")
+                logger.error(f"  ⚠️ Could not get swarm for {local_agent.name} without context: {e} {traceback.format_exc()}")
             
             if swarm:
                 # Extract agents from swarm
@@ -470,7 +469,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         mcp_config={
             "mcpServers": {
                 "terminal": {
-                    "command": "python",
+                    "command": sys.executable,
                     "args": ["-m", "examples.gaia.mcp_collections.tools.terminal"],
                     "env": {},
                     "client_session_timeout_seconds": 9999.0,

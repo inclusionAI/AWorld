@@ -763,7 +763,10 @@ class ACast:
                 "new_content": result.new_content,
                 "error": result.error,
                 "message": result.message,
-                "metadata": result.metadata
+                "metadata": result.metadata,
+                "file_path": result.metadata.get("file_path", ""),
+                "fuzzy_match_used": result.metadata.get("fuzzy_enabled", False),
+                "match_strategy": result.metadata.get("match_strategy", "unknown"),
             }
 
         except Exception as e:

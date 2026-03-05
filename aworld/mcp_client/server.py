@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import os
 import threading
+import traceback
 from datetime import timedelta
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from pathlib import Path
@@ -139,11 +140,11 @@ class _MCPServerWithClientSession(MCPServer, abc.ABC):
             self.server_initialize_result = server_result
             self.session = session
         except Exception as e:
-            logger.error(f"Error initializing MCP server: {e}")
+            logger.error(f"Error initializing MCP server: {e} {traceback.format_exc()}")
             await self.cleanup()
             return
         except BaseException as e:
-            logger.error(f"Error initializing MCP server: {e}")
+            logger.error(f"Error initializing MCP server: {e} {traceback.format_exc()}")
             await self.cleanup()
             return
 
