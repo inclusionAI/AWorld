@@ -19,6 +19,7 @@ class HookPoint:
     PRE_TASK_CALL = "pre_task_call"
     POST_TASK_CALL = "post_task_call"
 
+
 class Hook:
     """Runner hook."""
     __metaclass__ = abc.ABCMeta
@@ -27,9 +28,9 @@ class Hook:
     def point(self):
         """Hook point."""
 
-    @abc.abstractmethod
     async def exec(self, message: Message, context: Context = None) -> Message:
         """Execute hook function."""
+        pass
 
 
 class StartHook(Hook):
@@ -55,13 +56,15 @@ class ErrorHook(Hook):
     def point(self):
         return HookPoint.ERROR
 
+
 class PreLLMCallHook(Hook):
     """Process in the hook point of the pre_llm_call."""
     __metaclass__ = abc.ABCMeta
 
     def point(self):
         return HookPoint.PRE_LLM_CALL
-        
+
+
 class PostLLMCallHook(Hook):
     """Process in the hook point of the post_llm_call."""
     __metaclass__ = abc.ABCMeta
@@ -69,12 +72,6 @@ class PostLLMCallHook(Hook):
     def point(self):
         return HookPoint.POST_LLM_CALL
 
-class PostToolCallHook(Hook):
-    """Process in the hook point of the post_tool_call."""
-    __metaclass__ = abc.ABCMeta
-
-    def point(self):
-        return HookPoint.POST_TOOL_CALL
 
 class OutputProcessHook(Hook):
     """Output process hook for processing output data for display."""
@@ -123,4 +120,3 @@ class PostTaskCallHook(Hook):
 
     def point(self):
         return HookPoint.POST_TASK_CALL
-

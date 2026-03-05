@@ -18,10 +18,6 @@ class PreLLMCallContextProcessHook(PreLLMCallHook):
     def name(self):
         return convert_to_snake("PreLLMCallContextProcessHook")
 
-    async def exec(self, message: Message, context: Context = None) -> Message:
-        # and do something
-        pass
-
 
 @HookFactory.register(name="PostLLMCallContextProcessHook",
                       desc="PostLLMCallContextProcessHook")
@@ -32,17 +28,15 @@ class PostLLMCallContextProcessHook(PostLLMCallHook):
     def name(self):
         return convert_to_snake("PostLLMCallContextProcessHook")
 
-    async def exec(self, message: Message, context: Context = None) -> Message:
-        # get context
-        pass
-
 
 @HookFactory.register(name="PostLLMTrajectoryHook",
                       desc="PostLLMTrajectoryHook")
 class PostLLMTrajectoryHook(PostLLMCallHook):
     """Update trajectory after llm call."""
+
     def name(self):
         return convert_to_snake("PostLLMTrajectoryHook")
+
     async def exec(self, message: Message, context: Context = None) -> Message:
         # get context
         agent_message = message.headers.get("agent_message")
