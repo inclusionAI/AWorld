@@ -1,9 +1,13 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import asyncio
 import inspect
+import json
 import os
 import sys
-from typing import Union, Callable, Dict, Any
+import traceback
+from enum import Enum
+from typing import Union, Callable, Dict, Any, Optional
 
 from loguru import logger as base_logger
 
@@ -90,7 +94,7 @@ class AWorldLogger:
                  file_log_config: Dict[str, Any] = None):
         """
         Initialize AWorldLogger.
-        
+
         Args:
             tag: Logger tag
             name: Logger name
@@ -98,7 +102,7 @@ class AWorldLogger:
             file_log_config: File log config
             formatter: Custom formatter
             disable_console: If True, disable console output. If None, check environment variable AWORLD_DISABLE_CONSOLE_LOG.
-            
+
         Example:
             >>> logger = AWorldLogger(disable_console=True)  # Disable console output
             >>> logger = AWorldLogger()  # Use environment variable or default (False)
@@ -158,7 +162,7 @@ class AWorldLogger:
                                           level=console_level)
 
         # Before using aworld, including imports!
-        log_path = os.environ.get('AWORLD_LOG_PATH', f"{os.getcwd()}/logs" )
+        log_path = os.environ.get('AWORLD_LOG_PATH', f"{os.getcwd()}/logs")
         log_file = f'{log_path}/{tag}.log'
         error_log_file = f'{log_path}/aworld_error.log'
         handler_key = f'{name}_{tag}'
@@ -268,6 +272,7 @@ def update_logger_level(level: str):
     trace_logger.reset_level(level)
     digest_logger.reset_level(level)
     asyncio_monitor_logger.reset_level(level)
+    llm_logger.reset_level(level)
 
 
 logger = AWorldLogger(tag='aworld', name='AWorld', formatter=os.getenv('AWORLD_LOG_FORMAT'))
@@ -281,6 +286,12 @@ digest_logger = AWorldLogger(tag='digest_logger', name='AWorld',
 asyncio_monitor_logger = AWorldLogger(tag='asyncio_monitor', name='AWorld',
                                       formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | </black> <level>{message}</level>")
 
+_LLM_LOG_FORMATTER = (
+        "{time:YYYY-MM-DD HH:mm:ss.SSS}|llm|{extra[direction]}|{extra[trace_id]}|"
+        "model={extra[model_name]}|{extra[meta]}|{message}"
+)
+llm_logger = AWorldLogger(tag='llm', name='AWorld', formatter=_LLM_LOG_FORMATTER)
+
 if os.getenv('AWORLD_LOG_ENDABLE_MONKEY', 'true') == 'true':
     monkey_logger(logger)
     monkey_logger(trace_logger)
@@ -288,6 +299,92 @@ if os.getenv('AWORLD_LOG_ENDABLE_MONKEY', 'true') == 'true':
     monkey_logger(prompt_logger)
     # monkey_logger(digest_logger)
     monkey_logger(asyncio_monitor_logger)
+    # monkey_logger(llm_logger)
+
+
+
+def _safe_serialize(obj: Any, _memo=None):
+    if _memo is None:
+        _memo = set()
+    obj_id = id(obj)
+    if obj_id in _memo:
+        return str(obj)
+    _memo.add(obj_id)
+
+    if isinstance(obj, dict):
+        return {k: _safe_serialize(v, _memo) for k, v in obj.items()}
+    elif isinstance(obj, (list, set)):
+        return [_safe_serialize(i, _memo) for i in obj]
+    elif isinstance(obj, Enum):
+        return obj.value
+    elif isinstance(obj, asyncio.Task):
+        # asyncio.Task is not JSON-serializable; often appears when serializing context/trajectory
+        name = obj.get_name() if hasattr(obj, "get_name") else ""
+        logger.debug("_safe_serialize: asyncio.Task replaced with string (name=%s)", name)
+        return repr(obj)
+    elif asyncio.iscoroutine(obj):
+        logger.debug("_safe_serialize: coroutine replaced with string: %s", obj)
+        return repr(obj)
+    elif hasattr(obj, "to_dict"):
+        return obj.to_dict()
+    elif hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    elif hasattr(obj, "dict"):
+        return obj.dict()
+    elif hasattr(obj, "__dataclass_fields__"):
+        return {field.name: _safe_serialize(getattr(obj, field.name), _memo)
+                for field in obj.__dataclass_fields__.values()}
+    elif hasattr(obj, "__dict__"):
+        return {k: _safe_serialize(v, _memo) for k, v in obj.__dict__.items()
+                if not k.startswith('_') and not callable(v)}
+    else:
+        try:
+            json.dumps(obj)
+            return obj
+        except TypeError as e:
+            logger.error(
+                "Failed to serialize object: type=%s obj_repr=%s error=%s\n%s",
+                type(obj).__name__,
+                repr(obj)[:200],
+                e,
+                traceback.format_exc(),
+            )
+            raise RuntimeError(f"{e}")
+
+
+
+def log_llm_record(
+        direction: str,
+        model_name: str,
+        data: Any,
+        params: Optional[Dict[str, Any]] = None,
+        trace_id: Optional[str] = None,
+) -> None:
+    """Log LLM request input (messages and call parameters).
+
+    Args:
+        model_name: The model identifier being called (e.g. "gpt-4o").
+        messages: The list of message dicts sent to the model.
+        params: Optional dict of extra call parameters (temperature, max_tokens, etc.).
+        trace_id: Optional trace ID; auto-resolved from context when omitted.
+    """
+    from aworld.trace.base import get_trace_id
+
+    resolved_trace_id = trace_id or get_trace_id()
+    meta_parts = []
+    if params:
+        meta_parts = [f"{k}={v}" for k, v in params.items()]
+    meta_str = ", ".join(meta_parts) if meta_parts else ""
+
+    body = _safe_serialize(data)
+
+    llm_logger._logger.bind(
+        trace_id=resolved_trace_id,
+        direction=direction,
+        model_name=model_name,
+        meta=meta_str,
+    ).info(json.dumps(body, ensure_ascii=False))
+
 
 # log examples:
 # the same as debug, warn, error, fatal
