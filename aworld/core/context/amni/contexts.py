@@ -20,7 +20,7 @@ from .prompt.prompts import AMNI_CONTEXT_PROMPT
 from .state import TaskInput, Summary
 from .utils import jsonplus
 from .worksapces import workspace_repo
-from ...task import TaskStatusValue
+from ...task import TaskStatus
 
 
 class ContextManager(BaseModel):

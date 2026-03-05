@@ -5,11 +5,12 @@ import time
 from typing import Optional, List, Callable, Awaitable, Dict, Set
 
 from aworld.logs.util import logger
+from aworld.runners.hook.hooks import Hook
 from aworld.runners.hook.utils import run_hooks
 from aworld.runners.task_manager import TaskManager
 from aworld.schedule.strategy import ScheduleStrategy, create_strategy
 from aworld.schedule.types import ScheduledTask, ResourceQuota, ScheduledTaskStatistics
-from aworld.core.common import TaskStatusValue
+from aworld.core.common import TaskStatus
 from aworld.core.task import Task, TaskResponse
 
 
@@ -18,7 +19,7 @@ class TaskScheduler:
     Task Scheduler for managing and executing scheduled tasks.
 
     The scheduler supports:
-    - Multiple scheduling strategies (FIFO, Priority, DAG, Auto)
+    - Multiple scheduling strategies (FIFO, Priority, DAG, Auto, ...)
     - Resource quota management
     - Concurrent task execution
     - Periodic task scheduling
@@ -28,8 +29,7 @@ class TaskScheduler:
     Examples:
         # Create scheduler with storage
         from aworld.core.storage.inmemory_store import InmemoryStorage
-        storage = InmemoryStorage()
-        manager = TaskManager(storage=storage)
+        manager = TaskManager(storage=InmemoryStorage())
         scheduler = TaskScheduler(task_manager=manager)
 
         # Add tasks
@@ -42,10 +42,8 @@ class TaskScheduler:
             await asyncio.sleep(1)
             return True
 
-        scheduler.set_executor(execute_handler)
-
         # Run scheduler
-        await scheduler.run(max_iterations=10)
+        await scheduler.run()
 
         # Or run scheduler in background
         scheduler.start()
@@ -61,7 +59,7 @@ class TaskScheduler:
         resource_quota: Optional[ResourceQuota] = None,
         max_concurrent: int = 10,
         poll_interval: float = 1.0,
-        enable_periodic: bool = True
+        hooks: Dict[str, Hook] = None
     ):
         """
         Initialize TaskScheduler.
@@ -73,7 +71,6 @@ class TaskScheduler:
             resource_quota: Resource quota for task execution
             max_concurrent: Maximum concurrent tasks
             poll_interval: Seconds between scheduling cycles
-            enable_periodic: Enable periodic task scheduling
         """
         if task_manager is None:
             raise ValueError("task_manager is required")
@@ -83,7 +80,6 @@ class TaskScheduler:
         self.resource_quota = resource_quota or ResourceQuota(max_concurrent=max_concurrent)
 
         self.poll_interval = poll_interval
-        self.enable_periodic = enable_periodic
 
         # Execution state
         self._executor: Optional[Callable[[Task], Awaitable[bool]]] = None
@@ -95,12 +91,12 @@ class TaskScheduler:
         # Statistics
         self.statistics = ScheduledTaskStatistics()
 
-        # Lifecycle hooks
-        self._on_task_start: Optional[Callable[[Task], Awaitable[None]]] = None
-        self._on_task_complete: Optional[Callable[[Task, bool], Awaitable[None]]] = None
-        self._on_task_error: Optional[Callable[[Task, Exception], Awaitable[None]]] = None
+    @property
+    def executor(self):
+        return self._executor
 
-    def set_executor(self, executor: Callable[[Task], Awaitable[bool]]):
+    @executor.setter
+    def executor(self, executor: Callable[[Task], Awaitable[bool]]):
         """
         Set the task executor function.
 
@@ -113,7 +109,7 @@ class TaskScheduler:
                 # ... do work ...
                 return True
 
-            scheduler.set_executor(my_executor)
+            scheduler.executor = my_executor
         """
         self._executor = executor
 
@@ -178,7 +174,7 @@ class TaskScheduler:
             bool: True if successful
         """
         if self._executor is None:
-            logger.error("No executor set. Use set_executor() to configure task execution.")
+            logger.error("No executor set. Use .executor to configure task execution.")
             return None
 
         # demo
@@ -187,7 +183,7 @@ class TaskScheduler:
             # Mark task as started
             await self.task_manager.update_status(
                 task.id,
-                TaskStatusValue.RUNNING,
+                TaskStatus.RUNNING,
                 started_at=time.time()
             )
 
@@ -199,7 +195,7 @@ class TaskScheduler:
             # Mark task as completed
             await self.task_manager.update_status(
                 task.id,
-                TaskStatusValue.SUCCESS if success else TaskStatusValue.FAILED,
+                TaskStatus.SUCCESS if success else TaskStatus.FAILED,
                 completed_at=time.time()
             )
 
@@ -220,7 +216,7 @@ class TaskScheduler:
             # Mark task as failed
             await self.task_manager.update_status(
                 task.id,
-                TaskStatusValue.FAILED,
+                TaskStatus.FAILED,
                 completed_at=time.time()
             )
 
@@ -337,7 +333,7 @@ class TaskScheduler:
 
             # Check if no tasks to execute
             if executed == 0:
-                pending = await self.task_manager.count(TaskStatusValue.INIT)
+                pending = await self.task_manager.count(TaskStatus.INIT)
                 if pending == 0:
                     logger.info("No more tasks to execute")
         except Exception as e:
@@ -480,7 +476,7 @@ class TaskScheduler:
         # Update task status
         return await self.task_manager.update_status(
             task_id,
-            TaskStatusValue.CANCELLED,
+            TaskStatus.CANCELLED,
             completed_at=time.time()
         )
 

@@ -5,7 +5,7 @@ from typing import Dict, List
 
 from aworld.core.factory import Factory
 from aworld.logs.util import logger
-from aworld.runners.hook.hooks import Hook, StartHook, HookPoint
+from aworld.runners.hook.hooks import Hook, HookPoint
 
 
 class HookManager(Factory):

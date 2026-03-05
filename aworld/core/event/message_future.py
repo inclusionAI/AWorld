@@ -84,10 +84,10 @@ class MessageFuture:
         from aworld.logs.util import logger
         logger.info(f"Waiting for message {self.msg_id}")
         if context:
-            from aworld.core.common import TaskStatusValue
+            from aworld.core.common import TaskStatus
             task_status = await context.get_task_status()
-            if (task_status == TaskStatusValue.CANCELLED
-                    or task_status == TaskStatusValue.INTERRUPTED):
+            if (task_status == TaskStatus.CANCELLED
+                    or task_status == TaskStatus.INTERRUPTED):
                 self.set_empty_result(msg=f"Task {task_status.lower()}: message not sent")
                 logger.info(f"Task {task_status.lower()}: message not sent")
                 return self.result()

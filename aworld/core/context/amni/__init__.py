@@ -9,7 +9,6 @@ from typing import Optional, Any, List, Dict, Tuple
 
 from aworld import trace
 from aworld.config import AgentConfig, AgentMemoryConfig
-from aworld.core.common import TaskStatus
 # lazy import
 from aworld.core.context.base import Context
 from aworld.dataset.types import TrajectoryItem

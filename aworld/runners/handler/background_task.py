@@ -1,25 +1,18 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-import asyncio
-import time
 from typing import AsyncGenerator, TYPE_CHECKING, Tuple
 
-from env_channel import EnvChannelMessage
-
 from aworld.core.common import TaskItem, Observation
-from aworld.core.context.amni import get_context_manager, ContextManager, ApplicationContext, AmniContext
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message, Constants, TopicType, BackgroundTaskMessage, AgentMessage
-from aworld.core.task import TaskResponse, TaskStatusValue, Task, Runner
+from aworld.core.task import TaskResponse, TaskStatus, Task, Runner
 from aworld.events.util import send_message
 from aworld.logs.util import logger
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryHumanMessage, MessageMetadata
-from aworld.runner import Runners
 from aworld.runners import HandlerFactory
 from aworld.runners.handler.base import DefaultHandler
-from aworld.runners.hook.hooks import HookPoint
 
 if TYPE_CHECKING:
     from aworld.runners.event_runner import TaskEventRunner
@@ -166,11 +159,11 @@ class DefaultBackgroundTaskHandler(BackgroundTaskHandler):
                 content = data.content
             elif isinstance(data, Observation):
                 content = data.content
-            elif isinstance(data, EnvChannelMessage):
-                data = data.message
-                if not agent_id:
-                    agent_id = data.get('env_content', {}).get('agent_id')
-                content = data
+            # elif isinstance(data, EnvChannelMessage):
+            #     data = data.message
+            #     if not agent_id:
+            #         agent_id = data.get('env_content', {}).get('agent_id')
+            #     content = data
             elif isinstance(data, dict):
                 if not agent_id:
                     agent_id = data.get('env_content', {}).get('agent_id')

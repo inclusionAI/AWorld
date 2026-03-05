@@ -3,10 +3,10 @@
 from collections import deque
 from typing import Dict, List, Set, Optional
 
-from aworld.core.common import TaskStatusValue
+from aworld.core.common import TaskStatus
 from aworld.core.task import Task
 from aworld.logs.util import logger
-from aworld.schedule.types import InstantTask
+from aworld.schedule.types import SchedulableTask
 
 
 class TaskGraph:
@@ -52,7 +52,7 @@ class TaskGraph:
         """Get all tasks that are ready to execute (no pending dependencies)."""
         ready_tasks = []
         for task_id, node in self.nodes.items():
-            if node.task_status == TaskStatusValue.INIT:
+            if node.task_status == TaskStatus.INIT:
                 if task_id in self.predecessor:
                     pending_predecessors = self.predecessor[task_id] - self.completed
                     if not pending_predecessors:
@@ -84,7 +84,7 @@ class TaskGraph:
         if task_id in self.successor:
             for dependent_id in self.successor[task_id]:
                 if dependent_id in self.nodes:
-                    self.nodes[dependent_id].task_status = TaskStatusValue.FAILED
+                    self.nodes[dependent_id].task_status = TaskStatus.FAILED
 
         if task_id in self.predecessor:
             del self.predecessor[task_id]
@@ -224,7 +224,7 @@ class TaskGraph:
         return {
             "total_tasks": len(self.nodes),
             "completed_tasks": len(self.completed),
-            "pending_tasks": sum(1 for n in self.nodes.values() if n.task_status == TaskStatusValue.INIT),
+            "pending_tasks": sum(1 for n in self.nodes.values() if n.task_status == TaskStatus.INIT),
             "ready_tasks": ready_count,
             "max_depth": len(self.get_execution_order()),
             "has_cycle": self.has_cycle(),
@@ -248,7 +248,7 @@ class TaskGraph:
         return True, None
 
     @staticmethod
-    def validate_task_dependencies(task: InstantTask, existing_tasks: Set[str]) -> tuple[bool, Optional[str]]:
+    def validate_task_dependencies(task: SchedulableTask, existing_tasks: Set[str]) -> tuple[bool, Optional[str]]:
         """Validate task dependencies before adding to DAG."""
         for dep_id in task.dependencies:
             if dep_id == task.id:
