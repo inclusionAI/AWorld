@@ -115,7 +115,7 @@ class TaskRunner(Runner):
             self.context = task.context
             self.context.set_task(task)
         else:
-            self.context = task.context if task.context else await self.build_context(task)
+            self.context = task.context if task.context else await TaskRunner.build_context(task)
             self.context.set_task(task)
         self.context.task_id = self.task.id
         self.context.trace_id = trace_id
@@ -167,8 +167,8 @@ class TaskRunner(Runner):
         except:
             logger.warning(f"{os.environ.get(aworld.tools.LOCAL_TOOLS_ENV_VAR, '')} tools load fail, can't use them!!")
 
-    async def build_context(self, task: Task, **kwargs) -> 'ApplicationContext':
-
+    @staticmethod
+    async def build_context(task: Task, **kwargs) -> 'ApplicationContext':
         from aworld.core.context.amni import ApplicationContext
 
         # Use provided context_config, fallback to Task's context_config, then None (will use default)
@@ -179,11 +179,11 @@ class TaskRunner(Runner):
 
         # Extract task content from input
         task_content = ""
-        if self.input is not None:
-            if isinstance(self.input, str):
-                task_content = self.input
+        if task.input is not None:
+            if isinstance(task.input, str):
+                task_content = task.input
             else:
-                task_content = str(self.input)
+                task_content = str(task.input)
 
         # Get parent context if available and is ApplicationContext
         parent_context = None
