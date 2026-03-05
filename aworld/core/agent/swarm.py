@@ -302,6 +302,7 @@ class Swarm(object):
         loop_agent.loop_point = loop_point
         loop_agent.loop_point_finder = loop_point_finder
         loop_agent.stop_func = stop_func
+        loop_agent.cur_run_times = 0
 
         idx = self.ordered_agents.index(agent)
         self.ordered_agents[idx] = loop_agent
