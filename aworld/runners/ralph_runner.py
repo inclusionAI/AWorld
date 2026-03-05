@@ -4,10 +4,10 @@ from aworld.core.task import Runner, Task, TaskResponse
 from aworld.logs.util import logger
 from aworld.runners.event_runner import TaskEventRunner
 from aworld.utils.run_util import exec_tasks
-from aworld.ralph_loop.config import RalphConfig
-from aworld.ralph_loop.detect.detector import create_stop_detector
-from aworld.ralph_loop.state.types import LoopState, to_loop_context
-from aworld.ralph_loop.types import CompletionCriteria
+from aworld.runners.ralph.config import RalphConfig
+from aworld.runners.ralph.detect.detector import create_stop_detector
+from aworld.runners.ralph.state import LoopState, to_loop_context
+from aworld.runners.ralph.types import CompletionCriteria
 
 
 class RalphRunner(Runner):

@@ -10,8 +10,8 @@ from typing import Optional, List
 import aworld
 from aworld.core.context.base import Context
 from aworld.logs.util import logger
-from aworld.ralph_loop.detect.types import StopDecision, StopType
-from aworld.ralph_loop.state.types import LoopContext
+from aworld.runners.ralph.detect.types import StopDecision, StopType
+from aworld.runners.ralph.state import LoopContext
 
 
 class StopCondition(ABC):
