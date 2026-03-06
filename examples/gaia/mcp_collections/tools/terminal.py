@@ -21,10 +21,16 @@ import asyncio
 import json
 import os
 import platform
+import re
 import subprocess
 import time
 import traceback
 from datetime import datetime
+
+# Python 3.11+ ExceptionGroup/BaseExceptionGroup from anyio TaskGroup
+import builtins
+_ExceptionGroup = getattr(builtins, "ExceptionGroup", type("_Never", (), {}))
+_BaseExceptionGroup = getattr(builtins, "BaseExceptionGroup", type("_Never", (), {}))
 
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
@@ -95,6 +101,15 @@ class TerminalActionCollection(ActionCollection):
             "sudo mkfs",  # Sudo variants
         ]
 
+        # Interactive-only commands (block stdin, cannot run non-interactively)
+        self.interactive_command_patterns = [
+            r"(?:^|\s)(vim|vi|nano|emacs)(?:\s|$)",
+            r"(?:^|\s)(less|more)(?:\s|$)",
+            r"(?:^|\s)(top|htop)(?:\s|$)",
+            r"(?:^|\s)(ftp|telnet)(?:\s|$)",
+            r"(?:^|\s)(python3?|bash)\s+-i\b",
+        ]
+
         # Get current platform info
         self.platform_info = {
             "system": platform.system(),
@@ -120,6 +135,23 @@ class TerminalActionCollection(ActionCollection):
             if dangerous_cmd.lower() in command_lower:
                 return False, f"Command contains dangerous pattern: {dangerous_cmd}"
 
+        return True, None
+
+    def _check_interactive_command(self, command: str) -> tuple[bool, str | None]:
+        """Check if command is interactive-only (forbidden; use non-interactive flags instead).
+
+        Args:
+            command: Command string to check
+
+        Returns:
+            Tuple of (is_allowed, reason_if_forbidden)
+        """
+        for pattern in self.interactive_command_patterns:
+            if re.search(pattern, command, re.IGNORECASE):
+                return False, (
+                    "Interactive commands are not allowed. Use non-interactive alternatives "
+                    "(e.g. --yes, -y, CI=1, DEBIAN_FRONTEND=noninteractive) or different tools."
+                )
         return True, None
 
     def _format_command_output(self, result: CommandResult, output_format: str = "markdown") -> str:
@@ -185,13 +217,19 @@ class TerminalActionCollection(ActionCollection):
 
         try:
             # Create appropriate subprocess for platform
+            # stdin=DEVNULL: prevent interactive prompts from blocking; subprocess gets EOF on read
             if self.platform_info["system"] == "Windows":
                 process = await asyncio.create_subprocess_shell(
-                    command, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, shell=True
+                    command,
+                    stdin=subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    shell=True,
                 )
             else:
                 process = await asyncio.create_subprocess_shell(
                     command,
+                    stdin=subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     shell=True,
@@ -208,6 +246,7 @@ class TerminalActionCollection(ActionCollection):
                 try:
                     process.kill()
                 except Exception:
+                    self.logger.error(f"Command execution timeout: {traceback.format_exc()}")
                     pass
 
                 duration = str(datetime.now() - start_time)
@@ -248,13 +287,30 @@ class TerminalActionCollection(ActionCollection):
 
             return result
 
-        except Exception as e:
+        except asyncio.CancelledError:
+            # Convert cancellation to result instead of propagating (avoids TaskGroup crash)
             duration = str(datetime.now() - start_time)
             return CommandResult(
                 command=command,
                 success=False,
                 stdout="",
-                stderr=f"Error executing command: {str(e)}",
+                stderr="Command execution was cancelled",
+                return_code=-1,
+                duration=duration,
+                timestamp=start_time.isoformat(),
+            )
+        except Exception as e:
+            # Python 3.11+ ExceptionGroup from anyio TaskGroup; extract first sub-exception
+            if isinstance(e, _ExceptionGroup) and getattr(e, "exceptions", None):
+                err_msg = str(e.exceptions[0])
+            else:
+                err_msg = str(e)
+            duration = str(datetime.now() - start_time)
+            return CommandResult(
+                command=command,
+                success=False,
+                stdout="",
+                stderr=f"Error executing command: {err_msg}",
                 return_code=-1,
                 duration=duration,
                 timestamp=start_time.isoformat(),
@@ -262,7 +318,9 @@ class TerminalActionCollection(ActionCollection):
 
     async def mcp_execute_command(
         self,
-        command: str = Field(description="Terminal command to execute"),
+        command: str = Field(
+            description="Terminal command to execute. Interactive commands (vim, less, etc.) are forbidden; use non-interactive flags (--yes, -y, CI=1) when available."
+        ),
         timeout: int = Field(default=30, description="Command timeout in seconds (default: 30)"),
         output_format: str = Field(default="markdown", description="Output format: 'markdown', 'json', or 'text'"),
     ) -> ActionResponse:
@@ -310,6 +368,22 @@ class TerminalActionCollection(ActionCollection):
                         timeout_seconds=timeout,
                         safety_check_passed=False,
                         error_type="security_violation",
+                    ).model_dump(),
+                )
+
+            # Interactive command check (stdin-blocking tools are forbidden)
+            is_allowed, interactive_reason = self._check_interactive_command(command)
+            if not is_allowed:
+                return ActionResponse(
+                    success=False,
+                    message=f"Command rejected: {interactive_reason}",
+                    metadata=TerminalMetadata(
+                        command=command,
+                        platform=self.platform_info["system"],
+                        working_directory=str(self.workspace),
+                        timeout_seconds=timeout,
+                        safety_check_passed=True,
+                        error_type="interactive_forbidden",
                     ).model_dump(),
                 )
 
@@ -517,5 +591,8 @@ if __name__ == "__main__":
     except (KeyboardInterrupt, asyncio.CancelledError):
         # Exit silently on Ctrl+C; do not log traceback to avoid noisy output
         pass
+    except _BaseExceptionGroup as e:
+        # Python 3.11+ anyio TaskGroup "unhandled errors" (e.g. subprocess cancellation)
+        logger.error(f"TaskGroup error: {e}\n{traceback.format_exc()}")
     except Exception as e:
         logger.error(f"An error occurred: {e}: {traceback.format_exc()}")
