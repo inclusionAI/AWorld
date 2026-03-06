@@ -197,7 +197,7 @@ class ScheduledTask(SchedulableTask):
 
 
 @dataclass
-class ScheduledTaskStatistics:
+class TaskStatistics:
     """Global scheduling state."""
     total_tasks: int = 0
     pending_tasks: int = 0

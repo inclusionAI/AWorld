@@ -2,16 +2,19 @@
 # Copyright (c) inclusionAI.
 import asyncio
 import time
-from typing import Optional, List, Callable, Awaitable, Dict, Set
+from typing import Optional, List, Callable, Awaitable, Dict, Set, Any
 
 from aworld.logs.util import logger
 from aworld.runners.hook.hooks import Hook
 from aworld.runners.hook.utils import run_hooks
+from aworld.runners.runtime_engine import RuntimeEngine
 from aworld.runners.task_manager import TaskManager
+from aworld.runners.utils import runtime_engine
 from aworld.schedule.strategy import ScheduleStrategy, create_strategy
-from aworld.schedule.types import ScheduledTask, ResourceQuota, ScheduledTaskStatistics
+from aworld.schedule.types import ScheduledTask, ResourceQuota, TaskStatistics
 from aworld.core.common import TaskStatus
 from aworld.core.task import Task, TaskResponse
+from aworld.utils.run_util import exec_tasks
 
 
 class TaskScheduler:
@@ -52,14 +55,15 @@ class TaskScheduler:
     """
 
     def __init__(
-        self,
-        task_manager: TaskManager,
-        strategy: Optional[ScheduleStrategy] = None,
-        strategy_type: str = 'auto',
-        resource_quota: Optional[ResourceQuota] = None,
-        max_concurrent: int = 10,
-        poll_interval: float = 1.0,
-        hooks: Dict[str, Hook] = None
+            self,
+            task_manager: TaskManager = TaskManager(),
+            strategy: Optional[ScheduleStrategy] = None,
+            strategy_type: str = 'auto',
+            executor: Optional[Callable[[Task], Awaitable[TaskResponse]]] = None,
+            resource_quota: Optional[ResourceQuota] = None,
+            max_concurrent: int = 10,
+            poll_interval: float = 1.0,
+            hooks: Dict[str, Hook] = None
     ):
         """
         Initialize TaskScheduler.
@@ -67,29 +71,26 @@ class TaskScheduler:
         Args:
             task_manager: TaskManager instance (required)
             strategy: Custom scheduling strategy (optional)
-            strategy_type: Type of strategy if strategy is None ('auto', 'fifo', 'priority', 'dag')
+            strategy_type: Type of schedule strategy ('auto', 'fifo', 'priority', 'dag', 'custom_name')
+            executor: Async function to execute a task (optional, default uses RuntimeEngine)
             resource_quota: Resource quota for task execution
             max_concurrent: Maximum concurrent tasks
             poll_interval: Seconds between scheduling cycles
         """
-        if task_manager is None:
-            raise ValueError("task_manager is required")
-
         self.task_manager = task_manager
         self.strategy = strategy or create_strategy(strategy_type)
         self.resource_quota = resource_quota or ResourceQuota(max_concurrent=max_concurrent)
-
         self.poll_interval = poll_interval
 
         # Execution state
-        self._executor: Optional[Callable[[Task], Awaitable[bool]]] = None
+        self._executor: Optional[Callable[[Task], Awaitable[TaskResponse]]] = executor or execute_schedulable_tasks
         self._running = False
         self._scheduler_task: Optional[asyncio.Task] = None
         self._active_tasks: Dict[str, asyncio.Task] = {}
         self._stop_event = asyncio.Event()
 
         # Statistics
-        self.statistics = ScheduledTaskStatistics()
+        self.statistics = TaskStatistics()
 
     @property
     def executor(self):
@@ -107,42 +108,11 @@ class TaskScheduler:
             async def my_executor(task):
                 print(f"Executing {task.name}")
                 # ... do work ...
-                return True
+                return TaskResponse(success=True, ...)
 
             scheduler.executor = my_executor
         """
         self._executor = executor
-
-    async def add_task(self, task: ScheduledTask, overwrite: bool = True) -> bool:
-        """
-        Add a task to the scheduler.
-
-        Args:
-            task: Task to add
-            overwrite: Whether to overwrite existing task
-
-        Returns:
-            bool: True if successful
-        """
-        success = await self.task_manager.add_task(task, overwrite=overwrite)
-
-        if success:
-            logger.info(f"Added task to scheduler: {task.id} ({task.name})")
-
-        return success
-
-    async def add_tasks(self, tasks: List[ScheduledTask], overwrite: bool = True) -> int:
-        """
-        Add multiple tasks to the scheduler.
-
-        Args:
-            tasks: List of tasks to add
-            overwrite: Whether to overwrite existing tasks
-
-        Returns:
-            int: Number of successfully added tasks
-        """
-        return await self.task_manager.add_batch(tasks, overwrite=overwrite)
 
     async def schedule(self, tasks: Optional[List[ScheduledTask]] = None) -> List[List[ScheduledTask]]:
         """Schedule tasks into execution batches using the configured strategy.
@@ -173,12 +143,10 @@ class TaskScheduler:
         Returns:
             bool: True if successful
         """
-        if self._executor is None:
-            logger.error("No executor set. Use .executor to configure task execution.")
-            return None
+        if not self._executor:
+            res = await execute_schedulable_tasks(await runtime_engine(), [task])
+            return res.get(task.id)
 
-        # demo
-        await run_hooks(task.context, "task_start", "scheduler", payload=task)
         try:
             # Mark task as started
             await self.task_manager.update_status(
@@ -190,26 +158,26 @@ class TaskScheduler:
             logger.info(f"Executing task: {task.id} ({task.name})")
 
             # Execute task
-            success = await self._executor(task)
+            result: TaskResponse = await self._executor(task)
 
             # Mark task as completed
             await self.task_manager.update_status(
                 task.id,
-                TaskStatus.SUCCESS if success else TaskStatus.FAILED,
+                TaskStatus.SUCCESS if result.success else TaskStatus.FAILED,
                 completed_at=time.time()
             )
 
             # Update completed cache for dependency tracking
-            if success:
+            if result.success:
                 self.task_manager.mark_completed(task.id)
 
-            logger.info(f"Task {'completed' if success else 'failed'}: {task.id}")
+            logger.info(f"Task {'completed' if result.success else 'failed'}: {task.id}")
 
             # Handle periodic tasks
-            if success and hasattr(task, 'is_periodic') and task.is_periodic:
+            if result.success and hasattr(task, 'is_periodic') and task.is_periodic:
                 await self._reschedule_periodic_task(task)
 
-            return None
+            return result
         except Exception as e:
             logger.error(f"Error executing task {task.id}: {e}")
 
@@ -219,8 +187,7 @@ class TaskScheduler:
                 TaskStatus.FAILED,
                 completed_at=time.time()
             )
-
-            return None
+            return TaskResponse()
 
     async def _reschedule_periodic_task(self, task: ScheduledTask):
         """Reschedule a periodic task for next execution."""
@@ -238,7 +205,7 @@ class TaskScheduler:
                 return
 
             # Reset for next execution
-            task.task_status = "init"
+            task.task_status = TaskStatus.INIT
             task.started_at = None
             task.completed_at = None
 
@@ -250,18 +217,17 @@ class TaskScheduler:
         except Exception as e:
             logger.error(f"Failed to reschedule periodic task {task.id}: {e}")
 
-    async def execute_batch(self, batch: List[Task]) -> List[bool]:
-        """
-        Execute a batch of tasks concurrently.
+    async def execute_batch(self, batch: List[Task]) -> Dict[str, TaskResponse]:
+        """Execute a batch of tasks concurrently.
 
         Args:
             batch: Batch of tasks to execute
 
         Returns:
-            List of success flags for each task
+            Dict of response for each task
         """
         if not batch:
-            return []
+            return {}
 
         # Check resource availability
         current_concurrent = len(self._active_tasks)
@@ -269,7 +235,7 @@ class TaskScheduler:
             available_slots = self.resource_quota.max_concurrent - current_concurrent
             if available_slots <= 0:
                 logger.warning("Max concurrent tasks reached, skipping batch")
-                return [False] * len(batch)
+                return {}
 
             # Limit batch size to available slots
             batch = batch[:available_slots]
@@ -278,12 +244,10 @@ class TaskScheduler:
         tasks = [self.execute(task) for task in batch]
         results = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Convert exceptions to False
-        return [r if isinstance(r, bool) else False for r in results]
+        return {res.id: res for res in results}
 
-    async def run_once(self) -> int:
-        """
-        Run one scheduling cycle.
+    async def _run_once(self) -> int:
+        """Run one scheduling cycle.
 
         Returns:
             int: Number of tasks executed
@@ -307,17 +271,12 @@ class TaskScheduler:
         return executed_count
 
     async def run(self, timeout: Optional[float] = None):
-        """
-        Run the scheduler for a limited time or iterations.
+        """Run the scheduler for a limited time or iterations.
 
         Args:
-            max_iterations: Maximum number of scheduling cycles (None = unlimited)
             timeout: Maximum time to run in seconds (None = unlimited)
 
         Examples:
-            # Run for 10 iterations
-            await scheduler.run(max_iterations=10)
-
             # Run for 60 seconds
             await scheduler.run(timeout=60)
 
@@ -329,7 +288,7 @@ class TaskScheduler:
 
         try:
             # Run one cycle
-            executed = await self.run_once()
+            executed = await self._run_once()
 
             # Check if no tasks to execute
             if executed == 0:
@@ -361,8 +320,7 @@ class TaskScheduler:
                     pass
 
                 # Run one scheduling cycle
-                await self.run_once()
-
+                await self._run_once()
         except Exception as e:
             logger.error(f"Error in scheduler loop: {e}")
         finally:
@@ -370,8 +328,7 @@ class TaskScheduler:
             logger.info("Scheduler loop stopped")
 
     def start(self):
-        """
-        Start the scheduler in background.
+        """Start the scheduler in background.
 
         Examples:
             scheduler.start()
@@ -389,8 +346,7 @@ class TaskScheduler:
         logger.info("Scheduler started in background")
 
     async def stop(self, wait: bool = True):
-        """
-        Stop the background scheduler.
+        """Stop the background scheduler.
 
         Args:
             wait: Wait for scheduler to complete current cycle
@@ -415,7 +371,7 @@ class TaskScheduler:
 
         self._active_tasks.clear()
 
-        logger.info("Scheduler stopped")
+        logger.info("Scheduler stopped!")
 
     @property
     def is_running(self) -> bool:
@@ -423,8 +379,7 @@ class TaskScheduler:
         return self._running
 
     async def get_statistics(self) -> dict:
-        """
-        Get scheduler statistics.
+        """Get scheduler statistics.
 
         Returns:
             Dictionary with scheduler statistics
@@ -458,9 +413,28 @@ class TaskScheduler:
         else:
             logger.warning("Scheduler not paused or not running")
 
-    async def cancel_task(self, task_id: str) -> bool:
+    async def add_task(self, task: ScheduledTask, overwrite: bool = True) -> bool:
+        """Add a task to the scheduler.
+
+        Args:
+            task: Task to add
+            overwrite: Whether to overwrite existing task
+
+        Returns:
+            bool: True if successful
         """
-        Cancel a scheduled task.
+        success = await self.task_manager.add_task(task, overwrite=overwrite)
+
+        if success:
+            logger.info(f"Added task to scheduler: {task.id} ({task.name})")
+        return success
+
+    async def add_tasks(self, tasks: List[ScheduledTask], overwrite: bool = True) -> int:
+        """Add multiple tasks to the scheduler."""
+        return await self.task_manager.add_batch(tasks, overwrite=overwrite)
+
+    async def cancel_task(self, task_id: str) -> bool:
+        """Cancel a scheduled task.
 
         Args:
             task_id: ID of task to cancel
@@ -481,8 +455,7 @@ class TaskScheduler:
         )
 
     async def cleanup(self, before_time: Optional[float] = None):
-        """
-        Clean up old completed tasks.
+        """Clean up old completed tasks.
 
         Args:
             before_time: Remove tasks completed before this time
@@ -490,3 +463,26 @@ class TaskScheduler:
         removed = await self.task_manager.cleanup_completed(before_time=before_time)
         logger.info(f"Cleaned up {removed} old tasks")
         return removed
+
+
+async def execute_schedulable_tasks(runtime_engine: RuntimeEngine, tasks: List[Task]) -> Dict[str, Any]:
+    """Execute a list of scheduled tasks using the runtime engine, updates task status and start time before execution."""
+    if not tasks:
+        return {}
+
+    funcs = []
+    # Wrap each task in an async executor function
+    for scheduled_task in tasks:
+        async def task_execute(st=scheduled_task):
+            st.task_status = TaskStatus.RUNNING
+            st.started_at = time.time()
+            res = await exec_tasks(tasks=[st])
+            st.task_status = res.get(st.id).status
+            st.completed_at = time.time()
+            return res
+
+        funcs.append(task_execute)
+
+    results = await runtime_engine.execute(funcs)
+    logger.info(f"{runtime_engine.name} execute {len(tasks)} tasks finished")
+    return results
