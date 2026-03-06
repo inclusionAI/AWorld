@@ -3,7 +3,7 @@ from typing import Optional, Dict, Literal, OrderedDict
 from pydantic import BaseModel, Field
 from pydantic import field_validator
 
-from aworld.core.task import TaskStatus
+from aworld.core.common import TaskStatus
 from .agent_state import ApplicationAgentState
 from .common import WorkingState, TaskInput, TaskOutput
 from ..utils.modelplus import from_dict_to_memory_message
