@@ -473,24 +473,6 @@ def build_aworld_agent(include_skills: Optional[str] = None):
                     "args": ["-m", "examples.gaia.mcp_collections.tools.terminal"],
                     "env": {},
                     "client_session_timeout_seconds": 9999.0,
-                },
-                "audio": {
-                    "command": sys.executable,
-                    "args": ["-m", "examples.gaia.mcp_collections.media.audio"],
-                    "env": {},
-                    "client_session_timeout_seconds": 9999.0,
-                },
-                "image": {
-                    "command": sys.executable,
-                    "args": ["-m", "examples.gaia.mcp_collections.media.image"],
-                    "env": {},
-                    "client_session_timeout_seconds": 9999.0,
-                },
-                "video": {
-                    "command": sys.executable,
-                    "args": ["-m", "examples.gaia.mcp_collections.media.video"],
-                    "env": {},
-                    "client_session_timeout_seconds": 9999.0,
                 }
             }
         }
