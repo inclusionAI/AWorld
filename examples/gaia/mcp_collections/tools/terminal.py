@@ -227,6 +227,8 @@ class TerminalActionCollection(ActionCollection):
                     shell=True,
                 )
             else:
+                # start_new_session=True: subprocess gets its own process group so we can
+                # safely kill it (and children like curl) on timeout without affecting parent
                 process = await asyncio.create_subprocess_shell(
                     command,
                     stdin=subprocess.DEVNULL,
@@ -234,6 +236,7 @@ class TerminalActionCollection(ActionCollection):
                     stderr=asyncio.subprocess.PIPE,
                     shell=True,
                     executable="/bin/bash",
+                    start_new_session=True,
                 )
 
             try:
@@ -244,10 +247,16 @@ class TerminalActionCollection(ActionCollection):
 
             except asyncio.TimeoutError:
                 try:
-                    process.kill()
-                except Exception:
-                    self.logger.error(f"Command execution timeout: {traceback.format_exc()}")
-                    pass
+                    # Kill process group so child processes (e.g. curl) are also terminated
+                    if self.platform_info["system"] != "Windows" and process.pid:
+                        os.killpg(os.getpgid(process.pid), 9)
+                    else:
+                        process.kill()
+                except (ProcessLookupError, OSError, Exception):
+                    try:
+                        process.kill()
+                    except Exception:
+                        self.logger.error(f"Command execution timeout: {traceback.format_exc()}")
 
                 duration = str(datetime.now() - start_time)
                 return CommandResult(
@@ -337,6 +346,9 @@ class TerminalActionCollection(ActionCollection):
         - Execute Python code and output the result to stdout
             - Example (Directly execute simple Python code): `python -c "nums = [1, 2, 3, 4]\nsum_of_nums = sum(nums)\nprint(f'{sum_of_nums=}')"`
             - Example (Execute code from a file): `python my_script.py`
+        - For curl/wget downloads: add `--no-progress-meter` (curl) or `-q` (wget) to avoid
+          stderr progress output that can cause pipe pressure; add `--max-time N` (curl) for
+          transfer timeout to avoid indefinite hangs on slow networks.
 
         Args:
             command: The terminal command to execute
