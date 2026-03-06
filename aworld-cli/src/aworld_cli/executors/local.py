@@ -3,6 +3,7 @@ Local agent executor.
 """
 import asyncio
 import os
+import time
 import re
 import shutil
 import traceback
@@ -467,6 +468,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
             # 4. Run task with streaming
             try:
+                chat_start_time = time.time()
                 # Ensure console is set before running task
                 # Use global console if self.console is not set
                 if not self.console:
@@ -893,30 +895,25 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 elif hasattr(self.swarm, 'cur_agent') and self.swarm.cur_agent:
                                     agent_name = getattr(self.swarm.cur_agent, 'name', None) or "unknown"
                                 
-                                # Get tool calls count
-                                tool_calls_count = 0
-                                if hasattr(last_message_output, 'tool_calls') and last_message_output.tool_calls:
-                                    tool_calls_count = len(last_message_output.tool_calls)
-                                
                                 stats = {
                                     "input_tokens": input_tokens,
                                     "output_tokens": output_tokens,
-                                    "tool_calls_count": tool_calls_count,
                                     "agent_name": agent_name,
                                 }
                                 logger.info(f"💾 Extracted stats from last_message_output: {stats}")
                         except Exception as extract_error:
                             logger.warning(f"💾 Failed to extract stats from last_message_output: {extract_error}")
                     
-                    # Prepare token_stats for JSONLHistory.store_string() (expects token_stats, not metadata)
+                    # Prepare token_stats for JSONLHistory.store_string() (no tool_calls; add duration)
                     token_stats = None
                     if stats:
+                        duration_seconds = time.time() - chat_start_time
                         token_stats = {
                             "input_tokens": stats.get("input_tokens") or 0,
                             "output_tokens": stats.get("output_tokens") or 0,
                             "total_tokens": (stats.get("input_tokens") or 0) + (stats.get("output_tokens") or 0),
-                            "tool_calls_count": stats.get("tool_calls_count", 0),
                             "model_name": stats.get("agent_name", "unknown"),
+                            "duration_seconds": duration_seconds,
                         }
                         logger.info(f"💾 Prepared token_stats for history: {token_stats}")
                     else:

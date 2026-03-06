@@ -30,20 +30,16 @@ Follow this workflow to build new projects from the ground up. The primary tool 
 2.  **Implementation Plan**:
     *   Create a step-by-step plan to generate the code. List the files you will create in a logical order.
     *   For each file, briefly outline the functions, classes, or main logic it will contain.
-    *   **Write a development plan file** `DEVELOP_PLAN_xxx.md` in the target directory before starting implementation. This file tracks all planned items and their completion status. You should carefully analyze the requirements before drafting the plan; the plan must ensure functional completeness and executability.
 
 3.  **Iterative Code Generation**:
     *   Generate the code for one file at a time using `terminal`. **Path restriction:** Do not `cd` to other directories; always operate from the current working directory. When operating on files, always use explicit relative or absolute paths. **Large files:** Prohibit one-shot creation. Create large files in segments only; each segment must not exceed 50 lines or 5,000 characters.
     *   Start with foundational files like configuration (`package.json`, `pyproject.toml`), utility modules, or main entry points.
     *   After writing each file, briefly state what you have done and which file you will create next.
 
-4.  **Reflection and Completion**:
-    *   Once all files are created, enter a **Reflection loop** until the development plan is perfectly completed:
-    *   **Debug**: Run tests, perform functional checks, or manually verify each planned item. Identify any failures or gaps.
-    *   **Mark**: Update `DEVELOP_PLAN_xxx.md` to mark items as completed (e.g. add checkmarks or status annotations) for items that pass verification.
-    *   **Repeat**: Continue the **debug → mark** cycle until every item in `DEVELOP_PLAN_xxx.md` is verified and marked as completed.
-    *   Generate a `README.md` file using `terminal` summarizing the project structure, how to run it, and the work completed.
-    *   **Return the report path** in your final response (e.g. the path to `README.md`).
+4.  **Final Review and Reporting**:
+    *   Once all files are created, review the overall structure.
+    *   Generate a `README.md` file using `terminal`. This file should explain the project's structure, how to run it, and summarize the work you completed.
+    *   Inform the user that the initial version of the project is complete and ready for review.
 
 ---
 
@@ -63,7 +59,6 @@ Phase 2: Deep Code Analysis
     *   **Quality**: Code style, comments, maintainability metrics—align new code with existing conventions.
     *   **Security**: Basic checks for common vulnerabilities—ensure new implementations follow safe patterns.
 2.  **Interpret Results**: Process the structured report from `CAST_ANALYSIS` to understand the codebase and formulate an initial development plan for implementing the requested features.
-3.  **Write Development Plan**: Create `DEVELOP_PLAN_xxx.md` in the target directory before starting implementation. This file lists all planned items (features, fixes, refactors) and their completion status. Use it to track progress throughout the development cycle.
 
 Phase 3: Architecture Analysis & Design (MANDATORY)
 Demonstrate architectural expertise by analyzing reference codebases, extracting patterns, and synthesizing a design for the target implementation.
@@ -103,10 +98,6 @@ Phase 6: Development
     *   Each operation should be atomic and target a single file.
 2.  **Verify Changes**: After patching, perform a quick check to ensure the code remains valid and the change was applied as expected.
 
-Phase 7: Reflection and Completion
-1.  **Reflection Loop**: Enter a **debug → mark** cycle until the development plan is perfectly completed:
-    *   **Debug**: Run unit tests, perform functional checks, or manually verify each planned item in `DEVELOP_PLAN_xxx.md`. Identify any failures, regressions, or gaps.
-    *   **Mark**: Update `DEVELOP_PLAN_xxx.md` to mark items as completed (e.g. add checkmarks or status annotations) for items that pass verification.
-    *   **Repeat**: Continue the **debug → mark** cycle until every item in `DEVELOP_PLAN_xxx.md` is verified and marked as completed.
-2.  **Generate Report**: Summarize the analysis findings, the list of applied changes, and the expected benefits. Update the existing `README.md` in the target directory.
-3.  **Return the report path** in your final response (e.g. the path to the updated `README.md` or `DEVELOP_PLAN_xxx.md`).
+Phase 7: Verification and Reporting
+1.  **Validate Effects**: (Optional but recommended) Run unit tests or a basic functional check to ensure no regressions were introduced.
+2.  **Generate Report**: Summarize the analysis findings, the list of applied changes, and the expected benefits. Update the existing `README.md` or create a new report file in the target directory.
