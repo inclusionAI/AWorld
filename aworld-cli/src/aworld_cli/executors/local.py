@@ -488,6 +488,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     """Consume stream events and collect outputs with beautiful formatting."""
                     nonlocal answer, last_message_output, stream_token_stats
                     stream_token_stats = StreamTokenStats()
+                    logger.info(f"📊 Starting consume_stream - stream_token_stats initialized")
                     ctrl = StreamDisplayController(
                         console=self.console,
                         stream_token_stats=stream_token_stats,
@@ -551,6 +552,44 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     is_handoff = last_agent_name is not None and last_agent_name != current_agent_name
 
                                     last_message_output = output
+                                    
+                                    # 🔧 FIX: Extract token stats from MessageOutput if not already collected from ChunkOutput
+                                    # This ensures we capture token stats even when STREAM=0 or no ChunkOutput was received
+                                    if not received_chunk_output or not stream_token_stats.get_current_stats():
+                                        try:
+                                            # Try to extract usage information from MessageOutput
+                                            usage = None
+                                            if hasattr(output, 'usage'):
+                                                usage = output.usage
+                                            elif hasattr(output, 'data') and hasattr(output.data, 'usage'):
+                                                usage = output.data.usage
+                                            
+                                            if usage:
+                                                input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', None)
+                                                output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', None)
+                                                
+                                                # Get tool calls count
+                                                tool_calls_count = 0
+                                                if hasattr(output, 'tool_calls') and output.tool_calls:
+                                                    tool_calls_count = len(output.tool_calls)
+                                                
+                                                # Update stream_token_stats if we have valid token data
+                                                if input_tokens is not None or output_tokens is not None:
+                                                    logger.info(f"📊 Extracting token stats from MessageOutput - agent: {current_agent_name}, input: {input_tokens}, output: {output_tokens}, tool_calls: {tool_calls_count}")
+                                                    stream_token_stats.update(
+                                                        agent_id=None,
+                                                        agent_name=current_agent_name,
+                                                        output_tokens=output_tokens if output_tokens is not None else 0,
+                                                        input_tokens=input_tokens,
+                                                        tool_calls_count=tool_calls_count,
+                                                        output_estimated=False,
+                                                        input_estimated=False,
+                                                        tool_calls_estimated=False,
+                                                    )
+                                                    logger.info(f"📊 Token stats extracted from MessageOutput - current stats: {stream_token_stats.get_current_stats()}")
+                                        except Exception as extract_error:
+                                            logger.warning(f"📊 Failed to extract token stats from MessageOutput: {extract_error}")
+                                    
                                     # When STREAM=1: render message output; when STREAM=0: skip output, only update answer
                                     if not stream_on:
                                         logger.info(f"Rendering message output for agent: {current_agent_name}")
@@ -674,7 +713,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         if hasattr(self.swarm, "cur_agent") and self.swarm.cur_agent:
                                             agent_id = agent_id or getattr(self.swarm.cur_agent, "id", lambda: None)()
                                             agent_name = agent_name or getattr(self.swarm.cur_agent, "name", None)
+                                    # 🔧 FIX: Update token stats and log the update
                                     if out_tok is not None or inp_tok is not None or tc_count is not None:
+                                        logger.info(f"📊 Updating token stats - agent: {agent_name}, input: {inp_tok}, output: {out_tok}, tool_calls: {tc_count}")
                                         stream_token_stats.update(
                                             agent_id, agent_name,
                                             out_tok if out_tok is not None else 0,
@@ -688,6 +729,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             tool_calls=ctrl.buffer.accumulated_tool_calls if ctrl.buffer.accumulated_tool_calls else None,
                                             content=ctrl.buffer.accumulated_content if ctrl.buffer.accumulated_content else None,
                                         )
+                                        logger.info(f"📊 Token stats updated successfully - current stats: {stream_token_stats.get_current_stats()}")
+                                    else:
+                                        logger.warning(f"📊 No token data to update - out_tok: {out_tok}, inp_tok: {inp_tok}, tc_count: {tc_count}")
                                     # When STREAM=1: buffer content; Live display is refreshed at fixed interval
                                     if stream_on and self.console and (ctrl.buffer.has_content() or ctrl.buffer.has_tool_calls() or ctrl.buffer.has_tool_results() or stream_token_stats.get_current_stats()):
                                         ctrl.ensure_live_running()
@@ -723,10 +767,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         finally:
                             await ctrl.wait_for_display_done()
                             ctrl.stop_loading()
+                            # 🔧 FIX: Log final token stats before exiting consume_stream
+                            logger.info(f"📊 Finishing consume_stream - final token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
                     
                     except (asyncio.CancelledError, KeyboardInterrupt):
+                        logger.info(f"📊 consume_stream interrupted - token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
                         raise  # Re-raise so caller can handle (e.g. continue to next prompt)
                     except Exception as e:
+                        logger.error(f"📊 consume_stream error - token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
                         if self.console:
                             error_body = Text("Error in stream consumption: ")
                             error_body.append(str(e))
@@ -818,8 +866,47 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     # Create history instance (session_id for filtering)
                     history = JSONLHistory(str(history_path), session_id=self.session_id)
                     
-                    # Get token stats from stream_token_stats (set by consume_stream)
-                    stats = stream_token_stats.get_current_stats() if stream_token_stats else None
+                    # 🔧 FIX: Get token stats from stream_token_stats (uses current or snapshot from clear())
+                    stats = stream_token_stats.get_stats_for_history() if stream_token_stats else None
+                    logger.info(f"💾 Saving to history - stream_token_stats exists: {stream_token_stats is not None}, stats: {stats}")
+                    
+                    # 🔧 FIX: If no stats from stream, try to extract from last_message_output
+                    if not stats and last_message_output:
+                        logger.info(f"💾 No stats from stream, trying to extract from last_message_output")
+                        try:
+                            # Try to get usage from message output
+                            usage = None
+                            if hasattr(last_message_output, 'usage'):
+                                usage = last_message_output.usage
+                            elif hasattr(last_message_output, 'data') and hasattr(last_message_output.data, 'usage'):
+                                usage = last_message_output.data.usage
+                            
+                            if usage:
+                                # Extract token counts from usage
+                                input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', None) or 0
+                                output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', None) or 0
+                                
+                                # Get agent name
+                                agent_name = "unknown"
+                                if hasattr(last_message_output, 'metadata') and last_message_output.metadata:
+                                    agent_name = last_message_output.metadata.get('agent_name') or last_message_output.metadata.get('from_agent') or "unknown"
+                                elif hasattr(self.swarm, 'cur_agent') and self.swarm.cur_agent:
+                                    agent_name = getattr(self.swarm.cur_agent, 'name', None) or "unknown"
+                                
+                                # Get tool calls count
+                                tool_calls_count = 0
+                                if hasattr(last_message_output, 'tool_calls') and last_message_output.tool_calls:
+                                    tool_calls_count = len(last_message_output.tool_calls)
+                                
+                                stats = {
+                                    "input_tokens": input_tokens,
+                                    "output_tokens": output_tokens,
+                                    "tool_calls_count": tool_calls_count,
+                                    "agent_name": agent_name,
+                                }
+                                logger.info(f"💾 Extracted stats from last_message_output: {stats}")
+                        except Exception as extract_error:
+                            logger.warning(f"💾 Failed to extract stats from last_message_output: {extract_error}")
                     
                     # Prepare token_stats for JSONLHistory.store_string() (expects token_stats, not metadata)
                     token_stats = None
@@ -831,14 +918,19 @@ class LocalAgentExecutor(BaseAgentExecutor):
                             "tool_calls_count": stats.get("tool_calls_count", 0),
                             "model_name": stats.get("agent_name", "unknown"),
                         }
+                        logger.info(f"💾 Prepared token_stats for history: {token_stats}")
+                    else:
+                        logger.warning(f"💾 No token stats available - saving query without token info")
                     
                     # Store to history
                     history.store_string(task_content, token_stats=token_stats)
+                    logger.info(f"💾 Successfully saved query to history with token_stats: {token_stats is not None}")
                     
                 except Exception as e:
-                    print(f"Failed to save to history: {e}")
+                    logger.error(f"💾 Failed to save to history: {e}")
+                    import traceback
+                    logger.error(f"💾 Traceback: {traceback.format_exc()}")
                     # Don't fail the whole request if history save fails
-                    logger.warning(f"Failed to save to history: {e}")
 
 
                 return answer
