@@ -815,30 +815,25 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     history_path = Path.home() / ".aworld" / "cli_history.jsonl"
                     history_path.parent.mkdir(parents=True, exist_ok=True)
                     
-                    # Create history instance
-                    history = JSONLHistory(str(history_path))
+                    # Create history instance (session_id for filtering)
+                    history = JSONLHistory(str(history_path), session_id=self.session_id)
                     
                     # Get token stats from stream_token_stats (set by consume_stream)
                     stats = stream_token_stats.get_current_stats() if stream_token_stats else None
                     
-                    # Prepare metadata
-                    metadata = {
-                        "timestamp": datetime.now().isoformat(),
-                        "session_id": self.session_id,
-                        "cwd": str(Path.cwd()),
-                    }
-                    
+                    # Prepare token_stats for JSONLHistory.store_string() (expects token_stats, not metadata)
+                    token_stats = None
                     if stats:
-                        metadata.update({
+                        token_stats = {
                             "input_tokens": stats.get("input_tokens") or 0,
                             "output_tokens": stats.get("output_tokens") or 0,
                             "total_tokens": (stats.get("input_tokens") or 0) + (stats.get("output_tokens") or 0),
                             "tool_calls_count": stats.get("tool_calls_count", 0),
                             "model_name": stats.get("agent_name", "unknown"),
-                        })
+                        }
                     
                     # Store to history
-                    history.store_string(task_content, metadata=metadata)
+                    history.store_string(task_content, token_stats=token_stats)
                     
                 except Exception as e:
                     print(f"Failed to save to history: {e}")
