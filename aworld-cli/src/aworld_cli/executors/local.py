@@ -482,10 +482,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 # Process stream events
                 answer = ""
                 last_message_output = None
+                stream_token_stats = None  # Set by consume_stream, used for history
                 
                 async def consume_stream():
                     """Consume stream events and collect outputs with beautiful formatting."""
-                    nonlocal answer, last_message_output
+                    nonlocal answer, last_message_output, stream_token_stats
                     stream_token_stats = StreamTokenStats()
                     ctrl = StreamDisplayController(
                         console=self.console,
@@ -806,6 +807,45 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         #     self.console.print(f"[yellow]⚠️ Error waiting for final result: {e}[/yellow]")
                 
                 # Return answer without printing (already displayed in stream)
+                # 💾 Save query to history with token statistics
+                try:
+                    from ..history import JSONLHistory
+                    
+                    # Get history file path
+                    history_path = Path.home() / ".aworld" / "cli_history.jsonl"
+                    history_path.parent.mkdir(parents=True, exist_ok=True)
+                    
+                    # Create history instance
+                    history = JSONLHistory(str(history_path))
+                    
+                    # Get token stats from stream_token_stats (set by consume_stream)
+                    stats = stream_token_stats.get_current_stats() if stream_token_stats else None
+                    
+                    # Prepare metadata
+                    metadata = {
+                        "timestamp": datetime.now().isoformat(),
+                        "session_id": self.session_id,
+                        "cwd": str(Path.cwd()),
+                    }
+                    
+                    if stats:
+                        metadata.update({
+                            "input_tokens": stats.get("input_tokens") or 0,
+                            "output_tokens": stats.get("output_tokens") or 0,
+                            "total_tokens": (stats.get("input_tokens") or 0) + (stats.get("output_tokens") or 0),
+                            "tool_calls_count": stats.get("tool_calls_count", 0),
+                            "model_name": stats.get("agent_name", "unknown"),
+                        })
+                    
+                    # Store to history
+                    history.store_string(task_content, metadata=metadata)
+                    
+                except Exception as e:
+                    print(f"Failed to save to history: {e}")
+                    # Don't fail the whole request if history save fails
+                    logger.warning(f"Failed to save to history: {e}")
+
+
                 return answer
                 
             except Exception as err:

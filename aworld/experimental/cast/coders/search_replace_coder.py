@@ -97,12 +97,9 @@ class SearchReplaceCoder(BaseCoder):
             # Validate file path (file may not exist - will be auto-created with replace content)
             file_path = self.source_dir / operation["file_path"]
 
-            # When file exists: search text cannot be empty
+            # When file exists: search can be empty (full file replacement) or non-empty (block replace)
             # When file does not exist: search should be empty (create-new-file semantics)
-            if file_path.exists():
-                if not operation["search"].strip():
-                    raise CoderValidationError("Search text cannot be empty when modifying existing file")
-            else:
+            if not file_path.exists():
                 if operation["search"].strip():
                     raise CoderValidationError(
                         "When creating new file, search must be empty. Use empty string for search and put full content in replace."
@@ -167,6 +164,11 @@ class SearchReplaceCoder(BaseCoder):
             if not file_path.exists():
                 return self._create_new_file(file_path, replace_text)
 
+            # Full file replacement: when search is empty, replace entire file with replace content
+            replace_all = operation.get("replace_all", False)
+            if not search_text.strip():
+                return self._full_file_replace(file_path, replace_text)
+
             # Read original file content
             try:
                 original_content = file_path.read_text(encoding='utf-8')
@@ -185,7 +187,8 @@ class SearchReplaceCoder(BaseCoder):
                     search_text,
                     replace_text,
                     use_fuzzy,
-                    self.similarity_threshold
+                    self.similarity_threshold,
+                    replace_all=replace_all
                 )
 
                 if new_content is None:
@@ -239,7 +242,8 @@ class SearchReplaceCoder(BaseCoder):
                              search_text: str,
                              replace_text: str,
                              fuzzy_match: bool = False,
-                             similarity_threshold: float = 1.0) -> Optional[str]:
+                             similarity_threshold: float = 1.0,
+                             replace_all: bool = False) -> Optional[str]:
         """
         Precise search-replace algorithm - supports exact matching primarily
 
@@ -253,6 +257,7 @@ class SearchReplaceCoder(BaseCoder):
             replace_text: Replacement text
             fuzzy_match: Whether to enable flexible whitespace matching (default False)
             similarity_threshold: Ignored (kept for interface compatibility)
+            replace_all: If True, replace all occurrences; else only first match
 
         Returns:
             Modified content if match found, None if no match
@@ -266,24 +271,24 @@ class SearchReplaceCoder(BaseCoder):
         replace_text, replace_lines = self._prep_text(replace_text)
 
         # Strategy 1: Exact matching (primary strategy)
-        result = self._perfect_replace(content_lines, search_lines, replace_lines)
+        result = self._perfect_replace(content_lines, search_lines, replace_lines, replace_all)
         if result:
-            logger.info("✅ Using exact matching strategy")
+            logger.info(f"✅ Using exact matching strategy (replace_all={replace_all})")
             return result
 
-        result = self._inner_perfect_replace(content_lines, search_lines, replace_lines)
+        result = self._inner_perfect_replace(content_lines, search_lines, replace_lines, replace_all)
         if result:
-            logger.info("✅ Using inner exact matching strategy")
+            logger.info(f"✅ Using inner exact matching strategy (replace_all={replace_all})")
             return result
 
         if fuzzy_match:
             # Strategy 2: Whitespace flexible matching (only when explicitly enabled)
-            result = self._whitespace_flexible_replace(content_lines, search_lines, replace_lines)
+            result = self._whitespace_flexible_replace(content_lines, search_lines, replace_lines, replace_all)
             if result:
                 logger.warning("⚠️ Using whitespace flexible matching strategy (not recommended)")
                 return result
 
-            # Fuzzy matching
+            # Fuzzy matching (only first match for safety)
             result = self._similarity_replace(
                 content_lines=content_lines,
                 search_text="".join(search_lines),
@@ -296,6 +301,47 @@ class SearchReplaceCoder(BaseCoder):
                 return result
 
         return None
+
+    def _full_file_replace(self, file_path: Path, content: str) -> CoderResult:
+        """
+        Replace entire file content. Used when search="" for existing files.
+
+        Args:
+            file_path: Path to file
+            content: New full file content
+
+        Returns:
+            CoderResult indicating success
+        """
+        try:
+            original_content = file_path.read_text(encoding='utf-8')
+        except Exception as e:
+            raise CoderOperationError(f"Failed to read file {file_path}: {e}")
+
+        backup_path = None
+        if not self.dry_run:
+            backup_path = self.create_backup(file_path)
+
+        try:
+            if not self.dry_run:
+                file_path.write_text(content, encoding='utf-8')
+                logger.info(f"✅ Full file replacement completed: {file_path}")
+            else:
+                logger.info(f"🔍 Dry run: Would replace entire file: {file_path}")
+
+            return self._create_success_result(
+                modified=True,
+                message=f"Full file replacement {'simulated' if self.dry_run else 'completed'} successfully",
+                original_content=original_content,
+                new_content=content,
+                file_path=str(file_path),
+                file_created=False,
+                backup_path=str(backup_path) if backup_path else None
+            )
+        except Exception as e:
+            if backup_path and not self.dry_run:
+                self.restore_from_backup(file_path)
+            raise CoderOperationError(f"Failed to write file {file_path}: {e}")
 
     def _create_new_file(self, file_path: Path, content: str) -> CoderResult:
         """
@@ -334,30 +380,42 @@ class SearchReplaceCoder(BaseCoder):
         lines = text.splitlines(keepends=True)
         return text, lines
 
-    def _perfect_replace(self, content_lines: List[str], search_lines: List[str], replace_lines: List[str]) -> Optional[str]:
-        """Exact matching replacement - based on aider's perfect_replace algorithm"""
+    def _perfect_replace(self, content_lines: List[str], search_lines: List[str], replace_lines: List[str], replace_all: bool = False) -> Optional[str]:
+        """Exact matching replacement - supports replace_all when True"""
         search_tuple = tuple(search_lines)
         search_len = len(search_lines)
+        result_lines = content_lines
+        replaced_count = 0
 
-        for i in range(len(content_lines) - search_len + 1):
-            content_tuple = tuple(content_lines[i:i + search_len])
-            if search_tuple == content_tuple:
-                # Found exact match, perform replacement
-                result_lines = content_lines[:i] + replace_lines + content_lines[i + search_len:]
-                return "".join(result_lines)
+        while True:
+            found = False
+            for i in range(len(result_lines) - search_len + 1):
+                content_tuple = tuple(result_lines[i:i + search_len])
+                if search_tuple == content_tuple:
+                    result_lines = result_lines[:i] + replace_lines + result_lines[i + search_len:]
+                    replaced_count += 1
+                    found = True
+                    if not replace_all:
+                        return "".join(result_lines)
+                    break
+            if not found:
+                break
 
-        return None
+        return "".join(result_lines) if replaced_count > 0 else None
 
-    def _inner_perfect_replace(self, content_lines: List[str], search_lines: List[str], replace_lines: List[str]) -> Optional[str]:
+    def _inner_perfect_replace(self, content_lines: List[str], search_lines: List[str], replace_lines: List[str], replace_all: bool = False) -> Optional[str]:
         """Inner exact matching replacement"""
         content = "".join(content_lines).strip()
         search = "".join(search_lines).strip()
+        replace_str = "".join(replace_lines)
         if search in content:
-            return content.replace(search, "".join(replace_lines))
+            if replace_all:
+                return content.replace(search, replace_str)
+            return content.replace(search, replace_str, 1)
 
         return None
 
-    def _whitespace_flexible_replace(self, content_lines: List[str], search_lines: List[str], replace_lines: List[str]) -> Optional[str]:
+    def _whitespace_flexible_replace(self, content_lines: List[str], search_lines: List[str], replace_lines: List[str], replace_all: bool = False) -> Optional[str]:
         """Whitespace flexible matching - based on aider's whitespace matching algorithm"""
         # Calculate minimum common indentation
         leading_spaces = []
@@ -377,23 +435,33 @@ class SearchReplaceCoder(BaseCoder):
             normalized_search = search_lines
             normalized_replace = replace_lines
 
-        # Find match (ignoring indentation)
-        for i in range(len(content_lines) - len(normalized_search) + 1):
-            match_indent = self._check_indent_match(
-                content_lines[i:i + len(normalized_search)],
-                normalized_search
-            )
+        result_lines = content_lines
+        replaced_count = 0
 
-            if match_indent is not None:
-                # Apply same indentation to replacement text
-                adjusted_replace = [
-                    match_indent + line if line.strip() else line
-                    for line in normalized_replace
-                ]
-                result_lines = content_lines[:i] + adjusted_replace + content_lines[i + len(normalized_search):]
-                return "".join(result_lines)
+        while True:
+            found = False
+            for i in range(len(result_lines) - len(normalized_search) + 1):
+                match_indent = self._check_indent_match(
+                    result_lines[i:i + len(normalized_search)],
+                    normalized_search
+                )
 
-        return None
+                if match_indent is not None:
+                    # Apply same indentation to replacement text
+                    adjusted_replace = [
+                        match_indent + line if line.strip() else line
+                        for line in normalized_replace
+                    ]
+                    result_lines = result_lines[:i] + adjusted_replace + result_lines[i + len(normalized_search):]
+                    replaced_count += 1
+                    found = True
+                    if not replace_all:
+                        return "".join(result_lines)
+                    break
+            if not found:
+                break
+
+        return "".join(result_lines) if replaced_count > 0 else None
 
     def _check_indent_match(self, content_section: List[str], search_section: List[str]) -> Optional[str]:
         """Check if content section matches search section (ignoring indentation)"""
