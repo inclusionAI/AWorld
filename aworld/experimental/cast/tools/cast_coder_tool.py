@@ -145,7 +145,7 @@ class CAstCoderAction(ToolAction):
                 desc="Whether to show detailed deployment information"
             )
         },
-        desc="Deploy code changes based on JSON operation instructions (insert/replace/delete). Not recommended; prefer search_replace for precision and path clarity."
+        desc="Deploy code changes based on JSON operation instructions (insert/replace/delete). Files that do not exist will be auto-created before applying operations. Not recommended; prefer search_replace for precision and path clarity."
     )
 
     SEARCH_REPLACE = ToolActionInfo(
@@ -162,13 +162,16 @@ class CAstCoderAction(ToolAction):
         "file_path": "path/to/your/file.py",
         "search": "CODE_BLOCK_TO_FIND",
         "replace": "NEW_CODE_BLOCK",
-        "exact_match_only": true
+        "exact_match_only": true,
+        "replace_all": false
     }
 }
 
-Parameters: type (string, required) Must be "search_replace"; file_path (string, required) Relative path from source_dir; search (string, required) One or more complete lines of source code, must not be blank; replace (string, required) Multi-line code block to replace with; exact_match_only (boolean, optional) Fixed as true.
+Parameters: type (string, required) Must be "search_replace"; file_path (string, required) Relative path from source_dir; search (string, required) One or more complete lines when modifying existing file, or empty string for full file replacement / creating new file; replace (string, required) Replacement block or full file content; exact_match_only (boolean, optional) Fixed as true; replace_all (boolean, optional) When true, replace all occurrences of search in file; when false, only first match (default: false).
 
-Best Practices for search: Use multi-line blocks with structural context (def/class) for accuracy; content must be continuous and match source code."""
+Full file replacement: Use search="" and put full content in replace - works for both creating new files and replacing entire existing file content.
+
+Best Practices: When modifying existing file, use multi-line blocks with structural context (def/class) for accuracy. Use replace_all=true when the same block appears multiple times. For full file replacement, use search="" and put full content in replace."""
             ),
             "source_dir": ParamInfo(
                 name="source_dir",
@@ -183,10 +186,12 @@ Best Practices for search: Use multi-line blocks with structural context (def/cl
                 desc="Whether to show detailed operation information (default: True)"
             )
         },
-        desc="""Intelligently finds and replaces a block of code in a specified file. Preferred method for applying patches, robust against minor formatting differences. Based on aider's core matching algorithm.
+        desc="""Intelligently finds and replaces code in a specified file. Preferred method for applying patches, robust against minor formatting differences. Based on aider's core matching algorithm.
 
 Key Features:
 - Exact Match: First attempts a direct, character-for-character match.
+- Replace All: Set replace_all=true to replace all occurrences of the search block (default: only first match).
+- Full File Replacement: Use search="" for existing files to replace entire file content with replace.
 - Whitespace Flexible Match: If exact match fails, retries while ignoring differences in leading whitespace and indentation. Handles most copy-paste formatting issues.
 - Similarity Match: (Optional) If other methods fail, uses a fuzzy text similarity algorithm to find the best match."""
     )

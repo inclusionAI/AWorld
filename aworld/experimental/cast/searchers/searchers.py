@@ -6,6 +6,7 @@ Implements specific search tools: Grep, Glob, Read, etc.
 Based on opencode design, provides high-performance search capabilities.
 """
 
+import base64
 import os
 import time
 from pathlib import Path
@@ -300,7 +301,14 @@ class ReadSearcher(Searcher):
                     title, f"File does not exist: {file_path}", start_time
                 )
 
-            # Check if file is binary
+            # Check if file is multimedia (image, audio, video) - return base64
+            mime_type = self._get_multimedia_mime_type(file_path)
+            if mime_type:
+                return await self._read_multimedia_file(
+                    file_path, title, mime_type, start_time
+                )
+
+            # Check if file is binary (non-multimedia)
             if self._is_binary_file(file_path):
                 return self._create_error_result(
                     title, f"Cannot read binary file: {file_path}", start_time
@@ -392,6 +400,53 @@ class ReadSearcher(Searcher):
 
         except Exception as e:
             return self._create_error_result(title, f"Error occurred while reading file: {e}", start_time)
+
+    def _get_multimedia_mime_type(self, file_path: Path) -> Optional[str]:
+        """Return MIME type if file is multimedia (image/audio/video), else None."""
+        ext = file_path.suffix.lower()
+        multimedia_extensions = {
+            '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+            '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
+            '.ico': 'image/x-icon', '.tiff': 'image/tiff', '.tif': 'image/tiff',
+            '.mp3': 'audio/mp3', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+            '.m4a': 'audio/mp4', '.flac': 'audio/flac', '.aac': 'audio/aac',
+            '.mp4': 'video/mp4', '.webm': 'video/webm', '.avi': 'video/x-msvideo',
+            '.mov': 'video/quicktime', '.mkv': 'video/x-matroska', '.m4v': 'video/x-m4v',
+        }
+        return multimedia_extensions.get(ext)
+
+    async def _read_multimedia_file(
+        self, file_path: Path, title: str, mime_type: str, start_time: float
+    ) -> SearchResult:
+        """Read multimedia file as binary and return base64 data URI (plain text, not JSON)."""
+        try:
+            raw_bytes = file_path.read_bytes()
+            b64 = base64.b64encode(raw_bytes).decode('ascii')
+            data_uri = f"data:{mime_type};base64,{b64}"
+            execution_time = time.time() - start_time
+            return SearchResult(
+                title=title,
+                search_type=SearchType.READ,
+                matches=[{
+                    'file_path': str(file_path),
+                    'mime_type': mime_type,
+                    'size_bytes': len(raw_bytes),
+                    'is_multimedia': True,
+                }],
+                metadata={
+                    "is_multimedia": True,
+                    "mime_type": mime_type,
+                    "size_bytes": len(raw_bytes),
+                },
+                output=data_uri,
+                truncated=False,
+                total_count=1,
+                execution_time=execution_time
+            )
+        except Exception as e:
+            return self._create_error_result(
+                title, f"Failed to read multimedia file: {e}", start_time
+            )
 
     def _create_error_result(self, title: str, error_msg: str, start_time: float) -> SearchResult:
         """Create error result"""

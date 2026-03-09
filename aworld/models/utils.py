@@ -263,6 +263,12 @@ def usage_process(usage: Dict[str, Union[int, Dict[str, int]]] = {}, context: Co
     context.add_token(usage)
 
 
+def _encoding_encode(encoding, text: str) -> list:
+    """Encode text with disallowed_special=() so content containing special tokens (e.g. <|endoftext|>) is encoded as normal text."""
+    enc = getattr(encoding, "tokenizer", encoding)  # OpenAITokenizer wraps .tokenizer
+    return enc.encode(text, disallowed_special=())
+
+
 def num_tokens_from_string(string: str, model: str = "openai"):
     """Return the number of tokens used by a list of messages."""
     import tiktoken
@@ -278,7 +284,7 @@ def num_tokens_from_string(string: str, model: str = "openai"):
             logger.debug(
                 f"{model} model not found. Using cl100k_base encoding.")
             encoding = tiktoken.get_encoding("cl100k_base")
-    return len(encoding.encode(string))
+    return len(_encoding_encode(encoding, string))
 
 def num_tokens_from_messages(messages, model="openai"):
     """Return the number of tokens used by a list of messages."""
@@ -301,13 +307,14 @@ def num_tokens_from_messages(messages, model="openai"):
     tokens_per_name = 1
 
     num_tokens = 0
+    enc_fn = _encoding_encode
     for message in messages:
         num_tokens += tokens_per_message
         if isinstance(message, str):
-            num_tokens += len(encoding.encode(message))
+            num_tokens += len(enc_fn(encoding, message))
         else:
             for key, value in message.items():
-                num_tokens += len(encoding.encode(str(value)))
+                num_tokens += len(enc_fn(encoding, str(value)))
                 if key == "name":
                     num_tokens += tokens_per_name
     num_tokens += 3
