@@ -1,9 +1,13 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import asyncio
 import inspect
+import json
 import os
 import sys
-from typing import Union, Callable, Dict, Any
+import traceback
+from enum import Enum
+from typing import Union, Callable, Dict, Any, Optional
 
 from loguru import logger as base_logger
 
@@ -90,7 +94,7 @@ class AWorldLogger:
                  file_log_config: Dict[str, Any] = None):
         """
         Initialize AWorldLogger.
-        
+
         Args:
             tag: Logger tag
             name: Logger name
@@ -98,7 +102,7 @@ class AWorldLogger:
             file_log_config: File log config
             formatter: Custom formatter
             disable_console: If True, disable console output. If None, check environment variable AWORLD_DISABLE_CONSOLE_LOG.
-            
+
         Example:
             >>> logger = AWorldLogger(disable_console=True)  # Disable console output
             >>> logger = AWorldLogger()  # Use environment variable or default (False)
@@ -158,7 +162,7 @@ class AWorldLogger:
                                           level=console_level)
 
         # Before using aworld, including imports!
-        log_path = os.environ.get('AWORLD_LOG_PATH', f"{os.getcwd()}/logs" )
+        log_path = os.environ.get('AWORLD_LOG_PATH', f"{os.getcwd()}/logs")
         log_file = f'{log_path}/{tag}.log'
         error_log_file = f'{log_path}/aworld_error.log'
         handler_key = f'{name}_{tag}'
@@ -268,6 +272,7 @@ def update_logger_level(level: str):
     trace_logger.reset_level(level)
     digest_logger.reset_level(level)
     asyncio_monitor_logger.reset_level(level)
+    llm_logger.reset_level(level)
 
 
 logger = AWorldLogger(tag='aworld', name='AWorld', formatter=os.getenv('AWORLD_LOG_FORMAT'))
@@ -281,6 +286,12 @@ digest_logger = AWorldLogger(tag='digest_logger', name='AWorld',
 asyncio_monitor_logger = AWorldLogger(tag='asyncio_monitor', name='AWorld',
                                       formatter="<black>{time:YYYY-MM-DD HH:mm:ss.SSS} | </black> <level>{message}</level>")
 
+_LLM_LOG_FORMATTER = (
+        "{time:YYYY-MM-DD HH:mm:ss.SSS}|llm|{extra[direction]}|{extra[trace_id]}|"
+        "model={extra[model_name]}|{extra[meta]}|{message}"
+)
+llm_logger = AWorldLogger(tag='llm', name='AWorld', formatter=_LLM_LOG_FORMATTER)
+
 if os.getenv('AWORLD_LOG_ENDABLE_MONKEY', 'true') == 'true':
     monkey_logger(logger)
     monkey_logger(trace_logger)
@@ -288,6 +299,43 @@ if os.getenv('AWORLD_LOG_ENDABLE_MONKEY', 'true') == 'true':
     monkey_logger(prompt_logger)
     # monkey_logger(digest_logger)
     monkey_logger(asyncio_monitor_logger)
+    # monkey_logger(llm_logger)
+
+
+def log_llm_record(
+        direction: str,
+        model_name: str,
+        data: Any,
+        params: Optional[Dict[str, Any]] = None,
+        trace_id: Optional[str] = None,
+) -> None:
+    """Log LLM request/response record.
+
+    Args:
+        direction: The direction of the data flow (e.g., "INPUT", "OUTPUT", "CHUNK").
+        model_name: The model identifier being called (e.g. "gpt-4o").
+        data: The data to be logged (e.g., messages list for input, ModelResponse for output).
+        params: Optional dict of extra call parameters (temperature, max_tokens, etc.).
+        trace_id: Optional trace ID; auto-resolved from context when omitted.
+    """
+    from aworld.trace.base import get_trace_id
+    from aworld.utils.serialized_util import to_serializable
+
+    resolved_trace_id = trace_id or get_trace_id()
+    meta_parts = []
+    if params:
+        meta_parts = [f"{k}={v}" for k, v in params.items()]
+    meta_str = ", ".join(meta_parts) if meta_parts else ""
+
+    body = to_serializable(data)
+
+    llm_logger._logger.bind(
+        trace_id=resolved_trace_id,
+        direction=direction,
+        model_name=model_name,
+        meta=meta_str,
+    ).info(json.dumps(body, ensure_ascii=False))
+
 
 # log examples:
 # the same as debug, warn, error, fatal

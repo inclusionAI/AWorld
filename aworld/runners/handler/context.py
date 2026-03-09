@@ -1,6 +1,5 @@
 # coding: utf-8
-# Copyright (c) 2025 inclusionAI.
-import abc
+# Copyright (c) inclusionAI.
 import asyncio
 import traceback
 from typing import Optional, List, Tuple, AsyncGenerator
@@ -16,10 +15,6 @@ from aworld.runners.state_manager import HandleResult, RunNodeStatus, RuntimeSta
 
 @HandlerFactory.register(name=f'__{Constants.CONTEXT}__')
 class ContextProcessorHandler(DefaultHandler):
-    """Basic memory processor that abstracts workflow parsing and execution logic"""
-
-    __metaclass__ = abc.ABCMeta
-
     def __init__(self, runner: 'TaskEventRunner'):
         super().__init__(runner)
         self.runner = runner
@@ -27,38 +22,27 @@ class ContextProcessorHandler(DefaultHandler):
         self.endless_threshold = runner.endless_threshold
         self.task_id = runner.task.id
 
-        self.agent_calls = []
-
     def is_valid_message(self, message: Message):
-        if message.category != Constants.CONTEXT \
-                or not isinstance(message, ContextMessage):
+        if message.category != Constants.CONTEXT or not isinstance(message, ContextMessage):
             return False
         return True
 
     # receive message and handle
     async def _do_handle(self, message: Message) -> AsyncGenerator[Message, None]:
-        if not self.is_valid_message(message):
-            return
-
-        headers = {"context": message.context}
-        session_id = message.session_id
-
-        context_message: ContextMessage = message
-        event = context_message.payload
-
+        event = message.payload
         res_message = await self.process_messages(event)
         yield Message(
             category=Constants.CONTEXT_RESPONSE,
             sender=self.name(),
             receiver=message.sender,
-            session_id=session_id,
+            session_id=message.session_id,
             payload=res_message,
-            headers=headers,
+            headers={"context": message.context},
         )
         return
 
     # notify complete
-    async def post_handle(self, input:Message, output: Message) -> Message:
+    async def post_handle(self, input: Message, output: Message) -> Message:
         if not self.is_valid_message(input):
             return output
 
@@ -67,9 +51,9 @@ class ContextProcessorHandler(DefaultHandler):
 
         # update handle_result to state manager
         results = [HandleResult(
-            name = output.category,
-            status = RunNodeStatus.SUCCESS,
-            result = output
+            name=output.category,
+            status=RunNodeStatus.SUCCESS,
+            result=output
         )]
         state_mng = RuntimeStateManager.instance()
         state_mng.run_succeed(node_id=input.id,
@@ -78,7 +62,6 @@ class ContextProcessorHandler(DefaultHandler):
         return output
 
     async def process_messages(self, event: ContextMessagePayload) -> Optional[BaseMessagePayload]:
-
         try:
             sync_processors = []
             async_processors = []
@@ -127,7 +110,6 @@ class ContextProcessorHandler(DefaultHandler):
     def log_end(self, event, processor_config):
         pass
 
-
     async def _process_single_processor(self, processor_config, event: BaseMessagePayload) -> Optional[Tuple[str, any]]:
         """process a single processor"""
         try:
@@ -150,12 +132,11 @@ class ContextProcessorHandler(DefaultHandler):
         """Start async processors running in the background without waiting for completion"""
         for processor_config in async_processors:
             # Create background task without waiting for completion
-            asyncio.create_task(
-                self._run_processor_in_thread_pool(processor_config, event.deep_copy()
-                                                   ))
+            asyncio.create_task(self._run_processor_in_thread_pool(processor_config, event.deep_copy()))
             logger.info(f"Started async processor {processor_config.name} in background")
 
-    async def _run_processor_in_thread_pool(self, processor_config, event: BaseMessagePayload) -> Optional[Tuple[str, any]]:
+    async def _run_processor_in_thread_pool(self, processor_config, event: BaseMessagePayload) -> Optional[
+        Tuple[str, any]]:
         """Run processor in thread pool"""
         try:
             self.log_start(event, processor_config)
@@ -170,7 +151,7 @@ class ContextProcessorHandler(DefaultHandler):
             # Run the processor's process method in thread pool
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                self.thread_pool,
+                self.thread_pool if hasattr(self, 'thread_pool') else None,
                 self._sync_wrapper,
                 processor,
                 event.context,
@@ -180,7 +161,6 @@ class ContextProcessorHandler(DefaultHandler):
             logger.info(f"Async processor {processor.__class__.__name__} completed")
             self.log_end(event, processor_config)
             return (processor.__class__.__name__, result)
-
         except Exception as e:
             logger.error(f"Async processor {processor_config.name} failed: {e} {traceback.print_exc()}")
             return (processor_config.name, None)
@@ -189,24 +169,9 @@ class ContextProcessorHandler(DefaultHandler):
         """Synchronous wrapper for running async methods in thread pool"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        # try:
         return loop.run_until_complete(processor.process(context, event=event))
-        # except Exception as e:
-        #     logger.error(f"Error in sync wrapper: {e}")
-        #     return None
-        # finally:
-        #     # Ensure all tasks complete before closing the loop
-        #     try:
-        #         pending = asyncio.all_tasks(loop)
-        #         if pending:
-        #             loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
-        #     except Exception as e:
-        #         logger.warning(f"Error waiting for tasks to complete: {e}")
-        #     finally:
-        #         loop.close()
 
     def __del__(self):
         """Clean up thread pool resources"""
         if hasattr(self, 'thread_pool'):
             self.thread_pool.shutdown(wait=True)
-

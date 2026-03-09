@@ -4,9 +4,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, Optional
 
-from aworld.ralph_loop.state.types import LoopState, LoopContext
-from aworld.ralph_loop.types import CompletionCriteria
-
 
 class StopType(Enum):
     NONE = "none"
@@ -69,23 +66,6 @@ class StopType(Enum):
 
     def is_error(self) -> bool:
         return self.exit_code() == 4
-
-
-@dataclass
-class StopState:
-    loop_state: LoopState
-    loop_context: LoopContext
-    completion_criteria: CompletionCriteria
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-    def elapsed_time(self) -> float:
-        return self.loop_state.elapsed()
-
-    def is_within_budget(self) -> bool:
-        criteria = self.completion_criteria
-        if 0 < criteria.max_cost <= self.loop_state.cumulative_cost:
-            return False
-        return True
 
 
 @dataclass

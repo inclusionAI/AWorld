@@ -7,7 +7,7 @@ from openai import OpenAI, AsyncOpenAI
 
 from aworld.config.conf import ClientType
 from aworld.core.llm_provider import LLMProviderBase
-from aworld.logs.util import logger
+from aworld.logs.util import logger, log_llm_record
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError
 
@@ -491,15 +491,14 @@ class OpenAIProvider(LLMProviderBase):
                           max_tokens: int = None,
                           stop: List[str] = None,
                           **kwargs) -> Dict[str, Any]:
+        model_name = kwargs.get("model_name", self.model_name or "")
         openai_params = {
-            "model": kwargs.get("model_name", self.model_name or ""),
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stop": stop
+            "model": model_name,
+            "messages": messages
         }
 
         supported_params = [
+            "temperature", "max_tokens", "stop",
             "max_completion_tokens", "meta_data", "modalities", "n", "parallel_tool_calls",
             "prediction", "reasoning_effort", "service_tier", "stream_options", "web_search_options",
             "frequency_penalty", "logit_bias", "logprobs", "top_logprobs",
@@ -512,11 +511,17 @@ class OpenAIProvider(LLMProviderBase):
         llm_params.update(kwargs)
         llm_params.pop("response_parse_args", None)
         llm_params.pop("context", None)
+        llm_params.update({
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stop": stop
+        })
+        log_llm_record("OPENAI_PARAMS", model_name, llm_params, {"request_id": llm_params.pop("llm_request_id", None)})
 
         for param in llm_params:
             if param not in supported_params:
                 logger.warning(f"Using unsupported openai parameter may cause exception: {param}")
-            if llm_params[param]:
+            if llm_params[param] is not None:
                 openai_params[param] = llm_params[param]
         return openai_params
 
