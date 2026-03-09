@@ -35,7 +35,7 @@ class TaskManager:
 
         # List tasks
         all_tasks = await manager.list()
-        pending_tasks = await manager.list(status=TaskStatusValue.INIT)
+        pending_tasks = await manager.list(status=TaskStatus.INIT)
 
         # Get ready tasks
         ready = await manager.get_ready()

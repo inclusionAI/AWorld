@@ -425,13 +425,24 @@ class TaskScheduler:
         """
         success = await self.task_manager.add_task(task, overwrite=overwrite)
 
-        if success:
-            logger.info(f"Added task to scheduler: {task.id} ({task.name})")
+        logger.info(f"Added task to scheduler {success}: {task.id} ({task.name})")
         return success
 
     async def add_tasks(self, tasks: List[ScheduledTask], overwrite: bool = True) -> int:
         """Add multiple tasks to the scheduler."""
         return await self.task_manager.add_batch(tasks, overwrite=overwrite)
+
+    async def list_tasks(self, status: str = None, limit: Optional[int] = None, offset: int = 0) -> List[Task]:
+        tasks = await self.task_manager.list(status=status, limit=limit, offset=offset)
+
+        logger.info(f"found {len(tasks)} tasks")
+        return tasks
+
+    async def delete_task(self, task_id: str) -> bool:
+        success = await self.task_manager.delete_task(task_id=task_id)
+
+        logger.info(f"Deleted task {success}: {task_id}")
+        return success
 
     async def cancel_task(self, task_id: str) -> bool:
         """Cancel a scheduled task.
@@ -481,7 +492,7 @@ async def execute_schedulable_tasks(runtime_engine: RuntimeEngine, tasks: List[T
             if task_response:
                 st.task_status = task_response.status
             st.completed_at = time.time()
-            return res
+            return task_response
 
         funcs.append(task_execute)
 
