@@ -234,6 +234,15 @@ All design tokens are defined as CSS variables in `:root`, making it easy to cus
 }
 ```
 
+## Related Documentation
+
+### Recipe
+
+Step-by-step recipes for common tasks:
+
+- **[Mini-App Build Recipe](Recipe/miniapp_build_recipe.md)** — Generate and self-evolve a mini-application from a single text prompt.
+- **[Video Create Recipe](Recipe/video_create_recipe.md)** — Create and refine a short video from script, storyboard, or idea.
+
 ---
 
 **Last Updated**: 2026-01-12
