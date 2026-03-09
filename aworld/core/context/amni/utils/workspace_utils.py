@@ -40,7 +40,7 @@ def extract_artifacts_from_toolresult(tool_result: ActionResult) -> Optional[lis
                                                   "origin_tool_name": tool_result.tool_name,
                                                   "origin_action_name": tool_result.action_name,
                                               }))
-        elif tool_result.action_name.startswith('browser'):
+        elif tool_result.action_name and tool_result.action_name.startswith('browser'):
             logger.info(f"{tool_result.action_name} use PlaywrightSnapshotArtifact")
             content = json.loads(tool_result.content)[0]
             artifact = PlaywrightSnapshotArtifact.create(url="",

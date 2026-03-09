@@ -290,7 +290,8 @@ async def parse_file(
         "Search file or directory for lines matching a pattern (regex). "
         "path can be a file or directory; if directory, recurses. "
         "Returns one line per match: absolute_path:line_number:line_content. "
-        "Optional max_matches / max_per_file cap the number of results."
+        "Optional max_matches / max_per_file cap the number of matches. "
+        "Use before/after to include context lines around each match."
     )
 )
 async def search_content(
@@ -299,6 +300,8 @@ async def search_content(
     pattern: str = Field(description="Regex pattern to match in line content (e.g. keyword or full regex)"),
     max_matches: Optional[int] = Field(None, description="Maximum total matching lines to return; default no limit"),
     max_per_file: Optional[int] = Field(None, description="Maximum matching lines per file; default no limit"),
+    before: int = Field(0, description="Number of context lines to include before each match"),
+    after: int = Field(0, description="Number of context lines to include after each match"),
 ) -> TextContent:
     """Search content in file(s) by regex; path may be file or directory."""
     valid_path = await validate_path(path, allowed_directories)
@@ -309,13 +312,15 @@ async def search_content(
         pattern=pattern,
         max_matches=max_matches,
         max_per_file=max_per_file,
+        before=before,
+        after=after,
     )
     return TextContent(type="text", text=text)
 
 
 # ==================== Disabled MCP tools (not exposed) ====================
 
-#@mcp.tool(description="Read image or audio file as base64 encoded data. Returns base64 data, MIME type, and media type (image/audio/blob).")
+@mcp.tool(description="Read image or audio file as base64 encoded data. Returns base64 data, MIME type, and media type (image/audio/blob).")
 async def read_media_file(
     ctx: Context,
     path: str = Field(description="Media file path"),
@@ -518,6 +523,9 @@ if __name__ == "__main__":
     for i, dir_path in enumerate(allowed_dirs, 1):
         logging.info(f"  {i}. {dir_path}")
     
-    # Run the server
-    #mcp.run(transport="stdio")
-    mcp.run(transport="streamable-http")
+    # Run the server: default streamable-http (compat with start_tool_servers.sh); use stdio when --stdio or MCP_TRANSPORT=stdio
+    use_stdio = "--stdio" in sys.argv or os.environ.get("MCP_TRANSPORT", "").strip().lower() == "stdio"
+    if use_stdio:
+        mcp.run(transport="stdio")
+    else:
+        mcp.run(transport="streamable-http")

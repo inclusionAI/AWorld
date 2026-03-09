@@ -3,17 +3,20 @@ Local agent executor.
 """
 import asyncio
 import os
+import time
+import re
+import shutil
 import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Union
 
 from dotenv import load_dotenv
-from rich.console import Console
+from rich.console import Console, Group
+from rich.live import Live
 from rich.panel import Panel
 from rich.status import Status
 from rich.text import Text
-from aworld.logs.util import logger
 
 from aworld.config import TaskConfig
 from aworld.core.agent.swarm import Swarm
@@ -21,9 +24,12 @@ from aworld.core.common import Observation
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
 from aworld.core.task import Task
+from aworld.logs.util import logger
 from aworld.runner import Runners
 from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
+from .stats import StreamTokenStats, format_elapsed
+from .stream import StreamDisplayConfig, StreamDisplayController, _print_tool_result_lines
 
 # Try to import WorkSpace for local workspace creation
 try:
@@ -151,6 +157,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     self.console.print(f"[red]❌ [Executor] Failed to load hook '{hook_name}': {e}[/red]")
 
         return hooks
+
+    async def cleanup_resources(self) -> None:
+        """
+        Close MCP and other resources in the same event loop to avoid
+        "Attempted to exit cancel scope in a different task" on exit.
+        """
+        pass
 
     async def _execute_hooks(self, hook_point: str, **kwargs) -> Any:
         """
@@ -455,6 +468,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
             # 4. Run task with streaming
             try:
+                chat_start_time = time.time()
                 # Ensure console is set before running task
                 # Use global console if self.console is not set
                 if not self.console:
@@ -470,80 +484,35 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 # Process stream events
                 answer = ""
                 last_message_output = None
+                stream_token_stats = None  # Set by consume_stream, used for history
                 
+                saved_any_round = False
+
                 async def consume_stream():
                     """Consume stream events and collect outputs with beautiful formatting."""
-                    nonlocal answer, last_message_output
-                    loading_status = None
-                    status_start_time = None
-                    status_update_task = None
-                    base_message = ""
-                    
-                    async def _update_elapsed_time():
-                        """Update elapsed time in status message."""
-                        nonlocal loading_status, status_start_time, base_message
-                        while loading_status and status_start_time:
-                            elapsed = (datetime.now() - status_start_time).total_seconds()
-                            if elapsed < 60:
-                                elapsed_str = f"{elapsed:.1f}s"
-                            elif elapsed < 3600:
-                                elapsed_str = f"{int(elapsed // 60)}m {int(elapsed % 60)}s"
-                            else:
-                                hours = int(elapsed // 3600)
-                                minutes = int((elapsed % 3600) // 60)
-                                elapsed_str = f"{hours}h {minutes}m"
+                    nonlocal answer, last_message_output, stream_token_stats, saved_any_round
+                    stream_token_stats = StreamTokenStats()
+                    logger.info(f"📊 Starting consume_stream - stream_token_stats initialized")
+                    ctrl = StreamDisplayController(
+                        console=self.console,
+                        stream_token_stats=stream_token_stats,
+                        format_tool_calls_fn=self._format_tool_calls_display_lines,
+                        format_elapsed_fn=format_elapsed,
+                        config=StreamDisplayConfig(render_interval=0.02, chars_per_render=1),
+                    )
 
-                            if loading_status:
-                                # Add indentation to elapsed time updates
-                                indented_message = f"   {base_message} [{elapsed_str}]"
-                                loading_status.update(f"[dim]{indented_message}[/dim]")
-                            await asyncio.sleep(0.5)  # Update every 0.5 seconds
-                    
-                    def _start_loading_status(message: str):
-                        """Start or update loading status."""
-                        nonlocal loading_status, status_start_time, status_update_task, base_message
-                        if not self.console:
-                            return
-                        
-                        base_message = message
-                        status_start_time = datetime.now()
-                        
-                        # Add elapsed time for Thinking and Calling tool messages
-                        if "Thinking" in message or "Calling tool" in message:
-                            message_with_time = f"{message} [0.0s]"
-                        else:
-                            message_with_time = message
-                        
-                        if loading_status:
-                            loading_status.update(f"[dim]{message_with_time}[/dim]")
-                        else:
-                            loading_status = Status(f"[dim]{message_with_time}[/dim]", console=self.console)
-                            loading_status.start()
-                        
-                        # Start async task to update elapsed time
-                        if ("Thinking" in message or "Calling tool" in message) and status_update_task is None:
-                            status_update_task = asyncio.create_task(_update_elapsed_time())
-                    
-                    def _stop_loading_status():
-                        """Stop loading status."""
-                        nonlocal loading_status, status_start_time, status_update_task
-                        if status_update_task:
-                            status_update_task.cancel()
-                            status_update_task = None
-                        if loading_status:
-                            loading_status.stop()
-                            loading_status = None
-                        status_start_time = None
-                    
                     try:
-                        from aworld.output.base import MessageOutput, ToolResultOutput, StepOutput
+                        from aworld.output.base import MessageOutput, ToolResultOutput, StepOutput, ChunkOutput
                         
                         # Show loading status while waiting for first output
-                        _start_loading_status("💭 Thinking...")
-                        
+                        logger.info(f"Start thinking status: {ctrl.loading_status} {ctrl.status_start_time}")
+                        ctrl.start_loading("💭 Thinking...")
+                        await asyncio.sleep(0)  # Yield so _update_elapsed_time task can start
+
                         # Track current agent for handoff detection
                         current_agent_name = None
                         last_agent_name = None
+                        received_chunk_output = False
 
                         try:
                             # Ensure console is set before processing stream events
@@ -557,9 +526,40 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
                                 # Handle MessageOutput
                                 if isinstance(output, MessageOutput):
-                                    # Stop thinking status before rendering message
-                                    _stop_loading_status()
-
+                                    elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
+                                    # 💾 Save to history at end of each streaming round (before clear)
+                                    stats = stream_token_stats.get_current_stats()
+                                    if stats and task_content:
+                                        try:
+                                            from ..history import JSONLHistory
+                                            history_path = Path.home() / ".aworld" / "cli_history.jsonl"
+                                            history_path.parent.mkdir(parents=True, exist_ok=True)
+                                            history = JSONLHistory(str(history_path), session_id=self.session_id)
+                                            duration_sec = elapsed_sec if elapsed_sec is not None else 0
+                                            model_name = stats.get("model_name") or stats.get("agent_name", "unknown")
+                                            token_stats = {
+                                                "input_tokens": stats.get("input_tokens") or 0,
+                                                "output_tokens": stats.get("output_tokens") or 0,
+                                                "total_tokens": (stats.get("input_tokens") or 0) + (stats.get("output_tokens") or 0),
+                                                "model_name": model_name,
+                                                "duration_seconds": duration_sec,
+                                            }
+                                            history.store_string(task_content, token_stats=token_stats, aggregate_with_previous=saved_any_round)
+                                            saved_any_round = True
+                                            logger.info(f"💾 Saved round to history - model: {model_name}")
+                                        except Exception as save_err:
+                                            logger.warning(f"💾 Failed to save round to history: {save_err}")
+                                    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+                                    tool_result_pending = ctrl.buffer.has_tool_result_pending()
+                                    has_pending_display = ctrl.has_pending_display(stream_on, received_chunk_output, tool_result_pending)
+                                    if has_pending_display:
+                                        ctrl.set_pending_clear()
+                                    else:
+                                        ctrl.stop_loading()
+                                    if stream_on and not has_pending_display:
+                                        if received_chunk_output and stream_token_stats.get_current_stats():
+                                            stream_token_stats.clear()
+                                            ctrl.buffer.clear()
                                     # Extract agent name from output metadata
                                     current_agent_name = None
                                     if hasattr(output, 'metadata') and output.metadata:
@@ -568,6 +568,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     # Fallback to get current agent from swarm
                                     if not current_agent_name and hasattr(self.swarm, 'cur_agent') and self.swarm.cur_agent:
                                         current_agent_name = getattr(self.swarm.cur_agent, 'name', None) or getattr(self.swarm.cur_agent, 'id', lambda: None)()
+                                    logger.info(f"Stop thinking status: {ctrl.loading_status} {ctrl.status_start_time} {elapsed_sec} {current_agent_name} {last_agent_name} {received_chunk_output} {stream_token_stats.get_current_stats()} {ctrl.buffer.accumulated_content} {ctrl.buffer.accumulated_tool_calls}")
 
                                     # Default agent name
                                     if not current_agent_name:
@@ -577,25 +578,96 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     is_handoff = last_agent_name is not None and last_agent_name != current_agent_name
 
                                     last_message_output = output
-                                    # Pass agent_name and is_handoff parameters
-                                    logger.info(f"Rendering message output for agent: {current_agent_name}")
-                                    logger.info(f"Output: {output}")
-                                    logger.info(f"Answer: {answer}")
-                                    logger.info(f"Is handoff: {is_handoff}")
-                                    answer, _ = self._render_simple_message_output(output, answer, agent_name=current_agent_name, is_handoff=is_handoff)
+                                    
+                                    # 🔧 FIX: Extract token stats from MessageOutput if not already collected from ChunkOutput
+                                    # This ensures we capture token stats even when STREAM=0 or no ChunkOutput was received
+                                    if not received_chunk_output or not stream_token_stats.get_current_stats():
+                                        try:
+                                            # Try to extract usage information from MessageOutput
+                                            usage = None
+                                            if hasattr(output, 'usage'):
+                                                usage = output.usage
+                                            elif hasattr(output, 'data') and hasattr(output.data, 'usage'):
+                                                usage = output.data.usage
+                                            
+                                            if usage:
+                                                input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', None)
+                                                output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', None)
+                                                
+                                                # Get tool calls count
+                                                tool_calls_count = 0
+                                                if hasattr(output, 'tool_calls') and output.tool_calls:
+                                                    tool_calls_count = len(output.tool_calls)
+                                                
+                                                # Update stream_token_stats if we have valid token data
+                                                if input_tokens is not None or output_tokens is not None:
+                                                    model_name = None
+                                                    if hasattr(output, "metadata") and output.metadata:
+                                                        model_name = output.metadata.get("model_name")
+                                                    if not model_name and hasattr(output, "source") and output.source:
+                                                        model_name = getattr(output.source, "model", None)
+                                                    logger.info(f"📊 Extracting token stats from MessageOutput - agent: {current_agent_name}, model: {model_name}, input: {input_tokens}, output: {output_tokens}, tool_calls: {tool_calls_count}")
+                                                    stream_token_stats.update(
+                                                        agent_id=None,
+                                                        agent_name=current_agent_name,
+                                                        output_tokens=output_tokens if output_tokens is not None else 0,
+                                                        input_tokens=input_tokens,
+                                                        tool_calls_count=tool_calls_count,
+                                                        output_estimated=False,
+                                                        input_estimated=False,
+                                                        tool_calls_estimated=False,
+                                                        model_name=model_name,
+                                                    )
+                                                    logger.info(f"📊 Token stats extracted from MessageOutput - current stats: {stream_token_stats.get_current_stats()}")
+                                        except Exception as extract_error:
+                                            logger.warning(f"📊 Failed to extract token stats from MessageOutput: {extract_error}")
+                                    
+                                    # 💾 Save round when stats came from MessageOutput (STREAM=0 or no ChunkOutput)
+                                    if not saved_any_round:
+                                        stats = stream_token_stats.get_current_stats()
+                                        if stats and task_content:
+                                            try:
+                                                from ..history import JSONLHistory
+                                                history_path = Path.home() / ".aworld" / "cli_history.jsonl"
+                                                history_path.parent.mkdir(parents=True, exist_ok=True)
+                                                history = JSONLHistory(str(history_path), session_id=self.session_id)
+                                                duration_sec = elapsed_sec if elapsed_sec is not None else 0
+                                                model_name = stats.get("model_name") or stats.get("agent_name", "unknown")
+                                                token_stats = {
+                                                    "input_tokens": stats.get("input_tokens") or 0,
+                                                    "output_tokens": stats.get("output_tokens") or 0,
+                                                    "total_tokens": (stats.get("input_tokens") or 0) + (stats.get("output_tokens") or 0),
+                                                    "model_name": model_name,
+                                                    "duration_seconds": duration_sec,
+                                                }
+                                                history.store_string(task_content, token_stats=token_stats, aggregate_with_previous=saved_any_round)
+                                                saved_any_round = True
+                                                logger.info(f"💾 Saved round to history (from MessageOutput) - model: {model_name}")
+                                            except Exception as save_err:
+                                                logger.warning(f"💾 Failed to save round to history: {save_err}")
+                                    
+                                    # When STREAM=1: render message output; when STREAM=0: skip output, only update answer
+                                    if not stream_on:
+                                        logger.info(f"Rendering message output for agent: {current_agent_name}")
+                                        logger.info(f"Output: {output}")
+                                        logger.info(f"Answer: {answer}")
+                                        logger.info(f"Is handoff: {is_handoff}")
+                                        answer, _ = self._render_simple_message_output(output, answer, agent_name=current_agent_name, is_handoff=is_handoff, content_already_streamed=received_chunk_output)
+                                    else:
+                                        response_text = str(output.response) if hasattr(output, 'response') and output.response else ""
+                                        if response_text.strip():
+                                            answer = response_text if not answer else (response_text if response_text not in answer else answer)
 
                                     # Update last_agent_name for next iteration
                                     last_agent_name = current_agent_name
                                     
-                                    # Check if there are tool calls - if so, show "Calling tool..." status
+                                    # Check if there are tool calls - if so, show "Thinking..." for agent-as-tool
                                     # Skip status for human tools as they require user interaction
                                     tool_calls = output.tool_calls if hasattr(output, 'tool_calls') and output.tool_calls else []
                                     if tool_calls:
-                                        # Check if any tool is a human tool (requires user interaction, no loading status)
-                                        # Use the same logic as _format_tool_calls to ensure consistency
                                         from aworld.models.model_response import ToolCall
-                                        has_human_tool = False
-                                        has_non_human_tool = False
+                                        from aworld.core.agent.base import is_agent_by_name
+                                        has_agent_as_tool = False
                                         for tool_call_output in tool_calls:
                                             tool_call = None
                                             if hasattr(tool_call_output, 'data'):
@@ -603,48 +675,131 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             elif isinstance(tool_call_output, ToolCall):
                                                 tool_call = tool_call_output
                                             else:
-                                                # Try to use it directly if it's already a ToolCall
                                                 tool_call = tool_call_output
-                                            
                                             if tool_call:
                                                 function_name = ""
                                                 if hasattr(tool_call, 'function') and tool_call.function:
                                                     function_name = getattr(tool_call.function, 'name', '')
-                                                if 'human' in function_name.lower():
-                                                    has_human_tool = True
-                                                else:
-                                                    has_non_human_tool = True
-                                        
-                                        # Only show loading status if there are non-human tools
-                                        # if has_non_human_tool:
-                                            # Use dynamic loading status without icon prefix
-                                            # _start_loading_status("Calling tool...")
-                                    # If no tool calls, don't show thinking status here
-                                    # It might be final response, or next output will trigger thinking status
+                                                if 'human' not in function_name.lower() and is_agent_by_name(function_name):
+                                                    has_agent_as_tool = True
+                                                    break
+                                        if has_agent_as_tool:
+                                            if has_pending_display:
+                                                ctrl.set_deferred_thinking("💭 Thinking...")
+                                            else:
+                                                ctrl.start_loading("💭 Thinking...")
+                                    elif not tool_calls and (current_agent_name or "").lower() != "aworld":
+                                        # No tool calls and not Aworld: agent may produce more output
+                                        if has_pending_display:
+                                            ctrl.set_deferred_thinking("💭 Thinking...")
+                                        else:
+                                            ctrl.start_loading("💭 Thinking...")
                                 
-                                # Handle ToolResultOutput
+                                # Handle ToolResultOutput - add to buffer for gradual display
                                 elif isinstance(output, ToolResultOutput):
-                                    # Stop "Calling tool..." status before rendering result
-                                    # _stop_loading_status()
-                                    
-                                    # Render tool result
-                                    self._render_simple_tool_result_output(output)
-                                    
-                                    # Immediately show thinking status after tool execution completes
-                                    # Agent will process the tool result and think about next steps
-                                    _start_loading_status("💭 Thinking...")
+                                    tr_lines = self._format_tool_result_display_lines(output)
+                                    if tr_lines:
+                                        ctrl.buffer.accumulated_tool_result_lines.extend(tr_lines)
+                                    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+                                    has_pending_display = ctrl.has_any_pending(stream_on)
+                                    if has_pending_display:
+                                        ctrl.set_pending_clear()
+                                        ctrl.set_deferred_thinking("💭 Thinking...")
+                                    if stream_on and ctrl.buffer.has_tool_results() and ctrl.stream_live is None:
+                                        ctrl.stop_loading()
+                                        ctrl.status_start_time = datetime.now()
+                                        ctrl.ensure_live_running()
+                                    if not has_pending_display:
+                                        ctrl.stop_loading()
+                                        if ctrl.buffer.has_tool_results() and self.console:
+                                            _print_tool_result_lines(self.console, ctrl.buffer.accumulated_tool_result_lines)
+                                            # STREAM=0: clear tool results after printing to avoid multi-round accumulation
+                                            ctrl.buffer.accumulated_tool_result_lines.clear()
+                                            ctrl.buffer.displayed_tool_result_lines = 0
+                                        ctrl.start_loading("💭 Thinking...")
                                 
                                 # Handle StepOutput - don't interrupt Thinking status
                                 elif isinstance(output, StepOutput):
-                                    # StepOutput should not interrupt Thinking status
-                                    # Just silently continue, keeping the Thinking status active
-                                    # Optionally, we can log or render step info without stopping status
                                     pass
+
+                                # Handle ChunkOutput - accumulate token and tool_calls stats, refresh display in real-time
+                                elif isinstance(output, ChunkOutput):
+                                    received_chunk_output = True
+                                    ctrl.streaming_mode = True
+                                    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+                                    chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
+                                    if stream_on and chunk:
+                                        if content := getattr(chunk, "content", None):
+                                            ctrl.buffer.accumulated_content += content
+                                        if tool_calls := getattr(chunk, "tool_calls", None):
+                                            ctrl.buffer.accumulated_tool_calls = list(tool_calls)
+                                    meta = getattr(output, "metadata", None) or {}
+                                    out_tok = meta.get("output_tokens")
+                                    inp_tok = meta.get("input_tokens")
+                                    tc_count = meta.get("tool_calls_count")
+                                    tc_content_len = meta.get("tool_calls_content_length")
+                                    out_est = meta.get("output_tokens_estimated", False)
+                                    inp_est = meta.get("input_tokens_estimated", False)
+                                    tc_est = meta.get("tool_calls_count_estimated", False)
+                                    tc_content_est = meta.get("tool_calls_content_estimated", False)
+                                    agent_id = meta.get("agent_id")
+                                    agent_name = meta.get("agent_name")
+                                    logger.info(f"agent_name: {agent_name} output: {output} accumulated_tool_calls: {ctrl.buffer.accumulated_tool_calls}")
+                                    if out_tok is None or inp_tok is None or tc_count is None:
+                                        chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
+                                        if chunk:
+                                            u = getattr(chunk, "usage", None) or {}
+                                            if out_tok is None:
+                                                out_tok = u.get("completion_tokens")
+                                                if out_tok is None or out_tok == 0:
+                                                    content = getattr(chunk, "content", None) or ""
+                                                    out_tok = max(0, len(content) // 4)
+                                                    out_est = True
+                                            if inp_tok is None:
+                                                inp_tok = u.get("prompt_tokens")
+                                                if inp_tok is None or inp_tok == 0:
+                                                    inp_est = True
+                                            if tc_count is None:
+                                                tc_count = len(getattr(chunk, "tool_calls", None) or [])
+                                                tc_est = True
+                                            if tc_content_len is None and getattr(chunk, "tool_calls", None):
+                                                tc_content_len = sum(
+                                                    len(getattr(getattr(tc, "function", None), "arguments", None) or "")
+                                                    for tc in chunk.tool_calls
+                                                )
+                                                tc_content_est = True
+                                    if agent_id is None or agent_name is None:
+                                        if hasattr(self.swarm, "cur_agent") and self.swarm.cur_agent:
+                                            agent_id = agent_id or getattr(self.swarm.cur_agent, "id", lambda: None)()
+                                            agent_name = agent_name or getattr(self.swarm.cur_agent, "name", None)
+                                    model_name = meta.get("model_name")
+                                    # 🔧 FIX: Update token stats and log the update
+                                    if out_tok is not None or inp_tok is not None or tc_count is not None:
+                                        logger.info(f"📊 Updating token stats - agent: {agent_name}, model: {model_name}, input: {inp_tok}, output: {out_tok}, tool_calls: {tc_count}")
+                                        stream_token_stats.update(
+                                            agent_id, agent_name,
+                                            out_tok if out_tok is not None else 0,
+                                            inp_tok,
+                                            tc_count if tc_count is not None else 0,
+                                            output_estimated=out_est,
+                                            input_estimated=inp_est,
+                                            tool_calls_estimated=tc_est,
+                                            tool_calls_content_length=tc_content_len,
+                                            tool_calls_content_estimated=tc_content_est,
+                                            tool_calls=ctrl.buffer.accumulated_tool_calls if ctrl.buffer.accumulated_tool_calls else None,
+                                            content=ctrl.buffer.accumulated_content if ctrl.buffer.accumulated_content else None,
+                                            model_name=model_name,
+                                        )
+                                        logger.info(f"📊 Token stats updated successfully - current stats: {stream_token_stats.get_current_stats()}")
+                                    else:
+                                        logger.warning(f"📊 No token data to update - out_tok: {out_tok}, inp_tok: {inp_tok}, tc_count: {tc_count}")
+                                    # When STREAM=1: buffer content; Live display is refreshed at fixed interval
+                                    if stream_on and self.console and (ctrl.buffer.has_content() or ctrl.buffer.has_tool_calls() or ctrl.buffer.has_tool_results() or stream_token_stats.get_current_stats()):
+                                        ctrl.ensure_live_running()
 
                                 # Handle other output types
                                 else:
-                                    # Stop any loading status
-                                    _stop_loading_status()
+                                    ctrl.stop_loading()
                                     
                                     # Try to extract answer
                                     extracted_answer = self._extract_answer_from_output(output)
@@ -671,12 +826,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             self.console.print(generic_panel)
                                             self.console.print()
                         finally:
-                            # Ensure loading status is stopped
-                            _stop_loading_status()
+                            await ctrl.wait_for_display_done()
+                            ctrl.stop_loading()
+                            # 🔧 FIX: Log final token stats before exiting consume_stream
+                            logger.info(f"📊 Finishing consume_stream - final token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
                     
+                    except (asyncio.CancelledError, KeyboardInterrupt):
+                        logger.info(f"📊 consume_stream interrupted - token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
+                        raise  # Re-raise so caller can handle (e.g. continue to next prompt)
                     except Exception as e:
-                        # Stop loading status on error
-                        _stop_loading_status()
+                        logger.error(f"📊 consume_stream error - token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
                         if self.console:
                             error_body = Text("Error in stream consumption: ")
                             error_body.append(str(e))
@@ -690,8 +849,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                             self.console.print()
                         raise
                 
-                # Consume all stream events
-                await consume_stream()
+                # Consume all stream events (Ctrl+C raises CancelledError/KeyboardInterrupt → abort and return)
+                try:
+                    await consume_stream()
+                except (asyncio.CancelledError, KeyboardInterrupt):
+                    if self.console:
+                        self.console.print("\n[yellow]⏹ Interrupted.[/yellow]")
+                    return answer or ""
                 
                 # 🔥 Hook: POST_RUN_TASK
                 hook_kwargs = {
@@ -743,13 +907,91 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         pass
                     except asyncio.TimeoutError:
                         # Task is still running, but we'll use what we have
-                        if self.console:
-                            self.console.print(f"[dim]ℹ️ Task still running, using streamed answer[/dim]")
+                        logger.error(f"console|TimeoutError: Task still running, using streamed answer")
+                        # if self.console:
+                        #     self.console.print(f"[dim]ℹ️ Task still running, using streamed answer[/dim]")
                     except Exception as e:
-                        if self.console:
-                            self.console.print(f"[yellow]⚠️ Error waiting for final result: {e}[/yellow]")
+                        logger.error(f"console|Exception: Error waiting for final result: {e}")
+                        # if self.console:
+                        #     self.console.print(f"[yellow]⚠️ Error waiting for final result: {e}[/yellow]")
                 
                 # Return answer without printing (already displayed in stream)
+                # 💾 Save query to history (only if not already saved per round)
+                try:
+                    if not saved_any_round:
+                        from ..history import JSONLHistory
+                        
+                        history_path = Path.home() / ".aworld" / "cli_history.jsonl"
+                        history_path.parent.mkdir(parents=True, exist_ok=True)
+                        history = JSONLHistory(str(history_path), session_id=self.session_id)
+                        
+                        stats = stream_token_stats.get_stats_for_history() if stream_token_stats else None
+                        logger.info(f"💾 Final save - stream_token_stats exists: {stream_token_stats is not None}, stats: {stats}")
+                        
+                        # If no stats from stream, try to extract from last_message_output
+                        if not stats and last_message_output:
+                            logger.info(f"💾 No stats from stream, trying to extract from last_message_output")
+                            try:
+                                # Try to get usage from message output
+                                usage = None
+                                if hasattr(last_message_output, 'usage'):
+                                    usage = last_message_output.usage
+                                elif hasattr(last_message_output, 'data') and hasattr(last_message_output.data, 'usage'):
+                                    usage = last_message_output.data.usage
+                                
+                                if usage:
+                                    # Extract token counts from usage
+                                    input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', None) or 0
+                                    output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', None) or 0
+                                    
+                                    # Get model name (original LLM model) and agent name
+                                    model_name = None
+                                    agent_name = "unknown"
+                                    if hasattr(last_message_output, 'metadata') and last_message_output.metadata:
+                                        model_name = last_message_output.metadata.get('model_name')
+                                        agent_name = last_message_output.metadata.get('agent_name') or last_message_output.metadata.get('from_agent') or "unknown"
+                                    if not model_name and hasattr(last_message_output, 'source') and last_message_output.source:
+                                        model_name = getattr(last_message_output.source, 'model', None)
+                                    if not agent_name and hasattr(self.swarm, 'cur_agent') and self.swarm.cur_agent:
+                                        agent_name = getattr(self.swarm.cur_agent, 'name', None) or "unknown"
+                                    
+                                    stats = {
+                                        "input_tokens": input_tokens,
+                                        "output_tokens": output_tokens,
+                                        "model_name": model_name,
+                                        "agent_name": agent_name,
+                                    }
+                                    logger.info(f"💾 Extracted stats from last_message_output: {stats}")
+                            except Exception as extract_error:
+                                logger.warning(f"💾 Failed to extract stats from last_message_output: {extract_error}")
+                        
+                        # Prepare token_stats for JSONLHistory.store_string()
+                        token_stats = None
+                        if stats:
+                            duration_seconds = time.time() - chat_start_time
+                            model_name = stats.get("model_name") or stats.get("agent_name", "unknown")
+                            token_stats = {
+                                "input_tokens": stats.get("input_tokens") or 0,
+                                "output_tokens": stats.get("output_tokens") or 0,
+                                "total_tokens": (stats.get("input_tokens") or 0) + (stats.get("output_tokens") or 0),
+                                "model_name": model_name,
+                                "duration_seconds": duration_seconds,
+                            }
+                            logger.info(f"💾 Prepared token_stats for history: {token_stats}")
+                        else:
+                            logger.warning(f"💾 No token stats available - saving query without token info")
+                        
+                        # Store to history
+                        history.store_string(task_content, token_stats=token_stats)
+                        logger.info(f"💾 Successfully saved query to history with token_stats: {token_stats is not None}")
+                    
+                except Exception as e:
+                    logger.error(f"💾 Failed to save to history: {e}")
+                    import traceback
+                    logger.error(f"💾 Traceback: {traceback.format_exc()}")
+                    # Don't fail the whole request if history save fails
+
+
                 return answer
                 
             except Exception as err:

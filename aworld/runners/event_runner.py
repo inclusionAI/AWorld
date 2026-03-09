@@ -66,10 +66,13 @@ class TaskEventRunner(TaskRunner):
                 # the last step mark output finished
                 if not self.task.is_sub_task:
                     logger.info(f'main task {self.task.id} will mark outputs finished')
-                    await self.task.outputs.mark_completed(resp)
+                    await self.task.outputs.mark_completed(resp if resp is not None else self._response())
                     for _, agent in AgentFactory._agent_instance.items():
                         if agent and agent.sandbox:
                             await agent.sandbox.cleanup()
+                    # Release trajectory storage to free memory; trajectories have already
+                    # been persisted by _save_trajectories() before reaching this point.
+                    self.context.trajectory_dataset = None
 
 
 
