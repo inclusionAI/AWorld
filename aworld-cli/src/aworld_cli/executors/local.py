@@ -713,6 +713,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         ctrl.stop_loading()
                                         if ctrl.buffer.has_tool_results() and self.console:
                                             _print_tool_result_lines(self.console, ctrl.buffer.accumulated_tool_result_lines)
+                                            # STREAM=0: clear tool results after printing to avoid multi-round accumulation
+                                            ctrl.buffer.accumulated_tool_result_lines.clear()
+                                            ctrl.buffer.displayed_tool_result_lines = 0
                                         ctrl.start_loading("💭 Thinking...")
                                 
                                 # Handle StepOutput - don't interrupt Thinking status
