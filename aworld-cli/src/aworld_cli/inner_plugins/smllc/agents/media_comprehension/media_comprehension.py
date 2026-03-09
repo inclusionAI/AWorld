@@ -61,6 +61,8 @@ class MultiTaskMediaComprehensionAgent(Agent):
 - Images: Recognize, describe, and interpret visual content.
 - Audio: Transcribe speech and analyze audio content.
 - Video: Understand video content, analyze scenes, and perform multimodal comprehension.
+
+Cannot process (do NOT delegate to this agent): Documents (.pdf, e.g. report.pdf), spreadsheets (.xlsx/.csv, e.g. data.xlsx), presentations (.pptx, e.g. slides.pptx), code/scripts (.py/.js/.ts, e.g. main.py), archives (.zip/.tar/.rar, e.g. backup.zip), executables (.exe/.bin, e.g. app.exe), databases (.db/.sqlite, e.g. users.db), structured data (.json/.xml/.yaml, e.g. config.json), web pages (.html/.htm, e.g. index.html).
 """
 )
 def build_media_comprehension_swarm():

@@ -10,9 +10,25 @@ Supports Grep content search, Glob file matching, and Read file reading.
 """
 
 import json
+import os
 import traceback
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Union, Tuple
+
+# Multimedia extensions (image, audio, video) - must match searchers._get_multimedia_mime_type
+_MULTIMEDIA_EXTENSIONS = frozenset({
+    '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.ico', '.tiff', '.tif',
+    '.mp3', '.wav', '.ogg', '.m4a', '.flac', '.aac',
+    '.mp4', '.webm', '.avi', '.mov', '.mkv', '.m4v',
+})
+
+# Multimedia file size limit: default 50KB; set CAST_MEDIA_SIZE_LIMIT_KB to override (e.g. 100 for 100KB)
+def _get_media_size_limit_bytes() -> int:
+    try:
+        kb = int(os.environ.get("CAST_MEDIA_SIZE_LIMIT_KB", "50"))
+        return max(1, kb) * 1024
+    except (ValueError, TypeError):
+        return 50 * 1024
 
 from aworld.config import ToolConfig
 from aworld.core.common import Observation, ActionModel, ActionResult, ToolActionInfo, ParamInfo
@@ -530,6 +546,14 @@ class CastSearchTool(AsyncTool):
             logger.error(f"Glob search failed: {e}")
             raise
 
+    def _resolve_file_path(self, file_path: Union[str, Path]) -> Path:
+        """Resolve file path relative to search root."""
+        p = Path(file_path)
+        if p.is_absolute():
+            return p
+        root = self._root_path or (self.acast.search_engine.root_path if self.acast.search_engine else None) or Path.cwd()
+        return Path(root) / file_path
+
     async def _read_file(self,
                          file_path: Union[str, Path],
                          limit: int = 2000,
@@ -553,6 +577,19 @@ class CastSearchTool(AsyncTool):
             >>> print(result.output)
         """
         try:
+            resolved_path = self._resolve_file_path(file_path)
+            if resolved_path.exists():
+                ext = resolved_path.suffix.lower()
+                if ext in _MULTIMEDIA_EXTENSIONS:
+                    size_bytes = resolved_path.stat().st_size
+                    limit_bytes = _get_media_size_limit_bytes()
+                    if size_bytes > limit_bytes:
+                        limit_kb = limit_bytes // 1024
+                        raise ValueError(
+                            f"Multimedia file size ({size_bytes} bytes) exceeds limit ({limit_kb}KB). "
+                            f"File must be smaller than {limit_kb}KB. "
+                            "Compress the file before reading."
+                        )
             result = await self.acast.read(
                 file_path=file_path,
                 limit=limit,
