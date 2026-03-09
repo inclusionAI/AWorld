@@ -126,6 +126,49 @@ class ToolCall(BaseModel):
         yield from self.to_dict().items()
 
 
+class VideoGenerationResult:
+    """Holds the result of a video generation task."""
+
+    def __init__(
+            self,
+            task_id: str = None,
+            video_url: str = None,
+            status: str = None,
+            duration: float = None,
+            resolution: str = None,
+            extra: Dict[str, Any] = None,
+    ):
+        """
+        Args:
+            task_id: Video generation task ID, used for async polling.
+            video_url: URL of the generated video, available when task is completed.
+            status: Task status, e.g. 'submitted', 'processing', 'succeeded', 'failed'.
+            duration: Duration of the generated video in seconds.
+            resolution: Resolution of the generated video, e.g. '1280x720'.
+            extra: Additional provider-specific fields.
+        """
+        self.task_id = task_id
+        self.video_url = video_url
+        self.status = status
+        self.duration = duration
+        self.resolution = resolution
+        self.extra = extra or {}
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "task_id": self.task_id,
+            "video_url": self.video_url,
+            "status": self.status,
+            "duration": self.duration,
+            "resolution": self.resolution,
+            "extra": self.extra,
+        }
+
+    def __repr__(self):
+        import json
+        return json.dumps(self.to_dict(), ensure_ascii=False)
+
+
 class ModelResponse:
     """
     Unified model response class for encapsulating responses from different LLM providers
@@ -143,7 +186,8 @@ class ModelResponse:
             message: Dict[str, Any] = None,
             reasoning_content: str = None,
             finish_reason: str = None,
-            reasoning_details: Dict[str, Any] = None
+            reasoning_details: Dict[str, Any] = None,
+            video_result: VideoGenerationResult = None,
     ):
         """
         Initialize ModelResponse object
@@ -157,6 +201,7 @@ class ModelResponse:
             error: Error message (if any)
             raw_response: Original response object
             message: Complete message object, can be used for subsequent API calls
+            video_result: Video generation result, populated when using video generation interfaces.
         """
         self.id = id
         self.model = model
@@ -169,6 +214,7 @@ class ModelResponse:
         }
         self.error = error
         self.raw_response = raw_response
+        self.video_result = video_result
 
         # If message is not provided, construct one from other fields
         if message is None:
@@ -656,7 +702,8 @@ class ModelResponse:
             "reasoning_content": self.reasoning_content,
             "created_at": self.created_at,
             "finish_reason": self.finish_reason,
-            "structured_output": self.structured_output
+            "structured_output": self.structured_output,
+            "video_result": self.video_result.to_dict() if self.video_result else None,
         }
 
     def get_message(self) -> Dict[str, Any]:

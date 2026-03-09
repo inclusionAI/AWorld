@@ -1,3 +1,4 @@
+import re
 import traceback
 from typing import (
     List,
@@ -13,9 +14,12 @@ from aworld.core.model_output_parser.default_parsers import ToolParser, Reasonin
 from aworld.logs.util import logger
 
 from aworld.core.llm_provider import LLMProviderBase
+from aworld.core.video_gen_provider import VideoGenProviderBase
 from aworld.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
 from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.ant_provider import AntProvider
+from aworld.models.together_video_provider import TogetherVideoProvider
+from aworld.models.ant_video_provider import AntVideoProvider
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
 from aworld.core.model_output_parser import ModelOutputParser, BaseContentParser
@@ -34,15 +38,54 @@ ENDPOINT_PATTERNS = {
     "anthropic": ["api.anthropic.com", "claude-api"],
     "azure_openai": ["openai.azure.com"],
     "ant": ["zdfmng.alipay.com"],
+    "together_video": ["api.together.ai", "api.together.xyz"],
+    "ant_video": ["matrixcube.alipay.com", "matrixcube-pool.global.alipay.com"],
 }
 
-# Provider class mapping
+# Provider class mapping (LLM providers)
 PROVIDER_CLASSES = {
     "openai": OpenAIProvider,
     "anthropic": AnthropicProvider,
     "azure_openai": AzureOpenAIProvider,
     "ant": AntProvider,
+    "together_video": TogetherVideoProvider,
 }
+
+# ---------------------------------------------------------------------------
+# Video provider registry
+#
+# VIDEO_PROVIDER_CLASSES: provider_name -> VideoGenProviderBase subclass
+#
+# VIDEO_MODEL_REGISTRY: list of (pattern, provider_name) pairs.
+#   Each pattern is matched against the model_name string.
+#   Patterns are tried in order; the first match wins.
+#   Patterns starting with '^' are treated as regex; otherwise plain prefix/exact match.
+#
+# To register a new video provider at runtime, call register_video_provider().
+# ---------------------------------------------------------------------------
+
+VIDEO_PROVIDER_CLASSES: Dict[str, type] = {
+    "ant_video":      AntVideoProvider,
+    "together_video": TogetherVideoProvider,
+}
+
+VIDEO_MODEL_REGISTRY: List[tuple] = [
+    # (pattern, provider_name)
+    # Ant gateway models (Kling, Doubao/Seedance, Veo via matrixcube)
+    (r"^kling-",        "ant_video"),
+    (r"^doubao-video-", "ant_video"),
+    (r"^seedance-",     "ant_video"),
+    (r"^veo-",          "ant_video"),
+    # Together.ai video models
+    (r"^minimax/",           "together_video"),
+    (r"^google/veo-",        "together_video"),
+    (r"^ByteDance/Seedance",  "together_video"),
+    (r"^pixverse/",          "together_video"),
+    (r"^kwaivgI/kling-",     "together_video"),
+    (r"^Wan-AI/",            "together_video"),
+    (r"^vidu/",              "together_video"),
+    (r"^openai/sora-",       "together_video"),
+]
 
 
 class ModelResponseParser(ModelOutputParser[ModelResponse, ModelResponse]):
@@ -154,9 +197,10 @@ class LLMModel:
 
         # If custom_provider instance is provided, use it directly
         if custom_provider is not None:
-            if not isinstance(custom_provider, LLMProviderBase):
+            if not isinstance(custom_provider, (LLMProviderBase, VideoGenProviderBase)):
                 raise TypeError(
-                    "custom_provider must be an instance of LLMProviderBase")
+                    "custom_provider must be an instance of LLMProviderBase or VideoGenProviderBase"
+                )
             self.provider_name = "custom"
             self.provider = custom_provider
             return
@@ -222,63 +266,88 @@ class LLMModel:
         return args
 
     def _identify_provider(self, provider: str = None, base_url: str = None, model_name: str = None) -> str:
-        """Identify LLM provider.
+        """Identify the provider for the given configuration.
 
-        Identification logic:
-        1. If provider is specified and doesn't need to be overridden, use the specified provider.
-        2. If base_url is provided, try to identify provider based on base_url.
-        3. If model_name is provided, try to identify provider based on model_name.
-        4. If none can be identified, default to "openai".
+        Identification logic (in priority order):
+        1. Explicit ``provider`` argument — used as-is when it exists in either
+           PROVIDER_CLASSES or VIDEO_PROVIDER_CLASSES.
+        2. ``base_url`` — matched against ENDPOINT_PATTERNS.
+        3. ``model_name`` — first checked against VIDEO_MODEL_REGISTRY (video
+           providers), then against MODEL_NAMES (LLM providers).
+        4. Falls back to ``"openai"``.
 
         Args:
-            provider: Specified provider.
-            base_url: Service URL.
-            model_name: Model name.
+            provider: Explicitly specified provider name.
+            base_url: Service endpoint URL.
+            model_name: Model name string.
 
         Returns:
-            str: Identified provider.
+            str: Resolved provider name.
         """
-        # Default provider
         identified_provider = "openai"
 
-        # Identify provider based on base_url
+        # 1. Match base_url against endpoint patterns (covers both LLM and video providers)
         if base_url:
             for p, patterns in ENDPOINT_PATTERNS.items():
                 if any(pattern in base_url for pattern in patterns):
                     identified_provider = p
                     logger.info(
-                        f"Identified provider: {identified_provider} based on base_url: {base_url}")
+                        f"Identified provider: {identified_provider} based on base_url: {base_url}"
+                    )
                     return identified_provider
 
-        # Identify provider based on model_name
+        # 2. Match model_name — video registry takes priority over LLM model names
         if model_name and not base_url:
-            for p, models in MODEL_NAMES.items():
-                if model_name in models or any(model_name.startswith(model) for model in models):
-                    identified_provider = p
-                    logger.info(
-                        f"Identified provider: {identified_provider} based on model_name: {model_name}")
-                    break
+            # Check video model registry first
+            video_provider = _match_video_registry(model_name)
+            if video_provider:
+                logger.info(
+                    f"Identified video provider: {video_provider} based on model_name: {model_name}"
+                )
+                identified_provider = video_provider
+            else:
+                # Fall back to LLM model name matching
+                for p, models in MODEL_NAMES.items():
+                    if model_name in models or any(model_name.startswith(m) for m in models):
+                        identified_provider = p
+                        logger.info(
+                            f"Identified provider: {identified_provider} based on model_name: {model_name}"
+                        )
+                        break
 
-        if provider and provider in PROVIDER_CLASSES and identified_provider and identified_provider != provider:
+        # 3. Explicit provider overrides the auto-detected result
+        all_providers = {**PROVIDER_CLASSES, **VIDEO_PROVIDER_CLASSES}
+        if provider and provider in all_providers and identified_provider != provider:
             logger.debug(
-                f"Provider mismatch: {provider} != {identified_provider}, using {provider} as provider")
+                f"Provider mismatch: {provider} != {identified_provider}, using {provider} as provider"
+            )
             identified_provider = provider
 
         return identified_provider
 
     def _create_provider(self, **kwargs):
-        """Return the corresponding provider instance based on provider.
+        """Instantiate the provider class resolved by ``_identify_provider``.
+
+        Looks up the provider name first in VIDEO_PROVIDER_CLASSES (video
+        generation providers), then in PROVIDER_CLASSES (LLM providers).
 
         Args:
-            **kwargs: Parameters, may include:
-                - base_url: Model endpoint.
-                - api_key: API key.
-                - model_name: Model name.
-                - temperature: Temperature parameter.
-                - timeout: Timeout.
-                - max_retries: Maximum number of retries.
+            **kwargs: Parameters forwarded to the provider constructor, e.g.
+                base_url, api_key, model_name, timeout, max_retries.
+
+        Raises:
+            ValueError: When the resolved provider name is not registered in
+                either provider table.
         """
-        self.provider = PROVIDER_CLASSES[self.provider_name](**kwargs)
+        if self.provider_name in VIDEO_PROVIDER_CLASSES:
+            self.provider = VIDEO_PROVIDER_CLASSES[self.provider_name](**kwargs)
+        elif self.provider_name in PROVIDER_CLASSES:
+            self.provider = PROVIDER_CLASSES[self.provider_name](**kwargs)
+        else:
+            raise ValueError(
+                f"Unknown provider '{self.provider_name}'. "
+                f"Register it via register_llm_provider() or register_video_provider()."
+            )
 
     @classmethod
     def supported_providers(cls) -> list[str]:
@@ -502,16 +571,93 @@ class LLMModel:
         return self.provider.apply_chat_template(messages)
 
 
+def _match_video_registry(model_name: str) -> Optional[str]:
+    """Return the video provider name for *model_name* using VIDEO_MODEL_REGISTRY.
+
+    Each entry in VIDEO_MODEL_REGISTRY is a ``(pattern, provider_name)`` tuple.
+    Patterns starting with ``^`` are treated as regular expressions; all others
+    are used as plain prefix strings.  Entries are evaluated in order and the
+    first match wins.
+
+    Args:
+        model_name: The model identifier to look up.
+
+    Returns:
+        Matched provider name, or ``None`` if no entry matches.
+    """
+    for pattern, provider_name in VIDEO_MODEL_REGISTRY:
+        if pattern.startswith("^"):
+            if re.match(pattern, model_name):
+                return provider_name
+        else:
+            if model_name.startswith(pattern) or model_name == pattern:
+                return provider_name
+    return None
+
+
 def register_llm_provider(provider: str, provider_class: type):
     """Register a custom LLM provider.
 
     Args:
         provider: Provider name.
-        provider_class: Provider class, must inherit from LLMProviderBase.
+        provider_class: Provider class, must be a subclass of LLMProviderBase.
     """
     if not issubclass(provider_class, LLMProviderBase):
         raise TypeError("provider_class must be a subclass of LLMProviderBase")
     PROVIDER_CLASSES[provider] = provider_class
+
+
+def register_video_provider(
+    provider: str,
+    provider_class: type,
+    model_patterns: Optional[List[str]] = None,
+    endpoint_patterns: Optional[List[str]] = None,
+):
+    """Register a video generation provider and optionally bind model/endpoint patterns.
+
+    This is the extension point for adding new video providers (e.g. Doubao,
+    Google Veo direct, etc.) without touching the core routing tables.
+
+    Args:
+        provider: Unique provider name, e.g. ``"doubao_video"``.
+        provider_class: Class that inherits from
+            :class:`~aworld.core.video_gen_provider.VideoGenProviderBase`.
+        model_patterns: List of model-name patterns to map to this provider.
+            Patterns starting with ``^`` are treated as regular expressions;
+            others are used as prefix strings.  New patterns are prepended to
+            VIDEO_MODEL_REGISTRY so they take priority over existing entries.
+        endpoint_patterns: List of base-URL substrings that identify this
+            provider (e.g. ``["ark.cn-beijing.volces.com"]``).  Added to
+            ENDPOINT_PATTERNS under *provider*.
+
+    Raises:
+        TypeError: When *provider_class* is not a subclass of
+            VideoGenProviderBase.
+
+    Example::
+
+        from aworld.models.llm import register_video_provider
+        from aworld.models.doubao_video_provider import DoubaoVideoProvider
+
+        register_video_provider(
+            provider="doubao_video",
+            provider_class=DoubaoVideoProvider,
+            model_patterns=[r"^doubao-video-", r"^seedance-"],
+            endpoint_patterns=["ark.cn-beijing.volces.com"],
+        )
+    """
+    if not issubclass(provider_class, VideoGenProviderBase):
+        raise TypeError("provider_class must be a subclass of VideoGenProviderBase")
+
+    VIDEO_PROVIDER_CLASSES[provider] = provider_class
+
+    if model_patterns:
+        # Prepend so newly registered patterns take priority
+        for pattern in reversed(model_patterns):
+            VIDEO_MODEL_REGISTRY.insert(0, (pattern, provider))
+
+    if endpoint_patterns:
+        ENDPOINT_PATTERNS[provider] = endpoint_patterns
 
 
 def conf_contains_key(conf: Union[ConfigDict, AgentConfig, ModelConfig], key: str) -> bool:
