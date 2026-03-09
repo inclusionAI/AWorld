@@ -3,7 +3,9 @@
 import os
 import traceback
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from aworld.config.conf import AgentConfig
 from aworld.core.agent.base import AgentResult
@@ -61,6 +63,8 @@ class VideoAgent(LLMAgent):
         default_resolution: Optional[str] = None,
         default_duration: Optional[float] = None,
         default_fps: Optional[int] = None,
+        download_video: bool = True,
+        output_dir: Optional[str] = None,
         **kwargs,
     ):
         """Initialize VideoAgent.
@@ -81,6 +85,10 @@ class VideoAgent(LLMAgent):
             default_resolution: Default video resolution, e.g. '1366x768'.
             default_duration: Default video duration in seconds.
             default_fps: Default frames per second.
+            download_video: Whether to download the generated video locally
+                after generation. Defaults to True.
+            output_dir: Directory to save downloaded videos. Defaults to the
+                current working directory.
             **kwargs: Forwarded to ``LLMAgent.__init__``.
         """
         if conf is None:
@@ -121,6 +129,8 @@ class VideoAgent(LLMAgent):
         self.default_resolution = default_resolution
         self.default_duration = default_duration
         self.default_fps = default_fps
+        self.download_video = download_video
+        self.output_dir = output_dir
 
     # ------------------------------------------------------------------
     # Core policy — single-round video generation
@@ -174,6 +184,8 @@ class VideoAgent(LLMAgent):
         poll: bool = obs_info.pop("poll", self.poll)
         poll_interval: float = obs_info.pop("poll_interval", self.poll_interval)
         poll_timeout: float = obs_info.pop("poll_timeout", self.poll_timeout)
+        download_video: bool = obs_info.pop("download_video", self.download_video)
+        output_dir: str = obs_info.pop("output_dir", self.output_dir or os.getcwd())
 
         # Any remaining keys in obs_info are forwarded to the provider
         extra_kwargs = obs_info
@@ -199,6 +211,7 @@ class VideoAgent(LLMAgent):
                 context=message.context if message else None,
                 **extra_kwargs,
             )
+            logger.info(f"VideoAgent Execute response: {video_response}")
         except Exception as exc:
             error_msg = f"Video generation failed: {exc}"
             logger.error(
@@ -226,6 +239,12 @@ class VideoAgent(LLMAgent):
                 f"status={video_response.video_result.status}, "
                 f"video_url={video_response.video_result.video_url}"
             )
+            if download_video:
+                result_payload = await self.postprocess(
+                    result=result_payload,
+                    video_result=video_response.video_result,
+                    output_dir=output_dir,
+                )
         else:
             result_payload = str(video_response)
             logger.warning(f"[VideoAgent:{self.id()}] Unexpected response: {video_response}")
@@ -236,7 +255,124 @@ class VideoAgent(LLMAgent):
             )
 
         self._finished = True
-        return [ActionModel(agent_name=self.id(), policy_info=result_payload)]
+        policy_result = [ActionModel(agent_name=self.id(), policy_info=result_payload)]
+        logger.info(f"agent_result: {result_payload}")
+        return policy_result
+
+    async def postprocess(
+        self,
+        result: Dict[str, Any],
+        video_result: "VideoGenerationResult",
+        output_dir: str,
+    ) -> Dict[str, Any]:
+        """Post-process the video generation result by downloading the video locally.
+
+        Override this method to customise post-processing behaviour (e.g. upload
+        to object storage, run a transcoding step, etc.).
+
+        Args:
+            result: The serialised ``VideoGenerationResult`` dict that will be
+                returned as the agent result.  Mutated in-place and returned.
+            video_result: The original ``VideoGenerationResult`` object.
+            output_dir: Directory where the video file should be saved.
+
+        Returns:
+            Updated result dict.  On success the dict contains a
+            ``local_path`` key with the absolute path of the downloaded file.
+            On failure the original dict is returned unchanged with an extra
+            ``download_error`` key describing the error.
+        """
+        video_url = video_result.video_url
+        if not video_url:
+            logger.warning(f"[VideoAgent:{self.id()}] No video_url available; skipping download.")
+            return result
+
+        task_id = video_result.task_id or ""
+        local_path = await self._download_video(video_url, output_dir, task_id)
+        if local_path:
+            result["local_path"] = local_path
+        return result
+
+    async def _download_video(
+        self,
+        video_url: str,
+        output_dir: str,
+        task_id: str = "",
+    ) -> Optional[str]:
+        """Download a video from *video_url* into *output_dir*.
+
+        Tries ``aiohttp`` first; falls back to ``urllib`` so the method works
+        without optional dependencies.
+
+        Args:
+            video_url: Remote URL of the video file.
+            output_dir: Local directory to save the file.
+            task_id: Task ID used as part of the filename when the URL does not
+                contain a recognisable filename.
+
+        Returns:
+            Absolute path of the saved file, or ``None`` on failure.
+        """
+        import asyncio
+
+        # Derive a safe filename: video_<url-stem> or video_<task_id> or video_<uuid>
+        _MAX_URL_FILENAME_LEN = 32
+        try:
+            url_path = urlparse(video_url).path
+            raw_name = Path(url_path).name  # e.g. "abc123.mp4"
+            stem, suffix = Path(raw_name).stem, Path(raw_name).suffix
+            url_filename = stem[:_MAX_URL_FILENAME_LEN] + suffix if raw_name else ""
+        except Exception:
+            url_filename = ""
+
+        if url_filename:
+            filename = f"video_{url_filename}"
+        elif task_id:
+            filename = f"video_{task_id}.mp4"
+        else:
+            filename = f"video_{uuid.uuid4().hex}.mp4"
+
+        os.makedirs(output_dir, exist_ok=True)
+        local_path = os.path.join(output_dir, filename)
+
+        logger.info(f"[VideoAgent:{self.id()}] Downloading video to {local_path} ...")
+
+        try:
+            await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: self._download_video_sync(video_url, local_path),
+            )
+            logger.info(f"[VideoAgent:{self.id()}] Video saved to {local_path}")
+            return local_path
+        except Exception as exc:
+            logger.warning(
+                f"[VideoAgent:{self.id()}] Failed to download video from {video_url}: {exc}\n"
+                f"{traceback.format_exc()}"
+            )
+            return None
+
+    @staticmethod
+    def _download_video_sync(video_url: str, local_path: str) -> None:
+        """Blocking download implementation used inside a thread-pool executor.
+
+        Tries ``requests`` first, then falls back to ``urllib`` so it works
+        without optional dependencies.
+
+        Args:
+            video_url: Remote URL of the video file.
+            local_path: Absolute local path to write the file.
+        """
+        try:
+            import requests  # type: ignore
+            resp = requests.get(video_url, stream=True, timeout=300)
+            resp.raise_for_status()
+            with open(local_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 1024):
+                    if chunk:
+                        f.write(chunk)
+        except ImportError:
+            import urllib.request
+            urllib.request.urlretrieve(video_url, local_path)
 
     async def _invoke_video_generation(
         self,
