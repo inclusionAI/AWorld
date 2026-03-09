@@ -408,7 +408,7 @@ class ReadSearcher(Searcher):
             '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
             '.gif': 'image/gif', '.webp': 'image/webp', '.bmp': 'image/bmp',
             '.ico': 'image/x-icon', '.tiff': 'image/tiff', '.tif': 'image/tiff',
-            '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
+            '.mp3': 'audio/mp3', '.wav': 'audio/wav', '.ogg': 'audio/ogg',
             '.m4a': 'audio/mp4', '.flac': 'audio/flac', '.aac': 'audio/aac',
             '.mp4': 'video/mp4', '.webm': 'video/webm', '.avi': 'video/x-msvideo',
             '.mov': 'video/quicktime', '.mkv': 'video/x-matroska', '.m4v': 'video/x-m4v',

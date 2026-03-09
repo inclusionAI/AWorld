@@ -391,7 +391,6 @@ class CastSearchTool(AsyncTool):
                                 logger.info(f"File read completed: {file_path}, read {len(result.matches)} lines")
                             action_result.content = json.dumps(result_data, ensure_ascii=False, default=str)
                         action_result.success = True
-                        print(f"action_result.content: {action_result.content[:100]}")
 
                     except Exception as e:
                         error_result = {

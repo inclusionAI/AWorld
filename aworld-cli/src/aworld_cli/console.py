@@ -722,8 +722,7 @@ class AWorldCLI:
             f"Type '/restore' or '/latest' to restore to the latest session.\n"
             f"Type '/skills' to list all available skills.\n"
             f"Type '/agents' to list all available agents.\n"
-            f"Type '/history' to view query history.\n"
-            f"Type '/cost' to view token usage and cost statistics.\n"
+            f"Type '/cost' for current session, '/cost -all' for global history.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
         self.console.print(Panel(help_text, style="blue"))
@@ -739,7 +738,7 @@ class AWorldCLI:
             # 用整行前缀匹配：/ski → /skills、/age → /agents；meta_dict 在补全菜单中显示描述（命令左、描述右）
             slash_cmds = [
                 "/agents", "/skills", "/new", "/restore", "/latest",
-                "/exit", "/quit", "/switch", "/history", "/cost",
+                "/exit", "/quit", "/switch", "/cost", "/cost -all",
             ]
             switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
             all_words = slash_cmds + switch_with_agents + ["exit", "quit"]
@@ -752,8 +751,8 @@ class AWorldCLI:
                 "/exit": "Exit chat",
                 "/quit": "Exit chat",
                 "/switch": "Switch to another agent",
-                "/history": "View query history",
-                "/cost": "View token usage and cost statistics",
+                "/cost": "View query history (current session)",
+                "/cost -all": "View global history (all sessions)",
                 "exit": "Exit chat",
                 "quit": "Exit chat",
             }
@@ -898,70 +897,34 @@ class AWorldCLI:
                         self.console.print(f"[red]Error loading skills: {e}[/red]")
                     continue
 
-                # Handle cost command
-                if user_input.lower() in ("/cost", "cost"):
+                # Handle cost command (query history + token usage)
+                cost_input = user_input.strip().lower()
+                if cost_input in ("/cost", "cost") or cost_input in ("/cost -all", "cost -all"):
                     try:
                         from pathlib import Path
                         from .history import JSONLHistory
                         
-                        # Get history file path
                         history_path = Path.home() / ".aworld" / "cli_history.jsonl"
-                        
                         if not history_path.exists():
                             self.console.print("[yellow]No history file found. Start chatting to generate history.[/yellow]")
                             continue
                         
-                        # Create history instance
                         history = JSONLHistory(str(history_path))
+                        show_all = "-all" in cost_input
                         
-                        # Get current session_id if available
-                        current_session_id = None
-                        if executor_instance and hasattr(executor_instance, 'session_id'):
-                            current_session_id = executor_instance.session_id
-                        
-                        # Display cost for current session
-                        if current_session_id:
-                            self.console.print(history.format_cost_display(session_id=current_session_id))
-                        
-                        # Display global cost
-                        self.console.print(history.format_cost_display(session_id=None))
+                        if show_all:
+                            self.console.print(history.format_history_display(session_id=None))
+                        else:
+                            current_session_id = None
+                            if executor_instance and hasattr(executor_instance, 'session_id'):
+                                current_session_id = executor_instance.session_id
+                            if current_session_id:
+                                self.console.print(history.format_history_display(session_id=current_session_id))
+                            else:
+                                self.console.print("[yellow]No current session. Use /cost -all for global history.[/yellow]")
                         
                     except Exception as e:
                         self.console.print(f"[red]Error displaying cost: {e}[/red]")
-                        import traceback
-                        traceback.print_exc()
-                    continue
-                
-                # Handle history command
-                if user_input.lower() in ("/history", "history"):
-                    try:
-                        from pathlib import Path
-                        from .history import JSONLHistory
-                        
-                        # Get history file path
-                        history_path = Path.home() / ".aworld" / "cli_history.jsonl"
-                        
-                        if not history_path.exists():
-                            self.console.print("[yellow]No history file found. Start chatting to generate history.[/yellow]")
-                            continue
-                        
-                        # Create history instance
-                        history = JSONLHistory(str(history_path))
-                        
-                        # Get current session_id if available
-                        current_session_id = None
-                        if executor_instance and hasattr(executor_instance, 'session_id'):
-                            current_session_id = executor_instance.session_id
-                        
-                        # Display history for current session
-                        if current_session_id:
-                            self.console.print(history.format_history_display(session_id=current_session_id, limit=50))
-                        
-                        # Display global history
-                        self.console.print(history.format_history_display(session_id=None, limit=50))
-                        
-                    except Exception as e:
-                        self.console.print(f"[red]Error displaying history: {e}[/red]")
                         import traceback
                         traceback.print_exc()
                     continue

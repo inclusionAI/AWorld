@@ -64,6 +64,7 @@ class StreamTokenStats:
         tool_calls_content_estimated: bool = False,
         tool_calls: Optional[List[Any]] = None,
         content: Optional[str] = None,
+        model_name: Optional[str] = None,
     ) -> None:
         """Update stats for the current agent. Clears previous agent's data."""
         key = agent_id or "default"
@@ -74,6 +75,7 @@ class StreamTokenStats:
             "tool_calls_count": tool_calls_count,
             "tool_calls_content_length": tool_calls_content_length,
             "agent_name": agent_name or key,
+            "model_name": model_name,
             "output_estimated": output_estimated,
             "input_estimated": input_estimated,
             "tool_calls_estimated": tool_calls_estimated,
