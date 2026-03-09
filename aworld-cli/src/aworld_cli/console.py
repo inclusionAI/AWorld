@@ -1,4 +1,5 @@
 import asyncio
+import os
 import sys
 from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
@@ -127,68 +128,124 @@ class AWorldCLI:
         await handler(config, current_config)
     
     async def _edit_models_config(self, config, current_config: dict):
-        """Edit models section of config (providers, api_key, model, base_url)."""
+        """Edit models.default (flat: provider, api_key, model, base_url)."""
         from rich.table import Table
+
+        from .core.config import resolve_stream_value
         
         if 'models' not in current_config:
             current_config['models'] = {}
-        
-        providers = ['openai', 'anthropic', 'gemini']
-        self.console.print("\n[bold]Model provider:[/bold]")
-        for i, provider in enumerate(providers, 1):
-            self.console.print(f"  {i}. {provider}")
-        
-        provider_choice = Prompt.ask("\nSelect provider (1-3)", default="1")
-        try:
-            provider_idx = int(provider_choice) - 1
-            if provider_idx < 0 or provider_idx >= len(providers):
-                self.console.print("[red]Invalid selection[/red]")
-                return
-            selected_provider = providers[provider_idx]
-        except ValueError:
-            self.console.print("[red]Invalid selection[/red]")
-            return
-        
-        if selected_provider not in current_config['models']:
-            current_config['models'][selected_provider] = {}
-        
-        provider_config = current_config['models'][selected_provider]
-        
-        self.console.print(f"\n[bold]Configuring {selected_provider}[/bold]")
-        current_api_key = provider_config.get('api_key', '')
+        if 'default' not in current_config['models']:
+            current_config['models']['default'] = {}
+        default_cfg = current_config['models']['default']
+        # Migrate legacy nested format to flat (take openai first, then anthropic, gemini)
+        if not default_cfg.get('api_key') and isinstance(default_cfg, dict):
+            for p in ('openai', 'anthropic', 'gemini'):
+                if isinstance(default_cfg.get(p), dict) and default_cfg[p].get('api_key'):
+                    default_cfg['api_key'] = default_cfg[p].get('api_key', '')
+                    default_cfg['model'] = default_cfg[p].get('model', '')
+                    default_cfg['base_url'] = default_cfg[p].get('base_url', '')
+                    for k in ('openai', 'anthropic', 'gemini'):
+                        default_cfg.pop(k, None)
+                    break
+
+        self.console.print("\n[bold]Default LLM configuration[/bold]")
+        self.console.print("  [dim]Provider: openai (default)[/dim]\n")
+        current_api_key = default_cfg.get('api_key', '')
         if current_api_key:
             masked_key = current_api_key[:8] + "..." if len(current_api_key) > 8 else "***"
             self.console.print(f"  [dim]Current API key: {masked_key}[/dim]")
-        api_key = Prompt.ask(
-            f"  {selected_provider.upper()}_API_KEY",
-            default=current_api_key,
-            password=True
-        )
+        api_key = Prompt.ask("  OPENAI_API_KEY", default=current_api_key, password=True)
         if api_key:
-            provider_config['api_key'] = api_key
-        
-        current_model = provider_config.get('model', '')
-        if current_model:
-            self.console.print(f"  [dim]Default: {current_model}[/dim]")
-        else:
-            self.console.print("  [dim]e.g. gpt-4, claude-3-opus · press Enter to leave empty[/dim]")
+            default_cfg['api_key'] = api_key
+
+        current_model = default_cfg.get('model', '')
+        self.console.print("  [dim]e.g. gpt-4, claude-3-opus · Enter to leave empty[/dim]")
         model = Prompt.ask("  Model name", default=current_model)
         if model:
-            provider_config['model'] = model
-        
-        current_base_url = provider_config.get('base_url', '')
-        self.console.print("  [dim]Optional · press Enter to leave empty[/dim]")
+            default_cfg['model'] = model
+        else:
+            default_cfg.pop('model', None)
+
+        current_base_url = default_cfg.get('base_url', '')
+        self.console.print("  [dim]Optional · Enter to leave empty[/dim]")
         base_url = Prompt.ask("  Base URL", default=current_base_url)
         if base_url:
-            provider_config['base_url'] = base_url
-        
+            default_cfg['base_url'] = base_url
+        else:
+            default_cfg.pop('base_url', None)
+
+        # Stream switch
+        stream_str = 'true' if resolve_stream_value(current_config) == '1' else 'false'
+        self.console.print("  [dim]Enable streaming display (sets STREAM=1)[/dim]")
+        stream_choice = Prompt.ask("  Stream (true/false)", default=stream_str)
+        if str(stream_choice).lower() in ('true', '1', 'yes'):
+            current_config['stream'] = True
+            os.environ['STREAM'] = '1'
+        else:
+            current_config['stream'] = False
+            os.environ['STREAM'] = '0'
+
+        # Media LLM (models.media -> MEDIA_LLM_* for media_comprehension agent)
+        self.console.print("\n[bold]Media LLM configuration[/bold] [dim](optional, for media_comprehension - image/audio/video)[/dim]")
+        self.console.print("  [dim]Leave empty to use default LLM config above[/dim]\n")
+        if 'media' not in current_config['models']:
+            current_config['models']['media'] = {}
+        media_cfg = current_config['models']['media']
+
+        current_media_api_key = media_cfg.get('api_key', '')
+        if current_media_api_key:
+            masked = current_media_api_key[:8] + "..." if len(current_media_api_key) > 8 else "***"
+            self.console.print(f"  [dim]Current MEDIA_LLM_API_KEY: {masked}[/dim]")
+        media_api_key = Prompt.ask("  MEDIA_LLM_API_KEY", default=current_media_api_key, password=True)
+        if media_api_key:
+            media_cfg['api_key'] = media_api_key
+        else:
+            media_cfg.pop('api_key', None)
+
+        current_media_model = media_cfg.get('model', '')
+        self.console.print("  [dim]e.g. claude-3-5-sonnet-20241022 · Enter to inherit from default[/dim]")
+        media_model = Prompt.ask("  MEDIA_LLM_MODEL_NAME", default=current_media_model)
+        if media_model:
+            media_cfg['model'] = media_model
+        else:
+            media_cfg.pop('model', None)
+
+        current_media_base_url = media_cfg.get('base_url', '')
+        media_base_url = Prompt.ask("  MEDIA_LLM_BASE_URL", default=current_media_base_url)
+        if media_base_url:
+            media_cfg['base_url'] = media_base_url
+        else:
+            media_cfg.pop('base_url', None)
+
+        current_media_provider = media_cfg.get('provider', 'openai')
+        media_provider = Prompt.ask("  MEDIA_LLM_PROVIDER", default=current_media_provider)
+        if media_provider:
+            media_cfg['provider'] = media_provider
+        else:
+            media_cfg.pop('provider', None)
+
+        current_media_temp = media_cfg.get('temperature', 0.1)
+        media_temp = Prompt.ask("  MEDIA_LLM_TEMPERATURE", default=str(current_media_temp))
+        if media_temp:
+            try:
+                media_cfg['temperature'] = float(media_temp)
+            except ValueError:
+                media_cfg.pop('temperature', None)
+        else:
+            media_cfg.pop('temperature', None)
+
+        if not media_cfg:
+            current_config['models'].pop('media', None)
+
         config.save_config(current_config)
         self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
-        
-        table = Table(title=f"{selected_provider.upper()} Configuration", box=box.ROUNDED)
+        table = Table(title="Default LLM Configuration", box=box.ROUNDED)
         table.add_column("Setting", style="cyan")
         table.add_column("Value", style="green")
-        for key, value in provider_config.items():
+        for key, value in default_cfg.items():
+            if key == 'provider':
+                continue  # Not exposed, defaults to openai
             if key == 'api_key':
                 masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
                 table.add_row(key, masked_value)
@@ -196,6 +253,18 @@ class AWorldCLI:
                 table.add_row(key, str(value))
         self.console.print()
         self.console.print(table)
+        if current_config['models'].get('media'):
+            media_table = Table(title="Media LLM Configuration (MEDIA_LLM_*)", box=box.ROUNDED)
+            media_table.add_column("Setting", style="cyan")
+            media_table.add_column("Value", style="green")
+            for key, value in current_config['models']['media'].items():
+                if key == 'api_key':
+                    masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
+                    media_table.add_row(key, masked_value)
+                else:
+                    media_table.add_row(key, str(value))
+            self.console.print()
+            self.console.print(media_table)
 
     async def _edit_skills_config(self, config, current_config: dict):
         """Edit skills section of config (global SKILLS_PATH and per-agent XXX_SKILLS_PATH)."""
@@ -204,22 +273,23 @@ class AWorldCLI:
             current_config['skills'] = {}
 
         skills_cfg = current_config['skills']
+        print('skills_cfg: ', skills_cfg)
         self.console.print("\n[bold]Skills paths:[/bold]")
         self.console.print("  [dim]Paths are relative to home or absolute. Use semicolon (;) to separate multiple paths. Enter to keep, '-' to clear.[/dim]\n")
 
         # Global SKILLS_PATH
-        current = skills_cfg.get('skills_path', '')
-        val = Prompt.ask("  SKILLS_PATH (global)", default=current or default_skills_path)
+        current = skills_cfg.get('default_skills_path', '')
+        val = Prompt.ask("  SKILLS_PATH (default)", default=current or default_skills_path)
         v = val.strip() if val else ''
         if v and v != '-':
-            skills_cfg['skills_path'] = v
+            skills_cfg['default_skills_path'] = v
         elif v == '-' or (not v and current):
-            skills_cfg.pop('skills_path', None)
+            skills_cfg.pop('default_skills_path', None)
 
         # Per-agent paths (same default as SKILLS_PATH)
         for label, key in [
             ("EVALUATOR_SKILLS_PATH (evaluator)", "evaluator_skills_path"),
-            ("EXPLORER_SKILLS_PATH (explorer)", "explorer_skills_path"),
+            ("MEDIA_SKILLS_PATH (media)", "media_skills_path"),
             ("AWORLD_SKILLS_PATH (aworld)", "aworld_skills_path"),
             ("DEVELOPER_SKILLS_PATH (developer)", "developer_skills_path"),
         ]:
@@ -652,6 +722,7 @@ class AWorldCLI:
             f"Type '/restore' or '/latest' to restore to the latest session.\n"
             f"Type '/skills' to list all available skills.\n"
             f"Type '/agents' to list all available agents.\n"
+            f"Type '/cost' for current session, '/cost -all' for global history.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
         self.console.print(Panel(help_text, style="blue"))
@@ -667,7 +738,7 @@ class AWorldCLI:
             # 用整行前缀匹配：/ski → /skills、/age → /agents；meta_dict 在补全菜单中显示描述（命令左、描述右）
             slash_cmds = [
                 "/agents", "/skills", "/new", "/restore", "/latest",
-                "/exit", "/quit", "/switch",
+                "/exit", "/quit", "/switch", "/cost", "/cost -all",
             ]
             switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
             all_words = slash_cmds + switch_with_agents + ["exit", "quit"]
@@ -680,6 +751,8 @@ class AWorldCLI:
                 "/exit": "Exit chat",
                 "/quit": "Exit chat",
                 "/switch": "Switch to another agent",
+                "/cost": "View query history (current session)",
+                "/cost -all": "View global history (all sessions)",
                 "exit": "Exit chat",
                 "quit": "Exit chat",
             }
@@ -722,12 +795,8 @@ class AWorldCLI:
                 
                 # Handle explicit exit commands
                 if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
-                    if is_terminal:
-                        return False
-                    else:
-                        # In non-terminal, just exit without confirmation
-                        return False
-                    continue
+                    self.console.print("[dim]Bye[/dim]")
+                    return False
 
                 # Handle new session command
                 if user_input.lower() in ("/new", "new"):
@@ -826,6 +895,38 @@ class AWorldCLI:
                         self.console.print(f"[dim]Total: {len(all_skills)} skill(s)[/dim]")
                     except Exception as e:
                         self.console.print(f"[red]Error loading skills: {e}[/red]")
+                    continue
+
+                # Handle cost command (query history + token usage)
+                cost_input = user_input.strip().lower()
+                if cost_input in ("/cost", "cost") or cost_input in ("/cost -all", "cost -all"):
+                    try:
+                        from pathlib import Path
+                        from .history import JSONLHistory
+                        
+                        history_path = Path.home() / ".aworld" / "cli_history.jsonl"
+                        if not history_path.exists():
+                            self.console.print("[yellow]No history file found. Start chatting to generate history.[/yellow]")
+                            continue
+                        
+                        history = JSONLHistory(str(history_path))
+                        show_all = "-all" in cost_input
+                        
+                        if show_all:
+                            self.console.print(history.format_history_display(session_id=None))
+                        else:
+                            current_session_id = None
+                            if executor_instance and hasattr(executor_instance, 'session_id'):
+                                current_session_id = executor_instance.session_id
+                            if current_session_id:
+                                self.console.print(history.format_history_display(session_id=current_session_id))
+                            else:
+                                self.console.print("[yellow]No current session. Use /cost -all for global history.[/yellow]")
+                        
+                    except Exception as e:
+                        self.console.print(f"[red]Error displaying cost: {e}[/red]")
+                        import traceback
+                        traceback.print_exc()
                     continue
 
                 # Handle agents command
@@ -951,8 +1052,21 @@ class AWorldCLI:
                     continue
 
             except KeyboardInterrupt:
-                self.console.print("\n[yellow]Session interrupted.[/yellow]")
-                break
+                buf_content = ""
+                if is_terminal and session is not None:
+                    try:
+                        buf = getattr(session, "default_buffer", None)
+                        if buf is not None:
+                            buf_content = (buf.text or "").strip()
+                    except Exception:
+                        pass
+                if buf_content:
+                    logger.info(f"\n[yellow]Interrupted. Input buffer: {buf_content!r}[/yellow]")
+                    continue  # Stay in chat loop, show prompt again
+                else:
+                    logger.info("\n[yellow]Interrupted. Exiting...[/yellow]")
+                    self.console.print("[dim]Bye[/dim]")
+                    return False  # Exit CLI when buffer is empty
             except Exception as e:
                 import traceback
                 logger.error(f"Error executing task: {e} {traceback.format_exc()}")

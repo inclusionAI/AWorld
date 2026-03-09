@@ -1,4 +1,6 @@
 import re
+import time
+import uuid
 import traceback
 from typing import (
     List,
@@ -11,7 +13,7 @@ from typing import (
 from aworld.config import ConfigDict, ModelConfig
 from aworld.config.conf import AgentConfig, ClientType
 from aworld.core.model_output_parser.default_parsers import ToolParser, ReasoningParser, CodeParser, JsonParser
-from aworld.logs.util import logger
+from aworld.logs.util import logger, log_llm_record
 
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.core.video_gen_provider import VideoGenProviderBase
@@ -349,6 +351,13 @@ class LLMModel:
                 f"Register it via register_llm_provider() or register_video_provider()."
             )
 
+    @staticmethod
+    def _generate_llm_request_id() -> str:
+        """Generate a unique LLM request ID based on timestamp and UUID."""
+        ts = int(time.time() * 1000)
+        rand = uuid.uuid4().hex[:8]
+        return f"llm_req_{ts}_{rand}"
+
     @classmethod
     def supported_providers(cls) -> list[str]:
         return list(PROVIDER_CLASSES.keys())
@@ -381,6 +390,14 @@ class LLMModel:
             ModelResponse: Unified model response object.
         """
         # Call provider's acompletion method directly
+        start_ms = time.time()
+        request_id = LLMModel._generate_llm_request_id()
+        log_params = {
+            "task_id": context.task_id,
+            "request_id": request_id,
+        }
+        kwargs["llm_request_id"] = request_id
+        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context.trace_id)
         try:
             resp = await self.provider.acompletion(
                 messages=messages,
@@ -394,6 +411,9 @@ class LLMModel:
                 response_parse_args = kwargs.get("response_parse_args") or {}
                 response_parse_args["tools"] = kwargs.get("tools")
                 resp = await self.llm_response_parser.parse(resp, **response_parse_args)
+
+            log_params["time_cost"] = round(time.time() - start_ms, 3)
+            log_llm_record("OUTPUT", self.provider.model_name, resp, log_params, context.trace_id)
             return resp
         except AttributeError as e:
             logger.error(f"Provider {self.provider_name} does not support acompletion: {e}")
@@ -427,6 +447,14 @@ class LLMModel:
             ModelResponse: Unified model response object.
         """
         # Call provider's completion method directly
+        start_ms = time.time()
+        request_id = LLMModel._generate_llm_request_id()
+        log_params = {
+            "task_id": context.task_id,
+            "request_id": request_id,
+        }
+        kwargs["llm_request_id"] = request_id
+        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context.trace_id)
         resp = self.provider.completion(
             messages=messages,
             temperature=temperature,
@@ -438,6 +466,9 @@ class LLMModel:
         if self.llm_response_parser:
             response_parse_args = kwargs.get("response_parse_args") or {}
             resp = sync_exec(self.llm_response_parser.parse, resp, **response_parse_args)
+
+        log_params["time_cost"] = round(time.time() - start_ms, 3)
+        log_llm_record("OUTPUT", self.provider.model_name, resp, log_params, context.trace_id)
         return resp
 
     def stream_completion(self,
@@ -492,6 +523,14 @@ class LLMModel:
             AsyncGenerator yielding ModelResponse chunks.
         """
         # Call provider's astream_completion method directly
+        start_ms = time.time()
+        request_id = LLMModel._generate_llm_request_id()
+        log_params = {
+            "task_id": context.task_id,
+            "request_id": request_id,
+        }
+        kwargs["llm_request_id"] = request_id
+        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context.trace_id)
         async for chunk in self.provider.astream_completion(
                 messages=messages,
                 temperature=temperature,
@@ -503,6 +542,9 @@ class LLMModel:
             if self.llm_response_parser:
                 response_parse_args = kwargs.get("response_parse_args") or {}
                 chunk = await self.llm_response_parser.parse_chunk(chunk, **response_parse_args)
+            log_params["time_cost"] = round(time.time() - start_ms, 3)
+            log_llm_record("CHUNK", self.provider.model_name, chunk, log_params, context.trace_id)
+            start_ms = time.time()
             yield chunk
 
     def speech_to_text(self,

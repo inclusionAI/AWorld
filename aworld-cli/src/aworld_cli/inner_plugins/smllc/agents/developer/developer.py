@@ -62,7 +62,8 @@ def build_developer_swarm():
             llm_api_key=os.environ.get("LLM_API_KEY"),
             llm_base_url=os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
-            params={"max_completion_tokens": 59000}
+            params={"max_completion_tokens": 59000},
+            llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
         skill_configs=skill_configs
     )

@@ -33,7 +33,7 @@ class Sandbox(BaseSandbox, SandboxApi):
 
     @classmethod
     def builder(cls) -> "SandboxBuilder":
-        """链式编程入口：返回 SandboxBuilder，每个 . 后都有 IDE 方法提示，最后 .build() 得到 Sandbox。"""
+        """Fluent builder entrypoint: returns a SandboxBuilder so that each chained call has IDE hints, and final .build() creates a Sandbox."""
         from aworld.sandbox.builder.sandbox_builder import SandboxBuilder
         return SandboxBuilder()
 
@@ -54,11 +54,11 @@ class Sandbox(BaseSandbox, SandboxApi):
         env_content: Optional[Dict[str, Any]] = None,
         mode: str = "local",
         builtin_tools: Any = None,
+        workspaces: Optional[List[str]] = None,
         **kwargs,
     ):
         """Initialize a new Sandbox instance."""
         reuse = kwargs.pop("reuse", True)
-        workspace = kwargs.pop("workspace", None)
         super().__init__(
             sandbox_id=sandbox_id,
             env_type=SandboxEnvType.LOCAL,
@@ -67,10 +67,10 @@ class Sandbox(BaseSandbox, SandboxApi):
         )
         default_registry_url = os.getenv("ENV_REGISTRY_URL", "~/workspace/registry.json")
         self._registry_url = registry_url or default_registry_url
-        if workspace is None:
+        if workspaces is None:
             env_workspace = os.getenv("AWORLD_WORKSPACE_PATH")
             if env_workspace:
-                workspace = [p.strip() for p in env_workspace.split(",") if p.strip()]
+                workspaces = [p.strip() for p in env_workspace.split(",") if p.strip()]
         self._skill_configs = skill_configs or {}
         self._black_tool_actions = black_tool_actions or {}
         self._tools = tools or []
@@ -80,7 +80,7 @@ class Sandbox(BaseSandbox, SandboxApi):
         self._streaming = kwargs.get("streaming", False)
         self._env_content_name = env_content_name or "env_content"
         self._env_content = env_content or {}
-        self._workspace = workspace
+        self._workspaces = workspaces
         self._mode = "local"
         self.mode = mode
         self._builtin_tools = builtin_tools
@@ -95,7 +95,7 @@ class Sandbox(BaseSandbox, SandboxApi):
             user_mcp_servers = list(user_mcp_config.get("mcpServers", {}).keys())
 
         enabled_builtin = self._resolve_builtin_tools()
-        config_manager = ToolConfigManager(mode=self._mode, workspace=self._workspace)
+        config_manager = ToolConfigManager(mode=self._mode, workspaces=self._workspaces)
         auto_config = config_manager.get_mcp_config(enabled_builtin) if enabled_builtin else {}
         self._mcp_config = self._merge_mcp_configs(user_mcp_config, auto_config)
         self._mcp_servers = list(self._mcp_config.get("mcpServers", {}).keys()) or user_mcp_servers
@@ -123,7 +123,8 @@ class Sandbox(BaseSandbox, SandboxApi):
         return []
 
     def _merge_mcp_configs(self, user_config: Dict, auto_config: Dict) -> Dict:
-        """Merge user mcp_config with auto-generated builtin tool config. User wins on same key."""
+        """Merge user mcp_config with auto-generated builtin tool config.
+        Same server name: user wins (user_config overrides auto_config)."""
         merged = {"mcpServers": {}}
         user_servers = user_config.get("mcpServers") or {}
         auto_servers = auto_config.get("mcpServers") or {}
@@ -294,23 +295,23 @@ class Sandbox(BaseSandbox, SandboxApi):
         self._env_content = value or {}
 
     @property
-    def workspace(self) -> Optional[List[str]]:
-        return self._workspace
+    def workspaces(self) -> Optional[List[str]]:
+        return self._workspaces
 
-    @workspace.setter
-    def workspace(self, value):
+    @workspaces.setter
+    def workspaces(self, value):
         if self._mode == "remote":
             logger.warning(
-                "workspace setting is ignored in remote mode. "
-                "Configure workspace on the remote MCP server instead."
+                "workspaces setting is ignored in remote mode. "
+                "Configure workspaces on the remote MCP server instead."
             )
             return
         if isinstance(value, str):
             value = [value]
         elif value is not None and not isinstance(value, list):
-            raise TypeError(f"workspace must be a list of strings or a single string, got {type(value)}")
-        self._workspace = value
-        logger.info(f"Updated sandbox workspace to: {self._workspace}")
+            raise TypeError(f"workspaces must be a list of strings or a single string, got {type(value)}")
+        self._workspaces = value
+        logger.info(f"Updated sandbox workspaces to: {self._workspaces}")
 
     @property
     def reuse(self) -> bool:
