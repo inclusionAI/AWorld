@@ -1,12 +1,7 @@
 from typing import Optional
 
-from pydantic import BaseModel
-
 from aworld.core.memory import VectorDBConfig
 from aworld.memory.vector.dbs.base import VectorDB
-
-
-
 
 
 class VectorDBFactory:

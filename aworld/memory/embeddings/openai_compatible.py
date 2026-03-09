@@ -4,10 +4,10 @@ from openai import OpenAI
 
 from aworld.core.memory import EmbeddingsConfig
 from aworld.logs.util import logger
-from aworld.memory.embeddings.base import EmbeddingsBase
+from aworld.memory.embeddings.base import Embeddings
 
 
-class OpenAICompatibleEmbeddings(EmbeddingsBase):
+class OpenAICompatibleEmbeddings(Embeddings):
     """
     OpenAI compatible embeddings using OpenAI-compatible HTTP API.
 

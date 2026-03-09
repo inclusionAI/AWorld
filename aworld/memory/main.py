@@ -285,7 +285,7 @@ class Memory(MemoryBase):
         logger.debug(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages: {summary_messages}")
         return llm_response.content
 
-    def _get_parsed_history_messages(self, history_items: list[MemoryItem]) -> list[dict]:
+    def _get_parsed_history_messages(self, history_items: list[MemoryItem], use_cur_round: bool = False) -> list[dict]:
         """Get and format history messages for summary.
 
         Args:
@@ -300,15 +300,18 @@ class Memory(MemoryBase):
                 'tool_calls': message.metadata.get('tool_calls') if message.metadata.get('tool_calls') else None
             }
             for message in history_items]
+        if use_cur_round:
+            parsed_messages[-1]['tool_call_id'] = history_items[-1].metadata['tool_call_id']
         return parsed_messages
 
     async def async_gen_multi_rounds_summary(self,
                                              to_be_summary: list[MemoryItem],
-                                             agent_memory_config: AgentMemoryConfig) -> str:
+                                             agent_memory_config: AgentMemoryConfig,
+                                             use_cur_round: bool = False) -> str:
         logger.info(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages")
         if len(to_be_summary) == 0:
             return ""
-        parsed_messages = self._get_parsed_history_messages(to_be_summary)
+        parsed_messages = self._get_parsed_history_messages(to_be_summary, use_cur_round=use_cur_round)
         history_context = self._build_history_context(parsed_messages)
 
         summary_messages = [
@@ -323,16 +326,7 @@ class Memory(MemoryBase):
         logger.info(f"🧠 [MEMORY:short-term] [Summary] Creating summary memory, history messages [filters -> {filters}"
                     f", last_rounds -> {last_rounds}]")
         history_items = self.memory_store.get_last_n(last_rounds, filters=filters)
-        if len(history_items) == 0:
-            return ""
-        parsed_messages = self._get_parsed_history_messages(history_items)
-        history_context = self._build_history_context(parsed_messages)
-
-        summary_messages = [
-            {"role": "user", "content": agent_memory_config.summary_prompt.format(context=history_context)}
-        ]
-
-        return await self._call_llm_summary(summary_messages)
+        return await self.async_gen_multi_rounds_summary(history_items, agent_memory_config)
 
     async def async_gen_cur_round_summary(self, to_be_summary: MemoryItem, filters: dict, last_rounds: int,
                                           agent_memory_config: AgentMemoryConfig) -> str:
@@ -345,21 +339,8 @@ class Memory(MemoryBase):
         history_items = self.memory_store.get_last_n(last_rounds, filters=filters)
         if len(history_items) == 0:
             return ""
-        parsed_messages = self._get_parsed_history_messages(history_items)
-
-        # Append the to_be_summary
-        parsed_messages.append({
-            "role": to_be_summary.metadata['role'],
-            "content": f"{to_be_summary.content}",
-            'tool_call_id': to_be_summary.metadata['tool_call_id'],
-        })
-        history_context = self._build_history_context(parsed_messages)
-
-        summary_messages = [
-            {"role": "user", "content": agent_memory_config.summary_prompt.format(context=history_context)}
-        ]
-
-        return await self._call_llm_summary(summary_messages)
+        history_items.append(to_be_summary)
+        return await self.async_gen_multi_rounds_summary(history_items, agent_memory_config, use_cur_round=True)
 
     def search(self, query, limit=100, memory_type="message", threshold=0.8, filters=None) -> Optional[
         list[MemoryItem]]:
@@ -388,18 +369,6 @@ class Memory(MemoryBase):
         """Post process long-term memory."""
         # check if memory_item is "message"
         if memory_item.memory_type != 'message':
-            return
-
-        if not agent_memory_config:
-            return
-
-        # check if long-term memory is enabled
-        if not agent_memory_config.enable_long_term:
-            return
-
-        # check if long-term memory config is valid
-        long_term_config = agent_memory_config.long_term_config
-        if not long_term_config:
             return
 
         await self.trigger_short_term_memory_to_long_term(LongTermMemoryTriggerParams(
