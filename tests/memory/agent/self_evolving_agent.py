@@ -16,13 +16,25 @@ from aworld.core.task import Task
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import LongTermMemoryTriggerParams, MemoryAIMessage, MessageMetadata, UserProfile, \
     MemoryHumanMessage
-from aworld.memory.utils import build_history_context
 from aworld.output import AworldUI
 from aworld.output.utils import load_workspace
 from aworld.prompt import Prompt
 from aworld.runner import Runners
 from aworld.utils.common import load_mcp_config
 from tests.memory.prompts import SELF_EVOLVING_USER_INPUT_REWRITE_PROMPT, RESEARCH_PROMPT
+
+
+def build_history_context(history_messages: list[MemoryItem]) -> str:
+    """
+    Build history context from history messages.
+    """
+    history_context = ""
+    for message in history_messages:
+        if message.role == "user":
+            history_context += f"User: {message.content}\n"
+        else:
+            history_context += f"Agent: {message.content}\n"
+    return history_context
 
 
 class SuperAgent:

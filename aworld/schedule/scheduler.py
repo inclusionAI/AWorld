@@ -97,7 +97,7 @@ class TaskScheduler:
         return self._executor
 
     @executor.setter
-    def executor(self, executor: Callable[[Task], Awaitable[bool]]):
+    def executor(self, executor: Callable[[Task], Awaitable[TaskResponse]]):
         """
         Set the task executor function.
 
@@ -477,7 +477,9 @@ async def execute_schedulable_tasks(runtime_engine: RuntimeEngine, tasks: List[T
             st.task_status = TaskStatus.RUNNING
             st.started_at = time.time()
             res = await exec_tasks(tasks=[st])
-            st.task_status = res.get(st.id).status
+            task_response = res.get(st.id)
+            if task_response:
+                st.task_status = task_response.status
             st.completed_at = time.time()
             return res
 
