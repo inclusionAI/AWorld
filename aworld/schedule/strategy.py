@@ -163,7 +163,7 @@ def register_strategy(strategy_type: str, strategy: Type[ScheduleStrategy]) -> b
 
 def create_strategy(strategy_type: Optional[str] = None, **kwargs) -> ScheduleStrategy:
     """Create strategy instance."""
-    return STRATEGY_MAP.get(strategy_type, AutoStrategy())(**kwargs)
+    return STRATEGY_MAP.get(strategy_type, AutoStrategy)(**kwargs)
 
 
 class TaskQueue(ABC):
@@ -239,7 +239,7 @@ class PriorityTaskQueue(TaskQueue):
     def push(self, task: ScheduledTask):
         # (priority_value, counter, task)
         priority_value = task.priority
-        heapq.heappush(self.heap, (priority_value, self.counter, task))
+        heapq.heappush(self.heap, (-priority_value, self.counter, task))
         self.counter += 1
 
     def pop(self) -> Optional[ScheduledTask]:
