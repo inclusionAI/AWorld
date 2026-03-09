@@ -953,6 +953,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                     "tool_calls_content_estimated": True,  # char count, approx
                                     "agent_id": self.id(),
                                     "agent_name": self.name(),
+                                    "model_name": getattr(chunk, "model", None) or getattr(llm_response, "model", None) or self.model_name,
                                 }
                                 await task.outputs.add_output(ChunkOutput(data=chunk, metadata=meta))
 
@@ -1099,9 +1100,15 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
     @staticmethod
     async def send_agent_response_output(agent: BaseAgent, response: Any, context: Context, outputs: Outputs = None):
+        model_name = getattr(response, "model", None) if response else None
         resp_output = MessageOutput(
             source=response,
-            metadata={"agent_id": agent.id(), "agent_name": agent.name(), "is_finished": agent.finished}
+            metadata={
+                "agent_id": agent.id(),
+                "agent_name": agent.name(),
+                "is_finished": agent.finished,
+                "model_name": model_name,
+            }
         )
         if eventbus is not None:
             await send_message(Message(

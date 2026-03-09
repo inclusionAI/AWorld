@@ -57,7 +57,7 @@ class MultiTaskMediaComprehensionAgent(Agent):
 
 @agent(
     name="media_comprehension",
-    desc="""An intelligent assistant for understanding images, audio, and video files. Use when:
+    desc="""An intelligent assistant specially for understanding images, audio, and video files. Use when:
 - Images: Recognize, describe, and interpret visual content.
 - Audio: Transcribe speech and analyze audio content.
 - Video: Understand video content, analyze scenes, and perform multimodal comprehension.
