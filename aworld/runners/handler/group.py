@@ -104,7 +104,18 @@ class DefaultGroupHandler(GroupHandler):
                     con = action.policy_info
                     if action.params and 'content' in action.params:
                         try:
-                            con = Observation.model_validate(action.params)
+                            params = dict(action.params)
+                            raw_info = params.get('info')
+                            if isinstance(raw_info, str) and raw_info.strip():
+                                try:
+                                    params['info'] = json.loads(raw_info)
+                                except Exception:
+                                    logger.warning(
+                                        f"DefaultGroupHandler|agent_as_tool|Failed to parse info as JSON "
+                                        f"for agent '{agent_name}': {raw_info!r}"
+                                    )
+                                    params.pop('info', None)
+                            con = Observation.model_validate(params)
                         except Exception as e:
                             logger.error(f"DefaultGroupHandler|agent_as_tool|Can not build observation for {agent_name} agent.{e}")
                             con = action.params["content"]
