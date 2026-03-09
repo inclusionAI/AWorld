@@ -413,8 +413,8 @@ def _format_command_output(
 async def _execute_command_async(command: str, timeout: int) -> CommandResult:
     """Execute command asynchronously with timeout.
 
-    后台命令使用临时文件捕获输出，避免 PIPE 导致管道阻塞。
-    普通命令使用标准 PIPE 方式。
+    For background commands we capture output using temporary files to avoid PIPE backpressure.
+    For foreground commands we use the standard PIPE-based approach.
 
     Args:
         command: Command to execute
@@ -429,7 +429,7 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
         is_background = _is_background_process(command) and platform_info["system"] != "Windows"
 
         if is_background:
-            # ========== 后台命令：使用临时文件，避免 PIPE 阻塞 ==========
+            # ========== Background command: use temporary files to avoid PIPE blocking ==========
             stdout_file = tempfile.NamedTemporaryFile(mode='w+', suffix='.stdout', delete=False)
             stderr_file = tempfile.NamedTemporaryFile(mode='w+', suffix='.stderr', delete=False)
             stdout_path = stdout_file.name
@@ -565,6 +565,12 @@ async def _execute_command_async(command: str, timeout: int) -> CommandResult:
 
 
 if __name__ == "__main__":
+    import sys
     load_dotenv(override=True)
     logging.info("Starting terminal-server MCP server!")
-    mcp.run(transport="streamable-http")
+    # Default streamable-http (compat with start_tool_servers.sh); use stdio when --stdio or MCP_TRANSPORT=stdio
+    use_stdio = "--stdio" in sys.argv or os.environ.get("MCP_TRANSPORT", "").strip().lower() == "stdio"
+    if use_stdio:
+        mcp.run(transport="stdio")
+    else:
+        mcp.run(transport="streamable-http")

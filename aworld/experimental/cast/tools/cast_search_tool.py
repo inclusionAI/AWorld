@@ -67,7 +67,8 @@ class CastSearchAction(ToolAction):
                 name="include_patterns",
                 type="array",
                 required=False,
-                desc="List of file patterns to include"
+                desc="List of file patterns to include",
+                items={"type": "string"}
             ),
             "show_details": ParamInfo(
                 name="show_details",
@@ -367,20 +368,28 @@ class CastSearchTool(AsyncTool):
                             offset=offset
                         )
 
-                        result_data = {
-                            "search_type": "read",
-                            "file_path": str(file_path),
-                            "total_count": result.total_count,
-                            "match_count": len(result.matches),
-                            "truncated": result.truncated,
-                            "execution_time": result.execution_time,
-                            "output": result.output
-                        }
-
-                        if show_details:
-                            logger.info(f"File read completed: {file_path}, read {len(result.matches)} lines")
-
-                        action_result.content = json.dumps(result_data, ensure_ascii=False, default=str)
+                        # Multimedia files: return plain text (data URI), not JSON
+                        if result.metadata.get("is_multimedia"):
+                            mime = result.metadata.get("mime_type", "application/octet-stream")
+                            action_result.content = (
+                                result.output
+                                # f"[File: {file_path}] ({mime})\n{result.output}"
+                            )
+                            if show_details:
+                                logger.info(f"Multimedia file read: {file_path} ({mime})")
+                        else:
+                            result_data = {
+                                "search_type": "read",
+                                "file_path": str(file_path),
+                                "total_count": result.total_count,
+                                "match_count": len(result.matches),
+                                "truncated": result.truncated,
+                                "execution_time": result.execution_time,
+                                "output": result.output
+                            }
+                            if show_details:
+                                logger.info(f"File read completed: {file_path}, read {len(result.matches)} lines")
+                            action_result.content = json.dumps(result_data, ensure_ascii=False, default=str)
                         action_result.success = True
 
                     except Exception as e:

@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
 import requests
-from mcp.types import TextContent, ImageContent
+from mcp.types import CallToolResult, TextContent, ImageContent
 
 from aworld.core.common import ActionResult
 from aworld.core.context.base import Context
@@ -17,6 +17,18 @@ from aworld.mcp_client.server import MCPServer, MCPServerSse, MCPServerStdio, MC
 from aworld.tools import get_function_tools
 
 MCP_SERVERS_CONFIG = {}
+
+
+def _make_timeout_result(server_name: str, tool_name: str, timeout: float) -> CallToolResult:
+    """Build CallToolResult for tool call timeout."""
+    msg = (
+        f"Tool call timed out after {timeout:.0f} seconds "
+        f"(server={server_name}, tool={tool_name})."
+    )
+    return CallToolResult(
+        content=[TextContent(type="text", text=msg)],
+        is_error=True,
+    )
 
 
 def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
@@ -1127,8 +1139,14 @@ async def get_server_instance(
             )
             return server, _SESSION_ID
         else:  # stdio type
+            command = server_config["command"]
+            try:
+                from aworld.sandbox.config.python_cmd import resolve_command_placeholder
+                command = resolve_command_placeholder(command, server_name)
+            except Exception as resolve_err:
+                logger.warning(f"Resolve PYTHON_CMD for {server_name}: {resolve_err}, using command as-is")
             params = {
-                "command": server_config["command"],
+                "command": command,
                 "args": server_config.get("args", []),
                 "env": server_config.get("env", {}),
                 "cwd": server_config.get("cwd"),
@@ -1144,6 +1162,13 @@ async def get_server_instance(
             return server, None
     except Exception as e:
         logger.warning(f"Failed to create server instance for {server_name}: {e}")
+        if server_config and server_config.get("type") == "stdio":
+            _hint = (
+                f"Install dependencies for builtin server '{server_name}', "
+                f"e.g. pip install -r <aworld>/aworld/sandbox/tool_servers/{server_name}/requirements.txt "
+                f"(or pip install 'aworld[tools-{server_name}]' if the main package provides that extra)."
+            )
+            logger.warning(_hint)
         return None, None
 
 
@@ -1349,6 +1374,7 @@ async def call_mcp_tool_with_reuse(
             logger.warning(
                 f"Error calling tool {server_name}__{tool_name} "
                 f"(attempt {attempt + 1}/{max_retry}): {e}"
+                f"Traceback:\n{traceback.format_exc()}"
             )
 
     return call_result_raw
