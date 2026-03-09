@@ -1,6 +1,7 @@
 """
 Stream token statistics helpers for CLI display.
 """
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from rich.console import Console
@@ -22,6 +23,11 @@ def format_chars(n: int) -> str:
     return str(n)
 
 
+def format_timestamp() -> str:
+    """Return current time as HH:MM:SS for display."""
+    return datetime.now().strftime("%H:%M:%S")
+
+
 def format_elapsed(sec: float) -> str:
     """Format elapsed seconds for display."""
     if sec < 60:
@@ -37,10 +43,12 @@ class StreamTokenStats:
     """
     Tracks token stats for the current (last) streaming agent.
     Only keeps the most recent agent's stats for display.
+    When clear() is called (e.g. on agent handoff), stats are snapshotted for history.
     """
 
     def __init__(self) -> None:
         self._stats: Dict[str, Dict[str, Any]] = {}
+        self._last_for_history: Optional[Dict[str, Any]] = None
 
     def update(
         self,
@@ -56,6 +64,7 @@ class StreamTokenStats:
         tool_calls_content_estimated: bool = False,
         tool_calls: Optional[List[Any]] = None,
         content: Optional[str] = None,
+        model_name: Optional[str] = None,
     ) -> None:
         """Update stats for the current agent. Clears previous agent's data."""
         key = agent_id or "default"
@@ -66,6 +75,7 @@ class StreamTokenStats:
             "tool_calls_count": tool_calls_count,
             "tool_calls_content_length": tool_calls_content_length,
             "agent_name": agent_name or key,
+            "model_name": model_name,
             "output_estimated": output_estimated,
             "input_estimated": input_estimated,
             "tool_calls_estimated": tool_calls_estimated,
@@ -75,7 +85,10 @@ class StreamTokenStats:
         }
 
     def clear(self) -> None:
-        """Clear all stats. Call after last chunk / stream ends."""
+        """Clear all stats. Call after last chunk / stream ends. Snapshots for history first."""
+        stats = self.get_current_stats()
+        if stats is not None:
+            self._last_for_history = dict(stats)
         self._stats.clear()
 
     def get_current_stats(self) -> Optional[Dict[str, Any]]:
@@ -83,6 +96,15 @@ class StreamTokenStats:
         if not self._stats:
             return None
         return next(iter(self._stats.values()), None)
+
+    def get_stats_for_history(self) -> Optional[Dict[str, Any]]:
+        """Get stats for history: current stats, or last snapshot from clear(). Consumes snapshot."""
+        current = self.get_current_stats()
+        if current is not None:
+            return current
+        snapshot = self._last_for_history
+        self._last_for_history = None
+        return snapshot
 
     def _compute_total_tokens(self, stats: Dict[str, Any]) -> Optional[int]:
         """Compute total tokens using num_tokens_from_messages with tool_calls."""
@@ -136,6 +158,7 @@ class StreamTokenStats:
         if total_tokens is not None:
             parts.append(f"[dim]~{format_tokens(total_tokens)} tokens[/dim]")
         parts.append(f"[dim]{elapsed_str}[/dim]")
+        parts.append(f"[dim]{format_timestamp()}[/dim]")
         return "  ".join(parts)
 
     def show_final(self, console: Optional[Console], elapsed_sec: Optional[float] = None) -> None:
@@ -164,6 +187,7 @@ class StreamTokenStats:
                     parts.append(f"[dim]~{format_tokens(total_tokens)} tokens[/dim]")
                 if elapsed_sec is not None:
                     parts.append(f"[dim]{format_elapsed(elapsed_sec)}[/dim]")
+                parts.append(f"[dim]{format_timestamp()}[/dim]")
                 line = "  ".join(parts)
                 console.print(f"\n{line}")
             break

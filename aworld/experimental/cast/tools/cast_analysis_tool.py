@@ -257,7 +257,7 @@ class CAstAnalysisTool(AsyncTool):
 
             if action_name == CAstAnalysisAction.ANALYZE_REPOSITORY.value.name:
                 # Analyze entire repository
-                root_path = Path(action.params.get("root_path"))
+                root_path = Path(action.params.get("root_path")).expanduser()
                 ignore_patterns = action.params.get("ignore_patterns", ['__pycache__', '*.pyc', '.git'])
                 show_details = action.params.get("show_details", True)
 
@@ -344,7 +344,7 @@ class CAstAnalysisTool(AsyncTool):
                 action_results.append(action_result)
             elif action_name == CAstAnalysisAction.SEARCH_AST.value.name:
                 # Only recall implementation layer code
-                root_path = Path(action.params.get("root_path"))
+                root_path = Path(action.params.get("root_path")).expanduser()
                 user_query = action.params.get("user_query", "How to integrate AST analysis capability for DocCodeAgent")
                 max_tokens = action.params.get("max_tokens", 8000)
                 show_details = action.params.get("show_details", True)

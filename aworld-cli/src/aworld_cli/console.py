@@ -186,6 +186,58 @@ class AWorldCLI:
             current_config['stream'] = False
             os.environ['STREAM'] = '0'
 
+        # Media LLM (models.media -> MEDIA_LLM_* for media_comprehension agent)
+        self.console.print("\n[bold]Media LLM configuration[/bold] [dim](optional, for media_comprehension - image/audio/video)[/dim]")
+        self.console.print("  [dim]Leave empty to use default LLM config above[/dim]\n")
+        if 'media' not in current_config['models']:
+            current_config['models']['media'] = {}
+        media_cfg = current_config['models']['media']
+
+        current_media_api_key = media_cfg.get('api_key', '')
+        if current_media_api_key:
+            masked = current_media_api_key[:8] + "..." if len(current_media_api_key) > 8 else "***"
+            self.console.print(f"  [dim]Current MEDIA_LLM_API_KEY: {masked}[/dim]")
+        media_api_key = Prompt.ask("  MEDIA_LLM_API_KEY", default=current_media_api_key, password=True)
+        if media_api_key:
+            media_cfg['api_key'] = media_api_key
+        else:
+            media_cfg.pop('api_key', None)
+
+        current_media_model = media_cfg.get('model', '')
+        self.console.print("  [dim]e.g. claude-3-5-sonnet-20241022 · Enter to inherit from default[/dim]")
+        media_model = Prompt.ask("  MEDIA_LLM_MODEL_NAME", default=current_media_model)
+        if media_model:
+            media_cfg['model'] = media_model
+        else:
+            media_cfg.pop('model', None)
+
+        current_media_base_url = media_cfg.get('base_url', '')
+        media_base_url = Prompt.ask("  MEDIA_LLM_BASE_URL", default=current_media_base_url)
+        if media_base_url:
+            media_cfg['base_url'] = media_base_url
+        else:
+            media_cfg.pop('base_url', None)
+
+        current_media_provider = media_cfg.get('provider', 'openai')
+        media_provider = Prompt.ask("  MEDIA_LLM_PROVIDER", default=current_media_provider)
+        if media_provider:
+            media_cfg['provider'] = media_provider
+        else:
+            media_cfg.pop('provider', None)
+
+        current_media_temp = media_cfg.get('temperature', 0.1)
+        media_temp = Prompt.ask("  MEDIA_LLM_TEMPERATURE", default=str(current_media_temp))
+        if media_temp:
+            try:
+                media_cfg['temperature'] = float(media_temp)
+            except ValueError:
+                media_cfg.pop('temperature', None)
+        else:
+            media_cfg.pop('temperature', None)
+
+        if not media_cfg:
+            current_config['models'].pop('media', None)
+
         config.save_config(current_config)
         self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
         table = Table(title="Default LLM Configuration", box=box.ROUNDED)
@@ -201,6 +253,18 @@ class AWorldCLI:
                 table.add_row(key, str(value))
         self.console.print()
         self.console.print(table)
+        if current_config['models'].get('media'):
+            media_table = Table(title="Media LLM Configuration (MEDIA_LLM_*)", box=box.ROUNDED)
+            media_table.add_column("Setting", style="cyan")
+            media_table.add_column("Value", style="green")
+            for key, value in current_config['models']['media'].items():
+                if key == 'api_key':
+                    masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
+                    media_table.add_row(key, masked_value)
+                else:
+                    media_table.add_row(key, str(value))
+            self.console.print()
+            self.console.print(media_table)
 
     async def _edit_skills_config(self, config, current_config: dict):
         """Edit skills section of config (global SKILLS_PATH and per-agent XXX_SKILLS_PATH)."""
@@ -225,7 +289,7 @@ class AWorldCLI:
         # Per-agent paths (same default as SKILLS_PATH)
         for label, key in [
             ("EVALUATOR_SKILLS_PATH (evaluator)", "evaluator_skills_path"),
-            ("EXPLORER_SKILLS_PATH (explorer)", "explorer_skills_path"),
+            ("MEDIA_SKILLS_PATH (media)", "media_skills_path"),
             ("AWORLD_SKILLS_PATH (aworld)", "aworld_skills_path"),
             ("DEVELOPER_SKILLS_PATH (developer)", "developer_skills_path"),
         ]:
@@ -658,6 +722,7 @@ class AWorldCLI:
             f"Type '/restore' or '/latest' to restore to the latest session.\n"
             f"Type '/skills' to list all available skills.\n"
             f"Type '/agents' to list all available agents.\n"
+            f"Type '/cost' for current session, '/cost -all' for global history.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
         self.console.print(Panel(help_text, style="blue"))
@@ -673,7 +738,7 @@ class AWorldCLI:
             # 用整行前缀匹配：/ski → /skills、/age → /agents；meta_dict 在补全菜单中显示描述（命令左、描述右）
             slash_cmds = [
                 "/agents", "/skills", "/new", "/restore", "/latest",
-                "/exit", "/quit", "/switch",
+                "/exit", "/quit", "/switch", "/cost", "/cost -all",
             ]
             switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
             all_words = slash_cmds + switch_with_agents + ["exit", "quit"]
@@ -686,6 +751,8 @@ class AWorldCLI:
                 "/exit": "Exit chat",
                 "/quit": "Exit chat",
                 "/switch": "Switch to another agent",
+                "/cost": "View query history (current session)",
+                "/cost -all": "View global history (all sessions)",
                 "exit": "Exit chat",
                 "quit": "Exit chat",
             }
@@ -828,6 +895,38 @@ class AWorldCLI:
                         self.console.print(f"[dim]Total: {len(all_skills)} skill(s)[/dim]")
                     except Exception as e:
                         self.console.print(f"[red]Error loading skills: {e}[/red]")
+                    continue
+
+                # Handle cost command (query history + token usage)
+                cost_input = user_input.strip().lower()
+                if cost_input in ("/cost", "cost") or cost_input in ("/cost -all", "cost -all"):
+                    try:
+                        from pathlib import Path
+                        from .history import JSONLHistory
+                        
+                        history_path = Path.home() / ".aworld" / "cli_history.jsonl"
+                        if not history_path.exists():
+                            self.console.print("[yellow]No history file found. Start chatting to generate history.[/yellow]")
+                            continue
+                        
+                        history = JSONLHistory(str(history_path))
+                        show_all = "-all" in cost_input
+                        
+                        if show_all:
+                            self.console.print(history.format_history_display(session_id=None))
+                        else:
+                            current_session_id = None
+                            if executor_instance and hasattr(executor_instance, 'session_id'):
+                                current_session_id = executor_instance.session_id
+                            if current_session_id:
+                                self.console.print(history.format_history_display(session_id=current_session_id))
+                            else:
+                                self.console.print("[yellow]No current session. Use /cost -all for global history.[/yellow]")
+                        
+                    except Exception as e:
+                        self.console.print(f"[red]Error displaying cost: {e}[/red]")
+                        import traceback
+                        traceback.print_exc()
                     continue
 
                 # Handle agents command

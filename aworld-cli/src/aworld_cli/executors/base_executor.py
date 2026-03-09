@@ -987,6 +987,70 @@ class BaseAgentExecutor(ABC, AgentExecutor):
 
         return filtered_content
 
+    def _format_tool_result_display_lines(self, output) -> List[str]:
+        """
+        Format ToolResultOutput into display lines (markup strings) for stream buffer.
+        Returns empty list for human tools or invalid output.
+        """
+        from aworld.output.base import ToolResultOutput
+
+        if not isinstance(output, ToolResultOutput):
+            return []
+
+        tool_name = getattr(output, 'tool_name', 'Unknown Tool')
+        action_name = getattr(output, 'action_name', '')
+        if 'human' in tool_name.lower() or 'human' in action_name.lower():
+            return []
+
+        tool_parts = []
+        if tool_name:
+            tool_parts.append(tool_name)
+        if action_name and action_name != tool_name:
+            tool_parts.append(f"→ {action_name}")
+        tool_info = " ".join(tool_parts)
+
+        summary = None
+        if hasattr(output, 'metadata') and output.metadata:
+            summary = output.metadata.get('summary')
+
+        result_content = ""
+        if hasattr(output, 'data') and output.data:
+            data_str = str(output.data)
+            if data_str.strip():
+                result_content = self._filter_file_line_info(data_str)
+
+        display_content = None
+        if summary:
+            display_content = self._filter_file_line_info(summary)
+        elif result_content:
+            try:
+                parsed = json.loads(result_content)
+                if isinstance(parsed, dict):
+                    key_info = []
+                    for key, value in list(parsed.items())[:3]:
+                        if isinstance(value, (str, int, float, bool)):
+                            key_info.append(f"{key}: {value}")
+                        elif isinstance(value, (list, dict)):
+                            key_info.append(f"{key}: [{len(value)} items]" if isinstance(value, list) else f"{key}: {{object}}")
+                    if key_info:
+                        display_content = "\n".join(key_info)
+                        if len(parsed) > 3:
+                            display_content += f"\n... ({len(parsed) - 3} more fields)"
+            except (json.JSONDecodeError, TypeError):
+                pass
+            if display_content is None:
+                display_content = result_content
+
+        lines = []
+        lines.append(f"⚡ [bold]{tool_info}[/bold]")
+        if display_content:
+            content_lines = [ln.strip() for ln in display_content.split('\n')[:3] if ln.strip()]
+            for ln in content_lines:
+                lines.append(f"   {ln[:500]}{'...' if len(ln) > 500 else ''}")
+        else:
+            lines.append("   [dim italic]No output[/dim italic]")
+        return lines
+
     def _render_simple_tool_result_output(self, output) -> None:
         """
         Simplified tool result output rendering with modern, clean Claude Code style.
@@ -1081,12 +1145,11 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             # If not JSON or JSON parsing failed, use line-based truncation
             if not is_json:
                 display_content = result_content
-
         # Tool results: up to 3 lines, truncated at end; each line indented
         if display_content:
             lines = [ln.strip() for ln in display_content.split('\n')[:3] if ln.strip()]
             for i, ln in enumerate(lines):
-                lines[i] = ln[:500] + "..." if len(ln) > 100 else ln
+                lines[i] = ln[:500] + "..." if len(ln) > 500 else ln
             self.console.print(f"⚡ [bold]{tool_info}[/bold]")
             for ln in lines:
                 self._print_indented_line(ln)

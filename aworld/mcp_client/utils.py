@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any, Optional, Tuple
 
 import requests
-from mcp.types import TextContent, ImageContent
+from mcp.types import CallToolResult, TextContent, ImageContent
 
 from aworld.core.common import ActionResult
 from aworld.core.context.base import Context
@@ -17,6 +17,18 @@ from aworld.mcp_client.server import MCPServer, MCPServerSse, MCPServerStdio, MC
 from aworld.tools import get_function_tools
 
 MCP_SERVERS_CONFIG = {}
+
+
+def _make_timeout_result(server_name: str, tool_name: str, timeout: float) -> CallToolResult:
+    """Build CallToolResult for tool call timeout."""
+    msg = (
+        f"Tool call timed out after {timeout:.0f} seconds "
+        f"(server={server_name}, tool={tool_name})."
+    )
+    return CallToolResult(
+        content=[TextContent(type="text", text=msg)],
+        is_error=True,
+    )
 
 
 def get_function_tool(sever_name: str) -> List[Dict[str, Any]]:
