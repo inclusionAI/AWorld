@@ -186,6 +186,58 @@ class AWorldCLI:
             current_config['stream'] = False
             os.environ['STREAM'] = '0'
 
+        # Media LLM (models.media -> MEDIA_LLM_* for media_comprehension agent)
+        self.console.print("\n[bold]Media LLM configuration[/bold] [dim](optional, for media_comprehension - image/audio/video)[/dim]")
+        self.console.print("  [dim]Leave empty to use default LLM config above[/dim]\n")
+        if 'media' not in current_config['models']:
+            current_config['models']['media'] = {}
+        media_cfg = current_config['models']['media']
+
+        current_media_api_key = media_cfg.get('api_key', '')
+        if current_media_api_key:
+            masked = current_media_api_key[:8] + "..." if len(current_media_api_key) > 8 else "***"
+            self.console.print(f"  [dim]Current MEDIA_LLM_API_KEY: {masked}[/dim]")
+        media_api_key = Prompt.ask("  MEDIA_LLM_API_KEY", default=current_media_api_key, password=True)
+        if media_api_key:
+            media_cfg['api_key'] = media_api_key
+        else:
+            media_cfg.pop('api_key', None)
+
+        current_media_model = media_cfg.get('model', '')
+        self.console.print("  [dim]e.g. claude-3-5-sonnet-20241022 · Enter to inherit from default[/dim]")
+        media_model = Prompt.ask("  MEDIA_LLM_MODEL_NAME", default=current_media_model)
+        if media_model:
+            media_cfg['model'] = media_model
+        else:
+            media_cfg.pop('model', None)
+
+        current_media_base_url = media_cfg.get('base_url', '')
+        media_base_url = Prompt.ask("  MEDIA_LLM_BASE_URL", default=current_media_base_url)
+        if media_base_url:
+            media_cfg['base_url'] = media_base_url
+        else:
+            media_cfg.pop('base_url', None)
+
+        current_media_provider = media_cfg.get('provider', 'openai')
+        media_provider = Prompt.ask("  MEDIA_LLM_PROVIDER", default=current_media_provider)
+        if media_provider:
+            media_cfg['provider'] = media_provider
+        else:
+            media_cfg.pop('provider', None)
+
+        current_media_temp = media_cfg.get('temperature', 0.1)
+        media_temp = Prompt.ask("  MEDIA_LLM_TEMPERATURE", default=str(current_media_temp))
+        if media_temp:
+            try:
+                media_cfg['temperature'] = float(media_temp)
+            except ValueError:
+                media_cfg.pop('temperature', None)
+        else:
+            media_cfg.pop('temperature', None)
+
+        if not media_cfg:
+            current_config['models'].pop('media', None)
+
         config.save_config(current_config)
         self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
         table = Table(title="Default LLM Configuration", box=box.ROUNDED)
@@ -201,6 +253,18 @@ class AWorldCLI:
                 table.add_row(key, str(value))
         self.console.print()
         self.console.print(table)
+        if current_config['models'].get('media'):
+            media_table = Table(title="Media LLM Configuration (MEDIA_LLM_*)", box=box.ROUNDED)
+            media_table.add_column("Setting", style="cyan")
+            media_table.add_column("Value", style="green")
+            for key, value in current_config['models']['media'].items():
+                if key == 'api_key':
+                    masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
+                    media_table.add_row(key, masked_value)
+                else:
+                    media_table.add_row(key, str(value))
+            self.console.print()
+            self.console.print(media_table)
 
     async def _edit_skills_config(self, config, current_config: dict):
         """Edit skills section of config (global SKILLS_PATH and per-agent XXX_SKILLS_PATH)."""
@@ -225,7 +289,7 @@ class AWorldCLI:
         # Per-agent paths (same default as SKILLS_PATH)
         for label, key in [
             ("EVALUATOR_SKILLS_PATH (evaluator)", "evaluator_skills_path"),
-            ("EXPLORER_SKILLS_PATH (explorer)", "explorer_skills_path"),
+            ("MEDIA_SKILLS_PATH (media)", "media_skills_path"),
             ("AWORLD_SKILLS_PATH (aworld)", "aworld_skills_path"),
             ("DEVELOPER_SKILLS_PATH (developer)", "developer_skills_path"),
         ]:
