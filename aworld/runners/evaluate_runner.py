@@ -12,6 +12,7 @@ from aworld.evaluations.base import (
 from aworld.evaluations.recoder.base import EvalRecorder
 from aworld.evaluations.recoder.eval_recorder import EvalResultRecorder, EvalDatasetRecorder, EvalTaskRecorder
 from aworld.dataset.dataset import Dataset
+from aworld.evaluations.types import MetricNames
 from aworld.logs.util import logger
 from aworld.evaluations.scorers import scorer_factory
 

@@ -5,14 +5,17 @@ from typing import Dict, Any, List
 from aworld.agents.llm_agent import Agent
 from aworld.core.common import Observation, ActionModel
 from aworld.core.event.base import Message
-from aworld.evaluations.base import Evaluator, EvalDataCase, EvalDataset
+from aworld.evaluations.base import Evaluator, EvalDataCase, EvalDataset, Scorer
 from aworld.evaluations.eval_targets.delegate_eval import DelegateEvalTarget
 
 
 class ValidateAgent(Agent):
-    def __init__(self, evaluator: Evaluator, **kwargs):
+    def __init__(self, scorers: List[Scorer] = None, evaluator: Evaluator = None, **kwargs):
         super().__init__(**kwargs)
-        self.evaluator = evaluator
+        if scorers:
+            self.evaluator = Evaluator(scorers=scorers)
+        elif evaluator:
+            self.evaluator = evaluator
 
     async def async_policy(self,
                            observation: Observation,

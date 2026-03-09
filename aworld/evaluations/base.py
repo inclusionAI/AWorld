@@ -39,7 +39,7 @@ class EvalCriteria:
     # if not specified, will use the first scorer class in the registry for the metric name
     scorer_class: Optional[str] = field(default_factory=str)
     scorer_params: Optional[dict] = field(default_factory=dict)
-    prompt: str = field(default_factory=str)
+    criteria: str = field(default_factory=str)
     max_value: float = field(default=float('inf'))
     min_value: float = field(default=-float('inf'))
     threshold: float = field(default=0.0)
