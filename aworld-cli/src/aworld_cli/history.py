@@ -45,7 +45,7 @@ class JSONLHistory(History):
         except IOError as e:
             logger.warning(f"Failed to read history file {self.filename}: {e}")
             return []
-            
+
         # prompt_toolkit expects history in reverse order (newest first)
         # So we need to reverse the list before returning
         return reversed(strings)
@@ -54,7 +54,7 @@ class JSONLHistory(History):
         """
         Store a string in the history file.
         We wrap the command string in a JSON object with metadata.
-        
+
         Args:
             string: The command/query string to store
             token_stats: Optional token statistics dict with keys:
@@ -71,10 +71,10 @@ class JSONLHistory(History):
             "timestamp": int(time.time() * 1000),  # Milliseconds
             "cwd": os.getcwd(),
         }
-        
+
         if self.session_id:
             record["sessionId"] = self.session_id
-        
+
         if token_stats:
             ts = {k: v for k, v in token_stats.items() if k != "tool_calls_count"}
             # Add by_model for per-model aggregation (single round)
@@ -159,17 +159,17 @@ class JSONLHistory(History):
     def get_records(self, session_id: Optional[str] = None, limit: int = 100) -> List[Dict]:
         """
         Retrieve structured history records.
-        
+
         Args:
             session_id: If provided, filter by this session ID. If None, return all records.
             limit: Maximum number of records to return (from newest).
-            
+
         Returns:
             List of history records (dicts), ordered chronologically (oldest to newest).
         """
         if not os.path.exists(self.filename):
             return []
-            
+
         records = []
         try:
             with open(self.filename, "rb") as f:
@@ -178,29 +178,29 @@ class JSONLHistory(History):
                     try:
                         line_str = line.decode("utf-8")
                         data = json.loads(line_str)
-                        
+
                         # Filter by session_id if requested
                         if session_id is not None and data.get("sessionId") != session_id:
                             continue
-                            
+
                         records.append(data)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         continue
         except IOError as e:
             logger.warning(f"Failed to read history file {self.filename}: {e}")
             return []
-            
+
         # Return newest 'limit' records
         return records[-limit:]
-    
+
     def get_token_stats(self, session_id: Optional[str] = None) -> Dict:
         """
         Calculate token usage statistics from history records.
-        
+
         Args:
             session_id: If provided, calculate stats for this session only.
                        If None, calculate global stats.
-        
+
         Returns:
             Dict with aggregated token statistics (no tool_calls; includes time stats).
         """
@@ -286,25 +286,25 @@ class JSONLHistory(History):
             stats["total_queries"] += 1
 
         return stats
-    
+
     def format_history_display(self, session_id: Optional[str] = None, limit: int = 5) -> str:
         """
         Format history records for display.
-        
+
         Args:
             session_id: If provided, filter by this session ID. If None, show all records.
             limit: Maximum number of records to display (from newest).
-            
+
         Returns:
             Formatted string for display.
         """
         from datetime import datetime
-        
+
         records = self.get_records(session_id=session_id, limit=limit)
-        
+
         if not records:
             return "No history records found."
-        
+
         lines = []
         lines.append(f"\n{'='*60}")
         if session_id:
@@ -313,13 +313,13 @@ class JSONLHistory(History):
             lines.append("Global History (All Sessions)")
         lines.append(f"Query Count: {len(records)}")
         lines.append(f"{'='*60}\n")
-        
+
         for i, record in enumerate(records, 1):
             timestamp_ms = record.get("timestamp", 0)
             timestamp_dt = datetime.fromtimestamp(timestamp_ms / 1000)
             timestamp_str = timestamp_dt.strftime("%Y-%m-%d %H:%M:%S")
             display = record.get("display", "")
-            
+
             token_stats = record.get("token_stats")
             if token_stats:
                 input_tok = token_stats.get("input_tokens", 0)
@@ -351,24 +351,24 @@ class JSONLHistory(History):
                 lines.append(f"[{i}] {timestamp_str}")
                 lines.append(f"    {display}")
             lines.append("")
-        
+
         return "\n".join(lines)
-    
+
     def format_cost_display(self, session_id: Optional[str] = None) -> str:
         """
         Format token cost statistics for display.
-        
+
         Args:
             session_id: If provided, show stats for this session only.
                        If None, show global stats.
-            
+
         Returns:
             Formatted string for display.
         """
         from datetime import datetime
 
         stats = self.get_token_stats(session_id=session_id)
-        
+
         lines = []
         lines.append(f"\n{'='*80}")
         if session_id:
@@ -376,7 +376,7 @@ class JSONLHistory(History):
         else:
             lines.append("Global Token Usage (All Sessions)")
         lines.append(f"{'='*80}\n")
-        
+
         lines.append(f"Total Queries: {stats['total_queries']}")
         lines.append(f"Queries with Token Stats: {stats['records_with_stats']}")
 
@@ -408,7 +408,7 @@ class JSONLHistory(History):
         if by_model:
             lines.append(f"\nPer-Model Statistics:")
             lines.append(f"{'-'*80}")
-            
+
             for model_name, model_stats in sorted(by_model.items()):
                 lines.append(f"\n  Model: {model_name}")
                 lines.append(f"    Queries:       {model_stats['queries']}")
@@ -424,6 +424,6 @@ class JSONLHistory(History):
                     first_str = datetime.fromtimestamp(first_t / 1000).strftime("%Y-%m-%d %H:%M")
                     last_str = datetime.fromtimestamp(last_t / 1000).strftime("%Y-%m-%d %H:%M")
                     lines.append(f"    Time Range:    {first_str} ~ {last_str}")
-        
+
         lines.append(f"\n{'='*80}\n")
         return "\n".join(lines)
