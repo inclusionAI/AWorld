@@ -70,6 +70,9 @@ class TaskEventRunner(TaskRunner):
                     for _, agent in AgentFactory._agent_instance.items():
                         if agent and agent.sandbox:
                             await agent.sandbox.cleanup()
+                    # Release trajectory storage to free memory; trajectories have already
+                    # been persisted by _save_trajectories() before reaching this point.
+                    self.context.trajectory_dataset = None
 
 
 
