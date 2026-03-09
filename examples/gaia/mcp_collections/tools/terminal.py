@@ -104,10 +104,7 @@ class TerminalActionCollection(ActionCollection):
         # Interactive-only commands (block stdin, cannot run non-interactively)
         self.interactive_command_patterns = [
             r"(?:^|\s)(vim|vi|nano|emacs)(?:\s|$)",
-            r"(?:^|\s)(less|more)(?:\s|$)",
-            r"(?:^|\s)(top|htop)(?:\s|$)",
-            r"(?:^|\s)(ftp|telnet)(?:\s|$)",
-            r"(?:^|\s)(python3?|bash)\s+-i\b",
+            r"(?:^|\s)(ftp|telnet)(?:\s|$)"
         ]
 
         # Get current platform info
@@ -147,9 +144,12 @@ class TerminalActionCollection(ActionCollection):
             Tuple of (is_allowed, reason_if_forbidden)
         """
         for pattern in self.interactive_command_patterns:
-            if re.search(pattern, command, re.IGNORECASE):
+            m = re.search(pattern, command, re.IGNORECASE)
+            if m:
+                forbidden_cmd = m.group(1)
                 return False, (
-                    "Interactive commands are not allowed. Use non-interactive alternatives "
+                    f"Interactive commands are not allowed (forbidden: {forbidden_cmd}). "
+                    "Use non-interactive alternatives "
                     "(e.g. --yes, -y, CI=1, DEBIAN_FRONTEND=noninteractive) or different tools."
                 )
         return True, None
