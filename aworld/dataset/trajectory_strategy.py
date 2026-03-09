@@ -250,7 +250,7 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         if not agent_name:
             agent_name = source.receiver
         agent = AgentFactory.agent_instance(agent_name)
-        action = TrajectoryAction(content=action_content, tool_calls=tool_calls, is_agent_finished=agent.finished)
+        action = TrajectoryAction(content=action_content, tool_calls=tool_calls, is_agent_finished=agent._finished)
         return action
 
     async def build_trajectory_reward(self, source: Any, **kwargs) -> Optional[TrajectoryReward]:
@@ -327,7 +327,12 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         if histories:
             for history in histories:
                 if isinstance(history, MemoryMessage):
-                    messages.append(history.to_openai_message())
+                    openai_msg = history.to_openai_message()
+                    if history.role == "assistant":
+                        ext_info = history.metadata.get("ext_info", {}) if history.metadata else {}
+                        raw_response = ext_info.get("raw_response", "")
+                        openai_msg["raw_response"] = raw_response
+                    messages.append(openai_msg)
                 else:
                     if not use_tools_in_prompt and history.metadata.get('tool_calls'):
                         messages.append({'role': history.metadata['role'], 'content': history.content,
