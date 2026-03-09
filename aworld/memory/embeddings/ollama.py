@@ -5,13 +5,14 @@ import requests
 
 from aworld.core.memory import EmbeddingsConfig
 from aworld.logs.util import logger
-from aworld.memory.embeddings.base import EmbeddingsBase
+from aworld.memory.embeddings.base import Embeddings
 
 
-class OllamaEmbeddings(EmbeddingsBase):
+class OllamaEmbeddings(Embeddings):
     """
     Embedding implementation using Ollama HTTP API.
     """
+
     def __init__(self, config: EmbeddingsConfig):
         """
         Initialize OllamaEmbeddings with configuration.
@@ -19,7 +20,7 @@ class OllamaEmbeddings(EmbeddingsBase):
             config (EmbeddingsConfig): Configuration for embedding model and API.
         """
         super().__init__(config)
-    
+
     def embed_query(self, text: str) -> List[float]:
         """
         Embed a query string using Ollama HTTP API.
@@ -66,7 +67,7 @@ class OllamaEmbeddings(EmbeddingsBase):
                     return self.resolve_embedding(data)
         except Exception as e:
             raise RuntimeError(f"Ollama async embedding API error: {e}")
-      
+
     @staticmethod
     def resolve_embedding(data: dict) -> List[float]:
         """

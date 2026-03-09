@@ -22,6 +22,7 @@ class EmbeddingsMetadata(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+
 class EmbeddingsResult(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()), description="ID")
     embedding: Optional[list[float]] = Field(default=None, description="Embedding")
@@ -29,27 +30,15 @@ class EmbeddingsResult(BaseModel):
     metadata: Optional[EmbeddingsMetadata] = Field(..., description="Metadata")
     score: Optional[float] = Field(default=None, description="Retrieved relevance score")
 
+
 class EmbeddingsResults(BaseModel):
     docs: Optional[List[EmbeddingsResult]]
     retrieved_at: int = Field(..., description="Retrieved at")
 
+
 class Embeddings(ABC):
     """Interface for embedding models.
     Embeddings are used to convert artifacts and queries into a vector space.
-    """
-    @abstractmethod
-    def embed_query(self, text: str) -> list[float]:
-        """Embed query text."""
-        raise NotImplementedError
-
-    async def async_embed_query(self, text: str) -> list[float]:
-        """Asynchronous Embed query text."""
-        raise NotImplementedError
-
-
-class EmbeddingsBase(Embeddings):
-    """
-    Base class for embedding implementations that contains common functionality.
     """
 
     def __init__(self, config: EmbeddingsConfig):
@@ -60,38 +49,24 @@ class EmbeddingsBase(Embeddings):
         """
         self.config = config
 
-
     @abstractmethod
-    def embed_query(self, text: str) -> List[float]:
-        """
-        Abstract method to embed a query string.
+    def embed_query(self, text: str) -> list[float]:
+        """Abstract method to embed a query string.
+
         Args:
             text (str): Text to embed.
+
         Returns:
             List[float]: Embedding vector.
         """
-        pass
 
     @abstractmethod
-    async def async_embed_query(self, text: str) -> List[float]:
-        """
-        Abstract method to asynchronously embed a query string.
+    async def async_embed_query(self, text: str) -> list[float]:
+        """Abstract method to asynchronously embed a query string.
+
         Args:
             text (str): Text to embed.
+
         Returns:
             List[float]: Embedding vector.
         """
-        pass
-
-class EmbeddingFactory:
-
-    @staticmethod
-    def get_embedder(config: EmbeddingsConfig) -> Embeddings:
-        if config.provider == "openai":
-            from aworld.memory.embeddings.openai_compatible import OpenAICompatibleEmbeddings
-            return OpenAICompatibleEmbeddings(config)
-        elif config.provider == "ollama":
-            from aworld.memory.embeddings.ollama import OllamaEmbeddings
-            return OllamaEmbeddings(config)
-        else:
-            raise ValueError(f"Unsupported embedding provider: {config.provider}")
