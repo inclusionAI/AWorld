@@ -54,7 +54,7 @@ def _resolve_image_url_to_base64(image_url: Optional[str]) -> Optional[str]:
 
 
 class VideoAgent(LLMAgent):
-    """An agent dedicated to video generation via Together.ai.
+    """An agent dedicated to video generation.
 
     Each invocation is a single-round call: the agent submits one video
     generation request, waits for the result (optionally), and terminates.
@@ -105,10 +105,8 @@ class VideoAgent(LLMAgent):
 
         Args:
             name: Agent name.
-            conf: AgentConfig. If None, falls back to environment variables
-                TOGETHER_VIDEO_MODEL_NAME, TOGETHER_API_KEY, and
-                TOGETHER_BASE_URL.  ``llm_provider`` is forced to
-                ``'together_video'``.
+            conf: AgentConfig specifying the LLM provider, model, and
+                credentials. Must not be None.
             desc: Agent description exposed as tool description.
             agent_id: Explicit agent ID; auto-generated if None.
             poll: Default polling mode passed to ``generate_video``.
@@ -126,33 +124,15 @@ class VideoAgent(LLMAgent):
             **kwargs: Forwarded to ``LLMAgent.__init__``.
         """
         if conf is None:
-            model_name = os.getenv("TOGETHER_VIDEO_MODEL_NAME", "minimax/video-01-director")
-            api_key = os.getenv("TOGETHER_API_KEY", "")
-            base_url = os.getenv("TOGETHER_BASE_URL", "")
-
-            if not api_key:
-                raise ValueError(
-                    "TOGETHER_API_KEY environment variable must be set, "
-                    "or pass an AgentConfig with llm_api_key."
-                )
-
-            conf = AgentConfig(
-                llm_provider="together_video",
-                llm_model_name=model_name,
-                llm_api_key=api_key,
-                llm_base_url=base_url or None,
+            raise ValueError(
+                "conf must be provided. Pass an AgentConfig with llm_provider, "
+                "llm_model_name, and llm_api_key."
             )
-        else:
-            # Force the provider to together_video regardless of what was passed
-            if hasattr(conf, "llm_config") and conf.llm_config:
-                conf.llm_config.llm_provider = "together_video"
-            elif isinstance(conf, dict):
-                conf.setdefault("llm_provider", "together_video")
 
         super().__init__(
             name=name,
             conf=conf,
-            desc=desc or "Video generation agent powered by Together.ai",
+            desc=desc or "Video generation agent",
             agent_id=agent_id,
             **kwargs,
         )
@@ -422,7 +402,7 @@ class VideoAgent(LLMAgent):
         context: Context = None,
         **extra_kwargs,
     ) -> ModelResponse:
-        """Call the underlying Together.ai video provider.
+        """Call the underlying video provider.
 
         Runs the blocking ``generate_video`` call in the default thread-pool
         executor so it does not block the event loop.

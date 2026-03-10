@@ -12,6 +12,7 @@ from aworld.core.video_gen_provider import (
 )
 from aworld.models.model_response import ModelResponse, VideoGenerationResult, LLMResponseError
 from aworld.logs.util import logger
+from aworld.utils import import_package
 
 # Together video job status constants
 _STATUS_COMPLETED  = "completed"
@@ -131,10 +132,12 @@ class TogetherVideoProvider(VideoGenProviderBase):
         try:
             from together import Together
         except ImportError:
-            raise ImportError(
+            logger.error(
                 "The 'together' package is required for TogetherVideoProvider. "
                 "Install it with: pip install together"
             )
+            import_package("together")
+            from together import Together
 
         api_key = self.api_key or os.getenv("TOGETHER_API_KEY", "")
         if not api_key:
