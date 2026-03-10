@@ -482,7 +482,9 @@ def build_aworld_agent(include_skills: Optional[str] = None):
                     "client_session_timeout_seconds": 9999.0,
                 }
             }
-        }
+        },
+        # for read image, automatically convert bytes to base64
+        tool_names=['CAST_SEARCH']
     )
 
     # Load all registered agents as sub-agents
