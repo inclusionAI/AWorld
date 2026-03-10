@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import base64
 import os
 import traceback
 import uuid
@@ -17,6 +18,39 @@ from aworld.models.model_response import ModelResponse, VideoGenerationResult
 from aworld.logs.util import logger
 from aworld.events.util import send_message
 from aworld.output.base import Output
+
+
+def _resolve_image_url_to_base64(image_url: Optional[str]) -> Optional[str]:
+    """
+    If image_url is a local disk path (or file:// URL), read the file and convert to base64 data URI.
+    Otherwise return image_url unchanged (base64 or http(s) URL).
+    """
+    if not image_url or not isinstance(image_url, str):
+        return image_url
+    s = image_url.strip()
+    if not s:
+        return image_url
+    # Already base64 data URI or remote URL: pass through
+    if s.startswith("data:") or s.startswith("http://") or s.startswith("https://"):
+        return image_url
+    # file:// URL: extract path
+    if s.startswith("file://"):
+        s = urlparse(s).path
+    # Treat as local path: try to read and convert
+    path = Path(s)
+    if not path.is_file():
+        return image_url
+    try:
+        raw = path.read_bytes()
+        b64 = base64.b64encode(raw).decode("ascii")
+        # Infer MIME from extension
+        ext = path.suffix.lower()
+        mime_map = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".gif": "image/gif", ".webp": "image/webp"}
+        mime = mime_map.get(ext, "image/png")
+        return f"data:{mime};base64,{b64}"
+    except Exception as e:
+        logger.warning(f"[VideoAgent] Failed to read image from path {s!r}: {e}")
+        return image_url
 
 
 class VideoAgent(LLMAgent):
@@ -178,6 +212,7 @@ class VideoAgent(LLMAgent):
 
         # Resolve video parameters (observation.info overrides instance defaults)
         image_url: Optional[str] = obs_info.pop("image_url", None)
+        image_url = _resolve_image_url_to_base64(image_url)
         resolution: Optional[str] = obs_info.pop("resolution", self.default_resolution)
         duration: Optional[float] = obs_info.pop("duration", self.default_duration)
         fps: Optional[int] = obs_info.pop("fps", self.default_fps)
