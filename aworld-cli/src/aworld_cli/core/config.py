@@ -407,9 +407,8 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
 
 
 def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
-    """Load config from local .env. Clears env, loads dotenv, applies skills path and STREAM."""
-    os.environ.clear()
-    load_dotenv(dotenv_path=source_path)
+    """Load config from local .env. Loads dotenv (override), applies skills path and STREAM."""
+    load_dotenv(dotenv_path=source_path, override=True)
     _apply_skills_path_env(skills_cfg={})
     apply_stream_env({'stream': os.environ.get('STREAM'), 'models': {'stream': os.environ.get('STREAM')}})
     # Apply MEDIA_LLM_* and VIDEO_CREATOR_LLM_* from LLM_* when not set in .env
