@@ -80,14 +80,14 @@ def build_video_creator_swarm():
     env_skills_dir = Path(os.path.expanduser(os.environ.get("SKILLS_PATH"))).resolve()
     skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
 
-    # Create Agent configuration (VIDEO_CREATOR_LLM_* from models.video_creator or fallback to MEDIA_LLM_*/LLM_*)
+    # Create Agent configuration (DIFFUSION_* from models.diffusion or fallback to MEDIA_LLM_*/LLM_*)
     agent_config = AgentConfig(
         llm_config=ModelConfig(
-            llm_model_name=os.environ.get("VIDEO_CREATOR_LLM_MODEL_NAME", "claude-3-5-sonnet-20241022"),
-            llm_provider=os.environ.get("VIDEO_CREATOR_LLM_PROVIDER", "openai"),
-            llm_api_key=os.environ.get("VIDEO_CREATOR_LLM_API_KEY"),
-            llm_base_url=os.environ.get("VIDEO_CREATOR_LLM_BASE_URL"),
-            llm_temperature=float(os.environ.get("VIDEO_CREATOR_LLM_TEMPERATURE", "0.1")),
+            llm_model_name=os.environ.get("DIFFUSION_MODEL_NAME", "claude-3-5-sonnet-20241022"),
+            llm_provider=os.environ.get("DIFFUSION_PROVIDER", "openai"),
+            llm_api_key=os.environ.get("DIFFUSION_API_KEY"),
+            llm_base_url=os.environ.get("DIFFUSION_BASE_URL"),
+            llm_temperature=float(os.environ.get("DIFFUSION_TEMPERATURE", "0.1")),
             params={"max_completion_tokens": 59000},
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),

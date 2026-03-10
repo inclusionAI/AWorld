@@ -190,6 +190,29 @@ class VideoAgent(LLMAgent):
         if not prompt:
             logger.warning(f"[VideoAgent:{self.id()}] Empty prompt received; video generation may fail.")
 
+        # Check if DIFFUSION model is configured (api_key and model_name required for video generation)
+        llm_cfg = getattr(self.conf, "llm_config", None) if self.conf else None
+        api_key = (getattr(llm_cfg, "llm_api_key", None) or "").strip() if llm_cfg else ""
+        model_name = (getattr(llm_cfg, "llm_model_name", None) or "").strip() if llm_cfg else ""
+        if not api_key or not model_name:
+            hint = (
+                "DIFFUSION model is not configured. Please set DIFFUSION_API_KEY and DIFFUSION_MODEL_NAME "
+                "(or configure models.diffusion in aworld.json). Run `aworld --global-config` to configure."
+            )
+            logger.warning(f"[VideoAgent:{self.id()}] {hint}")
+            if message:
+                await send_message(
+                    Message(
+                        category=Constants.OUTPUT,
+                        payload=Output(data=hint),
+                        sender=self.id(),
+                        session_id=message.context.session_id if message.context else "",
+                        headers={"context": message.context},
+                    )
+                )
+            self._finished = True
+            return [ActionModel(agent_name=self.id(), policy_info=hint)]
+
         # Resolve video parameters (observation.info overrides instance defaults)
         image_url: Optional[str] = obs_info.pop("image_url", None)
         image_url = _resolve_image_url_to_base64(image_url)
