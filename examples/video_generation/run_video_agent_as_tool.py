@@ -148,8 +148,9 @@ Always pass image_url inside the info JSON string, NOT in content.
         max_steps=10,
     )
 
+    image_path = "~/Downloads/test.png"
     result = Runners.sync_run(
-        input="在本地路径下有一张图片：/Users/ck.hsq/Downloads/ant_universe.png，请用这张图片生成一段图片中的卡通人物跳舞的视频",
+        input=f"In the local path there is an image: {image_path}. Please use this image to generate a video of the cartoon characters in the image dancing.",
         swarm=swarm,
     )
     print(f"answer: {result.answer}")
