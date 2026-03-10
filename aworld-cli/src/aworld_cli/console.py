@@ -186,109 +186,59 @@ class AWorldCLI:
             current_config['stream'] = False
             os.environ['STREAM'] = '0'
 
-        # Media LLM (models.media -> MEDIA_LLM_* for media_comprehension agent)
-        self.console.print("\n[bold]Media LLM configuration[/bold] [dim](optional, for media_comprehension - image/audio/video)[/dim]")
-        self.console.print("  [dim]Leave empty to use default LLM config above[/dim]\n")
-        if 'media' not in current_config['models']:
-            current_config['models']['media'] = {}
-        media_cfg = current_config['models']['media']
-
-        current_media_api_key = media_cfg.get('api_key', '')
-        if current_media_api_key:
-            masked = current_media_api_key[:8] + "..." if len(current_media_api_key) > 8 else "***"
-            self.console.print(f"  [dim]Current MEDIA_LLM_API_KEY: {masked}[/dim]")
-        media_api_key = Prompt.ask("  MEDIA_LLM_API_KEY", default=current_media_api_key, password=True)
-        if media_api_key:
-            media_cfg['api_key'] = media_api_key
-        else:
-            media_cfg.pop('api_key', None)
-
-        current_media_model = media_cfg.get('model', '')
-        self.console.print("  [dim]e.g. claude-3-5-sonnet-20241022 · Enter to inherit from default[/dim]")
-        media_model = Prompt.ask("  MEDIA_LLM_MODEL_NAME", default=current_media_model)
-        if media_model:
-            media_cfg['model'] = media_model
-        else:
-            media_cfg.pop('model', None)
-
-        current_media_base_url = media_cfg.get('base_url', '')
-        media_base_url = Prompt.ask("  MEDIA_LLM_BASE_URL", default=current_media_base_url)
-        if media_base_url:
-            media_cfg['base_url'] = media_base_url
-        else:
-            media_cfg.pop('base_url', None)
-
-        current_media_provider = media_cfg.get('provider', 'openai')
-        media_provider = Prompt.ask("  MEDIA_LLM_PROVIDER", default=current_media_provider)
-        if media_provider:
-            media_cfg['provider'] = media_provider
-        else:
-            media_cfg.pop('provider', None)
-
-        current_media_temp = media_cfg.get('temperature', 0.1)
-        media_temp = Prompt.ask("  MEDIA_LLM_TEMPERATURE", default=str(current_media_temp))
-        if media_temp:
-            try:
-                media_cfg['temperature'] = float(media_temp)
-            except ValueError:
-                media_cfg.pop('temperature', None)
-        else:
-            media_cfg.pop('temperature', None)
-
-        if not media_cfg:
-            current_config['models'].pop('media', None)
-
-        # Video Creator LLM (models.video_creator -> VIDEO_CREATOR_LLM_* for video_creator agent)
-        self.console.print("\n[bold]Video Creator LLM configuration[/bold] [dim](optional, for video_creator agent)[/dim]")
+        # Diffusion (models.diffusion -> DIFFUSION_* for video_creator agent)
+        self.console.print("\n[bold]Diffusion configuration[/bold] [dim](optional, for video_creator agent)[/dim]")
         self.console.print("  [dim]Leave empty to use Media LLM or default LLM config above[/dim]\n")
-        if 'video_creator' not in current_config['models']:
-            current_config['models']['video_creator'] = {}
-        vc_cfg = current_config['models']['video_creator']
-
-        current_vc_api_key = vc_cfg.get('api_key', '')
-        if current_vc_api_key:
-            masked = current_vc_api_key[:8] + "..." if len(current_vc_api_key) > 8 else "***"
-            self.console.print(f"  [dim]Current VIDEO_CREATOR_LLM_API_KEY: {masked}[/dim]")
-        vc_api_key = Prompt.ask("  VIDEO_CREATOR_LLM_API_KEY", default=current_vc_api_key, password=True)
-        if vc_api_key:
-            vc_cfg['api_key'] = vc_api_key
-        else:
-            vc_cfg.pop('api_key', None)
-
-        current_vc_model = vc_cfg.get('model', '')
-        self.console.print("  [dim]e.g. claude-3-5-sonnet-20241022 · Enter to inherit from Media/default[/dim]")
-        vc_model = Prompt.ask("  VIDEO_CREATOR_LLM_MODEL_NAME", default=current_vc_model)
-        if vc_model:
-            vc_cfg['model'] = vc_model
-        else:
-            vc_cfg.pop('model', None)
-
-        current_vc_base_url = vc_cfg.get('base_url', '')
-        vc_base_url = Prompt.ask("  VIDEO_CREATOR_LLM_BASE_URL", default=current_vc_base_url)
-        if vc_base_url:
-            vc_cfg['base_url'] = vc_base_url
-        else:
-            vc_cfg.pop('base_url', None)
-
-        current_vc_provider = vc_cfg.get('provider', 'openai')
-        vc_provider = Prompt.ask("  VIDEO_CREATOR_LLM_PROVIDER", default=current_vc_provider)
-        if vc_provider:
-            vc_cfg['provider'] = vc_provider
-        else:
-            vc_cfg.pop('provider', None)
-
-        current_vc_temp = vc_cfg.get('temperature', 0.1)
-        vc_temp = Prompt.ask("  VIDEO_CREATOR_LLM_TEMPERATURE", default=str(current_vc_temp))
-        if vc_temp:
-            try:
-                vc_cfg['temperature'] = float(vc_temp)
-            except ValueError:
-                vc_cfg.pop('temperature', None)
-        else:
-            vc_cfg.pop('temperature', None)
-
-        if not vc_cfg:
+        if 'diffusion' not in current_config['models']:
+            # Migrate from legacy models.video_creator
+            current_config['models']['diffusion'] = current_config['models'].get('video_creator') or {}
             current_config['models'].pop('video_creator', None)
+        diff_cfg = current_config['models']['diffusion']
+
+        current_diff_api_key = diff_cfg.get('api_key', '')
+        if current_diff_api_key:
+            masked = current_diff_api_key[:8] + "..." if len(current_diff_api_key) > 8 else "***"
+            self.console.print(f"  [dim]Current DIFFUSION_API_KEY: {masked}[/dim]")
+        diff_api_key = Prompt.ask("  DIFFUSION_API_KEY", default=current_diff_api_key, password=True)
+        if diff_api_key:
+            diff_cfg['api_key'] = diff_api_key
+        else:
+            diff_cfg.pop('api_key', None)
+
+        current_diff_model = diff_cfg.get('model', '')
+        self.console.print("  [dim]e.g. claude-3-5-sonnet-20241022 · Enter to inherit from Media/default[/dim]")
+        diff_model = Prompt.ask("  DIFFUSION_MODEL_NAME", default=current_diff_model)
+        if diff_model:
+            diff_cfg['model'] = diff_model
+        else:
+            diff_cfg.pop('model', None)
+
+        current_diff_base_url = diff_cfg.get('base_url', '')
+        diff_base_url = Prompt.ask("  DIFFUSION_BASE_URL", default=current_diff_base_url)
+        if diff_base_url:
+            diff_cfg['base_url'] = diff_base_url
+        else:
+            diff_cfg.pop('base_url', None)
+
+        current_diff_provider = diff_cfg.get('provider', 'openai')
+        diff_provider = Prompt.ask("  DIFFUSION_PROVIDER", default=current_diff_provider)
+        if diff_provider:
+            diff_cfg['provider'] = diff_provider
+        else:
+            diff_cfg.pop('provider', None)
+
+        current_diff_temp = diff_cfg.get('temperature', 0.1)
+        diff_temp = Prompt.ask("  DIFFUSION_TEMPERATURE", default=str(current_diff_temp))
+        if diff_temp:
+            try:
+                diff_cfg['temperature'] = float(diff_temp)
+            except ValueError:
+                diff_cfg.pop('temperature', None)
+        else:
+            diff_cfg.pop('temperature', None)
+
+        if not diff_cfg:
+            current_config['models'].pop('diffusion', None)
 
         config.save_config(current_config)
         self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
@@ -305,30 +255,18 @@ class AWorldCLI:
                 table.add_row(key, str(value))
         self.console.print()
         self.console.print(table)
-        if current_config['models'].get('media'):
-            media_table = Table(title="Media LLM Configuration (MEDIA_LLM_*)", box=box.ROUNDED)
-            media_table.add_column("Setting", style="cyan")
-            media_table.add_column("Value", style="green")
-            for key, value in current_config['models']['media'].items():
+        if current_config['models'].get('diffusion'):
+            diff_table = Table(title="Diffusion Configuration (DIFFUSION_*)", box=box.ROUNDED)
+            diff_table.add_column("Setting", style="cyan")
+            diff_table.add_column("Value", style="green")
+            for key, value in current_config['models']['diffusion'].items():
                 if key == 'api_key':
                     masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
-                    media_table.add_row(key, masked_value)
+                    diff_table.add_row(key, masked_value)
                 else:
-                    media_table.add_row(key, str(value))
+                    diff_table.add_row(key, str(value))
             self.console.print()
-            self.console.print(media_table)
-        if current_config['models'].get('video_creator'):
-            vc_table = Table(title="Video Creator LLM Configuration (VIDEO_CREATOR_LLM_*)", box=box.ROUNDED)
-            vc_table.add_column("Setting", style="cyan")
-            vc_table.add_column("Value", style="green")
-            for key, value in current_config['models']['video_creator'].items():
-                if key == 'api_key':
-                    masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
-                    vc_table.add_row(key, masked_value)
-                else:
-                    vc_table.add_row(key, str(value))
-            self.console.print()
-            self.console.print(vc_table)
+            self.console.print(diff_table)
 
     async def _edit_skills_config(self, config, current_config: dict):
         """Edit skills section of config (global SKILLS_PATH and per-agent XXX_SKILLS_PATH)."""
