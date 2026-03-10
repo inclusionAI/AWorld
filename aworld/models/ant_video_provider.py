@@ -44,6 +44,8 @@ Example — adding a new vendor adapter::
 """
 
 import abc
+import base64
+import mimetypes
 import os
 import re
 import time
@@ -79,6 +81,88 @@ _STATUS_MAP = {
     "succeed":    "succeeded",
     "failed":     "failed",
 }
+
+# Veo accepts only these image MIME types
+_VEO_ALLOWED_IMAGE_MIMES: frozenset = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+# Image magic bytes for MIME inference (signature -> mime_type)
+_IMAGE_MAGIC: Dict[bytes, str] = {
+    b"\xff\xd8\xff": "image/jpeg",
+    b"\x89PNG\r\n\x1a\n": "image/png",
+    b"GIF87a": "image/gif",
+    b"GIF89a": "image/gif",
+}
+
+
+def _infer_image_mime_from_bytes(data: bytes) -> str:
+    """Infer MIME type from raw image bytes using magic signatures."""
+    if data.startswith(b"RIFF") and len(data) >= 12 and data[8:12] == b"WEBP":
+        return "image/webp"
+    for sig, mime in _IMAGE_MAGIC.items():
+        if sig != b"RIFF" and data.startswith(sig):
+            return mime
+    return "image/jpeg"  # fallback
+
+
+def _parse_image_for_veo_payload(
+    image_data: Optional[str],
+    image_path: Optional[str],
+) -> Optional[Tuple[str, str]]:
+    """Parse image input into (base64_str, mime_type) for Veo bytesBase64Encoded payload.
+
+    - data URL (data:image/xxx;base64,yyy): extract mime from prefix, base64 from body
+    - raw base64: infer mime from decoded magic bytes
+    - image_path: read file, infer mime from magic bytes (fallback: mimetypes from ext)
+    """
+    b64_str: Optional[str] = None
+    mime: Optional[str] = None
+
+    if image_data:
+        s = image_data.strip()
+        if s.startswith(("http://", "https://")):
+            image_data = None  # fall through to image_path if available
+        elif s.startswith("data:") and ";base64," in s:
+            prefix, _, b64_part = s.partition(";base64,")
+            b64_str = b64_part
+            # data:image/jpeg;base64,  -> image/jpeg
+            if prefix.lower().startswith("data:image/"):
+                mime = prefix[11:].split(";")[0].strip().lower() or "image/jpeg"
+            else:
+                mime = "image/jpeg"
+        else:
+            b64_str = s
+            mime = None  # infer from bytes
+
+    if not b64_str and image_path:
+        b64_str = VideoGenProviderBase.read_file_as_base64(image_path)
+        mime_guess, _ = mimetypes.guess_type(image_path)
+        if mime_guess and mime_guess.startswith("image/"):
+            mime = mime_guess
+        else:
+            mime = None  # infer from bytes
+
+    if not b64_str:
+        return None
+
+    if not mime:
+        try:
+            chunk = b64_str[:32]
+            pad = (4 - len(chunk) % 4) % 4
+            raw = base64.b64decode(chunk + "=" * pad)
+            mime = _infer_image_mime_from_bytes(raw)
+        except Exception:
+            mime = "image/jpeg"
+
+    # Veo only accepts image/jpeg, image/png, image/webp
+    if mime not in _VEO_ALLOWED_IMAGE_MIMES:
+        logger.warning(
+            "[VeoAdapter] image mime %r not in allowed set %s; using image/jpeg",
+            mime,
+            sorted(_VEO_ALLOWED_IMAGE_MIMES),
+        )
+        mime = "image/jpeg"
+
+    return (b64_str, mime)
 
 
 # ---------------------------------------------------------------------------
@@ -788,9 +872,9 @@ class VeoAdapter(ModelAdapter):
 
     # Veo resolution strings (width x height)
     _RESOLUTION_MAP: Dict[VideoResolution, str] = {
-        VideoResolution.RES_480P:  "854x480",
-        VideoResolution.RES_720P:  "1280x720",
-        VideoResolution.RES_1080P: "1920x1080",
+        VideoResolution.RES_480P:  "480p",
+        VideoResolution.RES_720P:  "720p",
+        VideoResolution.RES_1080P: "1080p",
     }
 
     # ------------------------------------------------------------------
@@ -806,15 +890,13 @@ class VeoAdapter(ModelAdapter):
 
         instance: Dict[str, Any] = {"prompt": request.prompt or ""}
 
-        # Image-to-video: Veo accepts an image in the instance (base64 or URL)
+        # Image-to-video: Veo accepts an image in the instance (base64 + mimeType)
         is_image2video = False
-        image_data: Optional[str] = request.image_url
-        if not image_data and request.image_path:
-            b64        = VideoGenProviderBase.read_file_as_base64(request.image_path)
-            image_data = f"data:image/jpeg;base64,{b64}"
-        if image_data:
+        parsed = _parse_image_for_veo_payload(request.image_url, request.image_path)
+        if parsed:
+            b64_str, mime_type = parsed
             is_image2video = True
-            instance["image"] = {"bytesBase64Encoded": image_data}
+            instance["image"] = {"bytesBase64Encoded": b64_str, "mimeType": mime_type}
 
         parameters: Dict[str, Any] = {}
 
