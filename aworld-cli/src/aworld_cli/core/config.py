@@ -208,7 +208,7 @@ def _apply_skills_path_env(skills_cfg: Optional[Dict[str, Any]] = None) -> None:
 def _apply_media_models_config(models_config: Dict[str, Any]) -> None:
     """
     Apply models.media config to MEDIA_LLM_* env vars for media_comprehension agent.
-    If models.media is absent or empty, fall back to LLM_* or provider keys (OPENAI_*, etc.).
+    Priority: models.media config > existing MEDIA_LLM_* env vars > LLM_* or provider keys (OPENAI_*, etc.).
     """
     media_cfg = models_config.get('media') if isinstance(models_config.get('media'), dict) else {}
     api_key = (media_cfg.get('api_key') or '').strip()
@@ -217,6 +217,8 @@ def _apply_media_models_config(models_config: Dict[str, Any]) -> None:
     provider = (media_cfg.get('provider') or '').strip()
     temperature = media_cfg.get('temperature')
 
+    if not api_key:
+        api_key = (os.environ.get('MEDIA_LLM_API_KEY') or '').strip()
     if not api_key:
         api_key = (os.environ.get('LLM_API_KEY') or '').strip()
     if not api_key:
@@ -232,7 +234,11 @@ def _apply_media_models_config(models_config: Dict[str, Any]) -> None:
                     provider = 'gemini'
                 break
     if not model_name:
+        model_name = (os.environ.get('MEDIA_LLM_MODEL_NAME') or '').strip()
+    if not model_name:
         model_name = (os.environ.get('LLM_MODEL_NAME') or '').strip()
+    if not base_url:
+        base_url = (os.environ.get('MEDIA_LLM_BASE_URL') or '').strip()
     if not base_url:
         base_url = (os.environ.get('LLM_BASE_URL') or '').strip()
     if not base_url:
@@ -242,7 +248,13 @@ def _apply_media_models_config(models_config: Dict[str, Any]) -> None:
                 base_url = v
                 break
     if not provider:
+        provider = (os.environ.get('MEDIA_LLM_PROVIDER') or '').strip()
+    if not provider:
         provider = 'openai'
+    if temperature is None:
+        env_temp = (os.environ.get('MEDIA_LLM_TEMPERATURE') or '').strip()
+        if env_temp:
+            temperature = float(env_temp)
 
     if api_key:
         os.environ['MEDIA_LLM_API_KEY'] = api_key
@@ -255,11 +267,81 @@ def _apply_media_models_config(models_config: Dict[str, Any]) -> None:
         os.environ['MEDIA_LLM_TEMPERATURE'] = str(float(temperature))
 
 
+def _apply_video_creator_models_config(models_config: Dict[str, Any]) -> None:
+    """
+    Apply models.video_creator config to VIDEO_CREATOR_LLM_* env vars for video_creator agent.
+    Priority: models.video_creator config > existing VIDEO_CREATOR_LLM_* env vars > MEDIA_LLM_* > LLM_*.
+    """
+    vc_cfg = models_config.get('video_creator') if isinstance(models_config.get('video_creator'), dict) else {}
+    api_key = (vc_cfg.get('api_key') or '').strip()
+    model_name = (vc_cfg.get('model') or '').strip()
+    base_url = (vc_cfg.get('base_url') or '').strip()
+    provider = (vc_cfg.get('provider') or '').strip()
+    temperature = vc_cfg.get('temperature')
+
+    if not api_key:
+        api_key = (os.environ.get('VIDEO_CREATOR_LLM_API_KEY') or '').strip()
+    if not api_key:
+        api_key = (os.environ.get('MEDIA_LLM_API_KEY') or '').strip()
+    if not api_key:
+        api_key = (os.environ.get('LLM_API_KEY') or '').strip()
+    if not api_key:
+        for key in ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'):
+            v = (os.environ.get(key) or '').strip()
+            if v:
+                api_key = v
+                if not provider and 'OPENAI' in key:
+                    provider = 'openai'
+                elif not provider and 'ANTHROPIC' in key:
+                    provider = 'anthropic'
+                elif not provider and 'GEMINI' in key:
+                    provider = 'gemini'
+                break
+    if not model_name:
+        model_name = (os.environ.get('VIDEO_CREATOR_LLM_MODEL_NAME') or '').strip()
+    if not model_name:
+        model_name = (os.environ.get('MEDIA_LLM_MODEL_NAME') or '').strip()
+    if not model_name:
+        model_name = (os.environ.get('LLM_MODEL_NAME') or '').strip()
+    if not base_url:
+        base_url = (os.environ.get('VIDEO_CREATOR_LLM_BASE_URL') or '').strip()
+    if not base_url:
+        base_url = (os.environ.get('MEDIA_LLM_BASE_URL') or '').strip()
+    if not base_url:
+        base_url = (os.environ.get('LLM_BASE_URL') or '').strip()
+    if not base_url:
+        for key in ('OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL', 'GEMINI_BASE_URL'):
+            v = (os.environ.get(key) or '').strip()
+            if v:
+                base_url = v
+                break
+    if not provider:
+        provider = (os.environ.get('VIDEO_CREATOR_LLM_PROVIDER') or '').strip()
+    if not provider:
+        provider = (os.environ.get('MEDIA_LLM_PROVIDER') or '').strip()
+    if not provider:
+        provider = 'openai'
+    if temperature is None:
+        env_temp = (os.environ.get('VIDEO_CREATOR_LLM_TEMPERATURE') or '').strip()
+        if env_temp:
+            temperature = float(env_temp)
+
+    if api_key:
+        os.environ['VIDEO_CREATOR_LLM_API_KEY'] = api_key
+    if model_name:
+        os.environ['VIDEO_CREATOR_LLM_MODEL_NAME'] = model_name
+    if base_url:
+        os.environ['VIDEO_CREATOR_LLM_BASE_URL'] = base_url
+    os.environ['VIDEO_CREATOR_LLM_PROVIDER'] = provider
+    if temperature is not None:
+        os.environ['VIDEO_CREATOR_LLM_TEMPERATURE'] = str(float(temperature))
+
+
 def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
     """
     Apply models config (api_key, model, base_url) to os.environ.
     Supports: models.default (flat) and legacy models.default.{openai|anthropic|gemini}.
-    Also applies models.media to MEDIA_LLM_* for media_comprehension agent.
+    Also applies models.media to MEDIA_LLM_* and models.video_creator to VIDEO_CREATOR_LLM_*.
     """
     if not models_config:
         return
@@ -280,6 +362,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
         if base_url:
             os.environ['LLM_BASE_URL'] = base_url
         _apply_media_models_config(models_config)
+        _apply_video_creator_models_config(models_config)
         return
     # Legacy: nested models.default.{provider} or models.{provider}
     default_providers = {k: v for k, v in default_cfg.items()
@@ -320,16 +403,17 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
                 os.environ['LLM_BASE_URL'] = base_url
 
     _apply_media_models_config(models_config)
+    _apply_video_creator_models_config(models_config)
 
 
 def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
-    """Load config from local .env. Clears env, loads dotenv, applies skills path and STREAM."""
-    os.environ.clear()
-    load_dotenv(dotenv_path=source_path)
+    """Load config from local .env. Loads dotenv (override), applies skills path and STREAM."""
+    load_dotenv(dotenv_path=source_path, override=True)
     _apply_skills_path_env(skills_cfg={})
     apply_stream_env({'stream': os.environ.get('STREAM'), 'models': {'stream': os.environ.get('STREAM')}})
-    # Apply MEDIA_LLM_* from LLM_* when MEDIA_LLM_* not set in .env
+    # Apply MEDIA_LLM_* and VIDEO_CREATOR_LLM_* from LLM_* when not set in .env
     _apply_media_models_config({})
+    _apply_video_creator_models_config({})
     logger.info(f"[config] load_dotenv loaded from: {source_path} {os.environ.get('LLM_MODEL_NAME')} {os.environ.get('LLM_BASE_URL')}")
     return _env_to_config(), "local", source_path
 

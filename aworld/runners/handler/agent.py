@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import abc
 import asyncio
+import json
 from typing import AsyncGenerator, Tuple
 
 from aworld.agents.loop_llm_agent import LoopableAgent
@@ -244,9 +245,21 @@ class DefaultAgentHandler(AgentHandler):
 
         cur_agent._finished = False
         con = action.policy_info
+        obs_info = {}
         if action.params and 'content' in action.params:
             con = action.params['content']
-        observation = Observation(content=con, observer=agent.id(), from_agent_name=agent.id())
+        if action.params and 'info' in action.params:
+            raw_info = action.params['info']
+            if isinstance(raw_info, dict):
+                obs_info = raw_info
+            elif isinstance(raw_info, str) and raw_info.strip():
+                try:
+                    obs_info = json.loads(raw_info)
+                except Exception:
+                    logger.warning(
+                        f"[AgentHandler] Failed to parse info param as JSON for agent '{agent_name}': {raw_info!r}"
+                    )
+        observation = Observation(content=con, info=obs_info, observer=agent.id(), from_agent_name=agent.id())
 
         if agent.handoffs and agent_name not in agent.handoffs:
             if message.caller:
