@@ -59,7 +59,13 @@ def get_agent_desc() -> Dict[str, dict]:
             "required": True
         }
         ability_dict["params"]["info"] = {
-            "desc": "Some extended information provided to the agent for decision-making.",
+            "desc": (
+                "A JSON-encoded string carrying extra structured parameters for the agent. "
+                "For example, to pass image and video generation options use: "
+                '{\"image_url\": \"<url_or_base64>\", \"resolution\": \"720p\", '
+                '\"duration\": 5, \"fps\": 24}. '
+                "Leave empty or omit when no extra parameters are needed."
+            ),
             "type": "str",
             "required": False
         }

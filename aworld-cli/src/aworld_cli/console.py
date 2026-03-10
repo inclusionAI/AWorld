@@ -238,6 +238,58 @@ class AWorldCLI:
         if not media_cfg:
             current_config['models'].pop('media', None)
 
+        # Video Creator LLM (models.video_creator -> VIDEO_CREATOR_LLM_* for video_creator agent)
+        self.console.print("\n[bold]Video Creator LLM configuration[/bold] [dim](optional, for video_creator agent)[/dim]")
+        self.console.print("  [dim]Leave empty to use Media LLM or default LLM config above[/dim]\n")
+        if 'video_creator' not in current_config['models']:
+            current_config['models']['video_creator'] = {}
+        vc_cfg = current_config['models']['video_creator']
+
+        current_vc_api_key = vc_cfg.get('api_key', '')
+        if current_vc_api_key:
+            masked = current_vc_api_key[:8] + "..." if len(current_vc_api_key) > 8 else "***"
+            self.console.print(f"  [dim]Current VIDEO_CREATOR_LLM_API_KEY: {masked}[/dim]")
+        vc_api_key = Prompt.ask("  VIDEO_CREATOR_LLM_API_KEY", default=current_vc_api_key, password=True)
+        if vc_api_key:
+            vc_cfg['api_key'] = vc_api_key
+        else:
+            vc_cfg.pop('api_key', None)
+
+        current_vc_model = vc_cfg.get('model', '')
+        self.console.print("  [dim]e.g. claude-3-5-sonnet-20241022 · Enter to inherit from Media/default[/dim]")
+        vc_model = Prompt.ask("  VIDEO_CREATOR_LLM_MODEL_NAME", default=current_vc_model)
+        if vc_model:
+            vc_cfg['model'] = vc_model
+        else:
+            vc_cfg.pop('model', None)
+
+        current_vc_base_url = vc_cfg.get('base_url', '')
+        vc_base_url = Prompt.ask("  VIDEO_CREATOR_LLM_BASE_URL", default=current_vc_base_url)
+        if vc_base_url:
+            vc_cfg['base_url'] = vc_base_url
+        else:
+            vc_cfg.pop('base_url', None)
+
+        current_vc_provider = vc_cfg.get('provider', 'openai')
+        vc_provider = Prompt.ask("  VIDEO_CREATOR_LLM_PROVIDER", default=current_vc_provider)
+        if vc_provider:
+            vc_cfg['provider'] = vc_provider
+        else:
+            vc_cfg.pop('provider', None)
+
+        current_vc_temp = vc_cfg.get('temperature', 0.1)
+        vc_temp = Prompt.ask("  VIDEO_CREATOR_LLM_TEMPERATURE", default=str(current_vc_temp))
+        if vc_temp:
+            try:
+                vc_cfg['temperature'] = float(vc_temp)
+            except ValueError:
+                vc_cfg.pop('temperature', None)
+        else:
+            vc_cfg.pop('temperature', None)
+
+        if not vc_cfg:
+            current_config['models'].pop('video_creator', None)
+
         config.save_config(current_config)
         self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
         table = Table(title="Default LLM Configuration", box=box.ROUNDED)
@@ -265,6 +317,18 @@ class AWorldCLI:
                     media_table.add_row(key, str(value))
             self.console.print()
             self.console.print(media_table)
+        if current_config['models'].get('video_creator'):
+            vc_table = Table(title="Video Creator LLM Configuration (VIDEO_CREATOR_LLM_*)", box=box.ROUNDED)
+            vc_table.add_column("Setting", style="cyan")
+            vc_table.add_column("Value", style="green")
+            for key, value in current_config['models']['video_creator'].items():
+                if key == 'api_key':
+                    masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
+                    vc_table.add_row(key, masked_value)
+                else:
+                    vc_table.add_row(key, str(value))
+            self.console.print()
+            self.console.print(vc_table)
 
     async def _edit_skills_config(self, config, current_config: dict):
         """Edit skills section of config (global SKILLS_PATH and per-agent XXX_SKILLS_PATH)."""
