@@ -220,7 +220,7 @@ class AWorldCLI:
         else:
             diff_cfg.pop('base_url', None)
 
-        current_diff_provider = diff_cfg.get('provider', 'openai')
+        current_diff_provider = diff_cfg.get('provider', 'together_video')
         diff_provider = Prompt.ask("  DIFFUSION_PROVIDER", default=current_diff_provider)
         if diff_provider:
             diff_cfg['provider'] = diff_provider

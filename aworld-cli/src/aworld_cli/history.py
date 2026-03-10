@@ -326,7 +326,7 @@ class JSONLHistory(History):
                 output_tok = token_stats.get("output_tokens", 0)
                 total_tok = token_stats.get("total_tokens", 0)
                 duration = token_stats.get("duration_seconds")
-                tot_str = f" ↑{input_tok} / ↓{output_tok}"
+                tot_str = f" in{input_tok} / out{output_tok}"
                 if duration is not None and duration > 0:
                     tot_str += f" ({duration:.1f}s)"
                 by_model = token_stats.get("by_model") or {}
@@ -338,7 +338,7 @@ class JSONLHistory(History):
                         mo = mstats.get("output_tokens", 0)
                         md = mstats.get("duration_seconds", 0)
                         rnd = mstats.get("rounds", 1)
-                        ms = f" ↑{mi} / ↓{mo}"
+                        ms = f" in{mi} / out{mo}"
                         if md and md > 0:
                             ms += f" ({md:.1f}s)"
                         rnd_str = f" ({rnd} rounds)" if rnd > 0 else ""
