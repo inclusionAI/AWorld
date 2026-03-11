@@ -193,6 +193,12 @@ class VideoAgent(LLMAgent):
         # Resolve video parameters (observation.info overrides instance defaults)
         image_url: Optional[str] = obs_info.pop("image_url", None)
         image_url = _resolve_image_url_to_base64(image_url)
+        reference_images = obs_info.pop("reference_images", None)
+        if reference_images:
+            reference_images = [
+                _resolve_image_url_to_base64(image_url)
+                for image_url in reference_images
+            ]
         resolution: Optional[str] = obs_info.pop("resolution", self.default_resolution)
         duration: Optional[float] = obs_info.pop("duration", self.default_duration)
         fps: Optional[int] = obs_info.pop("fps", self.default_fps)
@@ -204,6 +210,8 @@ class VideoAgent(LLMAgent):
 
         # Any remaining keys in obs_info are forwarded to the provider
         extra_kwargs = obs_info
+        if reference_images:
+            extra_kwargs["reference_images"] = reference_images
 
         logger.info(
             f"[VideoAgent:{self.id()}] Generating video: "
