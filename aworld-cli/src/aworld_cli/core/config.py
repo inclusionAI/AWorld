@@ -254,7 +254,7 @@ def _apply_diffusion_models_config(models_config: Dict[str, Any]) -> None:
     if not provider:
         provider = (os.environ.get('DIFFUSION_PROVIDER') or '').strip()
     if not provider:
-        provider = 'openai'
+        provider = 'together_video'
     if temperature is None:
         env_temp = (os.environ.get('DIFFUSION_TEMPERATURE') or '').strip()
         if env_temp:

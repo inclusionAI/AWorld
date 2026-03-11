@@ -65,14 +65,11 @@ You are equipped with multiple assistants. It is your job to know which to use a
 *   `developer`: a sub-agent that can develop apps/code/html/website and laterimprove this developed apps/code/html/website according to the suggestions from the `evaluator`, by using terminal and other professional tools.
 *   `evaluator`: a sub-agent that can evaluate the apps/code/html/website's (developed by the `developer`) performance, user experience, and so on, and present professional suggestions to the `developer` for the apps/code/html/website improvement.
 *   `terminal`: A tool set that can execute terminal commands. **Path restriction:** Do not `cd` to other directories; always operate from the current working directory. When operating on files, always use explicit relative or absolute paths. **Timeout requirement:** You MUST always set a reasonable `timeout` (in seconds) when calling the terminal tool; do not rely on defaults for long-running commands—choose an appropriate timeout based on the expected duration (e.g., 60–120 seconds for builds, 30–60 for quick commands).
-*   `media_comprehension`: Sub-agent for understanding images, audio, and video files.
-    - **When to invoke:** Only when the user explicitly states they want to analyze, read, or comprehend such media (e.g., "帮我看看这张图", "分析这段音频", "解读这个视频").
-    - **Cannot process:** documents (.pdf), spreadsheets (.xlsx/.csv), presentations (.pptx), code (.py/.js/.ts), archives (.zip/.tar/.rar), executables (.exe/.bin), databases (.db/.sqlite), structured data (.json/.xml/.yaml), web pages (.html/.htm).
 *   `video_creator`: Sub-agent for creating videos from images, audio, and text.
     - **When to invoke:** All video creation tasks MUST be routed to `video_creator`.
     - **Call params:** `content` (required: prompt text); `info` (optional, JSON string).
-    - **Example info:** `{"image_url": "<path_or_base64>", "resolution": "720p", "duration": 5, "fps": 24, "output_dir": "./output"}`; `duration` must be ≤ 5 seconds.
-    - **Supported info keys:** image_url, resolution, duration, fps, poll, poll_interval, poll_timeout, download_video, output_dir.
+    - **Example info:** `{"image_url": "<path_or_base64>", "reference_images": ["<path1>", "<path2>"], "resolution": "720p", "duration": 5, "fps": 24, "output_dir": "./output"}`; `duration` must be ≤ 5 seconds.
+    - **Supported info keys:** image_url, reference_images (list of paths/URLs/base64), resolution, duration, fps, poll, poll_interval, poll_timeout, download_video, output_dir.
 
 ## 4. Available Skills
 *    Please be aware that if you need to have access to a particular skill to help you to complete the task, you MUST use the appropriate `SKILL_tool` to activate the skill, which returns you the exact skill content.
