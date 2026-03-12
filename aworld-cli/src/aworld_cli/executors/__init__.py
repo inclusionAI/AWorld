@@ -28,6 +28,9 @@ from .hooks import (
 # This is a default hook that is automatically enabled
 from .file_parse_hook import FileParseHook  # noqa: F401
 
+# Import PreLlmCostHook to register with HookFactory (runner-level pre_llm_call hook)
+from .pre_llm_cost_hook import PreLlmCostHook  # noqa: F401
+
 __all__.extend([
     "LocalAgentExecutor", 
     "RemoteAgentExecutor", 

@@ -50,6 +50,14 @@ except ImportError:
 from .base import AgentExecutor
 
 
+def env_stream_no_truncate() -> bool:
+    """
+    Return True when NO_TRUNCATE is 1/true/yes.
+    Single source of truth for stream/content/tool display truncation.
+    """
+    return os.environ.get("NO_TRUNCATE", "").strip().lower() in ("1", "true", "yes")
+
+
 class BaseAgentExecutor(ABC, AgentExecutor):
     """
     Base executor with common capabilities.
@@ -320,7 +328,8 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             self.console.print(header)
 
         # Show content with proper indentation for wrapped lines
-        if is_collapsed and total_lines > max_lines:
+        no_truncate = env_stream_no_truncate()
+        if is_collapsed and total_lines > max_lines and not no_truncate:
             # Show only first few lines + summary
             for line in content_lines[:max_lines]:
                 if line.strip():
@@ -598,11 +607,14 @@ class BaseAgentExecutor(ABC, AgentExecutor):
     def _format_arg_display(self, value: Any, key: str | None = None, max_len: int = 100) -> List[str]:
         """
         Truncate value to max_len chars, then format for display with unified indent when multi-line.
-        Returns list of display lines.
+        Returns list of display lines. When NO_TRUNCATE=1, effective max_len is unlimited.
         """
+        effective_max = max_len
+        if max_len == 100 and env_stream_no_truncate():
+            effective_max = 1_000_000
         sv = str(value)
-        if len(sv) > max_len:
-            sv = sv[:max_len - 3] + "..."
+        if effective_max is not None and len(sv) > effective_max:
+            sv = sv[:effective_max - 3] + "..."
         lines = [l.strip() for l in sv.split("\n") if l.strip()]
         prefix = f"   {key}: " if key else "   "
         indent = " " * len(prefix)
@@ -1041,12 +1053,20 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             if display_content is None:
                 display_content = result_content
 
+        no_truncate = env_stream_no_truncate()
+        max_lines = None if no_truncate else 3
+        max_chars_per_line = None if no_truncate else 500
+
         lines = []
         lines.append(f"⚡ [bold]{tool_info}[/bold]")
         if display_content:
-            content_lines = [ln.strip() for ln in display_content.split('\n')[:3] if ln.strip()]
+            all_content_lines = [ln.strip() for ln in display_content.split("\n") if ln.strip()]
+            content_lines = all_content_lines[:max_lines] if max_lines is not None else all_content_lines
             for ln in content_lines:
-                lines.append(f"   {ln[:500]}{'...' if len(ln) > 500 else ''}")
+                if max_chars_per_line is not None and len(ln) > max_chars_per_line:
+                    lines.append(f"   {ln[:max_chars_per_line]}...")
+                else:
+                    lines.append(f"   {ln}")
         else:
             lines.append("   [dim italic]No output[/dim italic]")
         return lines
