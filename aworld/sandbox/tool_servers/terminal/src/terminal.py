@@ -182,6 +182,14 @@ async def run_code(
     if isinstance(output_format, FieldInfo):
         output_format = output_format.default
 
+    # Timeout: env TERMINAL_TIMEOUT overrides parameter/default when set
+    env_timeout = os.environ.get("TERMINAL_TIMEOUT")
+    if env_timeout is not None:
+        try:
+            timeout = int(env_timeout)
+        except ValueError:
+            pass  # keep current timeout if env value is not a valid integer
+
     output_data = ""
     command_id = str(uuid.uuid4())
     try:
