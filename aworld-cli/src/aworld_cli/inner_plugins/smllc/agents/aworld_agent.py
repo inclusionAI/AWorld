@@ -470,13 +470,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     )
 
     # Create the Aworld agent
-    #
-    # MCP server loading strategy:
-    # - Keep built-in defaults (e.g. terminal)
-    # - Merge in user/project registered MCP servers from aworld-cli registry
-    from aworld_cli.config.mcp_registry import merge_mcp_config, merge_mcp_servers_list
-
-    base_mcp_config = {
+    mcp_config = {
         "mcpServers": {
             "terminal": {
                 "command": sys.executable,
@@ -485,16 +479,14 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             }
         }
     }
-    merged_mcp_config = merge_mcp_config(base_mcp_config)
-    merged_mcp_servers = merge_mcp_servers_list(["terminal"], merged_mcp_config)
 
     aworld_agent = Agent(
         name="Aworld",
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
         system_prompt=aworld_system_prompt,
-        mcp_servers=merged_mcp_servers,
-        mcp_config=merged_mcp_config,
+        mcp_servers=["terminal"],
+        mcp_config=mcp_config,
         # for read image, automatically convert bytes to base64
         tool_names=['CAST_SEARCH']
     )
