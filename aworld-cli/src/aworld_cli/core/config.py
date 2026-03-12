@@ -123,9 +123,11 @@ def get_config() -> AWorldConfig:
 def resolve_stream_value(global_config: Dict[str, Any]) -> str:
     """
     Resolve stream setting from config to STREAM env value ('1' or '0').
-    Priority: stream > models.stream. Default: '1'.
+    Priority: output.stream > stream > models.stream. Default: '1'.
     """
-    stream_val = global_config.get('stream')
+    stream_val = (global_config.get('output') or {}).get('stream')
+    if stream_val is None:
+        stream_val = global_config.get('stream')
     if stream_val is None:
         stream_val = (global_config.get('models') or {}).get('stream')
     if stream_val in (True, 'true', '1', 'yes'):
@@ -135,9 +137,46 @@ def resolve_stream_value(global_config: Dict[str, Any]) -> str:
     return '1'
 
 
+def resolve_no_truncate_value(global_config: Dict[str, Any]) -> Optional[str]:
+    """
+    Resolve output no_truncate (NO_TRUNCATE) from config.
+    Returns '1', '0', or None (not set; caller should not overwrite env).
+    """
+    val = (global_config.get('output') or {}).get('no_truncate')
+    if val is None:
+        return None
+    if val in (True, 'true', '1', 'yes'):
+        return '1'
+    return '0'
+
+
+def resolve_limit_tokens_value(global_config: Dict[str, Any]) -> Optional[str]:
+    """
+    Resolve output limit_tokens (LIMIT_TOKENS) from config.
+    Returns string representation of integer, or None (not set).
+    Priority: output.limit_tokens > top-level limit_tokens.
+    """
+    val = (global_config.get('output') or {}).get('limit_tokens')
+    if val is None:
+        val = global_config.get('limit_tokens')
+    if val is None:
+        return None
+    try:
+        n = int(val)
+        return str(n) if n > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def apply_stream_env(global_config: Dict[str, Any]) -> None:
-    """Apply stream config to os.environ['STREAM']."""
+    """Apply output/stream config to os.environ: STREAM, NO_TRUNCATE, LIMIT_TOKENS."""
     os.environ['STREAM'] = resolve_stream_value(global_config)
+    no_truncate = resolve_no_truncate_value(global_config)
+    if no_truncate is not None:
+        os.environ['NO_TRUNCATE'] = no_truncate
+    limit_tokens = resolve_limit_tokens_value(global_config)
+    if limit_tokens is not None:
+        os.environ['LIMIT_TOKENS'] = limit_tokens
 
 
 def _env_to_config() -> Dict[str, Any]:
@@ -339,10 +378,17 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
 
 
 def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
-    """Load config from local .env. Loads dotenv (override), applies skills path and STREAM."""
+    """Load config from local .env. Loads dotenv (override), applies skills path and output (STREAM, NO_TRUNCATE, LIMIT_TOKENS)."""
     load_dotenv(dotenv_path=source_path, override=True)
     _apply_skills_path_env(skills_cfg={})
-    apply_stream_env({'stream': os.environ.get('STREAM'), 'models': {'stream': os.environ.get('STREAM')}})
+    apply_stream_env({
+        'stream': os.environ.get('STREAM'),
+        'output': {
+            'stream': os.environ.get('STREAM'),
+            'no_truncate': os.environ.get('NO_TRUNCATE'),
+            'limit_tokens': os.environ.get('LIMIT_TOKENS'),
+        },
+    })
     # Apply DIFFUSION_* from LLM_* when not set in .env
     _apply_diffusion_models_config({})
     logger.info(f"[config] load_dotenv loaded from: {source_path} {os.environ.get('LLM_MODEL_NAME')} {os.environ.get('LLM_BASE_URL')}")
@@ -350,7 +396,7 @@ def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
 
 
 def _load_from_global_config(config: AWorldConfig) -> tuple[Dict[str, Any], str, str]:
-    """Load config from global aworld.json. Applies skills path, models, stream."""
+    """Load config from global aworld.json. Applies skills path, models, output (stream, no_truncate, limit_tokens)."""
     global_config = config.load_config()
     skills_cfg = global_config.get('skills') if isinstance(global_config.get('skills'), dict) else {}
     _apply_skills_path_env(skills_cfg)

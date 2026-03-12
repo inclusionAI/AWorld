@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Optional, Any
 
 from .engine import Searcher, SearchParams, SearchResult, SearchType
-from .utils import PygrepSearcher
+from .utils import grep_search_with_fallback, PygrepSearcher
 from ..utils import logger
 
 
@@ -21,13 +21,13 @@ class GrepSearcher(Searcher):
     """
     Grep Content Search Tool
 
-    Uses Pygrep (Python-based grep) for text content search.
+    Uses Ripgrep when available (10-100x faster), automatically falls back to Pygrep
+    when ripgrep is not installed or errors.
     Based on opencode's grep.ts implementation.
     """
 
     def __init__(self, root_path: Optional[Path] = None):
         self.root_path = root_path or Path.cwd()
-        self.searcher = PygrepSearcher()
         self.max_line_length = 2000
 
     def get_search_type(self) -> SearchType:
@@ -47,15 +47,11 @@ class GrepSearcher(Searcher):
         if not self.validate_params(params):
             raise ValueError("Invalid search parameters")
 
-        # Execute search synchronously
         matches = await self._async_search(params)
 
         execution_time = time.time() - start_time
 
-        # Sort by modification time
-        matches.sort(key=lambda m: m.get('mod_time', 0), reverse=True)
-
-        # Apply result limit
+        # Apply result limit (underlying searcher already sorts by mod_time)
         limit = params.max_results
         truncated = len(matches) > limit
         final_matches = matches[:limit] if truncated else matches
@@ -85,6 +81,15 @@ class GrepSearcher(Searcher):
             output_lines.append("")
             output_lines.append("(Results truncated. Consider using a more specific path or pattern.)")
 
+        search_path = params.path or str(self.root_path)
+        pattern = params.pattern or ""
+        pattern_display = f"{pattern[:50]}{'...' if len(pattern) > 50 else ''}"
+        trunc_info = f", truncated to {limit}" if truncated else ""
+        logger.info(
+            f"Grep search: pattern='{pattern_display}', path='{search_path}', "
+            f"found {len(matches)} matches in {execution_time:.2f}s{trunc_info}"
+        )
+
         return SearchResult(
             title=params.pattern,
             search_type=SearchType.GREP,
@@ -101,11 +106,10 @@ class GrepSearcher(Searcher):
         )
 
     async def _async_search(self, params: SearchParams) -> List[Dict[str, Any]]:
-        """Execute search asynchronously"""
+        """Execute search: Ripgrep when available, auto-fallback to Pygrep on failure."""
         search_path = params.path or str(self.root_path)
-
         try:
-            pygrep_matches = await self.searcher.search(
+            raw = await grep_search_with_fallback(
                 pattern=params.pattern,
                 path=search_path,
                 include_patterns=params.include_patterns,
@@ -113,24 +117,21 @@ class GrepSearcher(Searcher):
                 context_lines=params.context_lines,
                 case_sensitive=params.case_sensitive,
                 follow_symlinks=params.follow_symlinks,
-                search_hidden=params.search_hidden
+                search_hidden=params.search_hidden,
             )
-
-            matches = []
-            for pygrep_match in pygrep_matches:
-                matches.append({
-                    'file_path': pygrep_match.file_path,
-                    'line_number': pygrep_match.line_number,
-                    'line_text': pygrep_match.line_text,
-                    'mod_time': pygrep_match.mod_time,
-                    'absolute_offset': pygrep_match.absolute_offset,
-                    'submatches': pygrep_match.submatches
-                })
-
-            return matches
-
+            return [
+                {
+                    'file_path': m.file_path,
+                    'line_number': m.line_number,
+                    'line_text': m.line_text,
+                    'mod_time': m.mod_time,
+                    'absolute_offset': m.absolute_offset,
+                    'submatches': m.submatches,
+                }
+                for m in raw
+            ]
         except Exception as e:
-            logger.error(f"Pygrep search failed: {e}")
+            logger.error(f"Grep search failed: {e}")
             return []
 
     def set_root_path(self, path: Path):

@@ -104,6 +104,7 @@ class AWorldCLI:
         config_types = [
             ("1", "Model configuration", self._edit_models_config),
             ("2", "Skills configuration", self._edit_skills_config),
+            ("3", "Output configuration", self._edit_output_config),
         ]
         back_key = str(len(config_types) + 1)
         self.console.print("\n[bold]Select configuration type:[/bold]")
@@ -131,8 +132,6 @@ class AWorldCLI:
         """Edit models.default (flat: provider, api_key, model, base_url)."""
         from rich.table import Table
 
-        from .core.config import resolve_stream_value
-        
         if 'models' not in current_config:
             current_config['models'] = {}
         if 'default' not in current_config['models']:
@@ -174,17 +173,6 @@ class AWorldCLI:
             default_cfg['base_url'] = base_url
         else:
             default_cfg.pop('base_url', None)
-
-        # Stream switch
-        stream_str = 'true' if resolve_stream_value(current_config) == '1' else 'false'
-        self.console.print("  [dim]Enable streaming display (sets STREAM=1)[/dim]")
-        stream_choice = Prompt.ask("  Stream (true/false)", default=stream_str)
-        if str(stream_choice).lower() in ('true', '1', 'yes'):
-            current_config['stream'] = True
-            os.environ['STREAM'] = '1'
-        else:
-            current_config['stream'] = False
-            os.environ['STREAM'] = '0'
 
         # Diffusion (models.diffusion -> DIFFUSION_* for video_creator agent)
         self.console.print("\n[bold]Diffusion configuration[/bold] [dim](optional, for video_creator agent)[/dim]")
@@ -318,6 +306,74 @@ class AWorldCLI:
         if current_config.get('skills'):
             self.console.print()
             self.console.print(table)
+
+    async def _edit_output_config(self, config, current_config: dict):
+        """Edit output section: stream (STREAM), no_truncate (NO_TRUNCATE), limit_tokens (LIMIT_TOKENS)."""
+        from .core.config import (
+            apply_stream_env,
+            resolve_limit_tokens_value,
+            resolve_no_truncate_value,
+            resolve_stream_value,
+        )
+
+        if 'output' not in current_config:
+            current_config['output'] = {}
+
+        out = current_config['output']
+
+        self.console.print("\n[bold]Output configuration[/bold]")
+        self.console.print("  [dim]Stream: enable streaming display. No truncate: show full tool/output without folding. Limit tokens: max context tokens (e.g. 128000).[/dim]\n")
+
+        stream_str = 'true' if resolve_stream_value(current_config) == '1' else 'false'
+        stream_choice = Prompt.ask("  STREAM (true/false)", default=stream_str)
+        if str(stream_choice).lower() in ('true', '1', 'yes'):
+            out['stream'] = True
+            os.environ['STREAM'] = '1'
+        else:
+            out['stream'] = False
+            os.environ['STREAM'] = '0'
+
+        no_truncate_val = resolve_no_truncate_value(current_config)
+        if no_truncate_val is None:
+            no_truncate_val = (os.environ.get('NO_TRUNCATE') or '').strip().lower()
+        no_truncate_str = 'true' if no_truncate_val in ('1', 'true', 'yes') else 'false'
+        no_truncate_choice = Prompt.ask("  NO_TRUNCATE (true/false)", default=no_truncate_str)
+        if str(no_truncate_choice).lower() in ('true', '1', 'yes'):
+            out['no_truncate'] = True
+            os.environ['NO_TRUNCATE'] = '1'
+        else:
+            out['no_truncate'] = False
+            os.environ['NO_TRUNCATE'] = '0'
+
+        limit_tokens_val = resolve_limit_tokens_value(current_config) or (os.environ.get('LIMIT_TOKENS') or '').strip()
+        limit_tokens_choice = Prompt.ask("  LIMIT_TOKENS (max context tokens, e.g. 128000; empty to unset)", default=limit_tokens_val or "")
+        if limit_tokens_choice.strip():
+            try:
+                n = int(limit_tokens_choice.strip())
+                if n > 0:
+                    out['limit_tokens'] = n
+                    os.environ['LIMIT_TOKENS'] = str(n)
+                else:
+                    out.pop('limit_tokens', None)
+                    os.environ.pop('LIMIT_TOKENS', None)
+            except ValueError:
+                out.pop('limit_tokens', None)
+                os.environ.pop('LIMIT_TOKENS', None)
+        else:
+            out.pop('limit_tokens', None)
+            os.environ.pop('LIMIT_TOKENS', None)
+
+        apply_stream_env(current_config)
+        config.save_config(current_config)
+        self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
+        table = Table(title="Output Configuration", box=box.ROUNDED)
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+        table.add_row("stream", str(out.get('stream', '')))
+        table.add_row("no_truncate", str(out.get('no_truncate', '')))
+        table.add_row("limit_tokens", str(out.get('limit_tokens', '')) or "(unset)")
+        self.console.print()
+        self.console.print(table)
 
     def display_agents(self, agents: List[AgentInfo], source_type: str = "LOCAL", source_location: str = ""):
         """
