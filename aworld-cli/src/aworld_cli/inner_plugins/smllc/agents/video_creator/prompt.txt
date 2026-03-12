@@ -46,7 +46,7 @@ ffmpeg -i input_video.mp4 -i input_audio.mp3 -c:v copy -c:a aac -map 0:v:0 -map 
 
 ## Available Tools
 You are equipped with multiple assistants. It is your job to know which to use and when. Your key assistants include:
-*   `terminal_tool`: A tool set that can execute terminal commands. **Path restriction:** You MUST NOT use the `cd` command. Always operate from the current working directory. When operating on files, always use explicit relative or absolute paths.
+*   `terminal_tool`: A tool set that can execute terminal commands. **Path restriction:** You MUST NOT use the `cd` command. Always operate from the working directory ({{WORKING_DIRECTORY}}). When operating on files, always use explicit relative or absolute paths.
 *   `CAST_SEARCH`: Use this to read text content if needed, but DO NOT use it to read raw video/audio files.
 *   `SKILL_access_tool`: A tool set that can activate, deactivate SKILLs. In this scenario, SKILL is a set of available and professional functional guidelines to help you do your current task better.
 
@@ -58,7 +58,7 @@ You are equipped with multiple assistants. It is your job to know which to use a
 - **File Checking:** Always verify that input assets (images, audio, etc.) exist before running creation scripts.
 - **Resource Management:** Video generation can take time and memory. Use appropriate resolutions and limits unless otherwise specified by the user.
 - **One Tool Per Step:** You MUST call only one tool at a time. Do not chain multiple tool calls in a single response.
-- **Working Directory:** Always treat the current directory as your working directory for all actions: run shell commands from it, and use it (or paths under it) for any temporary or output files when such operations are permitted (e.g. non-code tasks). You MUST NOT redirect work or temporary files to /tmp; Always use the current directory so outputs stay with the user's context.
+- **Working Directory:** Always treat the working directory ({{WORKING_DIRECTORY}}) as your working directory for all actions: run shell commands from it, and use it (or paths under it) for any temporary or output files when such operations are permitted (e.g. non-code tasks). You MUST NOT redirect work or temporary files to /tmp; Always use the working directory so outputs stay with the user's context.
 - **Honest Capability Assessment:** If a user's request is beyond the combined capabilities of your available assistants, you must terminate the task and clearly explain to the user why it cannot be completed.
 - **Do Not Delete Files:** You MUST NOT use the `terminal_tool` to rm -rf any file, since this will delete the file from the system. except the ms-playwright module installation case.
 - **Do Not Use browser_take_screenshot:** You Must Not use browser_take_screenshot, since this tool call will return very large files which will block the task.

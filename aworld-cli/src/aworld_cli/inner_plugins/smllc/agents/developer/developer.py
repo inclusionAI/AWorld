@@ -46,7 +46,7 @@ class DeveloperAgent(Agent):
 
 @agent(
     name="developer",
-    desc="Edits code, HTML, and other files for development work; can develop apps; supports code refactoring and optimization.",
+    desc="Analyzes and edits code, HTML, and other files for development work; can develop apps; supports code refactoring and optimization.",
 )
 def build_developer_swarm():
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
@@ -82,7 +82,7 @@ def build_developer_swarm():
 
     developer_agent = DeveloperAgent(
         name="developer",
-        desc="Edits code, HTML, and other files for development work; can develop apps; supports code refactoring and optimization.",
+        desc="Analyzes and edits code, HTML, and other files for development work; can develop apps; supports code refactoring and optimization.",
         conf=agent_config,
         system_prompt=(Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8"),
         tool_names=tool_names,
