@@ -244,6 +244,17 @@ def _apply_skills_path_env(skills_cfg: Optional[Dict[str, Any]] = None) -> None:
         os.environ[env_key] = val
 
 
+def _apply_filesystem_config(filesystem_cfg: Optional[Dict[str, Any]] = None) -> None:
+    """
+    Apply filesystem config to WORKING_DIRECTORY env var.
+    When filesystem.working_directory is set, it overrides WORKING_DIRECTORY.
+    """
+    filesystem_cfg = filesystem_cfg or {}
+    working_dir = (filesystem_cfg.get("working_directory") or "").strip()
+    if working_dir:
+        os.environ["WORKING_DIRECTORY"] = working_dir
+
+
 def _apply_diffusion_models_config(models_config: Dict[str, Any]) -> None:
     """
     Apply models.diffusion config to DIFFUSION_* env vars for video_creator agent.
@@ -378,7 +389,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
 
 
 def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
-    """Load config from local .env. Loads dotenv (override), applies skills path and output (STREAM, NO_TRUNCATE, LIMIT_TOKENS)."""
+    """Load config from local .env. Loads dotenv (override), applies skills path and output (STREAM, NO_TRUNCATE, LIMIT_TOKENS). WORKING_DIRECTORY can be set in .env."""
     load_dotenv(dotenv_path=source_path, override=True)
     _apply_skills_path_env(skills_cfg={})
     apply_stream_env({
@@ -396,11 +407,12 @@ def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
 
 
 def _load_from_global_config(config: AWorldConfig) -> tuple[Dict[str, Any], str, str]:
-    """Load config from global aworld.json. Applies skills path, models, output (stream, no_truncate, limit_tokens)."""
+    """Load config from global aworld.json. Applies skills path, models, filesystem (working_directory), output (stream, no_truncate, limit_tokens)."""
     global_config = config.load_config()
     skills_cfg = global_config.get('skills') if isinstance(global_config.get('skills'), dict) else {}
     _apply_skills_path_env(skills_cfg)
     _apply_models_config_to_env(global_config.get('models') or {})
+    _apply_filesystem_config(global_config.get('filesystem') if isinstance(global_config.get('filesystem'), dict) else {})
     apply_stream_env(global_config)
     return global_config, "global", str(config.config_file)
 

@@ -127,9 +127,9 @@ def get_username() -> str:
 
 
 def get_working_directory() -> str:
-    """Get current working directory."""
+    """Get working directory. Priority: WORKING_DIRECTORY env > os.getcwd()."""
     try:
-        return os.getcwd()
+        return (os.environ.get("WORKING_DIRECTORY") or "").strip() or os.getcwd()
     except Exception as e:
         logger.warning(f"Error getting working directory: {e}")
         return ""
@@ -171,6 +171,7 @@ ALL_PREDEFINED_DYNAMIC_VARIABLES = {
     "hostname": get_hostname,
     "username": get_username,
     "working_directory": get_working_directory,
+    "WORKING_DIRECTORY": get_working_directory,  # Alias for prompt template {{WORKING_DIRECTORY}}
     "random_uuid": get_random_uuid,
     "short_uuid": get_short_uuid,
 }

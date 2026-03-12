@@ -105,6 +105,7 @@ class AWorldCLI:
             ("1", "Model configuration", self._edit_models_config),
             ("2", "Skills configuration", self._edit_skills_config),
             ("3", "Output configuration", self._edit_output_config),
+            ("4", "Filesystem configuration", self._edit_filesystem_config),
         ]
         back_key = str(len(config_types) + 1)
         self.console.print("\n[bold]Select configuration type:[/bold]")
@@ -374,6 +375,45 @@ class AWorldCLI:
         table.add_row("limit_tokens", str(out.get('limit_tokens', '')) or "(unset)")
         self.console.print()
         self.console.print(table)
+
+    async def _edit_filesystem_config(self, config, current_config: dict):
+        """Edit filesystem section: working_directory (WORKING_DIRECTORY env)."""
+        if 'filesystem' not in current_config:
+            current_config['filesystem'] = {}
+
+        fs_cfg = current_config['filesystem']
+        default_cwd = str(Path.cwd())
+        current = fs_cfg.get('working_directory', '')
+        if not current and os.environ.get('WORKING_DIRECTORY'):
+            current = os.environ.get('WORKING_DIRECTORY', '')
+
+        self.console.print("\n[bold]Filesystem configuration[/bold]")
+        self.console.print("  [dim]working_directory: Base path for agent operations (shell, files). Overrides WORKING_DIRECTORY env. Empty = use current directory. Enter to keep, '-' to clear.[/dim]\n")
+
+        val = Prompt.ask("  WORKING_DIRECTORY (working directory path)", default=current or default_cwd)
+        v = val.strip() if val else ''
+        if v and v != '-':
+            fs_cfg['working_directory'] = v
+            os.environ['WORKING_DIRECTORY'] = v
+        elif v == '-' or (not v and current):
+            fs_cfg.pop('working_directory', None)
+            os.environ.pop('WORKING_DIRECTORY', None)
+
+        if not fs_cfg:
+            current_config.pop('filesystem', None)
+        else:
+            current_config['filesystem'] = fs_cfg
+
+        config.save_config(current_config)
+        self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
+        table = Table(title="Filesystem Configuration", box=box.ROUNDED)
+        table.add_column("Setting", style="cyan")
+        table.add_column("Value", style="green")
+        for k, v in (current_config.get('filesystem') or {}).items():
+            table.add_row(k, str(v)[:60] + ("..." if len(str(v)) > 60 else ""))
+        if current_config.get('filesystem'):
+            self.console.print()
+            self.console.print(table)
 
     def display_agents(self, agents: List[AgentInfo], source_type: str = "LOCAL", source_location: str = ""):
         """
