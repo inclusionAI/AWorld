@@ -33,9 +33,12 @@ def truncate_lines_for_display(
     lines: List[str],
     max_lines: int,
     has_more: bool,
+    no_truncate: bool = False,
 ) -> List[str]:
-    """Truncate lines to max_lines, optionally prepending [dim]...[/dim] if has_more."""
-    if len(lines) <= max_lines:
+    """Truncate lines to max_lines, optionally prepending [dim]...[/dim] if has_more.
+    When no_truncate is True (e.g. via NO_TRUNCATE=1), return all lines.
+    """
+    if no_truncate or len(lines) <= max_lines:
         return lines
     out = lines[-max_lines:]
     if has_more:
@@ -43,16 +46,21 @@ def truncate_lines_for_display(
     return out
 
 
+from .base_executor import env_stream_no_truncate
+
+
 @dataclass
 class StreamDisplayConfig:
     """Config for stream display behavior.
     Output rate scales up when buffer backlog is large (chars_per_render and line steps increase).
+    Set NO_TRUNCATE=1 to show full content/tool_calls/tool_results without folding.
     """
     render_interval: float = 0.02
     chars_per_render: int = 1
     chars_per_render_max: int = 20  # Max chars per render when backlog is large
     backlog_chars_threshold: int = 100  # Chars of backlog before scaling up
     tool_lines_step_max: int = 5  # Max tool/tool_result lines per render when backlog is large
+    no_truncate: bool = field(default_factory=env_stream_no_truncate)
 
 
 @dataclass
@@ -198,6 +206,7 @@ def build_stream_renderable(
             content_lines = truncate_lines_for_display(
                 content_lines, max_content_lines,
                 len(content_lines) > max_content_lines,
+                no_truncate=config.no_truncate,
             )
             indented = "\n".join("   " + line for line in content_lines)
             parts.append(Text.from_markup(indented) if "[dim]" in indented else Text(indented))
@@ -213,6 +222,7 @@ def build_stream_renderable(
         displayed_tool = truncate_lines_for_display(
             displayed_tool, max_tool_lines,
             buffer.displayed_tool_lines < len(tool_lines),
+            no_truncate=config.no_truncate,
         )
         parts.append(Text.from_markup("🔧 [bold]Tool calls[/bold]"))
         tool_str = "\n".join(f"   {line}" for line in displayed_tool if line).rstrip("\n")
@@ -229,6 +239,7 @@ def build_stream_renderable(
         displayed_tr = truncate_lines_for_display(
             displayed_tr, max_tr_lines,
             buffer.displayed_tool_result_lines < len(tool_result_lines),
+            no_truncate=config.no_truncate,
         )
         tr_str = "\n".join(line for line in displayed_tr if line).rstrip("\n")
         if tr_str:

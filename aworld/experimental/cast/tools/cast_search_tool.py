@@ -7,6 +7,9 @@ Cast Search Tool
 
 Encapsulates ACast's search functionality, providing a unified search interface.
 Supports Grep content search, Glob file matching, and Read file reading.
+
+Note: grep_search operates on the local filesystem only; it cannot perform
+networked or web search.
 """
 
 import json
@@ -93,7 +96,10 @@ class CastSearchAction(ToolAction):
                 desc="Whether to show detailed search information (default: True)"
             )
         },
-        desc="Execute content search using regular expression pattern"
+        desc=(
+            "Execute content search using regular expression pattern in the local filesystem. "
+            "Note: grep_search cannot perform networked/web search; it only searches within local files."
+        )
     )
 
     GLOB_SEARCH = ToolActionInfo(
@@ -462,7 +468,10 @@ class CastSearchTool(AsyncTool):
                            include_patterns: Optional[List[str]] = None,
                            **kwargs) -> SearchResult:
         """
-        Execute content search
+        Execute content search in the local filesystem.
+
+        Note: This method cannot perform networked/web search; it only searches
+        within local files under the given path.
 
         Args:
             pattern: Regular expression search pattern
