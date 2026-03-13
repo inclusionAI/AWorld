@@ -113,12 +113,12 @@ class LLMHTTPHandler:
                         headers=request_headers,
                         json=data,
                         stream=True,
-                        timeout=self.timeout,
+                        timeout=(30, 60),  # (connect timeout, read timeout)
                     )
                     response.raise_for_status()
 
                     def generate_chunks():
-                        for line in response.iter_lines():
+                        for line in response.iter_lines(chunk_size=1024):
                             if line:
                                 line_str = line.decode('utf-8').strip()
                                 if line_str.startswith('data: '):
@@ -178,40 +178,56 @@ class LLMHTTPHandler:
         if headers:
             request_headers.update(headers)
 
-        # Create an independent session and keep it open
-        session = aiohttp.ClientSession()
+        # Configure timeout with separate read timeout for streaming
+        timeout = aiohttp.ClientTimeout(
+            total=self.timeout,      # Total timeout (default 180s)
+            connect=30,              # Connection timeout 30s
+            sock_read=60             # Socket read timeout 60s - critical for streaming
+        )
+
+        # Configure TCP connector with connection pooling
+        connector = aiohttp.TCPConnector(
+            limit=100,               # Total connection pool size
+            limit_per_host=30,       # Connections per host
+            ttl_dns_cache=300,       # DNS cache TTL 5 minutes
+            keepalive_timeout=30     # Keep-Alive timeout
+        )
+
+        # Create session with proper timeout and connector
+        session = aiohttp.ClientSession(timeout=timeout, connector=connector)
         try:
             response = await session.post(
                 url,
                 headers=request_headers,
                 json=data,
-                timeout=self.timeout,
             )
             response.raise_for_status()
 
-            # Implement async generator directly
-            async for line in response.content:
-                if line:
-                    line_str = line.decode('utf-8').strip()
-                    if line_str.startswith('data: '):
-                        line_content = line_str[6:]
+            # Use chunked iteration for proper streaming handling
+            async for chunk in response.content.iter_chunked(1024):
+                # Process each chunk and split by newlines
+                for line in chunk.split(b'\n'):
+                    if line:
+                        line_str = line.decode('utf-8').strip()
+                        if line_str.startswith('data: '):
+                            line_content = line_str[6:]
 
-                        if line_content == "[DONE]":
-                            yield {"status": "done", "message": "Stream completed"}
-                            break
-                        elif line_content == "[REVOKE]":
-                            yield {"status": "revoke", "message": "Content should be revoked"}
-                            continue
-                        elif line_content == "[FAIL]":
-                            yield {"status": "fail", "message": "Request failed"}
-                            break
-                        elif line_content.startswith("[FAIL]_stream was reset: CANCEL"):
-                            yield {"status": "cancel", "message": "Stream was cancelled"}
-                            break
+                            if line_content == "[DONE]":
+                                yield {"status": "done", "message": "Stream completed"}
+                                break
+                            elif line_content == "[REVOKE]":
+                                yield {"status": "revoke", "message": "Content should be revoked"}
+                                continue
+                            elif line_content == "[FAIL]":
+                                yield {"status": "fail", "message": "Request failed"}
+                                break
+                            elif line_content.startswith("[FAIL]_stream was reset: CANCEL"):
+                                yield {"status": "cancel", "message": "Stream was cancelled"}
+                                break
 
-                    chunk = self._parse_sse_line(line)
-                    if chunk is not None:
-                        yield chunk
+                        chunk_data = self._parse_sse_line(line)
+                        if chunk_data is not None:
+                            yield chunk_data
         except Exception as e:
             logger.error(f"Error in stream: {str(e)}")
             raise
@@ -386,12 +402,14 @@ class LLMHTTPHandler:
                 async for chunk in self._make_async_request_stream(endpoint or "chat/completions", data, headers=headers):
                     yield chunk
                 return  # Exit after completing stream processing
-            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            except (aiohttp.ClientError, aiohttp.ClientPayloadError, asyncio.TimeoutError) as e:
                 last_error = e
                 retries += 1
                 if retries < self.max_retries:
-                    logger.warning(f"Stream connection failed, retrying ({retries}/{self.max_retries}): {str(e)}")
-                    await asyncio.sleep(1)  # Wait one second before retrying
+                    # Exponential backoff with jitter
+                    backoff = min(2 ** retries + random.uniform(0, 1), 10)
+                    logger.warning(f"Stream connection failed, retrying in {backoff:.1f}s ({retries}/{self.max_retries}): {str(e)}")
+                    await asyncio.sleep(backoff)
                 else:
                     logger.error(f"Stream connection failed after {self.max_retries} retries: {str(e)}")
                     raise last_error
