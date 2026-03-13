@@ -206,7 +206,9 @@ class VideoAgent(LLMAgent):
         poll_interval: float = obs_info.pop("poll_interval", self.poll_interval)
         poll_timeout: float = obs_info.pop("poll_timeout", self.poll_timeout)
         download_video: bool = obs_info.pop("download_video", self.download_video)
-        output_dir: str = obs_info.pop("output_dir", self.output_dir or os.getcwd())
+        output_dir: str = os.path.expanduser(
+            obs_info.pop("output_dir", self.output_dir or os.getcwd())
+        )
 
         # Any remaining keys in obs_info are forwarded to the provider
         extra_kwargs = obs_info
@@ -263,6 +265,7 @@ class VideoAgent(LLMAgent):
                 f"video_url={video_response.video_result.video_url}"
             )
             if download_video:
+                print('output_dir: ', output_dir)
                 result_payload = await self.postprocess(
                     result=result_payload,
                     video_result=video_response.video_result,

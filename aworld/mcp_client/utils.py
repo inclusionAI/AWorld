@@ -1264,13 +1264,15 @@ async def call_mcp_tool_with_exit_stack(
                 )
 
                 # Call the tool with timeout
+                # Pass read_timeout_seconds to MCP session to avoid premature protocol-level timeout
                 call_result_raw = await asyncio.wait_for(
                     server.call_tool(
                         tool_name=tool_name,
                         arguments=parameter,
+                        read_timeout_seconds=timedelta(seconds=timeout),
                         progress_callback=progress_callback
                     ),
-                    timeout=timeout
+                    timeout=timeout + 5  # Add 5 seconds buffer for outer timeout
                 )
 
                 # Success, break out of retry loop
@@ -1359,13 +1361,15 @@ async def call_mcp_tool_with_reuse(
     for attempt in range(max_retry):
         try:
             # Call the tool with timeout
+            # Pass read_timeout_seconds to MCP session to avoid premature protocol-level timeout
             call_result_raw = await asyncio.wait_for(
                 server.call_tool(
                     tool_name=tool_name,
                     arguments=parameter,
+                    read_timeout_seconds=timedelta(seconds=timeout),
                     progress_callback=progress_callback
                 ),
-                timeout=timeout
+                timeout=timeout + 5  # Add 5 seconds buffer for outer timeout
             )
             # Success, break out of retry loop
             break
