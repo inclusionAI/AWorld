@@ -423,6 +423,16 @@ class McpServers:
 
                 sandbox_id = self.sandbox.sandbox_id if self.sandbox is not None else None
 
+                # Extract timeout from tool parameters if available, otherwise use default
+                # Add 10 seconds buffer for MCP communication overhead
+                tool_timeout = parameter.get("timeout", 30)
+                if isinstance(tool_timeout, (int, float)):
+                    mcp_timeout = max(float(tool_timeout) + 10, 120.0)
+                else:
+                    mcp_timeout = 120.0
+
+                logger.debug(f"Tool timeout: {tool_timeout}s, MCP timeout: {mcp_timeout}s")
+
                 if self._should_reuse():
                     # Reuse mode: use cached server instances (delegated to utils.py)
                     call_result_raw = await call_mcp_tool_with_reuse(
@@ -435,7 +445,7 @@ class McpServers:
                         sandbox_id=sandbox_id,
                         progress_callback=progress_callback,
                         max_retry=3,
-                        timeout=120.0
+                        timeout=mcp_timeout
                     )
 
                     if not call_result_raw:
@@ -451,7 +461,7 @@ class McpServers:
                         sandbox_id=sandbox_id,
                         progress_callback=progress_callback,
                         max_retry=3,
-                        timeout=120.0
+                        timeout=mcp_timeout
                     )
 
                     if not call_result_raw:
