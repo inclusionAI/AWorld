@@ -126,12 +126,12 @@ def get_username() -> str:
         return ""
 
 
-def get_working_directory() -> str:
-    """Get working directory. Priority: WORKING_DIRECTORY env > os.getcwd()."""
+def get_artifact_directory() -> str:
+    """Get artifact directory. Priority: ARTIFACT_DIRECTORY env > os.getcwd()."""
     try:
-        return (os.environ.get("WORKING_DIRECTORY") or "").strip() or os.getcwd()
+        return (os.environ.get("ARTIFACT_DIRECTORY") or "").strip() or os.getcwd()
     except Exception as e:
-        logger.warning(f"Error getting working directory: {e}")
+        logger.warning(f"Error getting artifact directory: {e}")
         return ""
 
 
@@ -170,8 +170,8 @@ ALL_PREDEFINED_DYNAMIC_VARIABLES = {
     "python_version": get_python_version,
     "hostname": get_hostname,
     "username": get_username,
-    "working_directory": get_working_directory,
-    "WORKING_DIRECTORY": get_working_directory,  # Alias for prompt template {{WORKING_DIRECTORY}}
+    "artifact_directory": get_artifact_directory,
+    "ARTIFACT_DIRECTORY": get_artifact_directory,  # Alias for prompt template {{ARTIFACT_DIRECTORY}}
     "random_uuid": get_random_uuid,
     "short_uuid": get_short_uuid,
 }
