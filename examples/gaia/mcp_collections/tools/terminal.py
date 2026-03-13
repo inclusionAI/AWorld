@@ -330,7 +330,7 @@ class TerminalActionCollection(ActionCollection):
         command: str = Field(
             description="Terminal command to execute. Interactive commands (vim, less, etc.) are forbidden; use non-interactive flags (--yes, -y, CI=1) when available."
         ),
-        timeout: int = Field(default=30, description="Command timeout in seconds (default: 30)"),
+        timeout: int = Field(default=300, description="Command timeout in seconds (default: 300, max: 3600)"),
         output_format: str = Field(default="markdown", description="Output format: 'markdown', 'json', or 'text'"),
     ) -> ActionResponse:
         """Execute a terminal command with safety checks and timeout controls.
@@ -367,6 +367,14 @@ class TerminalActionCollection(ActionCollection):
             output_format = output_format.default
 
         try:
+            # Validate and cap timeout
+            if timeout > 3600:  # 1 hour max
+                self._color_log(f"⚠️ Timeout {timeout}s exceeds 1 hour limit, capping at 3600s", Color.yellow, "warning")
+                timeout = 3600
+            elif timeout < 1:
+                self._color_log(f"⚠️ Timeout {timeout}s is too small, using minimum 1s", Color.yellow, "warning")
+                timeout = 1
+
             # Safety check
             is_safe, safety_reason = self._check_command_safety(command)
             if not is_safe:
