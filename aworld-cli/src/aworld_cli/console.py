@@ -377,27 +377,29 @@ class AWorldCLI:
         self.console.print(table)
 
     async def _edit_filesystem_config(self, config, current_config: dict):
-        """Edit filesystem section: working_directory (WORKING_DIRECTORY env)."""
+        """Edit filesystem section: artifact_directory (ARTIFACT_DIRECTORY env)."""
         if 'filesystem' not in current_config:
             current_config['filesystem'] = {}
 
         fs_cfg = current_config['filesystem']
         default_cwd = str(Path.cwd())
-        current = fs_cfg.get('working_directory', '')
-        if not current and os.environ.get('WORKING_DIRECTORY'):
-            current = os.environ.get('WORKING_DIRECTORY', '')
+        current = fs_cfg.get('artifact_directory') or fs_cfg.get('working_directory', '')
+        if not current and os.environ.get('ARTIFACT_DIRECTORY'):
+            current = os.environ.get('ARTIFACT_DIRECTORY', '')
 
         self.console.print("\n[bold]Filesystem configuration[/bold]")
-        self.console.print("  [dim]working_directory: Base path for agent operations (shell, files). Overrides WORKING_DIRECTORY env. Empty = use current directory. Enter to keep, '-' to clear.[/dim]\n")
+        self.console.print("  [dim]artifact_directory: Base path for agent operations (shell, files). Overrides ARTIFACT_DIRECTORY env. Empty = use current directory. Enter to keep, '-' to clear.[/dim]\n")
 
-        val = Prompt.ask("  WORKING_DIRECTORY (working directory path)", default=current or default_cwd)
+        val = Prompt.ask("  ARTIFACT_DIRECTORY (working directory path)", default=current or default_cwd)
         v = val.strip() if val else ''
         if v and v != '-':
-            fs_cfg['working_directory'] = v
-            os.environ['WORKING_DIRECTORY'] = v
+            fs_cfg['artifact_directory'] = v
+            fs_cfg.pop('working_directory', None)  # migrate from old key
+            os.environ['ARTIFACT_DIRECTORY'] = v
         elif v == '-' or (not v and current):
+            fs_cfg.pop('artifact_directory', None)
             fs_cfg.pop('working_directory', None)
-            os.environ.pop('WORKING_DIRECTORY', None)
+            os.environ.pop('ARTIFACT_DIRECTORY', None)
 
         if not fs_cfg:
             current_config.pop('filesystem', None)
