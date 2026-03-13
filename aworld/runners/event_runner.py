@@ -15,7 +15,7 @@ from aworld.core.context.base import Context
 from aworld.dataset.trajectory_storage import get_storage_instance
 from aworld.core.event.base import Message, Constants, TopicType, ToolMessage, AgentMessage
 from aworld.core.exceptions import AWorldRuntimeException
-from aworld.core.task import Task, TaskResponse, TaskStatusValue
+from aworld.core.task import Task, TaskResponse, TaskStatus
 from aworld.dataset.trajectory_dataset import TrajectoryDataset
 from aworld.events.manager import EventManager
 from aworld.logs.util import logger, trajectory_logger
@@ -352,7 +352,7 @@ class TaskEventRunner(TaskRunner):
                                                            time_cost=(
                                                                time.time() - start),
                                                            usage=self.context.token_usage,
-                                                           status=TaskStatusValue.SUCCESS if not msg else TaskStatusValue.FAILED)
+                                                           status=TaskStatus.SUCCESS if not msg else TaskStatus.FAILED)
                     break
                 logger.debug(f"{task_flag} task {self.task.id} next message snap")
                 # consume message
@@ -427,7 +427,7 @@ class TaskEventRunner(TaskRunner):
             self._task_response = TaskResponse(id=self.context.task_id if self.context else "",
                                                success=False,
                                                msg="Task return None.",
-                                               status=TaskStatusValue.FAILED)
+                                               status=TaskStatus.FAILED)
         if self.context.get_task().conf and self.context.get_task().conf.resp_carry_raw_llm_resp == True:
             self._task_response.raw_llm_resp = self.context.context_info.get('llm_output')
         self._task_response.trace_id = get_trace_id()
@@ -469,14 +469,14 @@ class TaskEventRunner(TaskRunner):
                 time_cost=(time.time() - self.start_time),
                 usage=self.context.token_usage,
                 msg=f'Task timeout after {time_cost} seconds.',
-                status=TaskStatusValue.TIMEOUT
+                status=TaskStatus.TIMEOUT
             )
-            await self.context.update_task_status(self.task.id, TaskStatusValue.TIMEOUT)
+            await self.context.update_task_status(self.task.id, TaskStatus.TIMEOUT)
             return True
 
         # Check Task status from context
         task_status = await self.context.get_task_status()
-        if task_status == TaskStatusValue.INTERRUPTED or task_status == TaskStatusValue.CANCELLED:
+        if task_status == TaskStatus.INTERRUPTED or task_status == TaskStatus.CANCELLED:
             logger.warn(f"{task_flag} task {self.task.id} is {task_status}.")
             self._task_response = TaskResponse(
                 answer='',

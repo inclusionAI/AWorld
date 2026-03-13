@@ -1,18 +1,16 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import abc
-import asyncio
-import enum
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Union, List, Dict, Callable, Optional, Literal, TYPE_CHECKING, AsyncGenerator
+from typing import Any, Union, List, Dict, Callable, Optional, AsyncGenerator
 
 from aworld.core.event.base import Message
 from aworld.utils.serialized_util import to_serializable
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
-from aworld.core.common import Config, Observation, StreamingMode, TaskStatus, TaskStatusValue
+from aworld.core.common import Config, Observation, StreamingMode, TaskStatus
 from aworld.core.context.base import Context
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.output.outputs import Outputs, DefaultOutputs
@@ -58,7 +56,7 @@ class Task:
     max_retry_count: int = field(default=0)
     timeout: int = field(default=0)
     observation: Optional[Observation] = field(default=None)
-    task_status: TaskStatus = field(default=TaskStatusValue.INIT)
+    task_status: TaskStatus = field(default=TaskStatus.INIT)
     # streaming support
     streaming_mode: StreamingMode = field(default=None)
 
@@ -109,9 +107,9 @@ class TaskResponse:
     time_cost: float | None = field(default=0.0)
     success: bool = field(default=False)
     msg: str | None = field(default=None)
-    trajectory: List[Dict[str, Any]]= field(default_factory=list)
+    trajectory: List[Dict[str, Any]] = field(default_factory=list)
     # task final status, e.g. success/failed/cancelled
-    status: TaskStatus | None = field(default=TaskStatusValue.SUCCESS)
+    status: str | None = field(default=TaskStatus.SUCCESS)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
