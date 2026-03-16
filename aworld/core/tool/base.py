@@ -514,13 +514,21 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
 
         logger.info(f"send callback message: {message}")
         # Send via message system by default
+        results = None
         try:
             future = await send_message_with_future(message)
+            logger.debug(f"Waiting for callback response, message_id: {message.id}, timeout: 300s")
             results = await future.wait(timeout=300)
             if not results:
-                logger.warning(f"context write task failed: {message}")
+                logger.warning(f"context write task failed: no results received for message {message.id}")
+                return  # Early return if no results
+            logger.debug(f"Callback response received successfully for message {message.id}")
+        except TimeoutError as e:
+            logger.error(f"context write task timeout after 300s, message_id: {message.id}, receiver: {message.receiver}")
+            return  # Early return on timeout
         except Exception as e:
             logger.warn(f"context write task failed: {traceback.format_exc()}")
+            return  # Early return on exception
 
         tool_act_results = step_res[0].action_result
         callback_act_results = results.results
