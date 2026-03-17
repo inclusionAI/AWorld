@@ -296,8 +296,15 @@ class CAstCoderTool(AsyncTool):
                 elif action_name == CAstCoderAction.DEPLOY_PATCHES.value.name:
                     # Deploy patch
                     patch_content = action.params.get("patch_content")
-                    source_dir = Path(action.params.get("source_dir"))
+                    source_dir_raw = action.params.get("source_dir")
                     version = action.params.get("version", "v0")
+
+                    if source_dir_raw is None or source_dir_raw == "":
+                        raise ValueError(
+                            "source_dir is required but missing. "
+                            "This may occur when tool argument JSON parsing failed (e.g. truncated or malformed JSON)."
+                        )
+                    source_dir = Path(source_dir_raw)
                     validate_syntax = action.params.get("validate_syntax", True)
                     strict_validation = action.params.get("strict_validation", True)
                     max_context_mismatches = action.params.get("max_context_mismatches", 0)
@@ -355,8 +362,15 @@ class CAstCoderTool(AsyncTool):
                 elif action_name == CAstCoderAction.DEPLOY_OPS.value.name:
                     # Deploy JSON operation instructions
                     operations_json = action.params.get("operations_json")
-                    source_dir = Path(action.params.get("source_dir"))
+                    source_dir_raw = action.params.get("source_dir")
                     version = action.params.get("version", "v0")
+
+                    if source_dir_raw is None or source_dir_raw == "":
+                        raise ValueError(
+                            "source_dir is required but missing. "
+                            "This may occur when tool argument JSON parsing failed (e.g. truncated or malformed JSON)."
+                        )
+                    source_dir = Path(source_dir_raw)
                     strict_validation = action.params.get("strict_validation", True)
                     max_context_mismatches = action.params.get("max_context_mismatches", 0)
                     show_details = action.params.get("show_details", True)
@@ -412,11 +426,17 @@ class CAstCoderTool(AsyncTool):
                 elif action_name == CAstCoderAction.SEARCH_REPLACE.value.name:
                     # Search and replace operation
                     operation_json = action.params.get("operation_json")
-                    source_dir = Path(action.params.get("source_dir"))
+                    source_dir_raw = action.params.get("source_dir")
                     show_details = action.params.get("show_details", True)
 
                     if not operation_json:
                         raise ValueError("operation_json is required")
+                    if source_dir_raw is None or source_dir_raw == "":
+                        raise ValueError(
+                            "source_dir is required but missing. "
+                            "This may occur when tool argument JSON parsing failed (e.g. truncated or malformed JSON)."
+                        )
+                    source_dir = Path(source_dir_raw)
 
                     if not source_dir.exists():
                         raise ValueError(f"Source directory does not exist: {source_dir}")
