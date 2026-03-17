@@ -192,7 +192,7 @@ class AWorldLogger:
             self.error_log_id = base_logger.add(error_log_file,
                                                 format=file_formatter,
                                                 filter=lambda record: (record['extra'].get('name') == tag and
-                                                                       record['level'].name in ['WARNING', 'ERROR']),
+                                                                       record['level'].name in ['WARNING', 'ERROR', 'FATAL', 'CRITICAL']),
                                                 **file_log_config)
             AWorldLogger._added_handlers.add(error_handler_key)
 

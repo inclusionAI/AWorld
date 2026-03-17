@@ -43,13 +43,19 @@ class CAstAnalysisAction(ToolAction):
                 type="boolean",
                 required=False,
                 desc="Whether to show detailed analysis information"
+            ),
+            "enable_dependency_graph": ParamInfo(
+                name="enable_dependency_graph",
+                type="boolean",
+                required=False,
+                desc="Whether to build dependency graph and PageRank (costly for large repos, ~96s for 1k+ files). Default false. Set to true only when explicitly needed."
             )
         },
         desc="""Analyze the repository and build the three-tier index:
         - L1 logic (project structure, call/dependency graph, heatmap)
         - L2 skeleton (signatures and docstrings only, no body)
         - L3 implementation (full source on-demand).
-        Returns logic_layer always; skeleton_layer and implementation_layer when within length limits.
+        Returns logic_layer only (skeleton_layer, implementation_layer, trajectory_mapping are not returned).
         """
     )
 
@@ -68,6 +74,13 @@ class CAstAnalysisAction(ToolAction):
                 required=True,
                 desc="MUST be a regular expression for symbol/line recall (e.g. .*MyClass.*|.*my_function.*). Natural language is not supported. Incorrect: 'Find the MyClass class and the my_function function', '.*mcp_config\\.py.', '.*'"
             ),
+            "context_layers": ParamInfo(
+                name="context_layers",
+                type="array",
+                required=False,
+                desc="Which context layers to recall. Allowed values: 'skeleton' (L2: file skeletons, key symbols, signatures only), 'implementation' (L3: full source code with matched symbols). Can specify one or both, e.g. ['skeleton'] or ['skeleton','implementation']. Default: ['implementation'].",
+                items={"type": "string"}
+            ),
             "max_tokens": ParamInfo(
                 name="max_tokens",
                 type="integer",
@@ -81,7 +94,7 @@ class CAstAnalysisAction(ToolAction):
                 desc="Whether to show detailed recall information"
             )
         },
-        desc="Retrieve skeleton_layer and implementation_layer to gain insights into implementation details of the repository. Fetch the precise source code for specific symbols (classes, functions) or line ranges."
+        desc="Retrieve logic_layer (project structure, dependency graph) and implementation_layer (key symbols) for repository overview. Use layered_recall to fetch precise source code for specific symbols or line ranges."
     )
 
 
@@ -260,8 +273,9 @@ class CAstAnalysisTool(AsyncTool):
                 root_path = Path(action.params.get("root_path")).expanduser()
                 ignore_patterns = action.params.get("ignore_patterns", ['__pycache__', '*.pyc', '.git'])
                 show_details = action.params.get("show_details", True)
+                enable_dependency_graph = action.params.get("enable_dependency_graph", False)
 
-                logger.info(f"Repository-level analysis - Path: {root_path}")
+                logger.info(f"Repository-level analysis - Path: {root_path}, enable_dependency_graph={enable_dependency_graph}")
 
                 if show_details:
                     logger.info(f"\n🏗️ Repository-level Analysis")
@@ -272,50 +286,36 @@ class CAstAnalysisTool(AsyncTool):
                     repo_map = self.acast.analyze(
                         root_path=root_path,
                         ignore_patterns=ignore_patterns,
-                        record_name=Path(root_path).name
+                        record_name=Path(root_path).name,
+                        enable_dependency_graph=enable_dependency_graph
                     )
+
 
                     # Save complete repo_map for later use (contains implementation layer)
                     self._repo_map = repo_map
 
-                    # Return logic_layer always; include skeleton_layer/implementation_layer only if length is short enough
-                    from dataclasses import replace
-                    from aworld.experimental.cast.models import (
-                        ImplementationLayer,
-                        SkeletonLayer,
-                    )
-                    # Length thresholds (chars): only include layer in return when under threshold
-                    SKELETON_MAX_CHARS = 80_000
-                    IMPL_MAX_CHARS = 100_000
-                    skeleton_len = sum(
-                        len(s) for s in repo_map.skeleton_layer.file_skeletons.values()
-                    )
-                    impl_len = sum(
-                        len(s.content or "")
-                        for node in repo_map.implementation_layer.code_nodes.values()
-                        for s in node.symbols
-                    )
-                    repo_map_for_return = replace(
-                        repo_map,
-                        skeleton_layer=repo_map.skeleton_layer
-                        if skeleton_len <= SKELETON_MAX_CHARS
-                        else SkeletonLayer(
-                            file_skeletons={},
-                            symbol_signatures={},
-                            line_mappings={},
-                        ),
-                        implementation_layer=repo_map.implementation_layer
-                        if impl_len <= IMPL_MAX_CHARS
-                        else ImplementationLayer(code_nodes={}),
-                    )
-
                     # Analyze statistics
                     analysis_stats = self._gather_repository_stats(repo_map, show_details)
+
+                    repo_dict = repo_map.to_dict()
+                    # Do not return these fields (not even empty) to reduce prompt size
+                    for key in ("pagerank_scores", "skeleton_layer", "implementation_layer", "trajectory_mapping"):
+                        repo_dict.pop(key, None)
+                    # dependency_graph has ~727k edges for 1k files, serializes to 65M+ chars - replace with summary
+                    logic = repo_dict.get("logic_layer")
+                    if logic and "dependency_graph" in logic:
+                        dep = logic["dependency_graph"]
+                        n_nodes = len(dep) if isinstance(dep, dict) else 0
+                        n_edges = sum(len(v) for v in dep.values()) if isinstance(dep, dict) else 0
+                        logic["dependency_graph"] = {"_summary": f"{n_nodes} nodes, {n_edges} edges (omitted for size)"}
+
+                    repo_map_chars = len(json.dumps(repo_dict, ensure_ascii=False))
+                    logger.info(f"repository_map size: {repo_map_chars} chars {json.dumps(repo_dict, ensure_ascii=False)}")
 
                     result = {
                         "root_path": str(root_path),
                         "ignore_patterns": ignore_patterns,
-                        "repository_map": repo_map_for_return.to_dict(),  # Use to_dict() to convert to JSON serializable object
+                        "repository_map": repo_dict,
                         "analysis_stats": analysis_stats,
                         "analysis_success": True,
                         "analysis_time": datetime.now().isoformat()
@@ -343,19 +343,18 @@ class CAstAnalysisTool(AsyncTool):
                 action_result.success = result.get("analysis_success", False)
                 action_results.append(action_result)
             elif action_name == CAstAnalysisAction.SEARCH_AST.value.name:
-                # Only recall implementation layer code
                 root_path = Path(action.params.get("root_path")).expanduser()
                 user_query = action.params.get("user_query", "How to integrate AST analysis capability for DocCodeAgent")
+                context_layers = action.params.get("context_layers", ["implementation"])
                 max_tokens = action.params.get("max_tokens", 8000)
                 show_details = action.params.get("show_details", True)
 
                 try:
-                    # Use ACast to recall only implementation layer
                     context = self.acast.search_ast(
                         repo_map=None,
                         user_query=user_query,
                         max_tokens=max_tokens,
-                        context_layers=["implementation"],
+                        context_layers=context_layers,
                         record_name=Path(root_path).name
                     )
 
@@ -367,10 +366,10 @@ class CAstAnalysisTool(AsyncTool):
                         "recall_time": datetime.now().isoformat()
                     }
 
-                    logger.info(f"Implementation layer recall completed - Context length: {len(context) if context else 0} characters")
+                    logger.info(f"Context recall completed (layers={context_layers}) - Context length: {len(context) if context else 0} characters")
 
                     if show_details:
-                        logger.info(f"\n🎯 Implementation Layer Recall")
+                        logger.info(f"\n🎯 Context Recall (layers={context_layers})")
                         logger.info("=" * 60)
                         logger.info(f"💭 User query: {user_query}")
                         for value in context.values():
@@ -378,7 +377,7 @@ class CAstAnalysisTool(AsyncTool):
 
                 except Exception as e:
                     error_msg = f"Recall failed: {str(e)} {traceback.format_exc()}"
-                    logger.error(f"Implementation layer recall failed: {error_msg}")
+                    logger.error(f"Context recall failed: {error_msg}")
                     result = {
                         "success": False,
                         "error": error_msg,

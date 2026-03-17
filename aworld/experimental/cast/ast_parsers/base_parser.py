@@ -12,6 +12,11 @@ from typing import List, Set, Optional, Tuple
 
 from grep_ast import TreeContext
 from grep_ast.tsl import get_language, get_parser
+import traceback
+try:
+    from tree_sitter import QueryCursor
+except ImportError:
+    QueryCursor = None
 
 from ..utils import logger
 from ..models import (
@@ -62,7 +67,7 @@ class BaseParser(ABC):
             return CodeNode(file_path=file_path)
 
         try:
-            content = file_path.read_text(encoding='utf-8')
+            content = file_path.read_text(encoding='utf-8', errors='replace')
 
             # Get Tree-sitter components
             parser = self._get_parser()
@@ -95,7 +100,7 @@ class BaseParser(ABC):
             )
 
         except Exception as e:
-            logger.error(f"Failed to parse file {file_path}: {e}")
+            logger.error(f"Failed to parse file {file_path}: {e} {traceback.format_exc()}")
             return CodeNode(file_path=file_path)
 
     def generate_skeleton(self, content: str, file_path: Path) -> str:
@@ -278,7 +283,11 @@ class BaseParser(ABC):
 
         try:
             query = language.query(query_content)
-            captures = query.captures(tree.root_node)
+            if QueryCursor is None:
+                logger.debug("QueryCursor not available, skipping symbol extraction")
+                return symbols, references
+            cursor = QueryCursor(query)
+            captures = cursor.captures(tree.root_node)
             lines = content.split('\n')
 
             # Process captures
