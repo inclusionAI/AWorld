@@ -135,7 +135,7 @@ class HtmlParser(BaseParser):
             return CodeNode(file_path=file_path)
 
         try:
-            content = file_path.read_text(encoding='utf-8')
+            content = file_path.read_text(encoding='utf-8', errors='replace')
 
             # Try to parse with tree-sitter
             try:

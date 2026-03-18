@@ -16,83 +16,34 @@ from aworld.core.context.amni import AgentContextConfig
 from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
 from aworld.experimental.cast.tools import CAST_ANALYSIS, CAST_CODER
 from aworld.logs.util import logger
-from aworld_cli.core.agent_registry_tool import AGENT_REGISTRY
+from .developer.developer import build_developer_swarm
+from .evaluator.evaluator import build_evaluator_swarm
+from .video_creator.video_creator import build_video_creator_swarm
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import TeamSwarm, Swarm
 from aworld.core.agent.base import BaseAgent
-from aworld_cli.core import agent, LocalAgentRegistry
-from aworld_cli.core.loader import init_agents
-from aworld_cli.core.agent_scanner import global_agent_registry
-import asyncio
+from aworld_cli.core import agent
+
 from aworld.config import AgentConfig, ModelConfig
+
 # for skills use
-CAST_ANALYSIS, CAST_CODER, AGENT_REGISTRY
+CAST_ANALYSIS, CAST_CODER
+
+global_agent_registry = None
+AGENT_REGISTRY = None
 
 from datetime import datetime
 from zoneinfo import ZoneInfo
-import traceback
+
 
 def _build_beijing_date_line() -> str:
     """Return a line stating today's Beijing date in Chinese format."""
     beijing_now = datetime.now(ZoneInfo("Asia/Shanghai"))
 
     return f"Today is {beijing_now.year} (year)-{beijing_now.month} (month)-{beijing_now.day}(day)."
-
-
-# System prompt based on orchestrator_agent prompt
-aworld_system_prompt = """
-You are AWorld, a versatile AI assistant designed to solve any task presented by users.
-
-Today is {{current_date}}, {{current_datetime}} (Beijing time). Your own knowledge has a cutoff in 2024, please keep in mind!
-
-## 1. Role & Identity
-You are AWorldAgent, a sophisticated AI agent acting as a central coordinator. Your primary role is to understand complex user requests and orchestrate a solution by dispatching tasks to a suite of specialized assistants (tools). You do not solve tasks directly; you manage the workflow.
-
-## 2. Core Operational Workflow
-You must tackle every user request by following this iterative, step-by-step process:
-1.  **Analyze & Decompose:** Break down the user's complex request into a sequence of smaller, manageable sub-tasks.
-2.  **Select & Execute:** For the immediate sub-task, select **one and only one** assistant (tool) best suited to complete it. When dispatching to an assistant, you **must** provide an **accurate and detailed** task description that includes:
-    - **Exact goal:** What the assistant should accomplish (be specific, avoid vague wording).
-    - **Relevant context:** User's original request, prior step results, file paths, or other necessary background.
-    - **Constraints & requirements:** Any format, scope, or quality requirements the user specified.
-    - **Expected output:** What the assistant should deliver (e.g., a working app, a report, a file path).
-    Do not pass a brief or ambiguous instruction; the assistant needs enough detail to execute correctly without guessing.
-3.  **Report & Plan:** After the tool executes, clearly explain the results of that step and state your plan for the next action.
-4.  **Iterate:** Repeat this process until the user's overall request is fully resolved.
-
-## 3. Available Assistants/Tools
-You are equipped with multiple assistants. It is your job to know which to use and when. Your key assistants include:
-**Note:** When invoking sub-agents, the assistant name may include an ID suffix (e.g. `developer_xyz`). Use the exact name shown in the available tools list.
-*   `SKILL_tool`: A tool set that can activate, deactivate skills, and so on.
-*   `developer`: a sub-agent that can develop apps/code/html/website and laterimprove this developed apps/code/html/website according to the suggestions from the `evaluator`, by using terminal and other professional tools.
-*   `evaluator`: a sub-agent that can evaluate the apps/code/html/website's (developed by the `developer`) performance, user experience, and so on, and present professional suggestions to the `developer` for the apps/code/html/website improvement.
-*   `terminal`: A tool set that can execute terminal commands.
-    - **Path restriction:** Do not `cd` to other directories; always operate from the working directory ({{ARTIFACT_DIRECTORY}}). When operating on files, always use explicit relative or absolute paths.
-    - **Timeout requirement:** For tasks >60s, use async + polling: (1) Start: `python3 -u script.py > /tmp/task.log 2>&1 &` (`-u` disables buffering); (2) Poll: `sleep 60 && cat /tmp/task.log` (repeat until done); (3) Completion: process gone OR log shows completion marker. Note: Timeout (-1) during polling is expected—continue. Bad: `mcp_execute_command(command="python script.py", timeout=120)`.
-*   `video_creator`: Sub-agent for creating videos from images, audio, and text.
-    - **When to invoke:** All video creation tasks MUST be routed to `video_creator`.
-    - **Call params:** `content` (required: prompt text); `info` (optional, JSON string).
-    - **Example info:** `{"image_url": "<path_or_base64>", "reference_images": ["<path1>", "<path2>"], "resolution": "720p", "duration": 5, "fps": 24, "output_dir": "./output"}`; `duration` must be ≤ 5 seconds.
-    - **Supported info keys:** image_url, reference_images (list of paths/URLs/base64), resolution, duration, fps, poll, poll_interval, poll_timeout, download_video, output_dir.
-
-## 4. Available Skills
-*    Please be aware that if you need to have access to a particular skill to help you to complete the task, you MUST use the appropriate `SKILL_tool` to activate the skill, which returns you the exact skill content.
-*    You MUST NOT call the skill as a tool, since the skill is not a tool. You have to use the `SKILL_tool` to activate the skill.
-
-## 5. Critical Guardrails
-- **One Tool Per Step:** You **must** call only one tool at a time. Do not chain multiple tool calls in a single response.
-- **True to Task:** While calling your assistant, you must pass the user's raw request/details to the assistant, without any modification. The task description must be **accurate and detailed** (see Select & Execute above)—never truncate, summarize away critical details, or leave the assistant to infer missing context.
-- **Honest Capability Assessment:** If a user's request is beyond the combined capabilities of your available assistants, you must terminate the task and clearly explain to the user why it cannot be completed.
-- **Working Directory:** Always treat the working directory ({{ARTIFACT_DIRECTORY}}) as your working directory for all actions: run shell commands from it, and use it (or paths under it) for any temporary or output files when such operations are permitted (e.g. non-code tasks). You MUST NOT redirect work or temporary files to /tmp; Always use the working directory so outputs stay with the user's context.
-- **Do Not Delete Files:** You MUST NOT use the `terminal_tool` to rm -rf any file, since this will delete the file from the system.
-- **Loop:** In the scenario of creating an apps/code/html/website for the user, after the `developer` has developed the apps/code/html/website, you MUST loop the `evaluator` to evaluate the apps/code/html/website's performance and present professional suggestions, then asks the `developer` with `evaluator`'s suggestions to improve the apps/code/html/website if needed. If the `evaluator` gives an evalution score that meets the user's requirements, you MUST stop the loop and return the current/improved apps/code/html/website to the user.
-- **Consecutive user messages:** If you see consecutive `role=user` messages in the conversation, the earlier one may have been interrupted (e.g., by Ctrl+C) before completion. In such cases, treat the **last** user message as the authoritative input and respond to it.
-
-"""
-
 
 def extract_agents_from_swarm(swarm: Swarm) -> List[BaseAgent]:
     """
@@ -174,231 +125,6 @@ def extract_agents_from_swarm(swarm: Swarm) -> List[BaseAgent]:
         return []
 
 
-async def _load_agents_from_global_registry(exclude_names: List[str]) -> List[BaseAgent]:
-    """
-    Async helper function to load agents from global_agent_registry.
-    
-    Args:
-        exclude_names: List of agent names to exclude
-        
-    Returns:
-        List of BaseAgent instances loaded from global_agent_registry
-    """
-    registry_agents = []
-
-    try:
-        # Get all agent names from global_agent_registry
-        agent_names = await global_agent_registry.list_as_source()
-        logger.debug(f"📋 Found {len(agent_names)} agent(s) in global_agent_registry")
-
-        for agent_name in agent_names:
-            # Skip excluded agents
-            if agent_name in exclude_names:
-                logger.debug(f"⏭️ Skipping excluded agent from global_agent_registry: {agent_name}")
-                continue
-
-            try:
-                # Load agent from global_agent_registry
-                agent = await global_agent_registry.load_agent(agent_name)
-                if agent and isinstance(agent, BaseAgent):
-                    registry_agents.append(agent)
-                    logger.debug(f"✅ Loaded agent '{agent_name}' from global_agent_registry")
-                else:
-                    logger.debug(
-                        f"⚠️ Failed to load agent '{agent_name}' from global_agent_registry: agent is None or not BaseAgent")
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to load agent '{agent_name}' from global_agent_registry: {e}")
-                continue
-
-    except Exception as e:
-        logger.warning(f"⚠️ Error listing agents from global_agent_registry: {e}")
-
-    return registry_agents
-
-
-def load_all_registered_agents(
-        agents_dir: Optional[str] = None,
-        exclude_names: Optional[List[str]] = None
-) -> List[BaseAgent]:
-    """
-    Load all registered agents from global_agent_registry.
-
-    This function:
-    1. Initializes agents from the specified directory (or current directory) if needed
-    2. Gets all registered agent names from global_agent_registry
-    3. Loads each agent from the registry
-    4. Returns a list of all loaded Agent instances
-
-    Args:
-        agents_dir: Directory to initialize agents from. If None, uses current working directory.
-                   This is used to ensure agents are loaded into the registry before querying.
-        exclude_names: List of agent names to exclude (e.g., ["Aworld"] to exclude self)
-
-    Returns:
-        List of BaseAgent instances from all registered agents in global_agent_registry
-
-    Example:
-        >>> agents = load_all_registered_agents(exclude_names=["Aworld"])
-        >>> print(f"Loaded {len(agents)} sub-agents")
-    """
-    if exclude_names is None:
-        exclude_names = []
-
-    logger.info(f"🔄 Starting to load registered agents (exclude: {exclude_names if exclude_names else 'none'})")
-
-    # Initialize agents from directory if provided
-    if agents_dir:
-        logger.info(f"📁 Initializing agents from directory: {agents_dir}")
-        try:
-            init_agents(agents_dir)
-            logger.info(f"✅ Successfully initialized agents from {agents_dir}")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to initialize agents from {agents_dir}: {e}")
-    else:
-        # Try to initialize from current working directory
-        logger.info(f"📁 Attempting to initialize agents from current working directory")
-        try:
-            init_agents()
-            logger.info(f"✅ Successfully initialized agents from current directory")
-        except Exception as e:
-            logger.debug(f"ℹ️ Could not initialize agents from current directory: {e} (this is usually fine)")
-
-    # Get all registered agents
-    registered_agents = LocalAgentRegistry.list_agents()
-    logger.info(f"📋 Found {len(registered_agents)} registered agent(s) in LocalAgentRegistry {registered_agents}")
-    
-    all_agent_instances = []
-    skipped_count = 0
-    failed_count = 0
-    no_swarm_count = 0
-    empty_swarm_count = 0
-    success_count = 0
-    
-    for local_agent in registered_agents:
-        # Skip excluded agents
-        if local_agent.name in exclude_names:
-            logger.debug(f"⏭️ Skipping excluded agent: {local_agent.name}")
-            skipped_count += 1
-            continue
-        
-        logger.debug(f"🔍 Processing agent: {local_agent.name}")
-        try:
-            # Try to get swarm without context first
-            swarm = None
-            swarm_type = None
-            swarm_id = 'N/A'
-            swarm_name = 'N/A'
-            try:
-                # For sync callables or direct instances
-                if isinstance(local_agent.swarm, Swarm):
-                    swarm = local_agent.swarm
-                    swarm_type = "Swarm instance"
-                    swarm_id = swarm.id() if hasattr(swarm, 'id') else 'N/A'
-                    swarm_name = swarm.name() if hasattr(swarm, 'name') else 'N/A'
-                    logger.debug(f"  ✓ Found Swarm instance for {local_agent.name} [Swarm ID: {swarm_id}, Swarm Name: {swarm_name}]")
-                elif callable(local_agent.swarm):
-                    # Try calling without context
-                    import inspect
-                    sig = inspect.signature(local_agent.swarm)
-                    if len(sig.parameters) == 0:
-                        swarm = local_agent.swarm()
-                        swarm_type = "callable (no params)"
-                        swarm_id = swarm.id() if hasattr(swarm, 'id') else 'N/A'
-                        swarm_name = swarm.name() if hasattr(swarm, 'name') else 'N/A'
-                        logger.debug(f"  ✓ Created Swarm from callable (no params) for {local_agent.name} [Swarm ID: {swarm_id}, Swarm Name: {swarm_name}]")
-                    else:
-                        swarm_type = "callable (requires context)"
-                        logger.debug(f"  ℹ️ Swarm is callable but requires context for {local_agent.name}")
-            except Exception as e:
-                logger.error(f"  ⚠️ Could not get swarm for {local_agent.name} without context: {e} {traceback.format_exc()}")
-            
-            if swarm:
-                # Extract agents from swarm
-                extracted_agents = extract_agents_from_swarm(swarm)
-                if extracted_agents:
-                    # Get agent names and IDs
-                    agent_info_list = []
-                    for agent in extracted_agents:
-                        agent_name = agent.name() if hasattr(agent, 'name') else str(type(agent).__name__)
-                        agent_id = agent.id() if hasattr(agent, 'id') else 'N/A'
-                        agent_info_list.append(f"{agent_name}[ID: {agent_id}]")
-                    
-                    all_agent_instances.extend(extracted_agents)
-                    success_count += 1
-                    logger.info(f"✅ Loaded {len(extracted_agents)} agent(s) from '{local_agent.name}' (swarm type: {swarm_type}, Swarm ID: {swarm_id}, Swarm Name: {swarm_name}):")
-                    for agent_info in agent_info_list:
-                        logger.info(f"   • {agent_info}")
-                else:
-                    logger.warning(f"⚠️ No agents extracted from '{local_agent.name}' swarm (swarm type: {swarm_type})")
-                    empty_swarm_count += 1
-            else:
-                logger.debug(
-                    f"⚠️ Could not get swarm for '{local_agent.name}' (swarm type: {swarm_type or 'unknown'}, may require context)")
-                no_swarm_count += 1
-
-        except Exception as e:
-            logger.warning(f"❌ Failed to load agents from '{local_agent.name}': {e}")
-            failed_count += 1
-            continue
-
-    # Load agents from global_agent_registry
-    try:
-        logger.info(f"🔄 Loading agents from global_agent_registry...")
-        # Get list of all agent names from global_agent_registry
-        try:
-            # Try to get existing event loop
-            try:
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # If loop is running, we need to use a different approach
-                    # Use asyncio.create_task or run in a new thread
-                    import concurrent.futures
-                    with concurrent.futures.ThreadPoolExecutor() as executor:
-                        future = executor.submit(asyncio.run, _load_agents_from_global_registry(exclude_names))
-                        registry_agents = future.result(timeout=30)
-                else:
-                    registry_agents = loop.run_until_complete(_load_agents_from_global_registry(exclude_names))
-            except RuntimeError:
-                # No event loop exists, create a new one
-                registry_agents = asyncio.run(_load_agents_from_global_registry(exclude_names))
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to load agents from global_agent_registry: {e}")
-            registry_agents = []
-        
-        if registry_agents:
-            all_agent_instances.extend(registry_agents)
-            logger.info(f"✅ Loaded {len(registry_agents)} agent(s) from global_agent_registry")
-            for agent in registry_agents:
-                agent_name = agent.name() if hasattr(agent, 'name') else str(type(agent).__name__)
-                agent_id = agent.id() if hasattr(agent, 'id') else 'N/A'
-                logger.info(f"   • {agent_name} [ID: {agent_id}]")
-    except Exception as e:
-        logger.warning(f"⚠️ Error loading agents from global_agent_registry: {e}")
-
-    # Summary log
-    logger.info(f"📊 Load summary:")
-    logger.info(f"   • Total registered agents: {len(registered_agents)}")
-    logger.info(f"   • Skipped (excluded): {skipped_count}")
-    logger.info(f"   • Successfully loaded: {len(all_agent_instances)} sub-agent(s) from {success_count} agent(s)")
-
-    # List all loaded agent instances with their IDs
-    if all_agent_instances:
-        logger.info(f"   • Loaded agent instances:")
-        for agent in all_agent_instances:
-            agent_name = agent.name() if hasattr(agent, 'name') else str(type(agent).__name__)
-            agent_id = agent.id() if hasattr(agent, 'id') else 'N/A'
-            logger.info(f"     - {agent_name} [ID: {agent_id}]")
-
-    if no_swarm_count > 0:
-        logger.info(f"   • No swarm available: {no_swarm_count}")
-    if empty_swarm_count > 0:
-        logger.info(f"   • Empty swarms: {empty_swarm_count}")
-    if failed_count > 0:
-        logger.warning(f"   • Failed to load: {failed_count}")
-
-    return all_agent_instances
-
-
 def build_context_config(debug_mode):
     config = get_default_config()
     config.debug_mode = debug_mode
@@ -428,12 +154,14 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     - Agent team delegation capabilities
     - Multiple skills for various task types
     - Adaptive execution strategy (direct vs. team-based)
+    - FileSystemMemoryStore for persistent memory storage
 
     The agent can:
     1. Execute tasks directly using available tools and skills
     2. Delegate complex tasks to specialized agent teams
     3. Coordinate multi-agent workflows when needed
     4. Adapt execution strategy based on task complexity
+    5. Persist conversation memory to filesystem via Sandbox
 
     Args:
         include_skills (str, optional): Specify which skills to include.
@@ -447,14 +175,37 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     Example:
         >>> agent = build_aworld_agent()
         >>> # Agent can execute tasks directly or delegate to teams
+        >>> # Memory is persisted to filesystem automatically
     """
+
     from pathlib import Path
+    from aworld.utils.skill_loader import collect_skill_docs
 
-    from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
+    # 收集 skills
+    ALL_SKILLS = {}
 
+    # 1. 从 plugin 目录收集
     plugin_base_dir = Path(__file__).resolve().parents[1]
+    if plugin_base_dir.exists():
+        try:
+            plugin_skills = collect_skill_docs(plugin_base_dir)
+            ALL_SKILLS.update(plugin_skills)
+            logger.debug(f"✅ Loaded {len(plugin_skills)} skills from plugin directory")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load skills from plugin directory: {e}")
+
+    # 2. 从用户目录收集（AWORLD_SKILLS_PATH 环境变量）
     user_dir = os.environ.get("AWORLD_SKILLS_PATH")  # semicolon-separated paths
-    ALL_SKILLS = collect_plugin_and_user_skills(plugin_base_dir, user_dir=user_dir)
+    if user_dir:
+        for dir_path in user_dir.split(";"):
+            dir_path = dir_path.strip()
+            if dir_path and Path(dir_path).exists():
+                try:
+                    user_skills = collect_skill_docs(Path(dir_path))
+                    ALL_SKILLS.update(user_skills)
+                    logger.debug(f"✅ Loaded {len(user_skills)} skills from user directory: {dir_path}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to load skills from {dir_path}: {e}")
 
     # Configure agent: provider/base_url use getenv defaults; model_name/api_key may be None (ModelConfig accepts Optional[str])
     agent_config = AgentConfig(
@@ -464,7 +215,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             llm_api_key=os.getenv("LLM_API_KEY"),
             llm_base_url=os.getenv("LLM_BASE_URL", "https://api.openai.com/v1"),
             llm_temperature=float(os.environ.get("LLM_TEMPERATURE", "0.1")),
-            params={"max_completion_tokens": 59000},
+            params={"max_completion_tokens": 64000},
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
         use_vision=False,  # Enable if needed for image analysis
@@ -472,43 +223,42 @@ def build_aworld_agent(include_skills: Optional[str] = None):
     )
 
     # Create the Aworld agent
-    mcp_config = {
-        "mcpServers": {
-            "terminal": {
-                "command": sys.executable,
-                "args": ["-m", "examples.gaia.mcp_collections.tools.terminal"],
-                "client_session_timeout_seconds": 9999.0,
-            }
-        }
-    }
-
     aworld_agent = Agent(
         name="Aworld",
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
-        system_prompt=aworld_system_prompt,
+        system_prompt=(Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8"),
         mcp_servers=["terminal"],
-        mcp_config=mcp_config,
-        # for read image, automatically convert bytes to base64
+        mcp_config={
+            "mcpServers": {
+                "terminal": {
+                    "command": sys.executable,
+                    "args": ["-m", "examples.gaia.mcp_collections.tools.terminal"],
+                    "env": {},
+                    "client_session_timeout_seconds": 9999.0,
+                }
+            }
+        },
         tool_names=['CAST_SEARCH']
     )
 
-    # Load all registered agents as sub-agents
+    # Directly instantiate developer, evaluator, and video_creator as sub-agents
     try:
-        # Try to load from current working directory first
-        sub_agents = load_all_registered_agents(
-            agents_dir=None,  # Use default (current directory)
-            exclude_names=["Aworld"]  # Exclude self to avoid circular reference
+        developer_swarm = build_developer_swarm()
+        evaluator_swarm = build_evaluator_swarm()
+        video_creator_swarm = build_video_creator_swarm()
+        sub_agents = (
+            extract_agents_from_swarm(developer_swarm)
+            + extract_agents_from_swarm(evaluator_swarm)
+            + extract_agents_from_swarm(video_creator_swarm)
         )
 
         if sub_agents:
-            logger.info(f"🤝 Adding {len(sub_agents)} sub-agent(s) to Aworld TeamSwarm")
-            # Create TeamSwarm with Aworld as leader and all other agents as sub-agents
+            logger.info(f"🤝 Adding {len(sub_agents)} sub-agent(s) to Aworld TeamSwarm (developer, evaluator, video_creator)")
             return TeamSwarm(aworld_agent, *sub_agents, max_steps=100)
         else:
-            logger.info("ℹ️ No sub-agents found, creating Aworld TeamSwarm without sub-agents")
+            logger.info("ℹ️ No sub-agents extracted, creating Aworld TeamSwarm without sub-agents")
             return TeamSwarm(aworld_agent)
     except Exception as e:
-
-        logger.warning(f"⚠️ Failed to load sub-agents: {e}, creating Aworld TeamSwarm without sub-agents")
+        logger.warning(f"⚠️ Failed to instantiate sub-agents: {e}, creating Aworld TeamSwarm without sub-agents")
         return TeamSwarm(aworld_agent)

@@ -16,11 +16,9 @@ import networkx as nx
 
 from .models import (
     CodeNode, LogicLayer, SkeletonLayer, ImplementationLayer,
-    SymbolType
+    SymbolType, ReferenceType, Symbol
 )
-from .models import (
-    Symbol, RepositoryMap
-)
+from .models import RepositoryMap
 from .utils import logger
 
 
@@ -34,7 +32,8 @@ class ASTAnalyzer(ABC):
     @abstractmethod
     def analyze_repository(self, root_path: Path,
                            file_patterns: Optional[List[str]] = None,
-                           ignore_patterns: Optional[List[str]] = None) -> RepositoryMap:
+                           ignore_patterns: Optional[List[str]] = None,
+                           enable_dependency_graph: bool = False) -> RepositoryMap:
         """
         Analyze entire code repository
 
@@ -42,6 +41,7 @@ class ASTAnalyzer(ABC):
             root_path: Repository root directory
             file_patterns: File patterns to include
             ignore_patterns: File patterns to ignore
+            enable_dependency_graph: Whether to build dependency graph and PageRank (costly for large repos)
 
         Returns:
             Complete repository mapping
@@ -107,27 +107,68 @@ class DefaultASTAnalyzer(ASTAnalyzer):
 
     def analyze_repository(self, root_path: Path,
                            file_patterns: Optional[List[str]] = None,
-                           ignore_patterns: Optional[List[str]] = None) -> RepositoryMap:
+                           ignore_patterns: Optional[List[str]] = None,
+                           enable_dependency_graph: bool = False) -> RepositoryMap:
         """Analyze entire code repository"""
-        logger.info(f"Starting repository analysis: {root_path}")
+        t_start = time.perf_counter()
+        logger.info(f"[analyze_repository] Starting: root_path={root_path}, enable_dependency_graph={enable_dependency_graph}")
 
         # Scan files
+        t0 = time.perf_counter()
         files_to_analyze = self._scan_files(root_path, file_patterns, ignore_patterns)
-        logger.info(f"Found {len(files_to_analyze)} files to analyze")
+        t_scan = time.perf_counter() - t0
+        logger.info(f"[analyze_repository] _scan_files: {len(files_to_analyze)} files, {t_scan:.3f}s")
 
         # Analyze files using tools (tree-sitter, pageIndex, etc.)
+        t0 = time.perf_counter()
         code_nodes = self.analyze_files(files_to_analyze)
+        t_parse = time.perf_counter() - t0
+        logger.info(f"[analyze_repository] analyze_files: {len(code_nodes)} nodes, {t_parse:.3f}s")
 
-        # Build dependency graph
-        dependency_graph = self.build_dependency_graph(code_nodes)
+        # Build dependency graph (skip when disabled - saves ~96s for 1k+ files)
+        if enable_dependency_graph:
+            t0 = time.perf_counter()
+            dependency_graph = self.build_dependency_graph(code_nodes)
+            t_dep = time.perf_counter() - t0
+            n_edges = sum(len(t) for t in dependency_graph.values())
+            logger.info(f"[analyze_repository] build_dependency_graph: {len(dependency_graph)} nodes, {n_edges} edges, {t_dep:.3f}s")
 
-        # Calculate importance
-        pagerank_scores = self.calculate_importance(code_nodes, dependency_graph)
+            t0 = time.perf_counter()
+            pagerank_scores = self.calculate_importance(code_nodes, dependency_graph)
+            t_pagerank = time.perf_counter() - t0
+            logger.info(f"[analyze_repository] calculate_importance: {len(pagerank_scores)} scores, {t_pagerank:.3f}s")
+        else:
+            dependency_graph = {}
+            n = len(code_nodes)
+            pagerank_scores = {path: 1.0 / n for path in code_nodes.keys()} if n else {}
+            t_dep = t_pagerank = 0.0
+            logger.info(f"[analyze_repository] build_dependency_graph: skipped (enable_dependency_graph=False)")
+            logger.info(f"[analyze_repository] calculate_importance: {len(pagerank_scores)} scores (uniform), 0.000s")
 
         # Build three-layer structure
-        logic_layer = self._build_logic_layer(code_nodes, dependency_graph)
+        t0 = time.perf_counter()
+        logic_layer = self._build_logic_layer(root_path, code_nodes, dependency_graph)
+        t_logic = time.perf_counter() - t0
+        logger.info(f"[analyze_repository] _build_logic_layer: {t_logic:.3f}s")
+
+        t0 = time.perf_counter()
         skeleton_layer = self._build_skeleton_layer(code_nodes)
+        t_skeleton = time.perf_counter() - t0
+        n_skeletons = len(skeleton_layer.file_skeletons)
+        logger.info(f"[analyze_repository] _build_skeleton_layer: {n_skeletons} skeletons, {t_skeleton:.3f}s")
+
+        t0 = time.perf_counter()
         implementation_layer = self._build_implementation_layer(code_nodes)
+        t_impl = time.perf_counter() - t0
+        n_symbols = sum(len(n.symbols) for n in implementation_layer.code_nodes.values())
+        logger.info(f"[analyze_repository] _build_implementation_layer: {len(implementation_layer.code_nodes)} files, {n_symbols} symbols, {len(skeleton_layer.key_symbols)} key_symbols (in skeleton), {t_impl:.3f}s")
+
+        t_total = time.perf_counter() - t_start
+        logger.info(
+            f"[analyze_repository] Done: total={t_total:.3f}s "
+            f"(scan={t_scan:.2f}s parse={t_parse:.2f}s dep={t_dep:.2f}s pagerank={t_pagerank:.2f}s "
+            f"logic={t_logic:.2f}s skeleton={t_skeleton:.2f}s impl={t_impl:.2f}s)"
+        )
 
         return RepositoryMap(
             logic_layer=logic_layer,
@@ -273,56 +314,12 @@ class DefaultASTAnalyzer(ASTAnalyzer):
 
         return result
 
-    def _build_logic_layer(self, code_nodes: Dict[Path, CodeNode],
+    def _build_logic_layer(self, root_path: Path, code_nodes: Dict[Path, CodeNode],
                            dependency_graph: Dict[Path, Set[Path]]) -> LogicLayer:
-        """Build L1 logic layer"""
-        # Build project structure
-        project_structure = self._build_project_structure(code_nodes.keys())
-
-        # Extract key symbols (without content)
-        key_symbols = []
-        for node in code_nodes.values():
-            # Select important symbols (classes, main functions, etc.)
-            for symbol in node.symbols:
-                if (symbol.symbol_type in [SymbolType.CLASS, SymbolType.FUNCTION] and
-                        (symbol.name.startswith('main') or
-                         symbol.name == '__init__' or
-                         len(symbol.name) > 3)):
-                    # Create symbol copy without content
-                    symbol_without_content = Symbol(
-                        name=symbol.name,
-                        symbol_type=symbol.symbol_type,
-                        file_path=symbol.file_path,
-                        line_number=symbol.line_number,
-                        column=symbol.column,
-                        end_line=symbol.end_line,
-                        end_column=symbol.end_column,
-                        signature=symbol.signature,
-                        docstring=symbol.docstring,
-                        content=None,  # Don't record content
-                        parent=symbol.parent,
-                        modifiers=symbol.modifiers,
-                        parameters=symbol.parameters,
-                        return_type=symbol.return_type,
-                        metadata=symbol.metadata
-                    )
-                    key_symbols.append(symbol_without_content)
-
-        # Build call graph
-        call_graph = {}
-        # for file_path, node in code_nodes.items():
-        #     for symbol in node.symbols:
-        #         calls = []
-        #         for ref in node.references:
-        #             if ref.reference_type == ReferenceType.CALL:
-        #                 calls.append(ref.symbol_name)
-        #         if calls:
-        #             call_graph[symbol.full_name] = calls
-
+        """Build L1 logic layer (project structure + dependency graph only)"""
+        project_structure = self._build_project_structure(root_path, code_nodes.keys())
         return LogicLayer(
             project_structure=project_structure,
-            key_symbols=key_symbols,
-            call_graph=call_graph,
             dependency_graph=dependency_graph
         )
 
@@ -331,12 +328,13 @@ class DefaultASTAnalyzer(ASTAnalyzer):
         file_skeletons = {}
         symbol_signatures = {}
         line_mappings = {}
+        call_graph = {}
 
         for file_path, node in code_nodes.items():
             parser = self.get_parser(file_path)
             if parser and file_path.exists():
                 try:
-                    content = file_path.read_text(encoding='utf-8')
+                    content = file_path.read_text(encoding='utf-8', errors='replace')
                     skeleton = parser.generate_skeleton(content, file_path)
                     file_skeletons[file_path] = skeleton
 
@@ -351,24 +349,67 @@ class DefaultASTAnalyzer(ASTAnalyzer):
                 except Exception as e:
                     logger.error(f"Failed to generate skeleton {file_path}: {e}")
 
+        # Build call graph from all code_nodes (associate references with symbols by scope)
+        for file_path, node in code_nodes.items():
+            for symbol in node.symbols:
+                calls = []
+                end_line = symbol.end_line or symbol.line_number
+                for ref in node.references:
+                    if ref.reference_type == ReferenceType.CALL:
+                        if symbol.line_number <= ref.line_number <= end_line:
+                            calls.append(ref.symbol_name)
+                if calls:
+                    call_graph[symbol.full_name] = calls
+
+        # Build key symbol table (classes, main functions, etc.)
+        key_symbols = []
+        for node in code_nodes.values():
+            for symbol in node.symbols:
+                if (symbol.symbol_type in [SymbolType.CLASS, SymbolType.FUNCTION] and
+                        (symbol.name.startswith('main') or
+                         symbol.name == '__init__' or
+                         len(symbol.name) > 3)):
+                    symbol_without_content = Symbol(
+                        name=symbol.name,
+                        symbol_type=symbol.symbol_type,
+                        file_path=symbol.file_path,
+                        line_number=symbol.line_number,
+                        column=symbol.column,
+                        end_line=symbol.end_line,
+                        end_column=symbol.end_column,
+                        signature=symbol.signature,
+                        docstring=symbol.docstring,
+                        content=None,
+                        parent=symbol.parent,
+                        modifiers=symbol.modifiers,
+                        parameters=symbol.parameters,
+                        return_type=symbol.return_type,
+                        metadata=symbol.metadata
+                    )
+                    key_symbols.append(symbol_without_content)
+
         return SkeletonLayer(
             file_skeletons=file_skeletons,
             symbol_signatures=symbol_signatures,
-            line_mappings=line_mappings
+            line_mappings=line_mappings,
+            call_graph=call_graph,
+            key_symbols=key_symbols
         )
 
     def _build_implementation_layer(self, code_nodes: Dict[Path, CodeNode]) -> ImplementationLayer:
-        """Build L3 implementation layer"""
-        return ImplementationLayer(
-            code_nodes=code_nodes
-        )
+        """Build L3 implementation layer (code_nodes only; key_symbols moved to SkeletonLayer)"""
+        return ImplementationLayer(code_nodes=code_nodes)
 
-    def _build_project_structure(self, file_paths: List[Path]) -> Dict[str, Any]:
-        """Build project directory structure"""
+    def _build_project_structure(self, root_path: Path, file_paths: List[Path]) -> Dict[str, Any]:
+        """Build project directory structure. Uses relative paths; leaf files store empty string (no full path)."""
         structure = {}
 
         for file_path in file_paths:
-            parts = file_path.parts
+            try:
+                rel_path = file_path.relative_to(root_path)
+            except ValueError:
+                rel_path = file_path
+            parts = rel_path.parts
             current = structure
 
             for part in parts[:-1]:  # All parts except filename
@@ -376,9 +417,9 @@ class DefaultASTAnalyzer(ASTAnalyzer):
                     current[part] = {}
                 current = current[part]
 
-            # Add file
+            # Add file - use empty string, do not store full path
             if isinstance(current, dict):
-                current[parts[-1]] = str(file_path)
+                current[parts[-1]] = ""
 
         return structure
 
@@ -392,7 +433,8 @@ class ASTContextBuilder:
     def analyze(self,
                 root_path: Path,
                 file_patterns: Optional[List[str]] = None,
-                ignore_patterns: Optional[List[str]] = None) -> RepositoryMap:
+                ignore_patterns: Optional[List[str]] = None,
+                enable_dependency_graph: bool = False) -> RepositoryMap:
         """
         Perform complete repository analysis
 
@@ -400,15 +442,16 @@ class ASTContextBuilder:
             root_path: Repository root directory
             file_patterns: File inclusion patterns
             ignore_patterns: File ignore patterns
+            enable_dependency_graph: Whether to build dependency graph and PageRank (costly for large repos)
 
         Returns:
             Complete repository mapping
         """
-        logger.info(f"Starting repository analysis: {root_path}")
+        logger.info(f"Starting repository analysis: {root_path}, enable_dependency_graph={enable_dependency_graph}")
 
         # Execute code analysis
         repo_map = self.ast_analyzer.analyze_repository(
-            root_path, file_patterns, ignore_patterns
+            root_path, file_patterns, ignore_patterns, enable_dependency_graph
         )
 
         logger.info("Repository analysis completed")
@@ -492,9 +535,10 @@ class ASTContextBuilder:
                         logger.warning(f"  ⚠️ Layer {layer_name} generated empty content, skipping")
 
                 except Exception as e:
-                    logger.error(f"  ❌ Failed to generate {layer_name} layer content: {e}")
                     import traceback
-                    logger.debug(f"  📋 Error traceback: {traceback.format_exc()}")
+                    tb_str = traceback.format_exc()
+                    logger.error(f"  ❌ Failed to generate {layer_name} layer content: {e}\n{tb_str}")
+                    logger.debug(f"  📋 Error traceback: {tb_str}")
             else:
                 logger.warning(f"  ⚠️ Unknown layer type: {layer_name}")
                 logger.info(f"  📝 Available layer types: {list(layer_generators.keys())}")
@@ -508,14 +552,16 @@ class ASTContextBuilder:
 
     def _generate_skeleton_context(self, repo_map: RepositoryMap, user_mentions: List[str]) -> str:
         """Generate code skeleton layer context by recalling matched content from skeleton_layer."""
+        import re
         lines = ["# Code Skeleton"]
 
-        # Build list of (file_path, score) from skeleton_layer only
+        # Build list of (file_path, score) from skeleton_layer (file_skeletons + key_symbols)
         relevant_files = []
-        import re
+        file_scores: Dict[Path, float] = {}
+
         for file_path, skeleton_text in repo_map.skeleton_layer.file_skeletons.items():
+            score = 0.0
             if user_mentions:
-                score = 0
                 for mention in user_mentions:
                     try:
                         if re.search(mention, file_path.name, re.IGNORECASE):
@@ -528,12 +574,34 @@ class ASTContextBuilder:
                             score += 10
                         if skeleton_text and mention_lower in skeleton_text.lower():
                             score += 5
-                if score > 0:
-                    relevant_files.append((file_path, score))
             else:
-                # No mentions: use skeleton length as relevance proxy
-                relevant_files.append((file_path, len(skeleton_text) if skeleton_text else 0))
+                score = len(skeleton_text) if skeleton_text else 0
+            file_scores[file_path] = file_scores.get(file_path, 0) + score
 
+        # Retrieve key_symbols from SkeletonLayer: boost score when user mentions match key symbol names
+        for symbol in repo_map.skeleton_layer.key_symbols:
+            if user_mentions:
+                for mention in user_mentions:
+                    try:
+                        if re.search(mention, symbol.name, re.IGNORECASE):
+                            file_scores[symbol.file_path] = file_scores.get(symbol.file_path, 0) + 8
+                            break
+                        if symbol.full_name and re.search(mention, symbol.full_name, re.IGNORECASE):
+                            file_scores[symbol.file_path] = file_scores.get(symbol.file_path, 0) + 8
+                            break
+                    except re.error:
+                        mention_lower = mention.lower()
+                        if mention_lower in symbol.name.lower():
+                            file_scores[symbol.file_path] = file_scores.get(symbol.file_path, 0) + 8
+                            break
+                        if symbol.full_name and mention_lower in symbol.full_name.lower():
+                            file_scores[symbol.file_path] = file_scores.get(symbol.file_path, 0) + 8
+                            break
+            else:
+                # No mentions: ensure files with key symbols get non-zero score
+                file_scores[symbol.file_path] = file_scores.get(symbol.file_path, 0) + 1
+
+        relevant_files = [(fp, s) for fp, s in file_scores.items() if s > 0 or not user_mentions]
         relevant_files.sort(key=lambda x: x[1], reverse=True)
 
         for i, (file_path, score) in enumerate(relevant_files[:3], 1):
@@ -543,8 +611,30 @@ class ASTContextBuilder:
                 lines.append("```")
                 lines.append(skeleton.strip())
                 lines.append("```")
+            # Include key symbols for this file from SkeletonLayer
+            key_syms = [s for s in repo_map.skeleton_layer.key_symbols if s.file_path == file_path]
+            if key_syms:
+                lines.append("\nKey symbols:")
+                for s in key_syms[:5]:
+                    lines.append(f"  - {s.full_name} ({s.symbol_type.value})")
 
         return "\n".join(lines) + "\n"
+
+    def _get_symbols(self, node: Any) -> List:
+        """Safely get symbols from CodeNode or dict (e.g. from JSON deserialization)."""
+        if hasattr(node, 'symbols'):
+            return node.symbols
+        if isinstance(node, dict):
+            return node.get('symbols', [])
+        return []
+
+    def _get_attr(self, obj: Any, attr: str, default: Any = None) -> Any:
+        """Safely get attribute from object or dict."""
+        if hasattr(obj, attr):
+            return getattr(obj, attr, default)
+        if isinstance(obj, dict):
+            return obj.get(attr, default)
+        return default
 
     def _generate_implementation_context(self, repo_map: RepositoryMap, user_mentions: List[str]) -> str:
         """
@@ -581,29 +671,33 @@ class ASTContextBuilder:
             lines.append("\nImplementation layer code nodes not found")
             return '\n'.join(lines) + '\n'
 
-        # Statistics for implementation layer data
+        # Statistics for implementation layer data (support both CodeNode and dict)
         total_files = len(repo_map.implementation_layer.code_nodes)
-        total_symbols = sum(len(node.symbols) for node in repo_map.implementation_layer.code_nodes.values())
+        total_symbols = sum(len(self._get_symbols(node)) for node in repo_map.implementation_layer.code_nodes.values())
         symbols_with_content = 0
 
         logger.info(f"📈 Implementation layer statistics:")
         logger.info(f"  - Total files: {total_files}")
         logger.info(f"  - Total symbols: {total_symbols}")
 
-        # Iterate through all symbols in code_nodes
+        # Iterate through all symbols in code_nodes (support both CodeNode and dict)
         for file_idx, (file_path, code_node) in enumerate(repo_map.implementation_layer.code_nodes.items()):
+            symbols_list = self._get_symbols(code_node)
             logger.info(f"🔍 Processing file [{file_idx+1}/{total_files}]: {file_path}")
-            logger.info(f"  - Symbol count: {len(code_node.symbols)}")
+            logger.info(f"  - Symbol count: {len(symbols_list)}")
 
-            for symbol_idx, symbol in enumerate(code_node.symbols):
+            for symbol_idx, symbol in enumerate(symbols_list):
                 logger.info(f'symbol: {symbol}')
-                if not symbol.content:  # Skip symbols without content
-                    logger.info(f"  - Skipping symbol [{symbol_idx+1}] {symbol.name}: no content")
+                content = self._get_attr(symbol, 'content')
+                if not content:  # Skip symbols without content
+                    logger.info(f"  - Skipping symbol [{symbol_idx+1}] {self._get_attr(symbol, 'name')}: no content")
                     continue
 
                 symbols_with_content += 1
-                logger.info(f"  - Checking symbol [{symbol_idx+1}] {symbol.name} ({symbol.symbol_type.value})")
-                logger.info(f"    Content length: {len(symbol.content)} characters")
+                symbol_type_val = self._get_attr(symbol, 'symbol_type')
+                st_str = symbol_type_val.value if hasattr(symbol_type_val, 'value') else str(symbol_type_val or '')
+                logger.info(f"  - Checking symbol [{symbol_idx+1}] {self._get_attr(symbol, 'name')} ({st_str})")
+                logger.info(f"    Content length: {len(content)} characters")
 
                 symbol_score = 0.0
                 match_details = []
@@ -615,7 +709,7 @@ class ASTContextBuilder:
 
                     try:
                         # Search in symbol content
-                        content_matches = re.finditer(mention_pattern, symbol.content, re.IGNORECASE | re.MULTILINE)
+                        content_matches = re.finditer(mention_pattern, content, re.IGNORECASE | re.MULTILINE)
                         content_match_count = len(list(content_matches))
                         logger.info(f"      Content match count: {content_match_count}")
 
@@ -625,8 +719,9 @@ class ASTContextBuilder:
                             logger.info(f"      ✅ Content match +{content_match_count * 15.0} points")
 
                         # Search in symbol signature (if available)
-                        if symbol.signature:
-                            signature_match = re.search(mention_pattern, symbol.signature, re.IGNORECASE)
+                        signature = self._get_attr(symbol, 'signature')
+                        if signature:
+                            signature_match = re.search(mention_pattern, signature, re.IGNORECASE)
                             logger.info(f"      Signature match: {signature_match is not None}")
                             if signature_match:
                                 symbol_score += 12.0
@@ -634,8 +729,9 @@ class ASTContextBuilder:
                                 logger.info(f"      ✅ Signature match +12.0 points")
 
                         # Search in docstring (if available)
-                        if symbol.docstring:
-                            docstring_match = re.search(mention_pattern, symbol.docstring, re.IGNORECASE)
+                        docstring = self._get_attr(symbol, 'docstring')
+                        if docstring:
+                            docstring_match = re.search(mention_pattern, docstring, re.IGNORECASE)
                             logger.info(f"      Docstring match: {docstring_match is not None}")
                             if docstring_match:
                                 symbol_score += 8.0
@@ -643,7 +739,7 @@ class ASTContextBuilder:
                                 logger.info(f"      ✅ Docstring match +8.0 points")
 
                         # Search in symbol name
-                        name_match = re.search(mention_pattern, symbol.name, re.IGNORECASE)
+                        name_match = re.search(mention_pattern, str(self._get_attr(symbol, 'name') or ''), re.IGNORECASE)
                         logger.info(f"      Name match: {name_match is not None}")
                         if name_match:
                             symbol_score += 5.0
@@ -658,7 +754,7 @@ class ASTContextBuilder:
                 # If there are matches, add to results
                 if symbol_score > 0:
                     matches.append((symbol, symbol_score, match_details))
-                    logger.info(f"🎯 Found matching symbol: {symbol.name} (score: {symbol_score:.1f}, details: {match_details})")
+                    logger.info(f"🎯 Found matching symbol: {self._get_attr(symbol, 'name')} (score: {symbol_score:.1f}, details: {match_details})")
 
         # Final statistics
         logger.info(f"📊 Search completion statistics:")
@@ -669,28 +765,32 @@ class ASTContextBuilder:
         matches.sort(key=lambda x: x[1], reverse=True)
         logger.info(f"🏆 Top 5 matches after sorting:")
         for i, (symbol, score, details) in enumerate(matches[:5]):
-            logger.info(f"  {i+1}. {symbol.name} - {score:.1f} points ({', '.join(details)})")
+            logger.info(f"  {i+1}. {self._get_attr(symbol, 'name')} - {score:.1f} points ({', '.join(details)})")
 
         # Generate context content
         if matches:
             logger.info(f"📝 Generating context content, showing top 8 matching results")
             for symbol, score, match_details in matches[:8]:  # Show at most 8 matching results
-                lines.append(f"\n## {symbol.name} ({symbol.symbol_type.value})")
-                lines.append(f"File: {symbol.file_path}")
-                lines.append(f"Line: {symbol.line_number}-{symbol.end_line}")
+                st = self._get_attr(symbol, 'symbol_type')
+                st_str = st.value if hasattr(st, 'value') else str(st or '')
+                lines.append(f"\n## {self._get_attr(symbol, 'name')} ({st_str})")
+                lines.append(f"File: {self._get_attr(symbol, 'file_path')}")
+                lines.append(f"Line: {self._get_attr(symbol, 'line_number')}-{self._get_attr(symbol, 'end_line')}")
                 lines.append(f"Match score: {score:.1f}")
                 lines.append(f"Match details: {', '.join(match_details)}")
 
-                if symbol.signature:
+                sig = self._get_attr(symbol, 'signature')
+                if sig:
                     lines.append(f"\nSignature:")
-                    lines.append(symbol.signature)
+                    lines.append(sig)
 
-                if symbol.docstring:
+                doc = self._get_attr(symbol, 'docstring')
+                if doc:
                     lines.append(f"\nDocumentation:")
-                    lines.append(symbol.docstring)
+                    lines.append(doc)
 
                 # Show complete content of symbol (with line numbers)
-                source_code = symbol.content
+                source_code = self._get_attr(symbol, 'content')
                 if source_code:
                     lines.append(f"\nSource code:")
                     lines.append("```")
