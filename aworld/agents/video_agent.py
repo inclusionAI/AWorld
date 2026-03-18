@@ -203,6 +203,7 @@ class VideoAgent(LLMAgent):
                 _resolve_image_url_to_base64(image_url)
                 for image_url in reference_images
             ]
+        sound: Optional[str] = obs_info.pop("sound", None)
         resolution: Optional[str] = obs_info.pop("resolution", self.default_resolution)
         duration: Optional[float] = obs_info.pop("duration", self.default_duration)
         fps: Optional[int] = obs_info.pop("fps", self.default_fps)
@@ -221,6 +222,8 @@ class VideoAgent(LLMAgent):
         if image_tail:
             extra_kwargs["image_tail"] = image_tail
             extra_kwargs["last_frame_url"] = image_tail  # WanX adapter
+        if sound:
+            extra_kwargs["sound"] = sound
 
         logger.info(
             f"[VideoAgent:{self.id()}] Generating video: "
