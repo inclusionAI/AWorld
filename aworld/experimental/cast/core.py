@@ -353,9 +353,10 @@ class ACast:
         # Extract recording-related parameters (extract root_path before calling analyze)
         auto_record = kwargs.pop('auto_record', True)
         record_name = kwargs.pop('record_name', None)
+        enable_dependency_graph = kwargs.pop('enable_dependency_graph', False)
 
         # Execute analysis
-        repo_map = self.analyzer.analyze(*args, **kwargs)
+        repo_map = self.analyzer.analyze(*args, enable_dependency_graph=enable_dependency_graph, **kwargs)
 
         # Auto-record analysis results
         if auto_record:

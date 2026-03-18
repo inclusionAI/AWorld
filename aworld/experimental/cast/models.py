@@ -117,10 +117,8 @@ class CodeNode:
 
 @dataclass
 class LogicLayer:
-    """L1 - Panoramic logic layer data structure"""
+    """L1 - Panoramic logic layer data structure (project structure + dependency graph only)"""
     project_structure: Dict[str, Any]  # Project directory structure
-    key_symbols: List[Symbol]  # Key symbol table
-    call_graph: Dict[str, List[str]]  # Call relationship graph
     dependency_graph: Dict[Path, Set[Path]]  # Dependency relationship graph
     execution_heatmap: Dict[str, int] = field(default_factory=dict)  # Execution heatmap
     module_descriptions: Dict[Path, str] = field(default_factory=dict)  # Module descriptions
@@ -133,23 +131,6 @@ class LogicLayer:
         md_lines.extend(["## Project Structure", "```"])
         md_lines.append(self._format_structure(self.project_structure))
         md_lines.extend(["```", ""])
-
-        # Key symbols
-        md_lines.extend(["## Key Symbols", ""])
-        for symbol in sorted(self.key_symbols, key=lambda s: s.name):
-            heat = self.execution_heatmap.get(symbol.full_name, 0)
-            heat_indicator = "🔥" * min(heat // 10, 5) if heat > 0 else ""
-            md_lines.append(f"- **{symbol.full_name}** ({symbol.symbol_type.value}) {heat_indicator}")
-            if symbol.docstring:
-                md_lines.append(f"  - {symbol.docstring.split('.')[0]}.")
-
-        md_lines.append("")
-
-        # Call relationships
-        md_lines.extend(["## Call Relationships", ""])
-        for caller, callees in self.call_graph.items():
-            if callees:
-                md_lines.append(f"- **{caller}** → {', '.join(callees)}")
 
         return "\n".join(md_lines)
 
@@ -172,6 +153,8 @@ class SkeletonLayer:
     file_skeletons: Dict[Path, str]  # File skeleton code
     symbol_signatures: Dict[str, str]  # Symbol signature mapping
     line_mappings: Dict[Path, Dict[int, int]]  # Line number mapping (skeleton to original)
+    call_graph: Dict[str, List[str]] = field(default_factory=dict)  # Call relationship graph (caller -> callees)
+    key_symbols: List[Symbol] = field(default_factory=list)  # Key symbol table (classes, main functions, etc.)
 
     def get_skeleton(self, file_path: Path) -> Optional[str]:
         """Get file skeleton"""
@@ -284,7 +267,7 @@ class RepositoryMap:
                 result = {}
                 for field_name, field_value in value.__dict__.items():
                     result[field_name] = serialize_value(field_value)
-                    return result
+                return result
             elif isinstance(value, dict):
                 # Handle dictionary, convert Path keys to strings, ensure all keys are serializable
                 result = {}
@@ -366,13 +349,11 @@ class RepositoryMap:
                         last_modified=value.get('last_modified'),
                         metadata=value.get('metadata', {})
                     )
-                elif 'project_structure' in value and 'key_symbols' in value:
-                    # LogicLayer
+                elif 'project_structure' in value and 'dependency_graph' in value:
+                    # LogicLayer (key_symbols and call_graph removed)
                     return LogicLayer(
                         project_structure=deserialize_value(value.get('project_structure', {})),
-                        key_symbols=[deserialize_value(s, Symbol) for s in value.get('key_symbols', [])],
-                        call_graph=deserialize_value(value.get('call_graph', {})),
-                        dependency_graph={Path(k): {Path(p) for p in v} 
+                        dependency_graph={Path(k): {Path(p) for p in v}
                                          for k, v in value.get('dependency_graph', {}).items()},
                         execution_heatmap=value.get('execution_heatmap', {}),
                         module_descriptions={Path(k): v for k, v in value.get('module_descriptions', {}).items()}
@@ -382,10 +363,12 @@ class RepositoryMap:
                     return SkeletonLayer(
                         file_skeletons={Path(k): v for k, v in value.get('file_skeletons', {}).items()},
                         symbol_signatures=value.get('symbol_signatures', {}),
-                        line_mappings={Path(k): v for k, v in value.get('line_mappings', {}).items()}
+                        line_mappings={Path(k): v for k, v in value.get('line_mappings', {}).items()},
+                        call_graph=value.get('call_graph', {}),
+                        key_symbols=[deserialize_value(s, Symbol) for s in value.get('key_symbols', [])]
                     )
-                elif 'code_nodes' in value and len(value) == 1:
-                    # ImplementationLayer (new structure)
+                elif 'code_nodes' in value:
+                    # ImplementationLayer
                     return ImplementationLayer(
                         code_nodes={Path(k): deserialize_value(v, CodeNode) for k, v in value.get('code_nodes', {}).items()}
                     )

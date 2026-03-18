@@ -166,9 +166,9 @@ class VideoAgent(LLMAgent):
 
         Args:
             observation: Contains the video prompt in ``content`` and
-                optional overrides in ``info`` (image_url, resolution,
-                duration, fps, poll, poll_interval, poll_timeout, plus any
-                extra kwargs forwarded to the provider).
+                optional overrides in ``info`` (image_url, image_tail,
+                resolution, duration, fps, poll, poll_interval, poll_timeout,
+                plus any extra kwargs forwarded to the provider).
             info: Supplementary information dict (merged with
                 ``observation.info`` if both are non-empty).
             message: Incoming event message carrying context.
@@ -193,6 +193,10 @@ class VideoAgent(LLMAgent):
         # Resolve video parameters (observation.info overrides instance defaults)
         image_url: Optional[str] = obs_info.pop("image_url", None)
         image_url = _resolve_image_url_to_base64(image_url)
+
+        image_tail: Optional[str] = obs_info.pop("image_tail", None)
+        image_tail = _resolve_image_url_to_base64(image_tail)
+
         reference_images = obs_info.pop("reference_images", None)
         if reference_images:
             reference_images = [
@@ -214,6 +218,9 @@ class VideoAgent(LLMAgent):
         extra_kwargs = obs_info
         if reference_images:
             extra_kwargs["reference_images"] = reference_images
+        if image_tail:
+            extra_kwargs["image_tail"] = image_tail
+            extra_kwargs["last_frame_url"] = image_tail  # WanX adapter
 
         logger.info(
             f"[VideoAgent:{self.id()}] Generating video: "
@@ -265,7 +272,6 @@ class VideoAgent(LLMAgent):
                 f"video_url={video_response.video_result.video_url}"
             )
             if download_video:
-                print('output_dir: ', output_dir)
                 result_payload = await self.postprocess(
                     result=result_payload,
                     video_result=video_response.video_result,

@@ -806,6 +806,198 @@ class DoubaoAdapter(ModelAdapter):
         return status_raw in _DOUBAO_TERMINAL_STATUSES
 
 
+# WanX model-level API paths
+_WANX_METHOD_SUBMIT = "/aigc/image2video/video-synthesis"
+_WANX_METHOD_STATUS = "/tasks"
+
+# WanX resolution mapping
+_WANX_RESOLUTION_MAP: Dict[VideoResolution, str] = {
+    VideoResolution.RES_480P: "480P",
+    VideoResolution.RES_720P: "720P",
+    VideoResolution.RES_1080P: "1080P",
+}
+
+# WanX terminal statuses
+_WANX_TERMINAL_STATUSES = {"SUCCEEDED", "FAILED"}
+
+# Canonical status map for WanX
+_WANX_STATUS_MAP = {
+    "PENDING": "submitted",
+    "RUNNING": "processing",
+    "SUCCEEDED": "succeeded",
+    "FAILED": "failed",
+}
+
+
+class WanXAdapter(ModelAdapter):
+    """Adapter for WanX (万相) video models via the Ant MatrixCube gateway.
+
+    Supported models: ``wanx2.1-kf2v-plus``, etc.
+
+    API contract differences from Kling
+    ------------------------------------
+    - Submit: ``method = "/aigc/image2video/video-synthesis"``.
+      Parameters are carried in ``input`` and ``parameters`` dicts.
+      Requires ``first_frame_url`` and optionally ``last_frame_url`` for image2video.
+    - Submit response: wrapped in ``output`` field —
+      ``{"output": {"task_id": "...", "task_status": "PENDING"}}``
+    - Status: ``method = "/tasks"`` with ``pathParam.task_id = <task_id>``.
+    - Status response: wrapped in ``output`` field with ``task_status``
+      (``PENDING``, ``RUNNING``, ``SUCCEEDED``, ``FAILED``).
+      Video URL lives in ``output.video_url``.
+    - Terminal statuses: ``"SUCCEEDED"`` and ``"FAILED"``.
+
+    Extra params recognised in ``request.extra_params``
+    ---------------------------------------------------
+    - ``first_frame_url`` (str): URL or base64 of the first frame image.
+    - ``last_frame_url`` (str): URL or base64 of the last frame image.
+    - ``prompt_extend`` (bool): Whether to extend the prompt.
+    - ``resolution`` (str): Override resolution string, e.g. ``"480P"``.
+      If not set, falls back to the ``request.resolution`` enum mapping.
+    """
+
+    def build_submit_payload(
+        self,
+        request: VideoGenerationRequest,
+        model: str,
+        extra: Dict[str, Any],
+    ) -> Tuple[bool, Dict[str, Any]]:
+        # WanX is always image2video (requires first_frame)
+        is_image2video = True
+
+        # Build input dict with first_frame and optional last_frame
+        input_dict: Dict[str, Any] = {}
+
+        # Handle first frame (required for WanX)
+        first_frame = extra.pop("first_frame_url", None) or request.image_url
+        if not first_frame and request.image_path:
+            first_frame = VideoGenProviderBase.read_file_as_base64(request.image_path)
+            # WanX accepts base64 with data URI prefix
+            if first_frame and not first_frame.startswith("data:"):
+                first_frame = f"data:image/jpeg;base64,{first_frame}"
+
+        if first_frame:
+            input_dict["first_frame_url"] = first_frame
+
+        # Handle last frame (optional)
+        last_frame = extra.pop("last_frame_url", None)
+        if last_frame:
+            input_dict["last_frame_url"] = last_frame
+
+        # Add prompt if provided
+        if request.prompt:
+            input_dict["prompt"] = request.prompt
+
+        # Build parameters dict
+        parameters: Dict[str, Any] = {}
+
+        # Resolution: extra override → enum mapping
+        resolution_str = extra.pop("resolution", None)
+        if not resolution_str and request.resolution is not None:
+            resolution_str = _WANX_RESOLUTION_MAP.get(request.resolution)
+        if resolution_str:
+            parameters["resolution"] = resolution_str
+
+        # Prompt extend
+        prompt_extend = extra.pop("prompt_extend", None)
+        if prompt_extend is not None:
+            parameters["prompt_extend"] = bool(prompt_extend)
+
+        payload: Dict[str, Any] = {
+            "model": model,
+            "method": _WANX_METHOD_SUBMIT,
+            "input": input_dict,
+        }
+
+        if parameters:
+            payload["parameters"] = parameters
+
+        if request.video_url or request.video_path:
+            logger.warning("[WanXAdapter] video_url / video_path are not supported; ignoring.")
+
+        return is_image2video, payload
+
+    def build_status_payload(
+        self,
+        task_id: str,
+        model: str,
+        is_image2video: bool,
+    ) -> Dict[str, Any]:
+        return {
+            "model": model,
+            "method": _WANX_METHOD_STATUS,
+            "pathParam": {"task_id": task_id},
+        }
+
+    def parse_response(
+        self,
+        data: Dict[str, Any],
+        model: str,
+        is_image2video: bool = False,
+    ) -> ModelResponse:
+        # ``data`` here is the extracted ``output`` dict from the response
+        task_id = data.get("task_id", "")
+        status_raw = data.get("task_status", "unknown")
+        status = _WANX_STATUS_MAP.get(status_raw, status_raw.lower())
+
+        if status == "failed":
+            logger.error(f"[WanXAdapter] Task {task_id} failed: {data}")
+
+        video_url: Optional[str] = None
+        duration: Optional[float] = None
+
+        # Video URL is directly in data for WanX
+        video_url = data.get("video_url")
+
+        # Try to get duration from usage info if available
+        usage = data.get("usage") or {}
+        if usage:
+            raw_dur = usage.get("video_duration")
+            try:
+                duration = float(raw_dur) if raw_dur is not None else None
+            except (TypeError, ValueError):
+                duration = None
+
+        extra_out: Dict[str, Any] = {
+            "raw_status": status_raw,
+            "orig_prompt": data.get("orig_prompt"),
+            "actual_prompt": data.get("actual_prompt"),
+            "submit_time": data.get("submit_time"),
+            "scheduled_time": data.get("scheduled_time"),
+            "end_time": data.get("end_time"),
+            "usage": usage,
+            "is_image2video": is_image2video,
+            "adapter": "wanx",
+        }
+
+        return ModelResponse(
+            id=task_id or f"ant-video-{int(time.time())}",
+            model=model,
+            video_result=VideoGenerationResult(
+                task_id=task_id,
+                video_url=video_url,
+                status=status,
+                duration=duration,
+                extra=extra_out,
+            ),
+            raw_response=data,
+        )
+
+    # ------------------------------------------------------------------
+    # Response-shape overrides (WanX uses ``output`` wrapper like Kling)
+    # ------------------------------------------------------------------
+
+    def extract_submit_data(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        # WanX wraps response data in ``output`` field
+        return body.get("output") or {}
+
+    def extract_status_data(self, body: Dict[str, Any]) -> Dict[str, Any]:
+        # WanX wraps response data in ``output`` field
+        return body.get("output") or {}
+
+    def is_terminal_status(self, status_raw: str) -> bool:
+        return status_raw in _WANX_TERMINAL_STATUSES
+
 # ---------------------------------------------------------------------------
 # VeoAdapter — Google Veo vendor implementation
 # ---------------------------------------------------------------------------
@@ -1228,6 +1420,8 @@ _ADAPTER_REGISTRY: List[Tuple[re.Pattern, ModelAdapter]] = [
     (re.compile(r"^kling-"),        KlingAdapter()),
     (re.compile(r"^doubao-seedance-"), DoubaoAdapter()),
     (re.compile(r"^veo-"),          VeoAdapter()),
+    (re.compile(r"^Wan-AI/"),       WanXAdapter()),
+    (re.compile(r"^wanx"),       WanXAdapter()),
 ]
 
 
@@ -1401,6 +1595,9 @@ class AntVideoProvider(VideoGenProviderBase):
         return [
             # Kling
             "kling-v2-6",
+            "wanx2.1-kf2v-plus",
+            "Wan-AI/wanx2.1-kf2v-plus",
+
             # Doubao / Seedance (placeholder)
             "doubao-seedance-1-5-pro-251215",
             "doubao-seedance-1-0-pro-250528",
