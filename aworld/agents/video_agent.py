@@ -272,7 +272,6 @@ class VideoAgent(LLMAgent):
                 f"video_url={video_response.video_result.video_url}"
             )
             if download_video:
-                print('output_dir: ', output_dir)
                 result_payload = await self.postprocess(
                     result=result_payload,
                     video_result=video_response.video_result,
@@ -446,9 +445,6 @@ class VideoAgent(LLMAgent):
         import asyncio
 
         provider = self.llm.provider
-        print(f"provider: {provider} ")
-        print(f"provider.supported_models(): {provider.supported_models()}")
-        print(f"self.model_name: {self.model_name}")
         loop = asyncio.get_event_loop()
 
         return await loop.run_in_executor(
