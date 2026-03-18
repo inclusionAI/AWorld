@@ -445,6 +445,7 @@ class KlingAdapter(ModelAdapter):
             "method": _KLING_METHOD_IMAGE2VIDEO if is_image2video else _KLING_METHOD_TEXT2VIDEO,
             "prompt": request.prompt,
             "mode":   extra.pop("mode", "std"),
+            "sound":  extra.pop("sound", None),
         }
 
         if is_image2video:
@@ -1051,6 +1052,11 @@ class VeoAdapter(ModelAdapter):
       Falls back to ``request.aspect_ratio`` enum mapping.
     - ``resolution`` (str): Override resolution string, e.g. ``"1280x720"``.
       Falls back to ``request.resolution`` enum mapping.
+    - ``sound`` (str): Audio track URL or path for video generation.
+    - ``image_list`` (list): List of image dictionaries for multi-image video
+      generation. Format: ``[{"image": "url_or_path"}, {"image": "url_or_path"}, ...]``.
+      The first image becomes the main image, additional images are stored in
+      ``additionalImages`` if the model supports it.
     """
 
     # Veo aspect-ratio strings
@@ -1125,6 +1131,11 @@ class VeoAdapter(ModelAdapter):
 
         if request.seed is not None:
             parameters["seed"] = request.seed
+
+        # Sound: audio track for video generation
+        sound = extra.pop("sound", None)
+        if sound:
+            parameters["sound"] = sound
 
         if request.video_url or request.video_path:
             logger.warning("[VeoAdapter] video_url / video_path are not supported; ignoring.")
@@ -1665,6 +1676,8 @@ class AntVideoProvider(VideoGenProviderBase):
                 f"adapter={type(adapter).__name__}, "
                 f"mode={'image2video' if is_image2video else 'text2video'}, "
                 f"prompt={request.prompt!r}"
+                f"request={request}\n"
+                f"payload={payload}\n"
             )
             body = self.provider.sync_call(payload, endpoint=_GENERIC_CALL_ENDPOINT)
         except Exception as e:
