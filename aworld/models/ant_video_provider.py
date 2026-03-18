@@ -1648,7 +1648,6 @@ class AntVideoProvider(VideoGenProviderBase):
 
         extra = dict(request.extra_params)
         model = extra.pop("model_name", None) or self.model_name
-        print(f"self.model_name: {self.model_name} model:  {model}")
         if not model:
             raise ValueError("model_name must be provided in the constructor or via extra_params.")
 
