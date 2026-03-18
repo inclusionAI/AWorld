@@ -108,8 +108,11 @@ def main():
 Examples:
 
 Basic Usage:
-  # Interactive mode (default)
+  # Interactive mode (default: Aworld agent)
   aworld-cli
+  
+  # Use different agent
+  aworld-cli --agent developer
   
   # List available agents
   aworld-cli list
@@ -443,7 +446,7 @@ Batch Jobs:
     parser.add_argument(
         '--agent',
         type=str,
-        help='Agent name to use (required for direct run mode)'
+        help='Agent name (default: Aworld in interactive mode; required for direct run mode)'
     )
     
     parser.add_argument(
@@ -769,7 +772,9 @@ Batch Jobs:
         return
 
     # Interactive mode (default) - use AgentRuntime directly without AWorldApp
+    agent_name = args.agent or "Aworld"
     asyncio.run(_run_interactive_mode(
+        agent_name=agent_name,
         remote_backends=args.remote_backend,
         local_dirs=args.agent_dir,
         agent_files=args.agent_file
@@ -777,6 +782,7 @@ Batch Jobs:
 
 
 async def _run_interactive_mode(
+    agent_name: Optional[str] = None,
     remote_backends: Optional[list[str]] = None,
     local_dirs: Optional[list[str]] = None,
     agent_files: Optional[list[str]] = None
@@ -785,6 +791,7 @@ async def _run_interactive_mode(
     Run interactive mode using CliRuntime directly.
     
     Args:
+        agent_name: Agent name to use at startup (default: Aworld; override with --agent)
         remote_backends: Optional list of remote backend URLs
         local_dirs: Optional list of local agent directories
         agent_files: Optional list of individual agent file paths
@@ -798,7 +805,7 @@ async def _run_interactive_mode(
             except Exception as e:
                 print(f"⚠️ Failed to load agent file {agent_file}: {e}")
     
-    runtime = CliRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
+    runtime = CliRuntime(agent_name=agent_name, remote_backends=remote_backends, local_dirs=local_dirs)
     try:
         await runtime.start()
     except KeyboardInterrupt:
