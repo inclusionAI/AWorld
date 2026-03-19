@@ -1,9 +1,26 @@
 import json
 import os
+import socket
 import traceback
-from typing import Any, Dict, List, Generator, AsyncGenerator, Tuple
+from typing import Any, Dict, List, Generator, AsyncGenerator, Tuple, Optional
 
+import httpx
 from openai import OpenAI, AsyncOpenAI
+from openai import (
+    APIError,
+    APIConnectionError,
+    APITimeoutError,
+    RateLimitError,
+    AuthenticationError,
+    BadRequestError,
+    InternalServerError,
+    NotFoundError,
+    PermissionDeniedError,
+    UnprocessableEntityError,
+    ConflictError,
+    APIStatusError,
+    OpenAIError,
+)
 
 from aworld.config.conf import ClientType
 from aworld.core.llm_provider import LLMProviderBase
@@ -15,6 +32,43 @@ from aworld.models.model_response import ModelResponse, LLMResponseError
 class OpenAIProvider(LLMProviderBase):
     """OpenAI provider implementation.
     """
+
+    def _build_tcp_keepalive_socket_options(self) -> Optional[List[Tuple[int, int, int]]]:
+        """Build TCP keepalive socket options for httpx transports."""
+        if not self.kwargs.get("tcp_keepalive", True):
+            return None
+
+        options: List[Tuple[int, int, int]] = [
+            (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+        ]
+
+        keepidle = int(self.kwargs.get("tcp_keepalive_idle", 30))
+        keepintvl = int(self.kwargs.get("tcp_keepalive_interval", 10))
+        keepcnt = int(self.kwargs.get("tcp_keepalive_count", 8))
+
+        # Linux
+        if hasattr(socket, "TCP_KEEPIDLE"):
+            options.append((socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, keepidle))
+        # macOS / BSD
+        elif hasattr(socket, "TCP_KEEPALIVE"):
+            options.append((socket.IPPROTO_TCP, socket.TCP_KEEPALIVE, keepidle))
+
+        if hasattr(socket, "TCP_KEEPINTVL"):
+            options.append((socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, keepintvl))
+        if hasattr(socket, "TCP_KEEPCNT"):
+            options.append((socket.IPPROTO_TCP, socket.TCP_KEEPCNT, keepcnt))
+
+        return options
+
+    def _build_httpx_client(self, timeout: float) -> httpx.Client:
+        socket_options = self._build_tcp_keepalive_socket_options()
+        transport = httpx.HTTPTransport(socket_options=socket_options)
+        return httpx.Client(timeout=timeout, transport=transport)
+
+    def _build_async_httpx_client(self, timeout: float) -> httpx.AsyncClient:
+        socket_options = self._build_tcp_keepalive_socket_options()
+        transport = httpx.AsyncHTTPTransport(socket_options=socket_options)
+        return httpx.AsyncClient(timeout=timeout, transport=transport)
 
     def _init_provider(self):
         """Initialize OpenAI provider.
@@ -46,12 +100,14 @@ class OpenAIProvider(LLMProviderBase):
             self.is_http_provider = True
             return self.http_provider
         else:
+            timeout = self.kwargs.get("timeout", 600)
+            http_client = self.kwargs.get("http_client") or self._build_httpx_client(timeout=timeout)
             return OpenAI(
                 api_key=api_key,
                 base_url=base_url,
-                timeout=self.kwargs.get("timeout", 600),
+                timeout=timeout,
                 max_retries=self.kwargs.get("max_retries", 3),
-                http_client=self.kwargs.get("http_client", None),
+                http_client=http_client,
             )
 
     def _init_async_provider(self):
@@ -72,15 +128,14 @@ class OpenAIProvider(LLMProviderBase):
         if not base_url:
             base_url = os.getenv("OPENAI_ENDPOINT", "https://api.openai.com/v1")
 
-        # import httpx
-        # long_timeout_async_client = httpx.AsyncClient(timeout=7200)
+        timeout = self.kwargs.get("timeout", 7200)
+        http_client = self.kwargs.get("http_client") or self._build_async_httpx_client(timeout=timeout)
         return AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
-            timeout=self.kwargs.get("timeout", 7200),
+            timeout=timeout,
             max_retries=self.kwargs.get("max_retries", 3),
-            http_client=self.kwargs.get("http_client", None),
-            # http_client=long_timeout_async_client,
+            http_client=http_client,
         )
 
     @classmethod
@@ -215,6 +270,13 @@ class OpenAIProvider(LLMProviderBase):
                     return None, None
             if finish_reason:
                 if self.stream_tool_buffer:
+                    # Extract content based on chunk type (dict vs object)
+                    if isinstance(chunk, dict):
+                        content = chunk['choices'][0].get('delta', {}).get('content')
+                    else:
+                        delta = chunk.choices[0].delta
+                        content = delta.content if hasattr(delta, 'content') else None
+
                     tool_call_chunk = {
                         "id": chunk.id if hasattr(chunk, 'id') else chunk.get("id"),
                         "model": chunk.model if hasattr(chunk, 'model') else chunk.get("model"),
@@ -223,7 +285,7 @@ class OpenAIProvider(LLMProviderBase):
                             {
                                 "delta": {
                                     "role": "assistant",
-                                    "content": chunk.choices[0].delta.content if hasattr(chunk.choices[0].delta, 'content') else chunk.choices[0].delta.get("content"),
+                                    "content": content,
                                     "tool_calls": self.stream_tool_buffer
                                 }
                             }
