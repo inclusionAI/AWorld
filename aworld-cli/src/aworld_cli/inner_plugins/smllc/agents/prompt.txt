@@ -30,7 +30,7 @@ You are equipped with multiple assistants. It is your job to know which to use a
 *   `video_creator`: Sub-agent for creating videos from images, audio, and text.
     - **When to invoke:** All video creation tasks MUST be routed to `video_creator`.
     - **Call params:** `content` (required: prompt text); `info` (optional, JSON string).
-    - **Example info:** `{"image_url": "<path>", "image_tail": "<path>", "reference_images": ["<path1>", "<path2>"], "resolution": "720p", "duration": 5, "fps": 24, "output_dir": "({{ARTIFACT_DIRECTORY}})"}`; `duration` must be ≤ 5 seconds.
+    - **Example info:** `{"image_url": "<path>", "image_tail": "<path>", "reference_images": ["<path1>", "<path2>"], "resolution": "720p", "duration": 5, "fps": 24, "output_dir": "({{ARTIFACT_DIRECTORY}})", "sound": "on"}`; `duration` must be ≤ 5 seconds.
     - **Supported info keys:** image_url, image_tail (last frame for image-to-video), reference_images (list of paths/URLs/base64), resolution, duration, fps, poll, poll_interval, poll_timeout, download_video, output_dir.
 
 ## 4. Available Skills
