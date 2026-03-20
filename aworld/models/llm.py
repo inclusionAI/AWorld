@@ -839,6 +839,7 @@ async def acall_llm_model(
         temperature=temperature,
         max_tokens=max_tokens,
         stop=stop,
+        stream=stream,
         context=context,
         **kwargs
     )
