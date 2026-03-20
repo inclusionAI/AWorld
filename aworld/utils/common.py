@@ -272,13 +272,19 @@ def nest_dict_counter(usage: Dict[str, Union[int, Dict[str, int]]],
             result[elem] = res
             continue
 
-        newcount = count + other.get(elem, 0)
+        # Handle None values by treating them as 0
+        count_val = count if count is not None else 0
+        other_val = other.get(elem, 0)
+        other_val = other_val if other_val is not None else 0
+
+        newcount = count_val + other_val
         if not ignore_zero or newcount > 0:
             result[elem] = newcount
 
     for elem, count in other.items():
         if elem not in usage and not ignore_zero:
-            result[elem] = count
+            # Handle None values
+            result[elem] = count if count is not None else 0
     return result
 
 
