@@ -165,8 +165,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                  event_handler_name: str = None,
                  event_driven: bool = True,
                  skill_configs: Dict[str, Any] = None,
-                 llm_max_attempts: int = 1,
-                 llm_retry_delay: float = 0.05,
+                 llm_max_attempts: int = 3,
+                 llm_retry_delay: float = 10.0,
                  **kwargs):
         """A api class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 
@@ -180,8 +180,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             output_converter: Function to convert ModelResponse to AgentResult.
             tool_aggregate_func: Aggregation strategy for multiple tool results.
             event_handler_name: Custom handlers for certain types of events.
-            llm_max_attempts: Maximum number of attempts to call LLM. Default is 1 (no retry). Set to 3 means max 3 attempts.
-            llm_retry_delay: Delay in seconds between retry attempts. Default is 0.05 (50ms).
+            llm_max_attempts: Maximum number of attempts to call LLM. Default is 3. Includes stream and non-stream retries with exponential backoff.
+            llm_retry_delay: Base delay in seconds between retry attempts. Default is 10.0s. Uses exponential backoff (10s, 20s, 40s...).
         """
         if conf is None:
             model_name = os.getenv("LLM_MODEL_NAME")
@@ -872,12 +872,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             # Retry loop for LLM call
             attempt = 1
             last_exception = None
+            # Track if stream_mode failed and we need to fallback to non_stream_mode
+            stream_failed_fallback = False
 
             while attempt <= self.llm_max_attempts:
                 try:
                     logger.info(f"🔄 Attempt {attempt}/{self.llm_max_attempts} for LLM call")
 
-                    if stream_mode:
+                    # Use non_stream_mode if stream_mode failed in previous attempt
+                    current_stream_mode = stream_mode and not stream_failed_fallback
+
+                    if stream_failed_fallback:
+                        logger.info(f"🔀 Using non-stream mode for attempt {attempt}/{self.llm_max_attempts} due to previous stream failure")
+
+                    if current_stream_mode:
                         # Pre-calc prompt tokens for display (API often does not return in stream chunks)
                         prompt_tokens_est = 0
                         try:
@@ -963,15 +971,19 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                                 await task.outputs.add_output(ChunkOutput(data=chunk, metadata=meta))
 
                     else:
+                        # Remove 'stream' from kwargs to avoid conflict
+                        non_stream_kwargs = {k: v for k, v in kwargs.items() if k != 'stream'}
+                        logger.info(f"🔀 Using non-stream mode (no timeout limit, relies on httpx client timeout)")
+
                         llm_response = await acall_llm_model(
                             self.llm,
                             messages=messages,
                             model=self.model_name,
                             temperature=float_temperature,
                             tools=tools,
-                            stream=kwargs.get("stream", False),
+                            stream=False,  # Explicitly use non-stream mode
                             context=message.context,
-                            **kwargs
+                            **non_stream_kwargs
                         )
 
                     # Check if we got a valid response
@@ -1020,11 +1032,30 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
                     # If we haven't reached max attempts, try again
                     if attempt < self.llm_max_attempts:
+                        # If stream_mode failed and we haven't tried non_stream_mode fallback yet, enable it
+                        if stream_mode and not stream_failed_fallback:
+                            stream_failed_fallback = True
+                            logger.warning(f"⚠️ Stream mode failed, switching to non-stream mode for retry (attempt {attempt + 1}/{self.llm_max_attempts})")
+
+                        # Exponential backoff: retry_delay * (2 ^ (attempt - 1))
+                        # attempt 1->2: 1.0s, attempt 2->3: 2.0s, attempt 3->4: 4.0s
+                        backoff_delay = self.llm_retry_delay * (2 ** (attempt - 1))
+                        logger.info(f"⏳ Retrying in {backoff_delay}s (exponential backoff)...")
+                        await asyncio.sleep(backoff_delay)
+
                         attempt += 1
-                        await asyncio.sleep(self.llm_retry_delay)
                         continue
                     else:
-                        # Max attempts reached, send error message and raise
+                        # Max attempts reached, save context and tools for analysis
+                        await self._save_failed_request_context(
+                            messages=messages,
+                            tools=tools,
+                            error=str(e),
+                            attempt=attempt,
+                            context=message.context
+                        )
+
+                        # Send error message and raise
                         await send_message(Message(
                             category=Constants.OUTPUT,
                             payload=Output(
@@ -1084,6 +1115,77 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 from aworld.experimental.ptc.ptc_neuron import PTC_NEURON_PROMPT
                 system_prompt += PTC_NEURON_PROMPT
             return system_prompt
+
+    async def _save_failed_request_context(self,
+                                           messages: List[Dict[str, Any]],
+                                           tools: List[Dict[str, Any]],
+                                           error: str,
+                                           attempt: int,
+                                           context: Context) -> None:
+        """Save failed request context and tools to file for analysis.
+
+        Args:
+            messages: LLM input messages
+            tools: Tool descriptions
+            error: Error message
+            attempt: Number of attempts made
+            context: Agent context
+        """
+        try:
+            # Create failed_requests directory if not exists
+            failed_dir = os.path.join(os.getcwd(), "failed_requests")
+            os.makedirs(failed_dir, exist_ok=True)
+
+            # Generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            session_id = context.session_id if context else "unknown"
+            filename = f"failed_request_{self.id()}_{session_id}_{timestamp}.json"
+            filepath = os.path.join(failed_dir, filename)
+
+            # Calculate token estimates
+            def estimate_tokens(data):
+                """Rough token estimation: ~4 chars per token"""
+                return len(json.dumps(data, ensure_ascii=False)) // 4
+
+            messages_tokens = estimate_tokens(messages)
+            tools_tokens = estimate_tokens(tools)
+            total_tokens = messages_tokens + tools_tokens
+
+            # Prepare data to save
+            failed_data = {
+                "timestamp": timestamp,
+                "agent_id": self.id(),
+                "agent_name": self.name(),
+                "session_id": session_id,
+                "task_id": context.task_id if context else None,
+                "model_name": self.model_name,
+                "error": error,
+                "attempts": attempt,
+                "retry_delay": self.llm_retry_delay,
+                "statistics": {
+                    "total_tokens_estimate": total_tokens,
+                    "messages_tokens_estimate": messages_tokens,
+                    "tools_tokens_estimate": tools_tokens,
+                    "messages_count": len(messages),
+                    "tools_count": len(tools) if tools else 0,
+                },
+                "messages": messages,
+                "tools": tools,
+            }
+
+            # Write to file
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(failed_data, f, ensure_ascii=False, indent=2, default=str)
+
+            logger.warning(
+                f"💾 Failed request context saved to: {filepath}\n"
+                f"   📊 Statistics: {total_tokens} tokens (~{messages_tokens} messages + ~{tools_tokens} tools), "
+                f"{len(messages)} messages, {len(tools) if tools else 0} tools\n"
+                f"   ❌ Error: {error[:100]}..."
+            )
+
+        except Exception as save_error:
+            logger.error(f"Failed to save failed request context: {save_error}\n{traceback.format_exc()}")
 
     async def _add_message_to_memory(self, payload: Any, message_type: MemoryType, context: Context,
                                      skip_summary: bool = False):

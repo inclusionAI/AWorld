@@ -14,9 +14,16 @@ class LLMResponseError(Exception):
         message: Error message
         model: Model name
         response: Original response object
+        error_details: Optional structured error details (e.g. status_code, request_id)
     """
 
-    def __init__(self, message: str, model: str = "unknown", response: Any = None):
+    def __init__(
+        self,
+        message: str,
+        model: str = "unknown",
+        response: Any = None,
+        error_details: Optional[Dict[str, Any]] = None,
+    ):
         """
         Initialize LLM response error
         
@@ -24,11 +31,21 @@ class LLMResponseError(Exception):
             message: Error message
             model: Model name
             response: Original response object
+            error_details: Optional structured error details
         """
         self.message = message
         self.model = model
         self.response = response
-        super().__init__(f"LLM Error ({model}): {message}. Response: {response}")
+        self.error_details = error_details or None
+
+        details_str = ""
+        if self.error_details:
+            try:
+                details_str = f". Details: {json.dumps(self.error_details, ensure_ascii=False)}"
+            except Exception:
+                details_str = f". Details: {self.error_details}"
+
+        super().__init__(f"LLM Error ({model}): {message}{details_str}. Response: {response}")
 
 
 class Function(BaseModel):
@@ -418,7 +435,13 @@ class ModelResponse:
                 "total_tokens": cls._get_item_from_openai_message(chunk.usage, 'total_tokens', 0)
             }
         elif isinstance(chunk, dict) and chunk.get('usage'):
-            usage = chunk['usage']
+            # Normalize dict usage to ensure all values are integers, not None
+            raw_usage = chunk['usage']
+            usage = {
+                "completion_tokens": raw_usage.get('completion_tokens') or 0,
+                "prompt_tokens": raw_usage.get('prompt_tokens') or 0,
+                "total_tokens": raw_usage.get('total_tokens') or 0
+            }
 
         # Handle finish reason chunk (end of stream)
         finish_reason = None
@@ -427,16 +450,32 @@ class ModelResponse:
         elif isinstance(chunk, dict) and chunk.get('choices'):
             finish_reason = chunk['choices'][0].get('finish_reason')
         if finish_reason:
-            return cls(
-                id=chunk.id if hasattr(chunk, 'id') else chunk.get('id', 'unknown'),
-                model=chunk.model if hasattr(chunk, 'model') else chunk.get('model', 'unknown'),
-                content=chunk.choices[0].delta.content if hasattr(chunk.choices[0].delta, 'content') else chunk.choices[0].delta.get("content"),
-                usage=usage,
-                raw_response=chunk,
-                tool_calls=chunk.choices[0].delta.tool_calls,
-                message={"role": "assistant", "content": "", "finish_reason": chunk.choices[0].finish_reason},
-                finish_reason=finish_reason
-            )
+            # Handle dict type (HTTP client) vs object type (SDK client)
+            if isinstance(chunk, dict):
+                delta = chunk['choices'][0].get('delta', {})
+                return cls(
+                    id=chunk.get('id', 'unknown'),
+                    model=chunk.get('model', 'unknown'),
+                    content=delta.get('content'),
+                    usage=usage,
+                    raw_response=chunk,
+                    tool_calls=delta.get('tool_calls'),
+                    message={"role": "assistant", "content": "", "finish_reason": finish_reason},
+                    finish_reason=finish_reason
+                )
+            else:
+                # Object type access for SDK client
+                delta = chunk.choices[0].delta
+                return cls(
+                    id=chunk.id if hasattr(chunk, 'id') else 'unknown',
+                    model=chunk.model if hasattr(chunk, 'model') else 'unknown',
+                    content=delta.content if hasattr(delta, 'content') else None,
+                    usage=usage,
+                    raw_response=chunk,
+                    tool_calls=delta.tool_calls if hasattr(delta, 'tool_calls') else None,
+                    message={"role": "assistant", "content": "", "finish_reason": chunk.choices[0].finish_reason},
+                    finish_reason=finish_reason
+                )
 
         # Normal chunk with delta content
         content = ""
