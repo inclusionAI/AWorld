@@ -155,8 +155,10 @@ class CAstCoderAction(ToolAction):
                 name="operation_json",
                 type="string",
                 required=True,
-                desc="""JSON format precise search and replace operation instruction. Format:
-{
+                desc="""⚠️ IMPORTANT: This parameter MUST be a valid JSON STRING (not a JSON object).
+
+JSON string format for precise search and replace operation:
+'{
     "operation": {
         "type": "search_replace",
         "file_path": "path/to/your/file.py",
@@ -165,13 +167,37 @@ class CAstCoderAction(ToolAction):
         "exact_match_only": true,
         "replace_all": false
     }
-}
+}'
 
-Parameters: type (string, required) Must be "search_replace"; file_path (string, required) Relative path from source_dir; search (string, required) One or more complete lines when modifying existing file, or empty string for full file replacement / creating new file; replace (string, required) Replacement block or full file content; exact_match_only (boolean, optional) Fixed as true; replace_all (boolean, optional) When true, replace all occurrences of search in file; when false, only first match (default: false).
+Required Parameters:
+- type (string): Must be "search_replace"
+- file_path (string): Relative path from source_dir (e.g., "src/main.py", "requirements.txt")
+- search (string): Complete code lines to find. Use empty string "" for full file replacement or new file creation
+- replace (string): Replacement content or full file content
 
-Full file replacement: Use search="" and put full content in replace - works for both creating new files and replacing entire existing file content.
+Optional Parameters:
+- exact_match_only (boolean): Fixed as true (default behavior)
+- replace_all (boolean): If true, replace all occurrences; if false, only first match (default: false)
 
-Best Practices: When modifying existing file, use multi-line blocks with structural context (def/class) for accuracy. Use replace_all=true when the same block appears multiple times. For full file replacement, use search="" and put full content in replace."""
+Example Usage:
+Single line replacement:
+'{"operation":{"type":"search_replace","file_path":"main.py","search":"x = 1","replace":"x = 2"}}'
+
+Multi-line replacement with context:
+'{"operation":{"type":"search_replace","file_path":"app.py","search":"def foo():\\n    return 1","replace":"def foo():\\n    return 2"}}'
+
+Full file replacement or new file creation:
+'{"operation":{"type":"search_replace","file_path":"config.py","search":"","replace":"# Configuration\\nDEBUG = True\\nPORT = 8000"}}'
+
+Replace all occurrences:
+'{"operation":{"type":"search_replace","file_path":"utils.py","search":"old_name","replace":"new_name","replace_all":true}}'
+
+Best Practices:
+- For existing file modifications: Include multi-line blocks with structural context (def/class/import) for accuracy
+- For full file replacement: Use search="" and put entire content in replace field
+- For renaming variables/functions: Use replace_all=true to replace all occurrences
+- Ensure proper JSON escaping: use \\n for newlines, \\" for quotes within strings
+- Match indentation and whitespace exactly as they appear in the source file"""
             ),
             "source_dir": ParamInfo(
                 name="source_dir",
