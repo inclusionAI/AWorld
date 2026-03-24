@@ -61,6 +61,64 @@ Imports can be nested - imported files can import other files:
 @guidelines/testing.md
 ```
 
+## CLI Commands
+
+The AWorld CLI provides convenient commands to manage your AWORLD.md file:
+
+### `/memory` - Edit AWORLD.md
+
+Opens the AWORLD.md file in your default editor (set via `$EDITOR` or `$VISUAL` environment variable).
+
+```bash
+# In aworld-cli interactive mode
+You: /memory
+```
+
+If no AWORLD.md file exists, it will create one with a template in `.aworld/AWORLD.md`.
+
+**Supported Editors:**
+- Set `VISUAL` environment variable for GUI editors (e.g., `code`, `subl`)
+- Set `EDITOR` environment variable for terminal editors (e.g., `vim`, `nano`)
+- Default: `nano`
+
+**Example:**
+```bash
+# Use VS Code
+export VISUAL=code
+aworld-cli
+
+# Use Vim
+export EDITOR=vim
+aworld-cli
+```
+
+### `/memory view` - View Current Content
+
+Displays the current AWORLD.md content in a formatted panel.
+
+```bash
+You: /memory view
+```
+
+### `/memory status` - Show Status
+
+Displays information about the memory system:
+- AWORLD.md file location
+- File size and last modified time
+- System status
+
+```bash
+You: /memory status
+```
+
+### `/memory reload` - Reload Memory
+
+Informs you that memory will be reloaded on next agent start. The AWORLD.md file is automatically loaded when agents initialize.
+
+```bash
+You: /memory reload
+```
+
 ## Configuration
 
 ### Enable/Disable
