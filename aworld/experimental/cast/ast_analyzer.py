@@ -516,13 +516,13 @@ class ASTContextBuilder:
 
         layered_content = {}
         for layer_idx, layer_name in enumerate(context_layers):
-            logger.info(f"🔄 Processing layer [{layer_idx+1}/{len(context_layers)}]: {layer_name}")
+            logger.debug(f"🔄 Processing layer [{layer_idx+1}/{len(context_layers)}]: {layer_name}")
 
             if layer_name in layer_generators:
                 try:
-                    logger.info(f"  ⚙️ Calling generator: {layer_generators[layer_name].__name__}")
+                    logger.debug(f"  ⚙️ Calling generator: {layer_generators[layer_name].__name__}")
                     content = layer_generators[layer_name](repo_map, user_mentions)
-                    logger.info(f"  📏 Generated content length: {len(content)} characters")
+                    logger.debug(f"  📏 Generated content length: {len(content)} characters")
 
                     # Show content preview (first 200 characters)
                     preview = content[:200].replace('\n', '\\n')
@@ -530,18 +530,18 @@ class ASTContextBuilder:
 
                     if content.strip():  # Only add non-empty content
                         layered_content[layer_name] = content
-                        logger.info(f"  ✅ Layer {layer_name} content added")
+                        logger.debug(f"  ✅ Layer {layer_name} content added")
                     else:
-                        logger.warning(f"  ⚠️ Layer {layer_name} generated empty content, skipping")
+                        logger.debug(f"  ⚠️ Layer {layer_name} generated empty content, skipping")
 
                 except Exception as e:
                     import traceback
                     tb_str = traceback.format_exc()
-                    logger.error(f"  ❌ Failed to generate {layer_name} layer content: {e}\n{tb_str}")
+                    logger.debug(f"  ❌ Failed to generate {layer_name} layer content: {e}\n{tb_str}")
                     logger.debug(f"  📋 Error traceback: {tb_str}")
             else:
-                logger.warning(f"  ⚠️ Unknown layer type: {layer_name}")
-                logger.info(f"  📝 Available layer types: {list(layer_generators.keys())}")
+                logger.debug(f"  ⚠️ Unknown layer type: {layer_name}")
+                logger.debug(f"  📝 Available layer types: {list(layer_generators.keys())}")
 
         logger.info(f"🏁 Layered context construction completed")
         logger.info(f"📊 Successfully generated layers: {list(layered_content.keys())}")
@@ -551,9 +551,9 @@ class ASTContextBuilder:
         return layered_content
 
     def _generate_skeleton_context(self, repo_map: RepositoryMap, user_mentions: List[str]) -> str:
-        """Generate code skeleton layer context by recalling matched content from skeleton_layer."""
+        """Generate skeleton context as a JSON array string of matched items."""
+        import json
         import re
-        lines = ["# Code Skeleton"]
 
         # Build list of (file_path, score) from skeleton_layer (file_skeletons + key_symbols)
         relevant_files = []
@@ -604,21 +604,31 @@ class ASTContextBuilder:
         relevant_files = [(fp, s) for fp, s in file_scores.items() if s > 0 or not user_mentions]
         relevant_files.sort(key=lambda x: x[1], reverse=True)
 
-        for i, (file_path, score) in enumerate(relevant_files[:3], 1):
-            lines.append(f"\n## {file_path.name}")
+        items: List[Dict[str, Any]] = []
+        for file_path, score in relevant_files[:3]:
             skeleton = repo_map.skeleton_layer.get_skeleton(file_path)
-            if skeleton:
-                lines.append("```")
-                lines.append(skeleton.strip())
-                lines.append("```")
             # Include key symbols for this file from SkeletonLayer
             key_syms = [s for s in repo_map.skeleton_layer.key_symbols if s.file_path == file_path]
-            if key_syms:
-                lines.append("\nKey symbols:")
-                for s in key_syms[:5]:
-                    lines.append(f"  - {s.full_name} ({s.symbol_type.value})")
+            item: Dict[str, Any] = {
+                "type": "skeleton_match",
+                "file_path": str(file_path),
+                "file_name": file_path.name,
+                "score": score,
+                "skeleton": skeleton.strip() if skeleton else "",
+                "key_symbols": [
+                    {
+                        "name": s.name,
+                        "full_name": s.full_name,
+                        "symbol_type": s.symbol_type.value if hasattr(s.symbol_type, "value") else str(s.symbol_type or ""),
+                        "line_number": s.line_number,
+                        "end_line": s.end_line,
+                    }
+                    for s in key_syms[:5]
+                ],
+            }
+            items.append(item)
 
-        return "\n".join(lines) + "\n"
+        return json.dumps(items, ensure_ascii=False)
 
     def _get_symbols(self, node: Any) -> List:
         """Safely get symbols from CodeNode or dict (e.g. from JSON deserialization)."""
@@ -646,10 +656,10 @@ class ASTContextBuilder:
             user_mentions: List of user-mentioned regex patterns
 
         Returns:
-            Formatted implementation layer context string with matched lines highlighted
+            JSON array string where each element is one matched symbol item
         """
+        import json
         import re
-        lines = ["# Key Implementation"]
 
         # Add detailed debugging logs
         logger.info(f"🔍 Starting implementation layer context generation")
@@ -668,8 +678,7 @@ class ASTContextBuilder:
             logger.warning(f"  - implementation_layer: {repo_map.implementation_layer}")
             if repo_map.implementation_layer:
                 logger.warning(f"  - code_nodes: {repo_map.implementation_layer.code_nodes}")
-            lines.append("\nImplementation layer code nodes not found")
-            return '\n'.join(lines) + '\n'
+            return json.dumps([], ensure_ascii=False)
 
         # Statistics for implementation layer data (support both CodeNode and dict)
         total_files = len(repo_map.implementation_layer.code_nodes)
@@ -678,87 +687,86 @@ class ASTContextBuilder:
 
         logger.info(f"📈 Implementation layer statistics:")
         logger.info(f"  - Total files: {total_files}")
-        logger.info(f"  - Total symbols: {total_symbols}")
+        logger.debug(f"  - Total symbols: {total_symbols}")
 
         # Iterate through all symbols in code_nodes (support both CodeNode and dict)
         for file_idx, (file_path, code_node) in enumerate(repo_map.implementation_layer.code_nodes.items()):
             symbols_list = self._get_symbols(code_node)
-            logger.info(f"🔍 Processing file [{file_idx+1}/{total_files}]: {file_path}")
-            logger.info(f"  - Symbol count: {len(symbols_list)}")
+            logger.debug(f"🔍 Processing file [{file_idx+1}/{total_files}]: {file_path}")
+            logger.debug(f"  - Symbol count: {len(symbols_list)}")
 
             for symbol_idx, symbol in enumerate(symbols_list):
-                logger.info(f'symbol: {symbol}')
+                logger.debug(f'symbol: {symbol}')
                 content = self._get_attr(symbol, 'content')
                 if not content:  # Skip symbols without content
-                    logger.info(f"  - Skipping symbol [{symbol_idx+1}] {self._get_attr(symbol, 'name')}: no content")
+                    logger.debug(f"  - Skipping symbol [{symbol_idx+1}] {self._get_attr(symbol, 'name')}: no content")
                     continue
 
                 symbols_with_content += 1
                 symbol_type_val = self._get_attr(symbol, 'symbol_type')
                 st_str = symbol_type_val.value if hasattr(symbol_type_val, 'value') else str(symbol_type_val or '')
-                logger.info(f"  - Checking symbol [{symbol_idx+1}] {self._get_attr(symbol, 'name')} ({st_str})")
-                logger.info(f"    Content length: {len(content)} characters")
+                logger.debug(f"  - Checking symbol [{symbol_idx+1}] {self._get_attr(symbol, 'name')} ({st_str})")
+                logger.debug(f"    Content length: {len(content)} characters")
 
                 symbol_score = 0.0
                 match_details = []
-                matched_lines_info = []  # New: Store matched line information
 
                 # Search using regex in symbol.content
                 for pattern_idx, mention_pattern in enumerate(user_mentions):
-                    logger.info(f"    🔎 Applying pattern [{pattern_idx+1}]: '{mention_pattern}'")
+                    logger.debug(f"    🔎 Applying pattern [{pattern_idx+1}]: '{mention_pattern}'")
 
                     try:
                         # Search in symbol content
                         content_matches = re.finditer(mention_pattern, content, re.IGNORECASE | re.MULTILINE)
                         content_match_count = len(list(content_matches))
-                        logger.info(f"      Content match count: {content_match_count}")
+                        logger.debug(f"      Content match count: {content_match_count}")
 
                         if content_match_count > 0:
                             symbol_score += content_match_count * 15.0  # High score for content matches
                             match_details.append(f"Content matches: {content_match_count}x")
-                            logger.info(f"      ✅ Content match +{content_match_count * 15.0} points")
+                            logger.debug(f"      ✅ Content match +{content_match_count * 15.0} points")
 
                         # Search in symbol signature (if available)
                         signature = self._get_attr(symbol, 'signature')
                         if signature:
                             signature_match = re.search(mention_pattern, signature, re.IGNORECASE)
-                            logger.info(f"      Signature match: {signature_match is not None}")
+                            logger.debug(f"      Signature match: {signature_match is not None}")
                             if signature_match:
                                 symbol_score += 12.0
                                 match_details.append("Signature match")
-                                logger.info(f"      ✅ Signature match +12.0 points")
+                                logger.debug(f"      ✅ Signature match +12.0 points")
 
                         # Search in docstring (if available)
                         docstring = self._get_attr(symbol, 'docstring')
                         if docstring:
                             docstring_match = re.search(mention_pattern, docstring, re.IGNORECASE)
-                            logger.info(f"      Docstring match: {docstring_match is not None}")
+                            logger.debug(f"      Docstring match: {docstring_match is not None}")
                             if docstring_match:
                                 symbol_score += 8.0
                                 match_details.append("Docstring match")
-                                logger.info(f"      ✅ Docstring match +8.0 points")
+                                logger.debug(f"      ✅ Docstring match +8.0 points")
 
                         # Search in symbol name
                         name_match = re.search(mention_pattern, str(self._get_attr(symbol, 'name') or ''), re.IGNORECASE)
-                        logger.info(f"      Name match: {name_match is not None}")
+                        logger.debug(f"      Name match: {name_match is not None}")
                         if name_match:
                             symbol_score += 5.0
                             match_details.append("Name match")
-                            logger.info(f"      ✅ Name match +5.0 points")
+                            logger.debug(f"      ✅ Name match +5.0 points")
 
                     except re.error as e:
                         # If regex is invalid, log error and skip
-                        logger.warning(f"❌ Invalid regex '{mention_pattern}': {e}")
+                        logger.debug(f"❌ Invalid regex '{mention_pattern}': {e}")
                         continue
 
                 # If there are matches, add to results
                 if symbol_score > 0:
                     matches.append((symbol, symbol_score, match_details))
-                    logger.info(f"🎯 Found matching symbol: {self._get_attr(symbol, 'name')} (score: {symbol_score:.1f}, details: {match_details})")
+                    logger.debug(f"🎯 Found matching symbol: {self._get_attr(symbol, 'name')} (score: {symbol_score:.1f}, details: {match_details})")
 
         # Final statistics
         logger.info(f"📊 Search completion statistics:")
-        logger.info(f"  - Symbols with content: {symbols_with_content}")
+        logger.debug(f"  - Symbols with content: {symbols_with_content}")
         logger.info(f"  - Matching symbols: {len(matches)}")
 
         # Sort by relevance score
@@ -767,40 +775,30 @@ class ASTContextBuilder:
         for i, (symbol, score, details) in enumerate(matches[:5]):
             logger.info(f"  {i+1}. {self._get_attr(symbol, 'name')} - {score:.1f} points ({', '.join(details)})")
 
-        # Generate context content
+        # Generate JSON array items
+        result_items: List[Dict[str, Any]] = []
         if matches:
             logger.info(f"📝 Generating context content, showing top 8 matching results")
             for symbol, score, match_details in matches[:8]:  # Show at most 8 matching results
                 st = self._get_attr(symbol, 'symbol_type')
                 st_str = st.value if hasattr(st, 'value') else str(st or '')
-                lines.append(f"\n## {self._get_attr(symbol, 'name')} ({st_str})")
-                lines.append(f"File: {self._get_attr(symbol, 'file_path')}")
-                lines.append(f"Line: {self._get_attr(symbol, 'line_number')}-{self._get_attr(symbol, 'end_line')}")
-                lines.append(f"Match score: {score:.1f}")
-                lines.append(f"Match details: {', '.join(match_details)}")
-
-                sig = self._get_attr(symbol, 'signature')
-                if sig:
-                    lines.append(f"\nSignature:")
-                    lines.append(sig)
-
-                doc = self._get_attr(symbol, 'docstring')
-                if doc:
-                    lines.append(f"\nDocumentation:")
-                    lines.append(doc)
-
-                # Show complete content of symbol (with line numbers)
-                source_code = self._get_attr(symbol, 'content')
-                if source_code:
-                    lines.append(f"\nSource code:")
-                    lines.append("```")
-                    lines.append(source_code)
-                    lines.append("```")
+                result_items.append({
+                    "type": "implementation_match",
+                    "name": self._get_attr(symbol, 'name'),
+                    "symbol_type": st_str,
+                    "file_path": str(self._get_attr(symbol, 'file_path') or ""),
+                    "line_number": self._get_attr(symbol, 'line_number'),
+                    "end_line": self._get_attr(symbol, 'end_line'),
+                    "score": score,
+                    "match_details": match_details,
+                    "signature": self._get_attr(symbol, 'signature') or "",
+                    "docstring": self._get_attr(symbol, 'docstring') or "",
+                    "content": self._get_attr(symbol, 'content') or "",
+                })
         else:
             logger.warning(f"⚠️ No matching implementation code found")
-            lines.append("\nNo implementation code matching the query regex found")
 
-        result = '\n'.join(lines) + '\n'
+        result = json.dumps(result_items, ensure_ascii=False)
         logger.info(f"✅ Implementation layer context generation complete, total length: {len(result)} characters")
         return result
 

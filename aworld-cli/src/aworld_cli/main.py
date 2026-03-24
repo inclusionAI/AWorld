@@ -8,6 +8,95 @@ import os
 import sys
 from typing import Optional
 
+from aworld.memory.main import _default_file_memory_store
+
+# Try to import init_middlewares, fallback to no-op if not available
+try:
+    from aworld.core.context.amni.config import init_middlewares
+except ImportError:
+    # Fallback: init_middlewares might not be available in all environments
+    def init_middlewares():
+        """No-op fallback for init_middlewares if not available."""
+        pass
+
+
+def _show_banner(console=None):
+    """
+    Display AWorld CLI banner with product features.
+    """
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich.text import Text
+        
+        if console is None:
+            console = Console()
+        
+        # Create main title with gradient effect
+        title = Text()
+        title.append("\n", style="" )
+        title.append("    █████╗ ██╗    ██╗ ██████╗ ██████╗ ██╗     ██████╗ \n", style="bold bright_cyan")
+        title.append("   ██╔══██╗██║    ██║██╔═══██╗██╔══██╗██║     ██╔══██╗\n", style="bold bright_cyan")
+        title.append("   ███████║██║ █╗ ██║██║   ██║██████╔╝██║     ██║  ██║\n", style="bold bright_blue")
+        title.append("   ██╔══██║██║███╗██║██║   ██║██╔══██╗██║     ██║  ██║\n", style="bold bright_blue")
+        title.append("   ██║  ██║╚███╔███╔╝╚██████╔╝██║  ██║███████╗██████╔╝\n", style="bold bright_magenta")
+        title.append("   ╚═╝  ╚═╝ ╚══╝╚══╝  ╚═════╝ ╚═╝  ╚═╝╚══════╝╚═════╝ \n", style="bold bright_magenta")
+        
+        # Subtitle
+        subtitle = Text("\n   🚀 The Agent Runtime for Self-Improvement — Build & Orchestrate AI Agents\n", style="italic bright_white")
+        
+        # Create features table
+        features_table = Table(show_header=False, box=None, padding=(0, 2))
+        features_table.add_column("Icon", style="bright_yellow", justify="left")
+        features_table.add_column("Feature", style="bold bright_green")
+        features_table.add_column("Description", style="bright_white")
+        
+        features_table.add_row(
+            "🎬",
+            "[bold bright_green]Video Creation[/bold bright_green]",
+            "[dim]One-sentence to blockbuster video generation[/dim]"
+        )
+        features_table.add_row(
+            "📊",
+            "[bold bright_green]PPT Generation[/bold bright_green]",
+            "[dim]AI-powered presentation creation[/dim]"
+        )
+        features_table.add_row(
+            "🔬",
+            "[bold bright_green]AI for Science[/bold bright_green]",
+            "[dim]Automated scientific research exploration[/dim]"
+        )
+        
+        # Get version info
+        try:
+            from . import __version__
+            version_str = f"v{__version__}"
+        except ImportError:
+            version_str = "v1.0.0"
+        
+        # Combine all elements
+        banner_content = Text()
+        banner_content.append(title)
+        banner_content.append(subtitle)
+        banner_content.append(f"   Version {version_str}\n", style="dim")
+
+        console.print(banner_content)
+        
+        # Print features
+        console.print("[bold bright_cyan]🚀 Core Features:[/bold bright_cyan]")
+        console.print(features_table)
+        cli = AWorldCLI()
+        cli._display_conf_info()
+        
+    except ImportError:
+        # Fallback if rich is not available
+        print("\nAWorld CLI - AI-Powered Content Creation & Scientific Research Platform\n")
+        print("Core Features:")
+        print("  🎬 Video Creation - One-sentence to blockbuster")
+        print("  📊 PPT Generation - AI-powered presentations")
+        print("  🔬 AI for Science - Automated research exploration")
+        print("\nCore Advantages: 多(Versatile) 快(Fast) 好(Quality) 省(Efficient)\n")
+
 
 def _suppress_keyboard_interrupt_traceback(exc_type, exc_value, exc_tb):
     """Suppress KeyboardInterrupt traceback; exit cleanly."""
@@ -103,6 +192,9 @@ def main():
     Entry point for the AWorld CLI.
     Supports both interactive and non-interactive (direct run) modes.
     """
+    # Check for --no-banner flag early (before parsing)
+    show_banner_flag = "--no-banner" not in sys.argv
+    
     # English help text
     english_epilog = """
 Examples:
@@ -328,6 +420,12 @@ Batch Jobs:
         '--examples',
         action='store_true',
         help='Show usage examples / 显示使用示例'
+    )
+    
+    parser.add_argument(
+        '--no-banner',
+        action='store_true',
+        help='Disable banner display on startup / 启动时不显示 banner'
     )
 
     # Create a minimal parser to check if command is 'plugin'
@@ -593,7 +691,7 @@ Batch Jobs:
     
     # Parse arguments normally, but keep unknown args for inner plugin commands
     args, remaining_argv = parser.parse_known_args()
-    
+
     # Handle --config: run interactive config editor and exit
     if getattr(args, 'config', False):
         async def _run_config():
@@ -649,6 +747,12 @@ Batch Jobs:
     # Load configuration (priority: local .env > global config)
     from .core.config import load_config_with_env, has_model_config
     config_dict, source_type, source_path = load_config_with_env(args.env_file)
+
+    # Init middlewares (logging is already set up in base __init__)
+    init_middlewares(init_memory=True, init_retriever=False, custom_memory_store=_default_file_memory_store())
+
+    _show_banner()
+
     # Display configuration source
     from ._globals import console
     # Require model config for commands that use the agent (skip for 'list' and plugin)

@@ -197,7 +197,7 @@ class PygrepSearcher:
 
                     files_scanned[0] += 1
                     if files_scanned[0] % 50 == 0:
-                        logger.info(f"Pygrep scan progress: {files_scanned[0]} files scanned")
+                        logger.debug(f"Pygrep scan progress: {files_scanned[0]} files scanned")
                     try:
                         # Stream file line-by-line (avoids loading entire file into memory)
                         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
