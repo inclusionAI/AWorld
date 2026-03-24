@@ -460,7 +460,7 @@ class ACast:
 
         # If there's still no repo_map, raise error
         if repo_map is None:
-            raise ValueError("Must provide repo_map or valid record_name")
+            raise ValueError("Must provide repo_map or valid record_name, must call CAST_ANALYSIS__analyze_repository first")
 
         # If advanced parameters are specified, use analyzer's advanced recall method
         if context_layers is not None:
@@ -1061,7 +1061,7 @@ class ACast:
         logger.info(f"🚀 Starting batch source retrieval for {len(file_paths)} files")
 
         for file_idx, file_path in enumerate(file_paths):
-            logger.info(f"📄 Processing file [{file_idx+1}/{len(file_paths)}]: {file_path}")
+            logger.debug(f"📄 Processing file [{file_idx+1}/{len(file_paths)}]: {file_path}")
 
             try:
                 result = self.retrieve_source_lines_from_file(
@@ -1072,7 +1072,7 @@ class ACast:
                 batch_results['summary']['total_matches'] += result['search_stats']['total_matches']
                 batch_results['summary']['processed_files'] += 1
 
-                logger.info(f"  ✅ Found {result['search_stats']['total_matches']} matches")
+                logger.debug(f"  ✅ Found {result['search_stats']['total_matches']} matches")
 
             except Exception as e:
                 logger.error(f"  ❌ Failed to process {file_path}: {e}")

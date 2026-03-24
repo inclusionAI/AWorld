@@ -15,10 +15,11 @@ from rich.prompt import Prompt
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
+import os
 
 from aworld.logs.util import logger
 from ._globals import console
-from .core.skill_registry import get_skill_registry
+from .core.skill_registry import get_skill_registry, get_user_skills_paths
 from .models import AgentInfo
 from .user_input import UserInputHandler
 
@@ -695,7 +696,87 @@ class AWorldCLI:
 
         # Print layout full width
         self.console.print(layout)
-    
+
+    def _display_system_info(self, help_text: str = ""):
+        """
+        Display comprehensive system information including help commands,
+        configuration, skills, agents, and memory loading locations.
+        Consistent styling with _show_banner from main.py.
+        """
+
+        # Section 1: Help Commands
+        self.console.print(Panel(help_text or "Available Commands", title="📋 Help", style="blue", border_style="bright_cyan"))
+
+    def _display_conf_info(self):
+        from pathlib import Path
+        from rich.table import Table
+
+        # Keep visual style aligned with main banner output.
+        self.console.print("[bold bright_cyan]⚙ System Configuration[/bold bright_cyan]")
+
+        info_table = Table(show_header=False, box=None, padding=(0, 2))
+        info_table.add_column("Icon", style="bright_yellow", justify="left")
+        info_table.add_column("Component", style="bold bright_green")
+        info_table.add_column("Details", style="bright_white")
+        info_table.add_column("Status", justify="right")
+
+        # 1. Configuration
+        try:
+            from .core.config import get_config
+            config = get_config()
+            source_type, source_path = config.get_config_source(".env")
+            # Keep source selection aligned with load_config_with_env:
+            # local .env has higher priority; otherwise use global aworld.json.
+            config_path = source_path if (source_type == "local" and source_path) else config.get_config_path()
+            config_status = "[bold bright_green]ONLINE[/bold bright_green]"
+            config_loc = f"[dim]{config_path}[/dim]"
+        except Exception as e:
+            config_status = "[bold red]ERROR[/bold red]"
+            config_loc = f"[dim red]Error: {e}[/dim red]"
+        info_table.add_row("⚡", "Config", config_loc, )
+
+        # 2. Memory
+        try:
+            from aworld.memory.main import _default_file_memory_store
+            memory_store = _default_file_memory_store()
+            memory_location = getattr(memory_store, 'memory_root', 'Unknown')
+            memory_status = "[bold bright_green]ACTIVE[/bold bright_green]"
+            memory_loc = f"[dim]{memory_location}[/dim]"
+        except Exception as e:
+            memory_status = "[bold red]ERROR[/bold red]"
+            memory_loc = f"[dim red]Error: {e}[/dim red]"
+        info_table.add_row("💾", "Memory", memory_loc, )
+
+        # 3. Skills
+        try:
+            from .core.skill_registry import get_skill_registry
+            registry = get_skill_registry()
+            skills_count = len(registry.get_all_skills())
+            skills_loc = f"[dim]{[str(p) for p in get_user_skills_paths()]}[/dim]"
+            skills_status = f"[bold bright_green]{skills_count} LOADED[/bold bright_green]"
+        except Exception as e:
+            skills_status = "[bold red]ERROR[/bold red]"
+            skills_loc = f"[dim red]Error: {e}[/dim red]"
+        info_table.add_row("🎯", "Skills", skills_loc, )
+
+        # 4. Agents
+        try:
+            import os
+            agents_loc = os.path.expanduser(os.environ.get('AGENTS_PATH', '~/.aworld/agents'))
+            agents_status = (
+                "[bold bright_green]READY[/bold bright_green]"
+                if Path(agents_loc).exists()
+                else "[bold yellow]MISSING[/bold yellow]"
+            )
+            agents_loc_styled = f"[dim]{agents_loc}[/dim]"
+        except Exception as e:
+            agents_status = "[bold red]ERROR[/bold red]"
+            agents_loc_styled = f"[dim red]Error: {e}[/dim red]"
+        info_table.add_row("🤖", "Agents", agents_loc_styled, )
+
+        self.console.print(info_table)
+        self.console.print()
+
     async def _esc_key_listener(self):
         """
         Background listener for Esc key to interrupt currently executing tasks.
@@ -765,7 +846,7 @@ class AWorldCLI:
         session_id_info = ""
         if executor_instance and hasattr(executor_instance, 'session_id'):
             session_id_info = f"\nCurrent session: [dim]{executor_instance.session_id}[/dim]"
-        
+        self.console.print(f"Starting chat with [bold]{agent_name}[/bold]. Type /help for available commands.")
         # Get agent configuration info (PTC, MCP servers, and Skills)
         config_info = ""
         if available_agents:
@@ -823,9 +904,9 @@ class AWorldCLI:
             f"Type '/skills' to list all available skills.\n"
             f"Type '/agents' to list all available agents.\n"
             f"Type '/cost' for current session, '/cost -all' for global history.\n"
+            f"Type '/compact' to run context compression.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
-        self.console.print(Panel(help_text, style="blue"))
 
         # Check if we're in a real terminal (not IDE debugger or redirected input)
         is_terminal = sys.stdin.isatty()
@@ -838,7 +919,7 @@ class AWorldCLI:
             # 用整行前缀匹配：/ski → /skills、/age → /agents；meta_dict 在补全菜单中显示描述（命令左、描述右）
             slash_cmds = [
                 "/agents", "/skills", "/new", "/restore", "/latest",
-                "/exit", "/quit", "/switch", "/cost", "/cost -all",
+                "/exit", "/quit", "/switch", "/cost", "/cost -all", "/compact",
             ]
             switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
             all_words = slash_cmds + switch_with_agents + ["exit", "quit"]
@@ -853,6 +934,7 @@ class AWorldCLI:
                 "/switch": "Switch to another agent",
                 "/cost": "View query history (current session)",
                 "/cost -all": "View global history (all sessions)",
+                "/compact": "Run context compression",
                 "exit": "Exit chat",
                 "quit": "Exit chat",
             }
@@ -892,11 +974,16 @@ class AWorldCLI:
                 # Skip empty input (user just pressed Enter)
                 if not user_input:
                     continue
-                
+
                 # Handle explicit exit commands
                 if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
                     self.console.print("[dim]Bye[/dim]")
                     return False
+
+                # Handle help command - show system information
+                if user_input.lower() in ("/help", "help"):
+                    self._display_system_info(help_text)
+                    continue
 
                 # Handle new session command
                 if user_input.lower() in ("/new", "new"):
@@ -1013,18 +1100,68 @@ class AWorldCLI:
                         show_all = "-all" in cost_input
                         
                         if show_all:
-                            self.console.print(history.format_history_display(session_id=None))
+                            self.console.print(history.format_cost_display(session_id=None))
                         else:
                             current_session_id = None
                             if executor_instance and hasattr(executor_instance, 'session_id'):
                                 current_session_id = executor_instance.session_id
                             if current_session_id:
-                                self.console.print(history.format_history_display(session_id=current_session_id))
+                                self.console.print(history.format_cost_display(session_id=current_session_id))
                             else:
                                 self.console.print("[yellow]No current session. Use /cost -all for global history.[/yellow]")
                         
                     except Exception as e:
                         self.console.print(f"[red]Error displaying cost: {e}[/red]")
+                        import traceback
+                        traceback.print_exc()
+                    continue
+
+                # Handle compact command (context compression)
+                if user_input.lower() in ("/compact", "compact"):
+                    try:
+                        from .core.context import run_context_optimization
+
+                        if not executor_instance:
+                            self.console.print("[yellow]⚠️ No executor instance available for compression.[/yellow]")
+                            continue
+
+                        # Get session_id from executor
+                        session_id = getattr(executor_instance, 'session_id', None)
+                        if not session_id:
+                            self.console.print("[yellow]⚠️ No session ID available for compression.[/yellow]")
+                            continue
+
+                        self.console.print("[dim]Running context compression...[/dim]")
+
+                        # Get agent name from executor or swarm
+                        agent_id = agent_name
+                        if hasattr(executor_instance, 'swarm') and executor_instance.swarm:
+                            swarm = executor_instance.swarm
+                            if hasattr(swarm, 'agent_graph') and swarm.agent_graph:
+                                agents = swarm.agent_graph.agents
+                                if agents:
+                                    # Get first agent name
+                                    agent_id = list(agents.keys())[0] if agents.keys() else agent_name
+
+                        # Run compression directly with session_id (no need to construct context)
+                        ok, tokens_before, tokens_after, msg, compressed_content = await run_context_optimization(
+                            agent_id=agent_id,
+                            session_id=session_id
+                        )
+
+                        if ok:
+                            ratio = ((tokens_before - tokens_after) / tokens_before) * 100 if tokens_before > 0 else 0
+                            self.console.print(
+                                f"[dim]Context compressed: {tokens_before:,} → {tokens_after:,} tokens ({ratio:.1f}% reduction)[/dim]"
+                            )
+                            # Display compressed content in gray
+                            if compressed_content:
+                                self.console.print(f"[dim]{compressed_content}[/dim]")
+                        else:
+                            self.console.print(f"[yellow]⚠️ {msg}[/yellow]")
+
+                    except Exception as e:
+                        self.console.print(f"[red]Error running compression: {e}[/red]")
                         import traceback
                         traceback.print_exc()
                     continue

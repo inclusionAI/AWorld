@@ -16,6 +16,7 @@ from aworld.core.context.amni import AgentContextConfig
 from aworld.core.context.amni.config import get_default_config, ContextEnvConfig
 from aworld.experimental.cast.tools import CAST_ANALYSIS, CAST_CODER
 from aworld.logs.util import logger
+from aworld_cli.core.context_tool import CONTEXT_TOOL
 from .developer.developer import build_developer_swarm
 from .evaluator.evaluator import build_evaluator_swarm
 from .video_creator.video_creator import build_video_creator_swarm
@@ -239,7 +240,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
                 }
             }
         },
-        tool_names=['CAST_SEARCH']
+        tool_names=[CONTEXT_TOOL, 'CAST_SEARCH']
     )
 
     # Directly instantiate developer, evaluator, and video_creator as sub-agents

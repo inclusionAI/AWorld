@@ -6,6 +6,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ModelConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation, ActionModel
+from aworld.core.context.amni.config import get_default_config, AgentContextConfig, ContextEnvConfig
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.runners.hook.hook_factory import HookFactory
@@ -13,7 +14,6 @@ from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
 from aworld.sandbox import Sandbox
 from aworld_cli.core import agent
 from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
-
 from .mcp_config import mcp_config
 
 
@@ -53,13 +53,25 @@ class MultiTaskEvaluatorAgent(Agent):
         """
         return await super().async_policy(observation, info, message, **kwargs)
 
+def build_context_config(debug_mode):
+    config = get_default_config()
+    config.debug_mode = debug_mode
+    config.agent_config = AgentContextConfig(
+        enable_system_prompt_augment=True,
+        neuron_names=["skills"],
+    )
+    config.env_config = ContextEnvConfig()
+    return config
 
 @agent(
     name="evaluator",
     desc="""A versatile intelligent assistant for evaluation, when to use:
 - Evaluation: Analyze the app/code/html/website's performance, user experience, and so on.
 - Improvement: Present professional suggestions for the app/code/html/website improvement.
-"""
+""",
+    context_config=build_context_config(
+        debug_mode=True,
+    ),
 )
 def build_evaluator_swarm():
     """Build and configure the multi-task evaluator agent swarm."""

@@ -241,7 +241,8 @@ def _create_memory_store() -> MemoryStore:
     return InMemoryMemoryStore()
 
 
-def init_middlewares(init_memory: bool = True, init_retriever: bool = True) -> None:
+def init_middlewares(init_memory: bool = True, init_retriever: bool = True,
+                     custom_memory_store: MemoryStore = None) -> None:
     """
     Initialize Amni middlewares.
 
@@ -252,7 +253,7 @@ def init_middlewares(init_memory: bool = True, init_retriever: bool = True) -> N
     # 1. Initialize memory
     if init_memory:
         MemoryFactory.init(
-            custom_memory_store=_create_memory_store(),
+            custom_memory_store=custom_memory_store or _create_memory_store(),
             config=build_memory_config()
         )
 
