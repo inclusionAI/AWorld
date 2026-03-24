@@ -6,7 +6,7 @@ Monitors memory files for changes and triggers synchronization.
 import time
 import logging
 from pathlib import Path
-from typing import Callable, Set, Optional
+from typing import Callable, Set, Optional, List
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler, FileSystemEvent
 
