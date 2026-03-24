@@ -1100,13 +1100,13 @@ class AWorldCLI:
                         show_all = "-all" in cost_input
                         
                         if show_all:
-                            self.console.print(history.format_history_display(session_id=None))
+                            self.console.print(history.format_cost_display(session_id=None))
                         else:
                             current_session_id = None
                             if executor_instance and hasattr(executor_instance, 'session_id'):
                                 current_session_id = executor_instance.session_id
                             if current_session_id:
-                                self.console.print(history.format_history_display(session_id=current_session_id))
+                                self.console.print(history.format_cost_display(session_id=current_session_id))
                             else:
                                 self.console.print("[yellow]No current session. Use /cost -all for global history.[/yellow]")
                         
