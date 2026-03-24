@@ -25,6 +25,7 @@ from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
 from aworld.core.task import Task
 from aworld.logs.util import logger
+from aworld.memory.main import _default_file_memory_store
 from aworld.runner import Runners
 from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
@@ -435,10 +436,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 >>> # With images
                 >>> response = await executor.chat(("Analyze this", ["data:image/jpeg;base64,..."]))
             """
-            # 0. Init middlewares (logging is already set up in base __init__)
-            load_dotenv()
-            init_middlewares()
-            
             # 1. Ensure console is set - use global console if not set
             if not self.console:
                 from .._globals import console as global_console
@@ -537,11 +534,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             history = JSONLHistory(str(history_path), session_id=self.session_id)
                                             duration_sec = elapsed_sec if elapsed_sec is not None else 0
                                             model_name = stats.get("model_name") or stats.get("agent_name", "unknown")
+                                            agent_name = stats.get("agent_name") or "unknown"
                                             token_stats = {
                                                 "input_tokens": stats.get("input_tokens") or 0,
                                                 "output_tokens": stats.get("output_tokens") or 0,
                                                 "total_tokens": (stats.get("input_tokens") or 0) + (stats.get("output_tokens") or 0),
                                                 "model_name": model_name,
+                                                "agent_name": agent_name,
+                                                "context_window_tokens": stats.get("input_tokens") or 0,
                                                 "duration_seconds": duration_sec,
                                             }
                                             history.store_string(task_content, token_stats=token_stats, aggregate_with_previous=saved_any_round)
@@ -633,11 +633,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                 history = JSONLHistory(str(history_path), session_id=self.session_id)
                                                 duration_sec = elapsed_sec if elapsed_sec is not None else 0
                                                 model_name = stats.get("model_name") or stats.get("agent_name", "unknown")
+                                                agent_name = stats.get("agent_name") or "unknown"
                                                 token_stats = {
                                                     "input_tokens": stats.get("input_tokens") or 0,
                                                     "output_tokens": stats.get("output_tokens") or 0,
                                                     "total_tokens": (stats.get("input_tokens") or 0) + (stats.get("output_tokens") or 0),
                                                     "model_name": model_name,
+                                                    "agent_name": agent_name,
+                                                    "context_window_tokens": stats.get("input_tokens") or 0,
                                                     "duration_seconds": duration_sec,
                                                 }
                                                 history.store_string(task_content, token_stats=token_stats, aggregate_with_previous=saved_any_round)
@@ -775,7 +778,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     model_name = meta.get("model_name")
                                     # 🔧 FIX: Update token stats and log the update
                                     if out_tok is not None or inp_tok is not None or tc_count is not None:
-                                        logger.info(f"📊 Updating token stats - agent: {agent_name}, model: {model_name}, input: {inp_tok}, output: {out_tok}, tool_calls: {tc_count}")
+                                        logger.debug(f"📊 Updating token stats - agent: {agent_name}, model: {model_name}, input: {inp_tok}, output: {out_tok}, tool_calls: {tc_count}")
                                         stream_token_stats.update(
                                             agent_id, agent_name,
                                             out_tok if out_tok is not None else 0,
@@ -790,9 +793,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             content=ctrl.buffer.accumulated_content if ctrl.buffer.accumulated_content else None,
                                             model_name=model_name,
                                         )
-                                        logger.info(f"📊 Token stats updated successfully - current stats: {stream_token_stats.get_current_stats()}")
+                                        logger.debug(f"📊 Token stats updated successfully - current stats: {stream_token_stats.get_current_stats()}")
                                     else:
-                                        logger.warning(f"📊 No token data to update - out_tok: {out_tok}, inp_tok: {inp_tok}, tc_count: {tc_count}")
+                                        logger.debug(f"📊 No token data to update - out_tok: {out_tok}, inp_tok: {inp_tok}, tc_count: {tc_count}")
                                     # When STREAM=1: buffer content; Live display is refreshed at fixed interval
                                     if stream_on and self.console and (ctrl.buffer.has_content() or ctrl.buffer.has_tool_calls() or ctrl.buffer.has_tool_results() or stream_token_stats.get_current_stats()):
                                         ctrl.ensure_live_running()
@@ -966,15 +969,22 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 logger.warning(f"💾 Failed to extract stats from last_message_output: {extract_error}")
                         
                         # Prepare token_stats for JSONLHistory.store_string()
+                        # Stats by model_name and by agent_name; each agent records context_window_tokens
                         token_stats = None
                         if stats:
                             duration_seconds = time.time() - chat_start_time
-                            model_name = stats.get("model_name") or stats.get("agent_name", "unknown")
+                            input_tokens = stats.get("input_tokens") or 0
+                            output_tokens = stats.get("output_tokens") or 0
+                            total_tokens = input_tokens + output_tokens
+                            model_name = stats.get("model_name") or "unknown"
+                            agent_name = stats.get("agent_name") or "unknown"
                             token_stats = {
-                                "input_tokens": stats.get("input_tokens") or 0,
-                                "output_tokens": stats.get("output_tokens") or 0,
-                                "total_tokens": (stats.get("input_tokens") or 0) + (stats.get("output_tokens") or 0),
+                                "input_tokens": input_tokens,
+                                "output_tokens": output_tokens,
+                                "total_tokens": total_tokens,
                                 "model_name": model_name,
+                                "agent_name": agent_name,
+                                "context_window_tokens": input_tokens,
                                 "duration_seconds": duration_seconds,
                             }
                             logger.info(f"💾 Prepared token_stats for history: {token_stats}")

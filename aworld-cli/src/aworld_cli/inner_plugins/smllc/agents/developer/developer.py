@@ -6,6 +6,7 @@ from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig, ModelConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation, ActionModel
+from aworld.core.context.amni.config import get_default_config, AgentContextConfig, ContextEnvConfig
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.runners.hook.hook_factory import HookFactory
@@ -43,10 +44,22 @@ class DeveloperAgent(Agent):
                            **kwargs) -> List[ActionModel]:
         return await super().async_policy(observation, info, message, **kwargs)
 
+def build_context_config(debug_mode):
+    config = get_default_config()
+    config.debug_mode = debug_mode
+    config.agent_config = AgentContextConfig(
+        enable_system_prompt_augment=True,
+        neuron_names=["skills"],
+    )
+    config.env_config = ContextEnvConfig()
+    return config
 
 @agent(
     name="developer",
     desc="Analyzes and edits code, HTML, and other files for development work; can develop apps; supports code refactoring and optimization.",
+    context_config=build_context_config(
+        debug_mode=True,
+    ),
 )
 def build_developer_swarm():
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root

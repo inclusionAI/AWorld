@@ -3,13 +3,15 @@
 import abc
 import asyncio
 import json
+import os
 import traceback
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 
 from aworld.config import SummaryPromptConfig
 from aworld.core.memory import MemoryBase, MemoryItem, MemoryStore, MemoryConfig, AgentMemoryConfig
 from aworld.logs.util import logger
+from aworld.memory.db import SQLiteMemoryStore
 from aworld.memory.embeddings.base import EmbeddingsResult, EmbeddingsMetadata
 from aworld.memory.embeddings.factory import EmbedderFactory
 from aworld.memory.longterm import DefaultMemoryOrchestrator
@@ -21,6 +23,18 @@ from aworld.models.llm import acall_llm_model
 from aworld.models.utils import num_tokens_from_messages
 
 MEMORY_HOLDER = {}
+
+
+def _default_file_memory_store() -> "MemoryStore":
+    # db_path = os.getenv("DB_PATH", "./data/amni_context.db")
+    # return SQLiteMemoryStore(db_path=db_path)
+    """默认使用 FileSystemMemoryStore，路径可通过 AWORLD_MEMORY_ROOT 环境变量配置"""
+    from aworld.memory.db import FileSystemMemoryStore
+    memory_root = os.getenv("AWORLD_MEMORY_ROOT", "~/.aworld/memory")
+    # Expand "~" and any "$VARS" in the configured root path.
+    memory_root = os.path.expanduser(os.path.expandvars(memory_root))
+    return FileSystemMemoryStore(memory_root=memory_root)
+
 AWORLD_MEMORY_EXTRACT_NEW_SUMMARY = """
 You are presented with a user task, a conversion that may contain the answer, and a previous conversation summary. 
 Please read the conversation carefully and extract new information from the conversation that helps to solve user task
@@ -165,6 +179,8 @@ class InMemoryMemoryStore(MemoryStore):
             return exists.histories
         return None
 
+def get_memory() -> "MemoryBase":
+    return MemoryFactory.instance()
 
 class MemoryFactory:
 
@@ -177,7 +193,7 @@ class MemoryFactory:
             )
         else:
             MEMORY_HOLDER["instance"] = AworldMemory(
-                memory_store=InMemoryMemoryStore(),
+                memory_store=_default_file_memory_store(),
                 config=config
             )
         logger.info(f"Memory init success")
@@ -185,19 +201,20 @@ class MemoryFactory:
     @classmethod
     def instance(cls) -> "MemoryBase":
         """
-        Get the in-memory memory instance.
+        Get the memory instance. 默认使用 FileSystemMemoryStore 持久化存储。
         Returns:
-            MemoryBase: In-memory memory instance.
+            MemoryBase: Memory instance.
         """
         if MEMORY_HOLDER.get("instance"):
             logger.info(f"instance use cached memory instance")
             return MEMORY_HOLDER["instance"]
         MEMORY_HOLDER["instance"] = MemoryFactory.from_config(
             config=MemoryConfig(provider="aworld"),
-            memory_store=InMemoryMemoryStore()
+            memory_store=_default_file_memory_store()
         )
         logger.info(f"instance use new memory instance")
         return MEMORY_HOLDER["instance"]
+
 
     @classmethod
     def from_config(cls, config: MemoryConfig, memory_store: MemoryStore = None) -> "MemoryBase":
@@ -213,7 +230,7 @@ class MemoryFactory:
         if config.provider == "aworld":
             logger.info("🧠 [MEMORY]setup memory store: aworld")
             return AworldMemory(
-                memory_store=memory_store or InMemoryMemoryStore(),
+                memory_store=memory_store or _default_file_memory_store(),
                 config=config
             )
         elif config.provider == "mem0":
@@ -593,16 +610,36 @@ class AworldMemory(Memory):
         # obtain assistant un summary messages
 
         # get init messages
-        agent_task_total_message = self.get_all(
-            filters={
-                "agent_id": memory_item.agent_id,
-                "session_id": memory_item.session_id,
-                "task_id": memory_item.task_id,
-                "memory_type": ["init", "message", "summary"]
-            }
-        )
-        to_be_summary_items = [item for item in agent_task_total_message if
-                               item.memory_type in ["message", "summary"] and not item.has_summary]
+        filters: dict[str, Any] = {
+            "agent_id": memory_item.agent_id,
+            "session_id": memory_item.session_id,
+            "memory_type": ["init", "message", "summary"],
+        }
+        # When history_scope is task-level (default), include task_id.
+        # For session-level scope, we intentionally do NOT filter by task_id.
+        if getattr(agent_memory_config, "history_scope", "task") == "task":
+            filters["task_id"] = memory_item.task_id
+
+        agent_task_total_message = self.get_all(filters=filters)
+
+        # Log pre-summary context window information
+        try:
+            pre_ctx_tokens = num_tokens_from_messages(
+                [item.to_openai_message() for item in agent_task_total_message]
+            ) if agent_task_total_message else 0
+            pre_ctx_preview = "\n".join(
+                f"[{itm.metadata.get('role', itm.memory_type)}] {str(itm.content)[:200]}"
+                for itm in agent_task_total_message
+            )
+        except Exception:
+            pre_ctx_tokens = 0
+            pre_ctx_preview = ""
+
+        to_be_summary_items = [
+            item
+            for item in agent_task_total_message
+            if item.memory_type in ["message", "summary"] and not item.has_summary
+        ]
         # filter summary items
         if not agent_memory_config.summary_summaried:
             to_be_summary_items = [item for item in to_be_summary_items if
@@ -610,6 +647,13 @@ class AworldMemory(Memory):
 
         # Filter out incomplete message pairs
         to_be_summary_items = self._filter_incomplete_message_pairs(to_be_summary_items)
+        logger.info(
+            "🧠 [MEMORY:short-term] [Summary] pre-summary context: "
+            f"session_id={memory_item.session_id}, agent_id={memory_item.agent_id}, "
+            f"items={len(agent_task_total_message)}, ctx_tokens={pre_ctx_tokens}\n"
+            f"🧠 [MEMORY:short-term] [Summary] pre-summary content preview:\n{pre_ctx_preview}"
+            f"🧠 [MEMORY:short-term] [Summary] to_be_summary_items: {to_be_summary_items}"
+        )
 
         # Calculate summary_created_time
         start_time = datetime.now().isoformat()
@@ -682,8 +726,12 @@ class AworldMemory(Memory):
                 # Add to memory store
                 self.memory_store.add(summary_memory)
 
-                logger.info(f"🧠 [MEMORY:short-term] [Summary:Combined] [{trigger_reason}]Creating combined summary memory finished: "
-                           f"content is {combined_summary[:100]}")
+                logger.info(
+                    "🧠 [MEMORY:short-term] [Summary:Combined] "
+                    f"[{trigger_reason}] summary created for session_id={memory_item.session_id}, "
+                    f"agent_id={memory_item.agent_id}\n"
+                    f"🧠 [MEMORY:short-term] [Summary:Combined] content preview:\n{combined_summary[:1000]}"
+                )
 
                 # Log summary context length information
                 from aworld.logs.prompt_log import PromptLogger
@@ -718,12 +766,36 @@ class AworldMemory(Memory):
             # Log summary context length information
             from aworld.logs.prompt_log import PromptLogger
             PromptLogger.log_summary_memory(summary_memory, to_be_summary_items, trigger_reason, agent_memory_config)
+            logger.info(
+                "🧠 [MEMORY:short-term] [Summary] "
+                f"[{trigger_reason}] summary created for session_id={memory_item.session_id}, "
+                f"agent_id={memory_item.agent_id}\n"
+                f"🧠 [MEMORY:short-term] [Summary] content preview:\n{summary_content[:1000]}"
+            )
 
         # mark memory item summary flag
         for summary_item in to_be_summary_items:
             summary_item.mark_has_summary()
+            # `memory_store.update()` is synchronous for filesystem store, so don't await.
             self.memory_store.update(summary_item)
-        logger.info(f"🧠 [MEMORY:short-term] [Summary] [{trigger_reason}]Creating summary memory finished")
+
+        # Log post-summary context window information
+        try:
+            post_ctx_tokens = num_tokens_from_messages(
+                [item.to_openai_message() for item in to_be_summary_items]
+            ) if to_be_summary_items else 0
+        except Exception:
+            post_ctx_tokens = 0
+        logger.info(
+            "🧠 [MEMORY:short-term] [Summary] post-summary context: "
+            f"session_id={memory_item.session_id}, agent_id={memory_item.agent_id}, "
+            f"items={len(to_be_summary_items)}, ctx_tokens={post_ctx_tokens}, "
+            f"trigger_reason={trigger_reason}"
+        )
+
+        logger.info(
+            f"🧠 [MEMORY:short-term] [Summary] [{trigger_reason}]Creating summary memory finished"
+        )
 
     async def _generate_typed_summary(self, user_task_items: list[MemoryItem],
                                     existed_summary_items: list[MemorySummary],
@@ -757,18 +829,53 @@ class AworldMemory(Memory):
     def _check_need_summary(self,
                             to_be_summary_items: list[MemoryItem],
                             agent_memory_config: AgentMemoryConfig) -> Tuple[bool, str]:
-        if len(to_be_summary_items) <= 0:
+        """Decide whether to trigger short‑term summary; log detailed decision info."""
+        total_items = len(to_be_summary_items)
+        logger.info(
+            f"🧠 [MEMORY:short-term] [Summary] _check_need_summary: "
+            f"total_items={total_items}, "
+            f"summary_rounds={agent_memory_config.summary_rounds}, "
+            f"summary_context_length={agent_memory_config.summary_context_length}"
+        )
+
+        if total_items <= 0:
+            logger.info("🧠 [MEMORY:short-term] [Summary] skip summary: EMPTY")
             return False, "EMPTY"
-        if isinstance(to_be_summary_items[-1], MemoryAIMessage):
-            if to_be_summary_items[-1].tool_calls and len(to_be_summary_items[-1].tool_calls) > 0:
+
+        last_item = to_be_summary_items[-1]
+        if isinstance(last_item, MemoryAIMessage):
+            has_tool_calls = bool(last_item.tool_calls and len(last_item.tool_calls) > 0)
+            logger.info(
+                f"🧠 [MEMORY:short-term] [Summary] last_item is MemoryAIMessage, "
+                f"has_tool_calls={has_tool_calls}"
+            )
+            if has_tool_calls:
+                logger.info("🧠 [MEMORY:short-term] [Summary] skip summary: last message has tool_calls")
                 return False, "last message has tool_calls"
-        if len(to_be_summary_items) == 0:
+
+        if total_items == 0:
+            logger.info("🧠 [MEMORY:short-term] [Summary] skip summary: items is empty")
             return False, "items is empty"
-        if len(to_be_summary_items) >= agent_memory_config.summary_rounds:
+
+        if total_items >= agent_memory_config.summary_rounds:
+            logger.info(
+                "🧠 [MEMORY:short-term] [Summary] trigger summary: "
+                f"summary_rounds reached (items={total_items})"
+            )
             return True, "summary_rounds"
-        if num_tokens_from_messages([item.to_openai_message() for item in
-                                     to_be_summary_items]) > agent_memory_config.summary_context_length:
+
+        ctx_tokens = num_tokens_from_messages(
+            [item.to_openai_message() for item in to_be_summary_items]
+        )
+        logger.info(
+            "🧠 [MEMORY:short-term] [Summary] context token check: "
+            f"ctx_tokens={ctx_tokens}, threshold={agent_memory_config.summary_context_length}"
+        )
+        if ctx_tokens > agent_memory_config.summary_context_length:
+            logger.info("🧠 [MEMORY:short-term] [Summary] trigger summary: summary_context_length exceeded")
             return True, "summary_context_length"
+
+        logger.info("🧠 [MEMORY:short-term] [Summary] skip summary: unknown reason (no thresholds hit)")
         return False, "unknown"
 
     async def _gen_multi_rounds_summary(self, user_task_items: list[MemoryItem],

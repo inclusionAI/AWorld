@@ -3,9 +3,10 @@ Database implementations for memory storage.
 """
 
 from .sqlite import SQLiteMemoryStore
+from .filesystem import FileSystemMemoryStore
 
 # PostgresMemoryStore and MySQLMemoryStore are optional and require SQLAlchemy
-__all__ = ["SQLiteMemoryStore"]
+__all__ = ["SQLiteMemoryStore", "FileSystemMemoryStore"]
 
 try:
     from .postgres import PostgresMemoryStore

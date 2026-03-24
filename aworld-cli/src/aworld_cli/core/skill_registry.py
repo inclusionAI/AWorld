@@ -9,11 +9,10 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-from aworld.utils.skill_loader import SkillRegistry, DEFAULT_CACHE_DIR, collect_skill_docs
-
 from aworld_cli.core.plugin_manager import get_plugin_skills_dir
 
 from aworld.logs.util import logger
+from aworld.utils.skill_loader import SkillRegistry, DEFAULT_CACHE_DIR, collect_skill_docs
 
 # Global SkillRegistry instance
 _global_registry: Optional[SkillRegistry] = None

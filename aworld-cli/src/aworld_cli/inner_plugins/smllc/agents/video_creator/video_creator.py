@@ -7,6 +7,7 @@ from aworld.agents.video_agent import VideoAgent
 from aworld.config import AgentConfig, ModelConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation, ActionModel
+from aworld.core.context.amni.config import get_default_config, AgentContextConfig, ContextEnvConfig
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.runners.hook.hook_factory import HookFactory
@@ -68,8 +69,8 @@ Cannot process (do NOT delegate to this agent): Document reading/analysis (.pdf,
 
 **Invocation format (MUST follow when calling):**
 - `content`: Required. The video generation prompt (text description of what to create).
-- `info`: Optional JSON string. Use when passing image/video params, e.g.:
-  {"image_url": "<data_path_or_base64_string>", "reference_images": ["<path1>", "<path2>"], "resolution": "720p", "duration": 5, "fps": 24, "output_dir": "./output"}
+- `info`: Required JSON string. Use when passing image/video params, e.g.:
+  {"image_url": "<data_path_or_base64_string>", "reference_images": ["<path1>", "<path2>"], "resolution": "720p", "duration": 5, "fps": 24, "output_dir": "./output", "sound": "on"}
   Supported keys: image_url, reference_images (list of paths/URLs/base64), resolution, duration (must be ≤ 5 seconds), fps, poll, poll_interval, poll_timeout, download_video, output_dir.
 """
 )

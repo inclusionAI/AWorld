@@ -261,7 +261,7 @@ class CAstCoderTool(AsyncTool):
                 raise ValueError("context is not AmniContext")
 
             for action in actions:
-                logger.info(f"CAstPatchTool|do_step: {action}")
+                logger.debug(f"CAstPatchTool|do_step: {action}")
                 action_name = action.action_name
                 action_result = ActionResult(action_name=action_name, tool_name=self.name())
 
@@ -288,7 +288,7 @@ class CAstCoderTool(AsyncTool):
                     }
 
                     if show_details:
-                        logger.info(f"Generated snapshot: {snapshot_path} (version: {resolved_version})")
+                        logger.debug(f"Generated snapshot: {snapshot_path} (version: {resolved_version})")
 
                     action_result.content = json.dumps(result, ensure_ascii=False, default=str)
                     action_result.success = True
@@ -332,7 +332,7 @@ class CAstCoderTool(AsyncTool):
                         }
 
                         if show_details:
-                            logger.info(f"Patch deployed successfully to: {target_dir}")
+                            logger.debug(f"Patch deployed successfully to: {target_dir}")
 
                         action_result.content = json.dumps(result, ensure_ascii=False, default=str)
                         action_result.success = True
@@ -400,7 +400,7 @@ class CAstCoderTool(AsyncTool):
                         }
 
                         if show_details:
-                            logger.info(f"JSON operations successfully deployed to: {target_dir}")
+                            logger.debug(f"JSON operations successfully deployed to: {target_dir}")
 
                         action_result.content = json.dumps(result, ensure_ascii=False, default=str)
                         action_result.success = True
@@ -459,9 +459,9 @@ class CAstCoderTool(AsyncTool):
                             }
 
                             if show_details:
-                                logger.info(f"Search and replace operation successful: {source_dir}")
+                                logger.debug(f"Search and replace operation successful: {source_dir}")
                                 if result.get("modified"):
-                                    logger.info(f"File modified: {result.get('file_path', 'unknown')}")
+                                    logger.debug(f"File modified: {result.get('file_path', 'unknown')}")
 
                             action_result.content = json.dumps(response_result, ensure_ascii=False, default=str)
                             action_result.success = True

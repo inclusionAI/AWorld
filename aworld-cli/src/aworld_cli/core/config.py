@@ -168,8 +168,27 @@ def resolve_limit_tokens_value(global_config: Dict[str, Any]) -> Optional[str]:
         return None
 
 
+def resolve_limit_strategy_value(global_config: Dict[str, Any]) -> str:
+    """
+    Resolve output limit_strategy from config.
+    Returns 'compress' or 'terminate'. Default: 'compress'.
+    When LIMIT_TOKENS exceeded: compress = run context compression and continue;
+    terminate = sys.exit(0).
+    Priority: output.limit_strategy > top-level limit_strategy.
+    """
+    val = (global_config.get('output') or {}).get('limit_strategy')
+    if val is None:
+        val = global_config.get('limit_strategy')
+    if val is None:
+        return 'compress'
+    s = str(val).strip().lower()
+    if s in ('compress', 'terminate'):
+        return s
+    return 'compress'
+
+
 def apply_stream_env(global_config: Dict[str, Any]) -> None:
-    """Apply output/stream config to os.environ: STREAM, NO_TRUNCATE, LIMIT_TOKENS."""
+    """Apply output/stream config to os.environ: STREAM, NO_TRUNCATE, LIMIT_TOKENS, LIMIT_STRATEGY."""
     os.environ['STREAM'] = resolve_stream_value(global_config)
     no_truncate = resolve_no_truncate_value(global_config)
     if no_truncate is not None:
@@ -177,6 +196,7 @@ def apply_stream_env(global_config: Dict[str, Any]) -> None:
     limit_tokens = resolve_limit_tokens_value(global_config)
     if limit_tokens is not None:
         os.environ['LIMIT_TOKENS'] = limit_tokens
+    os.environ['LIMIT_STRATEGY'] = resolve_limit_strategy_value(global_config)
 
 
 def _env_to_config() -> Dict[str, Any]:
@@ -197,6 +217,8 @@ def _env_to_config() -> Dict[str, Any]:
             env_config.setdefault('models', {}).setdefault('default', {})['model'] = value
         elif key == 'LLM_BASE_URL':
             env_config.setdefault('models', {}).setdefault('default', {})['base_url'] = value
+        elif key == 'LLM_PROVIDER':
+            env_config.setdefault('models', {}).setdefault('default', {})['provider'] = value
     return env_config
 
 
@@ -334,14 +356,25 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
     default_cfg = models_config.get('default') or {}
     if not isinstance(default_cfg, dict):
         default_cfg = {}
-    # New format: default has api_key, model, base_url
+    # New format: default has api_key, model, base_url, provider
     if (default_cfg.get('api_key') or '').strip():
         api_key = (default_cfg.get('api_key') or '').strip()
         model_name = (default_cfg.get('model') or '').strip()
         base_url = (default_cfg.get('base_url') or '').strip()
-        os.environ['OPENAI_API_KEY'] = api_key
-        if base_url:
-            os.environ['OPENAI_BASE_URL'] = base_url
+        provider = (default_cfg.get('provider') or 'openai').strip().lower() or 'openai'
+        if provider == 'anthropic':
+            os.environ['ANTHROPIC_API_KEY'] = api_key
+            if base_url:
+                os.environ['ANTHROPIC_BASE_URL'] = base_url
+        elif provider == 'gemini':
+            os.environ['GEMINI_API_KEY'] = api_key
+            if base_url:
+                os.environ['GEMINI_BASE_URL'] = base_url
+        else:
+            os.environ['OPENAI_API_KEY'] = api_key
+            if base_url:
+                os.environ['OPENAI_BASE_URL'] = base_url
+        os.environ['LLM_PROVIDER'] = provider
         os.environ['LLM_API_KEY'] = api_key
         if model_name:
             os.environ['LLM_MODEL_NAME'] = model_name
@@ -372,6 +405,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
                 os.environ['GEMINI_API_KEY'] = api_key
             if not llm_primary_set:
                 os.environ['LLM_API_KEY'] = api_key
+                os.environ['LLM_PROVIDER'] = provider.lower()
                 if model_name:
                     os.environ['LLM_MODEL_NAME'] = model_name
                 if base_url:
@@ -400,6 +434,7 @@ def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
             'stream': os.environ.get('STREAM'),
             'no_truncate': os.environ.get('NO_TRUNCATE'),
             'limit_tokens': os.environ.get('LIMIT_TOKENS'),
+            'limit_strategy': os.environ.get('LIMIT_STRATEGY', 'compress'),
         },
     })
     # Apply DIFFUSION_* from LLM_* when not set in .env
