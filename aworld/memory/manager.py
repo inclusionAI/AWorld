@@ -250,6 +250,13 @@ class MemoryManager:
     def inject_prompt(self, system_prompt: str, available_tools: Set[str]) -> str:
         """Inject memory section into system prompt."""
         return self.prompt_injector.inject_into_prompt(system_prompt, available_tools)
+    
+    def get_memory_prompt(self, available_tools: Optional[Set[str]] = None) -> str:
+        """Get memory prompt section as string."""
+        if available_tools is None:
+            available_tools = {"memory_search", "memory_get"}
+        lines = self.prompt_injector.build_memory_section(available_tools)
+        return "\n".join(lines)
 
     async def __aenter__(self):
         await self.start()
