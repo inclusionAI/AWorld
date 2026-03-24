@@ -392,12 +392,16 @@ class LLMModel:
         # Call provider's acompletion method directly
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
+        # `context` is optional in some call sites (e.g. background summary). We should
+        # still be able to call the model and rely on trace/log auto-resolution.
+        context_task_id = context.task_id if context else None
+        context_trace_id = context.trace_id if context else None
         log_params = {
-            "task_id": context.task_id,
+            "task_id": context_task_id,
             "request_id": request_id,
         }
         kwargs["llm_request_id"] = request_id
-        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context.trace_id)
+        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
         try:
             resp = await self.provider.acompletion(
                 messages=messages,
@@ -413,7 +417,7 @@ class LLMModel:
                 resp = await self.llm_response_parser.parse(resp, **response_parse_args)
 
             log_params["time_cost"] = round(time.time() - start_ms, 3)
-            log_llm_record("OUTPUT", self.provider.model_name, resp, log_params, context.trace_id)
+            log_llm_record("OUTPUT", self.provider.model_name, resp, log_params, context_trace_id)
             return resp
         except AttributeError as e:
             logger.error(f"Provider {self.provider_name} does not support acompletion: {e}")
@@ -449,12 +453,14 @@ class LLMModel:
         # Call provider's completion method directly
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
+        context_task_id = context.task_id if context else None
+        context_trace_id = context.trace_id if context else None
         log_params = {
-            "task_id": context.task_id,
+            "task_id": context_task_id,
             "request_id": request_id,
         }
         kwargs["llm_request_id"] = request_id
-        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context.trace_id)
+        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
         resp = self.provider.completion(
             messages=messages,
             temperature=temperature,
@@ -468,7 +474,7 @@ class LLMModel:
             resp = sync_exec(self.llm_response_parser.parse, resp, **response_parse_args)
 
         log_params["time_cost"] = round(time.time() - start_ms, 3)
-        log_llm_record("OUTPUT", self.provider.model_name, resp, log_params, context.trace_id)
+        log_llm_record("OUTPUT", self.provider.model_name, resp, log_params, context_trace_id)
         return resp
 
     def stream_completion(self,
@@ -525,12 +531,14 @@ class LLMModel:
         # Call provider's astream_completion method directly
         start_ms = time.time()
         request_id = LLMModel._generate_llm_request_id()
+        context_task_id = context.task_id if context else None
+        context_trace_id = context.trace_id if context else None
         log_params = {
-            "task_id": context.task_id,
+            "task_id": context_task_id,
             "request_id": request_id,
         }
         kwargs["llm_request_id"] = request_id
-        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context.trace_id)
+        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
         async for chunk in self.provider.astream_completion(
                 messages=messages,
                 temperature=temperature,
@@ -543,7 +551,7 @@ class LLMModel:
                 response_parse_args = kwargs.get("response_parse_args") or {}
                 chunk = await self.llm_response_parser.parse_chunk(chunk, **response_parse_args)
             log_params["time_cost"] = round(time.time() - start_ms, 3)
-            log_llm_record("CHUNK", self.provider.model_name, chunk, log_params, context.trace_id)
+            log_llm_record("CHUNK", self.provider.model_name, chunk, log_params, context_trace_id)
             start_ms = time.time()
             yield chunk
 

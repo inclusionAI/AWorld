@@ -55,7 +55,7 @@ class CAstAnalysisAction(ToolAction):
         - L1 logic (project structure, call/dependency graph, heatmap)
         - L2 skeleton (signatures and docstrings only, no body)
         - L3 implementation (full source on-demand).
-        Returns logic_layer only (skeleton_layer, implementation_layer, trajectory_mapping are not returned).
+        Returns logic_layer only (skeleton_layer, implementation_layer, trajectory_mapping are not returned, use search_ast to search for specific symbols or line ranges).
         """
     )
 
@@ -207,7 +207,7 @@ class CAstAnalysisTool(AsyncTool):
                 logger.info(f"   Language distribution:")
                 for lang, count in sorted(stats["language_distribution"].items(), key=lambda x: x[1], reverse=True):
                     percentage = count / stats["total_files"] * 100
-                    logger.info(f"     • {lang}: {count} files ({percentage:.1f}%)")
+                    logger.debug(f"     • {lang}: {count} files ({percentage:.1f}%)")
 
             # Show major symbol types
             if stats["symbol_type_distribution"]:
@@ -216,7 +216,7 @@ class CAstAnalysisTool(AsyncTool):
                                    :5]
                 for symbol_type, count in top_symbol_types:
                     percentage = count / stats["total_symbols"] * 100 if stats["total_symbols"] > 0 else 0
-                    logger.info(f"     • {symbol_type}: {count} ({percentage:.1f}%)")
+                    logger.debug(f"     • {symbol_type}: {count} ({percentage:.1f}%)")
 
             # Show file size distribution
             if any(stats["file_size_distribution"].values()):
@@ -264,7 +264,7 @@ class CAstAnalysisTool(AsyncTool):
                 raise ValueError("context is not AmniContext")
 
             for action in actions:
-                logger.info(f"CAstAnalysisTool|do_step: {action}")
+                logger.debug(f"CAstAnalysisTool|do_step: {action}")
                 action_name = action.action_name
                 action_result = ActionResult(action_name=action_name, tool_name=self.name())
 
@@ -373,7 +373,7 @@ class CAstAnalysisTool(AsyncTool):
                         logger.info("=" * 60)
                         logger.info(f"💭 User query: {user_query}")
                         for value in context.values():
-                            logger.info(f"📏 Context length: {len(value) if value else 0} characters")
+                            logger.debug(f"📏 Context length: {len(value) if value else 0} characters")
 
                 except Exception as e:
                     error_msg = f"Recall failed: {str(e)} {traceback.format_exc()}"

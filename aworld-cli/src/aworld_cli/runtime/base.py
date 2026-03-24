@@ -50,7 +50,7 @@ class BaseCliRuntime:
     async def start(self) -> None:
         """Start the CLI interaction loop."""
         self._running = True
-        self.cli.display_welcome()
+        # self.cli.display_welcome()
         
         # Load agents (implemented by subclasses)
         agents = await self._load_agents()

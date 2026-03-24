@@ -61,8 +61,8 @@ class CastSearchAction(ToolAction):
             "path": ParamInfo(
                 name="path",
                 type="string",
-                required=False,
-                desc="Search path, uses root path if None"
+                required=True,
+                desc="Search path, it's a required parameter"
             ),
             "case_sensitive": ParamInfo(
                 name="case_sensitive",
@@ -97,6 +97,7 @@ class CastSearchAction(ToolAction):
             )
         },
         desc=(
+            "Before calling grep_search, timeout must be explicitly set. "
             "Execute content search using regular expression pattern in the local filesystem. "
             "Note: grep_search cannot perform networked/web search; it only searches within local files."
         )
@@ -114,8 +115,8 @@ class CastSearchAction(ToolAction):
             "path": ParamInfo(
                 name="path",
                 type="string",
-                required=False,
-                desc="Search path, uses root path if None"
+                required=True,
+                desc="Search path, it's a required parameter"
             ),
             "max_depth": ParamInfo(
                 name="max_depth",
@@ -158,7 +159,7 @@ class CastSearchAction(ToolAction):
                 name="file_path",
                 type="string",
                 required=True,
-                desc="File path to read"
+                desc="File path to read, it's a required parameter"
             ),
             "limit": ParamInfo(
                 name="limit",
@@ -179,7 +180,7 @@ class CastSearchAction(ToolAction):
                 desc="Whether to show detailed read information (default: True)"
             )
         },
-        desc="Read file content"
+        desc="Read file content, read_file /path/to/file e.g."
     )
 
 
@@ -256,7 +257,7 @@ class CastSearchTool(AsyncTool):
                 raise ValueError("context is not AmniContext")
 
             for action in actions:
-                logger.info(f"CastSearchTool|do_step: {action}")
+                logger.debug(f"CastSearchTool|do_step: {action}")
                 action_name = action.action_name
                 action_result = ActionResult(action_name=action_name, tool_name=self.name())
 
@@ -295,7 +296,7 @@ class CastSearchTool(AsyncTool):
                         }
 
                         if show_details:
-                            logger.info(
+                            logger.debug(
                                 f"Grep search completed: pattern='{pattern}', found {result.total_count} results")
 
                         action_result.content = json.dumps(result_data, ensure_ascii=False, default=str)
@@ -352,7 +353,7 @@ class CastSearchTool(AsyncTool):
                         }
 
                         if show_details:
-                            logger.info(f"Glob search completed: pattern='{pattern}', found {result.total_count} files")
+                            logger.debug(f"Glob search completed: pattern='{pattern}', found {result.total_count} files")
 
                         action_result.content = json.dumps(result_data, ensure_ascii=False, default=str)
                         action_result.success = True
@@ -398,7 +399,7 @@ class CastSearchTool(AsyncTool):
                                 # f"[File: {file_path}] ({mime})\n{result.output}"
                             )
                             if show_details:
-                                logger.info(f"Multimedia file read: {file_path} ({mime})")
+                                logger.debug(f"Multimedia file read: {file_path} ({mime})")
                         else:
                             result_data = {
                                 "search_type": "read",
@@ -410,7 +411,7 @@ class CastSearchTool(AsyncTool):
                                 "output": result.output
                             }
                             if show_details:
-                                logger.info(f"File read completed: {file_path}, read {len(result.matches)} lines")
+                                logger.debug(f"File read completed: {file_path}, read {len(result.matches)} lines")
                             action_result.content = json.dumps(result_data, ensure_ascii=False, default=str)
                         action_result.success = True
 

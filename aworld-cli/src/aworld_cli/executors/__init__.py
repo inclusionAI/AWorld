@@ -46,6 +46,7 @@ __all__.extend([
     "PreRunTaskHook",
     "PostRunTaskHook",
     "OnTaskErrorHook",
-    "FileParseHook"
+    "FileParseHook",
+    "PreLlmCostHook"
 ])
 
