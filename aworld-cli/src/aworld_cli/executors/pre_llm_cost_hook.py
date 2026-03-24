@@ -117,23 +117,22 @@ class PreLlmCostHook(PreLLMCallHook):
                 # strategy == "compress": run context optimization and continue
                 try:
                     from ..core.context import run_context_optimization
+                    if console:
+                        console.print(
+                            f"[dim]Context limit exceeded, compressing: {total:,} → <= {limit:,} tokens...[/dim]"
+                        )
                     ok, tokens_before, tokens_after, msg, compressed_content = await run_context_optimization(message.sender, context)
                     if ok:
                         ratio = ((tokens_before - tokens_after) / tokens_before) * 100 if tokens_before > 0 else 0
                         if console:
                             console.print(
-                                f"[bold green]Context Optimization Complete[/bold green]"
-                                f"\nOriginal: {tokens_before:,} tokens"
-                                f"\nCurrent:  {tokens_after:,} tokens"
-                                f"\nReduced:  {tokens_before - tokens_after:,} tokens ({ratio:.1f}%)"
-                                f"\n[dim]Agent {agent_name or 'session'} continuing with optimized context.[/dim]"
+                                f"[dim]Context compressed: {tokens_before:,} → {tokens_after:,} tokens ({ratio:.1f}% reduction)[/dim]"
                             )
+                            if compressed_content:
+                                console.print(f"[dim]{compressed_content}[/dim]")
                     else:
                         if console:
-                            console.print(
-                                f"[yellow]⚠️ Agent {agent_name or 'session'} ctx ({total:,}) exceeds limit ({limit:,}).[/yellow]\n"
-                                f"[dim]Context compression skipped: {msg}[/dim]"
-                            )
+                            console.print(f"[yellow]⚠️ {msg}[/yellow]")
                 except Exception as comp_err:
                     logger.warning(
                         f"PreLlmCostHook compression failed: {comp_err}. Continuing."
