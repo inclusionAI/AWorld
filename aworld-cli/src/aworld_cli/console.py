@@ -905,6 +905,7 @@ class AWorldCLI:
             f"Type '/agents' to list all available agents.\n"
             f"Type '/cost' for current session, '/cost -all' for global history.\n"
             f"Type '/compact' to run context compression.\n"
+            f"Type '/memory' to edit project context, '/memory view' to view, '/memory status' for status.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
 
@@ -920,6 +921,7 @@ class AWorldCLI:
             slash_cmds = [
                 "/agents", "/skills", "/new", "/restore", "/latest",
                 "/exit", "/quit", "/switch", "/cost", "/cost -all", "/compact",
+                "/memory", "/memory view", "/memory reload", "/memory status",
             ]
             switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
             all_words = slash_cmds + switch_with_agents + ["exit", "quit"]
@@ -935,6 +937,10 @@ class AWorldCLI:
                 "/cost": "View query history (current session)",
                 "/cost -all": "View global history (all sessions)",
                 "/compact": "Run context compression",
+                "/memory": "Edit AWORLD.md project context",
+                "/memory view": "View current memory content",
+                "/memory reload": "Reload memory from file",
+                "/memory status": "Show memory system status",
                 "exit": "Exit chat",
                 "quit": "Exit chat",
             }
@@ -1162,6 +1168,140 @@ class AWorldCLI:
 
                     except Exception as e:
                         self.console.print(f"[red]Error running compression: {e}[/red]")
+                        import traceback
+                        traceback.print_exc()
+                    continue
+
+                # Handle memory command
+                memory_input = user_input.strip().lower()
+                if memory_input.startswith(("/memory", "memory")):
+                    try:
+                        parts = user_input.split(maxsplit=1)
+                        subcommand = parts[1] if len(parts) > 1 else ""
+                        
+                        # Import required modules
+                        from pathlib import Path
+                        import subprocess
+                        
+                        # Find AWORLD.md file
+                        def find_aworld_file():
+                            """Find AWORLD.md in standard locations"""
+                            working_dir = Path.cwd()
+                            search_paths = [
+                                working_dir / '.aworld' / 'AWORLD.md',
+                                working_dir / 'AWORLD.md',
+                                Path.home() / '.aworld' / 'AWORLD.md',
+                            ]
+                            for path in search_paths:
+                                if path.exists():
+                                    return path
+                            return None
+                        
+                        def get_editor():
+                            """Get editor from environment variables"""
+                            return os.environ.get('VISUAL') or os.environ.get('EDITOR') or 'nano'
+                        
+                        if subcommand == "view":
+                            # View current memory content
+                            aworld_file = find_aworld_file()
+                            if not aworld_file:
+                                self.console.print("[yellow]No AWORLD.md file found.[/yellow]")
+                                self.console.print("[dim]Create one with: /memory[/dim]")
+                            else:
+                                self.console.print(f"[dim]Reading from: {aworld_file}[/dim]\n")
+                                content = aworld_file.read_text(encoding='utf-8')
+                                # Display in a panel
+                                from rich.panel import Panel
+                                from rich.syntax import Syntax
+                                syntax = Syntax(content, "markdown", theme="monokai", line_numbers=False)
+                                self.console.print(Panel(syntax, title="AWORLD.md", border_style="cyan"))
+                        
+                        elif subcommand == "reload":
+                            # Reload memory from file
+                            self.console.print("[dim]Memory reload functionality requires agent restart.[/dim]")
+                            self.console.print("[dim]The AWORLD.md file will be automatically loaded on next agent start.[/dim]")
+                        
+                        elif subcommand == "status":
+                            # Show memory system status
+                            aworld_file = find_aworld_file()
+                            from rich.table import Table
+                            table = Table(title="Memory System Status", box=box.ROUNDED)
+                            table.add_column("Property", style="cyan")
+                            table.add_column("Value", style="green")
+                            
+                            if aworld_file:
+                                table.add_row("AWORLD.md Location", str(aworld_file))
+                                table.add_row("File Size", f"{aworld_file.stat().st_size} bytes")
+                                from datetime import datetime
+                                mtime = datetime.fromtimestamp(aworld_file.stat().st_mtime)
+                                table.add_row("Last Modified", mtime.strftime("%Y-%m-%d %H:%M:%S"))
+                                table.add_row("Status", "✅ Active")
+                            else:
+                                table.add_row("AWORLD.md Location", "Not found")
+                                table.add_row("Status", "❌ Not configured")
+                            
+                            table.add_row("Feature", "AWORLDFileNeuron")
+                            table.add_row("Auto-load", "Enabled")
+                            self.console.print(table)
+                        
+                        else:
+                            # Edit AWORLD.md (default action)
+                            aworld_file = find_aworld_file()
+                            
+                            if not aworld_file:
+                                # Create new file
+                                default_location = Path.cwd() / '.aworld' / 'AWORLD.md'
+                                self.console.print(f"[yellow]No AWORLD.md found. Creating new file at:[/yellow]")
+                                self.console.print(f"[dim]{default_location}[/dim]\n")
+                                
+                                # Create directory if needed
+                                default_location.parent.mkdir(parents=True, exist_ok=True)
+                                
+                                # Create template
+                                template = """# Project Context
+
+## Project Overview
+Describe your project here.
+
+## Important Guidelines
+- Add your project-specific guidelines
+- Include coding standards
+- Document important conventions
+
+## Technical Details
+- List key technologies
+- Document architecture decisions
+- Note important file locations
+
+## Custom Instructions
+Add any custom instructions for AI agents working on this project.
+
+---
+*This file is automatically loaded by AWorld agents.*
+"""
+                                default_location.write_text(template, encoding='utf-8')
+                                aworld_file = default_location
+                            
+                            # Open in editor
+                            editor = get_editor()
+                            self.console.print(f"[dim]Opening {aworld_file} in {editor}...[/dim]")
+                            
+                            try:
+                                # Open editor and wait for it to close
+                                result = subprocess.run([editor, str(aworld_file)])
+                                if result.returncode == 0:
+                                    self.console.print("[green]✅ AWORLD.md saved successfully.[/green]")
+                                    self.console.print("[dim]Changes will take effect on next agent start.[/dim]")
+                                else:
+                                    self.console.print(f"[yellow]Editor exited with code {result.returncode}[/yellow]")
+                            except FileNotFoundError:
+                                self.console.print(f"[red]Editor '{editor}' not found.[/red]")
+                                self.console.print("[dim]Set EDITOR or VISUAL environment variable to your preferred editor.[/dim]")
+                            except Exception as e:
+                                self.console.print(f"[red]Error opening editor: {e}[/red]")
+                    
+                    except Exception as e:
+                        self.console.print(f"[red]Error handling memory command: {e}[/red]")
                         import traceback
                         traceback.print_exc()
                     continue
