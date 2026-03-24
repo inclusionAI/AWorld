@@ -1180,6 +1180,7 @@ class AWorldCLI:
                         subcommand = parts[1] if len(parts) > 1 else ""
                         
                         # Import required modules
+                        import os
                         from pathlib import Path
                         import subprocess
                         
