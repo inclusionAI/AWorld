@@ -18,6 +18,7 @@ class Neurons:
     WORKSPACE = "workspace"
     GRAPH = "graph"
     ENTITY = "entity"
+    AWORLD_FILE = "aworld_file"
 
 class Neuron(ABC):
     """

@@ -99,6 +99,12 @@ class SystemPromptAugmentOp(BaseOp):
             from aworld.core.context.amni.prompt.neurons.skill_neuron import SKILL_NEURON_NAME
             if SKILL_NEURON_NAME not in neuron_names:
                 neuron_names.append(SKILL_NEURON_NAME)
+        
+        # Enable AWORLD.md File Feature
+        if agent_context_config.enable_aworld_file:
+            from aworld.core.context.amni.prompt.neurons.aworld_file_neuron import AWORLD_FILE_NEURON_NAME
+            if AWORLD_FILE_NEURON_NAME not in neuron_names:
+                neuron_names.insert(0, AWORLD_FILE_NEURON_NAME)  # High priority - insert at beginning
 
         # Enable Planing Feature
         if agent_context_config.automated_cognitive_ingestion:
