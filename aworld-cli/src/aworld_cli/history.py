@@ -378,7 +378,7 @@ class JSONLHistory(History):
 
         return stats
 
-    def format_cost_display(self, session_id: Optional[str] = None, limit: int = 10) -> str:
+    def format_cost_display(self, session_id: Optional[str] = None, limit: int = 20) -> str:
         """
         Format token cost statistics for display.
 

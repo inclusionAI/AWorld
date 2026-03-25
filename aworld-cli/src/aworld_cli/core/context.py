@@ -82,6 +82,7 @@ def check_session_token_limit(
 
         history = JSONLHistory(str(history_path))
         stats = history.get_token_stats(session_id=session_id)
+        logger.info(f"check_session_token_limit|agent_name={agent_name}|session_id={session_id}|limit={limit}|stats={stats}")
 
         # Use current agent's context_window_tokens (ctx) when agent_name provided
         if agent_name:
@@ -90,7 +91,7 @@ def check_session_token_limit(
             total = (
                 agent_stats.get("context_window_tokens", 0)
                 if agent_stats
-                else stats.get("total_tokens", 0)
+                else 0
             )
         else:
             total = stats.get("total_tokens", 0)
