@@ -39,17 +39,17 @@ class AWORLDFileNeuron(Neuron):
         Find AWORLD.md file in standard locations
         
         Search order:
-        1. .aworld/AWORLD.md (project-specific)
-        2. AWORLD.md (project root)
-        3. ~/.aworld/AWORLD.md (user-level)
+        1. ~/.aworld/AWORLD.md (user-level, global - highest priority)
+        2. .aworld/AWORLD.md (project-specific)
+        3. AWORLD.md (project root - lowest priority)
         """
         # Get working directory from context
         working_dir = getattr(context, 'working_directory', os.getcwd())
         
         search_paths = [
+            Path.home() / '.aworld' / 'AWORLD.md',
             Path(working_dir) / '.aworld' / 'AWORLD.md',
             Path(working_dir) / 'AWORLD.md',
-            Path.home() / '.aworld' / 'AWORLD.md',
         ]
         
         for path in search_paths:

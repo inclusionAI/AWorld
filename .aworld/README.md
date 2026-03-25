@@ -7,9 +7,9 @@ The AWORLD.md feature allows you to provide project-specific context to AWorld a
 ## Quick Start
 
 1. Create an `AWORLD.md` file in one of these locations:
-   - `.aworld/AWORLD.md` (project-specific, highest priority)
-   - `AWORLD.md` (project root)
-   - `~/.aworld/AWORLD.md` (user-level, global)
+   - `~/.aworld/AWORLD.md` (user-level, global - **highest priority**)
+   - `.aworld/AWORLD.md` (project-specific)
+   - `AWORLD.md` (project root - **lowest priority**)
 
 2. Write your project context in markdown format
 
