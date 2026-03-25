@@ -1189,9 +1189,9 @@ class AWorldCLI:
                             """Find AWORLD.md in standard locations"""
                             working_dir = Path.cwd()
                             search_paths = [
+                                Path.home() / '.aworld' / 'AWORLD.md',
                                 working_dir / '.aworld' / 'AWORLD.md',
                                 working_dir / 'AWORLD.md',
-                                Path.home() / '.aworld' / 'AWORLD.md',
                             ]
                             for path in search_paths:
                                 if path.exists():
