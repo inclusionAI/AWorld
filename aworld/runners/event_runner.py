@@ -67,9 +67,35 @@ class TaskEventRunner(TaskRunner):
                 if not self.task.is_sub_task:
                     logger.info(f'main task {self.task.id} will mark outputs finished')
                     await self.task.outputs.mark_completed(resp if resp is not None else self._response())
-                    for _, agent in AgentFactory._agent_instance.items():
+                    # Snapshot to avoid iteration issues if AgentFactory registry changes during awaits.
+                    agents_snapshot = list(AgentFactory._agent_instance.values())
+                    for agent in agents_snapshot:
                         if agent and agent.sandbox:
-                            await agent.sandbox.cleanup()
+                            sandbox = agent.sandbox
+                            # task_list tracks which root-tasks are using this sandbox.
+                            # Only cleanup when the current task id is no longer referenced.
+                            try:
+                                metadata = getattr(sandbox, "metadata", {})
+                                task_list = metadata.get("task_list", [])
+                                
+                                # If we can't find/understand task_list, fallback to original behavior.
+                                if not task_list:
+                                    await sandbox.cleanup()
+                                    continue
+
+                                # Remove current task id from task_list (dedup by deletion).
+                                task_id = self.task.id
+                                if task_id in task_list:
+                                    task_list.remove(task_id)
+                                if len(task_list) == 0:
+                                    await sandbox.cleanup()
+                                
+                            except Exception as e:
+                                logger.warning(
+                                    f"Failed to manage sandbox cleanup for agent {agent.id() if hasattr(agent, 'id') else ''}: {e}"
+                                )
+                                # Keep the original semantics to avoid leaked resources.
+                                await sandbox.cleanup()
                     # Release trajectory storage to free memory; trajectories have already
                     # been persisted by _save_trajectories() before reaching this point.
                     self.context.trajectory_dataset = None
