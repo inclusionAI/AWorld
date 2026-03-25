@@ -7,13 +7,19 @@ The AWORLD.md feature allows you to provide project-specific context to AWorld a
 ## Quick Start
 
 1. Create an `AWORLD.md` file in one of these locations:
-   - `~/.aworld/AWORLD.md` (user-level, global - **highest priority**)
-   - `.aworld/AWORLD.md` (project-specific)
-   - `AWORLD.md` (project root - **lowest priority**)
+   - `~/.aworld/AWORLD.md` (user-level, global - **DEFAULT and HIGHEST PRIORITY**)
+   - `.aworld/AWORLD.md` (project-specific - **OPTIONAL OVERRIDE**)
+   - `AWORLD.md` (project root - **OPTIONAL OVERRIDE**)
 
 2. Write your project context in markdown format
 
 3. The content will be automatically loaded when agents start
+
+**Important:** 
+- The **default** location is `~/.aworld/AWORLD.md` (user directory)
+- This applies to all your projects
+- Project-specific files (`.aworld/AWORLD.md`) are **optional overrides**
+- When you run `/memory` without any existing file, it creates `~/.aworld/AWORLD.md`
 
 ## Features
 

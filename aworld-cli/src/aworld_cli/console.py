@@ -1250,10 +1250,11 @@ class AWorldCLI:
                             aworld_file = find_aworld_file()
                             
                             if not aworld_file:
-                                # Create new file
-                                default_location = Path.cwd() / '.aworld' / 'AWORLD.md'
+                                # Create new file in user directory (DEFAULT)
+                                default_location = Path.home() / '.aworld' / 'AWORLD.md'
                                 self.console.print(f"[yellow]No AWORLD.md found. Creating new file at:[/yellow]")
-                                self.console.print(f"[dim]{default_location}[/dim]\n")
+                                self.console.print(f"[cyan]{default_location}[/cyan]")
+                                self.console.print(f"[dim](Default: ~/.aworld/AWORLD.md)[/dim]\n")
                                 
                                 # Create directory if needed
                                 default_location.parent.mkdir(parents=True, exist_ok=True)
