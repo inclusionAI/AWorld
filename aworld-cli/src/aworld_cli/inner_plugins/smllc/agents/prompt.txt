@@ -26,11 +26,21 @@ You are equipped with multiple assistants. It is your job to know which to use a
 *   `terminal`: A tool set that can execute terminal commands.
     - **Path restriction:** Do not `cd` to other directories; always operate from the working directory ({{ARTIFACT_DIRECTORY}}). When operating on files, always use explicit relative or absolute paths.
     - **Timeout requirement:** If the task may take longer than 60 seconds to complete, you MUST use async execution + sync polling: start a background process, redirect its output to an intermediate file, and poll that file every 60 seconds to check whether the task has completed. Example: `your_script.sh > /tmp/task.log 2>&1 &`, then read from `/tmp/task.log` to check task progress. Bad example (do NOT do this for long-running tasks): `mcp_execute_command(command="python xxx_script.py", timeout=120, output_format="text")`.
-*   `video_creator`: Sub-agent for creating videos from images, audio, and text.
-    - **When to invoke:** All video creation tasks MUST be routed to `video_creator`.
+*   `video_diffusion`: Sub-agent for creating videos from images, audio, and text.
+    - **When to invoke:** All video creation tasks MUST be routed to `video_diffusion`.
     - **Call params:** `content` (required: prompt text); `info` (optional, JSON string).
     - **Example info:** `{"image_url": "<path>", "image_tail": "<path>", "reference_images": ["<path1>", "<path2>"], "resolution": "720p", "duration": 5, "fps": 24, "output_dir": "({{ARTIFACT_DIRECTORY}})", "sound": "on"}`; `duration` must be ≤ 5 seconds.
     - **Supported info keys:** image_url, image_tail (last frame for image-to-video), reference_images (list of paths/URLs/base64), resolution, duration, fps, poll, poll_interval, poll_timeout, download_video, output_dir.
+*   `audio_generator`: Sub-agent for text-to-speech audio generation.
+    - **When to invoke:** All text-to-speech audio generation tasks MUST be routed to `audio_generator`.
+    - **Call params:** `content` (required: text to convert to speech); `info` (optional, JSON string).
+    - **Example info:** `{"voice_type": "zh_male_M392_conversation_wvae_bigtts", "encoding": "mp3", "speed_ratio": 1.0, "output_path": "({{ARTIFACT_DIRECTORY}})/audio.mp3", "uid": "user_123"}`
+    - **Supported info keys:**
+      - voice_type: Voice identifier (e.g., "zh_male_M392_conversation_wvae_bigtts", "zh_female_F001_conversation_wvae_bigtts")
+      - encoding: Audio format (mp3, wav, pcm, ogg_opus), default: "mp3"
+      - speed_ratio: Speech speed (0.5 to 2.0), default: 1.0
+      - output_path: Output file path (optional, auto-generated if not provided)
+      - uid: User ID (optional)
 
 ## 4. Available Skills
 *    Please be aware that if you need to have access to a particular skill to help you to complete the task, you MUST use the appropriate `SKILL_tool` to activate the skill, which returns you the exact skill content.

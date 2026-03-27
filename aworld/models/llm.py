@@ -51,6 +51,7 @@ PROVIDER_CLASSES = {
     "azure_openai": AzureOpenAIProvider,
     "ant": AntProvider,
     "together_video": TogetherVideoProvider,
+    "doubao_tts": None,  # Lazy loaded to avoid circular import
 }
 
 # ---------------------------------------------------------------------------
@@ -288,7 +289,22 @@ class LLMModel:
         """
         identified_provider = "openai"
 
-        # 1. Match base_url against endpoint patterns (covers both LLM and video providers)
+        # 1. FIRST: Check explicit provider (highest priority)
+        all_providers = {**PROVIDER_CLASSES, **VIDEO_PROVIDER_CLASSES}
+        if provider:
+            if provider in all_providers:
+                logger.info(
+                    f"Using explicit provider: {provider}"
+                )
+                return provider
+            else:
+                logger.warning(
+                    f"Explicit provider '{provider}' not found in registry. "
+                    f"Available providers: {list(all_providers.keys())}. "
+                    f"Falling back to auto-detection."
+                )
+
+        # 2. SECOND: Match base_url against endpoint patterns (covers both LLM and video providers)
         if base_url:
             for p, patterns in ENDPOINT_PATTERNS.items():
                 if any(pattern in base_url for pattern in patterns):
@@ -298,8 +314,8 @@ class LLMModel:
                     )
                     return identified_provider
 
-        # 2. Match model_name — video registry takes priority over LLM model names
-        if model_name and not base_url:
+        # 3. THIRD: Match model_name — video registry takes priority over LLM model names
+        if model_name:
             # Check video model registry first
             video_provider = _match_video_registry(model_name)
             if video_provider:
@@ -317,14 +333,9 @@ class LLMModel:
                         )
                         break
 
-        # 3. Explicit provider overrides the auto-detected result
-        all_providers = {**PROVIDER_CLASSES, **VIDEO_PROVIDER_CLASSES}
-        if provider and provider in all_providers and identified_provider != provider:
-            logger.debug(
-                f"Provider mismatch: {provider} != {identified_provider}, using {provider} as provider"
-            )
-            identified_provider = provider
-
+        # 4. FOURTH: Default fallback
+        if identified_provider == "openai" and not provider and not base_url and not model_name:
+            logger.debug("No provider information provided, using default: openai")
         return identified_provider
 
     def _create_provider(self, **kwargs):
@@ -344,7 +355,13 @@ class LLMModel:
         if self.provider_name in VIDEO_PROVIDER_CLASSES:
             self.provider = VIDEO_PROVIDER_CLASSES[self.provider_name](**kwargs)
         elif self.provider_name in PROVIDER_CLASSES:
-            self.provider = PROVIDER_CLASSES[self.provider_name](**kwargs)
+            provider_class = PROVIDER_CLASSES[self.provider_name]
+            # Lazy load DoubaoTTSProvider to avoid circular import
+            if provider_class is None and self.provider_name == "doubao_tts":
+                from aworld.models.doubao_tts_provider import DoubaoTTSProvider
+                provider_class = DoubaoTTSProvider
+                PROVIDER_CLASSES[self.provider_name] = provider_class
+            self.provider = provider_class(**kwargs)
         else:
             raise ValueError(
                 f"Unknown provider '{self.provider_name}'. "

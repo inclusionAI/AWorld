@@ -139,7 +139,7 @@ class TogetherVideoProvider(VideoGenProviderBase):
             import_package("together")
             from together import Together
 
-        api_key = self.api_key or os.getenv("TOGETHER_API_KEY", "")
+        api_key = self.api_key or os.getenv("DIFFUSION_API_KEY") or os.getenv("TOGETHER_API_KEY", "")
         if not api_key:
             raise ValueError(
                 "Together API key not found. Set the TOGETHER_API_KEY environment "
