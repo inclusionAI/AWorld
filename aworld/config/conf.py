@@ -118,7 +118,7 @@ class BaseConfig(BaseModel):
 
 class ModelConfig(BaseConfig):
     model_config = ConfigDict(extra='allow')
-    llm_provider: str = "openai"
+    llm_provider: Optional[str] = None  # Set to None to allow automatic provider detection
     llm_model_name: Optional[str] = None
     llm_temperature: float = 1.
     llm_base_url: str = "https://api.openai.com/v1"

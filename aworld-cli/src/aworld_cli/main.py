@@ -57,9 +57,9 @@ def _show_banner(console=None):
             "[dim]One-sentence to blockbuster video generation[/dim]"
         )
         features_table.add_row(
-            "📊",
-            "[bold bright_green]PPT Generation[/bold bright_green]",
-            "[dim]AI-powered presentation creation[/dim]"
+            "💻",
+            "[bold bright_green]Code Generation[/bold bright_green]",
+            "[dim]AI-powered code generation and development[/dim]"
         )
         features_table.add_row(
             "🔬",
@@ -93,7 +93,7 @@ def _show_banner(console=None):
         print("\nAWorld CLI - AI-Powered Content Creation & Scientific Research Platform\n")
         print("Core Features:")
         print("  🎬 Video Creation - One-sentence to blockbuster")
-        print("  📊 PPT Generation - AI-powered presentations")
+        print("  💻 Code Generation - AI-powered code development")
         print("  🔬 AI for Science - Automated research exploration")
         print("\nCore Advantages: 多(Versatile) 快(Fast) 好(Quality) 省(Efficient)\n")
 

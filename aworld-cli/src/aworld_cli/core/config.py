@@ -281,9 +281,9 @@ def _apply_filesystem_config(filesystem_cfg: Optional[Dict[str, Any]] = None) ->
 
 def _apply_diffusion_models_config(models_config: Dict[str, Any]) -> None:
     """
-    Apply models.diffusion config to DIFFUSION_* env vars for video_creator agent.
+    Apply models.diffusion config to DIFFUSION_* env vars for diffusion agent.
     Priority: models.diffusion config > existing DIFFUSION_* env vars > LLM_*.
-    Supports models.video_creator for backwards compatibility.
+    Supports models.diffusion for backwards compatibility.
     """
     diff_cfg = models_config.get('diffusion')
     diff_cfg = diff_cfg if isinstance(diff_cfg, dict) else {}
@@ -345,6 +345,69 @@ def _apply_diffusion_models_config(models_config: Dict[str, Any]) -> None:
         os.environ['DIFFUSION_TEMPERATURE'] = str(float(temperature))
 
 
+def _apply_audio_models_config(models_config: Dict[str, Any]) -> None:
+    """
+    Apply models.audio config to AUDIO_* env vars for audio agent.
+    Priority: models.audio config > existing AUDIO_* env vars > LLM_*.
+    """
+    audio_cfg = models_config.get('audio')
+    audio_cfg = audio_cfg if isinstance(audio_cfg, dict) else {}
+    api_key = (audio_cfg.get('api_key') or '').strip()
+    model_name = (audio_cfg.get('model') or '').strip()
+    base_url = (audio_cfg.get('base_url') or '').strip()
+    provider = (audio_cfg.get('provider') or '').strip()
+    temperature = audio_cfg.get('temperature')
+
+    if not api_key:
+        api_key = (os.environ.get('AUDIO_API_KEY') or '').strip()
+    if not api_key:
+        api_key = (os.environ.get('LLM_API_KEY') or '').strip()
+    if not api_key:
+        for key in ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'):
+            v = (os.environ.get(key) or '').strip()
+            if v:
+                api_key = v
+                if not provider and 'OPENAI' in key:
+                    provider = 'openai'
+                elif not provider and 'ANTHROPIC' in key:
+                    provider = 'anthropic'
+                elif not provider and 'GEMINI' in key:
+                    provider = 'gemini'
+                break
+    if not model_name:
+        model_name = (os.environ.get('AUDIO_MODEL_NAME') or '').strip()
+    if not model_name:
+        model_name = (os.environ.get('LLM_MODEL_NAME') or '').strip()
+    if not base_url:
+        base_url = (os.environ.get('AUDIO_BASE_URL') or '').strip()
+    if not base_url:
+        base_url = (os.environ.get('LLM_BASE_URL') or '').strip()
+    if not base_url:
+        for key in ('OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL', 'GEMINI_BASE_URL'):
+            v = (os.environ.get(key) or '').strip()
+            if v:
+                base_url = v
+                break
+    if not provider:
+        provider = (os.environ.get('AUDIO_PROVIDER') or '').strip()
+    if not provider:
+        provider = 'openai'
+    if temperature is None:
+        env_temp = (os.environ.get('AUDIO_TEMPERATURE') or '').strip()
+        if env_temp:
+            temperature = float(env_temp)
+
+    if api_key:
+        os.environ['AUDIO_API_KEY'] = api_key
+    if model_name:
+        os.environ['AUDIO_MODEL_NAME'] = model_name
+    if base_url:
+        os.environ['AUDIO_BASE_URL'] = base_url
+    os.environ['AUDIO_PROVIDER'] = provider
+    if temperature is not None:
+        os.environ['AUDIO_TEMPERATURE'] = str(float(temperature))
+
+
 def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
     """
     Apply models config (api_key, model, base_url) to os.environ.
@@ -381,6 +444,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
         if base_url:
             os.environ['LLM_BASE_URL'] = base_url
         _apply_diffusion_models_config(models_config)
+        _apply_audio_models_config(models_config)
         return
     # Legacy: nested models.default.{provider} or models.{provider}
     default_providers = {k: v for k, v in default_cfg.items()
@@ -422,6 +486,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
                 os.environ['LLM_BASE_URL'] = base_url
 
     _apply_diffusion_models_config(models_config)
+    _apply_audio_models_config(models_config)
 
 
 def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
@@ -439,6 +504,7 @@ def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
     })
     # Apply DIFFUSION_* from LLM_* when not set in .env
     _apply_diffusion_models_config({})
+    _apply_audio_models_config({})
     logger.info(f"[config] load_dotenv loaded from: {source_path} {os.environ.get('LLM_MODEL_NAME')} {os.environ.get('LLM_BASE_URL')}")
     return _env_to_config(), "local", source_path
 

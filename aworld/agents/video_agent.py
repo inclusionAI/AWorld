@@ -290,7 +290,9 @@ class VideoAgent(LLMAgent):
             )
 
         self._finished = True
-        policy_result = [ActionModel(agent_name=self.id(), policy_info=result_payload)]
+        # Mark params as a tool result so the caller can correctly trigger the ReAct loop.
+        params = {"is_tool_result": True}
+        policy_result = [ActionModel(agent_name=self.id(), policy_info=result_payload, params=params)]
         logger.info(f"agent_result: {result_payload}")
         return policy_result
 
