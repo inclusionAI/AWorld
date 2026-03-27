@@ -27,7 +27,7 @@ Example usage:
     from aworld.core.common import Observation
     
     obs = Observation(
-        content="字节跳动语音合成",
+        content="ByteDance text-to-speech",
         info={
             "voice_type": "zh_female_F001_conversation_wvae_bigtts",
             "speed_ratio": 1.2
