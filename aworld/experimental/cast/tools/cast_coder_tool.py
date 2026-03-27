@@ -151,27 +151,41 @@ class CAstCoderAction(ToolAction):
     SEARCH_REPLACE = ToolActionInfo(
         name="search_replace",
         input_params={
-            "operation_json": ParamInfo(
-                name="operation_json",
+            "type": ParamInfo(
+                name="type",
                 type="string",
                 required=True,
-                desc="""JSON format precise search and replace operation instruction. Format:
-{
-    "operation": {
-        "type": "search_replace",
-        "file_path": "path/to/your/file.py",
-        "search": "CODE_BLOCK_TO_FIND",
-        "replace": "NEW_CODE_BLOCK",
-        "exact_match_only": true,
-        "replace_all": false
-    }
-}
-
-Parameters: type (string, required) Must be "search_replace"; file_path (string, required) Relative path from source_dir; search (string, required) One or more complete lines when modifying existing file, or empty string for full file replacement / creating new file; replace (string, required) Replacement block or full file content; exact_match_only (boolean, optional) Fixed as true; replace_all (boolean, optional) When true, replace all occurrences of search in file; when false, only first match (default: false).
-
-Full file replacement: Use search="" and put full content in replace - works for both creating new files and replacing entire existing file content.
-
-Best Practices: When modifying existing file, use multi-line blocks with structural context (def/class) for accuracy. Use replace_all=true when the same block appears multiple times. For full file replacement, use search="" and put full content in replace."""
+                desc='Operation type, must be "search_replace"'
+            ),
+            "file_path": ParamInfo(
+                name="file_path",
+                type="string",
+                required=True,
+                desc="Relative file path from source_dir"
+            ),
+            "search": ParamInfo(
+                name="search",
+                type="string",
+                required=True,
+                desc='Search block. Use empty string "" for full file replacement / creation.'
+            ),
+            "replace": ParamInfo(
+                name="replace",
+                type="string",
+                required=True,
+                desc="Replacement block or full file content"
+            ),
+            "exact_match_only": ParamInfo(
+                name="exact_match_only",
+                type="boolean",
+                required=False,
+                desc="Whether to use exact match only (default: true)"
+            ),
+            "replace_all": ParamInfo(
+                name="replace_all",
+                type="boolean",
+                required=False,
+                desc="When true, replace all occurrences; otherwise only first match (default: false)"
             ),
             "source_dir": ParamInfo(
                 name="source_dir",
@@ -425,12 +439,23 @@ class CAstCoderTool(AsyncTool):
                     action_results.append(action_result)
                 elif action_name == CAstCoderAction.SEARCH_REPLACE.value.name:
                     # Search and replace operation
-                    operation_json = action.params.get("operation_json")
+                    operation_type = action.params.get("type")
+                    file_path = action.params.get("file_path")
+                    search = action.params.get("search")
+                    replace = action.params.get("replace")
+                    exact_match_only = action.params.get("exact_match_only", True)
+                    replace_all = action.params.get("replace_all", False)
                     source_dir_raw = action.params.get("source_dir")
                     show_details = action.params.get("show_details", True)
 
-                    if not operation_json:
-                        raise ValueError("operation_json is required")
+                    if operation_type != "search_replace":
+                        raise ValueError('type must be "search_replace"')
+                    if not file_path:
+                        raise ValueError("file_path is required")
+                    if search is None:
+                        raise ValueError("search is required")
+                    if replace is None:
+                        raise ValueError("replace is required")
                     if source_dir_raw is None or source_dir_raw == "":
                         raise ValueError(
                             "source_dir is required but missing. "
@@ -440,6 +465,20 @@ class CAstCoderTool(AsyncTool):
 
                     if not source_dir.exists():
                         raise ValueError(f"Source directory does not exist: {source_dir}")
+
+                    operation_json = json.dumps(
+                        {
+                            "operation": {
+                                "type": operation_type,
+                                "file_path": file_path,
+                                "search": search,
+                                "replace": replace,
+                                "exact_match_only": exact_match_only,
+                                "replace_all": replace_all,
+                            }
+                        },
+                        ensure_ascii=False,
+                    )
 
                     # Use ACast's search_replace_operation method to handle search and replace
                     try:

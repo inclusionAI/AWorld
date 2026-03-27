@@ -15,7 +15,6 @@ from rich.prompt import Prompt
 from rich.style import Style
 from rich.table import Table
 from rich.text import Text
-import os
 
 from aworld.logs.util import logger
 from ._globals import console
@@ -30,6 +29,7 @@ class AWorldCLI:
     def __init__(self):
         self.console = console
         self.user_input = UserInputHandler(console)
+        # self.team_handler = InteractiveTeamHandler(console)
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -176,13 +176,13 @@ class AWorldCLI:
         else:
             default_cfg.pop('base_url', None)
 
-        # Diffusion (models.diffusion -> DIFFUSION_* for video_creator agent)
-        self.console.print("\n[bold]Diffusion configuration[/bold] [dim](optional, for video_creator agent)[/dim]")
+        # Diffusion (models.diffusion -> DIFFUSION_* for diffusion agent)
+        self.console.print("\n[bold]Diffusion configuration[/bold] [dim](optional, for diffusion agent)[/dim]")
         self.console.print("  [dim]Leave empty to use Media LLM or default LLM config above[/dim]\n")
         if 'diffusion' not in current_config['models']:
-            # Migrate from legacy models.video_creator
-            current_config['models']['diffusion'] = current_config['models'].get('video_creator') or {}
-            current_config['models'].pop('video_creator', None)
+            # Migrate from legacy models.diffusion
+            current_config['models']['diffusion'] = current_config['models'].get('diffusion') or {}
+            current_config['models'].pop('diffusion', None)
         diff_cfg = current_config['models']['diffusion']
 
         current_diff_api_key = diff_cfg.get('api_key', '')
@@ -230,6 +230,58 @@ class AWorldCLI:
         if not diff_cfg:
             current_config['models'].pop('diffusion', None)
 
+        # Audio (models.audio -> AUDIO_* for audio agent)
+        self.console.print("\n[bold]Audio configuration[/bold] [dim](optional, for audio agent)[/dim]")
+        self.console.print("  [dim]Leave empty to use Media LLM or default LLM config above[/dim]\n")
+        if 'audio' not in current_config['models']:
+            current_config['models']['audio'] = {}
+        audio_cfg = current_config['models']['audio']
+
+        current_audio_api_key = audio_cfg.get('api_key', '')
+        if current_audio_api_key:
+            masked = current_audio_api_key[:8] + "..." if len(current_audio_api_key) > 8 else "***"
+            self.console.print(f"  [dim]Current AUDIO_API_KEY: {masked}[/dim]")
+        audio_api_key = Prompt.ask("  AUDIO_API_KEY", default=current_audio_api_key, password=True)
+        if audio_api_key:
+            audio_cfg['api_key'] = audio_api_key
+        else:
+            audio_cfg.pop('api_key', None)
+
+        current_audio_model = audio_cfg.get('model', '')
+        self.console.print("  [dim]e.g. claude-3-5-sonnet-20241022 · Enter to inherit from Media/default[/dim]")
+        audio_model = Prompt.ask("  AUDIO_MODEL_NAME", default=current_audio_model)
+        if audio_model:
+            audio_cfg['model'] = audio_model
+        else:
+            audio_cfg.pop('model', None)
+
+        current_audio_base_url = audio_cfg.get('base_url', '')
+        audio_base_url = Prompt.ask("  AUDIO_BASE_URL", default=current_audio_base_url)
+        if audio_base_url:
+            audio_cfg['base_url'] = audio_base_url
+        else:
+            audio_cfg.pop('base_url', None)
+
+        current_audio_provider = audio_cfg.get('provider', 'openai')
+        audio_provider = Prompt.ask("  AUDIO_PROVIDER", default=current_audio_provider)
+        if audio_provider:
+            audio_cfg['provider'] = audio_provider
+        else:
+            audio_cfg.pop('provider', None)
+
+        current_audio_temp = audio_cfg.get('temperature', 0.1)
+        audio_temp = Prompt.ask("  AUDIO_TEMPERATURE", default=str(current_audio_temp))
+        if audio_temp:
+            try:
+                audio_cfg['temperature'] = float(audio_temp)
+            except ValueError:
+                audio_cfg.pop('temperature', None)
+        else:
+            audio_cfg.pop('temperature', None)
+
+        if not audio_cfg:
+            current_config['models'].pop('audio', None)
+
         config.save_config(current_config)
         self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
         table = Table(title="Default LLM Configuration", box=box.ROUNDED)
@@ -257,6 +309,19 @@ class AWorldCLI:
                     diff_table.add_row(key, str(value))
             self.console.print()
             self.console.print(diff_table)
+
+        if current_config['models'].get('audio'):
+            audio_table = Table(title="Audio Configuration (AUDIO_*)", box=box.ROUNDED)
+            audio_table.add_column("Setting", style="cyan")
+            audio_table.add_column("Value", style="green")
+            for key, value in current_config['models']['audio'].items():
+                if key == 'api_key':
+                    masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
+                    audio_table.add_row(key, masked_value)
+                else:
+                    audio_table.add_row(key, str(value))
+            self.console.print()
+            self.console.print(audio_table)
 
     async def _edit_skills_config(self, config, current_config: dict):
         """Edit skills section of config (global SKILLS_PATH and per-agent XXX_SKILLS_PATH)."""
@@ -905,6 +970,7 @@ class AWorldCLI:
             f"Type '/agents' to list all available agents.\n"
             f"Type '/cost' for current session, '/cost -all' for global history.\n"
             f"Type '/compact' to run context compression.\n"
+            f"Type '/team' for agent team management.\n"
             f"Type '/memory' to edit project context, '/memory view' to view, '/memory status' for status.\n"
             f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
         )
@@ -921,6 +987,7 @@ class AWorldCLI:
             slash_cmds = [
                 "/agents", "/skills", "/new", "/restore", "/latest",
                 "/exit", "/quit", "/switch", "/cost", "/cost -all", "/compact",
+                "/team",
                 "/memory", "/memory view", "/memory reload", "/memory status",
             ]
             switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
@@ -941,6 +1008,7 @@ class AWorldCLI:
                 "/memory view": "View current memory content",
                 "/memory reload": "Reload memory from file",
                 "/memory status": "Show memory system status",
+                "/team": "Agent team management commands",
                 "exit": "Exit chat",
                 "quit": "Exit chat",
             }
@@ -1178,12 +1246,12 @@ class AWorldCLI:
                     try:
                         parts = user_input.split(maxsplit=1)
                         subcommand = parts[1] if len(parts) > 1 else ""
-                        
+
                         # Import required modules
                         import os
                         from pathlib import Path
                         import subprocess
-                        
+
                         # Find AWORLD.md file
                         def find_aworld_file():
                             """Find AWORLD.md in standard locations"""
@@ -1197,11 +1265,11 @@ class AWorldCLI:
                                 if path.exists():
                                     return path
                             return None
-                        
+
                         def get_editor():
                             """Get editor from environment variables"""
                             return os.environ.get('VISUAL') or os.environ.get('EDITOR') or 'nano'
-                        
+
                         if subcommand == "view":
                             # View current memory content
                             aworld_file = find_aworld_file()
@@ -1216,20 +1284,20 @@ class AWorldCLI:
                                 from rich.syntax import Syntax
                                 syntax = Syntax(content, "markdown", theme="monokai", line_numbers=False)
                                 self.console.print(Panel(syntax, title="AWORLD.md", border_style="cyan"))
-                        
+
                         elif subcommand == "reload":
                             # Reload memory from file
                             self.console.print("[dim]Memory reload functionality requires agent restart.[/dim]")
                             self.console.print("[dim]The AWORLD.md file will be automatically loaded on next agent start.[/dim]")
-                        
+
                         elif subcommand == "status":
                             # Show memory system status
                             aworld_file = find_aworld_file()
-                            from rich.table import Table
+                            # Use global Table import (line 16) instead of local import
                             table = Table(title="Memory System Status", box=box.ROUNDED)
                             table.add_column("Property", style="cyan")
                             table.add_column("Value", style="green")
-                            
+
                             if aworld_file:
                                 table.add_row("AWORLD.md Location", str(aworld_file))
                                 table.add_row("File Size", f"{aworld_file.stat().st_size} bytes")
@@ -1240,25 +1308,25 @@ class AWorldCLI:
                             else:
                                 table.add_row("AWORLD.md Location", "Not found")
                                 table.add_row("Status", "❌ Not configured")
-                            
+
                             table.add_row("Feature", "AWORLDFileNeuron")
                             table.add_row("Auto-load", "Enabled")
                             self.console.print(table)
-                        
+
                         else:
                             # Edit AWORLD.md (default action)
                             aworld_file = find_aworld_file()
-                            
+
                             if not aworld_file:
                                 # Create new file in user directory (DEFAULT)
                                 default_location = Path.home() / '.aworld' / 'AWORLD.md'
                                 self.console.print(f"[yellow]No AWORLD.md found. Creating new file at:[/yellow]")
                                 self.console.print(f"[cyan]{default_location}[/cyan]")
                                 self.console.print(f"[dim](Default: ~/.aworld/AWORLD.md)[/dim]\n")
-                                
+
                                 # Create directory if needed
                                 default_location.parent.mkdir(parents=True, exist_ok=True)
-                                
+
                                 # Create template
                                 template = """# Project Context
 
@@ -1283,11 +1351,11 @@ Add any custom instructions for AI agents working on this project.
 """
                                 default_location.write_text(template, encoding='utf-8')
                                 aworld_file = default_location
-                            
+
                             # Open in editor
                             editor = get_editor()
                             self.console.print(f"[dim]Opening {aworld_file} in {editor}...[/dim]")
-                            
+
                             try:
                                 # Open editor and wait for it to close
                                 result = subprocess.run([editor, str(aworld_file)])
@@ -1301,11 +1369,16 @@ Add any custom instructions for AI agents working on this project.
                                 self.console.print("[dim]Set EDITOR or VISUAL environment variable to your preferred editor.[/dim]")
                             except Exception as e:
                                 self.console.print(f"[red]Error opening editor: {e}[/red]")
-                    
+
                     except Exception as e:
                         self.console.print(f"[red]Error handling memory command: {e}[/red]")
                         import traceback
                         traceback.print_exc()
+                    continue
+
+                # Handle team command
+                if user_input.lower().startswith("/team"):
+                    # await self.team_handler.handle_command(user_input)
                     continue
 
                 # Handle agents command

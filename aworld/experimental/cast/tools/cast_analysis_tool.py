@@ -44,12 +44,12 @@ class CAstAnalysisAction(ToolAction):
                 required=False,
                 desc="Whether to show detailed analysis information"
             ),
-            "enable_dependency_graph": ParamInfo(
-                name="enable_dependency_graph",
-                type="boolean",
-                required=False,
-                desc="Whether to build dependency graph and PageRank (costly for large repos, ~96s for 1k+ files). Default false. Set to true only when explicitly needed."
-            )
+            # "enable_dependency_graph": ParamInfo(
+            #     name="enable_dependency_graph",
+            #     type="boolean",
+            #     required=False,
+            #     desc="Whether to build dependency graph and PageRank (costly for large repos, ~96s for 1k+ files). Default false. Set to true only when explicitly needed."
+            # )
         },
         desc="""Analyze the repository and build the three-tier index:
         - L1 logic (project structure, call/dependency graph, heatmap)
