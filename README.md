@@ -74,6 +74,12 @@ This is what's possible today. Imagine what we'll build with *your* expertise.
   <td style="width:22%"><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video create demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr>
+<tr>
+  <td>Deep Search</td>
+  <td>• Auto-search by <a href="./aworld-skills/agent-browser/SKILL.md">Agent Browser Skill</a> </td>
+  <td style="width:22%"><img src="readme_assets/aworld_cli_intro_ds.gif" alt="Deep search demo" width="270"></td>
+  <td><a href="docs/Recipe/deep_search_recipe.md">View Recipe</a></td>
+</tr>
 </tbody>
 </table>
 
