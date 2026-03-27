@@ -240,6 +240,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self.context = kwargs.get("context", None)
         self.llm_max_attempts = max(1, llm_max_attempts)  # Ensure at least 1 attempt
         self.llm_retry_delay = llm_retry_delay
+
     @property
     def llm(self):
         # lazy
@@ -288,6 +289,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 self.sandbox.mcpservers.map_tool_list = tool_mapping
                 self.tools.extend(processed_tools)
                 self.tool_mapping = tool_mapping
+
+                root_task_id = context.root.task_id if hasattr(context, 'root') and context.root.task_id else context.task_id
+                if self.sandbox.metadata is None:
+                    self.sandbox.metadata = {}
+                task_list = self.sandbox.metadata.get("task_list")
+                if task_list is None:
+                    task_list = []
+                    self.sandbox.metadata["task_list"] = task_list
+                if root_task_id and root_task_id not in task_list:
+                    task_list.append(root_task_id)
             else:
                 self.tools.extend(await mcp_tool_desc_transform(self.mcp_servers, self.mcp_config))
         except:
