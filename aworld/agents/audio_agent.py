@@ -311,7 +311,6 @@ class AudioAgent(LLMAgent):
                 context=message.context if message else None,
                 **obs_info,  # Forward any remaining parameters
             )
-            print("generated")
             logger.info(f"[AudioAgent:{self.id()}] Audio generation response: {audio_response}")
         except Exception as exc:
             error_msg = f"Audio generation failed: {exc}"
@@ -426,7 +425,6 @@ class AudioAgent(LLMAgent):
         
         # Check if provider has async method
         if hasattr(provider, "atext_to_speech"):
-            print("1generating")
             return await provider.atext_to_speech(
                 text=text,
                 voice_type=voice_type,
@@ -438,7 +436,6 @@ class AudioAgent(LLMAgent):
             )
         else:
             # Fall back to sync method in executor
-            print("2generating")
             return await loop.run_in_executor(
                 None,
                 lambda: provider.text_to_speech(
