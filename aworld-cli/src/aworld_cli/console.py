@@ -1293,7 +1293,7 @@ class AWorldCLI:
                         elif subcommand == "status":
                             # Show memory system status
                             aworld_file = find_aworld_file()
-                            from rich.table import Table
+                            # Use global Table import (line 16) instead of local import
                             table = Table(title="Memory System Status", box=box.ROUNDED)
                             table.add_column("Property", style="cyan")
                             table.add_column("Value", style="green")
