@@ -2,12 +2,10 @@ import os
 from pathlib import Path
 from typing import Dict, Any, List
 
-from aworld.agents.llm_agent import Agent
 from aworld.agents.video_agent import VideoAgent
 from aworld.config import AgentConfig, ModelConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation, ActionModel
-from aworld.core.context.amni.config import get_default_config, AgentContextConfig, ContextEnvConfig
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
 from aworld.runners.hook.hook_factory import HookFactory
@@ -18,23 +16,23 @@ from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
 from .mcp_config import mcp_config
 
 
-@HookFactory.register(name="pre_video_creator_hook")
+@HookFactory.register(name="pre_diffusion_hook")
 class PreMultiTaskVideoCreatorHook(PreLLMCallHook):
     """Hook triggered before LLM execution. Used for monitoring, logging, etc. Should NOT modify input/output content."""
     
     async def exec(self, message: Message, context: Context = None) -> Message:
-        if message.sender.startswith('video_creator'):
+        if message.sender.startswith('diffusion'):
             # Logging and monitoring only - do not modify content
             pass
         return message
 
 
-@HookFactory.register(name="post_video_creator_hook")
+@HookFactory.register(name="post_diffusion_hook")
 class PostMultiTaskVideoCreatorHook(PostLLMCallHook):
     """Hook triggered after LLM execution. Used for monitoring, logging, etc. Should NOT modify input/output content."""
     
     async def exec(self, message: Message, context: Context = None) -> Message:
-        if message.sender.startswith('video_creator'):
+        if message.sender.startswith('diffusion'):
             # Logging and monitoring only - do not modify content
             pass
         return message
@@ -58,7 +56,7 @@ class MultiTaskVideoCreatorAgent(VideoAgent):
 
 
 @agent(
-    name="video_creator",
+    name="video_diffusion",
     desc="""An intelligent assistant specially designed for creating, editing, and generating video content. Use when:
 - Creating new videos from images, audio clips, or text.
 - Editing existing videos (e.g., trimming, concatenating, adding effects or overlays).
@@ -74,8 +72,8 @@ Cannot process (do NOT delegate to this agent): Document reading/analysis (.pdf,
   Supported keys: image_url, reference_images (list of paths/URLs/base64), resolution, duration (must be ≤ 5 seconds), fps, poll, poll_interval, poll_timeout, download_video, output_dir.
 """
 )
-def build_video_creator_swarm():
-    """Build and configure the multi-task video_creator agent swarm."""
+def build_diffusion_swarm():
+    """Build and configure the multi-task diffusion agent swarm."""
     # APP_EVALUATOR_SKILLS_DIR: override skill read directory (plugin root with skills/ subdir)
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
     env_skills_dir = Path(os.path.expanduser(os.environ.get("SKILLS_PATH"))).resolve()
@@ -108,8 +106,8 @@ def build_video_creator_swarm():
     _system_prompt = _prompt_path.read_text(encoding="utf-8")
 
     # Create MultiTaskVideoCreatorAgent instance
-    video_creator = MultiTaskVideoCreatorAgent(
-        name="video_creator",
+    diffusion = MultiTaskVideoCreatorAgent(
+        name="diffusion",
         desc="An intelligent assistant for creating, editing, and generating video content.",
         conf=agent_config,
         system_prompt=_system_prompt,
@@ -120,4 +118,4 @@ def build_video_creator_swarm():
     )
 
     # Return the Swarm containing this Agent
-    return Swarm(video_creator)
+    return Swarm(diffusion)
