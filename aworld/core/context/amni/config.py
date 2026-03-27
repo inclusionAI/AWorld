@@ -86,6 +86,10 @@ class AgentContextConfig(BaseConfig):
     enable_system_prompt_augment: bool = Field(default=False, description="enable_system_prompt_augment")
     neuron_names: Optional[list[str]] = Field(default_factory=list)
     neuron_config: Optional[Dict[str, NeuronStrategyConfig]] = Field(default_factory=list)
+    
+    # AWORLD.md File Support
+    enable_aworld_file: bool = Field(default=True, description="Enable AWORLD.md file loading for project-specific context")
+    aworld_file_path: Optional[str] = Field(default=None, description="Custom path to AWORLD.md file (optional override)")
 
     # Context Reduce - Purge
     history_rounds: int = Field(default=100,
