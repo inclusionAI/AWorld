@@ -335,6 +335,8 @@ class SystemPromptAugmentOp(BaseOp):
                 filters["session_id"] = task.session_id
         else:  # query_scope == "task" or default
             # Pass task_id when query_scope is task
+            if task and task.session_id:
+                filters["session_id"] = task.session_id
             if task and task.id:
                 filters["task_id"] = task.id
 

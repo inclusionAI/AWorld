@@ -50,8 +50,8 @@ def build_image_agent():
         llm_config=ModelConfig(
             llm_model_name="Qwen-Image-2512-Lightning",
             llm_provider="image",
-            llm_api_key="zLGL7xFPTTLbWYraGdb4jsdxTiQ0IPrQ",
-            llm_base_url="https://antchat.alipay.com",
+            llm_api_key="key",
+            llm_base_url="url",
             llm_temperature=0.7,
         ),
     )
