@@ -328,7 +328,7 @@ def _apply_diffusion_models_config(models_config: Dict[str, Any]) -> None:
     if not provider:
         provider = (os.environ.get('DIFFUSION_PROVIDER') or '').strip()
     if not provider:
-        provider = 'together_video'
+        provider = 'ant_video'
     if temperature is None:
         env_temp = (os.environ.get('DIFFUSION_TEMPERATURE') or '').strip()
         if env_temp:
@@ -505,6 +505,7 @@ def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
     # Apply DIFFUSION_* from LLM_* when not set in .env
     _apply_diffusion_models_config({})
     _apply_audio_models_config({})
+    print(f"os {os.environ.get('DIFFUSION_PROVIDER')}")
     logger.info(f"[config] load_dotenv loaded from: {source_path} {os.environ.get('LLM_MODEL_NAME')} {os.environ.get('LLM_BASE_URL')}")
     return _env_to_config(), "local", source_path
 
