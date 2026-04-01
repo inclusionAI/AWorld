@@ -6,8 +6,9 @@ import os
 from datetime import datetime
 
 from aworld.agents.llm_agent import Agent
+from aworld.agents.image_agent import ImageAgent
 from aworld.config import AgentConfig, ModelConfig
-from aworld.core.agent.swarm import Swarm
+from aworld.core.agent.swarm import Swarm, TeamSwarm
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.amni import TaskInput, AmniConfigFactory
 from aworld.core.context.amni.config import AmniConfigLevel
@@ -17,8 +18,8 @@ from aworld.experimental.cast.tools.cast_search_tool import CAST_SEARCH
 from aworld.runner import Runners
 from aworld_cli.core.agent_registry_tool import AGENT_REGISTRY
 
-def build_skill_run_agent():
 
+def build_skill_run_agent():
     agent_config = AgentConfig(
         llm_config=ModelConfig(
             llm_model_name=os.environ.get("LLM_MODEL_NAME", "gpt-4"),
@@ -40,7 +41,32 @@ def build_skill_run_agent():
         tool_names=[AGENT_REGISTRY, CAST_SEARCH, CAST_ANALYSIS, CAST_CODER],
     )
 
-    return Swarm(skill_runner)
+    return TeamSwarm(skill_runner)
+
+
+def build_image_agent():
+    """Build the image generation agent."""
+    image_agent_config = AgentConfig(
+        llm_config=ModelConfig(
+            llm_model_name="Qwen-Image-2512-Lightning",
+            llm_provider="image",
+            llm_api_key="zLGL7xFPTTLbWYraGdb4jsdxTiQ0IPrQ",
+            llm_base_url="https://antchat.alipay.com",
+            llm_temperature=0.7,
+        ),
+    )
+
+    image_agent = ImageAgent(
+        name="image_agent",
+        desc="An agent that generates images from text prompts using Qwen Image API",
+        conf=image_agent_config,
+        default_size="1024x1024",
+        default_output_format="png",
+        output_dir="./generated_images",
+        auto_filename=True,
+    )
+
+    return image_agent
 
 
 async def build_context(task_input: TaskInput) -> ApplicationContext:
@@ -52,8 +78,9 @@ async def build_context(task_input: TaskInput) -> ApplicationContext:
 async def main():
     session_id = f"session_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     task_id = "task_1"
-    task_content = """First, use the `list_desc` tool in `AGENT_REGISTRY` to check if there are any built-in agents available for reference.
-Then, read the first five lines of `text2agent`."""
+    
+    # Task to test image generation functionality
+    task_content = """Generate an image of a cute cat playing with a ball"""
 
     task_input = TaskInput(
         user_id=f"test_user",
@@ -65,7 +92,13 @@ Then, read the first five lines of `text2agent`."""
 
     context = await build_context(task_input)
 
-    swarm = build_skill_run_agent()
+    # Build the swarm with both cast_agent and image_agent
+    cast_swarm = build_skill_run_agent()
+    image_agent = build_image_agent()
+    
+    # Create a team swarm with both agents
+    # The cast_agent can delegate to image_agent for image generation tasks
+    swarm = TeamSwarm(cast_swarm, image_agent)
 
     task1 = Task(
         input=task_content,
