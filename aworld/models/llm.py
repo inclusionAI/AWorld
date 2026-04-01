@@ -52,6 +52,7 @@ PROVIDER_CLASSES = {
     "ant": AntProvider,
     "together_video": TogetherVideoProvider,
     "doubao_tts": None,  # Lazy loaded to avoid circular import
+    "image": None,  # Lazy loaded to avoid circular import
 }
 
 # ---------------------------------------------------------------------------
@@ -356,10 +357,14 @@ class LLMModel:
             self.provider = VIDEO_PROVIDER_CLASSES[self.provider_name](**kwargs)
         elif self.provider_name in PROVIDER_CLASSES:
             provider_class = PROVIDER_CLASSES[self.provider_name]
-            # Lazy load DoubaoTTSProvider to avoid circular import
+            # Lazy load providers to avoid circular import
             if provider_class is None and self.provider_name == "doubao_tts":
                 from aworld.models.doubao_tts_provider import DoubaoTTSProvider
                 provider_class = DoubaoTTSProvider
+                PROVIDER_CLASSES[self.provider_name] = provider_class
+            elif provider_class is None and self.provider_name == "image":
+                from aworld.models.image_provider import ImageProvider
+                provider_class = ImageProvider
                 PROVIDER_CLASSES[self.provider_name] = provider_class
             self.provider = provider_class(**kwargs)
         else:
