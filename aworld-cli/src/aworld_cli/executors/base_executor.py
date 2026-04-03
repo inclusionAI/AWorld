@@ -48,6 +48,8 @@ except ImportError:
                     yield renderable
 
 from .base import AgentExecutor
+from .output_manager import OutputManager
+from .tool_logger import get_tool_logger
 
 
 def env_stream_no_truncate() -> bool:
@@ -98,6 +100,9 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         }
         self._init_session_management()
         self._setup_logging()
+        # Initialize tool call logger
+        self.tool_logger = get_tool_logger()
+        self._start_tool_logging()
 
     async def cleanup_resources(self) -> None:
         """
@@ -281,10 +286,10 @@ class BaseAgentExecutor(ABC, AgentExecutor):
     def new_session(self) -> str:
         """
         Create a new session and return the new session ID.
-        
+
         Returns:
             The new session ID
-            
+
         Example:
             >>> executor = BaseAgentExecutor()
             >>> old_id = executor.session_id
@@ -294,6 +299,10 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         old_session_id = self.session_id
         self.session_id = self._generate_session_id()
         self._add_session_to_history(self.session_id)
+
+        # Restart tool logging for new session
+        self._start_tool_logging()
+
         if self.console:
             self.console.print(f"[green]✨ New session created: {self.session_id}[/green]")
             if old_session_id:
@@ -1014,11 +1023,19 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         if 'human' in tool_name.lower() or 'human' in action_name.lower():
             return []
 
+        # Apply display alias for action_name (reverse mapping for user-friendly display)
+        display_action_name = action_name
+        if action_name:
+            # Import at function level to avoid circular imports
+            from aworld.mcp_client.utils import TOOL_ALIASES
+            # Direct lookup: TOOL_ALIASES maps original_name -> friendly_name
+            display_action_name = TOOL_ALIASES.get(action_name, action_name)
+
         tool_parts = []
         if tool_name:
             tool_parts.append(tool_name)
-        if action_name and action_name != tool_name:
-            tool_parts.append(f"→ {action_name}")
+        if display_action_name and display_action_name != tool_name:
+            tool_parts.append(f"→ {display_action_name}")
         tool_info = " ".join(tool_parts)
 
         summary = None
@@ -1037,7 +1054,31 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         elif result_content:
             try:
                 parsed = json.loads(result_content)
-                if isinstance(parsed, dict):
+
+                # Handle MCP terminal tool nested JSON: ["{"success": true, ...}"]
+                if isinstance(parsed, list) and len(parsed) > 0 and isinstance(parsed[0], str):
+                    try:
+                        inner_parsed = json.loads(parsed[0])
+                        if isinstance(inner_parsed, dict) and 'message' in inner_parsed:
+                            message = inner_parsed['message']
+                            if '## Output' in message:
+                                output_start = message.find('## Output')
+                                if output_start != -1:
+                                    output_section = message[output_start:]
+                                    code_block_start = output_section.find('```')
+                                    if code_block_start != -1:
+                                        content_start = output_section.find('\n', code_block_start) + 1
+                                        code_block_end = output_section.find('```', content_start)
+                                        if code_block_end != -1:
+                                            actual_output = output_section[content_start:code_block_end].strip()
+                                            if actual_output:
+                                                display_content = actual_output
+                        parsed = inner_parsed
+                    except (json.JSONDecodeError, ValueError):
+                        pass
+
+                # Standard JSON dict handling
+                if display_content is None and isinstance(parsed, dict):
                     key_info = []
                     for key, value in list(parsed.items())[:3]:
                         if isinstance(value, (str, int, float, bool)):
@@ -1061,14 +1102,71 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         lines.append(f"⚡ [bold]{tool_info}[/bold]")
         if display_content:
             all_content_lines = [ln.strip() for ln in display_content.split("\n") if ln.strip()]
+            total_lines = len(all_content_lines)
             content_lines = all_content_lines[:max_lines] if max_lines is not None else all_content_lines
-            for ln in content_lines:
+
+            # Add lines with ⎿ symbol for first line
+            for i, ln in enumerate(content_lines):
+                prefix = "  ⎿  " if i == 0 else "     "
                 if max_chars_per_line is not None and len(ln) > max_chars_per_line:
-                    lines.append(f"   {ln[:max_chars_per_line]}...")
+                    lines.append(f"{prefix}{ln[:max_chars_per_line]}...")
                 else:
-                    lines.append(f"   {ln}")
+                    lines.append(f"{prefix}{ln}")
+
+            # Add fold indicator if truncated
+            if max_lines is not None and total_lines > max_lines:
+                remaining = total_lines - max_lines
+                lines.append(f"     [dim]… +{remaining} lines[/dim]")
         else:
-            lines.append("   [dim italic]No output[/dim italic]")
+            lines.append("  ⎿  [dim italic]No output[/dim italic]")
+
+        # Log tool call for debugging and AI diagnosis
+        try:
+            # Extract tool arguments
+            tool_args = {}
+            if hasattr(output, 'metadata') and output.metadata:
+                # Try to get args from metadata
+                if 'args' in output.metadata:
+                    tool_args = output.metadata.get('args', {})
+                # For bash/terminal tools, extract command
+                elif 'command' in output.metadata:
+                    tool_args = {'command': output.metadata['command']}
+
+            # Extract execution time
+            duration = 0.0
+            if hasattr(output, 'metadata') and output.metadata:
+                duration = output.metadata.get('duration', 0.0)
+
+            # Determine status
+            status = "success"
+            error_msg = None
+            if hasattr(output, 'metadata') and output.metadata:
+                if output.metadata.get('error'):
+                    status = "error"
+                    error_msg = str(output.metadata.get('error'))
+
+            # Log to file
+            self.tool_logger.log_tool_call(
+                tool_name=tool_info,
+                args=tool_args,
+                output=display_content or result_content or "",
+                duration=duration,
+                status=status,
+                error=error_msg,
+                metadata={
+                    'summary': summary,
+                    'tool_name': tool_name,
+                    'action_name': action_name
+                },
+                context={
+                    'session_id': self.session_id
+                }
+            )
+        except Exception as e:
+            # Logging is non-critical, don't break formatting
+            from aworld.logs.util import logger
+            logger.debug(f"Failed to log tool call: {e}")
+
         return lines
 
     def _render_simple_tool_result_output(self, output) -> None:
@@ -1100,6 +1198,15 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         if 'human' in tool_name.lower() or 'human' in action_name.lower():
             return
 
+        # Apply display alias for action_name (reverse mapping for user-friendly display)
+        display_action_name = action_name
+        if action_name:
+            from aworld.mcp_client.utils import TOOL_ALIASES
+            for friendly_name, original_name in TOOL_ALIASES.items():
+                if action_name == original_name:
+                    display_action_name = friendly_name
+                    break
+
         # Get tool_call_id
         tool_call_id = ""
         if hasattr(output, 'metadata') and output.metadata:
@@ -1124,8 +1231,8 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         tool_parts = []
         if tool_name:
             tool_parts.append(tool_name)
-        if action_name and action_name != tool_name:
-            tool_parts.append(f"→ {action_name}")
+        if display_action_name and display_action_name != tool_name:
+            tool_parts.append(f"→ {display_action_name}")
         tool_info = " ".join(tool_parts)
 
         # Determine what content to show
@@ -1145,7 +1252,39 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             try:
                 import json
                 parsed = json.loads(result_content)
-                if isinstance(parsed, dict):
+
+                # Handle MCP terminal tool nested JSON: ["{"success": true, ...}"]
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    if isinstance(parsed[0], str):
+                        try:
+                            # Try to parse inner JSON string
+                            inner_parsed = json.loads(parsed[0])
+                            if isinstance(inner_parsed, dict):
+                                # Extract actual output from MCP terminal response
+                                if 'message' in inner_parsed:
+                                    # Extract the actual command output from message
+                                    message = inner_parsed['message']
+                                    if '## Output' in message:
+                                        # Parse markdown format: extract content after ## Output
+                                        output_start = message.find('## Output')
+                                        if output_start != -1:
+                                            output_section = message[output_start:]
+                                            # Extract content between ``` markers
+                                            code_block_start = output_section.find('```')
+                                            if code_block_start != -1:
+                                                content_start = output_section.find('\n', code_block_start) + 1
+                                                code_block_end = output_section.find('```', content_start)
+                                                if code_block_end != -1:
+                                                    actual_output = output_section[content_start:code_block_end].strip()
+                                                    if actual_output:
+                                                        display_content = actual_output
+                                                        is_json = True
+                                parsed = inner_parsed
+                        except (json.JSONDecodeError, ValueError):
+                            pass
+
+                # Standard JSON dict handling
+                if not is_json and isinstance(parsed, dict):
                     # Show key info from JSON
                     key_info = []
                     for key, value in list(parsed.items())[:3]:  # First 3 keys
@@ -1165,19 +1304,82 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             # If not JSON or JSON parsing failed, use line-based truncation
             if not is_json:
                 display_content = result_content
-        # Tool results: up to 3 lines, truncated at end; each line indented
+        # Tool results: Smart display with Claude Code style
         if display_content:
-            lines = [ln.strip() for ln in display_content.split('\n')[:3] if ln.strip()]
-            for i, ln in enumerate(lines):
-                lines[i] = ln[:500] + "..." if len(ln) > 500 else ln
+            all_lines = [ln.strip() for ln in display_content.split('\n') if ln.strip()]
+            total_lines = len(all_lines)
+            preview_lines = all_lines[:3]
+
             self.console.print(f"⚡ [bold]{tool_info}[/bold]")
-            for ln in lines:
-                self._print_indented_line(ln)
+
+            # Display with ⎿ symbol
+            for i, ln in enumerate(preview_lines):
+                prefix = "  ⎿  " if i == 0 else "     "
+                truncated = ln[:500] + "…" if len(ln) > 500 else ln
+                self.console.print(f"{prefix}{truncated}")
+
+            # Add fold indicator if there are more lines
+            if total_lines > 3:
+                remaining = total_lines - 3
+                # Check if output is very large and suggest saving
+                if total_lines > 50:
+                    output_mgr = OutputManager()
+                    save_path = output_mgr._save_output(tool_info, display_content)
+                    self.console.print(f"     [dim]… +{remaining} lines[/dim]")
+                    self.console.print(f"     [cyan]💾 Full output saved to:[/cyan] [green]{save_path}[/green]")
+                else:
+                    self.console.print(f"     [dim]… +{remaining} lines[/dim]")
         else:
             # No content case - still show header but indicate no output
-            self.console.print(f"⚡ [bold]{tool_info}[/bold]", style="dim")
-            self.console.print("   [dim italic]No output[/dim italic]")
+            self.console.print(f"⚡ [bold]{tool_info}[/bold]")
+            self.console.print("  ⎿  [dim italic]No output[/dim italic]")
             self.console.print()
+
+        # Log tool call for debugging and AI diagnosis
+        try:
+            # Extract tool arguments
+            tool_args = {}
+            if hasattr(output, 'metadata') and output.metadata:
+                # Try to get args from metadata
+                if 'args' in output.metadata:
+                    tool_args = output.metadata.get('args', {})
+                # For bash/terminal tools, extract command
+                elif 'command' in output.metadata:
+                    tool_args = {'command': output.metadata['command']}
+
+            # Extract execution time
+            duration = 0.0
+            if hasattr(output, 'metadata') and output.metadata:
+                duration = output.metadata.get('duration', 0.0)
+
+            # Determine status
+            status = "success"
+            error_msg = None
+            if hasattr(output, 'metadata') and output.metadata:
+                if output.metadata.get('error'):
+                    status = "error"
+                    error_msg = str(output.metadata.get('error'))
+
+            # Log to file
+            self.tool_logger.log_tool_call(
+                tool_name=tool_info,
+                args=tool_args,
+                output=display_content or result_content or "",
+                duration=duration,
+                status=status,
+                error=error_msg,
+                metadata={
+                    'tool_call_id': tool_call_id,
+                    'summary': summary,
+                    'tool_type': tool_type
+                },
+                context={
+                    'session_id': self.session_id
+                }
+            )
+        except Exception as e:
+            # Logging is non-critical, don't break rendering
+            logger.debug(f"Failed to log tool call: {e}")
 
     def _render_tool_result_output(self, output) -> None:
         """
@@ -1196,11 +1398,20 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         tool_name = getattr(output, 'tool_name', 'Unknown Tool')
         action_name = getattr(output, 'action_name', '')
         tool_type = getattr(output, 'tool_type', '')
-        
+
         # Skip rendering for human tools - user input doesn't need to be displayed as tool result
         if 'human' in tool_name.lower() or 'human' in action_name.lower():
             return
-        
+
+        # Apply display alias for action_name (reverse mapping for user-friendly display)
+        display_action_name = action_name
+        if action_name:
+            from aworld.mcp_client.utils import TOOL_ALIASES
+            for friendly_name, original_name in TOOL_ALIASES.items():
+                if action_name == original_name:
+                    display_action_name = friendly_name
+                    break
+
         # Get tool_call_id from metadata first, then from origin_tool_call
         tool_call_id = ""
         # Try to get from metadata (most reliable source)
@@ -1209,23 +1420,23 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         # Fallback to origin_tool_call.id if not in metadata
         if not tool_call_id and hasattr(output, 'origin_tool_call') and output.origin_tool_call:
             tool_call_id = getattr(output.origin_tool_call, 'id', '')
-        
+
         # Get summary from metadata first, fallback to generating a summary from data
         summary = None
         if hasattr(output, 'metadata') and output.metadata:
             summary = output.metadata.get('summary')
-        
+
         # Get result content
         result_content = ""
         if hasattr(output, 'data') and output.data:
             data_str = str(output.data)
             if data_str.strip():
                 result_content = data_str
-        
+
         # Build tool info
         tool_info = f"[bold]{tool_name}[/bold]"
-        if action_name:
-            tool_info += f" → {action_name}"
+        if display_action_name:
+            tool_info += f" → {display_action_name}"
         if tool_type:
             tool_info += f" [{tool_type}]"
         if tool_call_id:
@@ -1372,7 +1583,31 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             # If anything goes wrong, just suppress console output at standard logging level
             logging.getLogger().setLevel(logging.ERROR)
             logging.getLogger("aworld").setLevel(logging.ERROR)
-    
+
+    def _start_tool_logging(self) -> None:
+        """
+        Start tool call logging for current session.
+
+        Creates session log file at ~/.aworld/tool_calls/<session_id>.jsonl
+        with AI/human readable format for debugging and problem diagnosis.
+        """
+        try:
+            agent_name = getattr(self, 'agent_name', 'Unknown')
+            project = os.getcwd()
+
+            self.tool_logger.start_session(
+                session_id=self.session_id,
+                metadata={
+                    'agent_name': agent_name,
+                    'project': project,
+                    'platform': sys.platform,
+                    'python_version': sys.version.split()[0]
+                }
+            )
+        except Exception as e:
+            # Tool logging is non-critical, don't break if it fails
+            logger.debug(f"Failed to start tool logging: {e}")
+
     # ========== Abstract Methods (Subclass Implementation) ==========
     
     @abstractmethod

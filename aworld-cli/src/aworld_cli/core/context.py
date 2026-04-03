@@ -245,6 +245,7 @@ async def run_context_optimization(
 
     try:
         # Step 1: Get latest memory_item as trigger, call _run_summary_in_background to trigger compression
+        logger.info(f"Context|step 1: Loading memory items for agent={agent_id}, session={session_id}")
         filters = {
             "agent_id": agent_id,
             "session_id": session_id,
@@ -253,10 +254,13 @@ async def run_context_optimization(
         # `get_all` is a synchronous method in the current memory implementations,
         # so we must not `await` it.
         all_items = memory.get_all(filters=filters)
+        logger.info(f"Context|step 1: Found {len(all_items)} memory items")
 
         # Step 2: Extract file context from current directory
+        logger.info(f"Context|step 2: Extracting file context from {os.getcwd()}")
         root_path = Path(os.getcwd())
         file_context_content = extract_file_context(root_path)
+        logger.info(f"Context|step 2: Extracted file context ({len(file_context_content)} chars)")
 
         # Step 3: Configure agent memory with summary settings
         agent_memory_config = AgentMemoryConfig(
@@ -277,10 +281,13 @@ async def run_context_optimization(
 
         if all_items:
             last_item = all_items[-1]
+            logger.info(f"Context|step 3: Triggering LLM summary generation (this may take 30-60s)")
             await memory._run_summary_in_background(
                 memory_item=last_item,
                 agent_memory_config=agent_memory_config,
             )
+            logger.info(f"Context|step 3: LLM summary generation completed")
+
             # Get the newly generated summary
             summary_items = memory.get_all(
                 filters={
@@ -291,13 +298,15 @@ async def run_context_optimization(
             )
             if summary_items:
                 summary_content = summary_items[-1].content or ""
+                logger.info(f"Context|step 3: Retrieved summary ({len(summary_content)} chars)")
 
         # Step 4: Merge both results and write to agent history via _add
+        logger.info(f"Context|step 4: Merging summary and file context")
         combined_content = summary_content
 
         if not combined_content:
             msg = f"No content generated for compression - found {len(all_items)} memory items but no summary was created"
-            logger.info(f"Context|skip: {msg}")
+            logger.warning(f"Context|skip: {msg}")
             return False, 0, 0, msg, ""
 
         summary_metadata = MessageMetadata(
@@ -314,11 +323,13 @@ async def run_context_optimization(
             role="user",
         )
 
+        logger.info(f"Context|step 5: Saving compressed context to memory")
         await memory._add(
             memory_item=combined_memory,
             filters=None,
             agent_memory_config=agent_memory_config,
         )
+        logger.info(f"Context|step 5: Compressed context saved")
 
         # Calculate new tokens
         new_tokens = num_tokens_from_messages(
@@ -326,7 +337,7 @@ async def run_context_optimization(
         )
 
         logger.info(
-            f"Context|success: added combined context (summary + file) to agent {agent_id}"
+            f"Context|success: Compression complete - {original_tokens} → {new_tokens} tokens for agent {agent_id}"
         )
         msg = f"Successfully compressed context for agent {agent_id}"
         return True, original_tokens, new_tokens, msg, combined_content
