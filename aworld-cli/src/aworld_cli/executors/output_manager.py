@@ -93,10 +93,11 @@ class OutputManager:
 
             # Add fold indicator
             remaining = total_lines - self.MAX_PREVIEW_LINES
+            display_lines.append(f"     [dim]… +{remaining} lines[/dim]")
+
+            # Add file path on separate line if saved
             if file_path:
-                display_lines.append(f"     [dim]… +{remaining} lines (saved to {file_path})[/dim]")
-            else:
-                display_lines.append(f"     [dim]… +{remaining} lines[/dim]")
+                display_lines.append(f"     [cyan]💾 Full output saved to:[/cyan] [green]{file_path}[/green]")
 
         return display_lines, file_path
 

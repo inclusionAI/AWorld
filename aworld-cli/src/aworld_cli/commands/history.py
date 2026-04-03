@@ -9,6 +9,8 @@ Usage:
   /history --full <id>  - Show full output of a specific call
 """
 from typing import List, Optional
+from rich.console import Console
+from rich.table import Table
 from ..core.command_system import Command, CommandContext, register_command
 
 
@@ -43,10 +45,6 @@ class HistoryCommand(Command):
             Formatted history output
         """
         from ..executors.tool_logger import get_tool_logger
-        from rich.console import Console
-        from rich.table import Table
-        from rich.text import Text
-        import os
 
         logger = get_tool_logger()
         console = Console()
@@ -214,10 +212,11 @@ class HistoryCommand(Command):
         if target_call.get('metadata', {}).get('output_file'):
             output_file = target_call['metadata']['output_file']
             lines.extend([
-                f"[dim]Full output saved to:[/dim]",
-                f"  {output_file}",
                 "",
-                f"[dim]View with:[/dim] cat {output_file}"
+                f"[cyan]💾 Full output saved to:[/cyan]",
+                f"  [green]{output_file}[/green]",
+                "",
+                f"[dim]View with:[/dim] [yellow]cat {output_file}[/yellow]"
             ])
         else:
             output = target_call.get('output', '')

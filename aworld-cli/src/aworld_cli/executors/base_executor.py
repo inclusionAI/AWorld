@@ -1119,6 +1119,54 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                 lines.append(f"     [dim]… +{remaining} lines[/dim]")
         else:
             lines.append("  ⎿  [dim italic]No output[/dim italic]")
+
+        # Log tool call for debugging and AI diagnosis
+        try:
+            # Extract tool arguments
+            tool_args = {}
+            if hasattr(output, 'metadata') and output.metadata:
+                # Try to get args from metadata
+                if 'args' in output.metadata:
+                    tool_args = output.metadata.get('args', {})
+                # For bash/terminal tools, extract command
+                elif 'command' in output.metadata:
+                    tool_args = {'command': output.metadata['command']}
+
+            # Extract execution time
+            duration = 0.0
+            if hasattr(output, 'metadata') and output.metadata:
+                duration = output.metadata.get('duration', 0.0)
+
+            # Determine status
+            status = "success"
+            error_msg = None
+            if hasattr(output, 'metadata') and output.metadata:
+                if output.metadata.get('error'):
+                    status = "error"
+                    error_msg = str(output.metadata.get('error'))
+
+            # Log to file
+            self.tool_logger.log_tool_call(
+                tool_name=tool_info,
+                args=tool_args,
+                output=display_content or result_content or "",
+                duration=duration,
+                status=status,
+                error=error_msg,
+                metadata={
+                    'summary': summary,
+                    'tool_name': tool_name,
+                    'action_name': action_name
+                },
+                context={
+                    'session_id': self.session_id
+                }
+            )
+        except Exception as e:
+            # Logging is non-critical, don't break formatting
+            from aworld.logs.util import logger
+            logger.debug(f"Failed to log tool call: {e}")
+
         return lines
 
     def _render_simple_tool_result_output(self, output) -> None:
@@ -1277,7 +1325,8 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                 if total_lines > 50:
                     output_mgr = OutputManager()
                     save_path = output_mgr._save_output(tool_info, display_content)
-                    self.console.print(f"     [dim]… +{remaining} lines (saved to {save_path})[/dim]")
+                    self.console.print(f"     [dim]… +{remaining} lines[/dim]")
+                    self.console.print(f"     [cyan]💾 Full output saved to:[/cyan] [green]{save_path}[/green]")
                 else:
                     self.console.print(f"     [dim]… +{remaining} lines[/dim]")
         else:
