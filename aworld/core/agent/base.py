@@ -127,7 +127,15 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         # An agent can delegate tasks to other agent
         self.handoffs: List[str] = agent_names or []
         if sandbox:
-            self.mcp_servers: List[str] = extract_mcp_servers_from_config(sandbox.mcp_config, sandbox.mcp_servers or [])
+            # ✅ Tool Access Control Fix:
+            # Prioritize agent's explicit mcp_servers parameter over sandbox defaults
+            # This enables principle of least privilege: each agent specifies its own tool permissions
+            #
+            # Logic:
+            # - If mcp_servers parameter is explicitly provided (even []), use it
+            # - Otherwise, fall back to sandbox.mcp_servers
+            agent_mcp_servers = mcp_servers if mcp_servers is not None else (sandbox.mcp_servers or [])
+            self.mcp_servers: List[str] = extract_mcp_servers_from_config(sandbox.mcp_config, agent_mcp_servers)
             self.mcp_config: Dict[str, Any] = replace_env_variables(sandbox.mcp_config or {})
         else:
             self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
