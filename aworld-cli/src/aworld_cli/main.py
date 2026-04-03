@@ -4,11 +4,19 @@ Provides CLI interface without requiring aworldappinfra.
 """
 import argparse
 import asyncio
+import logging
 import os
 import sys
 from typing import Optional
 
 from aworld.memory.main import _default_file_memory_store
+
+# Suppress DEBUG logs from third-party libraries (asyncio, mcp, etc.)
+# Only show WARNING and above for non-aworld modules
+logging.basicConfig(level=logging.WARNING)
+# Keep aworld's own logging at INFO level
+for aworld_logger in ['aworld', 'AWorld']:
+    logging.getLogger(aworld_logger).setLevel(logging.INFO)
 
 # Try to import init_middlewares, fallback to no-op if not available
 try:
@@ -117,6 +125,9 @@ from .runtime.cli import CliRuntime
 from .console import AWorldCLI
 from .models import AgentInfo
 from .executors.continuous import ContinuousExecutor
+
+# Import commands to trigger registration
+from . import commands
 
 
 async def load_all_agents(
@@ -1101,9 +1112,9 @@ async def _run_direct_mode(
             # If restore fails, session_id was already set during executor creation
             pass
     
-    # Default to 1 run if max_runs is not specified
+    # Default to 10 runs if max_runs is not specified (allow multi-step tasks)
     if max_runs is None:
-        max_runs = 1
+        max_runs = 10
     
     # File parsing is now handled by FileParseHook automatically
     # Just pass the prompt as-is, the hook will process @filename references
