@@ -61,9 +61,11 @@ def build_context_config(debug_mode):
         debug_mode=True,
     ),
 )
-def build_developer_swarm():
+def build_developer_swarm(sandbox: 'Sandbox' = None):
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
-    env_skills_dir = Path(os.path.expanduser(os.environ.get("DEVELOPER_SKILLS_PATH"))).resolve()
+    # Get user skills directory from environment (optional)
+    env_skills_path = os.environ.get("DEVELOPER_SKILLS_PATH")
+    env_skills_dir = Path(os.path.expanduser(env_skills_path)).resolve() if env_skills_path else None
     skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
 
     # Create Agent configuration
@@ -84,14 +86,26 @@ def build_developer_swarm():
     # Extract all server keys from mcp_config
     mcp_servers = list(mcp_config.get("mcpServers", {}).keys())
 
-    # Mandatory Use - You must use this.
-    sandbox = Sandbox(
-        mcp_config=mcp_config
-    )
-    sandbox.reuse = True
+    # Sandbox: reuse shared sandbox if provided, otherwise create new one
+    if sandbox is None:
+        # Create sandbox only if not provided (standalone usage)
+        sandbox = Sandbox(
+            mcp_config=mcp_config,
+            builtin_tools=["filesystem", "terminal"],  # Phase 1: Expose filesystem tools
+            workspaces=[os.getcwd()]  # Allow current working directory
+        )
+        sandbox.reuse = True
+
+    # Developer has full MCP tool access: filesystem + terminal
+    # Note: Actual tools exposed are filtered by mcp_servers config
+    developer_mcp_servers = ["filesystem", "terminal"]
 
     # Skill tool_list: AGENT_REGISTRY, CAST_ANALYSIS, CAST_CODER, CAST_SEARCH
-    tool_names = ["CAST_ANALYSIS", "CAST_CODER", "CAST_SEARCH"]
+    tool_names = [
+        "CAST_ANALYSIS", "CAST_CODER", "CAST_SEARCH",
+        "glob",  # Phase 2: File pattern matching
+        "git_status", "git_diff", "git_log", "git_commit", "git_blame"  # Phase 2: Git tools
+    ]
 
     developer_agent = DeveloperAgent(
         name="developer",
@@ -99,9 +113,8 @@ def build_developer_swarm():
         conf=agent_config,
         system_prompt=(Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8"),
         tool_names=tool_names,
-        mcp_servers=mcp_servers,
-        mcp_config=mcp_config,
-        sandbox=sandbox
+        mcp_servers=developer_mcp_servers,  # Explicitly set allowed MCP servers
+        sandbox=sandbox  # Shared sandbox (tools filtered by developer_mcp_servers)
     )
 
     # Return the Swarm containing this Agent
