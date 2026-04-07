@@ -25,7 +25,7 @@ from aworld.mcp_client.utils import replace_mcp_servers_variables, extract_mcp_s
 
 # Context variable for task-safe context storage
 # This prevents race conditions when agent instances are reused across concurrent tasks
-_agent_context: contextvars.ContextVar['Context'] = contextvars.ContextVar('_agent_context', default=None)
+_agent_context: contextvars.ContextVar[Optional['Context']] = contextvars.ContextVar('_agent_context', default=None)
 
 INPUT = TypeVar("INPUT")
 OUTPUT = TypeVar("OUTPUT")
@@ -245,9 +245,10 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
+        # Store context in contextvars for task-safe access (prevents race conditions)
+        # Capture token to ensure proper cleanup in finally block
+        token = _agent_context.set(message.context)
         try:
-            # Store context in contextvars for task-safe access (prevents race conditions)
-            _agent_context.set(message.context)
             message.context.update_agent_step(self.id())
             task = message.context.get_task()
             if task and task.conf and task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
@@ -300,6 +301,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
             digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|failed")
             raise e
+        finally:
+            # Reset context to prevent leakage in task reuse scenarios
+            _agent_context.reset(token)
 
     def policy(
             self, observation: INPUT, info: Dict[str, Any] = None, **kwargs
