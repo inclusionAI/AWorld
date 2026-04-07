@@ -111,30 +111,137 @@ result = await Runners.async_run(
 )
 ```
 
-### Peer Communication API
+### Peer Communication Pattern
 
-Executors automatically get peer communication capabilities:
+**Hybrid provides the mechanism (EventManager + topology), agents implement the pattern.**
+
+Executors in a Hybrid swarm can communicate directly using the EventManager API.
+
+#### Sending Peer Messages
 
 ```python
-class MyAgent(Agent):
+from aworld.core.event.base import TopicType, Constants
+import time
+
+class FilterAgent(Agent):
     async def async_policy(self, observation, **kwargs):
-        # Check if in Hybrid mode
-        if self._is_peer_enabled:
-            # Share information with specific peer
-            await self.share_with_peer(
-                peer_name="Analyst2",
-                information={"stage": "complete", "data": results},
-                info_type="status"
-            )
-            
-            # Broadcast to all peers
-            await self.broadcast_to_all_peers(
-                information={"alert": "high_priority"},
-                info_type="alert"
+        # Process data
+        filtered_data = self.filter(observation.content)
+        
+        # Send peer message using EventManager
+        message = kwargs.get('message')
+        context = message.context
+        
+        # Find peer agent by name from swarm
+        task = context.get_task()
+        transform_agent = next(
+            (a for a in task.swarm.agents if a.name() == "TransformAgent"),
+            None
+        )
+        
+        if transform_agent:
+            # Share filtered data format with TransformAgent
+            await context.event_manager.emit(
+                data={
+                    "type": "share",
+                    "info_type": "data_format",
+                    "information": {
+                        "format": "standard_email",
+                        "count": len(filtered_data)
+                    },
+                    "sender_name": self.name(),
+                    "timestamp": time.time()
+                },
+                sender=self.id(),
+                receiver=transform_agent.id(),
+                topic=TopicType.PEER_BROADCAST,
+                session_id=context.session_id,
+                event_type=Constants.AGENT
             )
         
-        # Continue with agent logic
-        return self.to_action_model(results)
+        return [self.to_action_model(filtered_data)]
+```
+
+#### Broadcasting to All Peers
+
+```python
+class ValidateAgent(Agent):
+    async def async_policy(self, observation, **kwargs):
+        # Validate results
+        validation_result = self.validate(observation.content)
+        
+        # Broadcast completion status to all peers
+        message = kwargs.get('message')
+        context = message.context
+        task = context.get_task()
+        
+        # Get all executor peers (excluding self and coordinator)
+        root_id = task.swarm.agent_graph.root_agent.id()
+        peers = [
+            agent for agent in task.swarm.agents 
+            if agent.id() != self.id() and agent.id() != root_id
+        ]
+        
+        # Broadcast to all peers
+        for peer in peers:
+            await context.event_manager.emit(
+                data={
+                    "type": "broadcast",
+                    "info_type": "completion",
+                    "information": {
+                        "status": "validation_complete",
+                        "pass_rate": validation_result['pass_rate']
+                    },
+                    "sender_name": self.name(),
+                    "timestamp": time.time()
+                },
+                sender=self.id(),
+                receiver=peer.id(),
+                topic=TopicType.PEER_BROADCAST,
+                session_id=context.session_id,
+                event_type=Constants.AGENT
+            )
+        
+        return [self.to_action_model(validation_result)]
+```
+
+#### Receiving Peer Messages
+
+```python
+class TransformAgent(Agent):
+    async def async_policy(self, observation, **kwargs):
+        message = kwargs.get('message')
+        context = message.context
+        
+        # Check for peer messages (optional, non-blocking)
+        format_info = None
+        try:
+            msg = await asyncio.wait_for(
+                context.event_manager.consume(nowait=True),
+                timeout=0.1  # Quick check
+            )
+            if msg and msg.topic == TopicType.PEER_BROADCAST:
+                payload = msg.payload
+                if payload.get('info_type') == 'data_format':
+                    format_info = payload.get('information')
+        except asyncio.TimeoutError:
+            pass  # No messages, proceed with defaults
+        
+        # Transform data (using format_info if available)
+        result = self.transform(observation.content, format_info)
+        return [self.to_action_model(result)]
+```
+
+**Message Format:**
+
+```python
+{
+    "type": "share" | "broadcast",
+    "info_type": str,           # your business message type
+    "information": Any,         # your data
+    "sender_name": str,
+    "timestamp": float
+}
 ```
 
 **Key Points**:

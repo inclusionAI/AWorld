@@ -60,24 +60,6 @@ class TestWorkflowSwarmRegression:
 
         logger.info("✅ Workflow parallel execution test passed")
 
-    def test_workflow_no_peer_capability(self):
-        """Test that workflow agents don't have peer capability."""
-        agent1 = Agent(name="Agent1", conf=AgentConfig())
-        agent2 = Agent(name="Agent2", conf=AgentConfig())
-
-        swarm = Swarm(
-            agent1, agent2,
-            build_type=GraphBuildType.WORKFLOW
-        )
-        swarm.reset()
-
-        # Verify agents don't have peer capability
-        assert not agent1._is_peer_enabled, \
-            "Workflow agents should NOT have peer capability"
-        assert not agent2._is_peer_enabled, \
-            "Workflow agents should NOT have peer capability"
-
-        logger.info("✅ Workflow no peer capability test passed")
 
 
 class TestTeamSwarmRegression:
@@ -133,29 +115,6 @@ class TestTeamSwarmRegression:
 
         logger.info("✅ Team with root_agent parameter test passed")
 
-    def test_team_no_peer_capability(self):
-        """Test that team agents don't have peer capability."""
-        coordinator = Agent(name="Coordinator", conf=AgentConfig())
-        worker1 = Agent(name="Worker1", conf=AgentConfig())
-        worker2 = Agent(name="Worker2", conf=AgentConfig())
-
-        swarm = Swarm(
-            coordinator,
-            worker1,
-            worker2,
-            build_type=GraphBuildType.TEAM
-        )
-        swarm.reset()
-
-        # Verify agents don't have peer capability
-        assert not coordinator._is_peer_enabled, \
-            "Team coordinator should NOT have peer capability"
-        assert not worker1._is_peer_enabled, \
-            "Team workers should NOT have peer capability"
-        assert not worker2._is_peer_enabled, \
-            "Team workers should NOT have peer capability"
-
-        logger.info("✅ Team no peer capability test passed")
 
 
 class TestHandoffSwarmRegression:
@@ -188,25 +147,6 @@ class TestHandoffSwarmRegression:
 
         logger.info("✅ Handoff basic creation test passed")
 
-    def test_handoff_no_peer_capability(self):
-        """Test that handoff agents don't have peer capability."""
-        agent1 = Agent(name="Agent1", conf=AgentConfig())
-        agent2 = Agent(name="Agent2", conf=AgentConfig())
-
-        swarm = Swarm(
-            (agent1, agent2),
-            (agent2, agent1),
-            build_type=GraphBuildType.HANDOFF
-        )
-        swarm.reset()
-
-        # Verify agents don't have peer capability
-        assert not agent1._is_peer_enabled, \
-            "Handoff agents should NOT have peer capability"
-        assert not agent2._is_peer_enabled, \
-            "Handoff agents should NOT have peer capability"
-
-        logger.info("✅ Handoff no peer capability test passed")
 
 
 class TestBackwardCompatibility:
