@@ -48,11 +48,35 @@ def get_terminal_script_path() -> str:
 
 
 def get_server_env() -> Dict[str, str]:
-    """Read env values that should be forwarded to MCP server processes (e.g. workspace)."""
+    """
+    Read env values that should be forwarded to MCP server processes.
+
+    This includes:
+    - AWORLD_WORKSPACE: workspace directories
+    - Log suppression vars: prevent verbose DEBUG/INFO logs from appearing in CLI
+    """
     env: Dict[str, str] = {}
+
+    # Workspace configuration
     v = os.environ.get(ENV_WORKSPACE, "").strip()
     if v:
         env[ENV_WORKSPACE] = v
+
+    # Log suppression for MCP server subprocesses
+    # These environment variables suppress verbose logging from Python-based MCP servers
+    log_suppression_vars = {
+        "PYTHONWARNINGS": "ignore",           # Suppress Python warnings
+        "MCP_LOG_LEVEL": "WARNING",           # MCP server log level
+        "LOG_LEVEL": "WARNING",               # Generic log level
+        "LOGLEVEL": "WARNING",                # Alternative log level var
+        "AWORLD_DISABLE_CONSOLE_LOG": "true"  # For aworld-based MCP servers
+    }
+
+    # Only set log suppression if not explicitly disabled by user
+    preserve_logs = os.environ.get('AWORLD_PRESERVE_MCP_LOGS', 'false').lower() in ('true', '1', 'yes')
+    if not preserve_logs:
+        env.update(log_suppression_vars)
+
     return env
 
 

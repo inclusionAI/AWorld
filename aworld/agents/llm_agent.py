@@ -27,7 +27,7 @@ from aworld.events import eventbus
 from aworld.events.util import send_message, send_message_with_future
 from aworld.logs.prompt_log import PromptLogger
 from aworld.logs.util import logger, Color, digest_logger
-from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools
+from aworld.mcp_client.utils import mcp_tool_desc_transform, process_mcp_tools, skill_translate_tools, filter_mcp_tools_by_servers
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemoryItem, MemoryAIMessage, MemoryMessage, MemoryToolMessage
 from aworld.models.llm import get_llm_model, acall_llm_model, acall_llm_model_stream, apply_chat_template, \
@@ -93,9 +93,11 @@ class LlmOutputParser(ModelOutputParser[ModelResponse, AgentResult]):
                 if (not full_name.startswith("mcp__") and agent_info and agent_info.sandbox and
                         agent_info.sandbox.mcpservers and agent_info.sandbox.mcpservers.mcp_servers):
                     if agent_info.sandbox.mcpservers.map_tool_list:
-                        _server_name = agent_info.sandbox.mcpservers.map_tool_list.get(full_name)
-                        if _server_name:
-                            full_name = f"mcp__{_server_name}__{full_name}"
+                        _original_tool = agent_info.sandbox.mcpservers.map_tool_list.get(full_name)
+                        if _original_tool:
+                            # map_tool_list maps friendly name to original "server__tool" format
+                            # e.g., "bash" → "terminal__mcp_execute_command"
+                            full_name = f"mcp__{_original_tool}"
                             logger.info(
                                 f"🔄 [Agent:{agent_id}] Mapped tool name: {original_name} -> {full_name} (via map_tool_list)")
                     else:
@@ -284,8 +286,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # MCP servers are tools
         try:
             if self.sandbox and hasattr(self.sandbox, 'mcpservers') and self.sandbox.mcpservers:
-                mcp_tools = await self.sandbox.mcpservers.list_tools(context)
-                processed_tools, tool_mapping = await process_mcp_tools(mcp_tools)
+                # Get all available MCP tools from shared sandbox
+                all_mcp_tools = await self.sandbox.mcpservers.list_tools(context)
+
+                # ✅ Filter tools based on agent's mcp_servers configuration
+                # This enforces principle of least privilege:
+                # - Each agent only sees tools from allowed MCP servers
+                # - Shared sandbox doesn't expose all tools to all agents
+                # - Agent's mcp_servers acts as access control list
+                filtered_mcp_tools = filter_mcp_tools_by_servers(
+                    all_mcp_tools,
+                    allowed_servers=self.mcp_servers
+                )
+
+                processed_tools, tool_mapping = await process_mcp_tools(filtered_mcp_tools)
                 self.sandbox.mcpservers.map_tool_list = tool_mapping
                 self.tools.extend(processed_tools)
                 self.tool_mapping = tool_mapping

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import threading
 import uuid
 from typing import Optional, List, Dict, Any
@@ -287,9 +288,20 @@ class McpProtocol(AppProtocol):
         """Start the MCP server."""
         if self._running:
             return
-        
+
         self._running = True
-        
+
+        # Suppress MCP/FastMCP verbose logging (DEBUG/INFO) for console output
+        # File logs are controlled by aworld.logs.util configuration
+        mcp_loggers = [
+            'mcp', 'mcp.server', 'mcp.shared', 'mcp.client',
+            'fastmcp', 'uvicorn', 'uvicorn.access', 'uvicorn.error'
+        ]
+        for logger_name in mcp_loggers:
+            logger = logging.getLogger(logger_name)
+            logger.setLevel(logging.WARNING)
+            logger.propagate = False
+
         # Create an event to signal server startup
         server_started = threading.Event()
         server_error = threading.Event()

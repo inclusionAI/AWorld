@@ -1,8 +1,8 @@
 # Multi-Agent Examples
 
 This directory contains a variety of multi-agent system examples built on the AWorld framework. 
-These examples demonstrate three core paradigms of agent **collaboration**, **coordination**, and **workflow**, 
-corresponding to **Swarm** of Handoff, Team, and Workflow respectively.
+These examples demonstrate four core paradigms of agent **collaboration**, **coordination**, **workflow**, and **hybrid**, 
+corresponding to **Swarm** of Handoff, Team, Workflow, and Hybrid respectively.
 
 ## Examples of Paradigm
 
@@ -30,14 +30,24 @@ corresponding to **Swarm** of Handoff, Team, and Workflow respectively.
     - **search/**  
       Example of agents collaborating to perform search and data aggregation tasks.
 
+- **hybrid/**
+  - Hybrid multi-agent system combining centralized coordination with peer-to-peer communication.
+    - **data_processing/**  
+      Demonstrates Hybrid architecture with a data processing pipeline (filter → transform → validate).  
+      Features peer communication between executors for information sharing and quality feedback.  
+      Includes both quick architecture tests (no LLM) and full validation with LLM agents.  
+      See `hybrid/README.md` for architecture details and `hybrid/data_processing/README.md` for usage.
+
 ## Key Concepts
 
-- **Collaboration:**  
-  Agents work together to achieve a common goal, such as debating or planning a trip.
-- **Coordination:**  
-  Agents are orchestrated in a structured pattern to solve complex problems.
-- **Workflow Automation:**  
-  Agents automate multi-step processes, such as planning, searching, and summarizing information.
+- **Collaboration (Handoff):**  
+  Agents work together to achieve a common goal through dynamic delegation, such as debating or planning a trip.
+- **Coordination (Team):**  
+  Agents are orchestrated in a structured pattern (star topology) to solve complex problems with a central coordinator.
+- **Workflow Automation (Workflow):**  
+  Agents automate multi-step processes in sequential or parallel DAG patterns, such as planning, searching, and summarizing information.
+- **Hybrid (Team + Peer Communication):**  
+  Combines centralized coordination with peer-to-peer communication. Orchestrator controls workflow while executors share information directly for better coordination.
 
 ## Usage
 

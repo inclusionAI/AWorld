@@ -6,6 +6,11 @@ from typing import Any, Dict, List, Optional
 
 from rich.console import Console
 
+try:
+    from aworld.models.utils import ModelUtils
+except ImportError:
+    ModelUtils = None
+
 
 def format_tokens(n: int) -> str:
     """Format token count: 2900 -> 2.9k, 1000 -> 1k, 100 -> 100."""
@@ -37,6 +42,49 @@ def format_elapsed(sec: float) -> str:
     hours = int(sec // 3600)
     minutes = int((sec % 3600) // 60)
     return f"{hours}h {minutes}m"
+
+
+def format_context_bar(used_tokens: int, max_tokens: int, bar_width: int = 10) -> str:
+    """
+    Format context usage as a visual progress bar.
+
+    Args:
+        used_tokens: Number of tokens used
+        max_tokens: Maximum context window size
+        bar_width: Width of the progress bar in characters (default: 10)
+
+    Returns:
+        Formatted string like "Ctx ████░░░░░░ 41%" or "Ctx 20.2k/200k"
+
+    Examples:
+        >>> format_context_bar(82000, 200000, 10)
+        'Ctx ████░░░░░░ 41%'
+        >>> format_context_bar(150000, 200000, 10)
+        'Ctx ███████░░░ 75%'
+    """
+    if max_tokens <= 0:
+        # Fallback: just show token count
+        return f"Ctx {format_tokens(used_tokens)}"
+
+    # Calculate percentage
+    percentage = min(100, int((used_tokens / max_tokens) * 100))
+
+    # Calculate filled blocks
+    filled = int((used_tokens / max_tokens) * bar_width)
+    empty = bar_width - filled
+
+    # Unicode block characters for better visual effect
+    bar = "█" * filled + "░" * empty
+
+    # Color coding based on usage
+    if percentage >= 90:
+        color = "red"  # Critical
+    elif percentage >= 70:
+        color = "yellow"  # Warning
+    else:
+        color = "green"  # Normal
+
+    return f"[{color}]Ctx {bar} {percentage}%[/{color}]"
 
 
 class StreamTokenStats:
@@ -143,6 +191,7 @@ class StreamTokenStats:
         out_val = stats.get("output_tokens")
         tc_count = stats.get("tool_calls_count", 0)
         aname = stats.get("agent_name") or "agent"
+        model_name = stats.get("model_name")
         inp_est = stats.get("input_estimated", False)
         out_est = stats.get("output_estimated", False)
         tc_est = stats.get("tool_calls_estimated", False)
@@ -154,9 +203,22 @@ class StreamTokenStats:
         if tc_count > 0:
             tc_str = f"{tc_count}" if tc_est else str(tc_count)
             parts.append(f"[dim]{tc_str} tool call(s)[/dim]")
+
+        # Add context usage visualization
         total_tokens = self._compute_total_tokens(stats)
-        if total_tokens is not None:
+        if total_tokens is not None and model_name and ModelUtils:
+            max_tokens = ModelUtils.get_context_window(model_name)
+            if max_tokens > 0:
+                # Show visual progress bar
+                context_bar = format_context_bar(total_tokens, max_tokens, bar_width=10)
+                parts.append(context_bar)
+            else:
+                # Fallback to token count
+                parts.append(f"[dim]~{format_tokens(total_tokens)} tokens[/dim]")
+        elif total_tokens is not None:
+            # No model info, just show token count
             parts.append(f"[dim]~{format_tokens(total_tokens)} tokens[/dim]")
+
         parts.append(f"[dim]{elapsed_str}[/dim]")
         parts.append(f"[dim]{format_timestamp()}[/dim]")
         return "  ".join(parts)
@@ -170,6 +232,7 @@ class StreamTokenStats:
             out_val = stats.get("output_tokens")
             tc_count = stats.get("tool_calls_count", 0)
             aname = stats.get("agent_name", "agent")
+            model_name = stats.get("model_name")
             if inp is not None or out_val is not None or tc_count > 0 or elapsed_sec is not None:
                 inp_est = stats.get("input_estimated", False)
                 out_est = stats.get("output_estimated", False)
@@ -182,9 +245,22 @@ class StreamTokenStats:
                 if tc_count > 0:
                     tc_str = f"{tc_count}" if tc_est else str(tc_count)
                     parts.append(f"[dim]{tc_str} tool call(s)[/dim]")
+
+                # Add context usage visualization
                 total_tokens = self._compute_total_tokens(stats)
-                if total_tokens is not None:
+                if total_tokens is not None and model_name and ModelUtils:
+                    max_tokens = ModelUtils.get_context_window(model_name)
+                    if max_tokens > 0:
+                        # Show visual progress bar
+                        context_bar = format_context_bar(total_tokens, max_tokens, bar_width=10)
+                        parts.append(context_bar)
+                    else:
+                        # Fallback to token count
+                        parts.append(f"[dim]~{format_tokens(total_tokens)} tokens[/dim]")
+                elif total_tokens is not None:
+                    # No model info, just show token count
                     parts.append(f"[dim]~{format_tokens(total_tokens)} tokens[/dim]")
+
                 if elapsed_sec is not None:
                     parts.append(f"[dim]{format_elapsed(elapsed_sec)}[/dim]")
                 parts.append(f"[dim]{format_timestamp()}[/dim]")

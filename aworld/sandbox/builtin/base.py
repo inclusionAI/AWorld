@@ -26,6 +26,8 @@ FILESYSTEM_TOOL_MAPPING = {
 
 TERMINAL_TOOL_MAPPING = {
     "run_code": "run_code",
+    "bash": "execute_command",  # User-friendly alias for execute_command
+    "execute_command": "execute_command",  # Keep original name for compatibility
 }
 
 # Service names

@@ -19,6 +19,7 @@ from rich.text import Text
 from aworld.logs.util import logger
 from ._globals import console
 from .core.skill_registry import get_skill_registry, get_user_skills_paths
+from .core.command_system import CommandRegistry, CommandContext
 from .models import AgentInfo
 from .user_input import UserInputHandler
 
@@ -891,7 +892,6 @@ class AWorldCLI:
 
         # 4. Agents
         try:
-            import os
             agents_loc = os.path.expanduser(os.environ.get('AGENTS_PATH', '~/.aworld/agents'))
             agents_status = (
                 "[bold bright_green]READY[/bold bright_green]"
@@ -976,7 +976,7 @@ class AWorldCLI:
         session_id_info = ""
         if executor_instance and hasattr(executor_instance, 'session_id'):
             session_id_info = f"\nCurrent session: [dim]{executor_instance.session_id}[/dim]"
-        self.console.print(f"Starting chat with [bold]{agent_name}[/bold]. Type /help for available commands.")
+
         # Get agent configuration info (PTC, MCP servers, and Skills)
         config_info = ""
         if available_agents:
@@ -1000,7 +1000,7 @@ class AWorldCLI:
                     mcp_info = f"\nMCP Servers: [dim]{mcp_list}[/dim]"
                 else:
                     mcp_info = ""  # Don't show "None" either
-                
+
                 config_info = f"{ptc_info}{mcp_info}"
         
         # Get skill status from executor if available
@@ -1012,7 +1012,7 @@ class AWorldCLI:
                 active = skill_status.get('active', 0)
                 inactive = skill_status.get('inactive', 0)
                 active_names = skill_status.get('active_names', [])
-                
+
                 if total > 0:
                     if active > 0 and active_names:
                         # Show active skill names
@@ -1025,47 +1025,71 @@ class AWorldCLI:
             except Exception:
                 # If getting skill status fails, don't show skill info
                 pass
-        
-        help_text = (
-            f"Starting chat session with [bold]{agent_name}[/bold].{session_id_info}{config_info}{skill_info}\n"
-            f"Type 'exit' to quit.\n"
-            f"Type '/switch [agent_name]' to switch agent.\n"
-            f"Type '/new' to create a new session.\n"
-            f"Type '/restore' or '/latest' to restore to the latest session.\n"
-            f"Type '/skills' to list all available skills.\n"
-            f"Type '/agents' to list all available agents.\n"
-            f"Type '/cost' for current session, '/cost -all' for global history.\n"
-            f"Type '/compact' to run context compression.\n"
-            f"Type '/team' for agent team management.\n"
-            f"Type '/memory' to edit project context, '/memory view' to view, '/memory status' for status.\n"
-            f"Use @filename to include images or text files (e.g., @photo.jpg or @document.txt)."
-        )
+
+        # Display welcome message with configuration details
+        self.console.print(f"Starting chat with [bold]{agent_name}[/bold].{session_id_info}{config_info}{skill_info}")
+        self.console.print("[dim]Type /help for available commands.[/dim]\n")
+
+        # Build help text with both built-in and registered commands
+        help_lines = [
+            f"Starting chat session with [bold]{agent_name}[/bold].{session_id_info}{config_info}{skill_info}\n",
+            "Type 'exit' to quit.",
+            "Type '/switch [agent_name]' to switch agent.",
+            "Type '/new' to create a new session.",
+            "Type '/restore' or '/latest' to restore to the latest session.",
+            "Type '/skills' to list all available skills.",
+            "Type '/agents' to list all available agents.",
+            "Type '/cost' for current session, '/cost -all' for global history.",
+            "Type '/compact' to run context compression.",
+            "Type '/team' for agent team management.",
+            "Type '/memory' to edit project context, '/memory view' to view, '/memory status' for status.",
+        ]
+
+        # Add registered commands from CommandRegistry
+        registered_commands = CommandRegistry.list_commands()
+        if registered_commands:
+            help_lines.append("\n[bold cyan]Slash Commands:[/bold cyan]")
+            for cmd in sorted(registered_commands, key=lambda c: c.name):
+                help_lines.append(f"  /{cmd.name:<12} {cmd.description}")
+
+        help_lines.append("\nUse @filename to include images or text files (e.g., @photo.jpg or @document.txt).")
+
+        help_text = "\n".join(help_lines)
 
         # Check if we're in a real terminal (not IDE debugger or redirected input)
         is_terminal = sys.stdin.isatty()
-        
+
         # Setup completer and session only if in terminal
         agent_names = [a.name for a in available_agents] if available_agents else []
         session = None
-        
+
         if is_terminal:
+            # Get registered commands from CommandRegistry
+            registered_commands = [f"/{cmd.name}" for cmd in CommandRegistry.list_commands()]
+
             # 用整行前缀匹配：/ski → /skills、/age → /agents；meta_dict 在补全菜单中显示描述（命令左、描述右）
-            slash_cmds = [
+            # Built-in commands (not in CommandRegistry)
+            builtin_cmds = [
                 "/agents", "/skills", "/new", "/restore", "/latest",
-                "/exit", "/quit", "/switch", "/cost", "/cost -all", "/compact",
+                "/exit", "/switch", "/cost", "/cost -all", "/compact",
                 "/team",
                 "/memory", "/memory view", "/memory reload", "/memory status",
             ]
+
+            # Combine built-in and registered commands
+            slash_cmds = list(set(builtin_cmds + registered_commands))
+
             switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
-            all_words = slash_cmds + switch_with_agents + ["exit", "quit"]
-            meta_dict = {
+            all_words = slash_cmds + switch_with_agents + ["exit"]
+
+            # Meta descriptions for built-in commands
+            builtin_meta = {
                 "/agents": "List available agents",
                 "/skills": "List available skills",
                 "/new": "Create a new session",
-                "/restore": "Restore to the latest session",
+                "/restore": "Restore to a previous session",
                 "/latest": "Restore to the latest session",
                 "/exit": "Exit chat",
-                "/quit": "Exit chat",
                 "/switch": "Switch to another agent",
                 "/cost": "View query history (current session)",
                 "/cost -all": "View global history (all sessions)",
@@ -1076,10 +1100,16 @@ class AWorldCLI:
                 "/memory status": "Show memory system status",
                 "/team": "Agent team management commands",
                 "exit": "Exit chat",
-                "quit": "Exit chat",
             }
+
+            # Add descriptions from CommandRegistry
+            meta_dict = builtin_meta.copy()
+            for cmd in CommandRegistry.list_commands():
+                meta_dict[f"/{cmd.name}"] = cmd.description
+
             for n in agent_names:
                 meta_dict[f"/switch {n}"] = f"Switch to agent: {n}"
+
             completer = WordCompleter(
                 all_words,
                 ignore_case=True,
@@ -1110,10 +1140,93 @@ class AWorldCLI:
                     user_input = await asyncio.to_thread(input)
                 
                 user_input = user_input.strip()
-                
+
                 # Skip empty input (user just pressed Enter)
                 if not user_input:
                     continue
+
+                # Handle slash commands (custom command system)
+                if user_input.startswith("/"):
+                    parts = user_input[1:].split(maxsplit=1)
+                    cmd_name = parts[0]
+                    cmd_args = parts[1] if len(parts) > 1 else ""
+
+                    # Skip built-in commands (let them fall through)
+                    builtin_commands = {
+                        "exit", "quit", "help", "new", "restore", "latest",
+                        "switch", "skills", "agents", "cost", "compact",
+                        "team", "memory", "sessions", "visualize_trajectory"
+                    }
+                    if cmd_name.lower() not in builtin_commands:
+                        command = CommandRegistry.get(cmd_name)
+                        if command is None:
+                            # Command not found in registry
+                            self.console.print(f"[yellow]Unknown command: /{cmd_name}[/yellow]")
+                            self.console.print("[dim]Type /help to see available commands[/dim]")
+                            continue
+                        if command:
+                            # Create command context
+                            cmd_context = CommandContext(
+                                cwd=os.getcwd(),
+                                user_args=cmd_args,
+                                sandbox=None,  # TODO: Pass actual sandbox if available
+                                agent_config=None  # TODO: Pass agent config if needed
+                            )
+
+                            try:
+                                # Pre-execute validation
+                                error = await command.pre_execute(cmd_context)
+                                if error:
+                                    self.console.print(f"[red]Error: {error}[/red]")
+                                    continue
+
+                                # Route by command type
+                                if command.command_type == "tool":
+                                    # Tool command: Direct execution
+                                    result = await command.execute(cmd_context)
+                                    self.console.print(result)
+                                    continue
+                                else:
+                                    # Prompt command: Generate prompt for agent, then execute with tool filtering
+                                    prompt = await command.get_prompt(cmd_context)
+
+                                    # Apply tool filtering if executor_instance has a swarm
+                                    if executor_instance and hasattr(executor_instance, 'swarm'):
+                                        from .core.tool_filter import temporary_tool_filter
+
+                                        # Get allowed tools from command
+                                        allowed_tools = command.allowed_tools if command.allowed_tools else None
+
+                                        if allowed_tools:
+                                            logger.info(f"Command /{cmd_name} restricting tools to: {allowed_tools}")
+
+                                        # Execute with tool filtering
+                                        with temporary_tool_filter(executor_instance.swarm, allowed_tools):
+                                            # Print agent name before response
+                                            self.console.print(f"[bold green]{agent_name}[/bold green]:")
+
+                                            # Execute the prompt
+                                            try:
+                                                response = await executor(prompt)
+                                                # Response is returned for potential future use
+                                            except Exception as exec_error:
+                                                import traceback
+                                                logger.error(f"Error executing command /{cmd_name}: {exec_error}\n{traceback.format_exc()}")
+                                                self.console.print(f"[bold red]Error executing command: {exec_error}[/bold red]")
+
+                                        # Command executed, continue to next input
+                                        continue
+                                    else:
+                                        # No tool filtering available, execute normally
+                                        logger.warning(f"Tool filtering not available for command /{cmd_name} (no swarm found)")
+                                        user_input = prompt  # Replace input with generated prompt
+                                        # Fall through to normal execution
+
+                            except Exception as e:
+                                import traceback
+                                logger.error(f"Error executing command /{cmd_name}: {e}\n{traceback.format_exc()}")
+                                self.console.print(f"[red]Error executing command: {e}[/red]")
+                                continue
 
                 # Handle explicit exit commands
                 if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
@@ -1259,7 +1372,9 @@ class AWorldCLI:
                 # Handle compact command (context compression)
                 if user_input.lower() in ("/compact", "compact"):
                     try:
-                        from .core.context import run_context_optimization
+                        from .core.context import run_context_optimization, check_session_token_limit
+                        from .executors.stats import format_context_bar, format_tokens
+                        from aworld.models.utils import ModelUtils
 
                         if not executor_instance:
                             self.console.print("[yellow]⚠️ No executor instance available for compression.[/yellow]")
@@ -1271,8 +1386,6 @@ class AWorldCLI:
                             self.console.print("[yellow]⚠️ No session ID available for compression.[/yellow]")
                             continue
 
-                        self.console.print("[dim]Running context compression...[/dim]")
-
                         # Get agent name from executor or swarm
                         agent_id = agent_name
                         if hasattr(executor_instance, 'swarm') and executor_instance.swarm:
@@ -1283,27 +1396,113 @@ class AWorldCLI:
                                     # Get first agent name
                                     agent_id = list(agents.keys())[0] if agents.keys() else agent_name
 
-                        # Run compression directly with session_id (no need to construct context)
-                        ok, tokens_before, tokens_after, msg, compressed_content = await run_context_optimization(
-                            agent_id=agent_id,
-                            session_id=session_id
-                        )
-
-                        if ok:
-                            ratio = ((tokens_before - tokens_after) / tokens_before) * 100 if tokens_before > 0 else 0
-                            self.console.print(
-                                f"[dim]Context compressed: {tokens_before:,} → {tokens_after:,} tokens ({ratio:.1f}% reduction)[/dim]"
+                        # Get current context usage BEFORE compression
+                        try:
+                            _, stats_before, _ = check_session_token_limit(
+                                session_id=session_id,
+                                agent_name=agent_id
                             )
-                            # Display compressed content in gray
-                            if compressed_content:
-                                self.console.print(f"[dim]{compressed_content}[/dim]")
-                        else:
-                            self.console.print(f"[yellow]⚠️ {msg}[/yellow]")
+
+                            # Get model name from executor config
+                            model_name = None
+                            if hasattr(executor_instance, 'conf') and hasattr(executor_instance.conf, 'llm_model_name'):
+                                model_name = executor_instance.conf.llm_model_name
+                            elif hasattr(executor_instance, 'swarm') and hasattr(executor_instance.swarm, 'conf'):
+                                model_name = executor_instance.swarm.conf.llm_model_name
+
+                            # Calculate and display current usage
+                            if stats_before and model_name:
+                                by_agent = stats_before.get("by_agent", {})
+                                agent_stats = by_agent.get(agent_id, {})
+                                current_tokens = agent_stats.get("context_window_tokens", 0)
+
+                                if current_tokens > 0:
+                                    max_tokens = ModelUtils.get_context_window(model_name)
+                                    if max_tokens > 0:
+                                        context_bar = format_context_bar(current_tokens, max_tokens, bar_width=10)
+                                        self.console.print(f"[dim]Current usage: {context_bar}  ({format_tokens(current_tokens)}/{format_tokens(max_tokens)})[/dim]")
+                        except Exception as e:
+                            logger.debug(f"Could not display pre-compression stats: {e}")
+
+                        # Run compression with progress indicator, timeout, and interrupt handling
+                        try:
+                            self.console.print("[bold cyan]⏳ Starting context compression...[/bold cyan]")
+                            self.console.print("[dim]Press Ctrl+C to cancel[/dim]")
+
+                            # Create the compression task
+                            compression_task = asyncio.create_task(
+                                run_context_optimization(
+                                    agent_id=agent_id,
+                                    session_id=session_id
+                                )
+                            )
+
+                            # Wait with timeout
+                            ok, tokens_before, tokens_after, msg, compressed_content = await asyncio.wait_for(
+                                compression_task,
+                                timeout=90.0
+                            )
+
+                            if ok:
+                                # If this is first compression (tokens_before == 0), show generation message
+                                if tokens_before == 0:
+                                    self.console.print(
+                                        f"[green]✓[/green] Context compressed: Generated {tokens_after:,} tokens from history"
+                                    )
+                                else:
+                                    ratio = ((tokens_before - tokens_after) / tokens_before) * 100
+                                    self.console.print(
+                                        f"[green]✓[/green] Context compressed: {tokens_before:,} → {tokens_after:,} tokens ([bold]{ratio:.1f}%[/bold] reduction)"
+                                    )
+
+                                # Show AFTER compression context usage
+                                try:
+                                    _, stats_after, _ = check_session_token_limit(
+                                        session_id=session_id,
+                                        agent_name=agent_id
+                                    )
+
+                                    if stats_after and model_name:
+                                        by_agent = stats_after.get("by_agent", {})
+                                        agent_stats = by_agent.get(agent_id, {})
+                                        new_tokens = agent_stats.get("context_window_tokens", 0)
+
+                                        if new_tokens > 0:
+                                            max_tokens = ModelUtils.get_context_window(model_name)
+                                            if max_tokens > 0:
+                                                context_bar = format_context_bar(new_tokens, max_tokens, bar_width=10)
+                                                self.console.print(f"[dim]New usage:     {context_bar}  ({format_tokens(new_tokens)}/{format_tokens(max_tokens)})[/dim]")
+                                except Exception as e:
+                                    logger.debug(f"Could not display post-compression stats: {e}")
+
+                                # Compressed content contains internal analysis (XML tags, etc.) - not shown to user
+                                # It's saved to memory for agent use, no need to display technical details
+                            else:
+                                self.console.print(f"[yellow]⚠️ {msg}[/yellow]")
+
+                        except asyncio.TimeoutError:
+                            # Cancel the task on timeout
+                            if not compression_task.done():
+                                compression_task.cancel()
+                                try:
+                                    await compression_task
+                                except asyncio.CancelledError:
+                                    pass
+                            self.console.print("[red]✗[/red] Context compression timed out (90s limit)")
+                            self.console.print("[dim]Operation was cancelled. Try again later or check your API configuration.[/dim]")
+
+                        except asyncio.CancelledError:
+                            self.console.print("[yellow]⚠️[/yellow] Context compression cancelled by user")
+
+                    except KeyboardInterrupt:
+                        self.console.print("\n[yellow]⚠️[/yellow] Context compression interrupted by user (Ctrl+C)")
+                        # Don't re-raise, just continue to next prompt
+                        continue
 
                     except Exception as e:
-                        self.console.print(f"[red]Error running compression: {e}[/red]")
+                        self.console.print(f"[red]✗[/red] Error running compression: {e}")
                         import traceback
-                        traceback.print_exc()
+                        logger.error(f"Compression error: {e}\n{traceback.format_exc()}")
                     continue
 
                 # Handle memory command
@@ -1314,7 +1513,6 @@ class AWorldCLI:
                         subcommand = parts[1] if len(parts) > 1 else ""
 
                         # Import required modules
-                        import os
                         from pathlib import Path
                         import subprocess
 
@@ -1454,7 +1652,6 @@ Add any custom instructions for AI agents working on this project.
                         from .runtime.loaders import PluginLoader
                         from aworld_cli.core.agent_scanner import global_agent_registry
                         from pathlib import Path
-                        import os
 
                         built_in_agents = []
                         user_agents = []
@@ -1566,7 +1763,7 @@ Add any custom instructions for AI agents working on this project.
                 except Exception as e:
                     import traceback
                     logger.error(f"Error executing task: {e} {traceback.format_exc()}")
-                    self.console.print("[bold red]Error executing task:[/bold red]", end=" ")
+                    self.console.print(f"[bold red]Error executing task: {e}[/bold red]")
                     continue
 
             except KeyboardInterrupt:
@@ -1588,7 +1785,8 @@ Add any custom instructions for AI agents working on this project.
             except Exception as e:
                 import traceback
                 logger.error(f"Error executing task: {e} {traceback.format_exc()}")
-                self.console.print("[red]An unexpected error occurred:[/red]", end=" ")
+                self.console.print(f"[red]An unexpected error occurred: {e}[/red]")
+                continue  # Add continue to prevent fall-through
 
         return False
 

@@ -227,32 +227,50 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         skill_configs=ALL_SKILLS
     )
 
-    # Create the Aworld agent
+    # Create sandbox with builtin filesystem and terminal tools (Phase 1)
+    from aworld.sandbox import Sandbox
+
+    mcp_config = {
+        "mcpServers": {
+            "terminal": {
+                "command": sys.executable,
+                "args": ["-m", "examples.gaia.mcp_collections.tools.terminal"],
+                "env": {},
+                "client_session_timeout_seconds": 9999.0,
+            }
+        }
+    }
+
+    sandbox = Sandbox(
+        mcp_config=mcp_config,
+        builtin_tools=["filesystem", "terminal"],  # Phase 1: Expose filesystem tools
+        workspaces=[os.getcwd()]  # Allow current working directory
+    )
+    sandbox.reuse = True
+
+    # Create the Aworld agent with filesystem and terminal tools enabled
+    # Note: Aworld is a coordinator with lightweight tool access for information gathering
+    # Complex development tasks are delegated to sub-agents (e.g., Developer)
     aworld_agent = Agent(
         name="Aworld",
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
         system_prompt=(Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8"),
-        mcp_servers=["terminal"],
-        mcp_config={
-            "mcpServers": {
-                "terminal": {
-                    "command": sys.executable,
-                    "args": ["-m", "examples.gaia.mcp_collections.tools.terminal"],
-                    "env": {},
-                    "client_session_timeout_seconds": 9999.0,
-                }
-            }
-        },
-        tool_names=[CONTEXT_TOOL, 'CAST_SEARCH']
+        mcp_servers=["terminal"],  # Enable terminal for information gathering (curl, wget, etc.)
+        sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
+        tool_names=[
+            CONTEXT_TOOL,      # Core: Context management
+            'CAST_SEARCH',     # Core: Lightweight code search
+        ]
     )
 
     # Directly instantiate developer, evaluator, and diffusion as sub-agents
+    # Pass shared sandbox to enable resource sharing while maintaining tool access control
     try:
-        developer_swarm = build_developer_swarm()
-        evaluator_swarm = build_evaluator_swarm()
-        diffusion_swarm = build_diffusion_swarm()
-        audio_swarm = build_audio_swarm()
+        developer_swarm = build_developer_swarm(sandbox=sandbox)  # ✅ Share sandbox
+        evaluator_swarm = build_evaluator_swarm()  # TODO: Add sandbox parameter
+        diffusion_swarm = build_diffusion_swarm()  # TODO: Add sandbox parameter
+        audio_swarm = build_audio_swarm()  # TODO: Add sandbox parameter
         image_swarm = build_image_swarm()
         sub_agents = (
             extract_agents_from_swarm(developer_swarm)

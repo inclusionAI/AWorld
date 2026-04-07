@@ -756,6 +756,14 @@ async def mcp_tool_desc_transform_v2_reuse(
     return openai_tools
 
 
+# Tool name aliases: Maps unfriendly tool names to user-friendly aliases
+# This improves user experience by using familiar, concise names
+TOOL_ALIASES = {
+    "execute_command": "bash",  # bash is more intuitive than execute_command
+    "mcp_execute_command": "bash",  # GAIA terminal server uses this name
+    # Add more aliases as needed
+}
+
 async def process_mcp_tools(
         mcp_tools: Optional[List[Dict[str, Any]]] = None
 ) -> Tuple[List[Dict[str, Any]], Dict[str, str]]:
@@ -778,14 +786,94 @@ async def process_mcp_tools(
                 continue
             seen_simple_names.add(simple_name)
 
-            processed_tool["function"]["name"] = simple_name
-            # keep first mapping only
-            if simple_name not in tool_mapping:
-                tool_mapping[simple_name] = server_name
+            # Apply alias mapping if available
+            friendly_name = TOOL_ALIASES.get(simple_name, simple_name)
+
+            processed_tool["function"]["name"] = friendly_name
+            # Store mapping from friendly name to original server__tool name
+            # This allows reverse lookup during tool execution
+            if friendly_name not in tool_mapping:
+                tool_mapping[friendly_name] = original_name  # e.g., "bash" → "terminal__mcp_execute_command"
 
         processed_tools.append(processed_tool)
 
     return processed_tools, tool_mapping
+
+
+def filter_mcp_tools_by_servers(
+        mcp_tools: Optional[List[Dict[str, Any]]] = None,
+        allowed_servers: Optional[List[str]] = None
+) -> List[Dict[str, Any]]:
+    """
+    Filter MCP tools by allowed server names.
+
+    This function implements tool access control at the agent level:
+    - Each agent specifies which MCP servers it can access via agent.mcp_servers
+    - Only tools from allowed servers are exposed to the agent
+    - Enforces principle of least privilege: agents only see tools they need
+
+    Args:
+        mcp_tools: List of MCP tools from sandbox.mcpservers.list_tools()
+                   Format: [{"type": "function", "function": {"name": "server__tool", ...}}, ...]
+        allowed_servers: List of MCP server names this agent is allowed to access
+                        e.g., ["filesystem", "terminal"]
+                        If None or empty, returns empty list (no tools allowed)
+
+    Returns:
+        Filtered list of MCP tools that belong to allowed servers.
+
+    Example:
+        # Sandbox has tools from: filesystem, terminal, playwright
+        all_tools = await sandbox.mcpservers.list_tools(context)
+
+        # Evaluator agent only allowed to use filesystem (read-only)
+        evaluator_tools = filter_mcp_tools_by_servers(
+            all_tools,
+            allowed_servers=["filesystem"]
+        )
+        # Result: Only filesystem__ prefixed tools are returned
+
+        # Aworld agent has no MCP tools
+        aworld_tools = filter_mcp_tools_by_servers(
+            all_tools,
+            allowed_servers=[]  # or None
+        )
+        # Result: Empty list
+    """
+    if mcp_tools is None or not mcp_tools:
+        return []
+
+    # If no servers allowed, return empty list
+    if allowed_servers is None or not allowed_servers:
+        return []
+
+    # Convert to set for faster lookup
+    allowed_set = set(allowed_servers)
+
+    filtered_tools = []
+    for tool in mcp_tools:
+        try:
+            tool_name = tool.get("function", {}).get("name", "")
+
+            # Check if tool belongs to an allowed server
+            # Tool name format: "server_name__tool_name"
+            if "__" in tool_name:
+                server_name = tool_name.split("__", 1)[0]
+                if server_name in allowed_set:
+                    filtered_tools.append(tool)
+            # If no "__" in name, it might be already processed
+            # In that case, we can't determine server, so include it
+            # (This handles edge cases but shouldn't happen in normal flow)
+            else:
+                # Conservative approach: include if we can't determine server
+                # Alternative: exclude unknown tools (stricter)
+                filtered_tools.append(tool)
+
+        except Exception as e:
+            logger.warning(f"Error filtering tool {tool}: {e}")
+            continue
+
+    return filtered_tools
 
 
 async def mcp_tool_desc_transform(
@@ -1389,11 +1477,17 @@ async def call_mcp_tool_with_reuse(
 def extract_mcp_servers_from_config(mcp_config: Dict[str, Any] = None,
                                      current_servers: List[str] = None) -> List[str]:
     """
-    Extract MCP server names from mcp_config if current_servers is empty.
-    
-    If current_servers is not empty, return it as is.
-    Otherwise, extract all keys from mcp_config["mcpServers"] as server names.
-    
+    Extract MCP server names from mcp_config if current_servers is not provided.
+
+    ✅ Tool Access Control Logic:
+    - If current_servers is explicitly provided (even if []), return it as is
+    - Only extract from mcp_config if current_servers is None (not provided)
+
+    This distinction enables principle of least privilege:
+    - None: "not specified, use config default"
+    - []: "explicitly specified as empty, no servers allowed"
+    - ["server1"]: "explicitly specified servers only"
+
     Args:
         mcp_config: MCP configuration dictionary with structure:
             {
@@ -1403,24 +1497,24 @@ def extract_mcp_servers_from_config(mcp_config: Dict[str, Any] = None,
                     ...
                 }
             }
-        current_servers: Current list of MCP server names. If empty or None,
-                        will extract from mcp_config.
-    
+        current_servers: List of MCP server names. If None (not provided),
+                        will extract from mcp_config. If [] or ["server"],
+                        will return as is.
+
     Returns:
-        List of MCP server names. Returns current_servers if not empty,
+        List of MCP server names. Returns current_servers if explicitly provided,
         otherwise returns keys from mcp_config["mcpServers"].
     """
-    if current_servers is None:
-        current_servers = []
-    
-    # If current_servers is not empty, return it as is
-    if current_servers:
+    # ✅ If explicitly provided (even if empty []), return it
+    # This allows mcp_servers=[] to mean "no MCP tools allowed"
+    if current_servers is not None:
         return current_servers
-    
+
+    # Only extract from config if not provided at all (None)
     # If mcp_config is empty or None, return empty list
     if not mcp_config:
         return []
-    
+
     server_list = []
     try:
         mcp_servers = mcp_config.get("mcpServers", {})
