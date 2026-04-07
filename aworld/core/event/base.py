@@ -52,6 +52,8 @@ class TopicType:
     TASK_RESPONSE = "__task_response"
     BACKGROUND_TOOL_COMPLETE = "__background_tool_complete"
     BACKGROUND_TASK_COMPLETE = "__background_task_complete"
+    # Peer-to-peer communication in Hybrid swarm (non-blocking)
+    PEER_BROADCAST = "__peer_broadcast"
 
 
 DataType = TypeVar('DataType')
