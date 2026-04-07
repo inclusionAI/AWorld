@@ -2,6 +2,16 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Workspace Context
+
+**This workspace (`aworld-mas/aworld`) is specifically for improving the MAS (multi-agent system) framework layer.** Code modifications should focus primarily on the frameworks layer:
+
+- **Target Area**: `aworld/core/agent/` - Multi-agent orchestration, swarm topologies, agent communication
+- **Related Areas**: `aworld/core/tool/`, `aworld/core/context/`, `aworld/memory/` - Supporting infrastructure
+- **Validation**: Changes must be validated through GAIA/XBench benchmarks (Benchmark-Driven Development)
+
+When modifying multi-agent architecture, ensure compatibility with existing swarm topologies (Workflow, Handoff, Team, Hybrid) and maintain backward compatibility with single-agent scenarios.
+
 ## Project Overview
 
 AWorld is a **multi-agent framework and harness** designed to orchestrate AI agents, tools, memory, context, and execution. Built on multi-agent architecture as its core strength while supporting single-agent scenarios.
@@ -112,7 +122,7 @@ LLM_BASE_URL="your_base_url"
 ```
 aworld/                    # Framework + runtime (core harness)
 ├── core/                  # Agent, tool, context, memory abstractions
-│   ├── agent/            # Base agent, swarm orchestration
+│   ├── agent/            # Base agent, swarm orchestration (MAS FOCUS)
 │   ├── tool/             # Tool abstractions and factories
 │   ├── context/          # Context management
 │   └── memory.py         # Memory system
@@ -308,10 +318,10 @@ python run.py --split validation --start 0 --end 10
 
 **Traditional Unit Tests (Supporting):**
 ```bash
-cd tests
-python -m pytest                    # All tests
-python -m pytest tests/core/       # Specific module
-python -m pytest --cov=aworld      # With coverage
+python -m pytest tests/                    # All tests
+python -m pytest tests/core/              # Core module
+python -m pytest tests/core/test_agent/   # Agent tests
+python -m pytest --cov=aworld            # With coverage
 ```
 
 **Production Agents:**
@@ -341,15 +351,24 @@ agent = Agent(
 **Creating Multi-Agent Swarm:**
 ```python
 from aworld.core.agent.swarm import Swarm, GraphBuildType
+# Or use convenient aliases:
+from aworld.core.agent.swarm import WorkflowSwarm, HandoffSwarm, TeamSwarm, HybridSwarm
 
 # Workflow (deterministic)
 swarm = Swarm(agent1, [agent2, agent3], agent4)
+# Or: swarm = WorkflowSwarm(agent1, [agent2, agent3], agent4)
 
 # Handoff (AI-driven)
 swarm = Swarm((agent1, agent2), (agent1, agent3), build_type=GraphBuildType.HANDOFF)
+# Or: swarm = HandoffSwarm((agent1, agent2), (agent1, agent3))
 
 # Team (leader-follower)
 swarm = Swarm(leader, executor1, executor2, build_type=GraphBuildType.TEAM)
+# Or: swarm = TeamSwarm(leader, executor1, executor2)
+
+# Hybrid (centralized + peer-to-peer)
+swarm = Swarm(coordinator, worker1, worker2, build_type=GraphBuildType.HYBRID)
+# Or: swarm = HybridSwarm(coordinator, worker1, worker2)
 ```
 
 **Creating Custom Tools:**
@@ -440,13 +459,11 @@ def build_my_swarm() -> Swarm:
 When preparing commits or PRs, **never include** temporary files generated during local development:
 
 **Exclude Patterns:**
-- `Claude-Sessions/` - Claude Code session logs
-- `*_FINAL*.md`, `*_COMPLETE*.md`, `*_FIX*.md` - Process documentation
-- `COMPACT_*.md`, `CONTEXT_*.md`, `QUICK_*.md` - Temporary notes
-- `test_*.py`, `test_*.sh` (in root) - Ad-hoc test scripts
-- `git_*__tmp_action.py`, `glob*__tmp_action.py` - Temporary action files
-- `outline.json`, `template.html` - Development artifacts
-- `.aworld/` - Local runtime data
+- `Claude-Sessions/` - Session logs
+- `*_FINAL*.md`, `*_COMPLETE*.md`, `*_FIX*.md` - Process docs
+- `test_*.py`, `test_*.sh` (in root) - Ad-hoc tests
+- `*__tmp_action.py` - Temporary files
+- See `.gitignore` for full list
 
 **Before Creating PR:**
 1. Review `git status` carefully
