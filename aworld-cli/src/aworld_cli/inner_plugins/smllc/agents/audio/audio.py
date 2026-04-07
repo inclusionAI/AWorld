@@ -80,17 +80,19 @@ def build_audio_swarm():
     """Build and configure the multi-task audio agent swarm."""
     # APP_EVALUATOR_SKILLS_DIR: override skill read directory (plugin root with skills/ subdir)
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
-    env_skills_dir = Path(os.path.expanduser(os.environ.get("SKILLS_PATH"))).resolve()
+    # Get user skills directory from environment (optional)
+    env_skills_path = os.environ.get("SKILLS_PATH")
+    env_skills_dir = Path(os.path.expanduser(env_skills_path)).resolve() if env_skills_path else None
     skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
 
     # Create Agent configuration (AUDIO_* from models.audio or fallback to MEDIA_LLM_*/LLM_*)
     agent_config = AgentConfig(
         llm_config=ModelConfig(
-            llm_model_name=os.environ.get("AUDIO_MODEL_NAME", "claude-3-5-sonnet-20241022"),
-            llm_provider=os.environ.get("AUDIO_PROVIDER", "openai"),
-            llm_api_key=os.environ.get("AUDIO_API_KEY"),
-            llm_base_url=os.environ.get("AUDIO_BASE_URL"),
-            llm_temperature=float(os.environ.get("AUDIO_TEMPERATURE", "0.1")),
+            llm_model_name=os.environ.get("AUDIO_MODEL_NAME", os.environ.get("LLM_MODEL_NAME", "claude-3-5-sonnet-20241022")),
+            llm_provider=os.environ.get("AUDIO_PROVIDER", os.environ.get("LLM_PROVIDER", "openai")),
+            llm_api_key=os.environ.get("AUDIO_API_KEY", os.environ.get("LLM_API_KEY")),
+            llm_base_url=os.environ.get("AUDIO_BASE_URL", os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")),
+            llm_temperature=float(os.environ.get("AUDIO_TEMPERATURE", os.environ.get("LLM_TEMPERATURE", "0.1"))),
             params={"max_completion_tokens": 59000},
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),

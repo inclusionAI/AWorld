@@ -3,16 +3,18 @@
 import time
 
 import abc
+import asyncio
+import contextvars
 import os
 import uuid
-from typing import Any, Dict, Generic, List, Tuple, TypeVar, Union
+from typing import Any, Dict, Generic, List, Tuple, TypeVar, Union, Optional
 
 from pydantic import BaseModel
 
 from aworld.config.conf import AgentConfig, ConfigDict, load_config, TaskRunMode
 from aworld.core.common import ActionModel
 from aworld.events import eventbus
-from aworld.core.event.base import Constants, Message, AgentMessage
+from aworld.core.event.base import Constants, Message, AgentMessage, TopicType
 from aworld.core.factory import Factory
 from aworld.events.util import send_message
 from aworld.logs.util import logger, digest_logger
@@ -20,6 +22,10 @@ from aworld.output.base import StepOutput
 from aworld.sandbox import Sandbox
 from aworld.utils.common import convert_to_snake, replace_env_variables, sync_exec
 from aworld.mcp_client.utils import replace_mcp_servers_variables, extract_mcp_servers_from_config
+
+# Context variable for task-safe context storage
+# This prevents race conditions when agent instances are reused across concurrent tasks
+_agent_context: contextvars.ContextVar[Optional['Context']] = contextvars.ContextVar('_agent_context', default=None)
 
 INPUT = TypeVar("INPUT")
 OUTPUT = TypeVar("OUTPUT")
@@ -127,7 +133,15 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         # An agent can delegate tasks to other agent
         self.handoffs: List[str] = agent_names or []
         if sandbox:
-            self.mcp_servers: List[str] = extract_mcp_servers_from_config(sandbox.mcp_config, sandbox.mcp_servers or [])
+            # ✅ Tool Access Control Fix:
+            # Prioritize agent's explicit mcp_servers parameter over sandbox defaults
+            # This enables principle of least privilege: each agent specifies its own tool permissions
+            #
+            # Logic:
+            # - If mcp_servers parameter is explicitly provided (even []), use it
+            # - Otherwise, fall back to sandbox.mcp_servers
+            agent_mcp_servers = mcp_servers if mcp_servers is not None else (sandbox.mcp_servers or [])
+            self.mcp_servers: List[str] = extract_mcp_servers_from_config(sandbox.mcp_config, agent_mcp_servers)
             self.mcp_config: Dict[str, Any] = replace_env_variables(sandbox.mcp_config or {})
         else:
             self.mcp_config: Dict[str, Any] = replace_env_variables(mcp_config or {})
@@ -165,6 +179,16 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             )
         self.loop_step = 0
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
+
+    @staticmethod
+    def _get_current_context() -> Optional['Context']:
+        """Get the current context for this async task (thread-safe).
+
+        Returns the context stored in contextvars, which is unique per async task.
+        This prevents race conditions when agent instances are reused across
+        concurrent executions.
+        """
+        return _agent_context.get()
 
     def _init_id_name(self, name: str, agent_id: str = None):
         self._name = name if name else convert_to_snake(self.__class__.__name__)
@@ -221,6 +245,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
+        # Store context in contextvars for task-safe access (prevents race conditions)
+        # Capture token to ensure proper cleanup in finally block
+        token = _agent_context.set(message.context)
         try:
             message.context.update_agent_step(self.id())
             task = message.context.get_task()
@@ -274,6 +301,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
             digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|failed")
             raise e
+        finally:
+            # Reset context to prevent leakage in task reuse scenarios
+            _agent_context.reset(token)
 
     def policy(
             self, observation: INPUT, info: Dict[str, Any] = None, **kwargs

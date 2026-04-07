@@ -53,9 +53,11 @@ def get_allowed_directories() -> list[str]:
 
 
 # Initialize FastMCP server
+# Read log level from environment variable, default to WARNING for clean CLI output
+_log_level = os.environ.get("MCP_LOG_LEVEL") or os.environ.get("LOG_LEVEL") or os.environ.get("LOGLEVEL") or "WARNING"
 mcp = FastMCP(
     "filesystem-server",
-    log_level="DEBUG",
+    log_level=_log_level,
     port=8084,
     instructions="Filesystem MCP Server for file operations"
 )

@@ -22,6 +22,8 @@ class GraphBuildType(Enum):
     HANDOFF = "handoff"
     # Coordination
     TEAM = "team"
+    # Hybrid: Hierarchical oversight + Peer-to-peer coordination
+    HYBRID = "hybrid"
 
 
 class Swarm(object):
@@ -1139,6 +1141,11 @@ class TeamBuilder(TopologyBuilder):
 
     def build(self):
         logger.info(f"Building swarm with root_agent={self.root_agent}, topology_size={len(self.topology)}")
+
+        # Validate topology is not empty
+        if not self.topology:
+            raise ValueError("Cannot build Team swarm: topology is empty. At least a root agent is required.")
+
         agent_graph = AgentGraph(GraphBuildType.TEAM.value, root_agent=self.root_agent)
         valid_agents = []
         root_agent = self.topology[0]
@@ -1204,8 +1211,118 @@ class TeamBuilder(TopologyBuilder):
         return agent_graph
 
 
+class HybridBuilder(TeamBuilder):
+    """Hybrid mechanism combines hierarchical oversight (TeamSwarm) with peer-to-peer coordination.
+
+    Hybrid = TeamSwarm (star topology) + Peer communication (all executors can communicate with each other)
+
+    The root agent (orchestrator) maintains centralized coordination, while executor agents
+    can directly communicate with their peers for collaborative decision-making.
+
+    Examples:
+    >>> coordinator = Agent(name='coordinator')
+    >>> analyst1 = Agent(name='analyst1'); analyst2 = Agent(name='analyst2')
+    >>> Swarm(coordinator, analyst1, analyst2, build_type=GraphBuildType.HYBRID)
+
+    This creates a star topology where coordinator is the hub, and analyst1/analyst2 are executors.
+    Executors can communicate directly using EventManager for peer-to-peer collaboration.
+    """
+
+    def build(self):
+        """Build hybrid topology: star structure + peer communication capability."""
+        # Step 1: Build base star topology using TeamBuilder
+        # Note: super().build() validates that topology is not empty
+        agent_graph = super().build()
+
+        # Update build type to HYBRID
+        agent_graph.build_type = GraphBuildType.HYBRID.value
+
+        # Step 2: Identify root agent
+        # Safe to access self.topology[0] here as super().build() validated topology
+        root_agent = self.topology[0]
+        if isinstance(root_agent, tuple):
+            root_agent = root_agent[0]
+
+        if not root_agent or root_agent.id() not in agent_graph.successor:
+            logger.warning("No root agent or no executors in hybrid swarm")
+            return agent_graph
+
+        # Get all executor agents (direct successors of root)
+        executor_ids = list(agent_graph.successor[root_agent.id()].keys())
+        executor_agents = [agent_graph.agents[agent_id] for agent_id in executor_ids]
+
+        if len(executor_agents) < 2:
+            logger.warning("Hybrid swarm requires at least 2 executors for peer communication")
+            return agent_graph
+
+        # Log peer topology (executors can communicate via EventManager)
+        executor_names = [agent.name() for agent in executor_agents]
+        logger.info(
+            f"Hybrid swarm created with {len(executor_agents)} executors: {executor_names}. "
+            f"Executors can use EventManager for peer-to-peer communication."
+        )
+
+        return agent_graph
+
+
+class HybridSwarm(Swarm):
+    """Hybrid paradigm: Centralized coordination + Peer-to-peer communication.
+
+    Combines the benefits of TeamSwarm (star topology with orchestrator) and
+    peer-to-peer communication between executors for collaborative decision-making.
+
+    Example:
+        >>> coordinator = Agent(name='coordinator')
+        >>> analyst1 = Agent(name='analyst1')
+        >>> analyst2 = Agent(name='analyst2')
+        >>> swarm = HybridSwarm(coordinator, analyst1, analyst2)
+
+        # Executors can communicate using EventManager directly:
+        # Within analyst1.async_policy():
+        #   context = message.context
+        #   peer = next((a for a in task.swarm.agents if a.name() == "analyst2"), None)
+        #   await context.event_manager.emit(data={...}, sender=self.id(),
+        #                                     receiver=peer.id(), topic=TopicType.PEER_BROADCAST, ...)
+    """
+
+    def __init__(self,
+                 *args,  # agents
+                 topology: List[tuple] = None,
+                 root_agent: BaseAgent = None,
+                 max_steps: int = 0,
+                 register_agents: List[BaseAgent] = None,
+                 builder_cls: str = None,
+                 event_driven: bool = True,
+                 **kwargs):
+        """Initialize HybridSwarm.
+
+        Args:
+            *args: Agent instances. First agent becomes orchestrator, rest are executors.
+            topology: Optional custom topology (advanced usage).
+            root_agent: Explicit root/orchestrator agent.
+            max_steps: Maximum coordination steps.
+            register_agents: Additional agents to register.
+            builder_cls: Custom builder class name.
+            event_driven: Enable event-driven execution.
+            **kwargs: Additional arguments (e.g., min_call_num).
+        """
+        super().__init__(*args,
+                         topology=topology,
+                         root_agent=root_agent,
+                         max_steps=max_steps,
+                         register_agents=register_agents,
+                         build_type=GraphBuildType.HYBRID,
+                         builder_cls=builder_cls,
+                         event_driven=event_driven,
+                         **kwargs)
+        # Hybrid inherits team's minimum interactive call number
+        # Default is 0, means calling at least once
+        self.min_call_num = kwargs.get("min_call_num", 0)
+
+
 BUILD_CLS = {
     GraphBuildType.WORKFLOW.value: WorkflowBuilder,
     GraphBuildType.HANDOFF.value: HandoffBuilder,
     GraphBuildType.TEAM.value: TeamBuilder,
+    GraphBuildType.HYBRID.value: HybridBuilder,
 }

@@ -77,7 +77,9 @@ def build_evaluator_swarm():
     """Build and configure the multi-task evaluator agent swarm."""
     # APP_EVALUATOR_SKILLS_DIR: override skill read directory (plugin root with skills/ subdir)
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
-    env_skills_dir = Path(os.path.expanduser(os.environ.get("EVALUATOR_SKILLS_PATH"))).resolve()
+    # Get user skills directory from environment (optional)
+    env_skills_path = os.environ.get("EVALUATOR_SKILLS_PATH")
+    env_skills_dir = Path(os.path.expanduser(env_skills_path)).resolve() if env_skills_path else None
     skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
 
     # Create Agent configuration with Claude Sonnet model

@@ -107,15 +107,24 @@ class FileParseHook(PostInputParseHook):
             valid_matches = []
             for match in matches:
                 file_ref = match.group(1)
+
+                # Clean trailing punctuation that are clearly not part of filenames
+                # Strip common sentence-ending punctuation: ), ], }, ", ', ., ,, :, ;
+                while file_ref and file_ref[-1] in ')]}"\'.,:;':
+                    file_ref = file_ref[:-1]
+
                 # Skip patterns that are clearly not file references:
-                # - Ending with closing brackets/parentheses: name), value], etc.
                 # - Starting with "definition." (code definition markers)
                 # - Single character references (likely code symbols)
-                if (file_ref.endswith((')', ']', '}')) or 
-                    file_ref.startswith('definition.') or
-                    len(file_ref) <= 1):
+                # - Empty after cleaning
+                if (file_ref.startswith('definition.') or
+                    len(file_ref) <= 1 or
+                    not file_ref):
                     continue
-                valid_matches.append(match)
+
+                # Store cleaned file_ref by creating a new match-like object
+                # We need to track both the original span and cleaned filename
+                valid_matches.append((match.start(), match.end(), file_ref))
             
             if not valid_matches:
                 if console:
@@ -134,9 +143,9 @@ class FileParseHook(PostInputParseHook):
             cleaned_text = user_message
             
             # First pass: collect all file information (images and text files)
-            for match in valid_matches:
-                file_ref = match.group(1)
-                start, end = match.span()
+            for match_data in valid_matches:
+                # match_data is now (start, end, cleaned_file_ref)
+                start, end, file_ref = match_data
                 
                 # Check if it's a remote URL
                 is_remote_url = file_ref.startswith(('http://', 'https://'))

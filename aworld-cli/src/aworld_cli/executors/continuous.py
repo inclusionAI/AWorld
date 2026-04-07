@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Union, List
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 from .base import AgentExecutor
 from .._globals import console as global_console
 
@@ -37,6 +38,7 @@ class ContinuousExecutor:
         self.console = console if console is not None else global_console
         self.total_cost: float = 0.0
         self.start_time: Optional[datetime] = None
+        self.response_history: List[str] = []  # Track recent responses for repetition detection
         
     def _parse_duration(self, duration_str: str) -> timedelta:
         """
@@ -129,24 +131,127 @@ class ContinuousExecutor:
                     self.console.print(f"[yellow]⚠️ Warning: Failed to set agent_executor.console[/yellow]")
             
             response = await self.agent_executor.chat(prompt)
-            
+
             # Check for completion signal (only check if response is string)
             is_complete = False
             if completion_signal and isinstance(response, str) and completion_signal.lower() in response.lower():
                 is_complete = True
                 self.console.print(f"[green]✅ ({iteration}) Completion signal detected![/green]")
-            
+
+            # Smart task completion detection (only after first iteration)
+            if not is_complete and isinstance(response, str) and iteration == 1:
+                # Check if agent gave a definitive answer (not asking questions or saying it will try)
+                normalized_response = response.lower()
+
+                # Definitive completion indicators (command execution)
+                execution_indicators = [
+                    "成功执行",
+                    "执行成功",
+                    "命令执行成功",
+                    "任务完成",
+                    "已完成",
+                    "输出结果",
+                    "执行结果",
+                    "successfully executed",
+                    "execution successful",
+                    "command executed",
+                    "task completed",
+                ]
+
+                # Definitive answer indicators (Q&A tasks)
+                answer_indicators = [
+                    "作者是",
+                    "答案是",
+                    "结果是",
+                    "主要是",
+                    "根据.*信息",
+                    "具体信息如下",
+                    "关键信息",
+                    "the author is",
+                    "the answer is",
+                    "the result is",
+                    "according to",
+                    "based on",
+                ]
+
+                # Continuation indicators (agent wants to keep working)
+                continuation_indicators = [
+                    "让我",
+                    "我将",
+                    "接下来",
+                    "需要继续",
+                    "还需要",
+                    "应该继续",
+                    "让我们继续",
+                    "let me",
+                    "i will",
+                    "i'll",
+                    "we should continue",
+                    "we need to",
+                    "next, i",
+                    "next, we",
+                ]
+
+                has_execution = any(indicator in normalized_response for indicator in execution_indicators)
+                has_answer = any(indicator in normalized_response for indicator in answer_indicators)
+                has_continuation = any(indicator in normalized_response for indicator in continuation_indicators)
+
+                # Response length check: if response is substantial (>200 chars) and structured
+                is_substantial = len(response) > 200 and ("\n" in response or "：" in response or ":" in response)
+
+                # Decision logic:
+                # 1. Command execution task: has execution indicator + no continuation
+                # 2. Q&A task: has answer indicator OR (substantial response + no continuation)
+                if (has_execution or has_answer or is_substantial) and not has_continuation:
+                    is_complete = True
+                    completion_reason = "execution" if has_execution else ("answer" if has_answer else "substantial response")
+                    self.console.print(f"[green]✅ ({iteration}) Task completed - agent gave definitive {completion_reason}![/green]")
+
+            # Intelligent repetition detection: Check if agent is repeating the same answer
+            if not is_complete and isinstance(response, str):
+                # Normalize response for comparison (remove extra whitespace, lowercase)
+                normalized_response = " ".join(response.lower().split())
+
+                # Check if this response is very similar to recent responses
+                if len(self.response_history) >= 1:
+                    # Compare with last response (reduced from 2 to make it more sensitive)
+                    recent_responses = self.response_history[-1:]
+                    similarity_scores = []
+
+                    for past_response in recent_responses:
+                        # Simple similarity: check if 70%+ of words are the same (reduced from 80%)
+                        words_current = set(normalized_response.split())
+                        words_past = set(past_response.split())
+
+                        if not words_current:
+                            continue
+
+                        intersection = words_current & words_past
+                        similarity = len(intersection) / len(words_current)
+                        similarity_scores.append(similarity)
+
+                    # If last response is 70%+ similar, consider task complete
+                    if similarity_scores and all(s >= 0.7 for s in similarity_scores):
+                        is_complete = True
+                        self.console.print(f"[green]✅ ({iteration}) Repetition detected - task appears complete![/green]")
+
+                # Add current response to history (keep last 3)
+                self.response_history.append(normalized_response)
+                if len(self.response_history) > 3:
+                    self.response_history.pop(0)
+
             # TODO: Extract actual cost from response if available
             # For now, we'll use a placeholder
             cost = 0.0  # This should be extracted from the actual response
-            
+
             self.console.print(f"[dim]💰 ({iteration}) Cost: ${cost:.3f}[/dim]")
-            
+
             return {
                 "iteration": iteration,
                 "response": response,
                 "cost": cost,
                 "completed": is_complete,
+                "immediate_stop": is_complete and iteration == 1,  # First iteration with definitive answer
                 "success": True
             }
             
@@ -197,6 +302,7 @@ class ContinuousExecutor:
         """
         self.start_time = datetime.now()
         self.total_cost = 0.0
+        self.response_history = []  # Reset history for new task
         
         # Format prompt for display
         if isinstance(prompt, tuple):
@@ -208,16 +314,26 @@ class ContinuousExecutor:
         else:
             prompt_display = prompt
         
-        # Display start banner
+        # Display start banner with adaptive layout
+        from rich.table import Table
+        from rich import box
+
+        start_table = Table(show_header=False, box=None, padding=(0, 1))
+        start_table.add_column("Label", style="bold", no_wrap=True)
+        start_table.add_column("Value", style="cyan")
+
+        start_table.add_row("Mode", "Continuous Execution")
+        start_table.add_row("Agent", f"[cyan]{agent_name}[/cyan]")
+        start_table.add_row("Prompt", f"[yellow]{prompt_display}[/yellow]")
+        start_table.add_row("Max Runs", str(max_runs if max_runs else '∞'))
+        start_table.add_row("Max Cost", f"${max_cost if max_cost else '∞'}")
+        start_table.add_row("Max Duration", str(max_duration if max_duration else '∞'))
+
         self.console.print(Panel(
-            f"[bold]Continuous Execution Mode[/bold]\n"
-            f"Agent: [cyan]{agent_name}[/cyan]\n"
-            f"Prompt: [yellow]{prompt_display}[/yellow]\n"
-            f"Max Runs: {max_runs if max_runs else '∞'}\n"
-            f"Max Cost: ${max_cost if max_cost else '∞'}\n"
-            f"Max Duration: {max_duration if max_duration else '∞'}",
+            start_table,
             title="🚀 Starting",
-            border_style="blue"
+            border_style="blue",
+            expand=False
         ))
         
         iteration = 0
@@ -244,9 +360,14 @@ class ContinuousExecutor:
                 # Run iteration
                 result = await self.run_iteration(iteration, prompt, completion_signal)
                 results.append(result)
-                
+
                 self.total_cost += result["cost"]
-                
+
+                # Check for immediate stop (first iteration with definitive answer)
+                if result.get("immediate_stop", False):
+                    self.console.print(f"\n[green]🎉 Task completed successfully![/green]")
+                    break
+
                 # Check completion signal
                 if result["completed"]:
                     consecutive_completions += 1
@@ -262,20 +383,26 @@ class ContinuousExecutor:
         except KeyboardInterrupt:
             self.console.print("\n[yellow]⚠️  Interrupted by user.[/yellow]")
         
-        # Display summary
+        # Display summary with adaptive width using Table for better terminal compatibility
         elapsed = datetime.now() - self.start_time if self.start_time else timedelta(0)
         successful_runs = sum(1 for r in results if r["success"])
-        
-        self.console.print(Panel(
-            f"[bold]Execution Summary[/bold]\n"
-            f"Total Iterations: {iteration}\n"
-            f"Successful: {successful_runs}\n"
-            f"Failed: {iteration - successful_runs}\n"
-            f"Total Cost: ${self.total_cost:.3f}\n"
-            f"Duration: {elapsed}",
-            title="📊 Summary",
-            border_style="green"
-        ))
+
+        # Use Table instead of Panel for better width control across different terminal sizes
+        # This auto-fits content width without excessive stretching or wrapping
+        summary_table = Table(show_header=False, box=None, padding=(0, 2), collapse_padding=True)
+        summary_table.add_column("Label", style="bold")
+        summary_table.add_column("Value")
+
+        summary_table.add_row("📊", "[bold green]Execution Summary[/bold green]")
+        summary_table.add_row("Total Iterations", str(iteration))
+        summary_table.add_row("Successful", f"[green]{successful_runs}[/green]")
+        summary_table.add_row("Failed", f"[red]{iteration - successful_runs}[/red]" if iteration - successful_runs > 0 else "0")
+        summary_table.add_row("Total Cost", f"[yellow]${self.total_cost:.3f}[/yellow]")
+        summary_table.add_row("Duration", f"[cyan]{elapsed}[/cyan]")
+
+        self.console.print("\n")  # Add spacing
+        self.console.print(summary_table)
+        self.console.print("")  # Add spacing
         
         return {
             "total_runs": iteration,
