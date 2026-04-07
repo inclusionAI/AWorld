@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Union, List
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 from .base import AgentExecutor
 from .._globals import console as global_console
 
@@ -382,20 +383,26 @@ class ContinuousExecutor:
         except KeyboardInterrupt:
             self.console.print("\n[yellow]⚠️  Interrupted by user.[/yellow]")
         
-        # Display summary
+        # Display summary with adaptive width using Table for better terminal compatibility
         elapsed = datetime.now() - self.start_time if self.start_time else timedelta(0)
         successful_runs = sum(1 for r in results if r["success"])
-        
-        self.console.print(Panel(
-            f"[bold]Execution Summary[/bold]\n"
-            f"Total Iterations: {iteration}\n"
-            f"Successful: {successful_runs}\n"
-            f"Failed: {iteration - successful_runs}\n"
-            f"Total Cost: ${self.total_cost:.3f}\n"
-            f"Duration: {elapsed}",
-            title="📊 Summary",
-            border_style="green"
-        ))
+
+        # Use Table instead of Panel for better width control across different terminal sizes
+        # This auto-fits content width without excessive stretching or wrapping
+        summary_table = Table(show_header=False, box=None, padding=(0, 2), collapse_padding=True)
+        summary_table.add_column("Label", style="bold")
+        summary_table.add_column("Value")
+
+        summary_table.add_row("📊", "[bold green]Execution Summary[/bold green]")
+        summary_table.add_row("Total Iterations", str(iteration))
+        summary_table.add_row("Successful", f"[green]{successful_runs}[/green]")
+        summary_table.add_row("Failed", f"[red]{iteration - successful_runs}[/red]" if iteration - successful_runs > 0 else "0")
+        summary_table.add_row("Total Cost", f"[yellow]${self.total_cost:.3f}[/yellow]")
+        summary_table.add_row("Duration", f"[cyan]{elapsed}[/cyan]")
+
+        self.console.print("\n")  # Add spacing
+        self.console.print(summary_table)
+        self.console.print("")  # Add spacing
         
         return {
             "total_runs": iteration,
