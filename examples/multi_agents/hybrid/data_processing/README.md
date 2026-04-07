@@ -34,33 +34,11 @@ Agent1 ←→ Agent2 ←→ Agent3
 
 ## Test Cases
 
-### 1. Simple Architecture Test (No LLM)
+### 1. Architecture Validation (With LLM)
 
-**File**: `test_simple.py`
+**File**: `run_validation.py`
 
-**Purpose**: Validate Hybrid architecture at framework level
-
-**What it tests:**
-- ✅ HybridBuilder creates star topology
-- ✅ Peer capability enabled for executors only
-- ✅ `share_with_peer()` works
-- ✅ `broadcast_to_all_peers()` works
-- ✅ Team vs Hybrid differentiation
-- ✅ Error handling
-
-**Run:**
-```bash
-cd examples/multi_agents/hybrid/data_processing
-python test_simple.py
-```
-
-**Expected output:**
-```
-TEST 1 PASSED: HybridBuilder works correctly
-TEST 2 PASSED: Team vs Hybrid correctly differentiated  
-TEST 3 PASSED: Peer API works correctly
-✅ ALL TESTS PASSED
-```
+**Purpose**: Validate Hybrid architecture with real LLM agents
 
 **Time:** < 5 seconds
 
@@ -102,36 +80,128 @@ python run_validation.py
 
 ---
 
-## Peer API Usage
+## Peer Communication Pattern
 
-### Non-blocking Communication
+### Using EventManager Directly
 
-```python
-# ✅ Share with specific peer (unicast)
-await self.share_with_peer(
-    peer_name="Agent2",
-    information={"stage": "complete", "data": results},
-    info_type="status"
-)
-# Returns immediately, continues execution
-
-# ✅ Broadcast to all peers
-await self.broadcast_to_all_peers(
-    information={"system_status": "ready"},
-    info_type="alert"
-)
-# Returns immediately, continues execution
-```
-
-### Error Cases
+**Framework provides the mechanism (EventManager + topology), agents implement the pattern.**
 
 ```python
-# ❌ Not in Hybrid swarm
-RuntimeError: "Agent is not in a Hybrid swarm"
+from aworld.core.event.base import TopicType, Constants
+import time
 
-# ❌ Invalid peer name
-ValueError: "Peer 'Unknown' not found. Available peers: [...]"
+class FilterAgent(Agent):
+    async def async_policy(self, observation, **kwargs):
+        # Process data
+        filtered_data = self.filter(observation.content)
+        
+        # Get context from message
+        message = kwargs.get('message')
+        context = message.context
+        task = context.get_task()
+        
+        # Find peer agent by name from swarm
+        transform_agent = next(
+            (a for a in task.swarm.agents if a.name() == "TransformAgent"),
+            None
+        )
+        
+        if transform_agent:
+            # Share filtered data format with TransformAgent
+            await context.event_manager.emit(
+                data={
+                    "type": "share",
+                    "info_type": "data_format",
+                    "information": {
+                        "format": "standard_email",
+                        "count": len(filtered_data)
+                    },
+                    "sender_name": self.name(),
+                    "timestamp": time.time()
+                },
+                sender=self.id(),
+                receiver=transform_agent.id(),
+                topic=TopicType.PEER_BROADCAST,
+                session_id=context.session_id,
+                event_type=Constants.AGENT
+            )
+        
+        return [self.to_action_model(filtered_data)]
 ```
+
+### Broadcasting to All Peers
+
+```python
+class ValidateAgent(Agent):
+    async def async_policy(self, observation, **kwargs):
+        validation_result = self.validate(observation.content)
+        
+        message = kwargs.get('message')
+        context = message.context
+        task = context.get_task()
+        
+        # Get all executor peers (excluding self and coordinator)
+        root_id = task.swarm.agent_graph.root_agent.id()
+        peers = [
+            agent for agent in task.swarm.agents 
+            if agent.id() != self.id() and agent.id() != root_id
+        ]
+        
+        # Broadcast to all peers
+        for peer in peers:
+            await context.event_manager.emit(
+                data={
+                    "type": "broadcast",
+                    "info_type": "completion",
+                    "information": {
+                        "status": "validation_complete",
+                        "pass_rate": validation_result['pass_rate']
+                    },
+                    "sender_name": self.name(),
+                    "timestamp": time.time()
+                },
+                sender=self.id(),
+                receiver=peer.id(),
+                topic=TopicType.PEER_BROADCAST,
+                session_id=context.session_id,
+                event_type=Constants.AGENT
+            )
+        
+        return [self.to_action_model(validation_result)]
+```
+
+### Receiving Peer Messages
+
+```python
+class TransformAgent(Agent):
+    async def async_policy(self, observation, **kwargs):
+        message = kwargs.get('message')
+        context = message.context
+        
+        # Check for peer messages (optional, non-blocking)
+        format_info = None
+        try:
+            msg = await asyncio.wait_for(
+                context.event_manager.consume(nowait=True),
+                timeout=0.1  # Quick check
+            )
+            if msg and msg.topic == TopicType.PEER_BROADCAST:
+                payload = msg.payload
+                if payload.get('info_type') == 'data_format':
+                    format_info = payload.get('information')
+        except asyncio.TimeoutError:
+            pass  # No messages, proceed with defaults
+        
+        # Transform data (using format_info if available)
+        result = self.transform(observation.content, format_info)
+        return [self.to_action_model(result)]
+```
+
+**Key Points:**
+- ✅ Non-blocking: Methods return immediately
+- ✅ No response: Fire-and-forget message pattern
+- ✅ Automatic setup: HybridBuilder enables peer capability
+- ✅ Full mesh: All executors can communicate with each other
 
 ## File Structure
 
@@ -160,16 +230,14 @@ swarm = Swarm(
 )
 ```
 
-### Automatic Peer Enablement
+### How HybridBuilder Works
 
 When `build_type=HYBRID`, HybridBuilder automatically:
 1. Creates star topology (coordinator → executors)
-2. Sets `agent._is_peer_enabled = True` for all executors
-3. Injects `agent._peer_agents` dict with peer references
+2. Enables full-mesh peer connectivity (executors can communicate with each other)
+3. Logs peer capability availability
 
-Executors can then use:
-- `await self.share_with_peer(...)`
-- `await self.broadcast_to_all_peers(...)`
+Executors can then use EventManager directly for peer-to-peer communication (see examples above)
 
 ## Design Principles
 

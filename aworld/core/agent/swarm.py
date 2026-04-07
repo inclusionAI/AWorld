@@ -1141,6 +1141,11 @@ class TeamBuilder(TopologyBuilder):
 
     def build(self):
         logger.info(f"Building swarm with root_agent={self.root_agent}, topology_size={len(self.topology)}")
+
+        # Validate topology is not empty
+        if not self.topology:
+            raise ValueError("Cannot build Team swarm: topology is empty. At least a root agent is required.")
+
         agent_graph = AgentGraph(GraphBuildType.TEAM.value, root_agent=self.root_agent)
         valid_agents = []
         root_agent = self.topology[0]
@@ -1220,20 +1225,20 @@ class HybridBuilder(TeamBuilder):
     >>> Swarm(coordinator, analyst1, analyst2, build_type=GraphBuildType.HYBRID)
 
     This creates a star topology where coordinator is the hub, and analyst1/analyst2 are executors.
-    Additionally, analyst1 and analyst2 can communicate directly via peer APIs (ask_peer, share_with_peer, etc.)
+    Executors can communicate directly using EventManager for peer-to-peer collaboration.
     """
 
     def build(self):
         """Build hybrid topology: star structure + peer communication capability."""
         # Step 1: Build base star topology using TeamBuilder
+        # Note: super().build() validates that topology is not empty
         agent_graph = super().build()
 
         # Update build type to HYBRID
         agent_graph.build_type = GraphBuildType.HYBRID.value
 
         # Step 2: Identify root agent
-        # Note: root_agent is not yet set by topological_sequence() at this point
-        # We need to get it from topology directly
+        # Safe to access self.topology[0] here as super().build() validated topology
         root_agent = self.topology[0]
         if isinstance(root_agent, tuple):
             root_agent = root_agent[0]
@@ -1271,9 +1276,13 @@ class HybridSwarm(Swarm):
         >>> analyst1 = Agent(name='analyst1')
         >>> analyst2 = Agent(name='analyst2')
         >>> swarm = HybridSwarm(coordinator, analyst1, analyst2)
-        >>> swarm.reset()
-        >>> # Now analyst1 and analyst2 can communicate via peer APIs
-        >>> await analyst1.share_with_peer("analyst2", {"status": "complete"})
+
+        # Executors can communicate using EventManager directly:
+        # Within analyst1.async_policy():
+        #   context = message.context
+        #   peer = next((a for a in task.swarm.agents if a.name() == "analyst2"), None)
+        #   await context.event_manager.emit(data={...}, sender=self.id(),
+        #                                     receiver=peer.id(), topic=TopicType.PEER_BROADCAST, ...)
     """
 
     def __init__(self,
