@@ -288,7 +288,7 @@ class DefaultAgentHandler(AgentHandler):
         )
 
     async def _stop_check(self, action: ActionModel, message: Message) -> AsyncGenerator[Message, None]:
-        if GraphBuildType.TEAM.value == self.swarm.build_type:
+        if GraphBuildType.TEAM.value == self.swarm.build_type or GraphBuildType.HYBRID.value == self.swarm.build_type:
             async for event in self._team_stop_check(action, message):
                 yield event
         elif GraphBuildType.HANDOFF.value == self.swarm.build_type:
