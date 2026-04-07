@@ -134,3 +134,4 @@ examples/**/workspaces
 examples/**/data
 examples/**/*.bak
 =**
+.gstack/
