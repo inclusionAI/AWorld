@@ -408,6 +408,69 @@ def _apply_audio_models_config(models_config: Dict[str, Any]) -> None:
         os.environ['AUDIO_TEMPERATURE'] = str(float(temperature))
 
 
+def _apply_image_models_config(models_config: Dict[str, Any]) -> None:
+    """
+    Apply models.image config to IMAGE_* env vars for image agent.
+    Priority: models.image config > existing IMAGE_* env vars > LLM_*.
+    """
+    image_cfg = models_config.get('image')
+    image_cfg = image_cfg if isinstance(image_cfg, dict) else {}
+    api_key = (image_cfg.get('api_key') or '').strip()
+    model_name = (image_cfg.get('model') or '').strip()
+    base_url = (image_cfg.get('base_url') or '').strip()
+    provider = (image_cfg.get('provider') or '').strip()
+    temperature = image_cfg.get('temperature')
+
+    if not api_key:
+        api_key = (os.environ.get('IMAGE_API_KEY') or '').strip()
+    if not api_key:
+        api_key = (os.environ.get('LLM_API_KEY') or '').strip()
+    if not api_key:
+        for key in ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'):
+            v = (os.environ.get(key) or '').strip()
+            if v:
+                api_key = v
+                if not provider and 'OPENAI' in key:
+                    provider = 'openai'
+                elif not provider and 'ANTHROPIC' in key:
+                    provider = 'anthropic'
+                elif not provider and 'GEMINI' in key:
+                    provider = 'gemini'
+                break
+    if not model_name:
+        model_name = (os.environ.get('IMAGE_MODEL_NAME') or '').strip()
+    if not model_name:
+        model_name = (os.environ.get('LLM_MODEL_NAME') or '').strip()
+    if not base_url:
+        base_url = (os.environ.get('IMAGE_BASE_URL') or '').strip()
+    if not base_url:
+        base_url = (os.environ.get('LLM_BASE_URL') or '').strip()
+    if not base_url:
+        for key in ('OPENAI_BASE_URL', 'ANTHROPIC_BASE_URL', 'GEMINI_BASE_URL'):
+            v = (os.environ.get(key) or '').strip()
+            if v:
+                base_url = v
+                break
+    if not provider:
+        provider = (os.environ.get('IMAGE_PROVIDER') or '').strip()
+    if not provider:
+        provider = 'image'
+    if temperature is None:
+        env_temp = (os.environ.get('IMAGE_TEMPERATURE') or '').strip()
+        if env_temp:
+            temperature = float(env_temp)
+
+    if api_key:
+        os.environ['IMAGE_API_KEY'] = api_key
+    if model_name:
+        os.environ['IMAGE_MODEL_NAME'] = model_name
+    if base_url:
+        os.environ['IMAGE_BASE_URL'] = base_url
+    os.environ['IMAGE_PROVIDER'] = provider
+    if temperature is not None:
+        os.environ['IMAGE_TEMPERATURE'] = str(float(temperature))
+
+
 def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
     """
     Apply models config (api_key, model, base_url) to os.environ.
@@ -445,6 +508,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
             os.environ['LLM_BASE_URL'] = base_url
         _apply_diffusion_models_config(models_config)
         _apply_audio_models_config(models_config)
+        _apply_image_models_config(models_config)
         return
     # Legacy: nested models.default.{provider} or models.{provider}
     default_providers = {k: v for k, v in default_cfg.items()
@@ -487,6 +551,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
 
     _apply_diffusion_models_config(models_config)
     _apply_audio_models_config(models_config)
+    _apply_image_models_config(models_config)
 
 
 def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
@@ -505,6 +570,7 @@ def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
     # Apply DIFFUSION_* from LLM_* when not set in .env
     _apply_diffusion_models_config({})
     _apply_audio_models_config({})
+    _apply_image_models_config({})
     print(f"os {os.environ.get('DIFFUSION_PROVIDER')}")
     logger.info(f"[config] load_dotenv loaded from: {source_path} {os.environ.get('LLM_MODEL_NAME')} {os.environ.get('LLM_BASE_URL')}")
     return _env_to_config(), "local", source_path

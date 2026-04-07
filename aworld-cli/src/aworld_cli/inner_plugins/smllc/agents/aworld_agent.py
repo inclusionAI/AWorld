@@ -23,6 +23,8 @@ from .evaluator.evaluator import build_evaluator_swarm
 from .diffusion.diffusion import build_diffusion_swarm
 import traceback
 
+from .image.image import build_image_swarm
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aworld.agents.llm_agent import Agent
@@ -251,11 +253,13 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         evaluator_swarm = build_evaluator_swarm()
         diffusion_swarm = build_diffusion_swarm()
         audio_swarm = build_audio_swarm()
+        image_swarm = build_image_swarm()
         sub_agents = (
             extract_agents_from_swarm(developer_swarm)
             + extract_agents_from_swarm(evaluator_swarm)
             + extract_agents_from_swarm(diffusion_swarm)
             + extract_agents_from_swarm(audio_swarm)
+            + extract_agents_from_swarm(image_swarm)
         )
 
         if sub_agents:
