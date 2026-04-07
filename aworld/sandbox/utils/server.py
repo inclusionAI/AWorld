@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import abc
 import asyncio
+import os
+import sys
 from datetime import timedelta
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from pathlib import Path
@@ -270,7 +272,24 @@ class MCPServerStdio(_MCPServerWithClientSession):
         ]
     ]:
         """Create the streams for the server."""
-        return stdio_client(self.params)
+        # Suppress MCP server stderr by redirecting to /dev/null or log file
+        # This prevents DEBUG/INFO logs from MCP servers appearing in CLI output
+
+        # Check if user wants to preserve MCP server logs
+        preserve_mcp_logs = os.environ.get('AWORLD_PRESERVE_MCP_LOGS', 'false').lower() in ('true', '1', 'yes')
+
+        if preserve_mcp_logs:
+            # Redirect to log file for debugging
+            log_path = os.environ.get('AWORLD_LOG_PATH', f"{os.getcwd()}/logs")
+            os.makedirs(log_path, exist_ok=True)
+            mcp_stderr_log = os.path.join(log_path, 'mcp_stderr.log')
+            errlog = open(mcp_stderr_log, 'a', encoding='utf-8', buffering=1)
+        else:
+            # Suppress MCP server stderr completely by redirecting to /dev/null
+            # This is the default behavior for cleaner CLI output
+            errlog = open(os.devnull, 'w')
+
+        return stdio_client(self.params, errlog=errlog)
 
     @property
     def name(self) -> str:
