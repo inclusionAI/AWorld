@@ -3,6 +3,8 @@
 import time
 
 import abc
+import asyncio
+import contextvars
 import os
 import uuid
 from typing import Any, Dict, Generic, List, Tuple, TypeVar, Union, Optional
@@ -20,6 +22,10 @@ from aworld.output.base import StepOutput
 from aworld.sandbox import Sandbox
 from aworld.utils.common import convert_to_snake, replace_env_variables, sync_exec
 from aworld.mcp_client.utils import replace_mcp_servers_variables, extract_mcp_servers_from_config
+
+# Context variable for task-safe context storage
+# This prevents race conditions when agent instances are reused across concurrent tasks
+_agent_context: contextvars.ContextVar['Context'] = contextvars.ContextVar('_agent_context', default=None)
 
 INPUT = TypeVar("INPUT")
 OUTPUT = TypeVar("OUTPUT")
@@ -174,10 +180,15 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.loop_step = 0
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
 
-        # Peer-to-peer communication capability (enabled by HybridBuilder)
-        self._is_peer_enabled = False
-        self._peer_agents: Dict[str, 'BaseAgent'] = {}
-        self._current_context: Optional['Context'] = None
+    @staticmethod
+    def _get_current_context() -> Optional['Context']:
+        """Get the current context for this async task (thread-safe).
+
+        Returns the context stored in contextvars, which is unique per async task.
+        This prevents race conditions when agent instances are reused across
+        concurrent executions.
+        """
+        return _agent_context.get()
 
     def _init_id_name(self, name: str, agent_id: str = None):
         self._name = name if name else convert_to_snake(self.__class__.__name__)
@@ -235,8 +246,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
 
     async def async_run(self, message: Message, **kwargs) -> Message:
         try:
-            # Store context for peer communication
-            self._current_context = message.context
+            # Store context in contextvars for task-safe access (prevents race conditions)
+            _agent_context.set(message.context)
             message.context.update_agent_step(self.id())
             task = message.context.get_task()
             if task and task.conf and task.conf.get("run_mode") == TaskRunMode.INTERACTIVE:
@@ -390,183 +401,6 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         if input_message.group_id:
             headers['parent_group_id'] = input_message.group_id
         return headers
-
-    # ===== Peer-to-peer Communication API (Hybrid Swarm) =====
-    # Design Principle: All peer communication is NON-BLOCKING
-    # - Orchestrator controls execution flow (serial/parallel)
-    # - Executors share information freely without waiting
-    # - No blocking ask/request patterns
-
-    async def share_with_peer(
-        self,
-        peer_name: str,
-        information: Any,
-        info_type: str = "general"
-    ) -> bool:
-        """Share information with a peer agent (non-blocking, fire-and-forget).
-
-        This method enables one-way information sharing between executor agents.
-        The sender does NOT wait for acknowledgment or response.
-
-        Use Cases:
-        - Share intermediate results: "I finished filtering, here's the data format"
-        - Notify about issues: "Found validation errors in these records"
-        - Send alerts: "Detected anomaly, adjust your strategy"
-
-        Args:
-            peer_name: Name of the peer agent to share with
-            information: The information to share (any JSON-serializable data)
-            info_type: Type of information for categorization
-                      (e.g., "result", "alert", "feedback", "status")
-
-        Returns:
-            bool: True if sent successfully (does not guarantee receipt)
-
-        Raises:
-            RuntimeError: If not in a Hybrid swarm
-            ValueError: If peer not found
-
-        Example:
-            # FilterAgent shares filtered data format with TransformAgent
-            >>> await self.share_with_peer(
-            ...     peer_name="TransformAgent",
-            ...     information={
-            ...         "format": "standard_email",
-            ...         "sample": "user@example.com",
-            ...         "count": 42
-            ...     },
-            ...     info_type="data_format"
-            ... )
-            # Returns immediately, FilterAgent continues execution
-        """
-        if not self._is_peer_enabled:
-            raise RuntimeError(
-                f"Agent {self.name()} is not in a Hybrid swarm. "
-                "Peer communication is only available with build_type=HYBRID."
-            )
-
-        peer_agent = self._find_peer_by_name(peer_name)
-        if not peer_agent:
-            available_peers = [p.name() for p in self._peer_agents.values()]
-            raise ValueError(
-                f"Peer '{peer_name}' not found. Available peers: {available_peers}"
-            )
-
-        if not self._current_context:
-            raise RuntimeError("No context available. Peer communication requires an active context.")
-
-        # Prepare message payload
-        share_data = {
-            "type": "share",
-            "info_type": info_type,
-            "information": information,
-            "sender_name": self.name(),
-            "timestamp": time.time()
-        }
-
-        # Send via EventManager (non-blocking)
-        await self._current_context.event_manager.emit(
-            data=share_data,
-            sender=self.id(),
-            receiver=peer_agent.id(),
-            topic=TopicType.PEER_BROADCAST,
-            session_id=self._current_context.session_id,
-            event_type=Constants.AGENT
-        )
-
-        logger.info(
-            f"[PeerComm] {self.name()} → {peer_name}: shared {info_type}"
-        )
-        return True
-
-    async def broadcast_to_all_peers(
-        self,
-        information: Any,
-        info_type: str = "broadcast"
-    ) -> int:
-        """Broadcast information to all peer agents (non-blocking).
-
-        This method sends information to ALL peers in the Hybrid swarm.
-        The sender does NOT wait for any acknowledgments.
-
-        Use Cases:
-        - System-wide alerts: "Critical error detected"
-        - Status updates: "My stage is complete, pass_rate=85%"
-        - Shared insights: "Detected pattern affecting all agents"
-
-        Args:
-            information: The information to broadcast (any JSON-serializable data)
-            info_type: Type of broadcast for categorization
-                      (e.g., "alert", "status", "completion", "warning")
-
-        Returns:
-            int: Number of peers the broadcast was sent to
-
-        Raises:
-            RuntimeError: If not in a Hybrid swarm
-
-        Example:
-            # ValidateAgent broadcasts validation complete status
-            >>> peer_count = await self.broadcast_to_all_peers(
-            ...     information={
-            ...         "status": "validation_complete",
-            ...         "pass_rate": 0.85,
-            ...         "issues_found": 3
-            ...     },
-            ...     info_type="completion"
-            ... )
-            >>> logger.info(f"Notified {peer_count} peers")
-            # Returns immediately, ValidateAgent continues
-        """
-        if not self._is_peer_enabled:
-            raise RuntimeError(
-                f"Agent {self.name()} is not in a Hybrid swarm. "
-                "Peer communication is only available with build_type=HYBRID."
-            )
-
-        if not self._current_context:
-            raise RuntimeError("No context available.")
-
-        # Prepare broadcast payload
-        broadcast_data = {
-            "type": "broadcast",
-            "info_type": info_type,
-            "information": information,
-            "sender_name": self.name(),
-            "timestamp": time.time()
-        }
-
-        # Send to all peers (non-blocking)
-        sent_count = 0
-        for peer_id, peer_agent in self._peer_agents.items():
-            await self._current_context.event_manager.emit(
-                data=broadcast_data,
-                sender=self.id(),
-                receiver=peer_id,
-                topic=TopicType.PEER_BROADCAST,
-                session_id=self._current_context.session_id,
-                event_type=Constants.AGENT
-            )
-            sent_count += 1
-
-        logger.info(
-            f"[PeerComm] {self.name()} → ALL: broadcast {info_type} to {sent_count} peers"
-        )
-        return sent_count
-
-    def _find_peer_by_name(self, name: str) -> Optional['BaseAgent']:
-        """Find peer agent by name.
-
-        Args:
-            name: Peer agent name
-
-        Returns:
-            BaseAgent: Peer agent instance or None if not found
-        """
-        for peer in self._peer_agents.values():
-            if peer.name() == name:
-                return peer
-        return None
 
 
 class AgentManager(Factory):
