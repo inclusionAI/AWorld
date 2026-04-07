@@ -1,5 +1,6 @@
 """MCP client utilities for sandbox to get tools from MCP servers."""
 import json
+import os
 import traceback
 from contextlib import AsyncExitStack
 from datetime import timedelta
@@ -93,12 +94,28 @@ async def _get_tools_from_server(
         async with AsyncExitStack() as stack:
             # Create server instance based on type
             if server_type == "stdio":
+                # Prepare environment variables for MCP server subprocess
+                # Inherit parent env and add log suppression settings
+                server_env = os.environ.copy()
+                server_env.update(server_config.get("env", {}))
+
+                # Suppress verbose logging from MCP server subprocess
+                # These env vars control logging in many Python-based MCP servers
+                log_suppression_env = {
+                    "PYTHONWARNINGS": "ignore",           # Suppress Python warnings
+                    "MCP_LOG_LEVEL": "WARNING",           # MCP server log level
+                    "LOG_LEVEL": "WARNING",               # Generic log level
+                    "LOGLEVEL": "WARNING",                # Alternative log level var
+                    "AWORLD_DISABLE_CONSOLE_LOG": "true"  # For aworld-based MCP servers
+                }
+                server_env.update(log_suppression_env)
+
                 server = MCPServerStdio(
                     name=server_name,
                     params={
                         "command": server_config["command"],
                         "args": server_config.get("args", []),
-                        "env": server_config.get("env", {}),
+                        "env": server_env,
                         "cwd": server_config.get("cwd"),
                         "encoding": server_config.get("encoding", "utf-8"),
                         "encoding_error_handler": server_config.get("encoding_error_handler", "strict"),
