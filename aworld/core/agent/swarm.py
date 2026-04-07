@@ -1250,18 +1250,12 @@ class HybridBuilder(TeamBuilder):
             logger.warning("Hybrid swarm requires at least 2 executors for peer communication")
             return agent_graph
 
-        # Step 3: Enable peer capability for all executors
-        for agent in executor_agents:
-            # Mark this agent as peer-enabled
-            agent._is_peer_enabled = True
-
-            # Store references to all peer agents (excluding self)
-            agent._peer_agents = {
-                peer.id(): peer for peer in executor_agents
-                if peer.id() != agent.id()
-            }
-
-            logger.info(f"Enabled peer capability for {agent.name()}, peers: {list(agent._peer_agents.keys())}")
+        # Log peer topology (executors can communicate via EventManager)
+        executor_names = [agent.name() for agent in executor_agents]
+        logger.info(
+            f"Hybrid swarm created with {len(executor_agents)} executors: {executor_names}. "
+            f"Executors can use EventManager for peer-to-peer communication."
+        )
 
         return agent_graph
 
