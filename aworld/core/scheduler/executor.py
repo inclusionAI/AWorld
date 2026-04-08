@@ -1,0 +1,165 @@
+# coding: utf-8
+# Copyright (c) 2025 inclusionAI.
+"""
+Cron job executor - converts CronJob to Task and executes.
+"""
+import asyncio
+from typing import Dict, Any
+
+from aworld.core.task import TaskResponse
+from aworld.logs.util import logger
+from .types import CronJob
+
+
+class CronExecutor:
+    """
+    Cron job executor.
+
+    Responsibilities:
+    - Build Task from CronJob
+    - Call Runners.run() to execute
+    - Handle retry logic
+    """
+
+    def __init__(self):
+        """Initialize executor."""
+        self._agent_cache: Dict[str, Any] = {}
+
+    async def execute(self, job: CronJob) -> TaskResponse:
+        """
+        Execute job (isolated mode only).
+
+        Args:
+            job: Job to execute
+
+        Returns:
+            Task response
+        """
+        from aworld.runner import Runners
+        from aworld.core.agent.swarm import Swarm
+
+        try:
+            # Resolve agent
+            agent = self._resolve_agent(job.payload.agent_name)
+            if not agent:
+                return TaskResponse(
+                    success=False,
+                    msg=f"Agent not found: {job.payload.agent_name}"
+                )
+
+            swarm = Swarm(agent)
+
+            # Execute using Runners.run()
+            logger.info(f"Executing cron job: {job.id} ({job.name})")
+            result = await Runners.run(
+                input=job.payload.message,
+                swarm=swarm,
+                tool_names=job.payload.tool_names,
+                session_id=None,  # Isolated mode: always None
+            )
+
+            if result.success:
+                logger.info(f"Cron job completed: {job.id}")
+            else:
+                logger.warning(f"Cron job failed: {job.id} - {result.msg}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Cron job execution error: {job.id} - {e}", exc_info=True)
+            return TaskResponse(
+                success=False,
+                msg=f"Execution error: {str(e)}"
+            )
+
+    async def execute_with_retry(self, job: CronJob, max_retries: int = 3) -> TaskResponse:
+        """
+        Execute with exponential backoff retry.
+
+        Args:
+            job: Job to execute
+            max_retries: Maximum number of retries
+
+        Returns:
+            Task response
+        """
+        backoff_base = 2
+
+        for attempt in range(max_retries + 1):
+            try:
+                result = await self.execute(job)
+
+                if result.success:
+                    return result
+
+                if attempt >= max_retries:
+                    logger.error(f"Job {job.id} failed after {max_retries} retries")
+                    return result
+
+                # Exponential backoff
+                wait_seconds = backoff_base ** attempt
+                logger.warning(
+                    f"Job {job.id} failed (attempt {attempt+1}/{max_retries+1}), "
+                    f"retrying in {wait_seconds}s..."
+                )
+                await asyncio.sleep(wait_seconds)
+
+            except Exception as e:
+                if attempt >= max_retries:
+                    return TaskResponse(
+                        success=False,
+                        msg=f"Execution failed after {max_retries} retries: {str(e)}"
+                    )
+
+                wait_seconds = backoff_base ** attempt
+                logger.warning(f"Job {job.id} error, retrying in {wait_seconds}s: {e}")
+                await asyncio.sleep(wait_seconds)
+
+        # Should not reach here
+        return TaskResponse(success=False, msg="Unexpected retry loop exit")
+
+    def _resolve_agent(self, agent_name: str):
+        """
+        Resolve agent from registry (with cache).
+
+        Args:
+            agent_name: Agent name
+
+        Returns:
+            Agent instance or None
+        """
+        if agent_name not in self._agent_cache:
+            try:
+                from aworld_cli.core.agent_registry import get_agent_builder
+
+                builder = get_agent_builder(agent_name)
+                if not builder:
+                    logger.error(f"Agent builder not found: {agent_name}")
+                    return None
+
+                # Builder returns Swarm, we need the root agent
+                swarm = builder()
+
+                if hasattr(swarm, 'root') and swarm.root:
+                    self._agent_cache[agent_name] = swarm.root
+                elif hasattr(swarm, 'agents') and swarm.agents:
+                    # Fallback: get first agent
+                    agents = list(swarm.agents.values())
+                    self._agent_cache[agent_name] = agents[0] if agents else None
+                else:
+                    logger.error(f"Cannot extract agent from swarm: {agent_name}")
+                    return None
+
+                logger.debug(f"Cached agent: {agent_name}")
+
+            except ImportError:
+                logger.error(
+                    "Cannot import agent_registry. "
+                    "This module requires aworld-cli to be installed."
+                )
+                return None
+            except Exception as e:
+                logger.error(f"Failed to resolve agent {agent_name}: {e}", exc_info=True)
+                return None
+
+        return self._agent_cache.get(agent_name)
