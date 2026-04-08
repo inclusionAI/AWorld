@@ -594,15 +594,30 @@ class LLMModel:
                     'timestamp': time.time()
                 }
 
-                # 同步执行 async hooks
+                # 同步执行 async hooks 并消费 updated_input
                 async def _run_before_hooks():
-                    async for _ in run_hooks(
+                    nonlocal messages
+                    before_hook_events = []
+                    async for hook_event in run_hooks(
                         context=context,
                         hook_point=HookPoint.BEFORE_LLM_CALL,
                         hook_from='llm_model',
                         payload=before_llm_call_payload
                     ):
-                        pass
+                        before_hook_events.append(hook_event)
+
+                    # Apply updated_input from hooks if present (chain all modifications)
+                    for hook_event in before_hook_events:
+                        if hook_event and hasattr(hook_event, 'headers'):
+                            updated_input = hook_event.headers.get('updated_input')
+                            if updated_input:
+                                # Update messages with modified input
+                                if isinstance(updated_input, list):
+                                    messages = updated_input
+                                    logger.info(f"BEFORE_LLM_CALL hook modified messages (sync)")
+                                elif isinstance(updated_input, dict) and 'messages' in updated_input:
+                                    messages = updated_input['messages']
+                                    logger.info(f"BEFORE_LLM_CALL hook modified messages (sync)")
 
                 sync_exec(_run_before_hooks)
             except Exception as e:
@@ -641,15 +656,36 @@ class LLMModel:
                     'timestamp': time.time()
                 }
 
-                # 同步执行 async hooks
+                # 同步执行 async hooks 并消费 updated_output
                 async def _run_after_hooks():
-                    async for _ in run_hooks(
+                    nonlocal resp
+                    after_hook_events = []
+                    async for hook_event in run_hooks(
                         context=context,
                         hook_point=HookPoint.AFTER_LLM_CALL,
                         hook_from='llm_model',
                         payload=after_llm_call_payload
                     ):
-                        pass
+                        after_hook_events.append(hook_event)
+
+                    # Apply updated_output from hooks if present (chain all modifications)
+                    for hook_event in after_hook_events:
+                        if hook_event and hasattr(hook_event, 'headers'):
+                            updated_output = hook_event.headers.get('updated_output')
+                            if updated_output:
+                                # Update resp with modified output
+                                if isinstance(updated_output, dict):
+                                    if 'content' in updated_output:
+                                        resp.content = updated_output['content']
+                                        logger.info(f"AFTER_LLM_CALL hook modified response content (sync)")
+                                    # Allow other fields to be updated as well
+                                    for key, value in updated_output.items():
+                                        if hasattr(resp, key):
+                                            setattr(resp, key, value)
+                                elif hasattr(updated_output, '__dict__'):
+                                    # If it's an object, replace resp entirely
+                                    resp = updated_output
+                                    logger.info(f"AFTER_LLM_CALL hook replaced response object (sync)")
 
                 sync_exec(_run_after_hooks)
             except Exception as e:

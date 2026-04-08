@@ -12,39 +12,43 @@ class HookPoint:
 
     Hooks V2 新增 16 个标准化 hook 点，覆盖 AWorld 核心生命周期。
     保留向后兼容性（START/FINISHED/ERROR 等旧常量仍可用）。
+
+    实现状态：
+    - ✅ 已实现并可用：11 个（会话、任务、Agent、用户交互、LLM、工具）
+    - 🚧 规划中待实现：3 个（上下文压缩、文件变化）
     """
 
-    # === 会话生命周期（3个）===
-    SESSION_STARTED = "session_started"        # 会话开始
-    SESSION_FINISHED = "session_finished"      # 会话完成
-    SESSION_FAILED = "session_failed"          # 会话失败
+    # === 会话生命周期（3个）✅ 已实现 ===
+    SESSION_STARTED = "session_started"        # 会话开始 - 在 event_runner.py 触发
+    SESSION_FINISHED = "session_finished"      # 会话完成 - 在 event_runner.py 触发
+    SESSION_FAILED = "session_failed"          # 会话失败 - 在 event_runner.py 触发
 
-    # === 上下文管理（2个）===
-    BEFORE_CONTEXT_COMPACT = "before_context_compact"  # 上下文压缩前
-    AFTER_CONTEXT_COMPACT = "after_context_compact"    # 上下文压缩后
+    # === 上下文管理（2个）🚧 规划中 ===
+    BEFORE_CONTEXT_COMPACT = "before_context_compact"  # 上下文压缩前 - TODO: 需在 context manager 中实现触发
+    AFTER_CONTEXT_COMPACT = "after_context_compact"    # 上下文压缩后 - TODO: 需在 context manager 中实现触发
 
-    # === 任务管理（2个）===
-    TASK_CREATED = "task_created"              # 任务创建
-    TASK_COMPLETED = "task_completed"          # 任务完成
+    # === 任务管理（2个）✅ 已实现 ===
+    TASK_CREATED = "task_created"              # 任务创建 - 在 event_runner.py 触发
+    TASK_COMPLETED = "task_completed"          # 任务完成 - 在 event_runner.py 触发
 
-    # === Agent 管理（2个）===
-    AGENT_STARTED = "agent_started"            # Agent 启动（包括子 Agent）
-    AGENT_STOPPED = "agent_stopped"            # Agent 停止
+    # === Agent 管理（2个）✅ 已实现 ===
+    AGENT_STARTED = "agent_started"            # Agent 启动（包括子 Agent）- 在 event_runner.py 触发
+    AGENT_STOPPED = "agent_stopped"            # Agent 停止 - 在 event_runner.py 触发
 
-    # === 用户交互（1个）===
-    USER_INPUT_RECEIVED = "user_input_received"  # 用户输入
+    # === 用户交互（1个）✅ 已实现 ===
+    USER_INPUT_RECEIVED = "user_input_received"  # 用户输入 - 在 console.py 触发
 
-    # === LLM 调用（2个）===
-    BEFORE_LLM_CALL = "before_llm_call"        # LLM 调用前
-    AFTER_LLM_CALL = "after_llm_call"          # LLM 返回后
+    # === LLM 调用（2个）✅ 已实现 ===
+    BEFORE_LLM_CALL = "before_llm_call"        # LLM 调用前 - 在 models/llm.py 触发（支持 transform）
+    AFTER_LLM_CALL = "after_llm_call"          # LLM 返回后 - 在 models/llm.py 触发（支持 transform）
 
-    # === 工具执行（3个）===
-    BEFORE_TOOL_CALL = "before_tool_call"      # 工具调用前
-    AFTER_TOOL_CALL = "after_tool_call"        # 工具调用成功后
-    TOOL_CALL_FAILED = "tool_call_failed"      # 工具调用失败后
+    # === 工具执行（3个）✅ 已实现 ===
+    BEFORE_TOOL_CALL = "before_tool_call"      # 工具调用前 - 在 core/tool/base.py 触发（支持拦截和 transform）
+    AFTER_TOOL_CALL = "after_tool_call"        # 工具调用成功后 - 在 core/tool/base.py 触发
+    TOOL_CALL_FAILED = "tool_call_failed"      # 工具调用失败后 - 在 core/tool/base.py 触发
 
-    # === 文件系统（1个）===
-    FILE_CHANGED = "file_changed"              # 文件变化
+    # === 文件系统（1个）🚧 规划中 ===
+    FILE_CHANGED = "file_changed"              # 文件变化 - TODO: 需实现文件监控机制
 
     # 向后兼容：保留旧常量（已废弃，映射到新常量）
     START = SESSION_STARTED
