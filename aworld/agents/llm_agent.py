@@ -169,6 +169,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                  skill_configs: Dict[str, Any] = None,
                  llm_max_attempts: int = 3,
                  llm_retry_delay: float = 10.0,
+                 enable_subagent: bool = False,
+                 subagent_search_paths: List[str] = None,
                  **kwargs):
         """A api class implementation of agent, using the `Observation` and `List[ActionModel]` protocols.
 
@@ -184,6 +186,11 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             event_handler_name: Custom handlers for certain types of events.
             llm_max_attempts: Maximum number of attempts to call LLM. Default is 3. Includes stream and non-stream retries with exponential backoff.
             llm_retry_delay: Base delay in seconds between retry attempts. Default is 10.0s. Uses exponential backoff (10s, 20s, 40s...).
+            enable_subagent: Enable subagent delegation capability. When True, agent can spawn specialized subagents
+                             to handle subtasks autonomously. Automatically adds spawn_subagent tool and scans for
+                             available subagents (TeamSwarm members + agent.md files). Default: False.
+            subagent_search_paths: Custom directories to search for agent.md files. If None, uses default paths:
+                                   ['./.claude/agents', '~/.claude/agents', './agents']. Only used when enable_subagent=True.
         """
         if conf is None:
             model_name = os.getenv("LLM_MODEL_NAME")
@@ -243,6 +250,79 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         self.llm_max_attempts = max(1, llm_max_attempts)  # Ensure at least 1 attempt
         self.llm_retry_delay = llm_retry_delay
 
+        # Initialize subagent capability if enabled
+        self.enable_subagent = enable_subagent
+        self.subagent_manager = None
+        if enable_subagent:
+            self._init_subagent(subagent_search_paths)
+
+    def _init_subagent(self, search_paths: List[str] = None):
+        """
+        Initialize subagent delegation capability.
+
+        Creates SubagentManager with lazy initialization for agent.md scanning.
+        Scanning is deferred until first spawn() call to avoid sync_exec in __init__.
+
+        Note: TeamSwarm member registration happens lazily in async_desc_transform
+        when Swarm topology is available.
+
+        Args:
+            search_paths: Custom directories to search for agent.md files.
+                         Will be used for lazy scanning on first spawn.
+        """
+        from aworld.core.agent.subagent_manager import SubagentManager
+
+        try:
+            # Step 1: Create SubagentManager with lazy initialization
+            # agent.md files will be scanned on first spawn() call (async context)
+            # This avoids sync_exec in __init__ which can cause nested event loop issues
+            self.subagent_manager = SubagentManager(
+                agent=self,
+                agent_md_search_paths=search_paths
+            )
+            logger.info(
+                f"Agent '{self.name()}': SubagentManager created "
+                f"(agent.md scanning deferred until first spawn)"
+            )
+
+            # Step 2: Check if spawn_subagent tool is in tool_names
+            # SpawnSubagentTool is globally registered via @ToolFactory.register decorator.
+            # Each agent instance will have its own SubagentManager, which will be
+            # accessed by the tool at runtime via BaseAgent._get_current_agent().
+            # Users must explicitly add 'async_spawn_subagent' (or 'spawn_subagent') to tool_names
+            # if they want spawn capability.
+            # Note: AsyncTool is registered with 'async_' prefix by ToolFactory
+            has_spawn_tool = 'async_spawn_subagent' in self.tool_names or 'spawn_subagent' in self.tool_names
+            if has_spawn_tool:
+                logger.info(
+                    f"Agent '{self.name()}': Subagent capability enabled with spawn_subagent tool. "
+                    f"This agent can delegate tasks to subagents."
+                )
+            else:
+                logger.info(
+                    f"Agent '{self.name()}': Subagent capability enabled (can be spawned by other agents). "
+                    f"To enable spawning subagents, add 'async_spawn_subagent' to tool_names."
+                )
+
+            # Step 3: System prompt update deferred
+            # Available subagents section will be generated on first spawn after scanning
+            # This is acceptable because:
+            # - System prompt is primarily for LLM guidance, not critical for execution
+            # - Subagents are discovered dynamically and can be listed via spawn errors
+            # - Avoids sync_exec overhead in __init__
+            logger.debug(
+                f"Agent '{self.name()}': System prompt subagent section will be "
+                f"generated on first spawn (lazy initialization)"
+            )
+
+        except Exception as e:
+            logger.error(
+                f"Agent '{self.name()}': Failed to initialize subagent capability: {e}"
+            )
+            # Disable subagent on initialization failure
+            self.enable_subagent = False
+            self.subagent_manager = None
+
     @property
     def llm(self):
         # lazy
@@ -259,6 +339,49 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
     async def async_desc_transform(self, context: Context) -> None:
         """Transform of descriptions of supported tools, agents, and MCP servers in the framework to support function calls of LLM."""
+
+        # Register TeamSwarm members as subagents if subagent capability is enabled
+        if self.enable_subagent and self.subagent_manager:
+            try:
+                swarm = context.swarm if hasattr(context, 'swarm') else None
+                if swarm:
+                    # Register team members (idempotent operation)
+                    await self.subagent_manager.register_team_members(swarm)
+
+                    # Update system prompt with newly registered subagents
+                    subagent_section = self.subagent_manager.generate_system_prompt_section()
+                    if subagent_section:
+                        # Replace old subagent section while preserving content after it
+                        if "## Available Subagents" in self.system_prompt:
+                            # Split on section header
+                            parts = self.system_prompt.split("## Available Subagents", 1)
+                            before_section = parts[0].rstrip()
+
+                            # Find the next section marker (##) after Available Subagents
+                            after_section = ""
+                            if len(parts) > 1:
+                                remaining = parts[1]
+                                # Look for next top-level section (## )
+                                next_section_match = remaining.find("\n## ")
+                                if next_section_match != -1:
+                                    # Preserve everything from the next section onward
+                                    after_section = "\n" + remaining[next_section_match:].lstrip('\n')
+
+                            # Reconstruct: before + new subagent section + after
+                            self.system_prompt = before_section + "\n\n" + subagent_section + after_section
+                        else:
+                            # Append new section
+                            self.system_prompt += "\n\n" + subagent_section
+
+                        logger.debug(
+                            f"Agent '{self.name()}': Updated system prompt with "
+                            f"{len(self.subagent_manager._available_subagents)} available subagents "
+                            f"(including team members)"
+                        )
+            except Exception as e:
+                logger.error(
+                    f"Agent '{self.name()}': Failed to register team members as subagents: {e}"
+                )
 
         # Stateless tool
         try:
