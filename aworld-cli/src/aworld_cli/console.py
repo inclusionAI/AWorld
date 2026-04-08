@@ -1791,11 +1791,35 @@ Add any custom instructions for AI agents working on this project.
                             if hook_result and hasattr(hook_result, 'headers'):
                                 # P0-3: 检查 permission_decision 以阻断执行
                                 permission_decision = hook_result.headers.get('permission_decision')
-                                if permission_decision == 'deny':
-                                    deny_reason = hook_result.headers.get('permission_decision_reason', 'User input blocked by hook')
-                                    self.console.print(f"[red]🚫 {deny_reason}[/red]")
-                                    should_execute = False
-                                    break  # 退出 hook 循环，不执行 executor
+                                if permission_decision in ('deny', 'ask'):
+                                    decision_reason = hook_result.headers.get('permission_decision_reason', 'User input blocked by hook')
+
+                                    # Handle 'ask' by resolving with permission handler
+                                    if permission_decision == 'ask':
+                                        try:
+                                            from aworld.runners.hook.v2.permission import get_permission_handler
+                                            handler = get_permission_handler()
+                                            context_dict = {
+                                                'user_input': user_input,
+                                                'hook_point': 'USER_INPUT_RECEIVED'
+                                            }
+                                            final_decision, resolution_reason = handler.resolve_permission_sync(
+                                                permission_decision, decision_reason, context_dict
+                                            )
+                                            if final_decision == 'deny':
+                                                self.console.print(f"[red]🚫 {resolution_reason}[/red]")
+                                                should_execute = False
+                                                break
+                                            # else: allowed, continue execution
+                                        except Exception as e:
+                                            self.console.print(f"[red]🚫 Permission resolution failed: {e}[/red]")
+                                            should_execute = False
+                                            break
+                                    else:
+                                        # Direct deny
+                                        self.console.print(f"[red]🚫 {decision_reason}[/red]")
+                                        should_execute = False
+                                        break  # 退出 hook 循环，不执行 executor
 
                                 updated_input = hook_result.headers.get('updated_input')
                                 if updated_input:

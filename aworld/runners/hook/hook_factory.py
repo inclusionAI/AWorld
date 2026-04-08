@@ -242,22 +242,20 @@ class HookManager(Factory):
             cached_entry = HookManager._config_hooks_cache[current_config_path]
             config_hooks = cached_entry['hooks']
 
-        # 策略 2: Fallback - 如果只有一个配置被加载，使用它（测试场景兼容）
-        elif len(HookManager._config_hooks_cache) == 1:
-            # 测试场景：通常只加载一个配置文件
-            single_config_path = next(iter(HookManager._config_hooks_cache))
-            logger.debug(
-                f"Standard config path not found, using single loaded config: {single_config_path}"
-            )
-            cached_entry = HookManager._config_hooks_cache[single_config_path]
-            config_hooks = cached_entry['hooks']
+        # 策略 2: Fallback 已移除 - 保持严格的工作区隔离
+        # 原因：单配置 fallback 会在工作区切换时产生配置交叉污染
+        # 测试场景应使用显式的配置路径，不依赖隐式 fallback
 
-        # 策略 3: 多配置场景 - 保持隔离，不使用其他工作区配置
-        elif len(HookManager._config_hooks_cache) > 1:
-            logger.debug(
-                f"Multiple configs loaded but {current_config_path} not found. "
-                f"Maintaining workspace isolation - returning Python hooks only."
-            )
+        # 策略 2: 配置未命中 - 严格保持工作区隔离
+        else:
+            # 无论缓存中有多少配置，只要当前工作区配置未命中，就不使用其他配置
+            # 这确保了工作区 A 的配置永远不会泄露到工作区 B
+            if len(HookManager._config_hooks_cache) > 0:
+                logger.debug(
+                    f"Config path {current_config_path} not found in cache "
+                    f"(cached paths: {list(HookManager._config_hooks_cache.keys())}). "
+                    f"Maintaining strict workspace isolation - returning Python hooks only."
+                )
             # config_hooks 保持 None，只返回 Python hooks
 
         # 4. 合并配置 hooks（如果找到）
