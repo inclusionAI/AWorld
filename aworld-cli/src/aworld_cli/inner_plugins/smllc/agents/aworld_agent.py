@@ -265,6 +265,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
             CONTEXT_TOOL,      # Core: Context management
             'CAST_SEARCH',     # Core: Lightweight code search
             'async_spawn_subagent',  # Core: Dynamic subagent delegation (AsyncTool, needs async_ prefix)
+            'cron',            # Core: Scheduled task management
         ],
         enable_subagent=True,  # Enable subagent capability (Aworld-specific default)
     )

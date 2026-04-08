@@ -39,19 +39,23 @@ class BaseCliRuntime:
     def __init__(self, agent_name: Optional[str] = None):
         """
         Initialize base runtime.
-        
+
         Args:
             agent_name: The name of the agent to interact with. If None, user will be prompted to select.
         """
         self.agent_name = agent_name
         self._running = False
         self.cli = AWorldCLI()
+        self._scheduler = None  # Cron scheduler instance
     
     async def start(self) -> None:
         """Start the CLI interaction loop."""
         self._running = True
         # self.cli.display_welcome()
-        
+
+        # Start cron scheduler
+        await self._start_scheduler()
+
         # Load agents (implemented by subclasses)
         agents = await self._load_agents()
         
@@ -105,7 +109,31 @@ class BaseCliRuntime:
     async def stop(self) -> None:
         """Stop the CLI loop."""
         self._running = False
-    
+
+        # Stop cron scheduler
+        await self._stop_scheduler()
+
+    async def _start_scheduler(self) -> None:
+        """Start cron scheduler (silent startup)."""
+        try:
+            from aworld.core.scheduler import get_scheduler
+            self._scheduler = get_scheduler()
+            await self._scheduler.start()
+            # Silent startup - no user-facing message
+        except Exception as e:
+            # Scheduler startup failure should not block CLI
+            from aworld.logs.util import logger
+            logger.warning(f"Failed to start cron scheduler: {e}")
+
+    async def _stop_scheduler(self) -> None:
+        """Stop cron scheduler."""
+        if self._scheduler:
+            try:
+                await self._scheduler.stop()
+            except Exception as e:
+                from aworld.logs.util import logger
+                logger.warning(f"Failed to stop cron scheduler: {e}")
+
     async def _load_agents(self) -> List[AgentInfo]:
         """
         Load available agents.
