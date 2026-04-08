@@ -134,3 +134,15 @@ examples/**/workspaces
 examples/**/data
 examples/**/*.bak
 =**
+
+# Claude Code session files
+Claude-Sessions/
+
+# AWorld session data
+.aworld/
+
+# Temporary PR documentation
+PR_*_*.md
+*_FINAL*.md
+*_COMPLETE*.md
+*_FIX*.md
