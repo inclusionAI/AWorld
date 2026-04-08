@@ -372,7 +372,7 @@ swarm = TeamSwarm(coordinator, agent1, agent2, agent3)
 team_member = Agent(name="team_agent", ...)
 
 # agent.md文件
-# File: .claude/agents/external_agent.md
+# File: .aworld/agents/external_agent.md
 # ---
 # name: external_agent
 # description: 外部agent
