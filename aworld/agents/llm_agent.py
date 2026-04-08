@@ -351,11 +351,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     # Update system prompt with newly registered subagents
                     subagent_section = self.subagent_manager.generate_system_prompt_section()
                     if subagent_section:
-                        # Replace old subagent section or append
+                        # Replace old subagent section while preserving content after it
                         if "## Available Subagents" in self.system_prompt:
-                            # Update existing section (split and replace)
-                            parts = self.system_prompt.split("## Available Subagents")
-                            self.system_prompt = parts[0].rstrip() + "\n\n" + subagent_section
+                            # Split on section header
+                            parts = self.system_prompt.split("## Available Subagents", 1)
+                            before_section = parts[0].rstrip()
+
+                            # Find the next section marker (##) after Available Subagents
+                            after_section = ""
+                            if len(parts) > 1:
+                                remaining = parts[1]
+                                # Look for next top-level section (## )
+                                next_section_match = remaining.find("\n## ")
+                                if next_section_match != -1:
+                                    # Preserve everything from the next section onward
+                                    after_section = "\n" + remaining[next_section_match:].lstrip('\n')
+
+                            # Reconstruct: before + new subagent section + after
+                            self.system_prompt = before_section + "\n\n" + subagent_section + after_section
                         else:
                             # Append new section
                             self.system_prompt += "\n\n" + subagent_section
