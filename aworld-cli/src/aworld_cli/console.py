@@ -283,6 +283,58 @@ class AWorldCLI:
         if not audio_cfg:
             current_config['models'].pop('audio', None)
 
+        # Image (models.image -> IMAGE_* for image agent)
+        self.console.print("\n[bold]Image configuration[/bold] [dim](optional, for image agent)[/dim]")
+        self.console.print("  [dim]Leave empty to use default LLM config above[/dim]\n")
+        if 'image' not in current_config['models']:
+            current_config['models']['image'] = {}
+        image_cfg = current_config['models']['image']
+
+        current_image_api_key = image_cfg.get('api_key', '')
+        if current_image_api_key:
+            masked = current_image_api_key[:8] + "..." if len(current_image_api_key) > 8 else "***"
+            self.console.print(f"  [dim]Current IMAGE_API_KEY: {masked}[/dim]")
+        image_api_key = Prompt.ask("  IMAGE_API_KEY", default=current_image_api_key, password=True)
+        if image_api_key:
+            image_cfg['api_key'] = image_api_key
+        else:
+            image_cfg.pop('api_key', None)
+
+        current_image_model = image_cfg.get('model', '')
+        self.console.print("  [dim]e.g. qwen-image · Enter to inherit from default[/dim]")
+        image_model = Prompt.ask("  IMAGE_MODEL_NAME", default=current_image_model)
+        if image_model:
+            image_cfg['model'] = image_model
+        else:
+            image_cfg.pop('model', None)
+
+        current_image_base_url = image_cfg.get('base_url', '')
+        image_base_url = Prompt.ask("  IMAGE_BASE_URL", default=current_image_base_url)
+        if image_base_url:
+            image_cfg['base_url'] = image_base_url
+        else:
+            image_cfg.pop('base_url', None)
+
+        current_image_provider = image_cfg.get('provider', 'image')
+        image_provider = Prompt.ask("  IMAGE_PROVIDER", default=current_image_provider)
+        if image_provider:
+            image_cfg['provider'] = image_provider
+        else:
+            image_cfg.pop('provider', None)
+
+        current_image_temp = image_cfg.get('temperature', 0.1)
+        image_temp = Prompt.ask("  IMAGE_TEMPERATURE", default=str(current_image_temp))
+        if image_temp:
+            try:
+                image_cfg['temperature'] = float(image_temp)
+            except ValueError:
+                image_cfg.pop('temperature', None)
+        else:
+            image_cfg.pop('temperature', None)
+
+        if not image_cfg:
+            current_config['models'].pop('image', None)
+
         config.save_config(current_config)
         self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
         table = Table(title="Default LLM Configuration", box=box.ROUNDED)
@@ -323,6 +375,19 @@ class AWorldCLI:
                     audio_table.add_row(key, str(value))
             self.console.print()
             self.console.print(audio_table)
+
+        if current_config['models'].get('image'):
+            image_table = Table(title="Image Configuration (IMAGE_*)", box=box.ROUNDED)
+            image_table.add_column("Setting", style="cyan")
+            image_table.add_column("Value", style="green")
+            for key, value in current_config['models']['image'].items():
+                if key == 'api_key':
+                    masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
+                    image_table.add_row(key, masked_value)
+                else:
+                    image_table.add_row(key, str(value))
+            self.console.print()
+            self.console.print(image_table)
 
     async def _edit_skills_config(self, config, current_config: dict):
         """Edit skills section of config (global SKILLS_PATH and per-agent XXX_SKILLS_PATH)."""
@@ -919,24 +984,25 @@ class AWorldCLI:
             current_agent = next((a for a in available_agents if a.name == agent_name), None)
             if current_agent and current_agent.metadata:
                 metadata = current_agent.metadata
-
-                # Check PTC status
+                
+                # Check PTC status - only show if enabled
                 ptc_tools = metadata.get("ptc_tools", [])
-                ptc_status = "✅ Enabled" if ptc_tools else "❌ Disabled"
-                ptc_count = len(ptc_tools) if isinstance(ptc_tools, list) else 0
-                ptc_status_text = ptc_status + (f" ({ptc_count} tools)" if ptc_count > 0 else "")
-                ptc_info = f"PTC: [dim]{ptc_status_text}[/dim]"
-
+                ptc_info = ""
+                if ptc_tools:
+                    ptc_count = len(ptc_tools) if isinstance(ptc_tools, list) else 0
+                    ptc_status_text = f"✅ Enabled ({ptc_count} tools)" if ptc_count > 0 else "✅ Enabled"
+                    ptc_info = f"\nPTC: [dim]{ptc_status_text}[/dim]"
+                
                 # Get MCP servers list
                 mcp_servers = metadata.get("mcp_servers", [])
                 if isinstance(mcp_servers, list) and mcp_servers:
                     mcp_list = ", ".join(mcp_servers)
-                    mcp_info = f"MCP Servers: [dim]{mcp_list}[/dim]"
+                    mcp_info = f"\nMCP Servers: [dim]{mcp_list}[/dim]"
                 else:
-                    mcp_info = f"MCP Servers: [dim]None[/dim]"
+                    mcp_info = ""  # Don't show "None" either
 
-                config_info = f"\n{ptc_info}\n{mcp_info}"
-
+                config_info = f"{ptc_info}{mcp_info}"
+        
         # Get skill status from executor if available
         skill_info = ""
         if executor_instance and hasattr(executor_instance, 'get_skill_status'):
@@ -963,7 +1029,7 @@ class AWorldCLI:
         # Display welcome message with configuration details
         self.console.print(f"Starting chat with [bold]{agent_name}[/bold].{session_id_info}{config_info}{skill_info}")
         self.console.print("[dim]Type /help for available commands.[/dim]\n")
-        
+
         # Build help text with both built-in and registered commands
         help_lines = [
             f"Starting chat session with [bold]{agent_name}[/bold].{session_id_info}{config_info}{skill_info}\n",
