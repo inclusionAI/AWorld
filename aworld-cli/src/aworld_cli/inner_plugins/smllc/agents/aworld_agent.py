@@ -25,6 +25,9 @@ import traceback
 
 from .image.image import build_image_swarm
 
+# Import SpawnSubagentTool to ensure it's registered in ToolFactory
+from aworld.core.tool.builtin import SpawnSubagentTool
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aworld.agents.llm_agent import Agent
@@ -261,7 +264,9 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         tool_names=[
             CONTEXT_TOOL,      # Core: Context management
             'CAST_SEARCH',     # Core: Lightweight code search
-        ]
+            'async_spawn_subagent',  # Core: Dynamic subagent delegation (AsyncTool, needs async_ prefix)
+        ],
+        enable_subagent=True,  # Enable subagent capability (Aworld-specific default)
     )
 
     # Directly instantiate developer, evaluator, and diffusion as sub-agents
