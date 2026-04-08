@@ -121,7 +121,7 @@ class ModelConfig(BaseConfig):
     llm_provider: Optional[str] = None  # Set to None to allow automatic provider detection
     llm_model_name: Optional[str] = None
     llm_temperature: float = 1.
-    llm_base_url: str = "https://api.openai.com/v1"
+    llm_base_url: Optional[str] = None
     llm_api_key: Optional[str] = None
     llm_client_type: ClientType = ClientType.SDK
     llm_sync_enabled: bool = True
