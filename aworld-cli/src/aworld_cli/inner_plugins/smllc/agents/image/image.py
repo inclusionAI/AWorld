@@ -110,7 +110,7 @@ def build_image_swarm():
 
     # Create ImageCreatorAgent instance
     image_agent = ImageCreatorAgent(
-        name="image",
+        name="image_generator",
         desc="An intelligent assistant for generating images from text prompts.",
         conf=agent_config,
         system_prompt=_system_prompt,
