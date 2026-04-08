@@ -1397,11 +1397,28 @@ class SpawnSubagentTool(AsyncTool):
                 )
                 return
 
-            # Access sub_task_list
-            sub_task_list = current_context.task_state.working_state.sub_task_list
+            # Access sub_task_list (safe for different Context types)
+            # ApplicationContext has task_state.working_state.sub_task_list structure
+            task_state = getattr(current_context, 'task_state', None)
+            if not task_state:
+                logger.debug(
+                    f"_sync_status_to_context: Context does not have task_state, "
+                    f"status sync skipped for task '{task_id}' (context type: {type(current_context).__name__})"
+                )
+                return
+
+            working_state = getattr(task_state, 'working_state', None)
+            if not working_state:
+                logger.debug(
+                    f"_sync_status_to_context: task_state does not have working_state, "
+                    f"status sync skipped for task '{task_id}'"
+                )
+                return
+
+            sub_task_list = getattr(working_state, 'sub_task_list', None)
             if not sub_task_list:
                 logger.warning(
-                    f"_sync_status_to_context: No sub_task_list found in context for task '{task_id}'"
+                    f"_sync_status_to_context: No sub_task_list found in working_state for task '{task_id}'"
                 )
                 return
 
