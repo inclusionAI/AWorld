@@ -4,6 +4,22 @@ import time
 from pathlib import Path
 from aworld.core.context.amni.prompt.neurons.aworld_file_neuron import AWORLDFileNeuron
 from aworld.core.context import ApplicationContext
+from aworld.core.context.amni.state import ApplicationTaskContextState, TaskWorkingState, TaskInput, TaskOutput
+
+
+def create_test_context(working_dir=None):
+    """Helper function to create ApplicationContext for testing"""
+    task_input = TaskInput(session_id="test_session", task_id="test_task", content="Test task")
+    working_state = TaskWorkingState(messages=[], user_profiles=[], kv_store={})
+    task_state = ApplicationTaskContextState(
+        task_input=task_input,
+        working_state=working_state,
+        task_output=TaskOutput()
+    )
+    context = ApplicationContext(task_state=task_state)
+    if working_dir:
+        context.working_directory = working_dir
+    return context
 
 
 @pytest.fixture
@@ -58,8 +74,7 @@ async def test_aworld_file_neuron_basic(temp_aworld_file):
     tmpdir, aworld_file = temp_aworld_file
     
     # Create context with working directory
-    context = ApplicationContext()
-    context.working_directory = tmpdir
+    context = create_test_context(working_dir=tmpdir)
     
     # Create neuron
     neuron = AWORLDFileNeuron()
@@ -77,8 +92,7 @@ async def test_aworld_file_neuron_with_imports(temp_aworld_file_with_imports):
     """Test AWORLD.md with @imports"""
     tmpdir, aworld_file = temp_aworld_file_with_imports
     
-    context = ApplicationContext()
-    context.working_directory = tmpdir
+    context = create_test_context(working_dir=tmpdir)
     
     neuron = AWORLDFileNeuron()
     items = await neuron.format_items(context)
@@ -110,7 +124,7 @@ async def test_aworld_file_neuron_circular_import():
         aworld_file = Path(tmpdir) / 'AWORLD.md'
         aworld_file.write_text("@a.md")
         
-        context = ApplicationContext()
+        context = create_test_context()
         context.working_directory = tmpdir
         
         neuron = AWORLDFileNeuron()
@@ -128,7 +142,7 @@ async def test_aworld_file_neuron_caching():
         aworld_file = Path(tmpdir) / 'AWORLD.md'
         aworld_file.write_text("# Version 1")
         
-        context = ApplicationContext()
+        context = create_test_context()
         context.working_directory = tmpdir
         
         neuron = AWORLDFileNeuron()
@@ -157,7 +171,7 @@ async def test_aworld_file_neuron_format():
         aworld_file = Path(tmpdir) / 'AWORLD.md'
         aworld_file.write_text("# Test")
         
-        context = ApplicationContext()
+        context = create_test_context()
         context.working_directory = tmpdir
         
         neuron = AWORLDFileNeuron()
@@ -171,7 +185,7 @@ async def test_aworld_file_neuron_format():
 async def test_aworld_file_neuron_no_file():
     """Test behavior when no AWORLD.md file exists"""
     with tempfile.TemporaryDirectory() as tmpdir:
-        context = ApplicationContext()
+        context = create_test_context()
         context.working_directory = tmpdir
         
         neuron = AWORLDFileNeuron()
@@ -188,7 +202,7 @@ async def test_aworld_file_neuron_no_file():
 @pytest.mark.asyncio
 async def test_aworld_file_neuron_desc():
     """Test neuron description"""
-    context = ApplicationContext()
+    context = create_test_context()
     neuron = AWORLDFileNeuron()
     
     desc = await neuron.desc(context)
@@ -202,7 +216,7 @@ async def test_aworld_file_neuron_import_not_found():
         aworld_file = Path(tmpdir) / 'AWORLD.md'
         aworld_file.write_text("# Main\n@nonexistent.md")
         
-        context = ApplicationContext()
+        context = create_test_context()
         context.working_directory = tmpdir
         
         neuron = AWORLDFileNeuron()
@@ -226,7 +240,7 @@ async def test_aworld_file_neuron_nested_imports():
         level2 = Path(tmpdir) / 'level2.md'
         level2.write_text("# Level 2\nDeep content")
         
-        context = ApplicationContext()
+        context = create_test_context()
         context.working_directory = tmpdir
         
         neuron = AWORLDFileNeuron()
