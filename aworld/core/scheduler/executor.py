@@ -120,7 +120,7 @@ class CronExecutor:
 
     def _resolve_agent(self, agent_name: str):
         """
-        Resolve agent from registry (with cache).
+        Resolve agent from LocalAgentRegistry (with cache).
 
         Args:
             agent_name: Agent name
@@ -130,16 +130,24 @@ class CronExecutor:
         """
         if agent_name not in self._agent_cache:
             try:
-                from aworld_cli.core.agent_registry import get_agent_builder
+                from aworld_cli.core.agent_registry import LocalAgentRegistry
 
-                builder = get_agent_builder(agent_name)
-                if not builder:
-                    logger.error(f"Agent builder not found: {agent_name}")
+                # Get registry instance
+                registry = LocalAgentRegistry()
+
+                # Get LocalAgent
+                local_agent = registry.get(agent_name)
+                if not local_agent:
+                    logger.error(f"Agent not found in registry: {agent_name}")
                     return None
 
-                # Builder returns Swarm, we need the root agent
-                swarm = builder()
+                # Get swarm from LocalAgent
+                swarm = local_agent.get_swarm()
+                if not swarm:
+                    logger.error(f"Failed to get swarm from agent: {agent_name}")
+                    return None
 
+                # Extract agent from swarm
                 if hasattr(swarm, 'root') and swarm.root:
                     self._agent_cache[agent_name] = swarm.root
                 elif hasattr(swarm, 'agents') and swarm.agents:
@@ -150,11 +158,11 @@ class CronExecutor:
                     logger.error(f"Cannot extract agent from swarm: {agent_name}")
                     return None
 
-                logger.debug(f"Cached agent: {agent_name}")
+                logger.debug(f"Cached agent from LocalAgentRegistry: {agent_name}")
 
             except ImportError:
                 logger.error(
-                    "Cannot import agent_registry. "
+                    "Cannot import LocalAgentRegistry. "
                     "This module requires aworld-cli to be installed."
                 )
                 return None
