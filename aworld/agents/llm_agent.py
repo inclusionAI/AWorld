@@ -260,28 +260,32 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         Initialize subagent delegation capability.
 
-        Creates SubagentManager, scans for available subagents (agent.md files),
-        registers spawn_subagent tool, and updates system prompt.
+        Creates SubagentManager with lazy initialization for agent.md scanning.
+        Scanning is deferred until first spawn() call to avoid sync_exec in __init__.
 
         Note: TeamSwarm member registration happens lazily in async_desc_transform
         when Swarm topology is available.
 
         Args:
-            search_paths: Custom directories to search for agent.md files
+            search_paths: Custom directories to search for agent.md files.
+                         Will be used for lazy scanning on first spawn.
         """
         from aworld.core.agent.subagent_manager import SubagentManager
 
         try:
-            # Step 1: Create SubagentManager
-            self.subagent_manager = SubagentManager(agent=self)
-            logger.info(f"Agent '{self.name()}': SubagentManager created")
+            # Step 1: Create SubagentManager with lazy initialization
+            # agent.md files will be scanned on first spawn() call (async context)
+            # This avoids sync_exec in __init__ which can cause nested event loop issues
+            self.subagent_manager = SubagentManager(
+                agent=self,
+                agent_md_search_paths=search_paths
+            )
+            logger.info(
+                f"Agent '{self.name()}': SubagentManager created "
+                f"(agent.md scanning deferred until first spawn)"
+            )
 
-            # Step 2: Scan for agent.md files (synchronous, fast operation)
-            # Note: Uses sync_exec to convert async scan to sync in __init__
-            from aworld.utils.common import sync_exec
-            sync_exec(self.subagent_manager.scan_agent_md_files, search_paths=search_paths)
-
-            # Step 3: Check if spawn_subagent tool is in tool_names
+            # Step 2: Check if spawn_subagent tool is in tool_names
             # SpawnSubagentTool is globally registered via @ToolFactory.register decorator.
             # Each agent instance will have its own SubagentManager, which will be
             # accessed by the tool at runtime via BaseAgent._get_current_agent().
@@ -300,19 +304,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     f"To enable spawning subagents, add 'async_spawn_subagent' to tool_names."
                 )
 
-            # Step 4: Update system prompt with available subagents
-            subagent_section = self.subagent_manager.generate_system_prompt_section()
-            if subagent_section:
-                # Append to system prompt
-                if self.system_prompt:
-                    self.system_prompt += "\n\n" + subagent_section
-                else:
-                    self.system_prompt = subagent_section
-
-                logger.debug(
-                    f"Agent '{self.name()}': System prompt updated with "
-                    f"{len(self.subagent_manager._available_subagents)} available subagents"
-                )
+            # Step 3: System prompt update deferred
+            # Available subagents section will be generated on first spawn after scanning
+            # This is acceptable because:
+            # - System prompt is primarily for LLM guidance, not critical for execution
+            # - Subagents are discovered dynamically and can be listed via spawn errors
+            # - Avoids sync_exec overhead in __init__
+            logger.debug(
+                f"Agent '{self.name()}': System prompt subagent section will be "
+                f"generated on first spawn (lazy initialization)"
+            )
 
         except Exception as e:
             logger.error(
@@ -350,11 +351,24 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     # Update system prompt with newly registered subagents
                     subagent_section = self.subagent_manager.generate_system_prompt_section()
                     if subagent_section:
-                        # Replace old subagent section or append
+                        # Replace old subagent section while preserving content after it
                         if "## Available Subagents" in self.system_prompt:
-                            # Update existing section (split and replace)
-                            parts = self.system_prompt.split("## Available Subagents")
-                            self.system_prompt = parts[0].rstrip() + "\n\n" + subagent_section
+                            # Split on section header
+                            parts = self.system_prompt.split("## Available Subagents", 1)
+                            before_section = parts[0].rstrip()
+
+                            # Find the next section marker (##) after Available Subagents
+                            after_section = ""
+                            if len(parts) > 1:
+                                remaining = parts[1]
+                                # Look for next top-level section (## )
+                                next_section_match = remaining.find("\n## ")
+                                if next_section_match != -1:
+                                    # Preserve everything from the next section onward
+                                    after_section = "\n" + remaining[next_section_match:].lstrip('\n')
+
+                            # Reconstruct: before + new subagent section + after
+                            self.system_prompt = before_section + "\n\n" + subagent_section + after_section
                         else:
                             # Append new section
                             self.system_prompt += "\n\n" + subagent_section

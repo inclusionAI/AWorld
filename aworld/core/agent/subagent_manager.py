@@ -73,18 +73,24 @@ class SubagentManager:
         result = await manager.spawn('researcher', 'Search for X')
     """
 
-    def __init__(self, agent: 'Agent'):
+    def __init__(self, agent: 'Agent', agent_md_search_paths: List[str] = None):
         """
         Initialize SubagentManager for a parent agent.
 
         Args:
             agent: The parent Agent instance that owns this manager
+            agent_md_search_paths: Optional search paths for agent.md files.
+                                   If provided, will be used for lazy scanning on first spawn.
         """
         self.agent = agent
         self._available_subagents: Dict[str, SubagentInfo] = {}
         self._registry_lock = asyncio.Lock()  # Protects registration operations
         self._registered = False  # Idempotency flag for team member registration
         self._spawn_tool_instance = None  # Lazy-initialized spawn_subagent tool (per-agent instance)
+
+        # Lazy initialization support for agent.md scanning
+        self._scanned_agent_md_files = False  # Whether agent.md files have been scanned
+        self._agent_md_search_paths = agent_md_search_paths  # Paths to scan (deferred until first spawn)
 
         logger.debug(
             f"SubagentManager initialized for agent: {agent.name() if hasattr(agent, 'name') else 'unknown'}"
@@ -272,6 +278,53 @@ class SubagentManager:
                 f"Total available: {len(self._available_subagents)}"
             )
 
+    async def _ensure_agent_md_scanned(self):
+        """
+        Ensure agent.md files have been scanned (lazy initialization).
+
+        This method implements lazy scanning to avoid sync_exec in __init__.
+        Scanning is deferred until the first spawn() call, which runs in async context.
+
+        Thread Safety:
+            - Uses _registry_lock to prevent concurrent scans
+            - Idempotent: Multiple calls are safe (checked via _scanned_agent_md_files flag)
+
+        Design Rationale:
+            - Avoids sync_exec in __init__ which can cause nested event loop issues
+            - Scanning happens in async context where it belongs
+            - Only pays scanning cost when subagent capability is actually used
+            - Compatible with both sync and async initialization patterns
+        """
+        # Fast path: already scanned
+        if self._scanned_agent_md_files:
+            return
+
+        async with self._registry_lock:
+            # Double-check after acquiring lock (race condition guard)
+            if self._scanned_agent_md_files:
+                return
+
+            # Perform scanning
+            search_paths = self._agent_md_search_paths
+            if search_paths is None:
+                # Use default search paths
+                search_paths = ['./.claude/agents', '~/.claude/agents', './agents']
+
+            logger.debug(
+                f"SubagentManager._ensure_agent_md_scanned: "
+                f"Performing lazy scan of agent.md files for agent '{self.agent.name()}'"
+            )
+
+            await self.scan_agent_md_files(search_paths=search_paths)
+
+            # Mark as scanned
+            self._scanned_agent_md_files = True
+
+            logger.debug(
+                f"SubagentManager._ensure_agent_md_scanned: "
+                f"Lazy scan completed, {len(self._available_subagents)} subagents available"
+            )
+
     def generate_system_prompt_section(self, max_subagents: int = 10) -> str:
         """
         Generate system prompt section listing available subagents (concurrent-safe).
@@ -364,6 +417,9 @@ class SubagentManager:
         from aworld.core.agent.swarm import Swarm
 
         start_time = time.time()
+
+        # Step 0: Ensure agent.md files have been scanned (lazy initialization)
+        await self._ensure_agent_md_scanned()
 
         # Step 1: Validate subagent exists
         if name not in self._available_subagents:
@@ -574,42 +630,88 @@ class SubagentManager:
             - Does NOT copy mutable state (trajectory, loop_step, _finished)
             - Sandbox is shared (stateless component, safe to reuse)
             - Cloning overhead: ~1ms, negligible vs execution time
+
+        Compatible Agent Types:
+            - Agent subclasses that accept BaseAgent's standard constructor signature
+            - For custom subclasses with additional required arguments, cloning will
+              fall back to shallow copy + manual attribute reset
         """
         # Import Agent here to avoid circular dependency
-        # Note: Will be imported from actual Agent class location during integration
-        # For now, we use type annotation 'Agent' and runtime will resolve it
         from aworld.core.agent.base import BaseAgent
 
-        # Clone with fresh state
-        # Create new instance with same immutable config but fresh mutable state
-        cloned = original.__class__(
-            name=original.name(),
-            conf=original.conf.copy() if hasattr(original.conf, 'copy') else original.conf,
-            desc=original.desc() if hasattr(original, 'desc') else None,
-            tool_names=filtered_tools,  # ✅ Apply tool filtering
-            agent_names=original.handoffs.copy() if hasattr(original, 'handoffs') else [],
-            mcp_servers=original.mcp_servers.copy() if hasattr(original, 'mcp_servers') else [],
-            black_tool_actions=original.black_tool_actions.copy() if hasattr(original, 'black_tool_actions') else {},
-            feedback_tool_result=original.feedback_tool_result if hasattr(original, 'feedback_tool_result') else True,
-            wait_tool_result=original.wait_tool_result if hasattr(original, 'wait_tool_result') else False,
-            sandbox=original.sandbox  # ✅ Sandbox is stateless, safe to share
-        )
+        # Strategy 1: Try constructor-based cloning (preferred, creates fresh instance)
+        # This works for standard Agent subclasses (LLMAgent, Agent, etc.)
+        try:
+            # Safe attribute access with getattr for all fields
+            agent_names = getattr(original, 'handoffs', None)
+            if agent_names is None:
+                # Fallback: check for agent_names attribute directly
+                agent_names = getattr(original, 'agent_names', [])
 
-        # ✅ Mutable state is NOT copied:
-        # - trajectory: Empty list (cloned agent starts fresh)
-        # - tools: Rebuilt by __init__ from tool_names
-        # - state: AgentStatus.START (initial state)
-        # - _finished: True (initial value)
-        # - loop_step: Not exposed, but if exists, reset by __init__
+            # Create new instance with same immutable config but fresh mutable state
+            cloned = original.__class__(
+                name=original.name(),
+                conf=original.conf.copy() if hasattr(original.conf, 'copy') else original.conf,
+                desc=getattr(original, 'desc', lambda: None)() if callable(getattr(original, 'desc', None)) else getattr(original, '_desc', None),
+                tool_names=filtered_tools,  # ✅ Apply tool filtering
+                agent_names=agent_names.copy() if isinstance(agent_names, list) else [],
+                mcp_servers=getattr(original, 'mcp_servers', []).copy() if hasattr(getattr(original, 'mcp_servers', []), 'copy') else [],
+                black_tool_actions=getattr(original, 'black_tool_actions', {}).copy() if hasattr(getattr(original, 'black_tool_actions', {}), 'copy') else {},
+                feedback_tool_result=getattr(original, 'feedback_tool_result', True),
+                wait_tool_result=getattr(original, 'wait_tool_result', False),
+                sandbox=getattr(original, 'sandbox', None)  # ✅ Sandbox is stateless, safe to share
+            )
 
-        logger.debug(
-            f"SubagentManager._clone_agent_instance: "
-            f"Cloned agent {original.name()}, "
-            f"original_tools={len(original.tool_names)}, "
-            f"cloned_tools={len(filtered_tools)}"
-        )
+            logger.debug(
+                f"SubagentManager._clone_agent_instance: "
+                f"Successfully cloned agent {original.name()} via constructor, "
+                f"original_tools={len(getattr(original, 'tool_names', []))}, "
+                f"cloned_tools={len(filtered_tools)}"
+            )
 
-        return cloned
+            return cloned
+
+        except TypeError as e:
+            # Strategy 2: Fallback to shallow copy + manual attribute reset
+            # This handles custom Agent subclasses with non-standard constructors
+            logger.warning(
+                f"SubagentManager._clone_agent_instance: "
+                f"Constructor-based cloning failed for {original.__class__.__name__}: {e}. "
+                f"Falling back to copy-based cloning."
+            )
+
+            import copy
+
+            # Create shallow copy
+            cloned = copy.copy(original)
+
+            # Reset mutable state to avoid pollution
+            cloned.trajectory = [] if hasattr(cloned, 'trajectory') else None
+            cloned.state = None  # Will be initialized on first run
+            cloned._finished = True  # Reset finished flag
+
+            # Apply tool filtering (critical for security)
+            cloned.tool_names = list(filtered_tools)  # Create new list
+
+            # Rebuild tools from filtered tool_names
+            # This ensures the cloned agent only has access to allowed tools
+            if hasattr(cloned, '_init_tools') and callable(cloned._init_tools):
+                try:
+                    cloned._init_tools()
+                except Exception as init_error:
+                    logger.error(
+                        f"SubagentManager._clone_agent_instance: "
+                        f"Failed to reinitialize tools after cloning: {init_error}"
+                    )
+
+            logger.debug(
+                f"SubagentManager._clone_agent_instance: "
+                f"Cloned agent {original.name()} via copy fallback, "
+                f"original_tools={len(getattr(original, 'tool_names', []))}, "
+                f"cloned_tools={len(filtered_tools)}"
+            )
+
+            return cloned
 
     def _create_temp_agent(self, name: str, info: SubagentInfo, **kwargs) -> 'Agent':
         """
@@ -639,9 +741,9 @@ class SubagentManager:
         # Handle model inheritance
         model_name = kwargs.get('model', config.get('model', 'inherit'))
 
-        # Access parent agent's llm config (conf is ConfigDict)
+        # Access parent agent's llm config (conf is AgentConfig, a Pydantic model)
         # Try to get from llm_config first, fallback to root level
-        parent_llm_config = self.agent.conf.get('llm_config')
+        parent_llm_config = getattr(self.agent.conf, 'llm_config', None)
         if parent_llm_config and hasattr(parent_llm_config, 'llm_model_name'):
             # llm_config is a ModelConfig object
             parent_model = parent_llm_config.llm_model_name
@@ -650,10 +752,11 @@ class SubagentManager:
             parent_base_url = parent_llm_config.llm_base_url
         else:
             # Fallback: try root level fields (backward compatibility)
-            parent_model = self.agent.conf.get('llm_model_name', 'gpt-4o')
-            parent_provider = self.agent.conf.get('llm_provider', 'openai')
-            parent_api_key = self.agent.conf.get('llm_api_key')
-            parent_base_url = self.agent.conf.get('llm_base_url', 'https://api.openai.com/v1')
+            # AgentConfig has properties for llm_model_name and llm_provider
+            parent_model = getattr(self.agent.conf, 'llm_model_name', 'gpt-4o')
+            parent_provider = getattr(self.agent.conf, 'llm_provider', 'openai')
+            parent_api_key = getattr(parent_llm_config, 'llm_api_key', None) if parent_llm_config else None
+            parent_base_url = getattr(parent_llm_config, 'llm_base_url', None) if parent_llm_config else None
 
         if model_name == 'inherit':
             # Use parent agent's model configuration
