@@ -190,6 +190,25 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         """
         return _agent_context.get()
 
+    @staticmethod
+    def _get_current_agent() -> Optional['BaseAgent']:
+        """Get the current agent for this async task (thread-safe).
+
+        Returns the agent that is currently executing within the current context.
+        Useful for tools that need access to the calling agent's capabilities
+        (e.g., spawn_subagent tool accessing SubagentManager).
+
+        Returns:
+            The current agent if available, None otherwise
+        """
+        try:
+            ctx = _agent_context.get()
+            if ctx and hasattr(ctx, 'agent'):
+                return ctx.agent
+            return None
+        except LookupError:
+            return None
+
     def _init_id_name(self, name: str, agent_id: str = None):
         self._name = name if name else convert_to_snake(self.__class__.__name__)
         self._id = (
