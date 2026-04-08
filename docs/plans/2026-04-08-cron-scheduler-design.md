@@ -1,107 +1,155 @@
-# Aworld Cron Scheduler Design (MVP)
+# Aworld Cron Scheduler Design (Implementable MVP)
 
 **Date:** 2026-04-08  
-**Status:** Design Phase - MVP Scope  
+**Status:** Design Phase - Ready for Implementation  
 **Author:** AI Assistant + wuman  
-**Version:** 2.0 (Revised after design review)
+**Version:** 3.0
 
 ## 1. Overview
 
 ### 1.1 Goal
 
-Add **isolated-mode** cron-like scheduled task capabilities to Aworld CLI, enabling:
-- Periodic task execution (e.g., daily benchmarks)
-- One-time delayed tasks (e.g., "remind me in 30 minutes")
-- Agent-driven task scheduling during conversation
+Add cron-like scheduled task capability to Aworld with the following **MVP semantics**:
 
-### 1.2 MVP Scope (Revised)
+- Create one-time delayed tasks (`at`)
+- Create fixed-interval tasks (`every`)
+- Create cron-expression tasks (`cron`)
+- Execute each scheduled task in **isolated mode** using a fresh `Task` / `Runners.run()` call
+- Allow users to manage jobs from Aworld conversation and `/cron` slash command
 
-**What's Included:**
-- ✅ Isolated execution mode ONLY (new independent Agent instance)
-- ✅ Three scheduling modes (at/every/cron)
-- ✅ File-based storage (`.aworld/cron.json`)
-- ✅ CLI interactive mode support
-- ✅ Agent Tool (`cron_tool`)
-- ✅ Slash Command (`/cron`)
-- ✅ Reliable scheduler core (startup recovery, retry, timeout, concurrency control)
+This MVP is designed to fit the **current Aworld CLI architecture** and be implemented without introducing a daemon process.
 
-**What's Explicitly Excluded (MVP):**
-- ❌ Main session continuation mode (requires heartbeat/system-event semantics)
-- ❌ Delivery semantics (notifications to external channels)
-- ❌ Multiple storage backends (Redis/PostgreSQL)
-- ❌ `aworld-cli cron` subcommand (requires CLI parser changes)
-- ❌ Services/web mode support (focus on CLI first)
-- ❌ Failure alerting (can be added later)
-- ❌ Web UI
+### 1.2 Important Product Boundary
 
-### 1.3 Design Principles
+This design is **not** equivalent to OpenClaw's long-lived cron service.
 
-1. **Definition-Execution Separation**: `CronJob` (persistent definition) vs `Task` (runtime instance)
-2. **Reuse Existing Infrastructure**: Use `Runners.run()` for execution
-3. **Minimal Invasion**: No modification to core Agent/Runner logic
-4. **CLI-First**: Focus on interactive CLI mode
-5. **Reliable Core**: OpenClaw-inspired reliability (startup recovery, atomic writes, retry)
+For this MVP:
+- Scheduler runs only while `aworld-cli` runtime is alive
+- Jobs persist to disk, but they do **not** trigger while CLI is offline
+- On next CLI startup, scheduler performs recovery and recalculates future runs
+- Missed runs during offline time are **not replayed** in MVP
+
+That tradeoff is intentional because current codebase has no standalone scheduler service yet.
+
+### 1.3 Scope
+
+**Included in MVP**
+- CLI-only scheduler lifecycle
+- File-based storage in `.aworld/cron.json`
+- `at` / `every` / `cron`
+- Isolated execution via `Runners.run()`
+- `cron` tool for agent-side management
+- `/cron` slash command
+- Startup recovery
+- Timeout / retry / bounded concurrency
+- Single-process correctness
+
+**Explicitly excluded from MVP**
+- Standalone daemon / background service
+- Service/web runtime support
+- Main-session continuation / wake original chat session
+- Delivery semantics (Discord, email, webhook, push)
+- Catch-up replay for missed offline windows
+- Distributed coordination / multi-writer support
+- Web UI
+- `aworld-cli cron` top-level CLI subcommand
+
+### 1.4 Design Principles
+
+1. Reuse existing runtime and runner infrastructure.
+2. Match current codebase instead of introducing imaginary registry or tool-loading paths.
+3. Prefer correctness over feature breadth.
+4. Keep scheduler state explicit and serializable.
+5. Leave a clear upgrade path to a future daemon-based scheduler.
 
 ## 2. Architecture
 
-### 2.1 Component Layout
+### 2.1 Runtime Model
 
-```
-┌─────────────────────────────────────┐
-│  User Interface Layer                │
-│  - Agent cron_tool                  │
-│  - /cron Slash Command              │
-└─────────────────────────────────────┘
-           ↓
-┌─────────────────────────────────────┐
-│  Scheduler Core (aworld/core/scheduler/) │
-│  - CronScheduler (timer loop)       │
-│  - FileBasedCronStore (persistence) │
-│  - CronExecutor (Task builder)      │
-└─────────────────────────────────────┘
-           ↓
-┌─────────────────────────────────────┐
-│  Execution Layer (Reuse Existing)   │
-│  - Runners.run() (entry point)      │
-│  - Task + TaskRunner                │
-│  - Swarm/Agent                      │
-└─────────────────────────────────────┘
+MVP architecture:
+
+```text
+User / Agent
+  -> cron tool or /cron command
+  -> CronScheduler
+  -> FileBasedCronStore (.aworld/cron.json)
+  -> CronExecutor
+  -> LocalAgentRegistry / LocalAgent.get_swarm()
+  -> Runners.run()
 ```
 
-### 2.2 Directory Structure
+### 2.2 Why This Shape
 
-```
+This shape aligns with current implementation reality:
+
+- `BaseCliRuntime` owns the interactive runtime lifecycle
+- agents are resolved through `aworld_cli.core.agent_registry.LocalAgentRegistry`, not a `get_agent_builder()` helper
+- slash commands are registered through `aworld_cli.commands.__init__`
+- tool registration must use paths that are actually loaded by current ToolFactory flow
+
+## 3. MVP vs Future Proper Cron
+
+### 3.1 MVP in This Document
+
+This document covers:
+- scheduler embedded in CLI runtime
+- persisted jobs
+- no offline execution
+
+### 3.2 Future OpenClaw-like Version
+
+A future "proper cron" version should add:
+- standalone daemon process
+- CLI as CRUD control plane only
+- always-on scheduling independent of interactive sessions
+- optional delivery hooks
+- optional catch-up policy
+
+That is **not** part of this document.
+
+## 4. Directory Layout
+
+### 4.1 Files to Add
+
+```text
 aworld/
 ├── core/
-│   └── scheduler/              # NEW: Scheduler core
-│       ├── __init__.py         # get_scheduler() singleton
-│       ├── types.py            # CronJob, CronSchedule, CronPayload (simplified)
-│       ├── scheduler.py        # CronScheduler (timer loop + recovery)
-│       ├── store.py            # FileBasedCronStore (atomic writes + locking)
-│       └── executor.py         # CronExecutor (builds Task, calls Runners.run())
+│   └── scheduler/
+│       ├── __init__.py
+│       ├── types.py
+│       ├── store.py
+│       ├── scheduler.py
+│       └── executor.py
 └── tools/
-    └── builtin/                # NEW: Builtin tools directory
-        ├── __init__.py
-        ├── cron_tool.py        # NEW: Cron tool
-        └── context_tool.py     # Existing context tool (moved here)
+    └── cron_tool.py
 
 aworld-cli/
-├── src/aworld_cli/
-│   ├── runtime/
-│   │   └── base.py             # MODIFY: Add scheduler lifecycle in start()/stop()
-│   ├── commands/
-│   │   └── cron_cmd.py         # NEW: /cron slash command
-│   └── inner_plugins/smllc/agents/
-│       └── aworld_agent.py     # MODIFY: Add "cron" to default tool_names
+└── src/aworld_cli/
+    ├── commands/
+    │   └── cron_cmd.py
+    ├── commands/__init__.py        # modify: import cron_cmd
+    ├── runtime/base.py             # modify: start/stop scheduler
+    └── inner_plugins/smllc/agents/aworld_agent.py  # modify: expose cron tool
 ```
 
-## 3. Data Models (Simplified)
+### 4.2 Placement Notes
 
-### 3.1 Core Types
+`cron_tool.py` should live under `aworld/tools/`, not `aworld/tools/builtin/`.
+
+Reason:
+- current `aworld.tools` package is scanned automatically
+- `aworld/core/tool/builtin/__init__.py` is not a general-purpose auto-loading path
+- placing the tool under `aworld/tools/` avoids special-case loader work
+
+## 5. Data Model
+
+### 5.1 Core Types
+
+`aworld/core/scheduler/types.py` already exists and should remain the canonical model layer.
+
+Recommended model shape:
 
 ```python
-# aworld/core/scheduler/types.py
-
 from dataclasses import dataclass, field
 from typing import Literal, Optional, List
 import uuid
@@ -109,31 +157,22 @@ from datetime import datetime
 
 @dataclass
 class CronSchedule:
-    """Scheduling configuration"""
     kind: Literal["at", "every", "cron"]
-    
-    # at: One-time task (ISO 8601 timestamp)
     at: Optional[str] = None
-    
-    # every: Interval repetition (seconds)
     every_seconds: Optional[int] = None
-    
-    # cron: Cron expression
     cron_expr: Optional[str] = None
-    timezone: Optional[str] = "UTC"
+    timezone: str = "UTC"
 
 @dataclass
 class CronPayload:
-    """Task execution content (serializable)"""
-    message: str                          # Task input
-    agent_name: str = "Aworld"           # Agent to use
+    message: str
+    agent_name: str = "Aworld"
     tool_names: List[str] = field(default_factory=list)
     timeout_seconds: Optional[int] = None
 
 @dataclass
 class CronJobState:
-    """Runtime state"""
-    next_run_at: Optional[str] = None     # ISO 8601
+    next_run_at: Optional[str] = None
     last_run_at: Optional[str] = None
     last_status: Optional[Literal["ok", "error", "timeout"]] = None
     last_error: Optional[str] = None
@@ -142,26 +181,34 @@ class CronJobState:
 
 @dataclass
 class CronJob:
-    """Cron task definition (serializable to file)"""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    name: str
+    name: str = ""
     description: Optional[str] = None
     enabled: bool = True
-    delete_after_run: bool = False        # One-time task
-    
-    schedule: CronSchedule
-    payload: CronPayload
+    delete_after_run: bool = False
+    schedule: CronSchedule = field(default_factory=lambda: CronSchedule(kind="cron"))
+    payload: CronPayload = field(default_factory=lambda: CronPayload(message=""))
     state: CronJobState = field(default_factory=CronJobState)
-    
-    # Metadata
     created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
 ```
 
-### 3.2 Storage Format
+### 5.2 State Semantics
+
+`next_run_at` is the scheduler source of truth.
+
+Required rule:
+- every due job must be **claimed** before execution by atomically:
+  - verifying it is still due
+  - setting `running=True`
+  - setting `last_run_at=now`
+  - advancing `next_run_at` to the next future schedule, or `None` for one-shot jobs
+
+Without that claim step, the same due job can be triggered repeatedly by concurrent scheduler ticks.
+
+### 5.3 Storage Format
 
 ```json
-// .aworld/cron.json
 {
   "version": 1,
   "jobs": [
@@ -178,13 +225,14 @@ class CronJob:
       "payload": {
         "message": "Run GAIA benchmark validation",
         "agent_name": "Aworld",
-        "tool_names": ["terminal", "read_file"],
+        "tool_names": ["cron", "CAST_SEARCH"],
         "timeout_seconds": 600
       },
       "state": {
         "next_run_at": "2026-04-09T09:00:00+08:00",
         "last_run_at": null,
         "last_status": null,
+        "last_error": null,
         "running": false,
         "consecutive_errors": 0
       },
@@ -195,789 +243,458 @@ class CronJob:
 }
 ```
 
-## 4. Core Components
+## 6. Store Design
 
-### 4.1 CronScheduler
+### 6.1 Requirements
 
-**Responsibilities:**
-- Manage timer loop
-- Startup recovery (clean stale running, recalculate next runs)
-- Trigger job execution with concurrency control
+`FileBasedCronStore` must support:
+- list / get / add / update / remove
+- transactional update of a single job
+- claim-due-job semantics
+- atomic replace on write
+- in-process lock for correctness
 
-**Key Methods:**
+### 6.2 Concurrency Model
+
+MVP assumes **single Aworld CLI process** owns `.aworld/cron.json`.
+
+So correctness target is:
+- safe within one process
+- robust against crash during write
+- not safe for two independent CLI processes both running the scheduler
+
+### 6.3 Recommended Implementation
+
+Do not rely on "lock temp file only" as correctness story.
+
+Use:
+- one `asyncio.Lock` / process-local mutex inside store
+- read-modify-write performed under that lock
+- write to temp file, then `replace()`
+
+Optional `fcntl` can still be used, but it is secondary in MVP because the product contract is single-process.
+
+### 6.4 Store API
+
+Recommended store API:
+
 ```python
-class CronScheduler:
-    def __init__(self, store: CronStore, executor: CronExecutor, max_concurrent: int = 5):
-        self.store = store
-        self.executor = executor
-        self.semaphore = asyncio.Semaphore(max_concurrent)
-        self.running = False
-        self._timer_task = None
-    
-    async def start()                    # Start scheduler + recovery
-    async def stop()                     # Stop scheduler
-    async def add_job(job: CronJob)      # Add new job
-    async def update_job(id, **updates)  # Update job
-    async def remove_job(id)             # Remove job
-    async def run_job(id, force=False)   # Manually trigger
-    async def list_jobs()                # List all jobs
+class FileBasedCronStore:
+    async def list_jobs(self, enabled_only: bool = False) -> list[CronJob]: ...
+    async def get_job(self, job_id: str) -> CronJob | None: ...
+    async def add_job(self, job: CronJob) -> CronJob: ...
+    async def update_job(self, job_id: str, **updates) -> CronJob: ...
+    async def remove_job(self, job_id: str) -> None: ...
+    async def replace_job(self, job: CronJob) -> CronJob: ...
+    async def claim_due_job(self, job_id: str, now_iso: str) -> CronJob | None: ...
 ```
 
-**Startup Recovery:**
-```python
-async def start(self):
-    """启动调度器（带恢复）"""
-    # 1. Clean stale running states
-    await self._cleanup_stale_running()
-    
-    # 2. Recalculate next_run_time for all enabled jobs
-    await self._recalculate_next_runs()
-    
-    # 3. Start timer loop
-    self._timer_task = asyncio.create_task(self._schedule_loop())
+`claim_due_job()` is the key method that makes scheduling safe.
 
-async def _cleanup_stale_running(self):
-    """清理启动前异常中断的任务"""
-    jobs = await self.store.list_jobs()
-    for job in jobs:
-        if job.state.running:
-            await self.store.update_job(
-                job.id,
-                state={"running": False, "last_status": "error", 
-                       "last_error": "Scheduler restarted"}
-            )
-```
+## 7. Scheduler Design
 
-**Timer Loop:**
+### 7.1 Responsibilities
+
+`CronScheduler` is responsible for:
+- startup recovery
+- periodic polling
+- selecting due jobs
+- claiming jobs before execution
+- bounded concurrency
+- manual trigger
+
+### 7.2 Startup Recovery
+
+On startup:
+
+1. Load all jobs
+2. For jobs with `running=True`, mark them as failed with `last_error="Scheduler restarted"`
+3. Recalculate `next_run_at`
+4. Do **not** replay missed executions from offline period
+
+### 7.3 Polling Strategy
+
+Simple polling is sufficient for MVP:
+- wake every 1 second when there is due work
+- otherwise sleep until min(next due in 60s, 60s)
+
+### 7.4 Triggering Rule
+
+Pseudo-flow:
+
 ```python
 async def _schedule_loop(self):
-    """主调度循环"""
     while self.running:
         jobs = await self.store.list_jobs(enabled_only=True)
-        
-        # Find next job to run
-        next_job, wait_seconds = self._find_next_job(jobs)
-        
-        if next_job and wait_seconds <= 0:
-            # Trigger execution (non-blocking)
-            asyncio.create_task(self._trigger_job(next_job))
-            await asyncio.sleep(1)  # Prevent tight loop
-        else:
-            # Wait until next job or check interval
-            await asyncio.sleep(min(wait_seconds, 60) if next_job else 60)
+        due_jobs = [j for j in jobs if is_due(j.state.next_run_at)]
 
-async def _trigger_job(self, job: CronJob):
-    """触发任务（带并发控制、超时、重试）"""
-    async with self.semaphore:  # Concurrency control
-        try:
-            # Mark as running
-            await self.store.update_job(
-                job.id, 
-                state={"running": True, "last_run_at": datetime.utcnow().isoformat()}
-            )
-            
-            # Execute with timeout
-            result = await asyncio.wait_for(
-                self.executor.execute_with_retry(job),
-                timeout=job.payload.timeout_seconds or 600
-            )
-            
-            # Update state
-            await self.store.update_job(
-                job.id,
-                state={
-                    "running": False,
-                    "last_status": "ok" if result.success else "error",
-                    "last_error": result.msg if not result.success else None,
-                    "consecutive_errors": 0 if result.success else job.state.consecutive_errors + 1
-                }
-            )
-            
-            # Delete one-time jobs
-            if job.delete_after_run:
-                await self.store.remove_job(job.id)
-        
-        except asyncio.TimeoutError:
-            await self.store.update_job(
-                job.id,
-                state={"running": False, "last_status": "timeout", 
-                       "last_error": "Execution timeout"}
-            )
-        except Exception as e:
-            await self.store.update_job(
-                job.id,
-                state={"running": False, "last_status": "error", 
-                       "last_error": str(e)}
-            )
+        if not due_jobs:
+            await asyncio.sleep(self._next_sleep_seconds(jobs))
+            continue
+
+        for job in due_jobs:
+            claimed = await self.store.claim_due_job(job.id, now_iso())
+            if claimed is not None:
+                asyncio.create_task(self._execute_claimed_job(claimed))
+
+        await asyncio.sleep(1)
 ```
 
-### 4.2 FileBasedCronStore
+The scheduler must never execute a job that it has not successfully claimed.
 
-**Responsibilities:**
-- Atomic file writes with locking
-- CRUD operations on jobs
+### 7.5 Execution Semantics
 
-**Implementation:**
+For a claimed job:
+
+1. Run under semaphore
+2. Call executor with timeout
+3. Update `last_status`, `last_error`, `consecutive_errors`
+4. Set `running=False`
+5. If `delete_after_run=True` and no future `next_run_at`, remove the job
+
+### 7.6 Manual Trigger
+
+`run_job(job_id, force=True)` should:
+- bypass due-time check
+- still respect semaphore / timeout / state update logic
+- not mutate schedule definition
+- for recurring jobs, not break future cadence
+
+## 8. Execution Design
+
+### 8.1 Core Rule
+
+Execution must reuse `Runners.run()`:
+
 ```python
-import fcntl
-import json
-from pathlib import Path
-from typing import List, Optional, Dict
-
-class FileBasedCronStore:
-    def __init__(self, file_path: str):
-        self.file_path = Path(file_path)
-        self._ensure_file_exists()
-    
-    def _ensure_file_exists(self):
-        if not self.file_path.exists():
-            self.file_path.parent.mkdir(parents=True, exist_ok=True)
-            self._write_data({"version": 1, "jobs": []})
-    
-    def _read_data(self) -> Dict:
-        """Locked read"""
-        with open(self.file_path, "r") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_SH)  # Shared lock
-            try:
-                return json.load(f)
-            finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-    
-    def _write_data(self, data: Dict):
-        """Atomic locked write"""
-        temp_file = self.file_path.with_suffix('.tmp')
-        
-        with open(temp_file, "w") as f:
-            fcntl.flock(f.fileno(), fcntl.LOCK_EX)  # Exclusive lock
-            try:
-                json.dump(data, f, indent=2)
-            finally:
-                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
-        
-        # Atomic replace
-        temp_file.replace(self.file_path)
-    
-    async def add_job(self, job: CronJob) -> CronJob:
-        data = self._read_data()
-        data["jobs"].append(self._job_to_dict(job))
-        self._write_data(data)
-        return job
-    
-    async def update_job(self, job_id: str, **updates) -> CronJob:
-        data = self._read_data()
-        for job_dict in data["jobs"]:
-            if job_dict["id"] == job_id:
-                # Update fields
-                for key, value in updates.items():
-                    if key == "state":
-                        job_dict["state"].update(value)
-                    else:
-                        job_dict[key] = value
-                job_dict["updated_at"] = datetime.utcnow().isoformat()
-                break
-        self._write_data(data)
-        return await self.get_job(job_id)
-    
-    async def list_jobs(self, enabled_only: bool = False) -> List[CronJob]:
-        data = self._read_data()
-        jobs = [self._dict_to_job(j) for j in data["jobs"]]
-        if enabled_only:
-            jobs = [j for j in jobs if j.enabled]
-        return jobs
+result = await Runners.run(
+    input=job.payload.message,
+    swarm=swarm,
+    tool_names=job.payload.tool_names,
+    session_id=None,
+)
 ```
 
-### 4.3 CronExecutor
+This matches current runner model and preserves isolated execution.
 
-**Responsibilities:**
-- Build Task from CronJob
-- Call `Runners.run()` to execute
-- Handle retry logic
+### 8.2 Agent Resolution
 
-**Implementation:**
+Do **not** use a fictional `get_agent_builder()`.
+
+Current codebase should resolve agents through `LocalAgentRegistry`, then build or fetch a swarm via `LocalAgent.get_swarm()`.
+
+Recommended executor logic:
+
 ```python
 from aworld.runner import Runners
-from aworld.core.agent.swarm import Swarm
-from aworld.core.task import TaskResponse
+from aworld_cli.core.agent_registry import LocalAgentRegistry
 
 class CronExecutor:
-    def __init__(self):
-        self._agent_cache = {}  # Cache agents
-    
-    async def execute(self, job: CronJob) -> TaskResponse:
-        """Execute job (isolated mode only)"""
-        from aworld.runner import Runners
-        
-        # Resolve agent
-        agent = self._resolve_agent(job.payload.agent_name)
-        swarm = Swarm(agent)
-        
-        # Execute using Runners.run()
-        result = await Runners.run(
+    def __init__(self, agent_registry: LocalAgentRegistry):
+        self.agent_registry = agent_registry
+        self._swarm_cache = {}
+
+    async def execute(self, job: CronJob):
+        swarm = await self._resolve_swarm(job.payload.agent_name)
+        return await Runners.run(
             input=job.payload.message,
             swarm=swarm,
             tool_names=job.payload.tool_names,
-            session_id=None,  # Isolated mode: always None
+            session_id=None,
         )
-        
-        return result
-    
-    async def execute_with_retry(self, job: CronJob, max_retries: int = 3) -> TaskResponse:
-        """Execute with exponential backoff retry"""
-        backoff_base = 2
-        
-        for attempt in range(max_retries + 1):
-            try:
-                result = await self.execute(job)
-                
-                if result.success:
-                    return result
-                
-                if attempt >= max_retries:
-                    return result
-                
-                # Exponential backoff
-                wait_seconds = backoff_base ** attempt
-                logger.warning(f"Job {job.id} failed (attempt {attempt+1}/{max_retries+1}), "
-                             f"retrying in {wait_seconds}s...")
-                await asyncio.sleep(wait_seconds)
-            
-            except Exception as e:
-                if attempt >= max_retries:
-                    return TaskResponse(
-                        success=False,
-                        msg=f"Execution failed after {max_retries} retries: {str(e)}"
-                    )
-                
-                wait_seconds = backoff_base ** attempt
-                await asyncio.sleep(wait_seconds)
-    
-    def _resolve_agent(self, agent_name: str):
-        """Resolve agent from registry (with cache)"""
-        if agent_name not in self._agent_cache:
-            from aworld_cli.core.agent_registry import get_agent_builder
-            builder = get_agent_builder(agent_name)
-            
-            # Builder returns Swarm, we need the root agent
-            swarm = builder()
-            if hasattr(swarm, 'root'):
-                self._agent_cache[agent_name] = swarm.root
-            else:
-                # Fallback: get first agent
-                agents = list(swarm.agents.values())
-                self._agent_cache[agent_name] = agents[0] if agents else None
-        
-        return self._agent_cache[agent_name]
+
+    async def _resolve_swarm(self, agent_name: str):
+        if agent_name in self._swarm_cache:
+            return self._swarm_cache[agent_name]
+
+        local_agent = self.agent_registry.get(agent_name)
+        if not local_agent:
+            raise ValueError(f"Agent not found: {agent_name}")
+
+        swarm = await local_agent.get_swarm()
+        self._swarm_cache[agent_name] = swarm
+        return swarm
 ```
 
-## 5. User Interfaces
+### 8.3 Tool Semantics
 
-### 5.1 Agent Tool: cron_tool
+`payload.tool_names` is a whitelist of Aworld tool names, not arbitrary sandbox action names.
 
-**Location:** `aworld/tools/builtin/cron_tool.py`
+Examples:
+- `cron`
+- `CAST_SEARCH`
+- `async_spawn_subagent`
 
-**Implementation:**
-```python
-from aworld.core.tool.func_to_tool import be_tool
-from pydantic import Field
-from typing import Literal, Optional, List, Dict, Any
+Do not document values like `read_file` unless they are confirmed to be valid top-level tool names in the current tool system.
 
-@be_tool(
-    tool_name='cron',
-    tool_desc="Manage scheduled tasks. Actions: add, list, remove, run, status"
-)
-def cron_tool(
-    action: Literal["add", "list", "remove", "run", "status"] = Field(
-        description="Action: add/list/remove/run/status"
-    ),
-    
-    # add parameters
-    name: Optional[str] = Field(default=None, description="Task name"),
-    message: Optional[str] = Field(default=None, description="Task message/instruction"),
-    schedule_type: Optional[Literal["at", "every", "cron"]] = Field(
-        default=None,
-        description="Schedule type: 'at' (once), 'every' (interval), 'cron' (expression)"
-    ),
-    schedule_value: Optional[str] = Field(
-        default=None,
-        description="Schedule value: ISO timestamp for 'at', duration for 'every' (e.g. '30m'), cron expr for 'cron'"
-    ),
-    agent_name: Optional[str] = Field(default="Aworld", description="Agent to use"),
-    tools: Optional[List[str]] = Field(default=None, description="Tool names to enable"),
-    delete_after_run: Optional[bool] = Field(default=None, description="Delete after execution (for reminders)"),
-    
-    # update/remove/run parameters
-    job_id: Optional[str] = Field(default=None, description="Job ID"),
-    enabled: Optional[bool] = Field(default=None, description="Enable/disable"),
-    
-    # list parameters
-    include_disabled: Optional[bool] = Field(default=False, description="Include disabled tasks"),
-) -> Dict[str, Any]:
-    """Execute cron operations"""
-    from aworld.core.scheduler import get_scheduler
-    from aworld.core.scheduler.types import CronJob, CronSchedule, CronPayload
-    
-    scheduler = get_scheduler()
-    
-    if action == "add":
-        if not all([name, message, schedule_type, schedule_value]):
-            return {"success": False, "error": "Missing required parameters"}
-        
-        # Parse schedule
-        schedule = _parse_schedule(schedule_type, schedule_value)
-        
-        # Build job
-        job = CronJob(
-            name=name,
-            schedule=schedule,
-            payload=CronPayload(
-                message=message,
-                agent_name=agent_name,
-                tool_names=tools or [],
-            ),
-            delete_after_run=delete_after_run or (schedule_type == "at"),
-        )
-        
-        result = await scheduler.add_job(job)
-        
-        return {
-            "success": True,
-            "job_id": result.id,
-            "message": f"Created task '{name}' (ID: {result.id})",
-            "next_run": result.state.next_run_at,
-        }
-    
-    elif action == "list":
-        jobs = await scheduler.list_jobs(enabled_only=not include_disabled)
-        return {
-            "success": True,
-            "jobs": [
-                {
-                    "id": j.id,
-                    "name": j.name,
-                    "schedule": _format_schedule(j.schedule),
-                    "next_run": j.state.next_run_at,
-                    "enabled": j.enabled,
-                    "last_status": j.state.last_status,
-                }
-                for j in jobs
-            ],
-        }
-    
-    elif action == "remove":
-        if not job_id:
-            return {"success": False, "error": "job_id required"}
-        await scheduler.remove_job(job_id)
-        return {"success": True, "message": f"Removed job {job_id}"}
-    
-    elif action == "run":
-        if not job_id:
-            return {"success": False, "error": "job_id required"}
-        result = await scheduler.run_job(job_id, force=True)
-        return {
-            "success": result.success,
-            "message": f"Job executed: {result.msg}",
-        }
-    
-    elif action == "status":
-        status = await scheduler.get_status()
-        return {
-            "success": True,
-            "running": status.running,
-            "total_jobs": len(await scheduler.list_jobs()),
-        }
+## 9. Tool Design
 
-def _parse_schedule(schedule_type: str, schedule_value: str) -> 'CronSchedule':
-    """Parse schedule from user input"""
-    from aworld.core.scheduler.types import CronSchedule
-    
-    if schedule_type == "at":
-        return CronSchedule(kind="at", at=schedule_value)
-    elif schedule_type == "every":
-        seconds = _parse_duration(schedule_value)  # "30m" -> 1800
-        return CronSchedule(kind="every", every_seconds=seconds)
-    elif schedule_type == "cron":
-        return CronSchedule(kind="cron", cron_expr=schedule_value)
+### 9.1 Tool Location
 
-def _parse_duration(duration_str: str) -> int:
-    """Parse duration string to seconds"""
-    import re
-    match = re.match(r'(\d+)([smhd])', duration_str)
-    if not match:
-        raise ValueError(f"Invalid duration: {duration_str}")
-    
-    value, unit = int(match.group(1)), match.group(2)
-    multipliers = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400}
-    return value * multipliers[unit]
-```
+Add `aworld/tools/cron_tool.py`.
 
-**Tool Registration:**
-```python
-# aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/aworld_agent.py
+This makes it discoverable by the current `aworld.tools` package scan.
 
-tool_names=[
-    CONTEXT_TOOL,
-    'CAST_SEARCH',
-    'async_spawn_subagent',
-    'cron',  # ← Add this line
-],
-```
+### 9.2 Tool Contract
 
-### 5.2 Slash Command: /cron
+Use `@be_tool(tool_name="cron")`.
 
-**Location:** `aworld-cli/src/aworld_cli/commands/cron_cmd.py`
+Supported actions:
+- `add`
+- `list`
+- `remove`
+- `run`
+- `status`
+- `enable`
+- `disable`
 
-**Implementation:**
-```python
-from aworld_cli.core.command_system import Command, CommandContext, register_command
-from typing import List
+`enable` / `disable` should be included in MVP because the store model already has `enabled`, and operationally this is cheaper than delete/recreate.
 
-@register_command
-class CronCommand(Command):
-    @property
-    def name(self) -> str:
-        return "cron"
-    
-    @property
-    def description(self) -> str:
-        return "Manage scheduled tasks"
-    
-    @property
-    def command_type(self) -> str:
-        return "prompt"  # Generate prompt for Agent
-    
-    @property
-    def allowed_tools(self) -> List[str]:
-        return ["cron"]
-    
-    async def get_prompt(self, context: CommandContext) -> str:
-        args = context.user_args  # FIXED: Use user_args
-        
-        if not args:
-            return "使用 cron tool 列出所有定时任务，以表格形式展示"
-        
-        parts = args.split(maxsplit=1)
-        action = parts[0]
-        rest = parts[1] if len(parts) > 1 else ""
-        
-        if action == "add":
-            return f"""创建定时任务："{rest}"
+### 9.3 Async Tool Example
 
-请分析需求，确定：
-1. 任务名称
-2. 调度时间（at/every/cron）
-3. 要执行的具体内容
-
-然后使用 cron tool 的 add 操作创建任务。"""
-        
-        elif action == "list":
-            return "使用 cron tool 列出所有定时任务"
-        
-        elif action in ["remove", "rm"]:
-            return f"使用 cron tool 删除任务 {rest}"
-        
-        elif action == "run":
-            return f"使用 cron tool 立即执行任务 {rest}"
-        
-        elif action == "status":
-            return "使用 cron tool 查看调度器状态"
-        
-        else:
-            return f"未知命令：{action}。支持：add, list, remove, run, status"
-```
-
-**Usage:**
-```bash
-> /cron
-> /cron add 每天早上9点运行测试
-> /cron list
-> /cron remove job-abc123
-> /cron run job-abc123
-```
-
-## 6. Lifecycle Management
-
-### 6.1 Scheduler Startup
-
-**Location:** `aworld-cli/src/aworld_cli/runtime/base.py`
+The tool function should be async:
 
 ```python
-class BaseCliRuntime:
-    def __init__(self, agent_name: Optional[str] = None):
-        self.agent_name = agent_name
-        self._running = False
-        self.cli = AWorldCLI()
-        self._scheduler = None  # NEW
-    
-    async def start(self) -> None:
-        """Start the CLI interaction loop."""
-        self._running = True
-        
-        # Start scheduler
-        await self._start_scheduler()
-        
-        # ... existing code (load agents, etc.)
-    
-    async def stop(self) -> None:
-        """Stop the CLI loop."""
-        self._running = False
-        
-        # Stop scheduler
-        await self._stop_scheduler()
-    
-    async def _start_scheduler(self) -> None:
-        """Start Cron scheduler"""
-        try:
-            from aworld.core.scheduler import get_scheduler
-            self._scheduler = get_scheduler()
-            await self._scheduler.start()
-        except Exception as e:
-            from aworld.logs.util import logger
-            logger.warning(f"Failed to start cron scheduler: {e}")
-    
-    async def _stop_scheduler(self) -> None:
-        """Stop Cron scheduler"""
-        if self._scheduler:
-            try:
-                await self._scheduler.stop()
-            except Exception as e:
-                from aworld.logs.util import logger
-                logger.warning(f"Failed to stop cron scheduler: {e}")
+@be_tool(tool_name="cron", tool_desc="Manage scheduled tasks")
+async def cron_tool(...)-> Dict[str, Any]:
+    ...
 ```
 
-### 6.2 Scheduler Singleton
+### 9.4 Schedule Parsing Rules
 
-**Location:** `aworld/core/scheduler/__init__.py`
+- `at`: accept ISO8601 timestamp
+- `every`: accept duration strings like `30m`, `2h`, `1d`
+- `cron`: accept standard 5-field cron expression
+- timezone defaults to `UTC`, but caller may set explicit timezone
+
+## 10. Slash Command Design
+
+### 10.1 Command File
+
+Add:
+
+```text
+aworld-cli/src/aworld_cli/commands/cron_cmd.py
+```
+
+### 10.2 Registration Requirement
+
+Also modify:
+
+```text
+aworld-cli/src/aworld_cli/commands/__init__.py
+```
+
+to import `cron_cmd`, otherwise the command will not register.
+
+### 10.3 Command Type
+
+`/cron` should remain a prompt command with:
+
+```python
+@property
+def allowed_tools(self) -> List[str]:
+    return ["cron"]
+```
+
+That keeps its execution constrained and consistent with the existing command system.
+
+## 11. CLI Lifecycle Integration
+
+### 11.1 Runtime Hook
+
+Modify `aworld-cli/src/aworld_cli/runtime/base.py` to:
+- create scheduler on runtime start
+- stop scheduler on runtime shutdown
+
+### 11.2 Expected Behavior
+
+When user enters `aworld-cli`:
+- scheduler starts
+- existing jobs are loaded and recovered
+
+When user exits `aworld-cli`:
+- scheduler stops
+- jobs remain persisted
+- no future runs happen until next startup
+
+## 12. Scheduler Singleton
+
+Recommended:
 
 ```python
 _scheduler_instance = None
 
-def get_scheduler() -> 'CronScheduler':
-    """Get global scheduler singleton"""
+def get_scheduler(agent_registry=None) -> CronScheduler:
     global _scheduler_instance
-    
     if _scheduler_instance is None:
-        from .scheduler import CronScheduler
-        from .store import FileBasedCronStore
-        from .executor import CronExecutor
-        
         store = FileBasedCronStore(".aworld/cron.json")
-        executor = CronExecutor()
-        
+        executor = CronExecutor(agent_registry=agent_registry or default_registry())
         _scheduler_instance = CronScheduler(store, executor)
-    
     return _scheduler_instance
-
-def reset_scheduler():
-    """Reset scheduler singleton (for testing)"""
-    global _scheduler_instance
-    _scheduler_instance = None
 ```
 
-## 7. Implementation Plan
+Important:
+- singleton construction must have access to the actual local agent registry
+- do not hardcode imports to nonexistent helpers
 
-### Phase 1: Core Infrastructure (3-4 days)
+## 13. Dependencies
 
-**Files to Create:**
-- `aworld/core/scheduler/types.py` - Data models
-- `aworld/core/scheduler/store.py` - FileBasedCronStore
-- `aworld/core/scheduler/executor.py` - CronExecutor
-- `aworld/core/scheduler/scheduler.py` - CronScheduler
-- `aworld/core/scheduler/__init__.py` - Singleton
-
-**Tests:**
-```bash
-tests/core/scheduler/
-├── test_types.py          # Data model validation
-├── test_store.py          # File operations + locking
-├── test_executor.py       # Agent resolution + execution
-└── test_scheduler.py      # Timer loop + recovery
-```
-
-**Validation:**
-```python
-async def test_basic_cron():
-    from aworld.core.scheduler import get_scheduler, reset_scheduler
-    from aworld.core.scheduler.types import CronJob, CronSchedule, CronPayload
-    
-    reset_scheduler()
-    scheduler = get_scheduler()
-    
-    job = CronJob(
-        name="test",
-        schedule=CronSchedule(kind="every", every_seconds=60),
-        payload=CronPayload(message="print('Hello')"),
-    )
-    
-    added = await scheduler.add_job(job)
-    assert added.id
-    
-    # Manual trigger
-    result = await scheduler.run_job(added.id, force=True)
-    assert result.success
-```
-
-### Phase 2: Agent Integration (2 days)
-
-**Files to Modify:**
-- `aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/aworld_agent.py` - Add "cron" to tool_names
-- `aworld-cli/src/aworld_cli/runtime/base.py` - Add scheduler lifecycle
-
-**Files to Create:**
-- `aworld/tools/builtin/cron_tool.py` - Cron tool
-- `aworld/tools/builtin/__init__.py` - Export cron_tool
-- `aworld-cli/src/aworld_cli/commands/cron_cmd.py` - /cron command
-
-**Validation:**
-```bash
-aworld-cli
-> 每小时检查一次 git 状态
-Agent: [调用 cron_tool add] 已创建任务...
-
-> /cron list
-Task ID    Name              Schedule   Next Run
-job-abc    Hourly git check  every 1h   2026-04-08 12:00
-```
-
-### Phase 3: Reliability Testing (1-2 days)
-
-**Test Cases:**
-- Startup recovery (clean stale running)
-- Concurrent job execution
-- Timeout interruption
-- File locking under contention
-- Agent resolution caching
-- Retry on transient failures
-
-**Performance:**
-- Scheduler overhead < 1% CPU when idle
-- Job trigger accuracy ±5 seconds
-- No memory leaks with long-running scheduler
-
-## 8. Dependencies
-
-### 8.1 New Dependencies
+### 13.1 New Dependencies
 
 ```txt
-croniter>=1.4.0      # Cron expression parsing
-pytz>=2023.3         # Timezone support
+croniter>=1.4.0
 ```
 
-### 8.2 Existing Dependencies
+`pytz` is not required for MVP if standard-library `zoneinfo` is used consistently.
 
-- `aworld.runner.Runners` - Task execution
-- `aworld.core.agent.swarm.Swarm` - Agent orchestration
-- `aworld_cli.core.agent_registry` - Agent resolution
+### 13.2 Existing Dependencies
 
-## 9. Testing Strategy
+- `aworld.runner.Runners`
+- `aworld.runners.task_runner.TaskRunner`
+- `aworld_cli.core.agent_registry.LocalAgentRegistry`
+- `aworld.tools` scan/registration flow
 
-### 9.1 Unit Tests
+## 14. Implementation Plan
 
-```python
-# tests/core/scheduler/test_store.py
-async def test_file_locking()
-async def test_atomic_writes()
+### Phase 1: Core Scheduler
 
-# tests/core/scheduler/test_scheduler.py
-async def test_startup_recovery()
-async def test_concurrent_jobs()
-async def test_timeout_handling()
+Files:
+- `aworld/core/scheduler/store.py`
+- `aworld/core/scheduler/scheduler.py`
+- `aworld/core/scheduler/executor.py`
+- `aworld/core/scheduler/__init__.py`
+
+Work:
+- implement transactional file store
+- implement schedule calculation
+- implement due-claim semantics
+- implement timeout / retry / concurrency
+
+### Phase 2: CLI and Tool Integration
+
+Files:
+- `aworld/tools/cron_tool.py`
+- `aworld-cli/src/aworld_cli/commands/cron_cmd.py`
+- `aworld-cli/src/aworld_cli/commands/__init__.py`
+- `aworld-cli/src/aworld_cli/runtime/base.py`
+- `aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/aworld_agent.py`
+
+Work:
+- expose `cron` tool to Aworld agent
+- register `/cron`
+- start/stop scheduler with CLI runtime
+
+### Phase 3: Validation
+
+Work:
+- add unit tests
+- add integration tests
+- run manual recovery scenarios
+
+## 15. Testing Strategy
+
+### 15.1 Unit Tests
+
+Add:
+
+```text
+tests/core/scheduler/
+├── test_types.py
+├── test_store.py
+├── test_executor.py
+└── test_scheduler.py
 ```
 
-### 9.2 Integration Tests
+Critical cases:
+- schedule parsing
+- next-run calculation
+- claim-due-job is single-fire
+- startup recovery clears stale running state
+- one-shot jobs delete correctly
+- manual trigger does not corrupt recurring schedule
 
-```python
-# tests/integration/test_cron_cli.py
-async def test_cron_tool_add()
-async def test_slash_command()
-async def test_scheduler_lifecycle()
+### 15.2 Integration Tests
+
+Add:
+
+```text
+tests/integration/test_cron_cli.py
 ```
 
-### 9.3 Manual Testing
+Critical cases:
+- `/cron list` works
+- agent can call `cron` tool
+- runtime starts scheduler
+- jobs survive CLI restart
+
+### 15.3 Manual Test Matrix
 
 ```bash
-# Scenario 1: Create and trigger task
+# Scenario 1
 aworld-cli
-> 每天早上9点运行测试
+> /cron add 每30分钟运行一次 git status 检查
 > /cron list
-> /cron run job-abc123
 
-# Scenario 2: Scheduler recovery
-# - Create task
-# - Kill CLI (Ctrl+C)
-# - Restart CLI
-# - Verify task still exists and next_run is correct
+# Scenario 2
+aworld-cli
+> /cron run <job_id>
+
+# Scenario 3
+# create a recurring job
+# exit aworld-cli
+# restart aworld-cli
+# verify job is still present and next_run_at is recalculated
 ```
 
-## 10. Future Enhancements (Post-MVP)
+## 16. Known Limitations
 
-1. **Main Session Mode** (requires heartbeat/system-event semantics)
-2. **Delivery Semantics** (notifications to external channels)
-3. **Services Mode Support** (`aworld web`)
-4. **`aworld-cli cron` Subcommand** (requires CLI parser changes)
-5. **Multiple Storage Backends** (Redis, PostgreSQL)
-6. **Failure Alerting** (email, Slack, webhook)
-7. **Web UI** (for Services mode)
-8. **Task Dependencies** (Job B runs after Job A succeeds)
-9. **Conditional Execution** (only run if condition met)
+1. CLI must stay alive for jobs to fire.
+2. No offline catch-up replay.
+3. Single-process only.
+4. No delivery channel outside Aworld logs / task result.
+5. No original-session continuation.
 
-## 11. Migration & Compatibility
+## 17. Success Criteria
 
-**First Release (v1.0):**
-- No migration needed (new feature)
-- Storage format is v1
-- All fields in CronJob are required for v1
+### Functional
 
-**Future Versions:**
-If schema changes:
-```python
-def migrate_cron_store(old_version: int) -> None:
-    if old_version == 1:
-        # Migrate v1 -> v2
-        pass
-```
+- Can create `at`, `every`, `cron` jobs
+- Can list, enable, disable, remove, and manually run jobs
+- Jobs execute through `Runners.run()` in isolated mode
+- Scheduler restarts cleanly with CLI
 
-## 12. Known Limitations (MVP)
+### Correctness
 
-1. **CLI-only**: No support for Services/web mode yet
-2. **Isolated-only**: Cannot wake up in original session
-3. **File-based storage**: No distributed coordination
-4. **Single-process**: Only one CLI instance should manage `.aworld/cron.json`
-5. **No alerting**: Silent failures (check logs)
+- Due jobs are not double-fired in one scheduler process
+- Store writes do not lose in-process updates
+- Restart recovery leaves jobs in a consistent state
 
-## 13. Success Metrics
+### UX
 
-### Functional Metrics
-- ✅ Can create periodic tasks (at/every/cron)
-- ✅ Can execute in isolated mode
-- ✅ Agent can use cron_tool naturally
-- ✅ CLI commands work correctly
-- ✅ Scheduler survives restarts
+- Agent can naturally create scheduled jobs using `cron` tool
+- `/cron` works without exposing unrelated tools
 
-### Performance Metrics
-- Scheduler overhead < 1% CPU when idle
-- Job trigger accuracy within ±5 seconds
-- No memory leaks with long-running scheduler
+## 18. Future Upgrade Path
 
-### Reliability Metrics
-- No task loss after scheduler restart
-- Graceful handling of execution failures
-- Clear error messages for troubleshooting
+When Aworld needs OpenClaw-like cron behavior, keep this job model and replace only the runtime layer:
 
-## 14. References
+1. move scheduler loop into a daemon process
+2. keep `.aworld/cron.json` or migrate to DB
+3. let CLI and agent tools operate as CRUD clients
+4. add delivery hooks and catch-up policy
 
-**Similar Systems:**
-- OpenClaw cron (`/Users/wuman/Documents/workspace/openclaw/src/cron/`)
-- Celery Beat
-- APScheduler
+This preserves the MVP model work and avoids rewrite of job schema.
 
-**Design Review:**
-- Key feedback: Focus on isolated mode, reuse Runners.run(), CLI-first approach
-- Excluded: main_session mode, delivery semantics, Services mode (for now)
+## 19. References
+
+- OpenClaw cron: `/Users/wuman/Documents/workspace/openclaw/src/cron/`
+- Current Aworld runtime: `aworld-cli/src/aworld_cli/runtime/base.py`
+- Current Aworld agent registry: `aworld-cli/src/aworld_cli/core/agent_registry.py`
+- Current slash command registry: `aworld-cli/src/aworld_cli/commands/__init__.py`
 
 ---
 
-**Next Steps:**
-1. Review updated design
-2. Begin Phase 1 implementation (core infrastructure)
-3. Validate with basic end-to-end test
-4. Iterate based on feedback
+## 20. Next Step
+
+Implement the CLI-embedded MVP exactly as documented here. Do not expand to daemon mode in the first pass.
