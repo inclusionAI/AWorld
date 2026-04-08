@@ -267,7 +267,7 @@ class SubagentManager:
     async def scan_agent_md_files(self, search_paths: List[str] = None):
         """扫描agent.md文件（线程安全 + 错误处理）"""
         if not search_paths:
-            search_paths = ['./.claude/agents', '~/.claude/agents', './agents']
+            search_paths = ['./.aworld/agents', '~/.aworld/agents', './agents']
         
         async with self._registry_lock:  # 🆕 锁保护
             for path in search_paths:
