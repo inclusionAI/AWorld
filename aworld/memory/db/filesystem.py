@@ -418,7 +418,7 @@ class FileSystemMemoryStore(MemoryStore):
             self._init_storage()
             
             target_sessions = []
-            if filters and 'session_id' in filters:
+            if filters and 'session_id' in filters and filters['session_id'] is not None:
                 target_sessions = [filters['session_id']]
             else:
                 target_sessions = [p.stem for p in self.sessions_dir.glob("*.jsonl")]
@@ -444,7 +444,7 @@ class FileSystemMemoryStore(MemoryStore):
         try:
             self._init_storage()
             
-            if filters and 'session_id' in filters:
+            if filters and 'session_id' in filters and filters['session_id'] is not None:
                 target_sessions = [filters['session_id']]
             else:
                 target_sessions = [p.stem for p in self.sessions_dir.glob("*.jsonl")]
@@ -477,7 +477,7 @@ class FileSystemMemoryStore(MemoryStore):
             
             # Optimization: If session_id is provided, we can just read that file
             target_sessions = []
-            if filters and 'session_id' in filters:
+            if filters and 'session_id' in filters and filters['session_id'] is not None:
                 target_sessions = [filters['session_id']]
             else:
                 target_sessions = [p.stem for p in self.sessions_dir.glob("*.jsonl")]

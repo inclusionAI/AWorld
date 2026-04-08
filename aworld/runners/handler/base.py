@@ -98,8 +98,42 @@ class DefaultHandler(Handler[Message, AsyncGenerator[Message, None]]):
         hooks = self.hooks.get(hook_point, [])
         for hook in hooks:
             try:
-                msg = await hook.exec(message)
+                # Execute hook
+                msg = await hook.exec(message, message.context)
                 if msg:
+                    # Check for permission_decision='ask'
+                    permission_decision = msg.headers.get('permission_decision')
+                    if permission_decision == 'ask':
+                        # Resolve permission decision
+                        from aworld.runners.hook.v2.permission import get_permission_handler
+
+                        permission_handler = get_permission_handler()
+                        reason = msg.headers.get('permission_decision_reason', None)
+
+                        # Build context for permission resolution
+                        perm_context = {
+                            'hook_name': hook.name() if hasattr(hook, 'name') else 'unknown',
+                            'hook_point': hook_point,
+                            'tool_name': msg.payload.get('tool_name') if isinstance(msg.payload, dict) else None,
+                            'args': msg.payload.get('args') if isinstance(msg.payload, dict) else None,
+                        }
+
+                        final_decision, resolution_reason = await permission_handler.resolve_permission(
+                            decision='ask',
+                            reason=reason,
+                            context=perm_context
+                        )
+
+                        # Update message headers with final decision
+                        msg.headers['permission_decision'] = final_decision
+                        msg.headers['permission_decision_reason'] = resolution_reason
+
+                        logger.info(
+                            f"Permission 'ask' resolved to '{final_decision}' "
+                            f"for hook '{perm_context['hook_name']}' at point '{hook_point}'. "
+                            f"Reason: {resolution_reason}"
+                        )
+
                     yield msg
-            except:
-                logger.warning(f"{self.name()}|{hook.point()} {hook.name()} execute fail.")
+            except Exception as e:
+                logger.warning(f"{self.name()}|{hook.point()} {hook.name()} execute fail: {e}")

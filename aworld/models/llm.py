@@ -424,6 +424,49 @@ class LLMModel:
         }
         kwargs["llm_request_id"] = request_id
         log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
+
+        # Hooks V2: 触发 BEFORE_LLM_CALL hook 并消费 updated_input
+        if context:
+            try:
+                from aworld.runners.hook.hooks import HookPoint
+                from aworld.runners.hook.utils import run_hooks
+
+                before_llm_call_payload = {
+                    'event': 'before_llm_call',
+                    'model_name': self.provider.model_name,
+                    'provider_name': self.provider_name,
+                    'messages': messages,
+                    'temperature': temperature,
+                    'max_tokens': max_tokens,
+                    'request_id': request_id,
+                    'timestamp': time.time()
+                }
+
+                before_hook_events = []
+                async for hook_event in run_hooks(
+                    context=context,
+                    hook_point=HookPoint.BEFORE_LLM_CALL,
+                    hook_from='llm_model',
+                    payload=before_llm_call_payload
+                ):
+                    before_hook_events.append(hook_event)
+
+                # Apply updated_input from hooks if present (chain all modifications)
+                for hook_event in before_hook_events:
+                    if hook_event and hasattr(hook_event, 'headers'):
+                        updated_input = hook_event.headers.get('updated_input')
+                        if updated_input:
+                            # Update messages with modified input
+                            if isinstance(updated_input, list):
+                                messages = updated_input
+                                logger.info(f"BEFORE_LLM_CALL hook modified messages")
+                            elif isinstance(updated_input, dict) and 'messages' in updated_input:
+                                messages = updated_input['messages']
+                                logger.info(f"BEFORE_LLM_CALL hook modified messages")
+                            # Continue to next hook to allow chaining
+            except Exception as e:
+                logger.warning(f"BEFORE_LLM_CALL hook execution failed: {e}")
+
         try:
             resp = await self.provider.acompletion(
                 messages=messages,
@@ -440,6 +483,56 @@ class LLMModel:
 
             log_params["time_cost"] = round(time.time() - start_ms, 3)
             log_llm_record("OUTPUT", self.provider.model_name, resp, log_params, context_trace_id)
+
+            # Hooks V2: 触发 AFTER_LLM_CALL hook 并消费 updated_output
+            if context:
+                try:
+                    from aworld.runners.hook.hooks import HookPoint
+                    from aworld.runners.hook.utils import run_hooks
+
+                    after_llm_call_payload = {
+                        'event': 'after_llm_call',
+                        'model_name': self.provider.model_name,
+                        'provider_name': self.provider_name,
+                        'request_id': request_id,
+                        'time_cost': log_params["time_cost"],
+                        'response_content': resp.content if resp else None,
+                        'token_usage': getattr(resp, 'token_usage', None),
+                        'status': 'success',
+                        'timestamp': time.time()
+                    }
+
+                    after_hook_events = []
+                    async for hook_event in run_hooks(
+                        context=context,
+                        hook_point=HookPoint.AFTER_LLM_CALL,
+                        hook_from='llm_model',
+                        payload=after_llm_call_payload
+                    ):
+                        after_hook_events.append(hook_event)
+
+                    # Apply updated_output from hooks if present (chain all modifications)
+                    for hook_event in after_hook_events:
+                        if hook_event and hasattr(hook_event, 'headers'):
+                            updated_output = hook_event.headers.get('updated_output')
+                            if updated_output:
+                                # Update resp with modified output
+                                # Accept either complete response object or dict with specific fields
+                                if hasattr(updated_output, 'content'):
+                                    # Direct response object replacement
+                                    resp = updated_output
+                                    logger.info(f"AFTER_LLM_CALL hook replaced response object")
+                                elif isinstance(updated_output, dict):
+                                    # Partial update of response fields
+                                    if 'content' in updated_output:
+                                        resp.content = updated_output['content']
+                                    if 'token_usage' in updated_output:
+                                        resp.token_usage = updated_output['token_usage']
+                                    logger.info(f"AFTER_LLM_CALL hook modified response fields")
+                                # Continue to next hook to allow chaining
+                except Exception as e:
+                    logger.warning(f"AFTER_LLM_CALL hook execution failed: {e}")
+
             return resp
         except AttributeError as e:
             logger.error(f"Provider {self.provider_name} does not support acompletion: {e}")
@@ -483,6 +576,38 @@ class LLMModel:
         }
         kwargs["llm_request_id"] = request_id
         log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
+
+        # Hooks V2: 触发 BEFORE_LLM_CALL hook (同步版本)
+        if context:
+            try:
+                from aworld.runners.hook.hooks import HookPoint
+                from aworld.runners.hook.utils import run_hooks
+
+                before_llm_call_payload = {
+                    'event': 'before_llm_call',
+                    'model_name': self.provider.model_name,
+                    'provider_name': self.provider_name,
+                    'messages': messages,
+                    'temperature': temperature,
+                    'max_tokens': max_tokens,
+                    'request_id': request_id,
+                    'timestamp': time.time()
+                }
+
+                # 同步执行 async hooks
+                async def _run_before_hooks():
+                    async for _ in run_hooks(
+                        context=context,
+                        hook_point=HookPoint.BEFORE_LLM_CALL,
+                        hook_from='llm_model',
+                        payload=before_llm_call_payload
+                    ):
+                        pass
+
+                sync_exec(_run_before_hooks)
+            except Exception as e:
+                logger.warning(f"BEFORE_LLM_CALL hook execution failed: {e}")
+
         resp = self.provider.completion(
             messages=messages,
             temperature=temperature,
@@ -497,6 +622,39 @@ class LLMModel:
 
         log_params["time_cost"] = round(time.time() - start_ms, 3)
         log_llm_record("OUTPUT", self.provider.model_name, resp, log_params, context_trace_id)
+
+        # Hooks V2: 触发 AFTER_LLM_CALL hook (同步版本)
+        if context:
+            try:
+                from aworld.runners.hook.hooks import HookPoint
+                from aworld.runners.hook.utils import run_hooks
+
+                after_llm_call_payload = {
+                    'event': 'after_llm_call',
+                    'model_name': self.provider.model_name,
+                    'provider_name': self.provider_name,
+                    'request_id': request_id,
+                    'time_cost': log_params["time_cost"],
+                    'response_content': resp.content if resp else None,
+                    'token_usage': getattr(resp, 'token_usage', None),
+                    'status': 'success',
+                    'timestamp': time.time()
+                }
+
+                # 同步执行 async hooks
+                async def _run_after_hooks():
+                    async for _ in run_hooks(
+                        context=context,
+                        hook_point=HookPoint.AFTER_LLM_CALL,
+                        hook_from='llm_model',
+                        payload=after_llm_call_payload
+                    ):
+                        pass
+
+                sync_exec(_run_after_hooks)
+            except Exception as e:
+                logger.warning(f"AFTER_LLM_CALL hook execution failed: {e}")
+
         return resp
 
     def stream_completion(self,

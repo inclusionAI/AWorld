@@ -894,19 +894,86 @@ class AWorldCLI:
             # If prompt_toolkit is not available or error occurs, fail silently
             pass
 
+    async def _interactive_permission_prompt(self, reason: str, context: Optional[dict] = None) -> str:
+        """Interactive permission prompt for 'ask' mode
+
+        Called by permission handler when a hook returns 'ask' decision.
+        Presents the user with context and asks for allow/deny.
+
+        Args:
+            reason: Reason for permission request
+            context: Optional context (tool_name, args, etc.)
+
+        Returns:
+            'allow' or 'deny'
+        """
+        try:
+            # Build permission request message
+            self.console.print("\n[bold yellow]⚠️  Permission Required[/bold yellow]")
+            self.console.print(f"[yellow]Reason:[/yellow] {reason}")
+
+            if context:
+                tool_name = context.get('tool_name', 'unknown')
+                self.console.print(f"[yellow]Tool:[/yellow] {tool_name}")
+
+                # Show action details if available
+                actions = context.get('action', [])
+                if actions and len(actions) > 0:
+                    first_action = actions[0]
+                    if isinstance(first_action, dict):
+                        action_name = first_action.get('action_name', 'unknown')
+                        params = first_action.get('params', {})
+                        self.console.print(f"[yellow]Action:[/yellow] {action_name}")
+                        if params:
+                            self.console.print(f"[yellow]Parameters:[/yellow] {params}")
+
+            # Prompt for decision
+            self.console.print("\n[bold]Allow this action?[/bold]")
+            self.console.print("  [green]y/yes[/green] - Allow this action")
+            self.console.print("  [red]n/no[/red]  - Deny this action")
+
+            # Use prompt_toolkit if available, otherwise fallback to input()
+            if sys.stdin.isatty():
+                user_response = await asyncio.get_event_loop().run_in_executor(
+                    None,
+                    lambda: Prompt.ask("\nYour choice", choices=["y", "yes", "n", "no"], default="n")
+                )
+            else:
+                # Fallback for non-interactive environments
+                logger.warning("Non-interactive environment detected during permission prompt")
+                return 'deny'
+
+            # Parse response
+            if user_response.lower() in ['y', 'yes']:
+                self.console.print("[green]✓ Permission granted[/green]\n")
+                return 'allow'
+            else:
+                self.console.print("[red]✗ Permission denied[/red]\n")
+                return 'deny'
+
+        except Exception as e:
+            logger.error(f"Interactive permission prompt failed: {e}")
+            self.console.print(f"[red]Error during permission prompt: {e}[/red]")
+            return 'deny'
+
     async def run_chat_session(self, agent_name: str, executor: Callable[[str], Any], available_agents: List[AgentInfo] = None, executor_instance: Any = None) -> Union[bool, str]:
         """
         Run an interactive chat session with an agent.
-        
+
         Args:
             agent_name: Name of the agent to chat with
             executor: Async function that executes chat messages
             available_agents: List of available agents for switching
             executor_instance: Optional executor instance (for session management)
-            
+
         Returns:
             False if user wants to exit, True if wants to switch (show list), or agent name string to switch to
         """
+        # Setup permission handler callback for interactive prompting
+        from aworld.runners.hook.v2.permission import get_permission_handler
+        handler = get_permission_handler()
+        handler.set_interactive_prompt(self._interactive_permission_prompt)
+
         # Get current session_id if available
         session_id_info = ""
         if executor_instance and hasattr(executor_instance, 'session_id'):
@@ -1687,12 +1754,75 @@ Add any custom instructions for AI agents working on this project.
 
                 # Print agent name before response
                 self.console.print(f"[bold green]{agent_name}[/bold green]:")
-                
+
                 try:
-                    # File parsing is now handled by FileParseHook automatically
-                    # Just pass the user input as-is, the hook will process @filename references
-                    # Execute the task/chat (FileParseHook will handle file parsing)
-                    response = await executor(user_input)
+                    # Hooks V2: 触发 user_input_received hook
+                    # 在传递给 executor 前，允许 hooks 修改用户输入
+                    try:
+                        from aworld.core.event.base import Message
+                        from aworld.runners.hook.hooks import HookPoint
+                        from aworld.runners.hook.utils import run_hooks
+
+                        # 获取 context（如果可用）
+                        context = None
+                        if executor_instance and hasattr(executor_instance, 'context'):
+                            context = executor_instance.context
+
+                        # 创建 user_input_received message
+                        user_input_msg = Message(
+                            category='user_input',
+                            payload=user_input,
+                            session_id=getattr(context, 'session_id', 'unknown') if context else 'unknown',
+                            sender='cli_user'
+                        )
+                        if context:
+                            user_input_msg.context = context
+
+                        # 运行 hooks
+                        should_execute = True  # P0-3: 标志位控制是否执行 executor
+                        async for hook_result in run_hooks(
+                            context=context,
+                            hook_point=HookPoint.USER_INPUT_RECEIVED,
+                            hook_from='cli',
+                            payload=user_input,
+                            message=user_input_msg
+                        ):
+                            # 检查 hook 是否修改了输入
+                            if hook_result and hasattr(hook_result, 'headers'):
+                                # P0-3: 检查 permission_decision 以阻断执行
+                                permission_decision = hook_result.headers.get('permission_decision')
+                                if permission_decision == 'deny':
+                                    deny_reason = hook_result.headers.get('permission_decision_reason', 'User input blocked by hook')
+                                    self.console.print(f"[red]🚫 {deny_reason}[/red]")
+                                    should_execute = False
+                                    break  # 退出 hook 循环，不执行 executor
+
+                                updated_input = hook_result.headers.get('updated_input')
+                                if updated_input:
+                                    # Hook 修改了输入内容
+                                    if isinstance(updated_input, dict) and 'content' in updated_input:
+                                        user_input = updated_input['content']
+                                    elif isinstance(updated_input, str):
+                                        user_input = updated_input
+
+                                # 检查是否阻止继续执行（兼容旧协议）
+                                if hook_result.headers.get('prevent_continuation'):
+                                    stop_reason = hook_result.headers.get('stop_reason', 'Hook stopped execution')
+                                    self.console.print(f"[yellow]⚠️ {stop_reason}[/yellow]")
+                                    should_execute = False
+                                    break  # 退出 hook 循环，不执行 executor
+                    except Exception as e:
+                        logger.warning(f"USER_INPUT_RECEIVED hook execution failed: {e}")
+
+                    # P0-3: 只有在 hooks 允许时才执行 executor
+                    if should_execute:
+                        # File parsing is now handled by FileParseHook automatically
+                        # Just pass the user input as-is, the hook will process @filename references
+                        # Execute the task/chat (FileParseHook will handle file parsing)
+                        response = await executor(user_input)
+                    else:
+                        # Hook 阻断了执行，跳过当前输入，继续等待下一条
+                        continue
                     # Response is returned for potential future use, but content is already printed by executor
                 except Exception as e:
                     import traceback

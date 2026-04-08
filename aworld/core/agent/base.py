@@ -345,6 +345,30 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 agent_start_times[self.id()] = time.time()
                 message.context.put("agent_start_times", agent_start_times)
 
+        # Hooks V2: 触发 AGENT_STARTED hook
+        try:
+            from aworld.runners.hook.hooks import HookPoint
+            from aworld.runners.hook.utils import run_hooks
+
+            agent_started_payload = {
+                'event': 'agent_started',
+                'agent_id': self.id(),
+                'agent_name': self.name(),
+                'session_id': message.context.session_id,
+                'task_id': getattr(message.context, 'task_id', None),
+                'timestamp': time.time()
+            }
+
+            async for _ in run_hooks(
+                context=message.context,
+                hook_point=HookPoint.AGENT_STARTED,
+                hook_from=self.id(),
+                payload=agent_started_payload
+            ):
+                pass
+        except Exception as e:
+            logger.warning(f"AGENT_STARTED hook execution failed for agent {self.id()}: {e}")
+
     async def async_post_run(
             self, policy_result: OUTPUT, input: INPUT, message: Message = None
     ) -> Message:
@@ -365,6 +389,33 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
             if duration is None:
                 duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
             digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|success")
+
+            # Hooks V2: 触发 AGENT_STOPPED hook
+            try:
+                from aworld.runners.hook.hooks import HookPoint
+                from aworld.runners.hook.utils import run_hooks
+
+                agent_stopped_payload = {
+                    'event': 'agent_stopped',
+                    'agent_id': self.id(),
+                    'agent_name': self.name(),
+                    'session_id': message.context.session_id,
+                    'task_id': getattr(message.context, 'task_id', None),
+                    'duration': duration,
+                    'status': 'success',
+                    'timestamp': time.time()
+                }
+
+                async for _ in run_hooks(
+                    context=message.context,
+                    hook_point=HookPoint.AGENT_STOPPED,
+                    hook_from=self.id(),
+                    payload=agent_stopped_payload
+                ):
+                    pass
+            except Exception as e:
+                logger.warning(f"AGENT_STOPPED hook execution failed for agent {self.id()}: {e}")
+
         return AgentMessage(payload=policy_result, sender=self.id(), headers=message.headers)
 
     def sync_should_terminate_loop(self, message: Message) -> bool:
