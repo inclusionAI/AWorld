@@ -6,7 +6,6 @@ from pydantic import BaseModel
 from typing import Dict, Any, Optional, Union, List, Literal
 from enum import Enum
 
-
 from aworld.config import ConfigDict
 
 Config = Union[Dict[str, Any], ConfigDict, BaseModel]
@@ -96,14 +95,17 @@ class TaskItem(BaseModel):
     params: Optional[Dict[str, Any]] = {}
     policy_info: Optional[Any] = None
 
+
 class CallbackItem(BaseModel):
     data: Any
     node_id: str = None
     actions: List[ActionModel] = []
 
+
 class CallbackActionType(str, Enum):
     BYPASS = "bypass"
     OVERRIDE = "override"
+
 
 class CallbackResult(BaseModel):
     success: bool = False
@@ -124,7 +126,7 @@ class StreamingMode(enum.Enum):
     ALL = 'all'
 
 
-class TaskStatusValue:
+class TaskStatus(str):
     """Task status constants."""
     INIT = 'init'
     RUNNING = 'running'
@@ -133,5 +135,10 @@ class TaskStatusValue:
     CANCELLED = 'cancelled'
     INTERRUPTED = 'interrupted'
     TIMEOUT = 'timeout'
+    DISABLED = 'disabled'
 
-TaskStatus = Literal['init', 'running', 'success', 'failed', 'cancelled', 'interrupted', 'timeout']
+
+class TaskTypeValue:
+    """Task type constants."""
+    INSTANT = 'instant'
+    SCHEDULED = 'scheduled'

@@ -4,20 +4,29 @@ import abc
 
 from aworld.core.context.base import Context
 from aworld.core.event.base import Message
-from aworld.models.model_response import ModelResponse
 
 
 class HookPoint:
     START = "start"
     FINISHED = "finished"
     ERROR = "error"
-    PRE_LLM_CALL = "pre_llm_call"
-    POST_LLM_CALL = "post_llm_call"
     OUTPUT_PROCESS = "output_process"
-    PRE_TOOL_CALL = "pre_tool_call"
-    POST_TOOL_CALL = "post_tool_call"
-    PRE_TASK_CALL = "pre_task_call"
-    POST_TASK_CALL = "post_task_call"
+    ON_START_LLM_CALL = "on_start_llm_call"
+    ON_FINISHED_LLM_CALL = "on_finished_llm_call"
+    ON_LLM_CALL = "on_llm_call"
+    ON_SUCCESS_LLM_CALL = "on_success_llm_call"
+    ON_ERROR_LLM_CALL = "on_error_llm_call"
+    ON_START_TOOL_CALL = "on_start_tool_call"
+    ON_TOOL_CALL = "on_tool_call"
+    ON_FINISHED_TOOL_CALL = "on_finished_tool_call"
+    ON_SUCCESS_TOOL_CALL = "on_success_tool_call"
+    ON_ERROR_TOOL_CALL = "on_error_tool_call"
+    ON_RUN_TASK = "on_run_task"
+    ON_SUCCESS_TASK = "on_success_task"
+    ON_ERROR_TASK = "on_error_task"
+    ON_START_TASK = "on_start_task"
+    ON_FINISHED_TASK = "on_finished_task"
+
 
 class Hook:
     """Runner hook."""
@@ -27,14 +36,17 @@ class Hook:
     def point(self):
         """Hook point."""
 
-    @abc.abstractmethod
+    def name(self):
+        """Hook name."""
+        return self.__class__.__name__
+
     async def exec(self, message: Message, context: Context = None) -> Message:
         """Execute hook function."""
+        pass
 
 
 class StartHook(Hook):
     """Process in the hook point of the start."""
-    __metaclass__ = abc.ABCMeta
 
     def point(self):
         return HookPoint.START
@@ -42,7 +54,6 @@ class StartHook(Hook):
 
 class FinishedHook(Hook):
     """Process in the hook point of the finished."""
-    __metaclass__ = abc.ABCMeta
 
     def point(self):
         return HookPoint.FINISHED
@@ -50,35 +61,38 @@ class FinishedHook(Hook):
 
 class ErrorHook(Hook):
     """Process in the hook point of the error."""
-    __metaclass__ = abc.ABCMeta
 
     def point(self):
         return HookPoint.ERROR
 
-class PreLLMCallHook(Hook):
-    """Process in the hook point of the pre_llm_call."""
-    __metaclass__ = abc.ABCMeta
 
+class OnStartLLMCallHook(Hook):
     def point(self):
-        return HookPoint.PRE_LLM_CALL
-        
-class PostLLMCallHook(Hook):
-    """Process in the hook point of the post_llm_call."""
-    __metaclass__ = abc.ABCMeta
+        return HookPoint.ON_START_LLM_CALL
 
+
+class OnFinishedLLMCallHook(Hook):
     def point(self):
-        return HookPoint.POST_LLM_CALL
+        return HookPoint.ON_FINISHED_LLM_CALL
 
-class PostToolCallHook(Hook):
-    """Process in the hook point of the post_tool_call."""
-    __metaclass__ = abc.ABCMeta
 
+class OnLLMCallHook(Hook):
     def point(self):
-        return HookPoint.POST_TOOL_CALL
+        return HookPoint.ON_LLM_CALL
+
+
+class OnSuccessLLMCallHook(Hook):
+    def point(self):
+        return HookPoint.ON_SUCCESS_LLM_CALL
+
+
+class OnErrorLLMCallHook(Hook):
+    def point(self):
+        return HookPoint.ON_ERROR_LLM_CALL
+
 
 class OutputProcessHook(Hook):
     """Output process hook for processing output data for display."""
-    __metaclass__ = abc.ABCMeta
 
     def point(self):
         return HookPoint.OUTPUT_PROCESS
@@ -93,34 +107,3 @@ class OutputProcessHook(Hook):
             processed content
         """
         return content
-
-
-class PreToolCallHook(Hook):
-    """Process in the hook point of the pre_tool_call."""
-    __metaclass__ = abc.ABCMeta
-
-    def point(self):
-        return HookPoint.PRE_TOOL_CALL
-
-
-class PostToolCallHook(Hook):
-    """Process in the hook point of the post_tool_call."""
-    __metaclass__ = abc.ABCMeta
-
-    def point(self):
-        return HookPoint.POST_TOOL_CALL
-
-class PreTaskCallHook(Hook):
-    """Process in the hook point of the post_task_call."""
-    __metaclass__ = abc.ABCMeta
-
-    def point(self):
-        return HookPoint.PRE_TASK_CALL
-
-class PostTaskCallHook(Hook):
-    """Process in the hook point of the post_task_call."""
-    __metaclass__ = abc.ABCMeta
-
-    def point(self):
-        return HookPoint.POST_TASK_CALL
-

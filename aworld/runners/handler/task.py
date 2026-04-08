@@ -8,7 +8,7 @@ from typing import AsyncGenerator, TYPE_CHECKING
 
 from aworld.core.common import TaskItem
 from aworld.core.event.base import Message, Constants, TopicType
-from aworld.core.task import TaskResponse, TaskStatusValue
+from aworld.core.task import TaskResponse, TaskStatus
 from aworld.core.tool.base import Tool, AsyncTool
 from aworld.logs.util import logger, trajectory_logger
 from aworld.output import Output
@@ -88,7 +88,7 @@ class DefaultTaskHandler(TaskHandler):
                                                       id=self.runner.task.id,
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
-                                                      status=TaskStatusValue.FAILED)
+                                                      status=TaskStatus.FAILED)
             await self.runner.stop()
             yield Message(payload=self.runner._task_response,
                           session_id=message.session_id,
@@ -149,7 +149,7 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
                                                       msg=f'cancellation message received: {task_item.msg}',
-                                                      status=TaskStatusValue.CANCELLED)
+                                                      status=TaskStatus.CANCELLED)
             await self.runner.stop()
             yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers,
                           topic=TopicType.TASK_RESPONSE)
@@ -165,7 +165,7 @@ class DefaultTaskHandler(TaskHandler):
                                                       time_cost=(time.time() - self.runner.start_time),
                                                       usage=self.runner.context.token_usage,
                                                       msg=f'interruption message received: {task_item.msg}',
-                                                      status=TaskStatusValue.INTERRUPTED)
+                                                      status=TaskStatus.INTERRUPTED)
             await self.runner.stop()
             yield Message(payload=self.runner._task_response, session_id=message.session_id, headers=message.headers,
                           topic=TopicType.TASK_RESPONSE)
