@@ -8,6 +8,14 @@ from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
 
 from pydantic import BaseModel
 
+
+class ToolExecutionDenied(Exception):
+    """Exception raised when tool execution is denied by a hook."""
+    def __init__(self, tool_name: str, reason: str):
+        self.tool_name = tool_name
+        self.reason = reason
+        super().__init__(f"Tool {tool_name} execution denied: {reason}")
+
 import aworld
 from aworld.config.conf import ToolConfig, load_config, ConfigDict
 from aworld.core.common import Observation, ActionModel, ActionResult, CallbackItem, CallbackResult, CallbackActionType
@@ -244,11 +252,110 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                 tool_id = act.tool_call_id
                 tool_name = act.tool_name
                 tool_id_mapping[tool_id] = tool_name
-            self.run_hooks(message=message, hook_point=HookPoint.PRE_TOOL_CALL, hook_from=message.sender,
+            # Execute PRE_TOOL_CALL hooks and check for updated_input
+            pre_hook_events = self.run_hooks(message=message, hook_point=HookPoint.PRE_TOOL_CALL, hook_from=message.sender,
                            payload=action)
+
+            # P0 Fix: Check permission_decision to gate tool execution
+            for hook_event in pre_hook_events:
+                if hook_event and hasattr(hook_event, 'headers'):
+                    permission_decision = hook_event.headers.get('permission_decision')
+                    if permission_decision in ('deny', 'ask'):
+                        stop_reason = hook_event.headers.get('permission_decision_reason', 'Tool execution requires permission')
+
+                        # Handle 'ask' by resolving with permission handler
+                        if permission_decision == 'ask':
+                            try:
+                                from aworld.runners.hook.v2.permission import get_permission_handler
+                                handler = get_permission_handler()
+                                context_dict = {
+                                    'tool_name': self.name(),
+                                    'action': [act.model_dump() for act in action] if action else []
+                                }
+                                final_decision, resolution_reason = handler.resolve_permission_sync(
+                                    permission_decision, stop_reason, context_dict
+                                )
+                                if final_decision == 'deny':
+                                    logger.warning(f"PRE_TOOL_CALL hook denied tool {self.name()} after resolution: {resolution_reason}")
+                                    raise ToolExecutionDenied(self.name(), resolution_reason)
+                                else:
+                                    logger.info(f"PRE_TOOL_CALL hook allowed tool {self.name()} after resolution: {resolution_reason}")
+                                    # Continue execution
+                            except ToolExecutionDenied:
+                                raise
+                            except Exception as e:
+                                logger.error(f"Failed to resolve permission 'ask': {e}")
+                                raise ToolExecutionDenied(self.name(), f"Permission resolution failed: {e}")
+                        else:
+                            # Direct deny
+                            logger.warning(f"PRE_TOOL_CALL hook denied tool {self.name()}: {stop_reason}")
+                            raise ToolExecutionDenied(self.name(), stop_reason)
+
+            # Apply updated_input from hooks if present (chain all modifications)
+            for hook_event in pre_hook_events:
+                if hook_event and hasattr(hook_event, 'headers'):
+                    updated_input = hook_event.headers.get('updated_input')
+                    if updated_input:
+                        # Update action with modified input, convert to List[ActionModel]
+                        if isinstance(updated_input, list):
+                            # Convert list[dict] to list[ActionModel] if needed
+                            if updated_input and isinstance(updated_input[0], dict):
+                                action = [ActionModel(**item) if isinstance(item, dict) else item for item in updated_input]
+                            else:
+                                action = updated_input
+                            message.payload = action
+                        elif isinstance(updated_input, dict):
+                            if 'actions' in updated_input:
+                                # Handle {'actions': [...]} format
+                                actions_data = updated_input['actions']
+                                if isinstance(actions_data, list) and actions_data and isinstance(actions_data[0], dict):
+                                    action = [ActionModel(**item) if isinstance(item, dict) else item for item in actions_data]
+                                else:
+                                    action = actions_data
+                                message.payload = action
+                            else:
+                                # Treat single dict as one action
+                                action = [ActionModel(**updated_input)]
+                                message.payload = action
+                        logger.info(f"PRE_TOOL_CALL hook modified input for tool {self.name()}")
+                        # Continue to next hook to allow chaining
+
             self.pre_step(action, **kwargs)
             res = self.do_step(action, message=message, **kwargs)
-            self.run_hooks(message=message, hook_point=HookPoint.POST_TOOL_CALL, hook_from=message.sender, payload=res)
+
+            # Execute POST_TOOL_CALL hooks and check for updated_output
+            post_hook_events = self.run_hooks(message=message, hook_point=HookPoint.POST_TOOL_CALL, hook_from=message.sender, payload=res)
+
+            # Apply updated_output from hooks if present (chain all modifications)
+            for hook_event in post_hook_events:
+                if hook_event and hasattr(hook_event, 'headers'):
+                    updated_output = hook_event.headers.get('updated_output')
+                    if updated_output:
+                        # Update res with modified output
+                        if isinstance(updated_output, tuple) and len(updated_output) == 5:
+                            res = updated_output
+                        elif isinstance(updated_output, dict):
+                            # Allow hook to modify specific parts of res tuple
+                            res_list = list(res)
+                            if 'observation' in updated_output:
+                                obs = updated_output['observation']
+                                # Convert dict to Observation object if needed
+                                if isinstance(obs, dict) and not isinstance(obs, Observation):
+                                    res_list[0] = Observation(**obs)
+                                else:
+                                    res_list[0] = obs
+                            if 'reward' in updated_output:
+                                res_list[1] = updated_output['reward']
+                            if 'done' in updated_output:
+                                res_list[2] = updated_output['done']
+                            if 'truncated' in updated_output:
+                                res_list[3] = updated_output['truncated']
+                            if 'info' in updated_output:
+                                res_list[4] = updated_output['info']
+                            res = tuple(res_list)
+                        logger.info(f"POST_TOOL_CALL hook modified output for tool {self.name()}")
+                        # Continue to next hook to allow chaining
+
             final_res = self.post_step(res, action,message=message, **kwargs)
             self._internal_process(
                 res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
@@ -259,6 +366,24 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                 f"Debug info: session_id = {message.session_id}, action = {message.payload}."
                 f"Traceback:\n{traceback.format_exc()}"
             )
+
+            # Trigger TOOL_CALL_FAILED hook
+            try:
+                self.run_hooks(
+                    message=message,
+                    hook_point=HookPoint.TOOL_CALL_FAILED,
+                    hook_from=message.sender,
+                    payload={
+                        'tool_name': self.name(),
+                        'action': action,
+                        'error': str(e),
+                        'error_type': type(e).__name__,
+                        'traceback': traceback.format_exc()
+                    }
+                )
+            except Exception as hook_e:
+                logger.warning(f"TOOL_CALL_FAILED hook execution failed: {hook_e}")
+
             raise e
         finally:
             logger.info(
@@ -443,12 +568,111 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 tool_id = act.tool_call_id
                 tool_name = act.tool_name
                 tool_id_mapping[tool_id] = tool_name
-            await self.run_hooks(message=message, hook_point=HookPoint.PRE_TOOL_CALL, hook_from=message.sender,
+            # Execute PRE_TOOL_CALL hooks and check for updated_input
+            pre_hook_events = await self.run_hooks(message=message, hook_point=HookPoint.PRE_TOOL_CALL, hook_from=message.sender,
                                  payload=action)
+
+            # P0 Fix: Check permission_decision to gate tool execution
+            for hook_event in pre_hook_events:
+                if hook_event and hasattr(hook_event, 'headers'):
+                    permission_decision = hook_event.headers.get('permission_decision')
+                    if permission_decision in ('deny', 'ask'):
+                        stop_reason = hook_event.headers.get('permission_decision_reason', 'Tool execution requires permission')
+
+                        # Handle 'ask' by resolving with permission handler
+                        if permission_decision == 'ask':
+                            try:
+                                from aworld.runners.hook.v2.permission import get_permission_handler
+                                handler = get_permission_handler()
+                                context_dict = {
+                                    'tool_name': self.name(),
+                                    'action': [act.model_dump() for act in action] if action else []
+                                }
+                                final_decision, resolution_reason = await handler.resolve_permission(
+                                    permission_decision, stop_reason, context_dict
+                                )
+                                if final_decision == 'deny':
+                                    logger.warning(f"PRE_TOOL_CALL hook denied tool {self.name()} after resolution: {resolution_reason}")
+                                    raise ToolExecutionDenied(self.name(), resolution_reason)
+                                else:
+                                    logger.info(f"PRE_TOOL_CALL hook allowed tool {self.name()} after resolution: {resolution_reason}")
+                                    # Continue execution
+                            except ToolExecutionDenied:
+                                raise
+                            except Exception as e:
+                                logger.error(f"Failed to resolve permission 'ask': {e}")
+                                raise ToolExecutionDenied(self.name(), f"Permission resolution failed: {e}")
+                        else:
+                            # Direct deny
+                            logger.warning(f"PRE_TOOL_CALL hook denied tool {self.name()}: {stop_reason}")
+                            raise ToolExecutionDenied(self.name(), stop_reason)
+
+            # Apply updated_input from hooks if present (chain all modifications)
+            for hook_event in pre_hook_events:
+                if hook_event and hasattr(hook_event, 'headers'):
+                    updated_input = hook_event.headers.get('updated_input')
+                    if updated_input:
+                        # Update action with modified input, convert to List[ActionModel]
+                        if isinstance(updated_input, list):
+                            # Convert list[dict] to list[ActionModel] if needed
+                            if updated_input and isinstance(updated_input[0], dict):
+                                action = [ActionModel(**item) if isinstance(item, dict) else item for item in updated_input]
+                            else:
+                                action = updated_input
+                            message.payload = action
+                        elif isinstance(updated_input, dict):
+                            if 'actions' in updated_input:
+                                # Handle {'actions': [...]} format
+                                actions_data = updated_input['actions']
+                                if isinstance(actions_data, list) and actions_data and isinstance(actions_data[0], dict):
+                                    action = [ActionModel(**item) if isinstance(item, dict) else item for item in actions_data]
+                                else:
+                                    action = actions_data
+                                message.payload = action
+                            else:
+                                # Treat single dict as one action
+                                action = [ActionModel(**updated_input)]
+                                message.payload = action
+                        logger.info(f"PRE_TOOL_CALL hook modified input for tool {self.name()}")
+                        # Continue to next hook to allow chaining
+
             await self.pre_step(action, message=message,**kwargs)
             res = await self.do_step(action, message=message, **kwargs)
-            await self.run_hooks(message=message, hook_point=HookPoint.POST_TOOL_CALL, hook_from=message.sender,
+
+            # Execute POST_TOOL_CALL hooks and check for updated_output
+            post_hook_events = await self.run_hooks(message=message, hook_point=HookPoint.POST_TOOL_CALL, hook_from=message.sender,
                                  payload=res)
+
+            # Apply updated_output from hooks if present (chain all modifications)
+            for hook_event in post_hook_events:
+                if hook_event and hasattr(hook_event, 'headers'):
+                    updated_output = hook_event.headers.get('updated_output')
+                    if updated_output:
+                        # Update res with modified output
+                        if isinstance(updated_output, tuple) and len(updated_output) == 5:
+                            res = updated_output
+                        elif isinstance(updated_output, dict):
+                            # Allow hook to modify specific parts of res tuple
+                            res_list = list(res)
+                            if 'observation' in updated_output:
+                                obs = updated_output['observation']
+                                # Convert dict to Observation object if needed
+                                if isinstance(obs, dict) and not isinstance(obs, Observation):
+                                    res_list[0] = Observation(**obs)
+                                else:
+                                    res_list[0] = obs
+                            if 'reward' in updated_output:
+                                res_list[1] = updated_output['reward']
+                            if 'done' in updated_output:
+                                res_list[2] = updated_output['done']
+                            if 'truncated' in updated_output:
+                                res_list[3] = updated_output['truncated']
+                            if 'info' in updated_output:
+                                res_list[4] = updated_output['info']
+                            res = tuple(res_list)
+                        logger.info(f"POST_TOOL_CALL hook modified output for tool {self.name()}")
+                        # Continue to next hook to allow chaining
+
             final_res = await self.post_step(res, action, message=message,**kwargs)
             await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             if isinstance(final_res, Message):
@@ -465,6 +689,24 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 f"Debug info: session_id = {message.session_id}, action = {message.payload}."
                 f"Traceback:\n{traceback.format_exc()}"
             )
+
+            # Trigger TOOL_CALL_FAILED hook
+            try:
+                await self.run_hooks(
+                    message=message,
+                    hook_point=HookPoint.TOOL_CALL_FAILED,
+                    hook_from=message.sender,
+                    payload={
+                        'tool_name': self.name(),
+                        'action': action,
+                        'error': str(e),
+                        'error_type': type(e).__name__,
+                        'traceback': traceback.format_exc()
+                    }
+                )
+            except Exception as hook_e:
+                logger.warning(f"TOOL_CALL_FAILED hook execution failed: {hook_e}")
+
             raise e
         finally:
             logger.warning(
