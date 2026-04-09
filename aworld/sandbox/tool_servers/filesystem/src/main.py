@@ -527,7 +527,10 @@ if __name__ == "__main__":
     
     # Run the server: default streamable-http (compat with start_tool_servers.sh); use stdio when --stdio or MCP_TRANSPORT=stdio
     use_stdio = "--stdio" in sys.argv or os.environ.get("MCP_TRANSPORT", "").strip().lower() == "stdio"
-    if use_stdio:
-        mcp.run(transport="stdio")
-    else:
-        mcp.run(transport="streamable-http")
+    try:
+        if use_stdio:
+            mcp.run(transport="stdio")
+        else:
+            mcp.run(transport="streamable-http")
+    except KeyboardInterrupt:
+        logging.info("Filesystem MCP server stopped")

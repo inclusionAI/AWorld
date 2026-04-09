@@ -962,8 +962,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 # Get updated result from kwargs
                 answer = hook_kwargs.get('result', answer)
 
-                # Try to get final result if task is still running
-                # Note: After stream_events() completes, the task may be cancelled, so we handle CancelledError
+                # Try to get final result if task is still running.
+                # If stream consumption ended early, the producer may already have been cancelled.
                 if hasattr(outputs, '_run_impl_task') and outputs._run_impl_task and not outputs.is_complete:
                     try:
                         # Wait with timeout to avoid hanging
@@ -1239,4 +1239,3 @@ class LocalAgentExecutor(BaseAgentExecutor):
         }
 
 __all__ = ["LocalAgentExecutor"]
-

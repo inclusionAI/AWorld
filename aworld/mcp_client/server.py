@@ -7,7 +7,7 @@ import os
 import threading
 import traceback
 from datetime import timedelta
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -292,7 +292,35 @@ class MCPServerStdio(_MCPServerWithClientSession):
         ]
     ]:
         """Create the streams for the server."""
-        return stdio_client(self.params)
+        # Keep stdio MCP server stderr out of the interactive CLI by default.
+        # Background tasks and `/tasks follow` run in the same terminal process,
+        # so uncaptured MCP stderr would otherwise leak raw tracebacks directly
+        # into the user's console when child servers exit or are cancelled.
+        preserve_mcp_logs = os.environ.get("AWORLD_PRESERVE_MCP_LOGS", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+
+        @asynccontextmanager
+        async def _managed_stdio_client():
+            async with AsyncExitStack() as stack:
+                if preserve_mcp_logs:
+                    log_path = os.environ.get("AWORLD_LOG_PATH", f"{os.getcwd()}/logs")
+                    os.makedirs(log_path, exist_ok=True)
+                    mcp_stderr_log = os.path.join(log_path, "mcp_stderr.log")
+                    errlog = stack.enter_context(
+                        open(mcp_stderr_log, "a", encoding="utf-8", buffering=1)
+                    )
+                else:
+                    errlog = stack.enter_context(open(os.devnull, "w"))
+
+                transport = await stack.enter_async_context(
+                    stdio_client(self.params, errlog=errlog)
+                )
+                yield transport
+
+        return _managed_stdio_client()
 
     @property
     def name(self) -> str:
@@ -462,4 +490,3 @@ class MCPServerStreamableHttp(_MCPServerWithClientSession):
     def name(self) -> str:
         """A readable name for the server."""
         return self._name
-
