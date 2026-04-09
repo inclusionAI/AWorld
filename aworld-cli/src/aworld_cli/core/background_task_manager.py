@@ -360,7 +360,10 @@ class BackgroundTaskManager:
                 )
 
                 # Run with streaming (existing infrastructure)
-                streaming_outputs = Runners.streamed_run_task(task)
+                streaming_outputs = Runners.streamed_run_task(
+                    task,
+                    cancel_run_impl_task_on_cleanup=False,
+                )
                 metadata.streaming_outputs = streaming_outputs
 
                 # Track progress by consuming stream
