@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import traceback
+from collections import deque
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -70,11 +71,8 @@ class BackgroundTaskManager:
         """
         return self.output_dir / f"{task_id}.log"
 
-    def _persist_tasks(self) -> None:
-        """
-        Persist task metadata to disk.
-        """
-        payload = {
+    def _build_persist_payload(self) -> dict:
+        return {
             "version": 1,
             "session_id": self.session_id,
             "task_counter": self._task_counter,
@@ -82,10 +80,27 @@ class BackgroundTaskManager:
             "tasks": [task.to_dict() for task in self.list_tasks()],
         }
 
+    def _write_persisted_tasks(self, payload: dict) -> None:
         temp_path = self.metadata_file.with_suffix(".json.tmp")
         with open(temp_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)
         os.replace(temp_path, self.metadata_file)
+
+    def _persist_tasks_sync(self) -> None:
+        """
+        Persist task metadata to disk synchronously.
+
+        This is reserved for synchronous startup/shutdown paths where no event loop
+        handoff is available.
+        """
+        self._write_persisted_tasks(self._build_persist_payload())
+
+    async def _persist_tasks(self) -> None:
+        """
+        Persist task metadata to disk without blocking the event loop.
+        """
+        payload = self._build_persist_payload()
+        await asyncio.to_thread(self._write_persisted_tasks, payload)
 
     def _load_persisted_tasks(self) -> None:
         """
@@ -121,7 +136,7 @@ class BackgroundTaskManager:
             self._task_counter = max(persisted_counter, max_task_index + 1, 0)
 
             # Save back immediately if we normalized stale statuses.
-            self._persist_tasks()
+            self._persist_tasks_sync()
             logger.info(f"[BackgroundTaskManager] Loaded {len(self.tasks)} persisted tasks")
         except Exception as e:
             logger.warning(
@@ -168,8 +183,11 @@ class BackgroundTaskManager:
             return
 
         try:
-            lines = output_path.read_text(encoding="utf-8", errors="replace").splitlines()
-            relevant_lines = lines[-1000:]
+            relevant_lines = deque(maxlen=1000)
+            with open(output_path, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    relevant_lines.append(line.rstrip("\n"))
+
             base_date = (task.submitted_at or datetime.now()).date()
             for line in relevant_lines:
                 if len(line) >= 11 and line[0] == "[" and line[9] == "]":
@@ -289,7 +307,7 @@ class BackgroundTaskManager:
                 submitted_at=datetime.now()
             )
             self.tasks[task_id] = metadata
-            self._persist_tasks()
+            await self._persist_tasks()
 
             # Submit to background
             asyncio_task = asyncio.create_task(
@@ -335,7 +353,7 @@ class BackgroundTaskManager:
         metadata = self.tasks[task_id]
         metadata.status = "running"
         metadata.started_at = datetime.now()
-        self._persist_tasks()
+        await self._persist_tasks()
 
         # Setup output file
         output_path = self._get_task_output_path(task_id)
@@ -437,7 +455,7 @@ class BackgroundTaskManager:
                 log_file.flush()
 
                 logger.info(f"[BackgroundTaskManager] Task {task_id} finished with status={metadata.status}")
-                self._persist_tasks()
+                await self._persist_tasks()
 
         except asyncio.CancelledError:
             metadata.status = "cancelled"
@@ -452,7 +470,7 @@ class BackgroundTaskManager:
                     log_file.write(f"Cancelled at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             except Exception as e:
                 logger.error(f"[BackgroundTaskManager] Failed to write cancellation to log: {e}")
-            self._persist_tasks()
+            await self._persist_tasks()
 
             raise  # Re-raise to properly cancel the task
 
@@ -470,12 +488,12 @@ class BackgroundTaskManager:
                     log_file.write(f"Failed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             except Exception as write_error:
                 logger.error(f"[BackgroundTaskManager] Failed to write error to log: {write_error}")
-            self._persist_tasks()
+            await self._persist_tasks()
 
         finally:
             metadata.completed_at = datetime.now()
             try:
-                self._persist_tasks()
+                await self._persist_tasks()
             except Exception as e:
                 logger.warning(f"[BackgroundTaskManager] Failed to persist tasks in finally: {e}")
 
@@ -541,7 +559,7 @@ class BackgroundTaskManager:
             if metadata.asyncio_task and not metadata.asyncio_task.done():
                 metadata.asyncio_task.cancel()
                 logger.info(f"[BackgroundTaskManager] Cancelled task {task_id}")
-                self._persist_tasks()
+                await self._persist_tasks()
                 return True
 
             return False
