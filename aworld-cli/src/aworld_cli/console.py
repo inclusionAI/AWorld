@@ -907,6 +907,55 @@ class AWorldCLI:
         self.console.print(info_table)
         self.console.print()
 
+    def render_cron_notifications(self, notifications: List[Any]) -> None:
+        """
+        Render pending cron notifications.
+
+        Args:
+            notifications: List of CronNotification objects from notification center
+
+        Design (per Section 8.7):
+            - Renders up to 3 notifications inline with color-coded status
+            - Shows overflow count if more than 3 pending
+            - Uses fixed-template summaries (no raw error text)
+            - For failed tasks, directs user to /cron list for details
+        """
+        if not notifications:
+            return
+
+        # Cap visible notifications at 3
+        visible = notifications[:3]
+        overflow = len(notifications) - 3
+
+        for notif in visible:
+            status = getattr(notif, 'status', 'ok')
+            status_colors = {
+                'ok': 'green',
+                'error': 'red',
+                'timeout': 'yellow'
+            }
+            color = status_colors.get(status, 'white')
+
+            # Main notification line (fixed template summary)
+            summary = getattr(notif, 'summary', '')
+            self.console.print(f"[{color}][Cron] {summary}[/{color}]")
+
+            # Show next run time for recurring jobs
+            next_run_at = getattr(notif, 'next_run_at', None)
+            if next_run_at:
+                self.console.print(f"  [dim]next run: {next_run_at}[/dim]")
+
+            # For failed/timeout tasks, direct to /cron list for details
+            if status in ('error', 'timeout'):
+                self.console.print(f"  [dim]details: /cron list[/dim]")
+
+        # Show overflow count
+        if overflow > 0:
+            self.console.print(f"[dim]... and {overflow} more cron notifications[/dim]")
+
+        # Add spacing after notifications
+        self.console.print()
+
     async def _esc_key_listener(self):
         """
         Background listener for Esc key to interrupt currently executing tasks.
@@ -1127,6 +1176,17 @@ class AWorldCLI:
             )
 
         while True:
+            # Drain and render pending cron notifications (BEFORE user input prompt)
+            if executor_instance and hasattr(executor_instance, '_base_runtime'):
+                try:
+                    runtime = executor_instance._base_runtime
+                    notifications = await runtime._drain_notifications()
+                    if notifications:
+                        self.render_cron_notifications(notifications)
+                except Exception:
+                    # Graceful failure - never crash chat loop on notification error
+                    pass
+
             try:
                 # Use prompt_toolkit in terminal, plain input() in non-terminal (e.g., IDE debugger)
                 if is_terminal and session:
@@ -1760,6 +1820,18 @@ Add any custom instructions for AI agents working on this project.
                     # Execute the task/chat (FileParseHook will handle file parsing)
                     response = await executor(user_input)
                     # Response is returned for potential future use, but content is already printed by executor
+
+                    # Drain and render pending cron notifications (AFTER agent execution)
+                    if executor_instance and hasattr(executor_instance, '_base_runtime'):
+                        try:
+                            runtime = executor_instance._base_runtime
+                            notifications = await runtime._drain_notifications()
+                            if notifications:
+                                self.render_cron_notifications(notifications)
+                        except Exception:
+                            # Graceful failure - never crash chat loop on notification error
+                            pass
+
                 except Exception as e:
                     import traceback
                     logger.error(f"Error executing task: {e} {traceback.format_exc()}")

@@ -3,7 +3,7 @@
 **Date:** 2026-04-08  
 **Status:** Design Phase - Ready for Implementation  
 **Author:** AI Assistant + wuman  
-**Version:** 3.0
+**Version:** 3.1
 
 ## 1. Overview
 
@@ -16,6 +16,7 @@ Add cron-like scheduled task capability to Aworld with the following **MVP seman
 - Create cron-expression tasks (`cron`)
 - Execute each scheduled task in **isolated mode** using a fresh `Task` / `Runners.run()` call
 - Allow users to manage jobs from Aworld conversation and `/cron` slash command
+- Surface cron completion/failure notifications in `aworld-cli` TUI
 
 This MVP is designed to fit the **current Aworld CLI architecture** and be implemented without introducing a daemon process.
 
@@ -40,6 +41,7 @@ That tradeoff is intentional because current codebase has no standalone schedule
 - Isolated execution via `Runners.run()`
 - `cron` tool for agent-side management
 - `/cron` slash command
+- TUI-only task completion notifications
 - Startup recovery
 - Timeout / retry / bounded concurrency
 - Single-process correctness
@@ -49,6 +51,7 @@ That tradeoff is intentional because current codebase has no standalone schedule
 - Service/web runtime support
 - Main-session continuation / wake original chat session
 - Delivery semantics (Discord, email, webhook, push)
+- Injecting cron completion as synthetic user input back into the agent loop
 - Catch-up replay for missed offline windows
 - Distributed coordination / multi-writer support
 - Web UI
@@ -74,6 +77,8 @@ User / Agent
   -> CronScheduler
   -> FileBasedCronStore (.aworld/cron.json)
   -> CronExecutor
+  -> CronNotificationSink (CLI runtime)
+  -> AWorldCLI notification rendering
   -> LocalAgentRegistry / LocalAgent.get_swarm()
   -> Runners.run()
 ```
@@ -86,6 +91,7 @@ This shape aligns with current implementation reality:
 - agents are resolved through `aworld_cli.core.agent_registry.LocalAgentRegistry`, not a `get_agent_builder()` helper
 - slash commands are registered through `aworld_cli.commands.__init__`
 - tool registration must use paths that are actually loaded by current ToolFactory flow
+- `aworld-cli` currently has no Claude-Code-style unified queued-command loop, so cron completion should use a runtime-owned notification channel rather than re-entering the model as synthetic prompt text
 
 ## 3. MVP vs Future Proper Cron
 
@@ -129,6 +135,8 @@ aworld-cli/
     │   └── cron_cmd.py
     ├── commands/__init__.py        # modify: import cron_cmd
     ├── runtime/base.py             # modify: start/stop scheduler
+    ├── runtime/cron_notifications.py  # add: TUI notification center
+    ├── console.py                  # modify: render pending cron notifications
     └── inner_plugins/smllc/agents/aworld_agent.py  # modify: expose cron tool
 ```
 
@@ -351,6 +359,7 @@ For a claimed job:
 3. Update `last_status`, `last_error`, `consecutive_errors`
 4. Set `running=False`
 5. If `delete_after_run=True` and no future `next_run_at`, remove the job
+6. Emit a terminal notification event to the CLI runtime if a notification sink is attached
 
 ### 7.6 Manual Trigger
 
@@ -360,9 +369,258 @@ For a claimed job:
 - not mutate schedule definition
 - for recurring jobs, not break future cadence
 
-## 8. Execution Design
+## 8. TUI Task Notification Design
 
-### 8.1 Core Rule
+### 8.1 Why Aworld Should Not Copy Claude Code Literally
+
+Claude Code routes background completion through a unified queued-command system and can safely feed `task-notification` events back into the model loop.
+
+`aworld-cli` does **not** currently have that architecture:
+- chat loop is driven directly by `AWorldCLI.run_chat_session()`
+- slash commands execute inline
+- there is no existing inbox / queued-command abstraction shared by runtime and model loop
+
+Therefore, the Aworld design should copy the **user-visible outcome** of Claude Code task notifications, but use a simpler mechanism:
+- scheduler emits terminal events
+- CLI runtime buffers them
+- TUI renders them between turns / before next prompt
+- notifications are **not** injected into the agent as synthetic user messages in MVP
+
+This gives the user proactive visibility without destabilizing the current prompt loop.
+
+### 8.2 Scope
+
+This section is limited to `aworld-cli` TUI only.
+
+Included:
+- show a concise notification when a cron task completes, fails, or times out
+- show notifications near-real-time while the user is idle at the input prompt
+- preserve notifications until they have been rendered once
+- include enough summary for the user to decide whether to inspect `/cron list`
+
+Excluded:
+- waking a past chat session
+- auto-follow-up from the agent after notification
+- OS desktop notifications
+- remote/web delivery
+- injecting notifications into the agent/model loop as synthetic input
+- interrupting in-progress streaming output to show a notification
+
+### 8.3 Core Components
+
+Add a lightweight runtime notification path:
+
+```text
+CronScheduler
+  -> CronNotificationSink (protocol/callback)
+  -> BaseCliRuntime-owned CronNotificationCenter
+  -> AWorldCLI.render_pending_notifications()
+```
+
+Recommended new file:
+
+```text
+aworld-cli/src/aworld_cli/runtime/cron_notifications.py
+```
+
+Recommended types:
+
+```python
+@dataclass
+class CronNotification:
+    id: str
+    job_id: str
+    job_name: str
+    status: Literal["ok", "error", "timeout"]
+    summary: str
+    created_at: str
+    next_run_at: Optional[str] = None
+
+
+class CronNotificationCenter:
+    async def publish(self, notification: CronNotification) -> None: ...
+    async def drain(self) -> list[CronNotification]: ...
+```
+
+Design constraints:
+- in-memory only for MVP
+- process-local only
+- FIFO order
+- bounded size (for example keep last 100 notifications to avoid unbounded growth)
+- notification payload is for TUI summary only, not full execution detail
+
+### 8.4 Notification Payload Rules
+
+Each terminal cron execution should produce one `CronNotification`.
+
+Required fields:
+- `job_id`
+- `job_name`
+- `status`
+- `summary`
+- `created_at`
+
+Recommended summary rules:
+- success: `Cron task "<name>" completed`
+- error: `Cron task "<name>" failed`
+- timeout: `Cron task "<name>" timed out after <N>s`
+
+Summary must be short and safe for one-line or two-line TUI rendering.
+
+Do **not** embed raw error text, large model output, or free-form execution output in the notification body.
+
+The summary string should be treated as a fixed template, not a pass-through of runtime error content.
+
+### 8.5 Scheduler Integration
+
+`CronScheduler` should accept an optional notification sink:
+
+```python
+class CronScheduler:
+    def __init__(..., notification_sink: Optional[CronNotificationSink] = None):
+        ...
+```
+
+On terminal state update in `_execute_claimed_job()` and `run_job()`:
+- update persisted job state first
+- then publish a notification event
+
+Recommended ordering:
+1. persist final state
+2. persist execution detail / error trace location if available
+3. remove one-shot job if needed
+4. publish notification
+
+This ordering ensures `/cron list` reflects the final truth when the user sees the notification.
+
+### 8.6 Runtime Integration
+
+`BaseCliRuntime` should own one `CronNotificationCenter`.
+
+On startup:
+- create notification center
+- create scheduler with `notification_sink=center.publish`
+
+During chat loop:
+- before waiting for user input, drain and render pending notifications
+- after each agent turn completes, drain and render pending notifications again
+- while the prompt is idle, run a lightweight background poller that drains and renders notifications near-real-time
+- suspend that idle poller while agent execution / streaming output is active
+
+This keeps the design simple while still achieving near-real-time visibility at the prompt, and avoids injecting notifications during model streaming.
+
+Recommended implementation shape:
+
+```python
+class BaseCliRuntime:
+    async def _drain_notifications(self) -> list[CronNotification]: ...
+
+
+class AWorldCLI:
+    async def start_idle_notification_poller(self, runtime): ...
+    async def stop_idle_notification_poller(self): ...
+```
+
+The idle poller should:
+- wake on a short interval (for example 0.5-1.0s)
+- only render when the CLI is waiting for user input
+- no-op while agent output is in progress
+- render and clear pending notifications atomically
+
+### 8.7 TUI Rendering Rules
+
+`AWorldCLI` should provide a dedicated renderer, for example:
+
+```python
+def render_cron_notifications(self, notifications: list[CronNotification]) -> None:
+    ...
+```
+
+UX rules:
+- render as compact Rich panels or prefixed lines
+- use color by status: green=`ok`, yellow=`timeout`, red=`error`
+- cap visible batch size (for example 3), then print `... and N more cron notifications`
+- include:
+  - job name
+  - terminal status
+  - fixed-template short summary
+  - next run time for recurring jobs when available
+
+Example output:
+
+```text
+[Cron] Daily Benchmark completed
+  next run: 2026-04-09T09:00:00+08:00
+
+[Cron] Repo Health Check failed
+  details: /cron list
+```
+
+Do not display raw `last_error` inline in the TUI notification.
+
+### 8.8 Error Trace Persistence
+
+Notification text is intentionally minimal, so full execution detail must remain inspectable elsewhere.
+
+Required persisted detail:
+- terminal status
+- full error text when present
+- last run time
+- next run time
+
+MVP acceptable options:
+
+Option A: store-only
+- persist full error in `CronJob.state.last_error`
+- expose it through `/cron list`
+
+Option B: store + run record file
+- persist summary state in `.aworld/cron.json`
+- write detailed per-run record to a file such as:
+  - `.aworld/cron_runs/<job_id>/<timestamp>.json`
+- optionally store `last_result_path` on the job state
+
+Recommended record fields:
+- `job_id`
+- `job_name`
+- `started_at`
+- `finished_at`
+- `status`
+- `error`
+- `result_summary`
+- `next_run_at`
+
+For MVP, Option A is sufficient if `/cron list` reliably surfaces `last_error`.
+
+### 8.9 Persistence and Recovery Semantics
+
+Notifications are **not** persisted across CLI restarts in MVP.
+
+Rationale:
+- persistent source of truth already exists in `.aworld/cron.json`
+- keeping notification state in memory avoids a second durable queue
+- after restart, user can inspect `/cron list` for terminal states
+
+Recovery behavior:
+- scheduler still recovers jobs from store
+- no attempt is made to reconstruct or replay old TUI notifications
+
+### 8.10 Relationship to Job State
+
+Notification delivery is secondary to persisted scheduler state.
+
+Source of truth remains:
+- `.aworld/cron.json`
+- `CronJob.state.last_status`
+- `CronJob.state.last_error`
+- `CronJob.state.last_run_at`
+- optional per-run trace file if introduced
+
+Notifications are only a UX layer over that state.
+
+## 9. Execution Design
+
+### 9.1 Core Rule
 
 Execution must reuse `Runners.run()`:
 
@@ -377,7 +635,7 @@ result = await Runners.run(
 
 This matches current runner model and preserves isolated execution.
 
-### 8.2 Agent Resolution
+### 9.2 Agent Resolution
 
 Do **not** use a fictional `get_agent_builder()`.
 
@@ -416,7 +674,7 @@ class CronExecutor:
         return swarm
 ```
 
-### 8.3 Tool Semantics
+### 9.3 Tool Semantics
 
 `payload.tool_names` is a whitelist of Aworld tool names, not arbitrary sandbox action names.
 
@@ -427,15 +685,15 @@ Examples:
 
 Do not document values like `read_file` unless they are confirmed to be valid top-level tool names in the current tool system.
 
-## 9. Tool Design
+## 10. Tool Design
 
-### 9.1 Tool Location
+### 10.1 Tool Location
 
 Add `aworld/tools/cron_tool.py`.
 
 This makes it discoverable by the current `aworld.tools` package scan.
 
-### 9.2 Tool Contract
+### 10.2 Tool Contract
 
 Use `@be_tool(tool_name="cron")`.
 
@@ -450,7 +708,7 @@ Supported actions:
 
 `enable` / `disable` should be included in MVP because the store model already has `enabled`, and operationally this is cheaper than delete/recreate.
 
-### 9.3 Async Tool Example
+### 10.3 Async Tool Example
 
 The tool function should be async:
 
@@ -460,16 +718,16 @@ async def cron_tool(...)-> Dict[str, Any]:
     ...
 ```
 
-### 9.4 Schedule Parsing Rules
+### 10.4 Schedule Parsing Rules
 
 - `at`: accept ISO8601 timestamp
 - `every`: accept duration strings like `30m`, `2h`, `1d`
 - `cron`: accept standard 5-field cron expression
 - timezone defaults to `UTC`, but caller may set explicit timezone
 
-## 10. Slash Command Design
+## 11. Slash Command Design
 
-### 10.1 Command File
+### 11.1 Command File
 
 Add:
 
@@ -477,7 +735,7 @@ Add:
 aworld-cli/src/aworld_cli/commands/cron_cmd.py
 ```
 
-### 10.2 Registration Requirement
+### 11.2 Registration Requirement
 
 Also modify:
 
@@ -487,7 +745,7 @@ aworld-cli/src/aworld_cli/commands/__init__.py
 
 to import `cron_cmd`, otherwise the command will not register.
 
-### 10.3 Command Type
+### 11.3 Command Type
 
 `/cron` should remain a prompt command with:
 
@@ -499,26 +757,36 @@ def allowed_tools(self) -> List[str]:
 
 That keeps its execution constrained and consistent with the existing command system.
 
-## 11. CLI Lifecycle Integration
+## 12. CLI Lifecycle Integration
 
-### 11.1 Runtime Hook
+### 12.1 Runtime Hook
 
 Modify `aworld-cli/src/aworld_cli/runtime/base.py` to:
 - create scheduler on runtime start
+- create notification center on runtime start
 - stop scheduler on runtime shutdown
 
-### 11.2 Expected Behavior
+### 12.2 Expected Behavior
 
 When user enters `aworld-cli`:
 - scheduler starts
 - existing jobs are loaded and recovered
+- pending in-memory notification queue starts empty
 
 When user exits `aworld-cli`:
 - scheduler stops
 - jobs remain persisted
 - no future runs happen until next startup
+- in-memory notifications are discarded
 
-## 12. Scheduler Singleton
+### 12.3 TUI Notification Hook
+
+Modify `aworld-cli/src/aworld_cli/console.py` / runtime interaction so that:
+- notifications are rendered before next prompt
+- notifications are rendered after slash command / agent execution finishes
+- rendering never interrupts streaming output mid-turn
+
+## 13. Scheduler Singleton
 
 Recommended:
 
@@ -538,9 +806,9 @@ Important:
 - singleton construction must have access to the actual local agent registry
 - do not hardcode imports to nonexistent helpers
 
-## 13. Dependencies
+## 14. Dependencies
 
-### 13.1 New Dependencies
+### 14.1 New Dependencies
 
 ```txt
 croniter>=1.4.0
@@ -548,14 +816,14 @@ croniter>=1.4.0
 
 `pytz` is not required for MVP if standard-library `zoneinfo` is used consistently.
 
-### 13.2 Existing Dependencies
+### 14.2 Existing Dependencies
 
 - `aworld.runner.Runners`
 - `aworld.runners.task_runner.TaskRunner`
 - `aworld_cli.core.agent_registry.LocalAgentRegistry`
 - `aworld.tools` scan/registration flow
 
-## 14. Implementation Plan
+## 15. Implementation Plan
 
 ### Phase 1: Core Scheduler
 
@@ -578,12 +846,15 @@ Files:
 - `aworld-cli/src/aworld_cli/commands/cron_cmd.py`
 - `aworld-cli/src/aworld_cli/commands/__init__.py`
 - `aworld-cli/src/aworld_cli/runtime/base.py`
+- `aworld-cli/src/aworld_cli/runtime/cron_notifications.py`
+- `aworld-cli/src/aworld_cli/console.py`
 - `aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/aworld_agent.py`
 
 Work:
 - expose `cron` tool to Aworld agent
 - register `/cron`
 - start/stop scheduler with CLI runtime
+- add TUI notification center and renderer
 
 ### Phase 3: Validation
 
@@ -592,7 +863,7 @@ Work:
 - add integration tests
 - run manual recovery scenarios
 
-## 15. Testing Strategy
+## 16. Testing Strategy
 
 ### 15.1 Unit Tests
 
@@ -627,6 +898,13 @@ Critical cases:
 - agent can call `cron` tool
 - runtime starts scheduler
 - jobs survive CLI restart
+- completed cron job produces one TUI notification
+- failed cron job produces one TUI notification
+- idle prompt poller renders notification while user is waiting at prompt
+- notifications do not render during agent streaming output
+- notification body uses fixed template only (no raw error text)
+- full error remains available via persisted job state or run record file
+- notifications are not replayed after CLI restart
 
 ### 15.3 Manual Test Matrix
 
@@ -645,17 +923,27 @@ aworld-cli
 # exit aworld-cli
 # restart aworld-cli
 # verify job is still present and next_run_at is recalculated
+
+# Scenario 4
+aworld-cli
+> /cron add 1分钟后提醒我检查测试结果
+# wait for execution
+# verify TUI shows completion/failure notification while idle at prompt
+# verify detailed error/result remains inspectable via /cron list
 ```
 
-## 16. Known Limitations
+## 17. Known Limitations
 
 1. CLI must stay alive for jobs to fire.
 2. No offline catch-up replay.
 3. Single-process only.
-4. No delivery channel outside Aworld logs / task result.
-5. No original-session continuation.
+4. Notifications are TUI-only and in-memory only.
+5. No delivery channel outside `aworld-cli` TUI.
+6. No original-session continuation.
+7. Notifications are not injected back into the agent loop automatically.
+8. Near-real-time delivery is only guaranteed while idle at prompt, not during active streaming output.
 
-## 17. Success Criteria
+## 18. Success Criteria
 
 ### Functional
 
@@ -674,19 +962,25 @@ aworld-cli
 
 - Agent can naturally create scheduled jobs using `cron` tool
 - `/cron` works without exposing unrelated tools
+- user sees a proactive TUI notification when a cron task reaches terminal state
+- notification appears near-real-time while idle at prompt
+- notification does not appear during streaming output
+- notification uses fixed template text only
+- detailed error remains inspectable through persisted state
 
-## 18. Future Upgrade Path
+## 19. Future Upgrade Path
 
 When Aworld needs OpenClaw-like cron behavior, keep this job model and replace only the runtime layer:
 
 1. move scheduler loop into a daemon process
 2. keep `.aworld/cron.json` or migrate to DB
 3. let CLI and agent tools operate as CRUD clients
-4. add delivery hooks and catch-up policy
+4. optionally evolve TUI notifications into a durable inbox
+5. add delivery hooks and catch-up policy
 
 This preserves the MVP model work and avoids rewrite of job schema.
 
-## 19. References
+## 20. References
 
 - OpenClaw cron: `/Users/wuman/Documents/workspace/openclaw/src/cron/`
 - Current Aworld runtime: `aworld-cli/src/aworld_cli/runtime/base.py`
@@ -695,6 +989,6 @@ This preserves the MVP model work and avoids rewrite of job schema.
 
 ---
 
-## 20. Next Step
+## 21. Next Step
 
 Implement the CLI-embedded MVP exactly as documented here. Do not expand to daemon mode in the first pass.

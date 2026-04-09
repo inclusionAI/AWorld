@@ -3,6 +3,7 @@
 """
 Cron job storage with atomic writes and file locking.
 """
+import asyncio
 import fcntl
 import json
 from pathlib import Path
@@ -20,6 +21,7 @@ class FileBasedCronStore:
     Features:
     - Atomic writes (temp file + rename)
     - File locking (fcntl)
+    - Process-local mutex (asyncio.Lock) for read-modify-write operations
     - Automatic directory creation
     """
 
@@ -31,6 +33,7 @@ class FileBasedCronStore:
             file_path: Path to cron jobs file (e.g., '.aworld/cron.json')
         """
         self.file_path = Path(file_path)
+        self._lock = asyncio.Lock()  # Process-local mutex for read-modify-write
         self._ensure_file_exists()
 
     def _ensure_file_exists(self):
@@ -162,11 +165,12 @@ class FileBasedCronStore:
         Returns:
             Added job
         """
-        data = self._read_data()
-        data["jobs"].append(self._job_to_dict(job))
-        self._write_data(data)
-        logger.info(f"Added cron job: {job.id} ({job.name})")
-        return job
+        async with self._lock:
+            data = self._read_data()
+            data["jobs"].append(self._job_to_dict(job))
+            self._write_data(data)
+            logger.info(f"Added cron job: {job.id} ({job.name})")
+            return job
 
     async def update_job(self, job_id: str, **updates) -> Optional[CronJob]:
         """
@@ -179,25 +183,26 @@ class FileBasedCronStore:
         Returns:
             Updated job or None if not found
         """
-        data = self._read_data()
+        async with self._lock:
+            data = self._read_data()
 
-        for job_dict in data["jobs"]:
-            if job_dict["id"] == job_id:
-                # Update fields
-                for key, value in updates.items():
-                    if key == "state":
-                        # Merge state updates
-                        job_dict["state"].update(value)
-                    else:
-                        job_dict[key] = value
+            for job_dict in data["jobs"]:
+                if job_dict["id"] == job_id:
+                    # Update fields
+                    for key, value in updates.items():
+                        if key == "state":
+                            # Merge state updates
+                            job_dict["state"].update(value)
+                        else:
+                            job_dict[key] = value
 
-                job_dict["updated_at"] = datetime.utcnow().isoformat()
-                self._write_data(data)
-                logger.debug(f"Updated cron job: {job_id}")
-                return self._dict_to_job(job_dict)
+                    job_dict["updated_at"] = datetime.utcnow().isoformat()
+                    self._write_data(data)
+                    logger.debug(f"Updated cron job: {job_id}")
+                    return self._dict_to_job(job_dict)
 
-        logger.warning(f"Job not found for update: {job_id}")
-        return None
+            logger.warning(f"Job not found for update: {job_id}")
+            return None
 
     async def remove_job(self, job_id: str) -> bool:
         """
@@ -209,17 +214,18 @@ class FileBasedCronStore:
         Returns:
             True if removed, False if not found
         """
-        data = self._read_data()
-        original_count = len(data["jobs"])
-        data["jobs"] = [j for j in data["jobs"] if j["id"] != job_id]
+        async with self._lock:
+            data = self._read_data()
+            original_count = len(data["jobs"])
+            data["jobs"] = [j for j in data["jobs"] if j["id"] != job_id]
 
-        if len(data["jobs"]) < original_count:
-            self._write_data(data)
-            logger.info(f"Removed cron job: {job_id}")
-            return True
+            if len(data["jobs"]) < original_count:
+                self._write_data(data)
+                logger.info(f"Removed cron job: {job_id}")
+                return True
 
-        logger.warning(f"Job not found for removal: {job_id}")
-        return False
+            logger.warning(f"Job not found for removal: {job_id}")
+            return False
 
     async def get_job(self, job_id: str) -> Optional[CronJob]:
         """
@@ -255,55 +261,58 @@ class FileBasedCronStore:
 
         return jobs
 
-    async def claim_due_job(self, job_id: str, now_iso: str) -> Optional[CronJob]:
+    async def claim_due_job(self, job_id: str, now_iso: str, next_run_at: Optional[str] = None) -> Optional[CronJob]:
         """
         Atomically claim a due job for execution.
 
         This is the critical operation that prevents duplicate execution:
         - Check if job is enabled, not running, and due
-        - If so, atomically mark as running and update last_run_at
+        - If so, atomically mark as running, update last_run_at, AND advance next_run_at
         - All checks and updates happen in a single read-modify-write cycle
 
         Args:
             job_id: Job ID to claim
             now_iso: Current time in ISO format (for comparison and timestamp)
+            next_run_at: Next scheduled run time (ISO format) or None for one-shot jobs
 
         Returns:
             Claimed job if successful, None if job cannot be claimed
         """
-        data = self._read_data()
+        async with self._lock:
+            data = self._read_data()
 
-        for job_dict in data["jobs"]:
-            if job_dict["id"] == job_id:
-                # Check if job can be claimed
-                if not job_dict.get("enabled", True):
-                    logger.debug(f"Cannot claim job {job_id}: disabled")
-                    return None
+            for job_dict in data["jobs"]:
+                if job_dict["id"] == job_id:
+                    # Check if job can be claimed
+                    if not job_dict.get("enabled", True):
+                        logger.debug(f"Cannot claim job {job_id}: disabled")
+                        return None
 
-                if job_dict["state"].get("running", False):
-                    logger.debug(f"Cannot claim job {job_id}: already running")
-                    return None
+                    if job_dict["state"].get("running", False):
+                        logger.debug(f"Cannot claim job {job_id}: already running")
+                        return None
 
-                next_run_at = job_dict["state"].get("next_run_at")
-                if not next_run_at:
-                    logger.debug(f"Cannot claim job {job_id}: no next_run_at")
-                    return None
+                    current_next_run = job_dict["state"].get("next_run_at")
+                    if not current_next_run:
+                        logger.debug(f"Cannot claim job {job_id}: no next_run_at")
+                        return None
 
-                # Compare timestamps (both should be ISO format)
-                if next_run_at > now_iso:
-                    logger.debug(f"Cannot claim job {job_id}: not due yet ({next_run_at} > {now_iso})")
-                    return None
+                    # Compare timestamps (both should be ISO format)
+                    if current_next_run > now_iso:
+                        logger.debug(f"Cannot claim job {job_id}: not due yet ({current_next_run} > {now_iso})")
+                        return None
 
-                # Atomically claim the job
-                job_dict["state"]["running"] = True
-                job_dict["state"]["last_run_at"] = now_iso
-                job_dict["updated_at"] = datetime.utcnow().isoformat()
+                    # Atomically claim the job AND advance next_run_at
+                    job_dict["state"]["running"] = True
+                    job_dict["state"]["last_run_at"] = now_iso
+                    job_dict["state"]["next_run_at"] = next_run_at  # Advance to next schedule
+                    job_dict["updated_at"] = datetime.utcnow().isoformat()
 
-                # Write atomically
-                self._write_data(data)
+                    # Write atomically
+                    self._write_data(data)
 
-                logger.info(f"Claimed job {job_id} for execution")
-                return self._dict_to_job(job_dict)
+                    logger.info(f"Claimed job {job_id} for execution (next_run_at: {next_run_at})")
+                    return self._dict_to_job(job_dict)
 
-        logger.warning(f"Job not found for claim: {job_id}")
-        return None
+            logger.warning(f"Job not found for claim: {job_id}")
+            return None
