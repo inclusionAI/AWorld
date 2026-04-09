@@ -3,16 +3,18 @@
 import time
 
 import abc
+import asyncio
+import contextvars
 import os
 import uuid
-from typing import Any, Dict, Generic, List, Tuple, TypeVar, Union
+from typing import Any, Dict, Generic, List, Tuple, TypeVar, Union, Optional
 
 from pydantic import BaseModel
 
 from aworld.config.conf import AgentConfig, ConfigDict, load_config, TaskRunMode
 from aworld.core.common import ActionModel
 from aworld.events import eventbus
-from aworld.core.event.base import Constants, Message, AgentMessage
+from aworld.core.event.base import Constants, Message, AgentMessage, TopicType
 from aworld.core.factory import Factory
 from aworld.events.util import send_message
 from aworld.logs.util import logger, digest_logger
@@ -20,6 +22,10 @@ from aworld.output.base import StepOutput
 from aworld.sandbox import Sandbox
 from aworld.utils.common import convert_to_snake, replace_env_variables, sync_exec
 from aworld.mcp_client.utils import replace_mcp_servers_variables, extract_mcp_servers_from_config
+
+# Context variable for task-safe context storage
+# This prevents race conditions when agent instances are reused across concurrent tasks
+_agent_context: contextvars.ContextVar[Optional['Context']] = contextvars.ContextVar('_agent_context', default=None)
 
 INPUT = TypeVar("INPUT")
 OUTPUT = TypeVar("OUTPUT")
@@ -174,6 +180,35 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         self.loop_step = 0
         self.max_loop_steps = kwargs.pop("max_loop_steps", 20)
 
+    @staticmethod
+    def _get_current_context() -> Optional['Context']:
+        """Get the current context for this async task (thread-safe).
+
+        Returns the context stored in contextvars, which is unique per async task.
+        This prevents race conditions when agent instances are reused across
+        concurrent executions.
+        """
+        return _agent_context.get()
+
+    @staticmethod
+    def _get_current_agent() -> Optional['BaseAgent']:
+        """Get the current agent for this async task (thread-safe).
+
+        Returns the agent that is currently executing within the current context.
+        Useful for tools that need access to the calling agent's capabilities
+        (e.g., spawn_subagent tool accessing SubagentManager).
+
+        Returns:
+            The current agent if available, None otherwise
+        """
+        try:
+            ctx = _agent_context.get()
+            if ctx and hasattr(ctx, 'agent'):
+                return ctx.agent
+            return None
+        except LookupError:
+            return None
+
     def _init_id_name(self, name: str, agent_id: str = None):
         self._name = name if name else convert_to_snake(self.__class__.__name__)
         self._id = (
@@ -229,6 +264,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
         return final_result
 
     async def async_run(self, message: Message, **kwargs) -> Message:
+        # Store context in contextvars for task-safe access (prevents race conditions)
+        # Capture token to ensure proper cleanup in finally block
+        token = _agent_context.set(message.context)
         try:
             message.context.update_agent_step(self.id())
             task = message.context.get_task()
@@ -282,6 +320,9 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 duration = round(time.time() - getattr(message.context, "_start", time.time()), 2)
             digest_logger.info(f"agent_run|{self.id()}|{getattr(message.context, 'user', 'default')}|{message.context.session_id}|{message.context.task_id}|{duration}|failed")
             raise e
+        finally:
+            # Reset context to prevent leakage in task reuse scenarios
+            _agent_context.reset(token)
 
     def policy(
             self, observation: INPUT, info: Dict[str, Any] = None, **kwargs

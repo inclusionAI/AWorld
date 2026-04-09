@@ -163,7 +163,8 @@ def load_swarm_from_yaml(path: str) -> Tuple[Swarm, Dict[str, Agent]]:
         return Swarm(*ordered), agents
 
     stype = (swarm_conf.get("type") or GraphBuildType.WORKFLOW.value).lower()
-    if stype not in {GraphBuildType.WORKFLOW.value, GraphBuildType.HANDOFF.value, GraphBuildType.TEAM.value}:
+    if stype not in {GraphBuildType.WORKFLOW.value, GraphBuildType.HANDOFF.value,
+                     GraphBuildType.TEAM.value, GraphBuildType.HYBRID.value}:
         raise ValueError(f"Unsupported swarm.type: {stype}")
 
     if stype == GraphBuildType.WORKFLOW.value:
@@ -182,14 +183,15 @@ def load_swarm_from_yaml(path: str) -> Tuple[Swarm, Dict[str, Agent]]:
             pairs.append((agents[a], agents[b]))
         return Swarm(*pairs, build_type=GraphBuildType.HANDOFF), agents
 
-    # TEAM
+    # TEAM or HYBRID (HYBRID uses same topology as TEAM)
+    build_type_enum = GraphBuildType.HYBRID if stype == GraphBuildType.HYBRID.value else GraphBuildType.TEAM
     root: str = swarm_conf.get("root")
     members: List[str] = swarm_conf.get("members") or []
     if not root:
         # If root not specified, default to the first defined agent
         root = next(iter(data.get("agents", {}).keys()), None)
     if not root:
-        raise ValueError("For team swarm, `root` or at least one agent must be defined")
+        raise ValueError(f"For {stype} swarm, `root` or at least one agent must be defined")
     ordered = [agents[root]] + [agents[m] for m in members if m != root]
-    return Swarm(*ordered, build_type=GraphBuildType.TEAM), agents
+    return Swarm(*ordered, build_type=build_type_enum), agents
 

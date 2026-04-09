@@ -11,10 +11,30 @@ from typing import Optional
 
 from aworld.memory.main import _default_file_memory_store
 
-# Suppress DEBUG logs from third-party libraries (asyncio, mcp, etc.)
+# Suppress DEBUG/INFO logs from third-party libraries (asyncio, mcp, etc.)
 # Only show WARNING and above for non-aworld modules
-logging.basicConfig(level=logging.WARNING)
-# Keep aworld's own logging at INFO level
+logging.basicConfig(
+    level=logging.WARNING,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+# Explicitly suppress verbose third-party loggers
+third_party_loggers = [
+    'mcp',           # MCP server
+    'mcp.server',    # MCP server module
+    'mcp.shared',    # MCP shared module
+    'asyncio',       # asyncio module
+    'urllib3',       # HTTP library
+    'httpx',         # HTTP library
+    'httpcore',      # HTTP core
+]
+
+for logger_name in third_party_loggers:
+    logging.getLogger(logger_name).setLevel(logging.WARNING)
+    # Also disable propagation to avoid console output
+    logging.getLogger(logger_name).propagate = False
+
+# Keep aworld's own logging at INFO level (for file logs)
 for aworld_logger in ['aworld', 'AWorld']:
     logging.getLogger(aworld_logger).setLevel(logging.INFO)
 

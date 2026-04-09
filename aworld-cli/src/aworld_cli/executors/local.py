@@ -92,6 +92,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
         self._hooks_config = hooks or []
         self._hooks = self._load_hooks()
 
+        # Initialize background task manager
+        from aworld_cli.core.background_task_manager import BackgroundTaskManager
+        self.background_task_manager = BackgroundTaskManager(
+            session_id=self.session_id,
+            console=self.console
+        )
+
     def _load_hooks(self) -> Dict[str, List[ExecutorHook]]:
         """
         Load hooks from configuration.
@@ -164,7 +171,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
         Close MCP and other resources in the same event loop to avoid
         "Attempted to exit cancel scope in a different task" on exit.
         """
-        pass
+        # Cleanup background tasks
+        if hasattr(self, 'background_task_manager'):
+            await self.background_task_manager.cleanup()
 
     async def _execute_hooks(self, hook_point: str, **kwargs) -> Any:
         """
@@ -586,44 +595,114 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     # This ensures we capture token stats even when STREAM=0 or no ChunkOutput was received
                                     if not received_chunk_output or not stream_token_stats.get_current_stats():
                                         try:
-                                            # Try to extract usage information from MessageOutput
-                                            usage = None
-                                            if hasattr(output, 'usage'):
-                                                usage = output.usage
-                                            elif hasattr(output, 'data') and hasattr(output.data, 'usage'):
-                                                usage = output.data.usage
+                                            # Log the output structure for debugging
+                                            logger.info(f"📊 Attempting to extract token stats from MessageOutput")
+                                            logger.info(f"📊 Output type: {type(output)}")
+                                            logger.info(f"📊 Output attributes: {dir(output)}")
                                             
+                                            # Try multiple paths to extract usage information
+                                            usage = None
+                                            input_tokens = None
+                                            output_tokens = None
+                                            model_name = None
+                                            
+                                            # Path 1: Direct usage attribute
+                                            if hasattr(output, 'usage') and output.usage:
+                                                usage = output.usage
+                                                logger.info(f"📊 Found usage in output.usage: {usage}")
+                                            
+                                            # Path 2: usage in data attribute
+                                            elif hasattr(output, 'data') and output.data:
+                                                if hasattr(output.data, 'usage') and output.data.usage:
+                                                    usage = output.data.usage
+                                                    logger.info(f"📊 Found usage in output.data.usage: {usage}")
+                                            
+                                            # Path 3: usage in source (ModelResponse)
+                                            if not usage and hasattr(output, 'source') and output.source:
+                                                if hasattr(output.source, 'usage') and output.source.usage:
+                                                    usage = output.source.usage
+                                                    logger.info(f"📊 Found usage in output.source.usage: {usage}")
+                                            
+                                            # Path 4: Check if output itself is a dict-like object
+                                            if not usage and hasattr(output, '__dict__'):
+                                                output_dict = output.__dict__
+                                                if 'usage' in output_dict and output_dict['usage']:
+                                                    usage = output_dict['usage']
+                                                    logger.info(f"📊 Found usage in output.__dict__: {usage}")
+                                            
+                                            # Extract tokens from usage object
                                             if usage:
-                                                input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', None)
-                                                output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', None)
+                                                # Handle dict-like usage
+                                                if isinstance(usage, dict):
+                                                    input_tokens = usage.get('prompt_tokens') or usage.get('input_tokens')
+                                                    output_tokens = usage.get('completion_tokens') or usage.get('output_tokens')
+                                                    logger.info(f"📊 Extracted from dict usage - input: {input_tokens}, output: {output_tokens}")
+                                                # Handle object-like usage
+                                                else:
+                                                    input_tokens = getattr(usage, 'prompt_tokens', None) or getattr(usage, 'input_tokens', None)
+                                                    output_tokens = getattr(usage, 'completion_tokens', None) or getattr(usage, 'output_tokens', None)
+                                                    logger.info(f"📊 Extracted from object usage - input: {input_tokens}, output: {output_tokens}")
+                                            
+                                            # Fallback: Estimate tokens if we couldn't extract them
+                                            if input_tokens is None or output_tokens is None:
+                                                logger.warning(f"📊 Could not extract token stats from usage, attempting estimation")
                                                 
-                                                # Get tool calls count
-                                                tool_calls_count = 0
-                                                if hasattr(output, 'tool_calls') and output.tool_calls:
-                                                    tool_calls_count = len(output.tool_calls)
+                                                # Estimate output tokens from response content
+                                                if output_tokens is None:
+                                                    response_text = ""
+                                                    if hasattr(output, 'response') and output.response:
+                                                        response_text = str(output.response)
+                                                    elif hasattr(output, 'content') and output.content:
+                                                        response_text = str(output.content)
+                                                    elif hasattr(output, 'data') and hasattr(output.data, 'content'):
+                                                        response_text = str(output.data.content)
+                                                    
+                                                    if response_text:
+                                                        # Rough estimation: 1 token ≈ 4 characters
+                                                        output_tokens = max(1, len(response_text) // 4)
+                                                        logger.info(f"📊 Estimated output tokens from content length: {output_tokens} (content length: {len(response_text)})")
                                                 
-                                                # Update stream_token_stats if we have valid token data
-                                                if input_tokens is not None or output_tokens is not None:
-                                                    model_name = None
-                                                    if hasattr(output, "metadata") and output.metadata:
-                                                        model_name = output.metadata.get("model_name")
-                                                    if not model_name and hasattr(output, "source") and output.source:
-                                                        model_name = getattr(output.source, "model", None)
-                                                    logger.info(f"📊 Extracting token stats from MessageOutput - agent: {current_agent_name}, model: {model_name}, input: {input_tokens}, output: {output_tokens}, tool_calls: {tool_calls_count}")
-                                                    stream_token_stats.update(
-                                                        agent_id=None,
-                                                        agent_name=current_agent_name,
-                                                        output_tokens=output_tokens if output_tokens is not None else 0,
-                                                        input_tokens=input_tokens,
-                                                        tool_calls_count=tool_calls_count,
-                                                        output_estimated=False,
-                                                        input_estimated=False,
-                                                        tool_calls_estimated=False,
-                                                        model_name=model_name,
-                                                    )
-                                                    logger.info(f"📊 Token stats extracted from MessageOutput - current stats: {stream_token_stats.get_current_stats()}")
+                                                # Estimate input tokens (harder, but we can try)
+                                                if input_tokens is None:
+                                                    # Use task content length as a rough estimate
+                                                    if task_content:
+                                                        input_tokens = max(1, len(task_content) // 4)
+                                                        logger.info(f"📊 Estimated input tokens from task content: {input_tokens}")
+                                            
+                                            # Get tool calls count
+                                            tool_calls_count = 0
+                                            if hasattr(output, 'tool_calls') and output.tool_calls:
+                                                tool_calls_count = len(output.tool_calls)
+                                            
+                                            # Extract model name
+                                            if hasattr(output, "metadata") and output.metadata:
+                                                model_name = output.metadata.get("model_name")
+                                            if not model_name and hasattr(output, "source") and output.source:
+                                                model_name = getattr(output.source, "model", None)
+                                            if not model_name:
+                                                model_name = "unknown"
+                                            
+                                            # Update stream_token_stats if we have any token data
+                                            if input_tokens is not None or output_tokens is not None:
+                                                logger.info(f"📊 Updating token stats - agent: {current_agent_name}, model: {model_name}, input: {input_tokens}, output: {output_tokens}, tool_calls: {tool_calls_count}")
+                                                stream_token_stats.update(
+                                                    agent_id=None,
+                                                    agent_name=current_agent_name,
+                                                    output_tokens=output_tokens if output_tokens is not None else 0,
+                                                    input_tokens=input_tokens if input_tokens is not None else 0,
+                                                    tool_calls_count=tool_calls_count,
+                                                    output_estimated=(output_tokens is not None and usage is None),
+                                                    input_estimated=(input_tokens is not None and usage is None),
+                                                    tool_calls_estimated=False,
+                                                    model_name=model_name,
+                                                )
+                                                logger.info(f"📊 Token stats successfully updated - current stats: {stream_token_stats.get_current_stats()}")
+                                            else:
+                                                logger.warning(f"📊 No token data available to update stats")
+                                                logger.warning(f"📊 Output structure: {output}")
                                         except Exception as extract_error:
-                                            logger.warning(f"📊 Failed to extract token stats from MessageOutput: {extract_error}")
+                                            logger.error(f"📊 Failed to extract token stats from MessageOutput: {extract_error}")
+                                            logger.error(f"📊 Traceback: {traceback.format_exc()}")
                                     
                                     # 💾 Save round when stats came from MessageOutput (STREAM=0 or no ChunkOutput)
                                     if not saved_any_round:
@@ -659,6 +738,18 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         logger.info(f"Answer: {answer}")
                                         logger.info(f"Is handoff: {is_handoff}")
                                         answer, _ = self._render_simple_message_output(output, answer, agent_name=current_agent_name, is_handoff=is_handoff, content_already_streamed=received_chunk_output)
+                                        
+                                        # 🔧 FIX: Display token stats after rendering message output (STREAM=0 mode)
+                                        # This ensures the stats line is shown even when not streaming
+                                        if stream_token_stats and stream_token_stats.get_current_stats():
+                                            elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
+                                            if elapsed_sec is not None:
+                                                elapsed_str = format_elapsed(elapsed_sec)
+                                                msg = stream_token_stats.format_streaming_line(elapsed_str)
+                                                if msg and self.console:
+                                                    from rich.text import Text
+                                                    self.console.print(Text.from_markup(msg))
+                                                    self.console.print()  # Add spacing
                                     else:
                                         response_text = str(output.response) if hasattr(output, 'response') and output.response else ""
                                         if response_text.strip():

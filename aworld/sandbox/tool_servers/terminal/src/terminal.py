@@ -87,9 +87,12 @@ class TerminalMetadata(BaseModel):
     output_data: str | None = None
 
 
+# Read log level from environment variable, default to WARNING for clean CLI output
+_log_level = os.environ.get("MCP_LOG_LEVEL") or os.environ.get("LOG_LEVEL") or os.environ.get("LOGLEVEL") or "WARNING"
+
 mcp = FastMCP(
     "terminal-server",
-    log_level="DEBUG",
+    log_level=_log_level,
     port=8081,
     instructions="""
 Terminal MCP Server
