@@ -83,7 +83,8 @@ class TaskEventRunner(TaskRunner):
                         context=self.context,
                         hook_point=HookPoint.TASK_COMPLETED,
                         hook_from='task_runner',
-                        payload=task_completed_payload
+                        payload=task_completed_payload,
+                        workspace_path=getattr(self.context, 'workspace_path', None)
                     ):
                         pass
                 except Exception as e:
@@ -114,8 +115,8 @@ class TaskEventRunner(TaskRunner):
                             context=self.context,
                             hook_point=HookPoint.SESSION_FINISHED,
                             hook_from='task_runner',
-                            payload=session_finished_msg.payload,
-                            message=session_finished_msg
+                            message=session_finished_msg,
+                            workspace_path=getattr(self.context, 'workspace_path', None)
                         ):
                             pass
                     except Exception as e:
@@ -149,8 +150,8 @@ class TaskEventRunner(TaskRunner):
                             context=self.context,
                             hook_point=HookPoint.SESSION_FAILED,
                             hook_from='task_runner',
-                            payload=session_failed_msg.payload,
-                            message=session_failed_msg
+                            message=session_failed_msg,
+                            workspace_path=getattr(self.context, 'workspace_path', None)
                         ):
                             pass
                     except Exception as hook_e:

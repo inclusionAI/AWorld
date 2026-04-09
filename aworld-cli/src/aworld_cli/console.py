@@ -1773,10 +1773,14 @@ Add any custom instructions for AI agents working on this project.
                             category='user_input',
                             payload=user_input,
                             session_id=getattr(context, 'session_id', 'unknown') if context else 'unknown',
-                            sender='cli_user'
+                            sender='cli_user',
+                            headers={'context': context} if context else {}
                         )
                         if context:
                             user_input_msg.context = context
+
+                        # 获取 workspace_path（优先使用 context.workspace_path）
+                        workspace_path = getattr(context, 'workspace_path', None) or os.getcwd()
 
                         # 运行 hooks
                         should_execute = True  # P0-3: 标志位控制是否执行 executor
@@ -1784,8 +1788,8 @@ Add any custom instructions for AI agents working on this project.
                             context=context,
                             hook_point=HookPoint.USER_INPUT_RECEIVED,
                             hook_from='cli',
-                            payload=user_input,
-                            message=user_input_msg
+                            message=user_input_msg,
+                            workspace_path=workspace_path
                         ):
                             # 检查 hook 是否修改了输入
                             if hook_result and hasattr(hook_result, 'headers'):

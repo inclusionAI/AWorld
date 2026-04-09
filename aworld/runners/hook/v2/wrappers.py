@@ -17,6 +17,52 @@ from .protocol import HookJSONOutput
 logger = logging.getLogger(__name__)
 
 
+def to_serializable(obj: Any, max_depth: int = 5, current_depth: int = 0) -> Any:
+    """递归转换对象为可序列化形式.
+
+    处理：
+    - Pydantic 模型：使用 model_dump()
+    - 字典/列表：递归处理
+    - 基础类型：直接返回
+    - 其他类型：转字符串
+
+    Args:
+        obj: 待序列化对象
+        max_depth: 最大递归深度
+        current_depth: 当前递归深度
+
+    Returns:
+        可 JSON 序列化的对象
+    """
+    if current_depth > max_depth:
+        return str(obj)
+
+    # Pydantic 模型
+    if hasattr(obj, 'model_dump'):
+        try:
+            return obj.model_dump()
+        except Exception:
+            return str(obj)
+
+    # 字典
+    if isinstance(obj, dict):
+        return {
+            k: to_serializable(v, max_depth, current_depth + 1)
+            for k, v in obj.items()
+        }
+
+    # 列表/元组
+    if isinstance(obj, (list, tuple)):
+        return [to_serializable(item, max_depth, current_depth + 1) for item in obj]
+
+    # 基础类型
+    if isinstance(obj, (str, int, float, bool, type(None))):
+        return obj
+
+    # 其他类型转字符串
+    return str(obj)
+
+
 class CommandHookWrapper(Hook):
     """Shell 命令 Hook 适配器
 
@@ -175,7 +221,7 @@ class CommandHookWrapper(Hook):
         注入的环境变量：
         - AWORLD_SESSION_ID: 会话 ID
         - AWORLD_TASK_ID: 任务 ID
-        - AWORLD_CWD: 当前工作目录
+        - AWORLD_CWD: 当前工作目录（优先使用 context.workspace_path）
         - AWORLD_HOOK_POINT: Hook 点名称
         - AWORLD_MESSAGE_JSON: Message 对象的 JSON 序列化
         - AWORLD_CONTEXT_JSON: Context 关键信息的 JSON 序列化
@@ -191,33 +237,49 @@ class CommandHookWrapper(Hook):
         # 基础环境变量（继承父进程）
         env = dict(os.environ)
 
+        # 获取 workspace_path（优先使用 context.workspace_path）
+        workspace_path = getattr(context, 'workspace_path', None) or os.getcwd()
+
         # 注入 AWORLD_* 变量
         env.update({
             'AWORLD_SESSION_ID': getattr(context, 'session_id', 'unknown'),
             'AWORLD_TASK_ID': getattr(context, 'task_id', 'unknown'),
-            'AWORLD_CWD': os.getcwd(),
+            'AWORLD_CWD': workspace_path,
             'AWORLD_HOOK_POINT': self._hook_point,
             'AWORLD_HOOK_NAME': self._name,
         })
 
-        # 序列化 Message
+        # 序列化 Message（改进版）
         try:
-            # 过滤掉不可序列化的对象（如 Context）
             headers = getattr(message, 'headers', {})
+
+            # 排除不可序列化对象（Context）并转换其他对象
             serializable_headers = {
-                k: v for k, v in headers.items()
-                if not isinstance(v, Context)  # 排除 Context 对象
+                k: to_serializable(v)
+                for k, v in headers.items()
+                if not isinstance(v, Context)
             }
+
+            # 序列化 payload
+            payload_serialized = to_serializable(message.payload)
 
             message_dict = {
                 'category': message.category,
-                'payload': message.payload,
+                'payload': payload_serialized,
                 'headers': serializable_headers,
+                'sender': message.sender,
+                'session_id': message.session_id,
+                'timestamp': message.timestamp
             }
+
             env['AWORLD_MESSAGE_JSON'] = json.dumps(message_dict, ensure_ascii=False)
         except Exception as e:
             logger.warning(f"Failed to serialize message to JSON: {e}")
-            env['AWORLD_MESSAGE_JSON'] = '{}'
+            # 失败时保留基本信息，而非完全退化
+            env['AWORLD_MESSAGE_JSON'] = json.dumps({
+                'category': message.category,
+                'error': f'Serialization failed: {str(e)}'
+            }, ensure_ascii=False)
 
         # 序列化 Context（关键信息）
         try:

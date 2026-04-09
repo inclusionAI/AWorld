@@ -447,7 +447,8 @@ class LLMModel:
                     context=context,
                     hook_point=HookPoint.BEFORE_LLM_CALL,
                     hook_from='llm_model',
-                    payload=before_llm_call_payload
+                    payload=before_llm_call_payload,
+                    workspace_path=getattr(context, 'workspace_path', None)
                 ):
                     before_hook_events.append(hook_event)
 
@@ -507,7 +508,8 @@ class LLMModel:
                         context=context,
                         hook_point=HookPoint.AFTER_LLM_CALL,
                         hook_from='llm_model',
-                        payload=after_llm_call_payload
+                        payload=after_llm_call_payload,
+                        workspace_path=getattr(context, 'workspace_path', None)
                     ):
                         after_hook_events.append(hook_event)
 
@@ -602,7 +604,8 @@ class LLMModel:
                         context=context,
                         hook_point=HookPoint.BEFORE_LLM_CALL,
                         hook_from='llm_model',
-                        payload=before_llm_call_payload
+                        payload=before_llm_call_payload,
+                        workspace_path=getattr(context, 'workspace_path', None)
                     ):
                         before_hook_events.append(hook_event)
 
@@ -664,7 +667,8 @@ class LLMModel:
                         context=context,
                         hook_point=HookPoint.AFTER_LLM_CALL,
                         hook_from='llm_model',
-                        payload=after_llm_call_payload
+                        payload=after_llm_call_payload,
+                        workspace_path=getattr(context, 'workspace_path', None)
                     ):
                         after_hook_events.append(hook_event)
 
