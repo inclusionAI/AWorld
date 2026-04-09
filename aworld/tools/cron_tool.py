@@ -20,6 +20,8 @@ Actions:
 - list: Show all scheduled tasks
 - remove: Delete a task
 - run: Manually trigger a task
+- enable: Enable a disabled task
+- disable: Disable a task (stops scheduling but keeps the job)
 - status: Show scheduler status
 
 Examples:
@@ -29,11 +31,13 @@ Examples:
 - list: Show all tasks
 - remove: Delete task by ID
 - run: Execute task immediately
+- enable: Enable task by ID
+- disable: Disable task by ID
 """
 )
 async def cron_tool(
-    action: Literal["add", "list", "remove", "run", "status"] = Field(
-        description="Action to perform: add/list/remove/run/status"
+    action: Literal["add", "list", "remove", "run", "enable", "disable", "status"] = Field(
+        description="Action to perform: add/list/remove/run/enable/disable/status"
     ),
 
     # add parameters
@@ -165,6 +169,26 @@ async def cron_tool(
                 "message": f"Job executed" if result.success else f"Job failed: {result.msg}",
                 "result": result.answer if hasattr(result, 'answer') else None,
             }
+
+        elif action == "enable":
+            if not job_id:
+                return {"success": False, "error": "job_id required"}
+
+            updated = await scheduler.update_job(job_id, enabled=True)
+            if updated:
+                return {"success": True, "message": f"Enabled job {job_id}"}
+            else:
+                return {"success": False, "error": f"Job not found: {job_id}"}
+
+        elif action == "disable":
+            if not job_id:
+                return {"success": False, "error": "job_id required"}
+
+            updated = await scheduler.update_job(job_id, enabled=False)
+            if updated:
+                return {"success": True, "message": f"Disabled job {job_id}"}
+            else:
+                return {"success": False, "error": f"Job not found: {job_id}"}
 
         elif action == "status":
             status = await scheduler.get_status()
