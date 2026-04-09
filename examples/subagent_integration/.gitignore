@@ -1,0 +1,26 @@
+# Environment
+.env
+
+# Outputs
+outputs/
+*.md
+!README.md
+!agents/*.md
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db

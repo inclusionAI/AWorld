@@ -306,7 +306,8 @@ def print_buffer_to_console(
     stats = stream_token_stats.get_current_stats()
     aname = (stats or {}).get("agent_name") or "Assistant"
     # Print stats line first (before clear) so it persists in re-output
-    if status_start_time and format_elapsed_fn and stats:
+    # Only show stats when we have content or tool_calls; skip when buffer has ONLY tool results
+    if status_start_time and format_elapsed_fn and stats and (buffer.has_content() or buffer.has_tool_calls()):
         elapsed_str = format_elapsed_fn(
             (datetime.now() - status_start_time).total_seconds()
         )
