@@ -30,7 +30,11 @@ class Runners:
     """Unified entrance to the utility class of the runnable task of execution."""
 
     @staticmethod
-    def streamed_run_task(task: Task, run_conf: RunConfig = None) -> StreamingOutputs:
+    def streamed_run_task(
+            task: Task,
+            run_conf: RunConfig = None,
+            cancel_run_impl_task_on_cleanup: bool = True
+    ) -> StreamingOutputs:
         """Run the task in stream output."""
 
         with trace.task_span("streamed_run_task",
@@ -42,7 +46,8 @@ class Runners:
             streamed_result = StreamingOutputs(
                 input=task.input,
                 usage={},
-                is_complete=False
+                is_complete=False,
+                cancel_run_impl_task_on_cleanup=cancel_run_impl_task_on_cleanup,
             )
             task.outputs = streamed_result
             streamed_result.task_id = task.id
