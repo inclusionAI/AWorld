@@ -80,6 +80,20 @@ class CronCommand(Command):
                 return "请提供要执行的任务 ID。先使用 /cron list 查看所有任务。"
             return f"使用 cron tool 立即执行任务 {job_id}。执行前显示任务详情，执行后报告结果。"
 
+        elif action == "enable":
+            # /cron enable <job_id>
+            job_id = rest.strip()
+            if not job_id:
+                return "请提供要启用的任务 ID。先使用 /cron list 查看所有任务。"
+            return f"使用 cron tool 启用任务 {job_id}。启用前显示任务详情，启用后确认状态。"
+
+        elif action == "disable":
+            # /cron disable <job_id>
+            job_id = rest.strip()
+            if not job_id:
+                return "请提供要禁用的任务 ID。先使用 /cron list 查看所有任务。"
+            return f"使用 cron tool 禁用任务 {job_id}。禁用前显示任务详情，禁用后确认状态。"
+
         elif action == "status":
             return """使用 cron tool 查看调度器状态，包括：
 - 调度器是否运行中
@@ -95,6 +109,8 @@ class CronCommand(Command):
 - /cron list               列出所有任务
 - /cron remove <job_id>    删除任务
 - /cron run <job_id>       立即执行任务
+- /cron enable <job_id>    启用任务
+- /cron disable <job_id>   禁用任务
 - /cron status             查看调度器状态"""
 
     def get_help(self) -> str:
@@ -107,6 +123,8 @@ class CronCommand(Command):
   /cron list                     列出所有任务
   /cron remove <job_id>          删除任务
   /cron run <job_id>             立即执行任务
+  /cron enable <job_id>          启用任务
+  /cron disable <job_id>         禁用任务
   /cron status                   查看调度器状态
 
 示例：
@@ -114,9 +132,12 @@ class CronCommand(Command):
   /cron add 30分钟后提醒我提交代码
   /cron remove job-abc123
   /cron run job-abc123
+  /cron disable job-abc123
+  /cron enable job-abc123
 
 注意：
 - 任务只在 CLI 运行期间触发
 - CLI 关闭后，任务不会执行
 - 下次启动时，会重新计算未来的运行时间
+- 禁用的任务不会被调度，但保留配置
 """
