@@ -81,8 +81,15 @@ async def run_hooks(
     from aworld.runners.hook.hook_factory import HookFactory
     from aworld.core.event.base import Message
 
+    # Resolve logical workspace from explicit arg first, then context, then cwd.
+    resolved_workspace_path = (
+        workspace_path
+        or getattr(context, 'workspace_path', None)
+        or os.getcwd()
+    )
+
     # Get all hooks for the specified hook point, pass workspace_path
-    all_hooks = HookFactory.hooks(hook_point, workspace_path=workspace_path)
+    all_hooks = HookFactory.hooks(hook_point, workspace_path=resolved_workspace_path)
     hooks = all_hooks.get(hook_point, [])
 
     for hook in hooks:

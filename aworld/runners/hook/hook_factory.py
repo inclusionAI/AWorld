@@ -242,15 +242,20 @@ class HookManager(Factory):
             cached_entry = HookManager._config_hooks_cache[current_config_path]
             config_hooks = cached_entry['hooks']
 
-        # 策略 2: Fallback 已移除 - 保持严格的工作区隔离
-        # 原因：单配置 fallback 会在工作区切换时产生配置交叉污染
-        # 测试场景应使用显式的配置路径，不依赖隐式 fallback
-
-        # 策略 2: 配置未命中 - 严格保持工作区隔离
+        # 策略 2: 当缓存中只有一个配置时，允许窄回退
+        # 适用场景：
+        # - 显式 load_config_hooks(path) 后再调用 hooks()
+        # - 运行时 context.workspace_path 尚未设置，但只有一个活动配置
+        # 这样既恢复单配置场景，又避免多工作区缓存污染。
         else:
-            # 无论缓存中有多少配置，只要当前工作区配置未命中，就不使用其他配置
-            # 这确保了工作区 A 的配置永远不会泄露到工作区 B
-            if len(HookManager._config_hooks_cache) > 0:
+            if len(HookManager._config_hooks_cache) == 1:
+                fallback_path, cached_entry = next(iter(HookManager._config_hooks_cache.items()))
+                logger.debug(
+                    f"Config path {current_config_path} not found in cache. "
+                    f"Using the only cached hooks from {fallback_path}."
+                )
+                config_hooks = cached_entry['hooks']
+            elif len(HookManager._config_hooks_cache) > 0:
                 logger.debug(
                     f"Config path {current_config_path} not found in cache "
                     f"(cached paths: {list(HookManager._config_hooks_cache.keys())}). "

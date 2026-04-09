@@ -761,6 +761,14 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                   **kwargs):
         from aworld.runners.state_manager import RunNodeStatus
 
+        context = message.context
+        if not getattr(context, 'event_manager', None):
+            logger.debug(
+                f"Skip tool callback wait for message {message.id}: "
+                f"no active event_manager in context."
+            )
+            return
+
         logger.info(f"send callback message: {message}")
         # Send via message system by default
         results = None
@@ -850,11 +858,13 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
 
     async def run_hooks(self, message: Message, hook_point: str, hook_from: str, payload: Any = None) -> List[Message]:
         """Execute hooks and break by exception"""
+        workspace_path = getattr(message.context, 'workspace_path', None)
         hook_events = []
         async for event in run_hooks(context=message.context,
                                      hook_from=hook_from,
                                      payload=payload,
-                                     hook_point=hook_point):
+                                     hook_point=hook_point,
+                                     workspace_path=workspace_path):
             hook_events.append(event)
         return hook_events
 
