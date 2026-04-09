@@ -7,7 +7,7 @@ import os
 import threading
 import traceback
 from datetime import timedelta
-from contextlib import AbstractAsyncContextManager, AsyncExitStack
+from contextlib import AbstractAsyncContextManager, AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -302,15 +302,25 @@ class MCPServerStdio(_MCPServerWithClientSession):
             "yes",
         )
 
-        if preserve_mcp_logs:
-            log_path = os.environ.get("AWORLD_LOG_PATH", f"{os.getcwd()}/logs")
-            os.makedirs(log_path, exist_ok=True)
-            mcp_stderr_log = os.path.join(log_path, "mcp_stderr.log")
-            errlog = open(mcp_stderr_log, "a", encoding="utf-8", buffering=1)
-        else:
-            errlog = open(os.devnull, "w")
+        @asynccontextmanager
+        async def _managed_stdio_client():
+            async with AsyncExitStack() as stack:
+                if preserve_mcp_logs:
+                    log_path = os.environ.get("AWORLD_LOG_PATH", f"{os.getcwd()}/logs")
+                    os.makedirs(log_path, exist_ok=True)
+                    mcp_stderr_log = os.path.join(log_path, "mcp_stderr.log")
+                    errlog = stack.enter_context(
+                        open(mcp_stderr_log, "a", encoding="utf-8", buffering=1)
+                    )
+                else:
+                    errlog = stack.enter_context(open(os.devnull, "w"))
 
-        return stdio_client(self.params, errlog=errlog)
+                transport = await stack.enter_async_context(
+                    stdio_client(self.params, errlog=errlog)
+                )
+                yield transport
+
+        return _managed_stdio_client()
 
     @property
     def name(self) -> str:
