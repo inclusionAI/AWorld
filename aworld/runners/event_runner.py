@@ -222,7 +222,8 @@ class TaskEventRunner(TaskRunner):
                 context=self.context if hasattr(self, 'context') else None,
                 hook_point=HookPoint.TASK_CREATED,
                 hook_from='task_runner',
-                payload=task_created_payload
+                payload=task_created_payload,
+                workspace_path=getattr(self.context, 'workspace_path', None) if hasattr(self, 'context') else None
             ):
                 pass
         except Exception as e:
@@ -316,7 +317,8 @@ class TaskEventRunner(TaskRunner):
                     hook_point=HookPoint.SESSION_STARTED,
                     hook_from='task_runner',
                     payload=session_started_msg.payload,
-                    message=session_started_msg
+                    message=session_started_msg,
+                    workspace_path=getattr(self.context, 'workspace_path', None)
                 ):
                     pass
             except Exception as e:
@@ -708,4 +710,3 @@ class TaskEventRunner(TaskRunner):
         except Exception as e:
             logger.error(f"Error reading from streaming queue: {e}")
             raise
-
