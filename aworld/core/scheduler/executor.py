@@ -36,18 +36,15 @@ class CronExecutor:
             Task response
         """
         from aworld.runner import Runners
-        from aworld.core.agent.swarm import Swarm
 
         try:
-            # Resolve agent
-            agent = self._resolve_agent(job.payload.agent_name)
-            if not agent:
+            # Resolve swarm (not agent - preserve TeamSwarm configuration)
+            swarm = await self._resolve_swarm(job.payload.agent_name)
+            if not swarm:
                 return TaskResponse(
                     success=False,
                     msg=f"Agent not found: {job.payload.agent_name}"
                 )
-
-            swarm = Swarm(agent)
 
             # Execute using Runners.run()
             logger.info(f"Executing cron job: {job.id} ({job.name})")
@@ -118,15 +115,18 @@ class CronExecutor:
         # Should not reach here
         return TaskResponse(success=False, msg="Unexpected retry loop exit")
 
-    def _resolve_agent(self, agent_name: str):
+    async def _resolve_swarm(self, agent_name: str):
         """
-        Resolve agent from LocalAgentRegistry (with cache).
+        Resolve swarm from LocalAgentRegistry (with cache).
+
+        This method preserves the full swarm topology (e.g., TeamSwarm with sub-agents)
+        rather than extracting a single agent.
 
         Args:
             agent_name: Agent name
 
         Returns:
-            Agent instance or None
+            Swarm instance or None
         """
         if agent_name not in self._agent_cache:
             try:
@@ -141,24 +141,15 @@ class CronExecutor:
                     logger.error(f"Agent not found in registry: {agent_name}")
                     return None
 
-                # Get swarm from LocalAgent
-                swarm = local_agent.get_swarm()
+                # Get swarm from LocalAgent (async call)
+                swarm = await local_agent.get_swarm()
                 if not swarm:
                     logger.error(f"Failed to get swarm from agent: {agent_name}")
                     return None
 
-                # Extract agent from swarm
-                if hasattr(swarm, 'root') and swarm.root:
-                    self._agent_cache[agent_name] = swarm.root
-                elif hasattr(swarm, 'agents') and swarm.agents:
-                    # Fallback: get first agent
-                    agents = list(swarm.agents.values())
-                    self._agent_cache[agent_name] = agents[0] if agents else None
-                else:
-                    logger.error(f"Cannot extract agent from swarm: {agent_name}")
-                    return None
-
-                logger.debug(f"Cached agent from LocalAgentRegistry: {agent_name}")
+                # Cache the entire swarm (preserves TeamSwarm/sub-agents)
+                self._agent_cache[agent_name] = swarm
+                logger.debug(f"Cached swarm from LocalAgentRegistry: {agent_name}")
 
             except ImportError:
                 logger.error(
@@ -167,7 +158,7 @@ class CronExecutor:
                 )
                 return None
             except Exception as e:
-                logger.error(f"Failed to resolve agent {agent_name}: {e}", exc_info=True)
+                logger.error(f"Failed to resolve swarm for {agent_name}: {e}", exc_info=True)
                 return None
 
         return self._agent_cache.get(agent_name)
