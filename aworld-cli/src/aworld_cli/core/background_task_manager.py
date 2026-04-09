@@ -2,16 +2,19 @@
 Background task manager for aworld-cli.
 
 Manages session-level background tasks using asyncio and StreamingOutputs.
-All tasks are in-memory and cleared on CLI exit.
-Task outputs are persisted to files in .aworld/tasks/ directory.
+Task outputs and task metadata are persisted to .aworld/tasks/ directory.
 """
 import asyncio
+import json
+import os
+import traceback
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 from rich.console import Console
 
-from aworld.core.task import Task
+from aworld.core.common import TaskStatusValue
+from aworld.core.task import Task, TaskResponse
 from aworld.runner import Runners
 from aworld.logs.util import logger
 from aworld_cli.models.task_metadata import TaskMetadata
@@ -51,7 +54,9 @@ class BackgroundTaskManager:
         # Setup output directory for task logs
         self.output_dir = Path(output_dir or ".aworld/tasks")
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.metadata_file = self.output_dir / "tasks.json"
         logger.info(f"[BackgroundTaskManager] Output directory: {self.output_dir}")
+        self._load_persisted_tasks()
 
     def _get_task_output_path(self, task_id: str) -> Path:
         """
@@ -64,6 +69,183 @@ class BackgroundTaskManager:
             Path to output log file
         """
         return self.output_dir / f"{task_id}.log"
+
+    def _persist_tasks(self) -> None:
+        """
+        Persist task metadata to disk.
+        """
+        payload = {
+            "version": 1,
+            "session_id": self.session_id,
+            "task_counter": self._task_counter,
+            "updated_at": datetime.now().isoformat(),
+            "tasks": [task.to_dict() for task in self.list_tasks()],
+        }
+
+        temp_path = self.metadata_file.with_suffix(".json.tmp")
+        with open(temp_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        os.replace(temp_path, self.metadata_file)
+
+    def _load_persisted_tasks(self) -> None:
+        """
+        Load persisted task metadata from disk.
+        """
+        if not self.metadata_file.exists():
+            return
+
+        try:
+            with open(self.metadata_file, "r", encoding="utf-8") as f:
+                payload = json.load(f)
+
+            loaded_tasks = {}
+            max_task_index = -1
+            for raw_task in payload.get("tasks", []):
+                task = TaskMetadata.from_dict(raw_task)
+
+                # Background tasks are process-local. If the previous process exited while
+                # a task was pending/running, it cannot still be active after restart.
+                if task.status in {"pending", "running"}:
+                    task.status = "interrupted"
+                    task.error = task.error or "Task interrupted because aworld-cli exited or restarted"
+                    task.completed_at = task.completed_at or datetime.now()
+                    if task.output_file:
+                        self._append_restart_note(task)
+
+                self._load_output_buffer_from_log(task)
+                loaded_tasks[task.task_id] = task
+                max_task_index = max(max_task_index, TaskMetadata.parse_task_index(task.task_id))
+
+            self.tasks = loaded_tasks
+            persisted_counter = int(payload.get("task_counter", -1) or -1)
+            self._task_counter = max(persisted_counter, max_task_index + 1, 0)
+
+            # Save back immediately if we normalized stale statuses.
+            self._persist_tasks()
+            logger.info(f"[BackgroundTaskManager] Loaded {len(self.tasks)} persisted tasks")
+        except Exception as e:
+            logger.warning(
+                f"[BackgroundTaskManager] Failed to load persisted tasks: {e}\n{traceback.format_exc()}"
+            )
+
+    def _append_restart_note(self, task: TaskMetadata) -> None:
+        """
+        Append a note to the task log when a stale running task is recovered after restart.
+        """
+        try:
+            output_path = Path(task.output_file)
+            if not output_path.exists():
+                return
+
+            note = (
+                f"\n{'=' * 80}\n"
+                f"Status: interrupted\n"
+                f"Interrupted at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"Error: Task interrupted because aworld-cli exited or restarted\n"
+            )
+
+            with open(output_path, "rb") as f:
+                existing = f.read()
+                if b"Task interrupted because aworld-cli exited or restarted" in existing:
+                    return
+
+            with open(output_path, "a", encoding="utf-8") as f:
+                f.write(note)
+        except Exception as e:
+            logger.warning(f"[BackgroundTaskManager] Failed to append restart note: {e}")
+
+    def _load_output_buffer_from_log(self, task: TaskMetadata) -> None:
+        """
+        Rebuild in-memory output buffer from the persisted task log file.
+        """
+        if task.output_buffer:
+            return
+        if not task.output_file:
+            return
+
+        output_path = Path(task.output_file)
+        if not output_path.exists():
+            return
+
+        try:
+            lines = output_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            relevant_lines = lines[-1000:]
+            base_date = (task.submitted_at or datetime.now()).date()
+            for line in relevant_lines:
+                if len(line) >= 11 and line[0] == "[" and line[9] == "]":
+                    time_part = line[1:9]
+                    try:
+                        timestamp = datetime.combine(base_date, datetime.strptime(time_part, "%H:%M:%S").time())
+                        content = line[11:] if len(line) > 11 else ""
+                        task.output_buffer.append((timestamp, content))
+                    except Exception:
+                        continue
+        except Exception as e:
+            logger.warning(f"[BackgroundTaskManager] Failed to load output buffer from log: {e}")
+
+    def _normalize_final_status(self, task_response) -> str:
+        """
+        Normalize AWorld TaskResponse status to CLI background task status.
+
+        Returns one of:
+        pending/running/completed/failed/cancelled/interrupted/timeout
+        """
+        if task_response is None:
+            return "failed"
+
+        status = getattr(task_response, "status", None)
+        success = getattr(task_response, "success", None)
+
+        if status == TaskStatusValue.CANCELLED:
+            return "cancelled"
+        if status == TaskStatusValue.INTERRUPTED:
+            return "interrupted"
+        if status == TaskStatusValue.TIMEOUT:
+            return "timeout"
+        if status == TaskStatusValue.FAILED:
+            return "failed"
+        if status == TaskStatusValue.RUNNING:
+            return "running"
+        if status in (TaskStatusValue.SUCCESS, "finished", "completed") and success is True:
+            return "completed"
+        if success is False:
+            return "failed"
+
+        return "failed"
+
+    async def _get_definitive_task_response(
+        self,
+        aworld_task_id: str,
+        streaming_outputs,
+    ) -> Optional[TaskResponse]:
+        """
+        Resolve the final AWorld TaskResponse from the underlying run task.
+
+        `StreamingOutputs.stream_events()` only reflects stream lifecycle. A stream can
+        end slightly before the producer coroutine fully returns, so `/dispatch` should
+        treat the underlying run result as source of truth for terminal state.
+        """
+        run_impl_task = getattr(streaming_outputs, "_run_impl_task", None)
+
+        if run_impl_task is not None:
+            run_result = await run_impl_task
+            if isinstance(run_result, dict):
+                task_response = run_result.get(aworld_task_id)
+                if task_response is not None:
+                    return task_response
+
+        task_response = streaming_outputs.response()
+        if task_response is not None:
+            return task_response
+
+        # Give mark_completed a brief chance to publish its final TaskResponse.
+        for _ in range(10):
+            await asyncio.sleep(0.05)
+            task_response = streaming_outputs.response()
+            if task_response is not None:
+                return task_response
+
+        return None
 
     async def submit_task(
         self,
@@ -107,6 +289,7 @@ class BackgroundTaskManager:
                 submitted_at=datetime.now()
             )
             self.tasks[task_id] = metadata
+            self._persist_tasks()
 
             # Submit to background
             asyncio_task = asyncio.create_task(
@@ -152,6 +335,7 @@ class BackgroundTaskManager:
         metadata = self.tasks[task_id]
         metadata.status = "running"
         metadata.started_at = datetime.now()
+        self._persist_tasks()
 
         # Setup output file
         output_path = self._get_task_output_path(task_id)
@@ -210,32 +394,51 @@ class BackgroundTaskManager:
                             if hasattr(output, 'name'):
                                 metadata.current_step = f"Step: {output.name}"
 
-                # Wait for completion and extract result
-                task_response = streaming_outputs.response()
-                if task_response and hasattr(task_response, 'answer'):
-                    metadata.result = task_response.answer
-                else:
-                    # Fallback: Try to get message output content
-                    try:
-                        metadata.result = streaming_outputs.get_message_output_content()
-                    except Exception:
-                        metadata.result = "Task completed (no result available)"
+                # Wait for the real underlying task completion and extract final status/result.
+                # Stream completion alone is not authoritative enough.
+                task_response = await self._get_definitive_task_response(task.id, streaming_outputs)
+                metadata.status = self._normalize_final_status(task_response)
 
-                metadata.status = "completed"
-                metadata.progress_percentage = 100.0
+                result_text = None
+                if task_response and hasattr(task_response, 'answer'):
+                    result_text = task_response.answer
+                if not result_text:
+                    try:
+                        result_text = streaming_outputs.get_message_output_content()
+                    except Exception:
+                        result_text = None
+
+                if metadata.status == "completed":
+                    metadata.result = result_text or "Task completed (no result available)"
+                    metadata.progress_percentage = 100.0
+                elif metadata.status in {"failed", "cancelled", "interrupted", "timeout"}:
+                    metadata.error = (
+                        getattr(task_response, "msg", None)
+                        or getattr(task_response, "answer", None)
+                        or result_text
+                        or f"Task ended with status: {metadata.status}"
+                    )
+                    metadata.result = result_text
+                    metadata.progress_percentage = 100.0
+                else:
+                    metadata.result = result_text
 
                 # Write footer to log file
                 log_file.write(f"\n{'=' * 80}\n")
                 log_file.write(f"Status: {metadata.status}\n")
                 log_file.write(f"Completed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+                if metadata.error and metadata.status != "completed":
+                    log_file.write(f"\nError:\n{metadata.error}\n")
                 if metadata.result:
                     log_file.write(f"\nResult:\n{metadata.result}\n")
                 log_file.flush()
 
-                logger.info(f"[BackgroundTaskManager] Task {task_id} completed successfully")
+                logger.info(f"[BackgroundTaskManager] Task {task_id} finished with status={metadata.status}")
+                self._persist_tasks()
 
         except asyncio.CancelledError:
             metadata.status = "cancelled"
+            metadata.error = "Task cancelled by user"
             logger.info(f"[BackgroundTaskManager] Task {task_id} was cancelled")
 
             # Write cancellation to log file
@@ -246,6 +449,7 @@ class BackgroundTaskManager:
                     log_file.write(f"Cancelled at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             except Exception as e:
                 logger.error(f"[BackgroundTaskManager] Failed to write cancellation to log: {e}")
+            self._persist_tasks()
 
             raise  # Re-raise to properly cancel the task
 
@@ -263,9 +467,14 @@ class BackgroundTaskManager:
                     log_file.write(f"Failed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
             except Exception as write_error:
                 logger.error(f"[BackgroundTaskManager] Failed to write error to log: {write_error}")
+            self._persist_tasks()
 
         finally:
             metadata.completed_at = datetime.now()
+            try:
+                self._persist_tasks()
+            except Exception as e:
+                logger.warning(f"[BackgroundTaskManager] Failed to persist tasks in finally: {e}")
 
     def list_tasks(self) -> List[TaskMetadata]:
         """
@@ -329,6 +538,7 @@ class BackgroundTaskManager:
             if metadata.asyncio_task and not metadata.asyncio_task.done():
                 metadata.asyncio_task.cancel()
                 logger.info(f"[BackgroundTaskManager] Cancelled task {task_id}")
+                self._persist_tasks()
                 return True
 
             return False
@@ -350,6 +560,8 @@ class BackgroundTaskManager:
             "completed": 0,
             "failed": 0,
             "cancelled": 0,
+            "interrupted": 0,
+            "timeout": 0,
             "pending": 0
         }
 

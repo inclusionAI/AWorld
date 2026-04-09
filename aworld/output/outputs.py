@@ -211,13 +211,19 @@ class StreamingOutputs(AsyncOutputs):
                 self._stored_exception = exc
 
     def _cleanup_tasks(self):
-        """Clean up any running tasks by cancelling them if they're not done."""
-        if self._run_impl_task and not self._run_impl_task.done():
-            self._run_impl_task.cancel()
+        """Clean up stream-side state without aborting the underlying task.
+
+        The output stream is only a consumer view. Finishing or stopping the stream
+        should not implicitly cancel the actual task execution, otherwise callers can
+        observe a completed stream while the producer coroutine is still finalizing,
+        or accidentally turn a successful task into a cancelled one.
+        """
+        return
 
     async def mark_completed(self, task_response: "TaskResponse" = None) -> None:
         """Mark the streaming process as completed by adding a RUN_FINISHED_SIGNAL to the queue."""
         self._task_response = task_response
+        self.is_complete = True
         await self._output_queue.put(RUN_FINISHED_SIGNAL)
 
     def response(self) -> Optional["TaskResponse"]:
