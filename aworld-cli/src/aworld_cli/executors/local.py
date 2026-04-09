@@ -342,9 +342,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
             _context.get_config().debug_mode=True
             await _context.init_swarm_state(_swarm)
             return _context
-        
+
         context = await build_context(task_input, self.swarm, workspace)
-        
+
+        # Set workspace_path for hook system (CLI working directory)
+        context.workspace_path = os.getcwd()
+
         # 🔥 Hook: POST_BUILD_CONTEXT
         hook_kwargs = {
             'context': context,

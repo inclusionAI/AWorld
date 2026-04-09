@@ -363,7 +363,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                 context=message.context,
                 hook_point=HookPoint.AGENT_STARTED,
                 hook_from=self.id(),
-                payload=agent_started_payload
+                payload=agent_started_payload,
+                workspace_path=getattr(message.context, 'workspace_path', None)
             ):
                 pass
         except Exception as e:
@@ -410,7 +411,8 @@ class BaseAgent(Generic[INPUT, OUTPUT]):
                     context=message.context,
                     hook_point=HookPoint.AGENT_STOPPED,
                     hook_from=self.id(),
-                    payload=agent_stopped_payload
+                    payload=agent_stopped_payload,
+                    workspace_path=getattr(message.context, 'workspace_path', None)
                 ):
                     pass
             except Exception as e:

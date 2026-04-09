@@ -8,6 +8,7 @@ import traceback
 from typing import Callable, Any
 
 from aworld.core.context.base import Context
+from aworld.core.event.base import Message
 from aworld.logs.util import logger
 from aworld.runners.hook.template import HOOK_TEMPLATE
 from aworld.utils.common import snake_to_camel
@@ -57,29 +58,54 @@ def hook(hook_point: str, name: str = None):
 
     return decorator
 
-async def run_hooks(context: Context, hook_point: str, hook_from: str, payload: Any = None, **kwargs):
-    """Execute hooks and break by exception"""
+async def run_hooks(
+    context: Context,
+    hook_point: str,
+    hook_from: str,
+    payload: Any = None,
+    message: Message = None,
+    workspace_path: str = None,
+    **kwargs
+):
+    """Execute hooks at specified hook point.
+
+    Args:
+        context: Execution context
+        hook_point: Hook point identifier
+        hook_from: Caller identifier
+        payload: Hook payload (deprecated, prefer message)
+        message: Pre-constructed Message object (priority over payload)
+        workspace_path: CLI working directory (passed to HookFactory)
+        **kwargs: Additional headers for Message
+    """
     from aworld.runners.hook.hook_factory import HookFactory
     from aworld.core.event.base import Message
 
-    # Get all hooks for the specified hook point
-    all_hooks = HookFactory.hooks(hook_point)
+    # Get all hooks for the specified hook point, pass workspace_path
+    all_hooks = HookFactory.hooks(hook_point, workspace_path=workspace_path)
     hooks = all_hooks.get(hook_point, [])
 
     for hook in hooks:
         try:
-            # Create a temporary Message object to pass to the hook
-            message = Message(
-                category="agent_hook",
-                payload=payload,
-                sender=hook_from,
-                session_id=context.session_id if hasattr(
-                    context, 'session_id') else None,
-                headers={"context": context, **kwargs}
-            )
+            # Prioritize using passed-in message
+            if message is not None:
+                # Update context to latest (avoid stale context)
+                if 'context' not in message.headers:
+                    message.headers['context'] = context
+                hook_message = message
+            else:
+                # Backward compatibility: construct from payload if message not provided
+                hook_message = Message(
+                    category="agent_hook",
+                    payload=payload,
+                    sender=hook_from,
+                    session_id=context.session_id if hasattr(
+                        context, 'session_id') else None,
+                    headers={"context": context, **kwargs}
+                )
 
             # Execute hook
-            msg = await hook.exec(message, context)
+            msg = await hook.exec(hook_message, context)
             if msg:
                 logger.debug(f"Hook {hook.point()} executed successfully")
                 yield msg

@@ -455,34 +455,41 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
     def run_hooks(self, message: Message, hook_point: str, hook_from: str, payload: Any = None) -> List[Message]:
         """Execute hooks and break by exception"""
-        from aworld.runners.hook.hook_factory import HookFactory
-        from aworld.core.event.base import Message
+        import asyncio
+        from aworld.runners.hook.utils import run_hooks as async_run_hooks
 
-        # Get all hooks for the specified hook point
-        all_hooks = HookFactory.hooks(hook_point)
-        hooks = all_hooks.get(hook_point, [])
-        context = message.context
+        # If payload provided, update message instead of creating new one
+        if payload is not None:
+            message.payload = payload
+
+        # Get workspace_path from context
+        workspace_path = getattr(message.context, 'workspace_path', None)
+
+        # Use async run_hooks, passing original message
         hook_events = []
-        for hook in hooks:
-            try:
-                # Create a temporary Message object to pass to the hook
-                message = Message(
-                    category="agent_hook",
-                    payload=payload,
-                    sender=hook_from,
-                    session_id=context.session_id if hasattr(
-                        context, 'session_id') else None,
-                    headers={"context": context}
-                )
 
-                # Execute hook
-                msg = sync_exec(hook.exec, message, context)
-                if msg:
-                    logger.debug(f"Hook {hook.point()} executed successfully")
-                    hook_events.append(msg)
-            except Exception as e:
-                logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
-                raise e
+        async def _run():
+            async for event in async_run_hooks(
+                context=message.context,
+                hook_point=hook_point,
+                hook_from=hook_from,
+                message=message,
+                workspace_path=workspace_path
+            ):
+                hook_events.append(event)
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # In async context, use sync_exec
+                from aworld.utils.sync_utils import sync_exec
+                sync_exec(_run)
+            else:
+                loop.run_until_complete(_run())
+        except Exception as e:
+            logger.warning(f"Hook {hook_point} execution failed: {traceback.format_exc()}")
+            raise e
+
         return hook_events
 
 
