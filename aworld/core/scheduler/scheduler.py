@@ -127,9 +127,17 @@ class CronScheduler:
                 next_job, wait_seconds = self._find_next_job(jobs)
 
                 if next_job and wait_seconds <= 0:
-                    # Job is due - trigger execution (non-blocking)
-                    asyncio.create_task(self._trigger_job(next_job))
-                    await asyncio.sleep(1)  # Prevent tight loop
+                    # Job is due - try to claim it atomically
+                    now_iso = datetime.now(pytz.UTC).isoformat()
+                    claimed_job = await self.store.claim_due_job(next_job.id, now_iso)
+
+                    if claimed_job:
+                        # Successfully claimed - trigger execution (non-blocking)
+                        asyncio.create_task(self._execute_claimed_job(claimed_job))
+                    else:
+                        logger.debug(f"Failed to claim job {next_job.id} (may be claimed by another tick)")
+
+                    await asyncio.sleep(0.1)  # Brief pause before next check
                 else:
                     # Wait until next job or check interval
                     sleep_time = min(wait_seconds, 60) if next_job else 60
@@ -237,25 +245,19 @@ class CronScheduler:
 
         return None
 
-    async def _trigger_job(self, job: CronJob):
+    async def _execute_claimed_job(self, job: CronJob):
         """
-        Trigger job execution with concurrency control and timeout.
+        Execute a job that has already been claimed.
+
+        This method assumes the job has been atomically claimed via store.claim_due_job(),
+        so it skips the claim logic and proceeds directly to execution.
 
         Args:
-            job: Job to execute
+            job: Already claimed job (running=True, last_run_at set)
         """
         async with self.semaphore:  # Concurrency control
             try:
-                logger.info(f"Triggering cron job: {job.id} ({job.name})")
-
-                # Mark as running
-                await self.store.update_job(
-                    job.id,
-                    state={
-                        "running": True,
-                        "last_run_at": datetime.utcnow().isoformat()
-                    }
-                )
+                logger.info(f"Executing claimed cron job: {job.id} ({job.name})")
 
                 # Execute with timeout
                 timeout = job.payload.timeout_seconds or 600

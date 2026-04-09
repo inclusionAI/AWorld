@@ -254,3 +254,56 @@ class FileBasedCronStore:
             jobs = [j for j in jobs if j.enabled]
 
         return jobs
+
+    async def claim_due_job(self, job_id: str, now_iso: str) -> Optional[CronJob]:
+        """
+        Atomically claim a due job for execution.
+
+        This is the critical operation that prevents duplicate execution:
+        - Check if job is enabled, not running, and due
+        - If so, atomically mark as running and update last_run_at
+        - All checks and updates happen in a single read-modify-write cycle
+
+        Args:
+            job_id: Job ID to claim
+            now_iso: Current time in ISO format (for comparison and timestamp)
+
+        Returns:
+            Claimed job if successful, None if job cannot be claimed
+        """
+        data = self._read_data()
+
+        for job_dict in data["jobs"]:
+            if job_dict["id"] == job_id:
+                # Check if job can be claimed
+                if not job_dict.get("enabled", True):
+                    logger.debug(f"Cannot claim job {job_id}: disabled")
+                    return None
+
+                if job_dict["state"].get("running", False):
+                    logger.debug(f"Cannot claim job {job_id}: already running")
+                    return None
+
+                next_run_at = job_dict["state"].get("next_run_at")
+                if not next_run_at:
+                    logger.debug(f"Cannot claim job {job_id}: no next_run_at")
+                    return None
+
+                # Compare timestamps (both should be ISO format)
+                if next_run_at > now_iso:
+                    logger.debug(f"Cannot claim job {job_id}: not due yet ({next_run_at} > {now_iso})")
+                    return None
+
+                # Atomically claim the job
+                job_dict["state"]["running"] = True
+                job_dict["state"]["last_run_at"] = now_iso
+                job_dict["updated_at"] = datetime.utcnow().isoformat()
+
+                # Write atomically
+                self._write_data(data)
+
+                logger.info(f"Claimed job {job_id} for execution")
+                return self._dict_to_job(job_dict)
+
+        logger.warning(f"Job not found for claim: {job_id}")
+        return None
