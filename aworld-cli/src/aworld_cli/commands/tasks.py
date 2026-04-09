@@ -123,7 +123,9 @@ class TasksCommand(Command):
                 "running": ("▶", "blue"),
                 "completed": ("✓", "green"),
                 "failed": ("✗", "red"),
-                "cancelled": ("◼", "dim")
+                "cancelled": ("◼", "dim"),
+                "interrupted": ("⏸", "yellow"),
+                "timeout": ("⏱", "magenta"),
             }
             icon, color = status_icons.get(task.status, ("?", "white"))
             status_display = f"[{color}]{icon} {task.status}[/{color}]"
@@ -174,6 +176,10 @@ class TasksCommand(Command):
             summary_parts.append(f"[green]✓ {stats['completed']} completed[/green]")
         if stats['failed'] > 0:
             summary_parts.append(f"[red]✗ {stats['failed']} failed[/red]")
+        if stats['timeout'] > 0:
+            summary_parts.append(f"[magenta]⏱ {stats['timeout']} timeout[/magenta]")
+        if stats['interrupted'] > 0:
+            summary_parts.append(f"[yellow]⏸ {stats['interrupted']} interrupted[/yellow]")
         if stats['pending'] > 0:
             summary_parts.append(f"[yellow]⏳ {stats['pending']} pending[/yellow]")
         if stats['cancelled'] > 0:
@@ -183,7 +189,7 @@ class TasksCommand(Command):
 
         # Render table to string
         buffer = StringIO()
-        temp_console = RichConsole(file=buffer, force_terminal=True, width=120)
+        temp_console = RichConsole(file=buffer, force_terminal=False, color_system=None, width=120)
         temp_console.print(table)
         temp_console.print(summary)
 
@@ -220,7 +226,9 @@ class TasksCommand(Command):
             "running": "🔄",
             "completed": "✅",
             "failed": "❌",
-            "cancelled": "🚫"
+            "cancelled": "🚫",
+            "interrupted": "⏸️",
+            "timeout": "⏱️",
         }.get(task.status, "❓")
 
         # Build status display
@@ -259,12 +267,12 @@ class TasksCommand(Command):
             lines.append(f"\n[bold green]Result:[/bold green]\n{result_preview}")
 
         # Add error if failed
-        if task.status == "failed" and task.error:
+        if task.status in {"failed", "cancelled", "interrupted", "timeout"} and task.error:
             lines.append(f"\n[bold red]Error:[/bold red]\n{task.error}")
 
         # Render panel to string
         buffer = StringIO()
-        temp_console = RichConsole(file=buffer, force_terminal=True, width=120)
+        temp_console = RichConsole(file=buffer, force_terminal=False, color_system=None, width=120)
         panel = Panel(
             "\n".join(lines),
             title=f"📊 Task Status: {task_id}",
