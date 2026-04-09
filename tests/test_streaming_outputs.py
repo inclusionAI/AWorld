@@ -10,7 +10,7 @@ class DummyOutput:
         return "dummy"
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_streaming_outputs_cancels_producer_when_consumer_stops_early():
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -37,7 +37,7 @@ async def test_streaming_outputs_cancels_producer_when_consumer_stops_early():
         await outputs._run_impl_task
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_streaming_outputs_preserves_producer_when_cleanup_cancellation_disabled():
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -68,7 +68,7 @@ async def test_streaming_outputs_preserves_producer_when_cleanup_cancellation_di
         await outputs._run_impl_task
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 async def test_streaming_outputs_does_not_cancel_finishing_producer_after_mark_completed():
     async def producer():
         await asyncio.sleep(0.1)

@@ -38,7 +38,7 @@ class TestBackgroundTaskManager:
         assert manager._normalize_final_status(SimpleNamespace(status=TaskStatusValue.RUNNING, success=True)) == "running"
         assert manager._normalize_final_status(SimpleNamespace(status="unknown", success=False)) == "failed"
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_definitive_task_response_prefers_run_result(self):
         manager = BackgroundTaskManager(session_id="test-session")
         expected = SimpleNamespace(status=TaskStatusValue.SUCCESS, success=True, answer="ok")
@@ -56,9 +56,35 @@ class TestBackgroundTaskManager:
         actual = await manager._get_definitive_task_response("aw-task-1", DummyStreamingOutputs())
         assert actual is expected
 
+    @pytest.mark.anyio
+    async def test_persist_tasks_uses_background_thread(self, monkeypatch, tmp_path):
+        manager = BackgroundTaskManager(session_id="test-session", output_dir=str(tmp_path))
+        manager.tasks["task-001"] = TaskMetadata(
+            task_id="task-001",
+            agent_name="Aworld",
+            task_content="persist me",
+            status="pending",
+            submitted_at=datetime.now(),
+        )
+
+        captured = {}
+
+        async def fake_to_thread(func, *args, **kwargs):
+            captured["func"] = func
+            captured["args"] = args
+            captured["kwargs"] = kwargs
+            return func(*args, **kwargs)
+
+        monkeypatch.setattr("aworld_cli.core.background_task_manager.asyncio.to_thread", fake_to_thread)
+
+        await manager._persist_tasks()
+
+        assert captured["func"] == manager._write_persisted_tasks
+        assert manager.metadata_file.exists()
+
 
 class TestTasksCommandRendering:
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_show_status_has_no_ansi_escape_codes(self):
         cmd = TasksCommand()
         task = TaskMetadata(
@@ -80,7 +106,7 @@ class TestTasksCommandRendering:
         assert "Status:" in result
         assert "\x1b[" not in result
 
-    @pytest.mark.asyncio
+    @pytest.mark.anyio
     async def test_list_tasks_has_no_ansi_escape_codes(self):
         cmd = TasksCommand()
         task = TaskMetadata(
