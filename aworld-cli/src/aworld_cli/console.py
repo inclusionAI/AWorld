@@ -1170,7 +1170,8 @@ class AWorldCLI:
                                 cwd=os.getcwd(),
                                 user_args=cmd_args,
                                 sandbox=None,  # TODO: Pass actual sandbox if available
-                                agent_config=None  # TODO: Pass agent config if needed
+                                agent_config=None,  # TODO: Pass agent config if needed
+                                executor=executor_instance  # NEW: Pass executor for background task manager access
                             )
 
                             try:

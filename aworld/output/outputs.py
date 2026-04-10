@@ -120,6 +120,7 @@ class StreamingOutputs(AsyncOutputs):
 
     # State tracking
     is_complete: bool = field(default=False)  # Flag indicating if streaming is complete
+    cancel_run_impl_task_on_cleanup: bool = field(default=True)  # Cancel producer when stream consumer exits early
 
     # Queue for managing outputs
     _output_queue: asyncio.Queue[Output] = field(
@@ -154,47 +155,48 @@ class StreamingOutputs(AsyncOutputs):
         Raises:
             Exception: Any stored exception that occurred during streaming
         """
-        # First yield any cached outputs
-        for output in self._visited_outputs:
-            if output == RUN_FINISHED_SIGNAL:
-                self._output_queue.task_done()
-                return
-            # if self.task_id != output.task_id:
-            #     logger.warning(f"{self.task_id} unequals {output.task_id}")
-            #     return
-            yield output
+        try:
+            # First yield any cached outputs
+            for output in self._visited_outputs:
+                if output == RUN_FINISHED_SIGNAL:
+                    self._output_queue.task_done()
+                    return
+                # if self.task_id != output.task_id:
+                #     logger.warning(f"{self.task_id} unequals {output.task_id}")
+                #     return
+                yield output
 
-        # Main streaming loop
-        while True:
-            self._check_errors()
-            if self._stored_exception:
-                logger.info("Breaking due to stored exception")
-                self.is_complete = True
-                break
-
-            if self.is_complete and self._output_queue.empty():
-                logger.info(f"StreamingOutputs|stream_events|finished|{self.task_id}")
-                break
-
-            try:
-                output = await self._output_queue.get()
-                logger.info("Outputs got output: {}".format(output.output_type()))
-                self._visited_outputs.append(output)
-
-            except asyncio.CancelledError as err:
-                logger.info(f"StreamingOutputs|stream_events|CancelledError|{self.task_id}|{err}")
-                break
-
-            if output == RUN_FINISHED_SIGNAL:
-                logger.info(f"StreamingOutputs|stream_events|RUN_FINISHED_SIGNAL|{self.task_id}|{output}")
-                self._output_queue.task_done()
+            # Main streaming loop
+            while True:
                 self._check_errors()
-                break
+                if self._stored_exception:
+                    logger.info("Breaking due to stored exception")
+                    self.is_complete = True
+                    break
 
-            yield output
-            self._output_queue.task_done()
+                if self.is_complete and self._output_queue.empty():
+                    logger.info(f"StreamingOutputs|stream_events|finished|{self.task_id}")
+                    break
 
-        self._cleanup_tasks()
+                try:
+                    output = await self._output_queue.get()
+                    logger.info("Outputs got output: {}".format(output.output_type()))
+                    self._visited_outputs.append(output)
+
+                except asyncio.CancelledError as err:
+                    logger.info(f"StreamingOutputs|stream_events|CancelledError|{self.task_id}|{err}")
+                    break
+
+                if output == RUN_FINISHED_SIGNAL:
+                    logger.info(f"StreamingOutputs|stream_events|RUN_FINISHED_SIGNAL|{self.task_id}|{output}")
+                    self._output_queue.task_done()
+                    self._check_errors()
+                    break
+
+                yield output
+                self._output_queue.task_done()
+        finally:
+            self._cleanup_tasks()
 
         if self._stored_exception:
             logger.info(f"StreamingOutputs|stream_events|stored_exception|{self.task_id}|{self._stored_exception}")
@@ -211,13 +213,19 @@ class StreamingOutputs(AsyncOutputs):
                 self._stored_exception = exc
 
     def _cleanup_tasks(self):
-        """Clean up any running tasks by cancelling them if they're not done."""
-        if self._run_impl_task and not self._run_impl_task.done():
-            self._run_impl_task.cancel()
+        """Cancel the producer only when the stream consumer exits before completion."""
+        if not self.cancel_run_impl_task_on_cleanup:
+            return
+        if self.is_complete:
+            return
+        if not self._run_impl_task or self._run_impl_task.done():
+            return
+        self._run_impl_task.cancel()
 
     async def mark_completed(self, task_response: "TaskResponse" = None) -> None:
         """Mark the streaming process as completed by adding a RUN_FINISHED_SIGNAL to the queue."""
         self._task_response = task_response
+        self.is_complete = True
         await self._output_queue.put(RUN_FINISHED_SIGNAL)
 
     def response(self) -> Optional["TaskResponse"]:
