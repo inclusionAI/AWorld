@@ -926,10 +926,13 @@ class ApplicationContext(AmniContext):
                         pass  # Task output is already merged via task_output_object
                 break
 
-        # merge token
-        cur_token_usage = self.token_usage
-        self.add_token(sub_task_context.token_usage)
-        logger.info(f"merge_sub_context tokens finished: {cur_token_usage} + {sub_task_context.token_usage} -> {self.token_usage}")
+        # Token usage is already merged by parent class Context.merge_context() which calculates
+        # and adds the net increment (child_tokens - parent_tokens) to avoid double counting.
+        # No additional token merge needed here.
+        logger.info(
+            f"merge_sub_context finished: {sub_task_context.task_id} -> {self.task_id}, "
+            f"tokens merged by parent class (net increment)"
+        )
 
     async def update_task_after_run(self, task_response: 'TaskResponse'):
         if task_response and task_response.success:

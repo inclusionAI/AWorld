@@ -9,7 +9,7 @@ class AmniEmbeddingsConfig(BaseModel):
     provider: str = "openai"
     api_key: str = ""
     model_name: str = "text-embedding-3-small"
-    base_url: str = "https://api.openai.com/v1"
+    base_url: Optional[str] = None
     context_length: int = 8191
     dimensions: int = 512
     timeout: int = 60
