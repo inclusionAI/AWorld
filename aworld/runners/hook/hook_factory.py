@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import os
 import sys
+from pathlib import Path
 from typing import Dict, List, Any
 
 import yaml
@@ -43,6 +44,11 @@ class HookManager(Factory):
             logger.warning(f"Failed to create hook with name {name}:\n{err[1]}")
             act = None
         return act
+
+    @staticmethod
+    def _is_standard_workspace_config_path(config_path: str) -> bool:
+        path = Path(config_path)
+        return path.name == 'hooks.yaml' and path.parent.name == '.aworld'
 
     @staticmethod
     def load_config_hooks(
@@ -133,7 +139,8 @@ class HookManager(Factory):
         # P0-4: 更新路径隔离的缓存
         HookManager._config_hooks_cache[config_path] = {
             'hooks': hooks,
-            'mtime': current_mtime
+            'mtime': current_mtime,
+            'is_standard_workspace_config': HookManager._is_standard_workspace_config_path(config_path),
         }
 
         logger.info(
@@ -220,6 +227,8 @@ class HookManager(Factory):
                 logger.warning(f"Unknown hook point: {point}, adding to results")
                 results[point] = [hook]
 
+        workspace_path_provided = workspace_path is not None
+
         # 2. P0-1: 自动加载当前工作区的配置文件（如果存在且未加载）
         if workspace_path is None:
             workspace_path = os.getcwd()
@@ -242,17 +251,29 @@ class HookManager(Factory):
             cached_entry = HookManager._config_hooks_cache[current_config_path]
             config_hooks = cached_entry['hooks']
 
-        # 策略 2: 当缓存中只有一个配置时，允许窄回退
+        # 策略 2: 当缓存中只有一个显式加载的非标准配置时，允许窄回退
         # 适用场景：
         # - 显式 load_config_hooks(path) 后再调用 hooks()
         # - 运行时 context.workspace_path 尚未设置，但只有一个活动配置
         # 这样既恢复单配置场景，又避免多工作区缓存污染。
         else:
-            if len(HookManager._config_hooks_cache) == 1:
-                fallback_path, cached_entry = next(iter(HookManager._config_hooks_cache.items()))
+            nonstandard_configs = [
+                (path, entry)
+                for path, entry in HookManager._config_hooks_cache.items()
+                if not entry.get('is_standard_workspace_config', HookManager._is_standard_workspace_config_path(path))
+            ]
+            if len(nonstandard_configs) == 1:
+                fallback_path, cached_entry = nonstandard_configs[0]
                 logger.debug(
                     f"Config path {current_config_path} not found in cache. "
-                    f"Using the only cached hooks from {fallback_path}."
+                    f"Using the only cached nonstandard hooks from {fallback_path}."
+                )
+                config_hooks = cached_entry['hooks']
+            elif not workspace_path_provided and len(HookManager._config_hooks_cache) == 1:
+                fallback_path, cached_entry = next(iter(HookManager._config_hooks_cache.items()))
+                logger.debug(
+                    f"Config path {current_config_path} not found in cache and workspace_path was not explicit. "
+                    f"Using the only cached hooks from {fallback_path} for backward compatibility."
                 )
                 config_hooks = cached_entry['hooks']
             elif len(HookManager._config_hooks_cache) > 0:
