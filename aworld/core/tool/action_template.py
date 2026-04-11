@@ -22,9 +22,10 @@ class {name}Act(ExecutableAction):
     # only for function to tool.
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         try:
-            res = {func}(**action.params)
+            {func_import_line}
+            res = {sync_call}
             if not res:
-                raise ValueError(f"{func} no result return.")
+                raise ValueError(f"{call_func} no result return.")
             return ActionResult(content=res, success=True), None
         except Exception as e:
             logger.error(traceback.format_exc())
@@ -33,9 +34,10 @@ class {name}Act(ExecutableAction):
 
     async def async_act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         try:
-            res = {func}(**action.params)
+            {func_import_line}
+            res = {async_call}
             if not res:
-                raise ValueError(f"{func} no result return.")
+                raise ValueError(f"{call_func} no result return.")
             return ActionResult(content=res, success=True), None
         except Exception as e:
             logger.error(traceback.format_exc())

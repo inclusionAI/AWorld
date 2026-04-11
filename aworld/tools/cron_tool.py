@@ -4,9 +4,10 @@
 Cron tool - manage scheduled tasks through Agent.
 """
 import re
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Literal
 from pydantic import Field
+from pydantic.fields import FieldInfo
 
 from croniter import croniter
 from aworld.core.tool.func_to_tool import be_tool
@@ -51,6 +52,10 @@ async def cron_tool(
         default=None,
         description="Message/instruction for the agent to execute (required for add)"
     ),
+    request: Optional[str] = Field(
+        default=None,
+        description="Raw natural-language scheduling request for add (e.g., '一分钟后提醒我喝水', '每天早上9点提醒我运行测试')"
+    ),
     schedule_type: Optional[Literal["at", "every", "cron"]] = Field(
         default=None,
         description="Schedule type: 'at' (once), 'every' (interval), 'cron' (expression)"
@@ -89,6 +94,25 @@ async def cron_tool(
     ),
 ) -> Dict[str, Any]:
     """Execute cron operations."""
+    # Import helpers from the canonical module path so dynamic @be_tool wrappers
+    # can still resolve them after copying only this function's source.
+    from aworld.tools.cron_tool import (
+        _parse_natural_language_add_request as parse_request_helper,
+        _unwrap_fieldinfo as unwrap_fieldinfo_helper,
+    )
+
+    action = unwrap_fieldinfo_helper(action)
+    name = unwrap_fieldinfo_helper(name)
+    message = unwrap_fieldinfo_helper(message)
+    request = unwrap_fieldinfo_helper(request)
+    schedule_type = unwrap_fieldinfo_helper(schedule_type)
+    schedule_value = unwrap_fieldinfo_helper(schedule_value)
+    agent_name = unwrap_fieldinfo_helper(agent_name)
+    tools = unwrap_fieldinfo_helper(tools)
+    delete_after_run = unwrap_fieldinfo_helper(delete_after_run)
+    job_id = unwrap_fieldinfo_helper(job_id)
+    include_disabled = unwrap_fieldinfo_helper(include_disabled)
+
     def parse_duration_local(duration_str: str) -> int:
         match = re.fullmatch(r'(\d+)([smhd])', duration_str.strip())
         if not match:
@@ -162,6 +186,19 @@ async def cron_tool(
         scheduler = get_scheduler()
 
         if action == "add":
+            if request and not all([name, message, schedule_type, schedule_value]):
+                try:
+                    parsed_request = parse_request_helper(request)
+                except ValueError as e:
+                    return {"success": False, "error": str(e)}
+
+                name = name or parsed_request["name"]
+                message = message or parsed_request["message"]
+                schedule_type = schedule_type or parsed_request["schedule_type"]
+                schedule_value = schedule_value or parsed_request["schedule_value"]
+                if delete_after_run is None:
+                    delete_after_run = parsed_request["delete_after_run"]
+
             # Validate required parameters
             if not all([name, message, schedule_type, schedule_value]):
                 return {
@@ -332,6 +369,173 @@ def _parse_schedule(schedule_type: str, schedule_value: str) -> 'CronSchedule':
 
     else:
         raise ValueError(f"Unknown schedule type: {schedule_type}")
+
+
+def _parse_natural_language_add_request(request: str, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """
+    Parse a common natural-language reminder request into cron add parameters.
+
+    Supported examples:
+    - 一分钟后提醒我喝水
+    - 30分钟后提醒我提交代码
+    - 每天早上9点提醒我运行测试
+    - 明天下午3点提醒我开会
+    """
+    text = (request or "").strip()
+    if not text:
+        raise ValueError("Unsupported natural-language schedule request: empty request")
+
+    current_time = _resolve_schedule_now(now)
+
+    relative_match = re.fullmatch(
+        r"(?P<num>\d+|[零一二两三四五六七八九十]+)\s*(?P<unit>秒钟?|秒|分钟|分|小时|个小时|小时|天|日)后提醒我(?P<body>.+)",
+        text,
+    )
+    if relative_match:
+        quantity = _parse_natural_language_number(relative_match.group("num"))
+        unit = relative_match.group("unit")
+        body = relative_match.group("body")
+        delta = _natural_language_delta(quantity, unit)
+        target_time = current_time + delta
+        message = _normalize_reminder_message(body)
+        return {
+            "name": _reminder_name_from_message(message),
+            "message": message,
+            "schedule_type": "at",
+            "schedule_value": target_time.isoformat(timespec="seconds"),
+            "delete_after_run": True,
+        }
+
+    daily_match = re.fullmatch(
+        r"每天(?:(?P<period>早上|上午|中午|下午|晚上))?(?P<hour>\d{1,2})点(?P<half>半)?提醒我(?P<body>.+)",
+        text,
+    )
+    if daily_match:
+        hour = _normalize_hour(daily_match.group("period"), int(daily_match.group("hour")))
+        minute = 30 if daily_match.group("half") else 0
+        body = daily_match.group("body")
+        message = _normalize_reminder_message(body)
+        return {
+            "name": _reminder_name_from_message(message),
+            "message": message,
+            "schedule_type": "cron",
+            "schedule_value": f"{minute} {hour} * * *",
+            "delete_after_run": False,
+        }
+
+    tomorrow_match = re.fullmatch(
+        r"明天(?:(?P<period>早上|上午|中午|下午|晚上))?(?P<hour>\d{1,2})点(?P<half>半)?提醒我(?P<body>.+)",
+        text,
+    )
+    if tomorrow_match:
+        hour = _normalize_hour(tomorrow_match.group("period"), int(tomorrow_match.group("hour")))
+        minute = 30 if tomorrow_match.group("half") else 0
+        body = tomorrow_match.group("body")
+        target_time = (current_time + timedelta(days=1)).replace(
+            hour=hour, minute=minute, second=0, microsecond=0
+        )
+        message = _normalize_reminder_message(body)
+        return {
+            "name": _reminder_name_from_message(message),
+            "message": message,
+            "schedule_type": "at",
+            "schedule_value": target_time.isoformat(timespec="seconds"),
+            "delete_after_run": True,
+        }
+
+    raise ValueError(
+        f"Unsupported natural-language schedule request: {request}. "
+        "Use explicit schedule fields or a supported reminder phrase such as "
+        "'一分钟后提醒我喝水' or '每天早上9点提醒我运行测试'."
+    )
+
+
+def _resolve_schedule_now(now: Optional[datetime]) -> datetime:
+    if now is None:
+        return datetime.now().astimezone()
+    if now.tzinfo is None:
+        return now.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return now
+
+
+def _natural_language_delta(quantity: int, unit: str) -> timedelta:
+    if unit in {"秒", "秒钟"}:
+        return timedelta(seconds=quantity)
+    if unit in {"分", "分钟"}:
+        return timedelta(minutes=quantity)
+    if unit in {"小时", "个小时"}:
+        return timedelta(hours=quantity)
+    if unit in {"天", "日"}:
+        return timedelta(days=quantity)
+    raise ValueError(f"Unsupported relative reminder unit: {unit}")
+
+
+def _parse_natural_language_number(value: str) -> int:
+    if value.isdigit():
+        return int(value)
+
+    digit_map = {
+        "零": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+
+    if value == "十":
+        return 10
+
+    if "十" in value:
+        parts = value.split("十", 1)
+        tens = digit_map.get(parts[0], 1) if parts[0] else 1
+        ones = digit_map.get(parts[1], 0) if parts[1] else 0
+        return tens * 10 + ones
+
+    if value in digit_map:
+        return digit_map[value]
+
+    raise ValueError(f"Unsupported natural-language number in reminder request: {value}")
+
+
+def _normalize_reminder_message(body: str) -> str:
+    clean_body = body.strip().rstrip("。.!！")
+    if clean_body.startswith("提醒我"):
+        return clean_body
+    return f"提醒我{clean_body}"
+
+
+def _reminder_name_from_message(message: str) -> str:
+    body = message
+    if body.startswith("提醒我"):
+        body = body[len("提醒我"):]
+    return f"提醒：{body.strip()}"
+
+
+def _normalize_hour(period: Optional[str], hour: int) -> int:
+    if hour < 0 or hour > 23:
+        raise ValueError(f"Unsupported hour value in reminder request: {hour}")
+
+    if period in {"下午", "晚上"} and hour < 12:
+        hour += 12
+    elif period == "中午" and hour < 11:
+        hour = 12
+
+    if hour > 23:
+        raise ValueError(f"Unsupported hour value in reminder request: {hour}")
+
+    return hour
+
+
+def _unwrap_fieldinfo(value: Any) -> Any:
+    if isinstance(value, FieldInfo):
+        return value.default
+    return value
 
 
 def _parse_duration(duration_str: str) -> int:

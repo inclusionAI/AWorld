@@ -4,7 +4,7 @@
 Tests for cron_tool schedule parsing and validation.
 """
 import pytest
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 
 class TestParseScheduleValidation:
@@ -13,8 +13,9 @@ class TestParseScheduleValidation:
     @pytest.fixture(autouse=True)
     def setup(self):
         """Import _parse_schedule lazily to avoid tool initialization."""
-        from aworld.tools.cron_tool import _parse_schedule
+        from aworld.tools.cron_tool import _parse_schedule, _parse_natural_language_add_request
         self._parse_schedule = _parse_schedule
+        self._parse_natural_language_add_request = _parse_natural_language_add_request
 
     def test_parse_schedule_valid_at(self):
         """Test valid ISO 8601 timestamps are accepted."""
@@ -109,6 +110,78 @@ class TestParseScheduleValidation:
         with pytest.raises(ValueError) as exc_info:
             self._parse_schedule("unknown", "value")
         assert "Unknown schedule type" in str(exc_info.value)
+
+    def test_parse_natural_language_relative_reminder_in_chinese(self):
+        """Test common Chinese relative reminder requests are parsed to one-shot schedules."""
+        now = datetime(2026, 4, 11, 23, 21, 0, tzinfo=timezone(timedelta(hours=8)))
+
+        parsed = self._parse_natural_language_add_request("一分钟后提醒我喝水", now=now)
+
+        assert parsed["name"] == "提醒：喝水"
+        assert parsed["message"] == "提醒我喝水"
+        assert parsed["schedule_type"] == "at"
+        assert parsed["schedule_value"] == "2026-04-11T23:22:00+08:00"
+        assert parsed["delete_after_run"] is True
+
+    def test_parse_natural_language_daily_recurring_reminder_in_chinese(self):
+        """Test common daily reminder requests are parsed to cron schedules."""
+        now = datetime(2026, 4, 11, 23, 21, 0, tzinfo=timezone(timedelta(hours=8)))
+
+        parsed = self._parse_natural_language_add_request("每天早上9点提醒我运行测试", now=now)
+
+        assert parsed["name"] == "提醒：运行测试"
+        assert parsed["message"] == "提醒我运行测试"
+        assert parsed["schedule_type"] == "cron"
+        assert parsed["schedule_value"] == "0 9 * * *"
+        assert parsed["delete_after_run"] is False
+
+    def test_parse_natural_language_rejects_unsupported_request(self):
+        """Test unsupported natural-language requests fail clearly."""
+        now = datetime(2026, 4, 11, 23, 21, 0, tzinfo=timezone(timedelta(hours=8)))
+
+        with pytest.raises(ValueError) as exc_info:
+            self._parse_natural_language_add_request("有空的时候提醒我喝水", now=now)
+
+        assert "Unsupported natural-language schedule request" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_add_accepts_raw_natural_language_request(monkeypatch):
+    """Test cron_tool(add) can consume a raw reminder request without explicit schedule fields."""
+    from aworld.core.scheduler.types import CronJobState
+    import aworld.tools.cron_tool as cron_tool_module
+
+    class FakeScheduler:
+        def __init__(self):
+            self.last_job = None
+
+        async def add_job(self, job):
+            self.last_job = job
+            job.state = CronJobState(next_run_at="2026-04-11T23:22:00+08:00")
+            return job
+
+    fake_scheduler = FakeScheduler()
+
+    monkeypatch.setattr(
+        cron_tool_module,
+        "_parse_natural_language_add_request",
+        lambda request, now=None: {
+            "name": "提醒：喝水",
+            "message": "提醒我喝水",
+            "schedule_type": "at",
+            "schedule_value": "2026-04-11T23:22:00+08:00",
+            "delete_after_run": True,
+        },
+    )
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    result = await cron_tool_module.cron_tool(action="add", request="一分钟后提醒我喝水")
+
+    assert result["success"] is True
+    assert fake_scheduler.last_job is not None
+    assert fake_scheduler.last_job.name == "提醒：喝水"
+    assert fake_scheduler.last_job.payload.message == "提醒我喝水"
+    assert fake_scheduler.last_job.schedule.kind == "at"
 
 
 if __name__ == "__main__":
