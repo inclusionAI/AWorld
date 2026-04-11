@@ -40,3 +40,16 @@ async def test_execute_command_rejects_sleep_based_reminder():
     assert result.success is False
     assert result.metadata["error_type"] == "reminder_delay_blocked"
     assert "cron" in result.message.lower()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'sleep 300; echo "reminder"',
+        'sleep 60 && echo "提醒我提交代码" > reminder.txt',
+    ],
+)
+def test_check_delayed_reminder_simulation_blocks_common_variants(command):
+    blocked, reason = _check_delayed_reminder_simulation(command)
+    assert blocked is True
+    assert "cron" in reason.lower()
