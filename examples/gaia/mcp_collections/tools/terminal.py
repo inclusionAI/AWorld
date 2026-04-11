@@ -41,6 +41,33 @@ from examples.gaia.mcp_collections.base import ActionArguments, ActionCollection
 
 # pylint: disable=C0301
 
+REMINDER_KEYWORDS = ("提醒", "喝水", "remind", "reminder")
+REMINDER_OUTPUT_PATTERNS = (
+    r"(?:&&|;)\s*echo\b",
+    r"(?:&&|;)\s*cat\b",
+    r">\s*[^|]+",
+)
+
+
+def _check_delayed_reminder_simulation(command: str) -> tuple[bool, str | None]:
+    if not re.search(r"(^|[\s;&|])sleep\s+\d+(?:\.\d+)?(\s|$)", command, re.IGNORECASE):
+        return False, None
+
+    lower_command = command.lower()
+    has_keyword = any(keyword in command for keyword in ("提醒", "喝水")) or any(
+        keyword in lower_command for keyword in ("remind", "reminder")
+    ) or bool(re.search(r"该.{0,20}了", command))
+
+    has_delayed_output = any(re.search(pattern, command, re.IGNORECASE) for pattern in REMINDER_OUTPUT_PATTERNS)
+
+    if not (has_keyword and has_delayed_output):
+        return False, None
+
+    return (
+        True,
+        "Delayed reminder simulation with shell waiting is not allowed. Use `cron` to create a scheduled reminder instead.",
+    )
+
 
 class CommandResult(BaseModel):
     """Individual command execution result with structured data."""
@@ -404,6 +431,21 @@ class TerminalActionCollection(ActionCollection):
                         timeout_seconds=timeout,
                         safety_check_passed=True,
                         error_type="interactive_forbidden",
+                    ).model_dump(),
+                )
+
+            blocked, reminder_reason = _check_delayed_reminder_simulation(command)
+            if blocked:
+                return ActionResponse(
+                    success=False,
+                    message=reminder_reason,
+                    metadata=TerminalMetadata(
+                        command=command,
+                        platform=self.platform_info["system"],
+                        working_directory=str(self.workspace),
+                        timeout_seconds=timeout,
+                        safety_check_passed=True,
+                        error_type="reminder_delay_blocked",
                     ).model_dump(),
                 )
 
