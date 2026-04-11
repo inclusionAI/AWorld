@@ -93,7 +93,12 @@ def function_to_tool(
 
     postfix = f"{uuid.uuid4().hex[0:6]}__tmp"
 
-    with open(f"{tool_name}{postfix}_action.py", 'w') as write:
+    action_module_name = f"{action_name}{postfix}_action"
+
+    with open(f"{action_module_name}.py", 'w') as write:
+        write.writelines("from __future__ import annotations\n")
+        write.writelines("from typing import *\n")
+        write.writelines("from pydantic import Field\n\n")
         lines = inspect.getsourcelines(func)[0]
         for idx, line in enumerate(lines):
             if line.startswith("def ") or line.startswith("async def "):
@@ -127,9 +132,9 @@ def function_to_tool(
                                      func_import=func_import,
                                      func=func_name,
                                      call_func=name)
-        with open(f"{tool_name}{postfix}_action.py", 'a+') as write:
+        with open(f"{action_module_name}.py", 'a+') as write:
             write.writelines(con)
-        module = importlib.import_module(f"{action_name}{postfix}_action")
+        module = importlib.import_module(action_module_name)
         getattr(module, f"{action_name}Act")
     else:
         logger.warning(f"{action_name} already register to the tool.")
@@ -162,7 +167,7 @@ def function_to_tool(
     # build tool
     if tool_name not in ToolFactory:
         con = TOOL_TEMPLATE.format(name=tool_name,
-                                   desc=tool_desc if tool_desc else tool_name,
+                                   desc=repr(tool_desc if tool_desc else tool_name),
                                    action=f"{tool_name}Action",
                                    cls='AsyncTool' if is_async else 'Tool',
                                    async_flag='async ' if is_async else '',
@@ -177,8 +182,8 @@ def function_to_tool(
         val = os.environ.get(LOCAL_TOOLS_ENV_VAR, "")
         if val:
             val = val + ";"
-        os.environ[LOCAL_TOOLS_ENV_VAR] = val + sys.modules[f"{tool_name}{postfix}_action"].__file__
-        logger.debug(f'add {sys.modules[f"{tool_name}{postfix}_action"].__file__}')
+        os.environ[LOCAL_TOOLS_ENV_VAR] = val + sys.modules[action_module_name].__file__
+        logger.debug(f'add {sys.modules[action_module_name].__file__}')
 
 
 def func_params(func: Callable[..., Any]):

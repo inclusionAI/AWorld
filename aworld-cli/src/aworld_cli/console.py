@@ -26,11 +26,21 @@ from .user_input import UserInputHandler
 
 # ... existing imports ...
 
+# Notification polling configuration
+NOTIFICATION_POLL_INTERVAL = 2.0  # Seconds (1-3s latency target)
+
+
 class AWorldCLI:
     def __init__(self):
         self.console = console
         self.user_input = UserInputHandler(console)
         # self.team_handler = InteractiveTeamHandler(console)
+
+        # Notification polling state
+        self._is_agent_executing = False
+        self._notification_poll_task = None
+        self._notification_stop_event = None
+        self._notification_drain_lock = asyncio.Lock()
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -956,6 +966,50 @@ class AWorldCLI:
         # Add spacing after notifications
         self.console.print()
 
+    async def _drain_notifications_safe(self, runtime) -> List:
+        """
+        Thread-safe wrapper for draining notifications.
+
+        Prevents concurrent drain from poller and main loop using asyncio.Lock.
+        Returns empty list on any error to ensure graceful failure.
+        """
+        async with self._notification_drain_lock:
+            try:
+                return await runtime._drain_notifications()
+            except Exception:
+                return []
+
+    async def _notification_poller(
+        self,
+        runtime,
+        poll_interval: float = NOTIFICATION_POLL_INTERVAL,
+        stop_event: asyncio.Event = None
+    ) -> None:
+        """
+        Background task that polls for cron notifications during idle prompt.
+
+        Runs continuously while user is at input prompt, checking every
+        `poll_interval` seconds for new notifications. Skips polling during
+        agent execution to avoid duplicate drains.
+        """
+        while not stop_event.is_set():
+            try:
+                # Only poll when idle (not executing agent)
+                if not self._is_agent_executing:
+                    notifications = await self._drain_notifications_safe(runtime)
+                    if notifications:
+                        # Print above current prompt line
+                        self.console.print()  # Add newline before notifications
+                        self.render_cron_notifications(notifications)
+
+                await asyncio.sleep(poll_interval)
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                # Graceful failure - never crash on notification error
+                pass
+
     async def _esc_key_listener(self):
         """
         Background listener for Esc key to interrupt currently executing tasks.
@@ -1175,12 +1229,24 @@ class AWorldCLI:
                 history=FileHistory(str(history_path)),
             )
 
+        # Start background notification poller for real-time display during idle
+        if executor_instance and hasattr(executor_instance, '_base_runtime'):
+            runtime = executor_instance._base_runtime
+            self._notification_stop_event = asyncio.Event()
+            self._notification_poll_task = asyncio.create_task(
+                self._notification_poller(
+                    runtime=runtime,
+                    poll_interval=NOTIFICATION_POLL_INTERVAL,
+                    stop_event=self._notification_stop_event
+                )
+            )
+
         while True:
             # Drain and render pending cron notifications (BEFORE user input prompt)
             if executor_instance and hasattr(executor_instance, '_base_runtime'):
                 try:
                     runtime = executor_instance._base_runtime
-                    notifications = await runtime._drain_notifications()
+                    notifications = await self._drain_notifications_safe(runtime)
                     if notifications:
                         self.render_cron_notifications(notifications)
                 except Exception:
@@ -1818,14 +1884,18 @@ Add any custom instructions for AI agents working on this project.
                     # File parsing is now handled by FileParseHook automatically
                     # Just pass the user input as-is, the hook will process @filename references
                     # Execute the task/chat (FileParseHook will handle file parsing)
-                    response = await executor(user_input)
-                    # Response is returned for potential future use, but content is already printed by executor
+                    self._is_agent_executing = True
+                    try:
+                        response = await executor(user_input)
+                        # Response is returned for potential future use, but content is already printed by executor
+                    finally:
+                        self._is_agent_executing = False
 
                     # Drain and render pending cron notifications (AFTER agent execution)
                     if executor_instance and hasattr(executor_instance, '_base_runtime'):
                         try:
                             runtime = executor_instance._base_runtime
-                            notifications = await runtime._drain_notifications()
+                            notifications = await self._drain_notifications_safe(runtime)
                             if notifications:
                                 self.render_cron_notifications(notifications)
                         except Exception:
@@ -1859,6 +1929,22 @@ Add any custom instructions for AI agents working on this project.
                 logger.error(f"Error executing task: {e} {traceback.format_exc()}")
                 self.console.print(f"[red]An unexpected error occurred: {e}[/red]")
                 continue  # Add continue to prevent fall-through
+
+        # Cleanup: Stop background notification poller
+        if self._notification_poll_task:
+            self._notification_stop_event.set()
+            try:
+                await asyncio.wait_for(self._notification_poll_task, timeout=1.0)
+            except asyncio.TimeoutError:
+                # Force cancel if graceful shutdown times out
+                self._notification_poll_task.cancel()
+                try:
+                    await self._notification_poll_task
+                except asyncio.CancelledError:
+                    pass
+            finally:
+                self._notification_poll_task = None
+                self._notification_stop_event = None
 
         return False
 

@@ -297,9 +297,18 @@ class FileBasedCronStore:
                         logger.debug(f"Cannot claim job {job_id}: no next_run_at")
                         return None
 
-                    # Compare timestamps (both should be ISO format)
-                    if current_next_run > now_iso:
-                        logger.debug(f"Cannot claim job {job_id}: not due yet ({current_next_run} > {now_iso})")
+                    # Compare timestamps as datetime objects (handles timezone offsets correctly)
+                    # ISO 8601 strings with different timezone offsets cannot be compared lexicographically
+                    # Example: "09:00:00+08:00" > "02:00:00+00:00" (string) but UTC+8 09:00 < UTC 02:00 (datetime)
+                    try:
+                        current_next_run_dt = datetime.fromisoformat(current_next_run.replace('Z', '+00:00'))
+                        now_dt = datetime.fromisoformat(now_iso.replace('Z', '+00:00'))
+
+                        if current_next_run_dt > now_dt:
+                            logger.debug(f"Cannot claim job {job_id}: not due yet ({current_next_run} > {now_iso})")
+                            return None
+                    except (ValueError, AttributeError) as e:
+                        logger.warning(f"Invalid timestamp format for job {job_id}: {e}")
                         return None
 
                     # Atomically claim the job AND advance next_run_at

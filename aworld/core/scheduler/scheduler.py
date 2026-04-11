@@ -234,7 +234,15 @@ class CronScheduler:
 
                 if job.state.last_run_at:
                     last_run = datetime.fromisoformat(job.state.last_run_at.replace('Z', '+00:00'))
-                    return last_run + timedelta(seconds=schedule.every_seconds)
+                    next_run = last_run + timedelta(seconds=schedule.every_seconds)
+
+                    # FIX: Skip missed periods if offline duration > every_seconds
+                    # Design requirement: Offline missed runs should NOT be replayed
+                    # Ensure next_run is always in the future (no catchup execution)
+                    while next_run <= now:
+                        next_run += timedelta(seconds=schedule.every_seconds)
+
+                    return next_run
                 else:
                     # First run - execute immediately
                     return now
@@ -259,6 +267,9 @@ class CronScheduler:
                 return next_run_utc
 
         except Exception as e:
+            # Runtime error handling: allows recovery during schedule loop and startup
+            # Input validation should happen at tool layer (cron_tool._parse_schedule)
+            # to prevent creating jobs with invalid schedules
             logger.error(f"Failed to calculate next_run for job {job.id}: {e}")
             return None
 
@@ -411,6 +422,17 @@ class CronScheduler:
 
     async def update_job(self, job_id: str, **updates):
         """Update job fields."""
+        current_job = await self.store.get_job(job_id)
+        if not current_job:
+            return None
+
+        if updates.get("enabled") is True and not current_job.enabled:
+            now = datetime.now(pytz.UTC)
+            recalculated_next_run = self._calculate_next_run(current_job, now)
+            state_updates = dict(updates.get("state") or {})
+            state_updates["next_run_at"] = recalculated_next_run.isoformat() if recalculated_next_run else None
+            updates["state"] = state_updates
+
         return await self.store.update_job(job_id, **updates)
 
     async def remove_job(self, job_id: str) -> bool:
