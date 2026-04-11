@@ -3,7 +3,9 @@
 """
 Cron slash command - /cron for quick task management.
 """
-from typing import List
+from typing import List, Optional
+
+from aworld.tools.cron_tool import cron_tool
 
 from aworld_cli.core.command_system import Command, CommandContext, register_command
 
@@ -22,83 +24,63 @@ class CronCommand(Command):
 
     @property
     def command_type(self) -> str:
-        return "prompt"  # Generate prompt for Agent to execute
+        return "tool"
 
     @property
-    def allowed_tools(self) -> List[str]:
-        return ["cron"]  # Only allow cron tool
+    def allowed_tools(self) -> Optional[List[str]]:
+        return None
 
-    async def get_prompt(self, context: CommandContext) -> str:
-        """Generate prompt based on command arguments."""
+    async def execute(self, context: CommandContext) -> str:
+        """Execute cron subcommands directly through cron_tool."""
         args = context.user_args  # FIXED: Use user_args
 
         if not args:
-            # /cron without arguments -> list all tasks
-            return """使用 cron tool 列出所有已配置的定时任务，以清晰的表格形式展示：
-- Job ID
-- 任务名称
-- 调度配置（schedule）
-- 下次运行时间（next_run）
-- 状态（enabled/disabled）
-- 最后执行状态（last_status）
-
-如果有任务失败（last_status=error），请特别标注并显示错误信息。"""
+            result = await cron_tool(action="list")
+            return self._format_result("list", result)
 
         parts = args.split(maxsplit=1)
         action = parts[0]
         rest = parts[1] if len(parts) > 1 else ""
 
         if action == "add":
-            # /cron add <description>
-            return f"""用户想要创建定时任务："{rest}"
-
-请分析这个需求，确定：
-1. 任务名称（简短清晰）
-2. 调度时间：
-   - 一次性任务：使用 'at' 类型，提供完整 ISO 时间戳
-   - 重复间隔：使用 'every' 类型，如 '30m', '1h', '2d'
-   - Cron 表达式：使用 'cron' 类型，如 '0 9 * * *'（每天9点）
-3. 要执行的具体内容（message）
-4. 是否需要在执行后删除（一次性提醒）
-
-然后使用 cron tool 的 add 操作创建任务。"""
+            result = await cron_tool(action="add", request=rest)
+            return self._format_result("add", result)
 
         elif action == "list":
-            return "使用 cron tool 列出所有定时任务，以表格形式展示。"
+            result = await cron_tool(action="list")
+            return self._format_result("list", result)
 
         elif action in ["remove", "rm", "delete"]:
-            # /cron remove <job_id>
             job_id = rest.strip()
             if not job_id:
                 return "请提供要删除的任务 ID。先使用 /cron list 查看所有任务。"
-            return f"使用 cron tool 删除任务 {job_id}。确认删除前，先显示该任务的详细信息。"
+            result = await cron_tool(action="remove", job_id=job_id)
+            return self._format_result("remove", result)
 
         elif action == "run":
-            # /cron run <job_id>
             job_id = rest.strip()
             if not job_id:
                 return "请提供要执行的任务 ID。先使用 /cron list 查看所有任务。"
-            return f"使用 cron tool 立即执行任务 {job_id}。执行前显示任务详情，执行后报告结果。"
+            result = await cron_tool(action="run", job_id=job_id)
+            return self._format_result("run", result)
 
         elif action == "enable":
-            # /cron enable <job_id>
             job_id = rest.strip()
             if not job_id:
                 return "请提供要启用的任务 ID。先使用 /cron list 查看所有任务。"
-            return f"使用 cron tool 启用任务 {job_id}。启用前显示任务详情，启用后确认状态。"
+            result = await cron_tool(action="enable", job_id=job_id)
+            return self._format_result("enable", result)
 
         elif action == "disable":
-            # /cron disable <job_id>
             job_id = rest.strip()
             if not job_id:
                 return "请提供要禁用的任务 ID。先使用 /cron list 查看所有任务。"
-            return f"使用 cron tool 禁用任务 {job_id}。禁用前显示任务详情，禁用后确认状态。"
+            result = await cron_tool(action="disable", job_id=job_id)
+            return self._format_result("disable", result)
 
         elif action == "status":
-            return """使用 cron tool 查看调度器状态，包括：
-- 调度器是否运行中
-- 总任务数
-- 启用的任务数"""
+            result = await cron_tool(action="status")
+            return self._format_result("status", result)
 
         else:
             return f"""未知的 cron 子命令：{action}
@@ -112,6 +94,40 @@ class CronCommand(Command):
 - /cron enable <job_id>    启用任务
 - /cron disable <job_id>   禁用任务
 - /cron status             查看调度器状态"""
+
+    def _format_result(self, action: str, result: dict) -> str:
+        if not result.get("success"):
+            return f"操作失败: {result.get('error', 'unknown error')}"
+
+        if action == "status":
+            return (
+                "Cron 调度器状态\n"
+                f"- scheduler_running: {result.get('scheduler_running')}\n"
+                f"- total_jobs: {result.get('total_jobs')}\n"
+                f"- enabled_jobs: {result.get('enabled_jobs')}"
+            )
+
+        if action == "list":
+            jobs = result.get("jobs", [])
+            if not jobs:
+                return "当前没有定时任务。"
+
+            lines = [f"共 {len(jobs)} 个定时任务："]
+            for job in jobs:
+                lines.append(
+                    f"- {job['id']} | {job['name']} | {job['schedule']} | "
+                    f"enabled={job['enabled']} | next_run={job['next_run']} | "
+                    f"last_status={job['last_status']}"
+                )
+            return "\n".join(lines)
+
+        if action == "add":
+            return (
+                f"{result.get('message')}\n"
+                f"next_run: {result.get('next_run')}"
+            )
+
+        return result.get("message", "操作成功")
 
     def get_help(self) -> str:
         """Return help information."""
