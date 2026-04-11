@@ -47,6 +47,9 @@ async def test_execute_command_rejects_sleep_based_reminder():
     [
         'sleep 300; echo "reminder"',
         'sleep 60 && echo "提醒我提交代码" > reminder.txt',
+        'sleep 60 && osascript -e \'display notification "该喝水了！" with title "喝水提醒"\'',
+        'nohup bash -c \'sleep 60 && osascript -e "display notification \\"该喝水了！\\" with title \\"喝水提醒\\""\'',
+        'echo "osascript -e \'display notification \\"该喝水了！\\" with title \\"提醒\\"\'" | at now + 1 minute',
     ],
 )
 def test_check_delayed_reminder_simulation_blocks_common_variants(command):

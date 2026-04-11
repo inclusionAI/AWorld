@@ -108,11 +108,7 @@ def function_to_tool(
     if tool_name == "<lambda>" or action_name == "<lambda>":
         raise ValueError("You must provide a name for lambda functions")
 
-    func_name = func.__name__
-    # async func, will use AsyncTool
     is_async = inspect.iscoroutinefunction(func)
-    if is_async:
-        func_name = f"sync_exec({func_name})"
 
     name = action_name
     # build action
@@ -129,9 +125,16 @@ def function_to_tool(
         con = ACTION_TEMPLATE.format(name=action_name,
                                      desc=desc if desc else action_name,
                                      tool_name=tool_name,
-                                     func_import=func_import,
-                                     func=func_name,
-                                     call_func=name)
+                                     func_import_line=f"{func_import}import {func.__name__}",
+                                     sync_call=(
+                                         f"sync_exec({func.__name__}, **action.params)"
+                                         if is_async else f"{func.__name__}(**action.params)"
+                                     ),
+                                     async_call=(
+                                         f"await {func.__name__}(**action.params)"
+                                         if is_async else f"{func.__name__}(**action.params)"
+                                     ),
+                                     call_func=func.__name__)
         with open(f"{action_module_name}.py", 'a+') as write:
             write.writelines(con)
         module = importlib.import_module(action_module_name)
@@ -144,7 +147,9 @@ def function_to_tool(
     parameters = func_params(func)
 
     module_name = f'{tool_name}'
-    if module_name not in sys.modules:
+    expected_action_cls = f"{tool_name}Action"
+    existing_module = sys.modules.get(module_name)
+    if existing_module is None or not hasattr(existing_module, expected_action_cls):
         params = {}
         if parameters:
             for k, v in parameters['properties'].items():
@@ -162,7 +167,7 @@ def function_to_tool(
                                                 desc=desc if desc else action_name,
                                                 params=params))
     else:
-        logger.info(f"{module_name} already exists in modules, reuse the tool action.")
+        logger.info(f"{module_name} already provides {expected_action_cls}, reuse the tool action.")
 
     # build tool
     if tool_name not in ToolFactory:
