@@ -50,7 +50,7 @@ REMINDER_OUTPUT_PATTERNS = (
 
 
 def _check_delayed_reminder_simulation(command: str) -> tuple[bool, str | None]:
-    if not re.search(r"(^|[\s;&|])sleep\s+\d+(?:\.\d+)?(\s|$)", command, re.IGNORECASE):
+    if not re.search(r"(^|[\s;&|])sleep\s+\d+(?:\.\d+)?(?=$|[\s;&|])", command, re.IGNORECASE):
         return False, None
 
     lower_command = command.lower()
