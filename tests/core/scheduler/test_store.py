@@ -150,5 +150,73 @@ async def test_claim_due_job_no_next_run(temp_store):
     assert claimed is None  # Should fail - no next run scheduled
 
 
+@pytest.mark.asyncio
+async def test_claim_due_job_with_timezone_offset(temp_store):
+    """
+    Test that claim_due_job correctly handles timezone offsets in ISO timestamps.
+
+    Bug scenario: Job scheduled at UTC+8 09:00 (= UTC 01:00) should be claimable
+    when current time is UTC 02:00. String comparison incorrectly treats
+    "09:00:00+08:00" > "02:00:00+00:00" as True (not due yet).
+    """
+    # Job scheduled at UTC+8 09:00, which is UTC 01:00
+    job_next_run_utc8 = "2026-04-09T09:00:00+08:00"
+
+    # Current time is UTC 02:00 (1 hour after job's UTC time)
+    current_time_utc = "2026-04-09T02:00:00+00:00"
+
+    # Create a job with timezone-aware next_run_at
+    job = CronJob(
+        name="Timezone Test Job",
+        schedule=CronSchedule(kind="cron", cron_expr="0 9 * * *"),  # Every day at 9 AM
+        payload=CronPayload(message="test"),
+        state=CronJobState(next_run_at=job_next_run_utc8),
+    )
+
+    await temp_store.add_job(job)
+
+    # Attempt to claim with UTC current time
+    # Should succeed because UTC+8 09:00 (01:00 UTC) < 02:00 UTC
+    claimed = await temp_store.claim_due_job(job.id, current_time_utc)
+
+    # EXPECTED: Job should be claimed (it's past due)
+    # ACTUAL (with bug): Job not claimed (string comparison fails)
+    assert claimed is not None, (
+        f"Job should be claimable: {job_next_run_utc8} (UTC 01:00) is before "
+        f"{current_time_utc} (UTC 02:00)"
+    )
+    assert claimed.state.running is True
+
+
+@pytest.mark.asyncio
+async def test_claim_due_job_various_timezones(temp_store):
+    """Test claim_due_job with various timezone offsets."""
+    test_cases = [
+        # (job_next_run, current_time, should_claim, description)
+        ("2026-04-09T23:00:00+09:00", "2026-04-09T15:00:00+00:00", True, "JST 23:00 = UTC 14:00 < UTC 15:00"),
+        ("2026-04-09T08:00:00-05:00", "2026-04-09T14:00:00+00:00", True, "EST 08:00 = UTC 13:00 < UTC 14:00"),
+        ("2026-04-09T05:00:00+05:30", "2026-04-09T00:30:00+00:00", True, "IST 05:00 = UTC 23:30 (prev day) < UTC 00:30"),
+        ("2026-04-09T10:00:00+00:00", "2026-04-09T09:00:00+00:00", False, "UTC 10:00 > UTC 09:00 (not due)"),
+    ]
+
+    for idx, (next_run, current, should_claim, desc) in enumerate(test_cases):
+        job = CronJob(
+            name=f"TZ Test {idx}",
+            schedule=CronSchedule(kind="cron", cron_expr="0 * * * *"),
+            payload=CronPayload(message="test"),
+            state=CronJobState(next_run_at=next_run),
+        )
+
+        await temp_store.add_job(job)
+
+        claimed = await temp_store.claim_due_job(job.id, current)
+
+        if should_claim:
+            assert claimed is not None, f"Failed: {desc}"
+            assert claimed.state.running is True
+        else:
+            assert claimed is None, f"Failed (should not claim): {desc}"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

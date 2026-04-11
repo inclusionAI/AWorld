@@ -554,5 +554,97 @@ async def test_overdue_job_can_be_claimed_and_executed(scheduler, temp_store, mo
     assert executed_job is None  # One-shot job should be deleted
 
 
+@pytest.mark.asyncio
+async def test_every_task_no_catchup_after_offline(scheduler):
+    """
+    CRITICAL TEST: Verify 'every' tasks do NOT catchup missed runs after offline period.
+
+    Scenario:
+    - Task runs every hour (every_seconds=3600)
+    - last_run_at = 2 hours ago
+    - CLI was offline for 2 hours, just restarted
+    - Expected: next_run should be in FUTURE (no catchup)
+    - Bug: next_run = last_run + 3600 = 1 hour ago (triggers immediate execution)
+
+    This test validates the fix for offline missed run replay bug.
+    """
+    now = datetime.now(pytz.UTC)
+    last_run_2h_ago = now - timedelta(hours=2)
+
+    job = CronJob(
+        name="every-no-catchup",
+        schedule=CronSchedule(kind="every", every_seconds=3600),  # 1 hour
+        payload=CronPayload(message="test"),
+        state=CronJobState(last_run_at=last_run_2h_ago.isoformat()),
+    )
+
+    # Simulate startup: calculate next_run
+    next_run = scheduler._calculate_next_run(job, now)
+
+    # CRITICAL ASSERTION: next_run MUST be in future (no catchup for missed runs)
+    assert next_run is not None
+    assert next_run > now, (
+        f"BUG: next_run ({next_run}) should be > now ({now}). "
+        f"Offline missed runs should NOT be replayed!"
+    )
+
+
+@pytest.mark.asyncio
+async def test_calculate_next_run_invalid_schedule_returns_none(scheduler):
+    """
+    Test that _calculate_next_run() returns None for invalid schedules (runtime error handling).
+
+    This verifies the exception handling in _calculate_next_run() that allows
+    graceful recovery during schedule loop and startup, even if invalid schedules
+    somehow bypass tool layer validation.
+    """
+
+    # Create job with invalid 'at' schedule (bypassing tool validation)
+    job = CronJob(
+        name="Invalid At Job",
+        schedule=CronSchedule(kind="at", at="not-a-valid-timestamp"),
+        payload=CronPayload(message="test"),
+    )
+
+    now = datetime.now(pytz.UTC)
+    next_run = scheduler._calculate_next_run(job, now)
+
+    # Runtime error handling: should return None (not raise exception)
+    assert next_run is None, "Invalid schedule should return None for runtime error handling"
+
+    # Create job with invalid 'cron' schedule
+    job_cron = CronJob(
+        name="Invalid Cron Job",
+        schedule=CronSchedule(kind="cron", cron_expr="invalid-cron-expression"),
+        payload=CronPayload(message="test"),
+    )
+
+    next_run_cron = scheduler._calculate_next_run(job_cron, now)
+
+    # Should also return None without raising
+    assert next_run_cron is None, "Invalid cron should return None for runtime error handling"
+
+
+@pytest.mark.asyncio
+async def test_enable_job_recalculates_next_run(scheduler, temp_store):
+    """Test enabling a disabled job recalculates next_run_at."""
+    future = datetime.now(pytz.UTC) + timedelta(minutes=30)
+    job = CronJob(
+        name="disabled-at-job",
+        enabled=False,
+        schedule=CronSchedule(kind="at", at=future.isoformat()),
+        payload=CronPayload(message="test"),
+        state=CronJobState(next_run_at=None),
+    )
+
+    await temp_store.add_job(job)
+
+    updated_job = await scheduler.update_job(job.id, enabled=True)
+
+    assert updated_job is not None
+    assert updated_job.enabled is True
+    assert updated_job.state.next_run_at == future.isoformat()
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

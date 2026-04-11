@@ -4,9 +4,11 @@
 Cron tool - manage scheduled tasks through Agent.
 """
 import re
+from datetime import datetime
 from typing import Dict, Any, List, Optional, Literal
 from pydantic import Field
 
+from croniter import croniter
 from aworld.core.tool.func_to_tool import be_tool
 from aworld.logs.util import logger
 
@@ -82,11 +84,77 @@ async def cron_tool(
 
     # list parameters
     include_disabled: Optional[bool] = Field(
-        default=False,
+        default=True,
         description="Include disabled tasks in list"
     ),
 ) -> Dict[str, Any]:
     """Execute cron operations."""
+    def parse_duration_local(duration_str: str) -> int:
+        match = re.fullmatch(r'(\d+)([smhd])', duration_str.strip())
+        if not match:
+            raise ValueError(
+                f"Invalid duration format: {duration_str}. Use format like '30m', '1h', '2d'"
+            )
+
+        value, unit = int(match.group(1)), match.group(2)
+        multipliers = {
+            's': 1,
+            'm': 60,
+            'h': 3600,
+            'd': 86400
+        }
+        return value * multipliers[unit]
+
+    def parse_schedule_local(local_schedule_type: str, local_schedule_value: str):
+        from aworld.core.scheduler.types import CronSchedule
+
+        if local_schedule_type == "at":
+            try:
+                datetime.fromisoformat(local_schedule_value.replace('Z', '+00:00'))
+            except ValueError as e:
+                raise ValueError(
+                    f"Invalid ISO 8601 timestamp '{local_schedule_value}'. "
+                    f"Expected format: YYYY-MM-DDTHH:MM:SS or YYYY-MM-DDTHH:MM:SS+HH:MM. "
+                    f"Error: {e}"
+                )
+            return CronSchedule(kind="at", at=local_schedule_value)
+
+        if local_schedule_type == "every":
+            return CronSchedule(kind="every", every_seconds=parse_duration_local(local_schedule_value))
+
+        if local_schedule_type == "cron":
+            try:
+                if len(local_schedule_value.split()) != 5:
+                    raise ValueError("cron expression must have exactly 5 fields")
+                if not croniter.is_valid(local_schedule_value):
+                    raise ValueError("croniter validation failed")
+                croniter(local_schedule_value, datetime.now())
+            except Exception as e:
+                raise ValueError(
+                    f"Invalid cron expression '{local_schedule_value}'. "
+                    f"Expected format: 'MIN HOUR DAY MONTH WEEKDAY' (e.g., '0 9 * * *' for daily at 9:00). "
+                    f"Error: {e}"
+                )
+            return CronSchedule(kind="cron", cron_expr=local_schedule_value)
+
+        raise ValueError(f"Unknown schedule type: {local_schedule_type}")
+
+    def format_schedule_local(schedule: 'CronSchedule') -> str:
+        if schedule.kind == "at":
+            return f"at {schedule.at}"
+        if schedule.kind == "every":
+            seconds = schedule.every_seconds
+            if seconds < 60:
+                return f"every {seconds}s"
+            if seconds < 3600:
+                return f"every {seconds // 60}m"
+            if seconds < 86400:
+                return f"every {seconds // 3600}h"
+            return f"every {seconds // 86400}d"
+        if schedule.kind == "cron":
+            return f"cron {schedule.cron_expr}"
+        return "unknown"
+
     try:
         from aworld.core.scheduler import get_scheduler
         from aworld.core.scheduler.types import CronJob, CronSchedule, CronPayload
@@ -103,7 +171,7 @@ async def cron_tool(
 
             # Parse schedule
             try:
-                schedule = _parse_schedule(schedule_type, schedule_value)
+                schedule = parse_schedule_local(schedule_type, schedule_value)
             except ValueError as e:
                 return {"success": False, "error": f"Invalid schedule: {str(e)}"}
 
@@ -138,7 +206,7 @@ async def cron_tool(
                         "id": j.id,
                         "name": j.name,
                         "description": j.description,
-                        "schedule": _format_schedule(j.schedule),
+                        "schedule": format_schedule_local(j.schedule),
                         "next_run": j.state.next_run_at,
                         "last_run": j.state.last_run_at,
                         "enabled": j.enabled,
@@ -212,22 +280,33 @@ async def cron_tool(
 
 def _parse_schedule(schedule_type: str, schedule_value: str) -> 'CronSchedule':
     """
-    Parse schedule from user input.
+    Parse and validate schedule input.
 
     Args:
-        schedule_type: 'at', 'every', or 'cron'
-        schedule_value: Value string
+        schedule_type: One of 'at', 'cron', 'every'
+        schedule_value: Schedule specification string
 
     Returns:
-        CronSchedule instance
+        CronSchedule object
 
     Raises:
-        ValueError: If schedule is invalid
+        ValueError: If schedule_value is invalid for the given type
+            - 'at': Must be valid ISO 8601 timestamp
+            - 'cron': Must be valid 5 or 6-field cron expression
+            - 'every': Must match duration format (e.g., '30m', '2h', '1d')
     """
     from aworld.core.scheduler.types import CronSchedule
 
     if schedule_type == "at":
-        # ISO 8601 timestamp
+        # Validate ISO 8601 timestamp format
+        try:
+            datetime.fromisoformat(schedule_value.replace('Z', '+00:00'))
+        except ValueError as e:
+            raise ValueError(
+                f"Invalid ISO 8601 timestamp '{schedule_value}'. "
+                f"Expected format: YYYY-MM-DDTHH:MM:SS or YYYY-MM-DDTHH:MM:SS+HH:MM. "
+                f"Error: {e}"
+            )
         return CronSchedule(kind="at", at=schedule_value)
 
     elif schedule_type == "every":
@@ -236,7 +315,19 @@ def _parse_schedule(schedule_type: str, schedule_value: str) -> 'CronSchedule':
         return CronSchedule(kind="every", every_seconds=seconds)
 
     elif schedule_type == "cron":
-        # Cron expression
+        # Validate cron expression (5 or 6 fields)
+        try:
+            if len(schedule_value.split()) != 5:
+                raise ValueError("cron expression must have exactly 5 fields")
+            if not croniter.is_valid(schedule_value):
+                raise ValueError("croniter validation failed")
+            croniter(schedule_value, datetime.now())
+        except Exception as e:
+            raise ValueError(
+                f"Invalid cron expression '{schedule_value}'. "
+                f"Expected format: 'MIN HOUR DAY MONTH WEEKDAY' (e.g., '0 9 * * *' for daily at 9:00). "
+                f"Error: {e}"
+            )
         return CronSchedule(kind="cron", cron_expr=schedule_value)
 
     else:
@@ -258,7 +349,7 @@ def _parse_duration(duration_str: str) -> int:
     Raises:
         ValueError: If format is invalid
     """
-    match = re.match(r'(\d+)([smhd])', duration_str.strip())
+    match = re.fullmatch(r'(\d+)([smhd])', duration_str.strip())
     if not match:
         raise ValueError(f"Invalid duration format: {duration_str}. Use format like '30m', '1h', '2d'")
 
