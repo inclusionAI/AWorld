@@ -8,7 +8,7 @@ Simplified models for MVP - isolated mode only.
 from dataclasses import dataclass, field
 from typing import Literal, Optional, List
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 
 
 @dataclass
@@ -61,5 +61,5 @@ class CronJob:
     state: CronJobState = field(default_factory=CronJobState)
 
     # Metadata
-    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
-    updated_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    created_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
