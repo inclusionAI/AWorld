@@ -1,5 +1,6 @@
 import unittest
 import os
+import pytest
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.core.context.base import Context
@@ -12,6 +13,12 @@ import examples.common.tools
 from aworld.logs.util import logger
 
 from dotenv import load_dotenv
+
+if os.getenv("AWORLD_RUN_LIVE_TRAIN_TESTS") != "1":
+    pytest.skip(
+        "live train/agent stepping tests are opt-in; set AWORLD_RUN_LIVE_TRAIN_TESTS=1 to run them",
+        allow_module_level=True,
+    )
 
 trace.configure(trace.ObservabilityConfig(trace_server_enabled=True))
 

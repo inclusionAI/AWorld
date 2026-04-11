@@ -8,10 +8,14 @@ import fcntl
 import json
 from pathlib import Path
 from typing import List, Optional, Dict, Any
-from datetime import datetime
+from datetime import UTC, datetime
 
 from aworld.logs.util import logger
 from .types import CronJob, CronSchedule, CronPayload, CronJobState
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(UTC).isoformat()
 
 
 class FileBasedCronStore:
@@ -151,8 +155,8 @@ class FileBasedCronStore:
                 running=data["state"].get("running", False),
                 consecutive_errors=data["state"].get("consecutive_errors", 0),
             ),
-            created_at=data.get("created_at", datetime.utcnow().isoformat()),
-            updated_at=data.get("updated_at", datetime.utcnow().isoformat()),
+            created_at=data.get("created_at", _utc_now_iso()),
+            updated_at=data.get("updated_at", _utc_now_iso()),
         )
 
     async def add_job(self, job: CronJob) -> CronJob:
@@ -196,7 +200,7 @@ class FileBasedCronStore:
                         else:
                             job_dict[key] = value
 
-                    job_dict["updated_at"] = datetime.utcnow().isoformat()
+                    job_dict["updated_at"] = _utc_now_iso()
                     self._write_data(data)
                     logger.debug(f"Updated cron job: {job_id}")
                     return self._dict_to_job(job_dict)
@@ -315,7 +319,7 @@ class FileBasedCronStore:
                     job_dict["state"]["running"] = True
                     job_dict["state"]["last_run_at"] = now_iso
                     job_dict["state"]["next_run_at"] = next_run_at  # Advance to next schedule
-                    job_dict["updated_at"] = datetime.utcnow().isoformat()
+                    job_dict["updated_at"] = _utc_now_iso()
 
                     # Write atomically
                     self._write_data(data)
