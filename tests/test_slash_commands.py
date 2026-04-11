@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent / "aworld-cli" / "src"))
 
 from aworld_cli.core.command_system import CommandRegistry, CommandContext
-from aworld_cli.commands import help_cmd, commit, review, diff
+from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd
 
 
 class TestCommandRegistration:
@@ -21,7 +21,7 @@ class TestCommandRegistration:
 
     def test_commands_registered(self):
         """Verify all commands are registered."""
-        expected_commands = ['help', 'commit', 'review', 'diff']
+        expected_commands = ['help', 'commit', 'review', 'diff', 'cron']
         for cmd_name in expected_commands:
             cmd = CommandRegistry.get(cmd_name)
             assert cmd is not None, f"Command /{cmd_name} not registered"
@@ -38,6 +38,9 @@ class TestCommandRegistration:
             cmd = CommandRegistry.get(cmd_name)
             assert cmd.command_type == 'prompt', f"/{cmd_name} should be prompt command"
 
+        cron_cmd = CommandRegistry.get('cron')
+        assert cron_cmd.command_type == 'tool'
+
     def test_list_commands(self):
         """Test listing all registered commands."""
         commands = CommandRegistry.list_commands()
@@ -47,6 +50,7 @@ class TestCommandRegistration:
         assert 'commit' in command_names
         assert 'review' in command_names
         assert 'diff' in command_names
+        assert 'cron' in command_names
 
 
 class TestHelpCommand:
@@ -221,6 +225,34 @@ class TestDiffCommand:
         allowed_tools = cmd.allowed_tools
         assert 'git_diff' in allowed_tools
         assert 'git_status' in allowed_tools
+
+
+class TestCronCommand:
+    """Test /cron command direct execution."""
+
+    @pytest.mark.asyncio
+    async def test_cron_status_executes_tool_directly(self, monkeypatch):
+        """Test /cron status bypasses the agent and calls cron_tool directly."""
+        cmd = CommandRegistry.get('cron')
+        calls = []
+
+        async def fake_cron_tool(**kwargs):
+            calls.append(kwargs)
+            return {
+                "success": True,
+                "scheduler_running": False,
+                "total_jobs": 0,
+                "enabled_jobs": 0,
+            }
+
+        monkeypatch.setattr("aworld_cli.commands.cron_cmd.cron_tool", fake_cron_tool)
+
+        context = CommandContext(cwd=os.getcwd(), user_args='status')
+        result = await cmd.execute(context)
+
+        assert calls == [{"action": "status"}]
+        assert "scheduler_running" in result
+        assert "False" in result
 
 
 class TestCommandContext:
