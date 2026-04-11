@@ -1,0 +1,4 @@
+.aworld/
+.demo_runtime/
+outputs/
+__pycache__/
