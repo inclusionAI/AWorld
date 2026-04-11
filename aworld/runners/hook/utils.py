@@ -81,15 +81,19 @@ async def run_hooks(
     from aworld.runners.hook.hook_factory import HookFactory
     from aworld.core.event.base import Message
 
-    # Resolve logical workspace from explicit arg first, then context, then cwd.
-    resolved_workspace_path = (
-        workspace_path
-        or getattr(context, 'workspace_path', None)
-        or os.getcwd()
-    )
+    def _normalize_updated_input(updated_input: Any) -> Any:
+        if isinstance(updated_input, dict):
+            if 'content' in updated_input:
+                return updated_input['content']
+            if 'actions' in updated_input:
+                return updated_input['actions']
+        return updated_input
 
-    # Get all hooks for the specified hook point, pass workspace_path
-    all_hooks = HookFactory.hooks(hook_point, workspace_path=resolved_workspace_path)
+    requested_workspace_path = workspace_path or getattr(context, 'workspace_path', None)
+
+    # Get all hooks for the specified hook point. Only pass workspace_path
+    # when the caller provided a logical workspace explicitly.
+    all_hooks = HookFactory.hooks(hook_point, workspace_path=requested_workspace_path)
     hooks = all_hooks.get(hook_point, [])
 
     for hook in hooks:
@@ -114,6 +118,10 @@ async def run_hooks(
             # Execute hook
             msg = await hook.exec(hook_message, context)
             if msg:
+                updated_input = msg.headers.get('updated_input') if hasattr(msg, 'headers') else None
+                if updated_input is not None:
+                    hook_message.payload = _normalize_updated_input(updated_input)
+                    hook_message.headers['updated_input'] = updated_input
                 logger.debug(f"Hook {hook.point()} executed successfully")
                 yield msg
         except Exception as e:

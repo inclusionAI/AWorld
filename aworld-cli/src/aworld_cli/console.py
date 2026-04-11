@@ -1021,6 +1021,87 @@ class AWorldCLI:
             self.console.print(f"[red]Error during permission prompt: {e}[/red]")
             return 'deny'
 
+    async def _apply_user_input_hooks(self, user_input: str, executor_instance: Any = None) -> tuple[bool, str]:
+        """Run CLI user_input hooks and return whether execution should continue."""
+        from aworld.core.event.base import Message
+        from aworld.runners.hook.hooks import HookPoint
+        from aworld.runners.hook.utils import run_hooks
+        from aworld.runners.hook.v2.permission import get_permission_handler
+
+        context = None
+        if executor_instance and hasattr(executor_instance, 'context'):
+            context = executor_instance.context
+
+        user_input_msg = Message(
+            category='user_input',
+            payload=user_input,
+            session_id=getattr(context, 'session_id', 'unknown') if context else 'unknown',
+            sender='cli_user',
+            headers={'context': context} if context else {}
+        )
+        if context:
+            user_input_msg.context = context
+
+        workspace_path = getattr(context, 'workspace_path', None) or os.getcwd()
+        should_execute = True
+
+        handler = get_permission_handler()
+        handler.set_interactive_prompt(self._interactive_permission_prompt)
+
+        async for hook_result in run_hooks(
+            context=context,
+            hook_point=HookPoint.USER_INPUT_RECEIVED,
+            hook_from='cli',
+            message=user_input_msg,
+            workspace_path=workspace_path
+        ):
+            if not hook_result or not hasattr(hook_result, 'headers'):
+                continue
+
+            permission_decision = hook_result.headers.get('permission_decision')
+            if permission_decision in ('deny', 'ask'):
+                decision_reason = hook_result.headers.get(
+                    'permission_decision_reason',
+                    'User input blocked by hook'
+                )
+
+                if permission_decision == 'ask':
+                    try:
+                        context_dict = {
+                            'user_input': user_input,
+                            'hook_point': 'USER_INPUT_RECEIVED'
+                        }
+                        final_decision, resolution_reason = await handler.resolve_permission(
+                            permission_decision, decision_reason, context_dict
+                        )
+                        if final_decision == 'deny':
+                            self.console.print(f"[red]🚫 {resolution_reason}[/red]")
+                            should_execute = False
+                            break
+                    except Exception as e:
+                        self.console.print(f"[red]🚫 Permission resolution failed: {e}[/red]")
+                        should_execute = False
+                        break
+                else:
+                    self.console.print(f"[red]🚫 {decision_reason}[/red]")
+                    should_execute = False
+                    break
+
+            updated_input = hook_result.headers.get('updated_input')
+            if updated_input:
+                if isinstance(updated_input, dict) and 'content' in updated_input:
+                    user_input = updated_input['content']
+                elif isinstance(updated_input, str):
+                    user_input = updated_input
+
+            if hook_result.headers.get('prevent_continuation'):
+                stop_reason = hook_result.headers.get('stop_reason', 'Hook stopped execution')
+                self.console.print(f"[yellow]⚠️ {stop_reason}[/yellow]")
+                should_execute = False
+                break
+
+        return should_execute, user_input
+
     async def run_chat_session(self, agent_name: str, executor: Callable[[str], Any], available_agents: List[AgentInfo] = None, executor_instance: Any = None) -> Union[bool, str]:
         """
         Run an interactive chat session with an agent.
@@ -1826,88 +1907,13 @@ Add any custom instructions for AI agents working on this project.
                     # Hooks V2: 触发 user_input_received hook
                     # 在传递给 executor 前，允许 hooks 修改用户输入
                     try:
-                        from aworld.core.event.base import Message
-                        from aworld.runners.hook.hooks import HookPoint
-                        from aworld.runners.hook.utils import run_hooks
-
-                        # 获取 context（如果可用）
-                        context = None
-                        if executor_instance and hasattr(executor_instance, 'context'):
-                            context = executor_instance.context
-
-                        # 创建 user_input_received message
-                        user_input_msg = Message(
-                            category='user_input',
-                            payload=user_input,
-                            session_id=getattr(context, 'session_id', 'unknown') if context else 'unknown',
-                            sender='cli_user',
-                            headers={'context': context} if context else {}
+                        should_execute, user_input = await self._apply_user_input_hooks(
+                            user_input,
+                            executor_instance=executor_instance
                         )
-                        if context:
-                            user_input_msg.context = context
-
-                        # 获取 workspace_path（优先使用 context.workspace_path）
-                        workspace_path = getattr(context, 'workspace_path', None) or os.getcwd()
-
-                        # 运行 hooks
-                        should_execute = True  # P0-3: 标志位控制是否执行 executor
-                        async for hook_result in run_hooks(
-                            context=context,
-                            hook_point=HookPoint.USER_INPUT_RECEIVED,
-                            hook_from='cli',
-                            message=user_input_msg,
-                            workspace_path=workspace_path
-                        ):
-                            # 检查 hook 是否修改了输入
-                            if hook_result and hasattr(hook_result, 'headers'):
-                                # P0-3: 检查 permission_decision 以阻断执行
-                                permission_decision = hook_result.headers.get('permission_decision')
-                                if permission_decision in ('deny', 'ask'):
-                                    decision_reason = hook_result.headers.get('permission_decision_reason', 'User input blocked by hook')
-
-                                    # Handle 'ask' by resolving with permission handler
-                                    if permission_decision == 'ask':
-                                        try:
-                                            from aworld.runners.hook.v2.permission import get_permission_handler
-                                            handler = get_permission_handler()
-                                            context_dict = {
-                                                'user_input': user_input,
-                                                'hook_point': 'USER_INPUT_RECEIVED'
-                                            }
-                                            final_decision, resolution_reason = handler.resolve_permission_sync(
-                                                permission_decision, decision_reason, context_dict
-                                            )
-                                            if final_decision == 'deny':
-                                                self.console.print(f"[red]🚫 {resolution_reason}[/red]")
-                                                should_execute = False
-                                                break
-                                            # else: allowed, continue execution
-                                        except Exception as e:
-                                            self.console.print(f"[red]🚫 Permission resolution failed: {e}[/red]")
-                                            should_execute = False
-                                            break
-                                    else:
-                                        # Direct deny
-                                        self.console.print(f"[red]🚫 {decision_reason}[/red]")
-                                        should_execute = False
-                                        break  # 退出 hook 循环，不执行 executor
-
-                                updated_input = hook_result.headers.get('updated_input')
-                                if updated_input:
-                                    # Hook 修改了输入内容
-                                    if isinstance(updated_input, dict) and 'content' in updated_input:
-                                        user_input = updated_input['content']
-                                    elif isinstance(updated_input, str):
-                                        user_input = updated_input
-
-                                # 检查是否阻止继续执行（兼容旧协议）
-                                if hook_result.headers.get('prevent_continuation'):
-                                    stop_reason = hook_result.headers.get('stop_reason', 'Hook stopped execution')
-                                    self.console.print(f"[yellow]⚠️ {stop_reason}[/yellow]")
-                                    should_execute = False
-                                    break  # 退出 hook 循环，不执行 executor
                     except Exception as e:
                         logger.warning(f"USER_INPUT_RECEIVED hook execution failed: {e}")
+                        should_execute = True
 
                     # P0-3: 只有在 hooks 允许时才执行 executor
                     if should_execute:
@@ -1948,4 +1954,3 @@ Add any custom instructions for AI agents working on this project.
                 continue  # Add continue to prevent fall-through
 
         return False
-

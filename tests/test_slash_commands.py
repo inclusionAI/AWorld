@@ -42,10 +42,11 @@ class TestCommandRegistration:
         """Test listing all registered commands."""
         commands = CommandRegistry.list_commands()
         assert len(commands) >= 4  # At least our 4 commands
-        assert 'help' in commands
-        assert 'commit' in commands
-        assert 'review' in commands
-        assert 'diff' in commands
+        command_names = [cmd.name for cmd in commands]
+        assert 'help' in command_names
+        assert 'commit' in command_names
+        assert 'review' in command_names
+        assert 'diff' in command_names
 
 
 class TestHelpCommand:

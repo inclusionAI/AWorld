@@ -1,4 +1,5 @@
 import unittest
+import os
 
 from dotenv import load_dotenv
 
@@ -11,6 +12,9 @@ class EvalRuntimeTest(unittest.IsolatedAsyncioTestCase):
 
     async def test_agent_evaluation(self):
         load_dotenv()
+
+        if not (os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")):
+            self.skipTest("LLM credentials are required for evaluation runtime test")
 
         eval_config = EvaluationConfig(
             eval_target_full_class_name="aworld.evaluations.eval_targets.agent_eval.AworldAgentEvalTarget",
