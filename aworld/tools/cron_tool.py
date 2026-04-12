@@ -80,6 +80,10 @@ async def cron_tool(
         default=None,
         description="Whether to delete the task after one execution (for one-time reminders)"
     ),
+    max_runs: Optional[int] = Field(
+        default=None,
+        description="Optional maximum execution count for recurring tasks"
+    ),
 
     # update/remove/run parameters
     job_id: Optional[str] = Field(
@@ -110,8 +114,34 @@ async def cron_tool(
     agent_name = unwrap_fieldinfo_helper(agent_name)
     tools = unwrap_fieldinfo_helper(tools)
     delete_after_run = unwrap_fieldinfo_helper(delete_after_run)
+    max_runs = unwrap_fieldinfo_helper(max_runs)
     job_id = unwrap_fieldinfo_helper(job_id)
     include_disabled = unwrap_fieldinfo_helper(include_disabled)
+
+    def normalize_agent_name_local(raw_agent_name: Optional[str]) -> str:
+        candidate = (raw_agent_name or "Aworld").strip()
+        if not candidate:
+            return "Aworld"
+        if candidate.lower() == "aworld":
+            return "Aworld"
+        return candidate
+
+    def normalize_max_runs_local(raw_max_runs: Optional[Any]) -> Optional[int]:
+        if raw_max_runs is None or raw_max_runs == "":
+            return None
+        try:
+            parsed = int(raw_max_runs)
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"Invalid max_runs value: {raw_max_runs}") from e
+        if parsed <= 0:
+            raise ValueError(f"Invalid max_runs value: {raw_max_runs}. Expected a positive integer.")
+        return parsed
+
+    try:
+        max_runs = normalize_max_runs_local(max_runs)
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+    agent_name = normalize_agent_name_local(agent_name)
 
     def parse_duration_local(duration_str: str) -> int:
         match = re.fullmatch(r'(\d+)([smhd])', duration_str.strip())
@@ -196,6 +226,7 @@ async def cron_tool(
                 message = message or parsed_request["message"]
                 schedule_type = schedule_type or parsed_request["schedule_type"]
                 schedule_value = schedule_value or parsed_request["schedule_value"]
+                max_runs = max_runs or parsed_request.get("max_runs")
                 if delete_after_run is None:
                     delete_after_run = parsed_request["delete_after_run"]
 
@@ -220,6 +251,7 @@ async def cron_tool(
                     message=message,
                     agent_name=agent_name or "Aworld",
                     tool_names=tools or [],
+                    max_runs=max_runs,
                 ),
                 delete_after_run=delete_after_run or (schedule_type == "at"),
             )
@@ -247,6 +279,8 @@ async def cron_tool(
                         "next_run": j.state.next_run_at,
                         "last_run": j.state.last_run_at,
                         "enabled": j.enabled,
+                        "max_runs": j.payload.max_runs,
+                        "run_count": j.state.run_count,
                         "last_status": j.state.last_status,
                         "last_error": j.state.last_error if j.state.last_error else None,
                     }
@@ -406,6 +440,34 @@ def _parse_natural_language_add_request(request: str, now: Optional[datetime] = 
             "delete_after_run": True,
         }
 
+    bounded_every_match = re.fullmatch(
+        r"每\s*(?P<num>\d+|[零一二两三四五六七八九十百]+)\s*"
+        r"(?P<unit>秒钟?|秒|分钟|分|小时|个小时|小时|天|日)\s*"
+        r"(?:提醒我(?P<body1>.+?)|给我发(?:一次)?(?P<body2>.+?))"
+        r"(?:提醒|通知)?\s*[，,]?\s*"
+        r"(?:一共|总共|共)?(?:发送)?(?P<count>\d+|[零一二两三四五六七八九十百]+)次"
+        r"(?:就可以|即可|就行|便可|就够了|就好了)?",
+        text,
+    )
+    if bounded_every_match:
+        quantity = _parse_natural_language_number(bounded_every_match.group("num"))
+        count = _parse_natural_language_number(bounded_every_match.group("count"))
+        unit = bounded_every_match.group("unit")
+        body = bounded_every_match.group("body1") or bounded_every_match.group("body2") or ""
+        clean_body = body.strip()
+        for suffix in ("提醒", "通知"):
+            if clean_body.endswith(suffix):
+                clean_body = clean_body[:-len(suffix)].rstrip()
+        message = _normalize_reminder_message(clean_body)
+        return {
+            "name": _reminder_name_from_message(message),
+            "message": message,
+            "schedule_type": "every",
+            "schedule_value": _format_duration_for_every(quantity, unit),
+            "delete_after_run": False,
+            "max_runs": count,
+        }
+
     daily_match = re.fullmatch(
         r"每天(?:(?P<period>早上|上午|中午|下午|晚上))?(?P<hour>\d{1,2})点(?P<half>半)?提醒我(?P<body>.+)",
         text,
@@ -468,6 +530,18 @@ def _natural_language_delta(quantity: int, unit: str) -> timedelta:
     if unit in {"天", "日"}:
         return timedelta(days=quantity)
     raise ValueError(f"Unsupported relative reminder unit: {unit}")
+
+
+def _format_duration_for_every(quantity: int, unit: str) -> str:
+    if unit in {"秒", "秒钟"}:
+        return f"{quantity}s"
+    if unit in {"分", "分钟"}:
+        return f"{quantity}m"
+    if unit in {"小时", "个小时"}:
+        return f"{quantity}h"
+    if unit in {"天", "日"}:
+        return f"{quantity}d"
+    raise ValueError(f"Unsupported recurring reminder unit: {unit}")
 
 
 def _parse_natural_language_number(value: str) -> int:

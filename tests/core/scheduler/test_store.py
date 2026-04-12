@@ -218,5 +218,38 @@ async def test_claim_due_job_various_timezones(temp_store):
             assert claimed is None, f"Failed (should not claim): {desc}"
 
 
+@pytest.mark.asyncio
+async def test_store_coerces_legacy_string_max_runs_and_tool_fields(temp_store):
+    """Legacy cron.json rows with string fields should deserialize to runtime-safe types."""
+    job = CronJob(
+        name="legacy-bounded-job",
+        schedule=CronSchedule(kind="every", every_seconds=180),
+        payload=CronPayload(
+            message="提醒用户进行运动",
+            agent_name="aworld",
+            tool_names=["cron"],
+            max_runs=3,
+        ),
+        state=CronJobState(next_run_at="2026-04-12T10:32:00+00:00"),
+    )
+
+    await temp_store.add_job(job)
+
+    data = temp_store._read_data()
+    data["jobs"][0]["payload"]["max_runs"] = "3"
+    data["jobs"][0]["payload"]["tool_names"] = "cron"
+    data["jobs"][0]["enabled"] = "true"
+    data["jobs"][0]["delete_after_run"] = "false"
+    temp_store._write_data(data)
+
+    restored = await temp_store.get_job(job.id)
+
+    assert restored is not None
+    assert restored.payload.max_runs == 3
+    assert restored.payload.tool_names == ["cron"]
+    assert restored.enabled is True
+    assert restored.delete_after_run is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

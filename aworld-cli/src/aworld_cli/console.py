@@ -42,6 +42,23 @@ class AWorldCLI:
         self._notification_stop_event = None
         self._notification_drain_lock = asyncio.Lock()
 
+    def _build_cron_bottom_toolbar(self, runtime) -> str:
+        """
+        Build bottom-toolbar text for unread cron notifications.
+
+        Returns an empty string when there are no unread notifications so
+        prompt_toolkit keeps the prompt area clean.
+        """
+        notification_center = getattr(runtime, "_notification_center", None)
+        if not notification_center:
+            return ""
+
+        unread_count = notification_center.get_unread_count()
+        if unread_count <= 0:
+            return ""
+
+        return f"Cron: 有 {unread_count} 条未读提醒，使用 /cron list 查看"
+
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
         result = Text()
@@ -950,6 +967,10 @@ class AWorldCLI:
             summary = getattr(notif, 'summary', '')
             self.console.print(f"[{color}][Cron] {summary}[/{color}]")
 
+            detail = getattr(notif, 'detail', None)
+            if detail:
+                self.console.print(f"  [bold]提醒内容：[/bold]{detail}")
+
             # Show next run time for recurring jobs
             next_run_at = getattr(notif, 'next_run_at', None)
             if next_run_at:
@@ -1229,37 +1250,22 @@ class AWorldCLI:
                 history=FileHistory(str(history_path)),
             )
 
-        # Start background notification poller for real-time display during idle
+        runtime = None
         if executor_instance and hasattr(executor_instance, '_base_runtime'):
             runtime = executor_instance._base_runtime
-            self._notification_stop_event = asyncio.Event()
-            self._notification_poll_task = asyncio.create_task(
-                self._notification_poller(
-                    runtime=runtime,
-                    poll_interval=NOTIFICATION_POLL_INTERVAL,
-                    stop_event=self._notification_stop_event
-                )
-            )
 
         while True:
-            # Drain and render pending cron notifications (BEFORE user input prompt)
-            if executor_instance and hasattr(executor_instance, '_base_runtime'):
-                try:
-                    runtime = executor_instance._base_runtime
-                    notifications = await self._drain_notifications_safe(runtime)
-                    if notifications:
-                        self.render_cron_notifications(notifications)
-                except Exception:
-                    # Graceful failure - never crash chat loop on notification error
-                    pass
-
             try:
                 # Use prompt_toolkit in terminal, plain input() in non-terminal (e.g., IDE debugger)
                 if is_terminal and session:
                     # Use prompt_toolkit for input with completion
                     # We use HTML for basic coloring of the prompt
                     prompt_text = "<b><cyan>You</cyan></b>: "
-                    user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text))
+                    prompt_kwargs = {}
+                    if runtime:
+                        prompt_kwargs["bottom_toolbar"] = lambda: self._build_cron_bottom_toolbar(runtime)
+                        prompt_kwargs["refresh_interval"] = 0.1
+                    user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text), **prompt_kwargs)
                 else:
                     # Fallback to plain input() for non-terminal environments
                     self.console.print("[cyan]You[/cyan]: ", end="")
@@ -1891,17 +1897,6 @@ Add any custom instructions for AI agents working on this project.
                     finally:
                         self._is_agent_executing = False
 
-                    # Drain and render pending cron notifications (AFTER agent execution)
-                    if executor_instance and hasattr(executor_instance, '_base_runtime'):
-                        try:
-                            runtime = executor_instance._base_runtime
-                            notifications = await self._drain_notifications_safe(runtime)
-                            if notifications:
-                                self.render_cron_notifications(notifications)
-                        except Exception:
-                            # Graceful failure - never crash chat loop on notification error
-                            pass
-
                 except Exception as e:
                     import traceback
                     logger.error(f"Error executing task: {e} {traceback.format_exc()}")
@@ -1947,4 +1942,3 @@ Add any custom instructions for AI agents working on this project.
                 self._notification_stop_event = None
 
         return False
-

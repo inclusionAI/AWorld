@@ -25,6 +25,7 @@ class CronNotification:
         job_name: Human-readable job name
         status: Terminal status (ok/error/timeout)
         summary: One-line summary for display
+        detail: Optional reminder content for display
         created_at: Notification creation timestamp (ISO 8601)
         next_run_at: Next scheduled run time if job is recurring
     """
@@ -33,6 +34,7 @@ class CronNotification:
     job_name: str = ""
     status: Literal["ok", "error", "timeout"] = "ok"
     summary: str = ""
+    detail: Optional[str] = None
     created_at: str = field(default_factory=lambda: datetime.now(pytz.UTC).isoformat())
     next_run_at: Optional[str] = None
 
@@ -62,6 +64,7 @@ class CronNotificationCenter:
         """
         self._max_size = max_size
         self._queue = asyncio.Queue(maxsize=max_size)
+        self._unread_count = 0
 
     async def publish(self, notification_data: dict) -> None:
         """
@@ -81,6 +84,7 @@ class CronNotificationCenter:
                 job_name=notification_data.get('job_name', ''),
                 status=notification_data.get('status', 'ok'),
                 summary=notification_data.get('summary', ''),
+                detail=notification_data.get('detail'),
                 created_at=notification_data.get('created_at', datetime.now(pytz.UTC).isoformat()),
                 next_run_at=notification_data.get('next_run_at')
             )
@@ -96,6 +100,8 @@ class CronNotificationCenter:
                 except:
                     # If we can't drop oldest, silently skip this notification
                     pass
+
+            self._unread_count = self._queue.qsize()
 
         except Exception:
             # Graceful failure - notification system should never crash scheduler
@@ -127,4 +133,10 @@ class CronNotificationCenter:
             # Graceful failure - return what we have so far
             pass
 
+        self._unread_count = self._queue.qsize()
+
         return notifications
+
+    def get_unread_count(self) -> int:
+        """Return current unread notification count without draining the queue."""
+        return max(0, self._unread_count)

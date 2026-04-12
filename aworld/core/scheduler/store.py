@@ -18,6 +18,58 @@ def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _coerce_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "1", "yes", "on"}
+    return bool(value)
+
+
+def _coerce_tool_names(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if isinstance(value, str):
+        stripped = value.strip()
+        return [stripped] if stripped else []
+    return [str(value)]
+
+
+def _coerce_optional_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        return int(stripped)
+    return int(value)
+
+
+def _coerce_int(value: Any, default: int = 0) -> int:
+    coerced = _coerce_optional_int(value)
+    return default if coerced is None else coerced
+
+
+def _normalize_agent_name(value: Any) -> str:
+    if value is None:
+        return "Aworld"
+    agent_name = str(value).strip()
+    if not agent_name:
+        return "Aworld"
+    if agent_name.lower() == "aworld":
+        return "Aworld"
+    return agent_name
+
+
 class FileBasedCronStore:
     """
     File-based cron job storage with atomic writes and locking.
@@ -113,6 +165,7 @@ class FileBasedCronStore:
                 "agent_name": job.payload.agent_name,
                 "tool_names": job.payload.tool_names,
                 "timeout_seconds": job.payload.timeout_seconds,
+                "max_runs": job.payload.max_runs,
             },
             "state": {
                 "next_run_at": job.state.next_run_at,
@@ -121,6 +174,7 @@ class FileBasedCronStore:
                 "last_error": job.state.last_error,
                 "running": job.state.running,
                 "consecutive_errors": job.state.consecutive_errors,
+                "run_count": job.state.run_count,
             },
             "created_at": job.created_at,
             "updated_at": job.updated_at,
@@ -132,8 +186,8 @@ class FileBasedCronStore:
             id=data["id"],
             name=data["name"],
             description=data.get("description"),
-            enabled=data.get("enabled", True),
-            delete_after_run=data.get("delete_after_run", False),
+            enabled=_coerce_bool(data.get("enabled", True)),
+            delete_after_run=_coerce_bool(data.get("delete_after_run", False)),
             schedule=CronSchedule(
                 kind=data["schedule"]["kind"],
                 at=data["schedule"].get("at"),
@@ -143,17 +197,19 @@ class FileBasedCronStore:
             ),
             payload=CronPayload(
                 message=data["payload"]["message"],
-                agent_name=data["payload"].get("agent_name", "Aworld"),
-                tool_names=data["payload"].get("tool_names", []),
+                agent_name=_normalize_agent_name(data["payload"].get("agent_name", "Aworld")),
+                tool_names=_coerce_tool_names(data["payload"].get("tool_names", [])),
                 timeout_seconds=data["payload"].get("timeout_seconds"),
+                max_runs=_coerce_optional_int(data["payload"].get("max_runs")),
             ),
             state=CronJobState(
                 next_run_at=data["state"].get("next_run_at"),
                 last_run_at=data["state"].get("last_run_at"),
                 last_status=data["state"].get("last_status"),
                 last_error=data["state"].get("last_error"),
-                running=data["state"].get("running", False),
-                consecutive_errors=data["state"].get("consecutive_errors", 0),
+                running=_coerce_bool(data["state"].get("running", False)),
+                consecutive_errors=_coerce_int(data["state"].get("consecutive_errors", 0)),
+                run_count=_coerce_int(data["state"].get("run_count", 0)),
             ),
             created_at=data.get("created_at", _utc_now_iso()),
             updated_at=data.get("updated_at", _utc_now_iso()),

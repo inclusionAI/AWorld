@@ -4,6 +4,7 @@
 Cron scheduler - timer loop with startup recovery.
 """
 import asyncio
+import re
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, List, Callable, Any, Awaitable, Literal
 import pytz
@@ -12,6 +13,10 @@ from aworld.logs.util import logger
 from .types import CronJob
 from .store import FileBasedCronStore
 from .executor import CronExecutor
+
+_LEGACY_STOP_JOB_RE = re.compile(
+    r"停止.+?任务[（(]ID:\s*(?P<job_id>[0-9a-fA-F-]{36})[)）]"
+)
 
 
 class CronScheduler:
@@ -109,6 +114,14 @@ class CronScheduler:
         now = datetime.now(pytz.UTC)
 
         for job in jobs:
+            if self._has_reached_max_runs(job):
+                await self.store.update_job(
+                    job.id,
+                    enabled=False,
+                    state={"next_run_at": None, "running": False}
+                )
+                continue
+
             next_run = self._calculate_next_run(job, now)
             # Always update next_run_at (even if None for expired one-time tasks)
             await self.store.update_job(
@@ -133,7 +146,7 @@ class CronScheduler:
                     # Job is due - calculate next run time and claim atomically
                     now = datetime.now(pytz.UTC)
                     now_iso = now.isoformat()
-                    next_run = self._calculate_next_run(next_job, now)
+                    next_run = self._calculate_claim_next_run(next_job, now)
                     next_run_iso = next_run.isoformat() if next_run else None
 
                     claimed_job = await self.store.claim_due_job(next_job.id, now_iso, next_run_iso)
@@ -220,6 +233,9 @@ class CronScheduler:
         schedule = job.schedule
 
         try:
+            if self._has_reached_max_runs(job):
+                return None
+
             if schedule.kind == "at":
                 # One-time task
                 if not schedule.at:
@@ -275,6 +291,92 @@ class CronScheduler:
 
         return None
 
+    def _calculate_claim_next_run(self, job: CronJob, claimed_at: datetime) -> Optional[datetime]:
+        """Calculate the next persisted run time at claim time."""
+        if self._has_reached_max_runs(job):
+            return None
+
+        if job.schedule.kind == "every" and job.schedule.every_seconds:
+            return claimed_at + timedelta(seconds=job.schedule.every_seconds)
+
+        return self._calculate_next_run(job, claimed_at)
+
+    def _has_reached_max_runs(self, job: CronJob, run_count: Optional[int] = None) -> bool:
+        """Return True when a bounded recurring job has exhausted its run budget."""
+        max_runs = self._coerce_max_runs(job.payload.max_runs)
+        current_runs = job.state.run_count if run_count is None else run_count
+        return bool(max_runs and max_runs > 0 and current_runs >= max_runs)
+
+    def _coerce_max_runs(self, value: Any) -> Optional[int]:
+        """Best-effort integer coercion for runtime safety with legacy persisted data."""
+        if value is None or value == "":
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            stripped = value.strip()
+            if not stripped:
+                return None
+            return int(stripped)
+        return int(value)
+
+    def _extract_legacy_stop_target_id(self, message: str) -> Optional[str]:
+        """Extract target job ID from legacy 'stop reminder' control messages."""
+        match = _LEGACY_STOP_JOB_RE.search((message or "").strip())
+        return match.group("job_id") if match else None
+
+    async def _execute_job_payload(self, job: CronJob):
+        """Execute a job or short-circuit legacy stop-task payloads."""
+        from aworld.core.task import TaskResponse
+
+        target_job_id = self._extract_legacy_stop_target_id(job.payload.message)
+        if target_job_id:
+            target_job = await self.store.get_job(target_job_id)
+            if target_job:
+                await self.store.update_job(
+                    target_job_id,
+                    enabled=False,
+                    state={"next_run_at": None, "running": False}
+                )
+                logger.info(f"Disabled legacy stop-job target: {target_job_id}")
+            else:
+                logger.info(f"Legacy stop-job target already absent: {target_job_id}")
+
+            return TaskResponse(success=True, msg=f"Stopped job {target_job_id}")
+
+        return await self.executor.execute_with_retry(job)
+
+    async def _persist_job_result(self, job: CronJob, result) -> tuple[Optional[CronJob], bool]:
+        """Persist terminal execution state and return the updated job."""
+        run_count = job.state.run_count + (1 if result.success else 0)
+        next_run_at = job.state.next_run_at
+        updates = {
+            "running": False,
+            "last_status": "ok" if result.success else "error",
+            "last_error": None if result.success else result.msg,
+            "consecutive_errors": 0 if result.success else job.state.consecutive_errors + 1,
+            "run_count": run_count,
+        }
+        job_updates = {}
+
+        if result.success and self._has_reached_max_runs(job, run_count):
+            updates["next_run_at"] = None
+            next_run_at = None
+            job_updates["enabled"] = False
+
+        persisted_job = await self.store.update_job(job.id, state=updates, **job_updates)
+        should_remove = result.success and job.delete_after_run and next_run_at is None
+        if should_remove:
+            await self.store.remove_job(job.id)
+            return None, True
+
+        if persisted_job:
+            return persisted_job, False
+
+        return await self.store.get_job(job.id), False
+
     async def _publish_notification(
         self,
         job: CronJob,
@@ -312,11 +414,14 @@ class CronScheduler:
                 # Fixed template - do NOT include raw error text in notification
                 summary = f'Cron task "{job.name}" failed'
 
+            detail = self._build_notification_detail(job, status)
+
             notification_data = {
                 'job_id': job.id,
                 'job_name': job.name,
                 'status': status,
                 'summary': summary,
+                'detail': detail,
                 'created_at': datetime.now(pytz.UTC).isoformat(),
                 'next_run_at': job.state.next_run_at
             }
@@ -326,6 +431,37 @@ class CronScheduler:
         except Exception as e:
             # Graceful failure - notification system should never crash scheduler
             logger.warning(f"Failed to publish notification for job {job.id}: {e}")
+
+    def _build_notification_detail(
+        self,
+        job: CronJob,
+        status: Literal["ok", "error", "timeout"],
+    ) -> Optional[str]:
+        """
+        Build optional user-facing detail for notifications.
+
+        Only successful reminder-like jobs include reminder content so the CLI
+        can show the actual reminder text, not just the terminal state.
+        """
+        if status != "ok":
+            return None
+
+        message = (job.payload.message or "").strip()
+        if not message:
+            return None
+
+        job_name = (job.name or "").strip()
+        message_lower = message.lower()
+        name_lower = job_name.lower()
+
+        is_reminder = (
+            "提醒" in message
+            or "提醒" in job_name
+            or "remind" in message_lower
+            or "remind" in name_lower
+        )
+
+        return message if is_reminder else None
 
     async def _execute_claimed_job(self, job: CronJob):
         """
@@ -344,31 +480,20 @@ class CronScheduler:
                 # Execute with timeout
                 timeout = job.payload.timeout_seconds or 600
                 result = await asyncio.wait_for(
-                    self.executor.execute_with_retry(job),
+                    self._execute_job_payload(job),
                     timeout=timeout
                 )
 
-                # Update state (next_run_at already advanced during claim)
-                await self.store.update_job(
-                    job.id,
-                    state={
-                        "running": False,
-                        "last_status": "ok" if result.success else "error",
-                        "last_error": result.msg if not result.success else None,
-                        "consecutive_errors": 0 if result.success else job.state.consecutive_errors + 1,
-                    }
-                )
-
-                # Delete one-time jobs (those with next_run_at=None after claim)
-                if job.delete_after_run and job.state.next_run_at is None:
-                    await self.store.remove_job(job.id)
-                    logger.info(f"Deleted one-time job: {job.id}")
+                persisted_job, removed = await self._persist_job_result(job, result)
+                notification_job = persisted_job or job
 
                 # Publish notification (after state persistence and deletion)
                 if result.success:
-                    await self._publish_notification(job, "ok")
+                    await self._publish_notification(notification_job, "ok")
+                    if removed:
+                        logger.info(f"Deleted one-time job: {job.id}")
                 else:
-                    await self._publish_notification(job, "error", result.msg)
+                    await self._publish_notification(notification_job, "error", result.msg)
 
             except asyncio.TimeoutError:
                 logger.error(f"Job {job.id} execution timeout")
@@ -480,26 +605,18 @@ class CronScheduler:
                 logger.info(f"Manually running job: {job_id}")
                 timeout = job.payload.timeout_seconds or 600
                 result = await asyncio.wait_for(
-                    self.executor.execute_with_retry(job),
+                    self._execute_job_payload(updated_job),
                     timeout=timeout
                 )
 
-                # Update state (running=False, status, error)
-                await self.store.update_job(
-                    job_id,
-                    state={
-                        "running": False,
-                        "last_status": "ok" if result.success else "error",
-                        "last_error": result.msg if not result.success else None,
-                        "consecutive_errors": 0 if result.success else job.state.consecutive_errors + 1,
-                    }
-                )
+                persisted_job, _ = await self._persist_job_result(updated_job, result)
+                notification_job = persisted_job or updated_job
 
                 # Publish notification for manual run
                 if result.success:
-                    await self._publish_notification(job, "ok")
+                    await self._publish_notification(notification_job, "ok")
                 else:
-                    await self._publish_notification(job, "error", result.msg)
+                    await self._publish_notification(notification_job, "error", result.msg)
 
                 return result
 
