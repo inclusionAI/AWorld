@@ -29,3 +29,11 @@ def test_aworld_prompt_allows_passing_raw_reminder_request_to_cron():
 
     assert "pass the user's raw reminder request directly to `cron`" in prompt
     assert "一分钟后提醒我喝水" in prompt
+
+
+def test_aworld_prompt_prefers_single_bounded_cron_for_finite_repetition():
+    prompt = load_aworld_system_prompt()
+
+    assert "If the user wants a repeating reminder with a fixed total count" in prompt
+    assert "single cron task with a run limit" in prompt
+    assert "do not create a second stop task" in prompt

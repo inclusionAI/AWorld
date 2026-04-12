@@ -9,9 +9,13 @@ import pytest
 import asyncio
 from unittest.mock import AsyncMock, MagicMock
 from datetime import datetime
+from io import StringIO
+from datetime import timedelta
 import pytz
+from rich.console import Console
 
 from aworld_cli.runtime.cron_notifications import CronNotification, CronNotificationCenter
+from aworld_cli.console import AWorldCLI
 from aworld.core.scheduler.scheduler import CronScheduler
 from aworld.core.scheduler.store import FileBasedCronStore
 from aworld.core.scheduler.executor import CronExecutor
@@ -89,6 +93,35 @@ async def test_notification_center_bounded_size():
 
 
 @pytest.mark.asyncio
+async def test_notification_center_tracks_unread_count_until_drain():
+    """Unread count should increase on publish and reset after drain."""
+    center = CronNotificationCenter(max_size=10)
+
+    assert center.get_unread_count() == 0
+
+    await center.publish({
+        'job_id': 'job1',
+        'job_name': 'Job 1',
+        'status': 'ok',
+        'summary': 'Job 1 completed',
+        'created_at': datetime.now(pytz.UTC).isoformat()
+    })
+    await center.publish({
+        'job_id': 'job2',
+        'job_name': 'Job 2',
+        'status': 'ok',
+        'summary': 'Job 2 completed',
+        'created_at': datetime.now(pytz.UTC).isoformat()
+    })
+
+    assert center.get_unread_count() == 2
+
+    drained = await center.drain()
+    assert len(drained) == 2
+    assert center.get_unread_count() == 0
+
+
+@pytest.mark.asyncio
 async def test_scheduler_publishes_on_success():
     """Test that scheduler publishes success notification."""
     import tempfile
@@ -136,6 +169,46 @@ async def test_scheduler_publishes_on_success():
         assert call_args['job_name'] == 'test-job'
         assert call_args['status'] == 'ok'
         assert 'completed' in call_args['summary']
+        assert call_args.get('detail') is None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_publishes_reminder_detail_on_success():
+    """Reminder-style jobs should publish explicit reminder content for CLI rendering."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_path = Path(tmpdir) / "cron.json"
+        store = FileBasedCronStore(str(store_path))
+
+        executor = AsyncMock(spec=CronExecutor)
+        executor.execute_with_retry = AsyncMock(
+            return_value=TaskResponse(success=True, msg="Success")
+        )
+
+        notification_sink = AsyncMock()
+        scheduler = CronScheduler(store, executor, notification_sink=notification_sink)
+
+        now = datetime.now(pytz.UTC)
+        job = CronJob(
+            name="喝水提醒",
+            schedule=CronSchedule(kind="at", at=now.isoformat()),
+            payload=CronPayload(message="提醒我喝水"),
+            state=CronJobState(
+                running=True,
+                last_run_at=now.isoformat(),
+                next_run_at=None
+            )
+        )
+
+        await store.add_job(job)
+        await scheduler._execute_claimed_job(job)
+
+        notification_sink.assert_called_once()
+        call_args = notification_sink.call_args[0][0]
+        assert call_args['status'] == 'ok'
+        assert call_args['detail'] == "提醒我喝水"
 
 
 @pytest.mark.asyncio
@@ -275,10 +348,127 @@ async def test_scheduler_no_publish_without_sink():
         # Execute the claimed job (should not crash without sink)
         try:
             await scheduler._execute_claimed_job(job)
+
             # Should complete successfully without notification
             assert True
         except Exception as e:
             pytest.fail(f"Scheduler should handle missing sink gracefully, but raised: {e}")
+
+
+@pytest.mark.asyncio
+async def test_every_job_first_followup_advances_by_full_interval():
+    """First execution of an every-job should schedule the next run one full interval later."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_path = Path(tmpdir) / "cron.json"
+        store = FileBasedCronStore(str(store_path))
+        scheduler = CronScheduler(store, AsyncMock(spec=CronExecutor))
+
+        now = datetime.now(pytz.UTC)
+        job = CronJob(
+            name="interval-job",
+            schedule=CronSchedule(kind="every", every_seconds=180),
+            payload=CronPayload(message="test"),
+        )
+
+        added_job = await scheduler.add_job(job)
+        claim_time = datetime.fromisoformat(added_job.state.next_run_at.replace('Z', '+00:00'))
+        claimed_job = await store.claim_due_job(
+            added_job.id,
+            claim_time.isoformat(),
+            scheduler._calculate_claim_next_run(added_job, claim_time).isoformat(),
+        )
+
+        assert claimed_job is not None
+        assert claimed_job.state.next_run_at == (claim_time + timedelta(seconds=180)).isoformat()
+
+
+@pytest.mark.asyncio
+async def test_scheduler_disables_job_after_max_runs():
+    """Bounded recurring jobs should stop themselves after the configured number of runs."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_path = Path(tmpdir) / "cron.json"
+        store = FileBasedCronStore(str(store_path))
+
+        executor = AsyncMock(spec=CronExecutor)
+        executor.execute_with_retry = AsyncMock(
+            return_value=TaskResponse(success=True, msg="Success")
+        )
+        scheduler = CronScheduler(store, executor)
+
+        now = datetime.now(pytz.UTC)
+        job = CronJob(
+            name="bounded-job",
+            schedule=CronSchedule(kind="every", every_seconds=180),
+            payload=CronPayload(message="提醒我运动", max_runs=3),
+            state=CronJobState(
+                running=True,
+                last_run_at=now.isoformat(),
+                next_run_at=(now + timedelta(seconds=180)).isoformat(),
+                run_count=2,
+            )
+        )
+
+        await store.add_job(job)
+        await scheduler._execute_claimed_job(job)
+
+        persisted_job = await store.get_job(job.id)
+        assert persisted_job is not None
+        assert persisted_job.enabled is False
+        assert persisted_job.state.next_run_at is None
+        assert persisted_job.state.run_count == 3
+
+
+def test_console_renders_reminder_detail():
+    """CLI notification renderer should surface reminder content below status line."""
+    cli = AWorldCLI()
+    buffer = StringIO()
+    cli.console = Console(file=buffer, force_terminal=False, color_system=None)
+
+    cli.render_cron_notifications([
+        CronNotification(
+            job_id="job-1",
+            job_name="喝水提醒",
+            status="ok",
+            summary='Cron task "喝水提醒" completed',
+            detail="提醒我喝水",
+        )
+    ])
+
+    output = buffer.getvalue()
+    assert 'Cron task "喝水提醒" completed' in output
+    assert '提醒内容：提醒我喝水' in output
+
+
+def test_console_formats_bottom_toolbar_with_unread_cron_notifications():
+    """Unread cron reminders should appear in the bottom toolbar, not chat output."""
+    cli = AWorldCLI()
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = CronNotificationCenter()
+
+    runtime = FakeRuntime()
+
+    asyncio.run(runtime._notification_center.publish({
+        'job_id': 'job-1',
+        'job_name': '喝水提醒',
+        'status': 'ok',
+        'summary': 'Cron task "喝水提醒" completed',
+        'detail': '提醒我喝水',
+        'created_at': datetime.now(pytz.UTC).isoformat(),
+    }))
+
+    toolbar = cli._build_cron_bottom_toolbar(runtime)
+
+    assert toolbar is not None
+    assert "有 1 条未读提醒" in str(toolbar)
+    assert "/cron list" in str(toolbar)
 
 
 if __name__ == "__main__":

@@ -135,6 +135,22 @@ class TestParseScheduleValidation:
         assert parsed["schedule_value"] == "0 9 * * *"
         assert parsed["delete_after_run"] is False
 
+    def test_parse_natural_language_bounded_every_reminder_in_chinese(self):
+        """Test bounded recurring reminders are parsed with interval and max run count."""
+        now = datetime(2026, 4, 11, 23, 21, 0, tzinfo=timezone(timedelta(hours=8)))
+
+        parsed = self._parse_natural_language_add_request(
+            "每3分钟提醒我运动，一共发送三次就可以",
+            now=now,
+        )
+
+        assert parsed["name"] == "提醒：运动"
+        assert parsed["message"] == "提醒我运动"
+        assert parsed["schedule_type"] == "every"
+        assert parsed["schedule_value"] == "3m"
+        assert parsed["delete_after_run"] is False
+        assert parsed["max_runs"] == 3
+
     def test_parse_natural_language_rejects_unsupported_request(self):
         """Test unsupported natural-language requests fail clearly."""
         now = datetime(2026, 4, 11, 23, 21, 0, tzinfo=timezone(timedelta(hours=8)))
@@ -182,6 +198,42 @@ async def test_cron_tool_add_accepts_raw_natural_language_request(monkeypatch):
     assert fake_scheduler.last_job.name == "提醒：喝水"
     assert fake_scheduler.last_job.payload.message == "提醒我喝水"
     assert fake_scheduler.last_job.schedule.kind == "at"
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_normalizes_string_max_runs_and_aworld_agent_name(monkeypatch):
+    """String max_runs and lowercase aworld agent name should be normalized before persistence."""
+    from aworld.core.scheduler.types import CronJobState
+    import aworld.tools.cron_tool as cron_tool_module
+
+    class FakeScheduler:
+        def __init__(self):
+            self.last_job = None
+
+        async def add_job(self, job):
+            self.last_job = job
+            job.state = CronJobState(next_run_at="2026-04-12T10:32:00+00:00")
+            return job
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        name="运动通知",
+        message="提醒用户进行运动",
+        schedule_type="every",
+        schedule_value="3m",
+        agent_name="aworld",
+        max_runs="3",
+        delete_after_run=False,
+    )
+
+    assert result["success"] is True
+    assert result["next_run"] == "2026-04-12T10:32:00+00:00"
+    assert fake_scheduler.last_job is not None
+    assert fake_scheduler.last_job.payload.max_runs == 3
+    assert fake_scheduler.last_job.payload.agent_name == "Aworld"
 
 
 if __name__ == "__main__":

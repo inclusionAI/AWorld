@@ -34,6 +34,7 @@ class CronPayload:
     agent_name: str = "Aworld"           # Agent to use
     tool_names: List[str] = field(default_factory=list)
     timeout_seconds: Optional[int] = None
+    max_runs: Optional[int] = None       # Optional cap for recurring reminders
 
 
 @dataclass
@@ -45,6 +46,7 @@ class CronJobState:
     last_error: Optional[str] = None
     running: bool = False
     consecutive_errors: int = 0
+    run_count: int = 0
 
 
 @dataclass
