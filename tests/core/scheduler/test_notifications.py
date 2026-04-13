@@ -445,9 +445,11 @@ def test_console_renders_reminder_detail():
     assert '提醒内容：提醒我喝水' in output
 
 
-def test_console_formats_bottom_toolbar_with_unread_cron_notifications():
-    """Unread cron reminders should appear in the bottom toolbar, not chat output."""
+def test_console_formats_information_style_status_bar_with_unread_cron_notifications():
+    """Unread cron reminders should appear in the general status bar."""
     cli = AWorldCLI()
+    cli._toolbar_workspace_name = "aworld"
+    cli._toolbar_git_branch = "feat/subagent-optimization-clean"
 
     class FakeRuntime:
         def __init__(self):
@@ -464,11 +466,35 @@ def test_console_formats_bottom_toolbar_with_unread_cron_notifications():
         'created_at': datetime.now(pytz.UTC).isoformat(),
     }))
 
-    toolbar = cli._build_cron_bottom_toolbar(runtime)
+    toolbar = cli._build_status_bar_text(runtime, agent_name="Aworld", mode="Chat")
 
     assert toolbar is not None
-    assert "有 1 条未读提醒" in str(toolbar)
-    assert "/cron list" in str(toolbar)
+    assert "Agent: Aworld" in toolbar
+    assert "Mode: Chat" in toolbar
+    assert "Cron: 1 unread" in toolbar
+    assert "Workspace: aworld" in toolbar
+    assert "Branch: feat/subagent-optimization-clean" in toolbar
+    assert "Hint: /cron list" in toolbar
+
+
+def test_console_formats_information_style_status_bar_when_cron_queue_is_clear():
+    """The status bar should remain stable even when there are no unread reminders."""
+    cli = AWorldCLI()
+    cli._toolbar_workspace_name = "aworld"
+    cli._toolbar_git_branch = "main"
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = CronNotificationCenter()
+
+    toolbar = cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat")
+
+    assert "Agent: Aworld" in toolbar
+    assert "Mode: Chat" in toolbar
+    assert "Cron: clear" in toolbar
+    assert "Workspace: aworld" in toolbar
+    assert "Branch: main" in toolbar
+    assert "Hint: /cron list" in toolbar
 
 
 if __name__ == "__main__":
