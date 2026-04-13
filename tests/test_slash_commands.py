@@ -291,6 +291,42 @@ class TestCronCommand:
         assert "run_count" in result
 
     @pytest.mark.asyncio
+    async def test_cron_disable_all_executes_tool_directly(self, monkeypatch):
+        """Test /cron disable all calls cron_tool(disable, job_id=all)."""
+        cmd = CommandRegistry.get('cron')
+        calls = []
+
+        async def fake_cron_tool(**kwargs):
+            calls.append(kwargs)
+            return {"success": True, "message": "Disabled 2 active jobs"}
+
+        monkeypatch.setattr("aworld_cli.commands.cron_cmd.cron_tool", fake_cron_tool)
+
+        context = CommandContext(cwd=os.getcwd(), user_args='disable all')
+        result = await cmd.execute(context)
+
+        assert calls == [{"action": "disable", "job_id": "all"}]
+        assert "Disabled 2 active jobs" in result
+
+    @pytest.mark.asyncio
+    async def test_cron_enable_all_executes_tool_directly(self, monkeypatch):
+        """Test /cron enable all calls cron_tool(enable, job_id=all)."""
+        cmd = CommandRegistry.get('cron')
+        calls = []
+
+        async def fake_cron_tool(**kwargs):
+            calls.append(kwargs)
+            return {"success": True, "message": "Enabled 2 reactivatable jobs"}
+
+        monkeypatch.setattr("aworld_cli.commands.cron_cmd.cron_tool", fake_cron_tool)
+
+        context = CommandContext(cwd=os.getcwd(), user_args='enable all')
+        result = await cmd.execute(context)
+
+        assert calls == [{"action": "enable", "job_id": "all"}]
+        assert "Enabled 2 reactivatable jobs" in result
+
+    @pytest.mark.asyncio
     async def test_cron_inbox_reads_notifications_from_runtime(self):
         """Test /cron inbox drains unread notifications from runtime."""
         from aworld_cli.runtime.cron_notifications import CronNotificationCenter

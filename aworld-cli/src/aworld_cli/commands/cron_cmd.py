@@ -37,6 +37,8 @@ class CronCommand(Command):
             "/cron list": "列出所有任务",
             "/cron show": "查看单个任务详情",
             "/cron inbox": "查看并清空未读提醒通知",
+            "/cron enable all": "批量启用可重新激活的任务",
+            "/cron disable all": "批量禁用当前活跃任务",
             "/cron remove": "删除任务",
             "/cron run": "立即执行任务",
             "/cron enable": "启用任务",
@@ -119,8 +121,8 @@ class CronCommand(Command):
 - /cron inbox [job_id]     查看并清空未读提醒通知
 - /cron remove <job_id>    删除任务
 - /cron run <job_id>       立即执行任务
-- /cron enable <job_id>    启用任务
-- /cron disable <job_id>   禁用任务
+- /cron enable <job_id|all>    启用任务或批量启用可重新激活的任务
+- /cron disable <job_id|all>   禁用任务或批量禁用当前活跃任务
 - /cron status             查看调度器状态"""
 
     def _format_result(self, action: str, result: dict) -> str:
@@ -224,8 +226,8 @@ class CronCommand(Command):
   /cron inbox [job_id]           查看并清空未读提醒通知
   /cron remove <job_id>          删除任务
   /cron run <job_id>             立即执行任务
-  /cron enable <job_id>          启用任务
-  /cron disable <job_id>         禁用任务
+  /cron enable <job_id|all>      启用任务或批量启用可重新激活的任务
+  /cron disable <job_id|all>     禁用任务或批量禁用当前活跃任务
   /cron status                   查看调度器状态
 
 示例：
@@ -238,6 +240,8 @@ class CronCommand(Command):
   /cron run job-abc123
   /cron disable job-abc123
   /cron enable job-abc123
+  /cron disable all
+  /cron enable all
 
 注意：
 - 任务只在 CLI 运行期间触发
