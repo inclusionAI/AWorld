@@ -46,7 +46,11 @@ class TraceServer:
 
         self.app = app
         # app.run(port=self._port)
-        uvicorn.run(app, host="0.0.0.0", port=self._port, loop="asyncio")
+        try:
+            uvicorn.run(app, host="0.0.0.0", port=self._port, loop="asyncio")
+        except BaseException as exc:
+            self._started = False
+            logger.warning(f"Trace server failed to start on port {self._port}: {exc}")
 
 
 def set_trace_server(storage, port: int = 7079, start_server=False):

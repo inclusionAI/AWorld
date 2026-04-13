@@ -14,8 +14,8 @@ from aworld.core.tool.base import ToolFactory
 from aworld.core.tool.tool_desc import tool_action_desc
 
 
-def test_tool_registration():
-    """Test that spawn_subagent tools are registered with correct names."""
+def _run_tool_registration():
+    """Run the spawn_subagent tool registration verification."""
 
     print("\n" + "="*80)
     print("Spawn Subagent Tool Name Verification")
@@ -122,9 +122,14 @@ def test_tool_registration():
     return True
 
 
+def test_tool_registration():
+    """Test that spawn_subagent tools are registered with correct names."""
+    _run_tool_registration()
+
+
 if __name__ == '__main__':
     try:
-        success = test_tool_registration()
+        success = _run_tool_registration()
         if success:
             print("\n🎉 Tool names are correctly configured!")
         else:

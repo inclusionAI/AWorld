@@ -1253,7 +1253,7 @@ class AWorldCLI:
 
             detail = getattr(notif, 'detail', None)
             if detail:
-                self.console.print(f"  [bold]提醒内容：[/bold]{detail}")
+                self.console.print(f"  [bold]内容：[/bold]{detail}")
 
             # Show next run time for recurring jobs
             next_run_at = getattr(notif, 'next_run_at', None)

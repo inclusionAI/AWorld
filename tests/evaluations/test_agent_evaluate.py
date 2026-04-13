@@ -1,11 +1,18 @@
 import unittest
 import os
+import pytest
 from aworld.agents.llm_agent import Agent
 from aworld.evaluations.scorers.summarize_quality import SummarizeQualityScorer
 from aworld.evaluations.eval_targets.agent_eval import AworldAgentEvalTarget
 from aworld.evaluations.base import EvalDataset, EvalDataCase, Evaluator
 from aworld.config.conf import AgentConfig, ModelConfig
 from dotenv import load_dotenv
+
+if os.getenv("AWORLD_RUN_LIVE_EVALUATION_TESTS") != "1":
+    pytest.skip(
+        "live evaluation test is opt-in; set AWORLD_RUN_LIVE_EVALUATION_TESTS=1 to run it",
+        allow_module_level=True,
+    )
 
 
 class AgentEvaluationTest(unittest.IsolatedAsyncioTestCase):
