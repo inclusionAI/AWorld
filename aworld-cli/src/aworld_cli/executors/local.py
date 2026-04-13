@@ -92,6 +92,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
         self._hooks_config = hooks or []
         self._hooks = self._load_hooks()
 
+        # Initialize background task manager
+        from aworld_cli.core.background_task_manager import BackgroundTaskManager
+        self.background_task_manager = BackgroundTaskManager(
+            session_id=self.session_id,
+            console=self.console
+        )
+
     def _load_hooks(self) -> Dict[str, List[ExecutorHook]]:
         """
         Load hooks from configuration.
@@ -164,7 +171,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
         Close MCP and other resources in the same event loop to avoid
         "Attempted to exit cancel scope in a different task" on exit.
         """
-        pass
+        # Cleanup background tasks
+        if hasattr(self, 'background_task_manager'):
+            await self.background_task_manager.cleanup()
 
     async def _execute_hooks(self, hook_point: str, **kwargs) -> Any:
         """
@@ -953,8 +962,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 # Get updated result from kwargs
                 answer = hook_kwargs.get('result', answer)
 
-                # Try to get final result if task is still running
-                # Note: After stream_events() completes, the task may be cancelled, so we handle CancelledError
+                # Try to get final result if task is still running.
+                # If stream consumption ended early, the producer may already have been cancelled.
                 if hasattr(outputs, '_run_impl_task') and outputs._run_impl_task and not outputs.is_complete:
                     try:
                         # Wait with timeout to avoid hanging
@@ -1230,4 +1239,3 @@ class LocalAgentExecutor(BaseAgentExecutor):
         }
 
 __all__ = ["LocalAgentExecutor"]
-
