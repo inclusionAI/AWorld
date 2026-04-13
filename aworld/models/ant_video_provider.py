@@ -70,6 +70,7 @@ from aworld.trace import base
 
 _DEFAULT_POLL_INTERVAL = 5.0
 _DEFAULT_POLL_TIMEOUT  = 600.0
+_DEFAULT_SUBMITTED_TIMEOUT = 120.0
 
 # The single gateway endpoint shared by all vendors
 _GENERIC_CALL_ENDPOINT = "v1/genericCall"
@@ -81,6 +82,8 @@ _STATUS_MAP = {
     "succeed":    "succeeded",
     "failed":     "failed",
 }
+
+_QUEUED_STATUS_KEYS = frozenset({"submitted", "pending", "queued"})
 
 # Veo accepts only these image MIME types
 _VEO_ALLOWED_IMAGE_MIMES: frozenset = frozenset({"image/jpeg", "image/png", "image/webp"})
@@ -102,6 +105,28 @@ def _infer_image_mime_from_bytes(data: bytes) -> str:
         if sig != b"RIFF" and data.startswith(sig):
             return mime
     return "image/jpeg"  # fallback
+
+
+def _normalize_status_key(status_raw: Any) -> str:
+    """Normalize provider-specific status values for timeout classification."""
+    if status_raw is None:
+        return "unknown"
+    return str(status_raw).strip().lower()
+
+
+def _resolve_submitted_timeout(submitted_timeout: Any, poll_timeout: float) -> Optional[float]:
+    """Resolve the effective queued-status timeout.
+
+    ``None`` means "use the default", and any non-positive value disables the
+    queued-status timeout guard.
+    """
+    if submitted_timeout is None:
+        return min(poll_timeout, _DEFAULT_SUBMITTED_TIMEOUT)
+
+    resolved = float(submitted_timeout)
+    if resolved <= 0:
+        return None
+    return resolved
 
 
 def _parse_image_for_veo_payload(
@@ -1635,6 +1660,9 @@ class AntVideoProvider(VideoGenProviderBase):
         - ``poll`` (bool, default ``True``): Wait for the task to finish.
         - ``poll_interval`` (float, default 5): Seconds between polls.
         - ``poll_timeout`` (float, default 600): Maximum wait in seconds.
+        - ``submitted_timeout`` (float, default ``min(poll_timeout, 120)``):
+          Maximum time a task may remain queued/submitted before failing fast.
+          Set to ``0`` or a negative value to disable this guard.
         - ``model_name`` (str): Override the model for this single call.
 
         Additional vendor-specific keys (e.g. ``mode`` for Kling) are
@@ -1665,6 +1693,7 @@ class AntVideoProvider(VideoGenProviderBase):
         poll            = extra.pop("poll", True)
         poll_interval   = float(extra.pop("poll_interval", _DEFAULT_POLL_INTERVAL))
         poll_timeout    = float(extra.pop("poll_timeout",  _DEFAULT_POLL_TIMEOUT))
+        submitted_timeout = _resolve_submitted_timeout(extra.pop("submitted_timeout", None), poll_timeout)
         expiration_time = int(extra.pop("expiration_time", 7))
 
         adapter                    = _resolve_adapter(model)
@@ -1708,6 +1737,7 @@ class AntVideoProvider(VideoGenProviderBase):
             is_image2video=is_image2video,
             poll_interval=poll_interval,
             poll_timeout=poll_timeout,
+            submitted_timeout=submitted_timeout,
         )
         return adapter.post_process(response, **pp_kwargs)
 
@@ -1743,6 +1773,7 @@ class AntVideoProvider(VideoGenProviderBase):
         poll            = extra.pop("poll", True)
         poll_interval   = float(extra.pop("poll_interval", _DEFAULT_POLL_INTERVAL))
         poll_timeout    = float(extra.pop("poll_timeout",  _DEFAULT_POLL_TIMEOUT))
+        submitted_timeout = _resolve_submitted_timeout(extra.pop("submitted_timeout", None), poll_timeout)
         expiration_time = int(extra.pop("expiration_time", 7))
 
         adapter                 = _resolve_adapter(model)
@@ -1783,6 +1814,7 @@ class AntVideoProvider(VideoGenProviderBase):
             is_image2video=is_image2video,
             poll_interval=poll_interval,
             poll_timeout=poll_timeout,
+            submitted_timeout=submitted_timeout,
         )
         return await adapter.apost_process(response, **pp_kwargs)
 
@@ -1903,7 +1935,8 @@ class AntVideoProvider(VideoGenProviderBase):
                          model: str,
                          is_image2video: bool,
                          poll_interval: float,
-                         poll_timeout: float) -> ModelResponse:
+                         poll_timeout: float,
+                         submitted_timeout: Optional[float] = None) -> ModelResponse:
         """Block and poll until the task reaches a terminal status.
 
         Args:
@@ -1914,6 +1947,8 @@ class AntVideoProvider(VideoGenProviderBase):
             is_image2video: Passed through to the adapter.
             poll_interval: Seconds between polls.
             poll_timeout: Maximum total wait time in seconds.
+            submitted_timeout: Maximum time a task may remain queued/submitted
+                before failing fast. ``None`` disables the queued-state guard.
 
         Returns:
             ModelResponse for the final task state.
@@ -1924,6 +1959,8 @@ class AntVideoProvider(VideoGenProviderBase):
         """
         deadline = time.monotonic() + poll_timeout
         attempt  = 0
+        queued_since: Optional[float] = None
+        last_status_key: Optional[str] = None
 
         while True:
             attempt += 1
@@ -1939,18 +1976,46 @@ class AntVideoProvider(VideoGenProviderBase):
 
             data       = adapter.extract_status_data(body)
             status_raw = adapter.get_status_from_data(data)
+            now = time.monotonic()
+            status_key = _normalize_status_key(status_raw)
             logger.info(f"[AntVideoProvider] Task {task_id} poll #{attempt}: status={status_raw}")
 
             if adapter.is_terminal_status(status_raw):
                 return adapter.parse_response(data, model, is_image2video)
 
-            remaining = deadline - time.monotonic()
+            if status_key != last_status_key:
+                queued_since = now if status_key in _QUEUED_STATUS_KEYS else None
+                last_status_key = status_key
+            elif status_key in _QUEUED_STATUS_KEYS and queued_since is None:
+                queued_since = now
+
+            if submitted_timeout is not None and status_key in _QUEUED_STATUS_KEYS and queued_since is not None:
+                queued_elapsed = now - queued_since
+                queued_remaining = submitted_timeout - queued_elapsed
+                if queued_remaining <= 0:
+                    raise TimeoutError(
+                        f"Task {task_id} remained in queued status '{status_raw}' for "
+                        f"{submitted_timeout}s without starting processing. "
+                        f"This usually indicates backend queue saturation. "
+                        f"Increase submitted_timeout or reduce concurrency. "
+                        f"Total poll_timeout={poll_timeout}s."
+                    )
+            else:
+                queued_remaining = None
+
+            remaining = deadline - now
             if remaining <= 0:
                 raise TimeoutError(
                     f"Task {task_id} did not complete within {poll_timeout}s. "
                     f"Last status: {status_raw}"
                 )
-            time.sleep(min(poll_interval, remaining))
+
+            sleep_for = remaining
+            if poll_interval is not None:
+                sleep_for = min(sleep_for, poll_interval)
+            if queued_remaining is not None:
+                sleep_for = min(sleep_for, queued_remaining)
+            time.sleep(max(sleep_for, 0))
 
     async def _apoll_until_done(self,
                                 adapter: ModelAdapter,
@@ -1958,7 +2023,8 @@ class AntVideoProvider(VideoGenProviderBase):
                                 model: str,
                                 is_image2video: bool,
                                 poll_interval: float,
-                                poll_timeout: float) -> ModelResponse:
+                                poll_timeout: float,
+                                submitted_timeout: Optional[float] = None) -> ModelResponse:
         """Asynchronously poll until the task reaches a terminal status.
 
         Args:
@@ -1968,6 +2034,8 @@ class AntVideoProvider(VideoGenProviderBase):
             is_image2video: Passed through to the adapter.
             poll_interval: Seconds between polls.
             poll_timeout: Maximum total wait time in seconds.
+            submitted_timeout: Maximum time a task may remain queued/submitted
+                before failing fast. ``None`` disables the queued-state guard.
 
         Returns:
             ModelResponse for the final task state.
@@ -1980,6 +2048,8 @@ class AntVideoProvider(VideoGenProviderBase):
 
         deadline = time.monotonic() + poll_timeout
         attempt  = 0
+        queued_since: Optional[float] = None
+        last_status_key: Optional[str] = None
 
         while True:
             attempt += 1
@@ -1995,18 +2065,46 @@ class AntVideoProvider(VideoGenProviderBase):
 
             data       = adapter.extract_status_data(body)
             status_raw = adapter.get_status_from_data(data)
+            now = time.monotonic()
+            status_key = _normalize_status_key(status_raw)
             logger.info(f"[AntVideoProvider] Task {task_id} poll #{attempt} (async): status={status_raw}")
 
             if adapter.is_terminal_status(status_raw):
                 return adapter.parse_response(data, model, is_image2video)
 
-            remaining = deadline - time.monotonic()
+            if status_key != last_status_key:
+                queued_since = now if status_key in _QUEUED_STATUS_KEYS else None
+                last_status_key = status_key
+            elif status_key in _QUEUED_STATUS_KEYS and queued_since is None:
+                queued_since = now
+
+            if submitted_timeout is not None and status_key in _QUEUED_STATUS_KEYS and queued_since is not None:
+                queued_elapsed = now - queued_since
+                queued_remaining = submitted_timeout - queued_elapsed
+                if queued_remaining <= 0:
+                    raise TimeoutError(
+                        f"Task {task_id} remained in queued status '{status_raw}' for "
+                        f"{submitted_timeout}s without starting processing. "
+                        f"This usually indicates backend queue saturation. "
+                        f"Increase submitted_timeout or reduce concurrency. "
+                        f"Total poll_timeout={poll_timeout}s."
+                    )
+            else:
+                queued_remaining = None
+
+            remaining = deadline - now
             if remaining <= 0:
                 raise TimeoutError(
                     f"Task {task_id} did not complete within {poll_timeout}s. "
                     f"Last status: {status_raw}"
                 )
-            await asyncio.sleep(min(poll_interval, remaining))
+
+            sleep_for = remaining
+            if poll_interval is not None:
+                sleep_for = min(sleep_for, poll_interval)
+            if queued_remaining is not None:
+                sleep_for = min(sleep_for, queued_remaining)
+            await asyncio.sleep(max(sleep_for, 0))
 
 
 # ---------------------------------------------------------------------------

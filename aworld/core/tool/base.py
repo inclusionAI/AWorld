@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 
 import abc
+import inspect
 import time
 import traceback
 from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
@@ -31,6 +32,48 @@ ToolInput = TypeVar("ToolInput")
 
 # Forward declaration of action_executor to fix NameError
 action_executor = None
+
+
+async def maybe_await(result: Any) -> Any:
+    """Resolve sync or async hook/reset results uniformly.
+
+    Some call sites operate on ``AsyncTool`` instances and expect async lifecycle
+    methods, but a few implementations still return plain values. Accept both so
+    tool initialization is resilient to mixed implementations.
+    """
+    if inspect.isawaitable(result):
+        return await result
+    return result
+
+
+def ensure_action_results(
+    observation: Observation,
+    actions: List["ActionModel"],
+    *,
+    success: bool,
+    default_content: Any = None,
+    error: str = None,
+) -> Observation:
+    """Ensure an observation has one ActionResult per action.
+
+    Some tools return only ``Observation(content=...)`` on error paths. The
+    framework's post-processing expects ``action_result`` entries to exist, so
+    synthesize them when missing to avoid secondary crashes masking the real
+    tool failure.
+    """
+    if observation.action_result is None:
+        observation.action_result = []
+
+    while len(observation.action_result) < len(actions):
+        action_result_kwargs = {
+            "is_done": True,
+            "success": success,
+            "content": default_content if default_content is not None else observation.content,
+        }
+        if error is not None:
+            action_result_kwargs["error"] = error
+        observation.action_result.append(ActionResult(**action_result_kwargs))
+    return observation
 
 
 class BaseTool(Generic[AgentInput, ToolInput]):
@@ -274,6 +317,14 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             raise Exception(f'{self.name()} no observation has been made.')
 
         context = message.context
+        info = step_res[4] if len(step_res) > 4 and isinstance(step_res[4], dict) else {}
+        ensure_action_results(
+            step_res[0],
+            action,
+            success=step_res[1] > 0,
+            default_content=step_res[0].content,
+            error=info.get('error'),
+        )
 
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
@@ -481,6 +532,14 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         if not step_res:
             raise Exception(f'{self.name()} no observation has been made.')
 
+        info = step_res[4] if len(step_res) > 4 and isinstance(step_res[4], dict) else {}
+        ensure_action_results(
+            step_res[0],
+            action,
+            success=step_res[1] > 0,
+            default_content=step_res[0].content,
+            error=info.get('error'),
+        )
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
             step_res[0].action_result[idx].tool_call_id = act.tool_call_id
