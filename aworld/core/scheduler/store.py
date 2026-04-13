@@ -17,6 +17,10 @@ from aworld.logs.util import logger
 from .types import CronJob, CronSchedule, CronPayload, CronJobState
 
 
+class CronStoreReadError(RuntimeError):
+    """Raised when the persisted cron store cannot be read safely."""
+
+
 def _utc_now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -138,10 +142,14 @@ class FileBasedCronStore:
             return self._read_data_unlocked()
         except json.JSONDecodeError as e:
             logger.error(f"Failed to parse cron store: {e}")
-            return {"version": 1, "jobs": []}
+            raise CronStoreReadError(
+                f"Cron store is corrupted and cannot be parsed: {self.file_path}"
+            ) from e
         except Exception as e:
             logger.error(f"Failed to read cron store: {e}")
-            return {"version": 1, "jobs": []}
+            raise CronStoreReadError(
+                f"Cron store could not be read safely: {self.file_path}"
+            ) from e
 
     def _write_data_unlocked(self, data: Dict[str, Any]):
         """Write data atomically assuming the caller already coordinated file access."""

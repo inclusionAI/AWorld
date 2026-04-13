@@ -12,7 +12,7 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import pytz
 
-from aworld.core.scheduler.store import FileBasedCronStore
+from aworld.core.scheduler.store import FileBasedCronStore, CronStoreReadError
 from aworld.core.scheduler.types import CronJob, CronSchedule, CronPayload, CronJobState
 
 
@@ -32,6 +32,39 @@ def test_store_creates_dedicated_lock_file(tmp_path):
     FileBasedCronStore(str(store_path))
 
     assert (tmp_path / "cron.json.lock").exists()
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_raises_on_corrupted_store_file(tmp_path):
+    """Corrupted JSON must fail loudly instead of being treated as an empty store."""
+    store_path = tmp_path / "cron.json"
+    store_path.write_text("{invalid-json", encoding="utf-8")
+
+    store = FileBasedCronStore(str(store_path))
+
+    with pytest.raises(CronStoreReadError):
+        await store.list_jobs(enabled_only=False)
+
+
+@pytest.mark.asyncio
+async def test_add_job_does_not_overwrite_corrupted_store_file(tmp_path):
+    """Write operations must not replace a corrupted store with an empty state."""
+    corrupted_content = "{invalid-json"
+    store_path = tmp_path / "cron.json"
+    store_path.write_text(corrupted_content, encoding="utf-8")
+
+    store = FileBasedCronStore(str(store_path))
+    job = CronJob(
+        name="job-after-corruption",
+        schedule=CronSchedule(kind="every", every_seconds=60),
+        payload=CronPayload(message="test"),
+        state=CronJobState(next_run_at=None),
+    )
+
+    with pytest.raises(CronStoreReadError):
+        await store.add_job(job)
+
+    assert store_path.read_text(encoding="utf-8") == corrupted_content
 
 
 @pytest.mark.asyncio
