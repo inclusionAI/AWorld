@@ -68,18 +68,63 @@ This is what's possible today. Imagine what we'll build with *your* expertise.
   <td style="width:22%"><img src="readme_assets/aworld_cli_app_create.gif" alt="App create demo" width="270"></td>
   <td><a href="docs/Recipe/miniapp_build_recipe.md">View Recipe</a></td>
 </tr>
-<tr>
-  <td>Create Video</td>
-  <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• Human evaluation</td>
-  <td style="width:22%"><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video create demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
-</tr>
+
 <tr>
   <td>Deep Search</td>
   <td>• Auto-search by <a href="./aworld-skills/agent-browser/SKILL.md">Agent Browser Skill</a> </td>
   <td style="width:22%"><img src="readme_assets/aworld_cli_intro_ds.gif" alt="Deep search demo" width="270"></td>
   <td><a href="docs/Recipe/deep_search_recipe.md">View Recipe</a></td>
 </tr>
+
+<tr>
+  <td>Create Video: Self-Intro</td>
+  <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• Human evaluation</td>
+  <td style="width:22%"><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video (self-intro) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+
+<tr>
+  <td>Create Video: Calculus</td>
+  <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a> </td>
+  <td style="width:22%"><img src="readme_assets/edu_equation.gif" alt="Video (calculus) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+
+<tr>
+  <td>Create Video: Trig-Identity</td>
+  <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a> </td>
+  <td style="width:22%"><img src="readme_assets/edu_trig.gif" alt="Video (trig) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+
+<tr>
+  <td>Create Video: Corporate Training </td>
+  <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a> </td>
+  <td style="width:22%"><img src="readme_assets/corporate training.gif" alt="Video (corporate training) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+
+<tr>
+  <td>Create Video: Brand Marketing</td>
+  <td>• Auto-creation by Video Diffusion</td>
+  <td style="width:22%"><img src="readme_assets/brand_marketing.gif" alt="Video (brand marketing) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+
+<tr>
+  <td>Create Video: Social Media</td>
+  <td>• Auto-creation by Video Diffusion</td>
+  <td style="width:22%"><img src="readme_assets/social media.gif" alt="Video (social media) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+
+<tr>
+  <td>Create Video: Vtuber</td>
+  <td>• Auto-creation by Video Diffusion</td>
+  <td style="width:22%"><img src="readme_assets/vtuber.gif" alt="Video (vtuber) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+
 </tbody>
 </table>
 
