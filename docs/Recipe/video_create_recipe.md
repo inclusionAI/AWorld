@@ -1,77 +1,61 @@
 # Video Generation Recipe
 
-Create and refine a short video from your prompt and the materials in your current directory. The AWorld Agent **automatically** generates a storyboard and breakdown, then produces the video using a Remotion-based Skill. You then provide **human feedback**, and the Developer continues to optimize until you are satisfied.
+This recipe explains how to use AWorld-CLI for **one-shot video generation from a single user prompt**.  
+Current product focus is: user writes one paragraph of requirements, then AWorld generates the video directly.
 
-## What You Get
+## Scope and Current Workflow
 
-- A storyboard and a short breakdown with detailed requirements for each segment
-- A generated video that captures each breakdown’s SVG or HTML frame-by-frame and integrates them into a motion storyboard
-- Iterative refinement driven by your feedback (human evaluation)
+- Provide one prompt (plus optional local materials), and AWorld executes the full video generation flow directly.
 
-## Example: Video Introducing Your Topic
+## Video Types Supported
 
-This recipe reproduces the [README](../../README.md) “Create Video” example: auto-creation by the Remotion Skill, with human evaluation and follow-up optimization.
+The current video capabilities align with the README "Create Video" section:
 
-### User Prompt
+1. Trig-Identity video
+2. Corporate Training video
+3. Brand Marketing video
+4. Social Media video
+5. Vtuber video
 
-Use this prompt (replace the italic part with your topic or project name):
+## Install and Configure AWorld-CLI
 
-```text
-help me create a video introducing ...., based on the current available materials in the current directory, which means you need to create a storyboard and the corresponding short breakdown, with detailed requirements for each breakdown
-```
+Installation and activation steps remain the same as the main README:
 
-Replace `....` with your subject (e.g. “our product” or “this tutorial”). The agent will use the files in your **current directory** as the basis for the storyboard and per-breakdown requirements.
+- [Your Journey with AWorld-CLI](../../README.md#your-journey-with-aworld-cli)
+- [Environment configuration](../../README_env_config.md)
 
-### How the Video Is Built: Developer & Remotion Skill
+During `aworld-cli --config`, recommended models are:
 
-The **Developer** agent creates the storyboard and breakdown, then produces the video using a third-party Skill:
-
-- **Skill**: [Remotion](https://www.skillhub.club/skills/remotion-dev-remotion-remotion) — used to capture each breakdown’s SVG or HTML **frame by frame** and integrate them into the motion storyboard.
-
-**Installing the Skill (recommended)**  
-This Skill is not bundled by default. To use it:
-
-1. Download the Remotion Skill from the link above.
-2. Place it in your personal skills directory:  
-   `~/.aworld/skills`  
-   (on macOS/Linux, e.g. `/Users/username/.aworld/skills`).
-
-Once AWorld and AWorld-CLI are installed, the **Developer** automatically loads skills from this user directory. No extra configuration is needed beyond putting the skill in `~/.aworld/skills`.
-
-### What Happens (Auto-Create → Human Feedback → Optimize)
-
-1. **Auto-create** — The Developer generates a storyboard and a short breakdown with detailed requirements for each segment, then uses the Remotion Skill to capture each breakdown’s SVG/HTML frame-by-frame and assemble the video.
-2. **Human evaluation** — You watch the result and give feedback (e.g. “shorten scene 2”, “change the transition”).
-3. **Optimize** — You send your feedback through the CLI; the Developer continues to refine the video based on your input. Repeat until you are satisfied.
-
-So: creation is automatic; evaluation and direction are **human-in-the-loop**.
+- `video_diffusion`: `kling-v3`
+- `audio_generator`: `doubao-tts`
+- `aworld/developer/evaluator`: `claude-sonnet-4.5`
 
 ## How to Run
 
-1. **Install and configure AWorld-CLI**  
-   See [Your Journey with AWorld-CLI](../../README.md#your-journey-with-aworld-cli) in the main README (install AWorld and aworld-cli, then run `aworld-cli --config` or use a [.env file](../../README_env_config.md)).
+1. Install AWorld + AWorld-CLI and complete `aworld-cli --config`.
+2. Put required local assets/materials into your current working directory when needed.
+3. Start CLI:
 
-2. **Install the Remotion Skill (for this recipe)**  
-   Download the [Remotion Skill](https://www.skillhub.club/skills/remotion-dev-remotion-remotion) and place it under `~/.aworld/skills` (e.g. `/Users/username/.aworld/skills`).
+```bash
+aworld-cli
+```
 
-3. **Prepare your materials**  
-   Put the assets you want to use (images, SVGs, HTML, etc.) in a directory and `cd` into it.
+4. Paste your prompt in one shot and wait for the generation result.
 
-4. **Launch the CLI**  
-   ```bash
-   aworld-cli
-   ```
+## Example Inputs and Required Materials
 
-5. **Enter the video-creation flow**  
-   Choose or enter the flow that creates a video from a prompt.
+The following table lists 5 practical examples, including exact input prompt and required auxiliary files.
 
-6. **Submit the prompt**  
-   Paste or type (replace `....` with your topic):
-   ```text
-   help me create a video introducing ...., based on the current available materials in the current directory, which means you need to create a storyboard and the corresponding short breakdown, with detailed requirements for each breakdown
-   ```
+| Example | Input Prompt | Required Auxiliary Files / Preconditions |
+|---|---|---|
+| 1) Trig-Identity | `Please use the remotion-best-practice skill and create a video via code to explain the derivation that sin^2 + cos^2 = 1 using a circle-based geometric demonstration. The video should include intuitive mathematical and geometric visual mechanisms. 1080p, 30fps, duration decided by you but less than 20 seconds. No other input materials are provided.` | No extra materials required. |
+| 2) Corporate Training | `Please read a training document named xxxxx, summarize its core content, and turn it into a 5-10 second video. You may use the remotion-best-practice skill to help produce a high-quality result.` | User must place the training material file (`xxxxx`) in current directory in advance. |
+| 3) Brand Marketing | `Please use a clothing image as input and let video_diffusion produce a 1080p, 24fps, 10-second video. If the clothing photo is not 16:9, extend it with a pure white background to fit 16:9. Shoot a marketing ad for this dress: keep the dress centered at all times, and use hard cuts to show different girls (skin tone, hairstyle, accessories) wearing it. The overall style should be youthful and cute. Include visual factors such as product appearance, dynamic visuals, and close-up details. A hard cut every 2 seconds is acceptable. Keep the background consistent (for example, the same studio or a spacious fitting room). Do not let the model's head touch the top frame boundary. Please add background music (download it yourself into the current working directory) and merge it into the generated video.` | User must place: (1) one clothing image, (2) one background music file downloaded to current directory. |
+| 4) Social Media | `Please let video_diffusion make a 4:3 video using this image as input, 5-10 seconds, 24fps, and produce a social-media influencer-style operation video for this kitten.` | User must place one cat image in current directory as source material. |
+| 5) Vtuber | `Call video_diffusion to generate a 10-second, 720p, 24fps video showing an animal anchor (a lark) at the news desk, speaking to camera. The background and camera must remain static, and only the anchor's mouth should move quickly, in a 3D Pixar-style look. Name this video 主播.mp4. In parallel, call video_diffusion to generate another 10-second, 720p, 24fps video where an elephant and a giraffe are fighting, also in 3D Pixar style. Name it 新闻.mp4. Then follow the embeded video skill to embed the anchor video into the bottom-right corner of the news video. Next, call audio generator to create a 9.5-second mp3 in the anchor's voice, delivering a humorous news broadcast. Finally, merge the mp3 into the video.` | No user-provided media required by default. Uses built-in generation + embedded video skill + audio generator flow. |
 
-7. **Review and give feedback**  
-   After the agent generates the storyboard, breakdown, and video, review the result and send your feedback. The Developer will keep optimizing based on your input.
+## Notes
 
-For installation and activation details, see the main [README](../../README.md).
+- Prompt text can be used directly as shown above.
+- When a case needs local files, make sure those files are already in your current directory before running.
+- For feature updates, always refer to [README](../../README.md) as the source of truth.
