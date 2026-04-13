@@ -41,6 +41,56 @@ from examples.gaia.mcp_collections.base import ActionArguments, ActionCollection
 
 # pylint: disable=C0301
 
+REMINDER_KEYWORDS = ("提醒", "喝水", "remind", "reminder")
+REMINDER_ACTION_PATTERNS = (
+    r"(?:&&|;)\s*echo\b",
+    r"(?:&&|;)\s*cat\b",
+    r">\s*[^|]+",
+    r"(?:&&|;)\s*osascript\b",
+    r"(?:&&|;)\s*notify-send\b",
+    r"(?:&&|;)\s*terminal-notifier\b",
+    r"\bdisplay\s+notification\b",
+)
+REMINDER_DELAY_PATTERNS = (
+    r"\bsleep\s+\d+(?:\.\d+)?\b",
+    r"\|\s*at\b",
+    r"(?:^|[\s;&|])at\s+now\s*\+",
+    r"(?:^|[\s;&|])at\s+-t\b",
+)
+REMINDER_NOTIFICATION_PATTERNS = (
+    r"\bosascript\b.*\bdisplay\s+notification\b",
+    r"\bnotify-send\b",
+    r"\bterminal-notifier\b",
+)
+
+
+def _check_delayed_reminder_simulation(command: str) -> tuple[bool, str | None]:
+    has_delayed_execution = any(
+        re.search(pattern, command, re.IGNORECASE) for pattern in REMINDER_DELAY_PATTERNS
+    )
+    if not has_delayed_execution:
+        return False, None
+
+    lower_command = command.lower()
+    has_keyword = any(keyword in command for keyword in REMINDER_KEYWORDS) or bool(
+        re.search(r"该.{0,20}了", command)
+    )
+    has_notification = any(
+        re.search(pattern, lower_command, re.IGNORECASE) for pattern in REMINDER_NOTIFICATION_PATTERNS
+    )
+
+    has_delayed_action = any(
+        re.search(pattern, command, re.IGNORECASE) for pattern in REMINDER_ACTION_PATTERNS
+    )
+
+    if not ((has_keyword or has_notification) and has_delayed_action):
+        return False, None
+
+    return (
+        True,
+        "Delayed reminder simulation with shell waiting is not allowed. Use `cron` to create a scheduled reminder instead.",
+    )
+
 
 class CommandResult(BaseModel):
     """Individual command execution result with structured data."""
@@ -404,6 +454,21 @@ class TerminalActionCollection(ActionCollection):
                         timeout_seconds=timeout,
                         safety_check_passed=True,
                         error_type="interactive_forbidden",
+                    ).model_dump(),
+                )
+
+            blocked, reminder_reason = _check_delayed_reminder_simulation(command)
+            if blocked:
+                return ActionResponse(
+                    success=False,
+                    message=reminder_reason,
+                    metadata=TerminalMetadata(
+                        command=command,
+                        platform=self.platform_info["system"],
+                        working_directory=str(self.workspace),
+                        timeout_seconds=timeout,
+                        safety_check_passed=True,
+                        error_type="reminder_delay_blocked",
                     ).model_dump(),
                 )
 
