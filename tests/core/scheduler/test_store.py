@@ -4,13 +4,15 @@
 Tests for FileBasedCronStore, especially claim_due_job atomicity.
 """
 import asyncio
+import threading
+import time
 import pytest
 import tempfile
 from pathlib import Path
 from datetime import datetime, timedelta
 import pytz
 
-from aworld.core.scheduler.store import FileBasedCronStore
+from aworld.core.scheduler.store import FileBasedCronStore, CronStoreReadError
 from aworld.core.scheduler.types import CronJob, CronSchedule, CronPayload, CronJobState
 
 
@@ -21,6 +23,48 @@ def temp_store():
         store_path = Path(tmpdir) / "cron.json"
         store = FileBasedCronStore(str(store_path))
         yield store
+
+
+def test_store_creates_dedicated_lock_file(tmp_path):
+    """The store should create a dedicated cross-process lock file next to cron.json."""
+    store_path = tmp_path / "cron.json"
+
+    FileBasedCronStore(str(store_path))
+
+    assert (tmp_path / "cron.json.lock").exists()
+
+
+@pytest.mark.asyncio
+async def test_list_jobs_raises_on_corrupted_store_file(tmp_path):
+    """Corrupted JSON must fail loudly instead of being treated as an empty store."""
+    store_path = tmp_path / "cron.json"
+    store_path.write_text("{invalid-json", encoding="utf-8")
+
+    store = FileBasedCronStore(str(store_path))
+
+    with pytest.raises(CronStoreReadError):
+        await store.list_jobs(enabled_only=False)
+
+
+@pytest.mark.asyncio
+async def test_add_job_does_not_overwrite_corrupted_store_file(tmp_path):
+    """Write operations must not replace a corrupted store with an empty state."""
+    corrupted_content = "{invalid-json"
+    store_path = tmp_path / "cron.json"
+    store_path.write_text(corrupted_content, encoding="utf-8")
+
+    store = FileBasedCronStore(str(store_path))
+    job = CronJob(
+        name="job-after-corruption",
+        schedule=CronSchedule(kind="every", every_seconds=60),
+        payload=CronPayload(message="test"),
+        state=CronJobState(next_run_at=None),
+    )
+
+    with pytest.raises(CronStoreReadError):
+        await store.add_job(job)
+
+    assert store_path.read_text(encoding="utf-8") == corrupted_content
 
 
 @pytest.mark.asyncio
@@ -130,6 +174,43 @@ async def test_claim_due_job_concurrent_attempts(temp_store):
     # All others should be None
     failed_claims = [r for r in results if r is None]
     assert len(failed_claims) == 4
+
+
+@pytest.mark.asyncio
+async def test_add_job_concurrent_store_instances_do_not_lose_updates(tmp_path):
+    """Concurrent writers from distinct store instances should preserve both jobs."""
+    store_path = tmp_path / "cron.json"
+    read_barrier = threading.Barrier(2)
+
+    class SlowReadStore(FileBasedCronStore):
+        def _read_data(self, *args, **kwargs):
+            data = super()._read_data(*args, **kwargs)
+            try:
+                read_barrier.wait(timeout=0.5)
+            except threading.BrokenBarrierError:
+                pass
+            time.sleep(0.05)
+            return data
+
+    def add_job(job_name: str):
+        store = SlowReadStore(str(store_path))
+        job = CronJob(
+            name=job_name,
+            schedule=CronSchedule(kind="every", every_seconds=60),
+            payload=CronPayload(message=job_name),
+            state=CronJobState(next_run_at=None),
+        )
+        asyncio.run(store.add_job(job))
+
+    await asyncio.gather(
+        asyncio.to_thread(add_job, "job-a"),
+        asyncio.to_thread(add_job, "job-b"),
+    )
+
+    final_store = FileBasedCronStore(str(store_path))
+    jobs = await final_store.list_jobs(enabled_only=False)
+
+    assert sorted(job.name for job in jobs) == ["job-a", "job-b"]
 
 
 @pytest.mark.asyncio

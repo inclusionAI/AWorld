@@ -1,3 +1,4 @@
+import json
 import uuid
 from abc import abstractmethod
 from datetime import datetime
@@ -516,9 +517,17 @@ class MemoryToolMessage(MemoryMessage):
         return None
 
     def to_openai_message(self) -> dict:
+        if isinstance(self.content, str):
+            content = self.content
+        elif self.content is None:
+            content = ""
+        elif isinstance(self.content, (dict, list)):
+            content = json.dumps(self.content, ensure_ascii=False)
+        else:
+            content = str(self.content)
         return {
             "role": self.role,
-            "content": self.content,
+            "content": content,
             "tool_call_id": self.tool_call_id,
         }
 

@@ -122,7 +122,14 @@ class BaseCliRuntime:
         """Start cron scheduler with notification center."""
         try:
             from aworld.core.scheduler import get_scheduler
+            from aworld_cli.core.agent_registry import LocalAgentRegistry
             from aworld_cli.runtime.cron_notifications import CronNotificationCenter
+
+            async def resolve_swarm(agent_name: str):
+                local_agent = LocalAgentRegistry.get_agent(agent_name)
+                if not local_agent:
+                    return None
+                return await local_agent.get_swarm()
 
             # Create notification center
             self._notification_center = CronNotificationCenter()
@@ -130,6 +137,8 @@ class BaseCliRuntime:
             # Get scheduler and wire notification sink
             self._scheduler = get_scheduler()
             self._scheduler.notification_sink = self._notification_center.publish
+            if hasattr(self._scheduler.executor, "set_swarm_resolver"):
+                self._scheduler.executor.set_swarm_resolver(resolve_swarm)
 
             await self._scheduler.start()
             # Silent startup - no user-facing message
