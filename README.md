@@ -100,7 +100,7 @@ This is what's possible today. Imagine what we'll build with *your* expertise.
 <tr>
   <td>Create Video: Corporate Training </td>
   <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• See full video on  <a href="https://youtu.be/-QuzXw4MrHQ">Youtube </td>
-  <td style="width:22%"><img src="readme_assets/corporate training.gif" alt="Video (corporate training) demo" width="270"></td>
+  <td style="width:22%"><img src="readme_assets/corporate_training_en.gif" alt="Video (corporate training) demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr>
 
