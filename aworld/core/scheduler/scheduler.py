@@ -360,6 +360,35 @@ class CronScheduler:
         normalized_message = re.sub(r"^提醒我进行(?=\S)", "提醒我", normalized_message)
         return normalized_message
 
+    def _stringify_result_value(self, value: Any) -> Optional[str]:
+        """Best-effort conversion of task output to a concise user-facing string."""
+        if value is None:
+            return None
+
+        if isinstance(value, str):
+            text = value.strip()
+        else:
+            text = str(value).strip()
+
+        if not text:
+            return None
+
+        text = re.sub(r"\s+", " ", text)
+        if len(text) > 280:
+            return f"{text[:277]}..."
+        return text
+
+    def _get_result_summary(self, result: Any) -> Optional[str]:
+        """Extract a short execution summary from TaskResponse-like objects."""
+        if result is None:
+            return None
+
+        answer_text = self._stringify_result_value(getattr(result, "answer", None))
+        if answer_text:
+            return answer_text
+
+        return self._stringify_result_value(getattr(result, "msg", None))
+
     async def _execute_job_payload(self, job: CronJob):
         """Execute a job or short-circuit legacy stop-task payloads."""
         from aworld.core.task import TaskResponse
@@ -389,10 +418,12 @@ class CronScheduler:
         """Persist terminal execution state and return the updated job."""
         run_count = job.state.run_count + (1 if result.success else 0)
         next_run_at = job.state.next_run_at
+        result_summary = self._get_result_summary(result) if result.success else None
         updates = {
             "running": False,
             "last_status": "ok" if result.success else "error",
             "last_error": None if result.success else result.msg,
+            "last_result_summary": result_summary,
             "consecutive_errors": 0 if result.success else job.state.consecutive_errors + 1,
             "run_count": run_count,
         }
@@ -483,7 +514,11 @@ class CronScheduler:
         if status != "ok":
             return None
 
-        return self._get_reminder_detail(job)
+        reminder_detail = self._get_reminder_detail(job)
+        if reminder_detail:
+            return reminder_detail
+
+        return job.state.last_result_summary
 
     async def _execute_claimed_job(self, job: CronJob):
         """
@@ -525,6 +560,7 @@ class CronScheduler:
                         "running": False,
                         "last_status": "timeout",
                         "last_error": f"Execution timeout after {job.payload.timeout_seconds or 600}s",
+                        "last_result_summary": None,
                         "consecutive_errors": job.state.consecutive_errors + 1,
                     }
                 )
@@ -540,6 +576,7 @@ class CronScheduler:
                         "running": False,
                         "last_status": "error",
                         "last_error": str(e),
+                        "last_result_summary": None,
                         "consecutive_errors": job.state.consecutive_errors + 1,
                     }
                 )
@@ -650,6 +687,7 @@ class CronScheduler:
                         "running": False,
                         "last_status": "timeout",
                         "last_error": f"Execution timeout after {job.payload.timeout_seconds or 600}s",
+                        "last_result_summary": None,
                         "consecutive_errors": job.state.consecutive_errors + 1,
                     }
                 )
@@ -667,6 +705,7 @@ class CronScheduler:
                         "running": False,
                         "last_status": "error",
                         "last_error": str(e),
+                        "last_result_summary": None,
                         "consecutive_errors": job.state.consecutive_errors + 1,
                     }
                 )
