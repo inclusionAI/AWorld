@@ -300,7 +300,7 @@ class TaskOutput(ContextFileManager):
     actions_info: Optional[str] = Field(default=None, description="cooperate info")
 
     # left steps result
-    result: Optional[str] = Field(default=None, description="task final result")
+    result: Optional[Any] = Field(default=None, description="task final result")
 
 
 class TaskHistoryItem(BaseModel):
