@@ -113,14 +113,14 @@ This is what's possible today. Imagine what we'll build with *your* expertise.
 
 <tr>
   <td>Create Video: Social Media</td>
-  <td>• Auto-creation by Video Diffusion <br>• See full video on  <a href="https://youtu.be/L6hIwpqLy5w">Youtube</td>
+  <td>• Auto-creation by Video Diffusion & <a href="aworld-skills/video_subtitles_audios_insert/SKILL.md"> Video Subtitles Audios Insert Skill <br>• See full video on  <a href="https://youtu.be/L6hIwpqLy5w">Youtube</td>
   <td style="width:22%"><img src="readme_assets/social media.gif" alt="Video (social media) demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr>
 
 <tr>
   <td>Create Video: Vtuber</td>
-  <td>• Auto-creation by Video Diffusion <br>• See full video on  <a href="https://youtu.be/THKfbjYolqs">Youtube</td>
+  <td>• Auto-creation by Video Diffusion & Audio Generator <br>• See full video on  <a href="https://youtu.be/THKfbjYolqs">Youtube</td>
   <td style="width:22%"><img src="readme_assets/vtuber.gif" alt="Video (vtuber) demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr>
