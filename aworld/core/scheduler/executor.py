@@ -4,7 +4,8 @@
 Cron job executor - converts CronJob to Task and executes.
 """
 import asyncio
-from typing import Dict, Any
+import inspect
+from typing import Dict, Any, Callable, Optional
 
 from aworld.core.task import TaskResponse
 from aworld.logs.util import logger
@@ -21,9 +22,15 @@ class CronExecutor:
     - Handle retry logic
     """
 
-    def __init__(self):
+    def __init__(self, swarm_resolver: Optional[Callable[[str], Any]] = None):
         """Initialize executor."""
         self._agent_cache: Dict[str, Any] = {}
+        self.swarm_resolver = swarm_resolver
+
+    def set_swarm_resolver(self, swarm_resolver: Optional[Callable[[str], Any]]) -> None:
+        """Configure the swarm resolver used by cron jobs."""
+        self.swarm_resolver = swarm_resolver
+        self._agent_cache.clear()
 
     async def execute(self, job: CronJob) -> TaskResponse:
         """
@@ -117,7 +124,7 @@ class CronExecutor:
 
     async def _resolve_swarm(self, agent_name: str):
         """
-        Resolve swarm from LocalAgentRegistry (with cache).
+        Resolve swarm using the injected resolver (with cache).
 
         This method preserves the full swarm topology (e.g., TeamSwarm with sub-agents)
         rather than extracting a single agent.
@@ -128,37 +135,27 @@ class CronExecutor:
         Returns:
             Swarm instance or None
         """
-        if agent_name not in self._agent_cache:
-            try:
-                from aworld_cli.core.agent_registry import LocalAgentRegistry
+        if agent_name in self._agent_cache:
+            return self._agent_cache.get(agent_name)
 
-                # Get registry instance
-                registry = LocalAgentRegistry()
+        if not self.swarm_resolver:
+            logger.error(f"No swarm resolver configured for cron agent: {agent_name}")
+            return None
 
-                # Get LocalAgent
-                local_agent = registry.get(agent_name)
-                if not local_agent:
-                    logger.error(f"Agent not found in registry: {agent_name}")
-                    return None
+        try:
+            swarm = self.swarm_resolver(agent_name)
+            if inspect.isawaitable(swarm):
+                swarm = await swarm
 
-                # Get swarm from LocalAgent (async call)
-                swarm = await local_agent.get_swarm()
-                if not swarm:
-                    logger.error(f"Failed to get swarm from agent: {agent_name}")
-                    return None
-
-                # Cache the entire swarm (preserves TeamSwarm/sub-agents)
-                self._agent_cache[agent_name] = swarm
-                logger.debug(f"Cached swarm from LocalAgentRegistry: {agent_name}")
-
-            except ImportError:
-                logger.error(
-                    "Cannot import LocalAgentRegistry. "
-                    "This module requires aworld-cli to be installed."
-                )
+            if not swarm:
+                logger.error(f"Agent not found via configured swarm resolver: {agent_name}")
                 return None
-            except Exception as e:
-                logger.error(f"Failed to resolve swarm for {agent_name}: {e}", exc_info=True)
-                return None
+
+            # Cache the entire swarm (preserves TeamSwarm/sub-agents)
+            self._agent_cache[agent_name] = swarm
+            logger.debug(f"Cached swarm from configured resolver: {agent_name}")
+        except Exception as e:
+            logger.error(f"Failed to resolve swarm for {agent_name}: {e}", exc_info=True)
+            return None
 
         return self._agent_cache.get(agent_name)
