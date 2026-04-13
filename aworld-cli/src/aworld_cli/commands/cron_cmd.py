@@ -168,7 +168,8 @@ class CronCommand(Command):
                 f"- max_runs: {job.get('max_runs')}\n"
                 f"- run_count: {job.get('run_count')}\n"
                 f"- last_status: {job.get('last_status')}\n"
-                f"- last_error: {job.get('last_error')}"
+                f"- last_error: {job.get('last_error')}\n"
+                f"- last_result_summary: {job.get('last_result_summary')}"
             )
 
         if action == "add":
@@ -208,7 +209,7 @@ class CronCommand(Command):
             lines.append(f"  summary: {getattr(item, 'summary', '')}")
             detail = getattr(item, "detail", None)
             if detail:
-                lines.append(f"  detail: {detail}")
+                lines.append(f"  content: {detail}")
             if next_run_at:
                 lines.append(f"  next_run: {next_run_at}")
             created_at = getattr(item, "created_at", None)

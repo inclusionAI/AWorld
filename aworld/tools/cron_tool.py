@@ -224,6 +224,9 @@ async def cron_tool(
             "run_count": job.state.run_count,
             "last_status": job.state.last_status,
             "last_error": job.state.last_error if job.state.last_error else None,
+            "last_result_summary": (
+                job.state.last_result_summary if job.state.last_result_summary else None
+            ),
         }
 
     def parse_iso_datetime_local(value: Optional[str]) -> Optional[datetime]:

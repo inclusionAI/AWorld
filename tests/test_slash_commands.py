@@ -277,6 +277,7 @@ class TestCronCommand:
                     "last_error": None,
                     "max_runs": 3,
                     "run_count": 1,
+                    "last_result_summary": "BTC 当前价格 68000 USDT",
                 },
             }
 
@@ -289,6 +290,8 @@ class TestCronCommand:
         assert "job-123" in result
         assert "运动通知" in result
         assert "run_count" in result
+        assert "last_result_summary" in result
+        assert "BTC 当前价格 68000 USDT" in result
 
     @pytest.mark.asyncio
     async def test_cron_disable_all_executes_tool_directly(self, monkeypatch):

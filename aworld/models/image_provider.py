@@ -32,13 +32,12 @@ Example usage:
     )
 """
 
-import base64
+import mimetypes
 import os
 import traceback
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, List, Optional, Tuple
 from aworld.core.llm_provider import LLMProviderBase
 from aworld.logs.util import logger
 from aworld.models.llm_http_handler import LLMHTTPHandler
@@ -67,6 +66,264 @@ class ImageProvider(LLMProviderBase):
     SUPPORTED_SIZES = ["1024x1024", "1024x768", "768x1024", "512x512"]
     SUPPORTED_RESPONSE_FORMATS = ["b64_json", "url"]
     SUPPORTED_OUTPUT_FORMATS = ["png", "jpeg", "webp"]
+
+    @staticmethod
+    def _looks_like_edit_model(model_name: Optional[str]) -> bool:
+        return "edit" in (model_name or "").strip().lower()
+
+    def _resolved_model_name(self) -> str:
+        return (self.model_name or self.DEFAULT_MODEL).strip() or self.DEFAULT_MODEL
+
+    @staticmethod
+    def _normalize_size(size: Optional[str]) -> Optional[str]:
+        if not size:
+            return size
+        normalized = str(size).strip().lower().replace(" ", "")
+        return normalized.replace("*", "x")
+
+    @staticmethod
+    def _coerce_image_inputs(
+        image: Optional[str] = None,
+        image_urls: Optional[List[str]] = None,
+        input_image: Optional[str] = None,
+        input_images: Optional[List[str]] = None,
+        reference_images: Optional[List[str]] = None,
+        **kwargs,
+    ) -> List[str]:
+        images: List[str] = []
+
+        def add(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, str):
+                normalized = value.strip()
+                if normalized:
+                    images.append(normalized)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    add(item)
+
+        add(image)
+        add(image_urls)
+        add(input_image)
+        add(input_images)
+        add(reference_images)
+        add(kwargs.get("images"))
+        add(kwargs.get("image_url"))
+        add(kwargs.get("image_paths"))
+        add(kwargs.get("input_images_urls"))
+
+        deduped: List[str] = []
+        seen = set()
+        for item in images:
+            if item not in seen:
+                seen.add(item)
+                deduped.append(item)
+        return deduped
+
+    def _build_openai_payload(
+        self,
+        *,
+        prompt: str,
+        size: str,
+        response_format: str,
+        output_format: str,
+        negative_prompt: Optional[str],
+        output_compression: Optional[int],
+        seed: Optional[int],
+        user: Optional[str],
+        extra_kwargs: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        payload = {
+            "model": self._resolved_model_name(),
+            "prompt": prompt,
+            "size": self._normalize_size(size),
+            "response_format": response_format,
+            "output_format": output_format,
+        }
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
+        if output_compression is not None:
+            payload["output_compression"] = output_compression
+        if seed is not None:
+            payload["seed"] = seed
+        if user:
+            payload["user"] = user
+        payload.update(extra_kwargs)
+        return payload
+
+    @staticmethod
+    def _is_remote_url(value: str) -> bool:
+        normalized = (value or "").strip().lower()
+        return normalized.startswith("https://") or normalized.startswith("http://")
+
+    @staticmethod
+    def _is_data_url(value: str) -> bool:
+        return (value or "").strip().lower().startswith("data:image/")
+
+    @staticmethod
+    def _looks_like_local_path(value: str) -> bool:
+        normalized = (value or "").strip()
+        if not normalized:
+            return False
+        if normalized.startswith(("http://", "https://", "data:image/", "file://")):
+            return False
+        return (
+            normalized.startswith(("/", "./", "../", "~/"))
+            or os.path.exists(os.path.expanduser(normalized))
+        )
+
+    @staticmethod
+    def _read_local_image_file(value: str) -> Dict[str, Any]:
+        normalized = (value or "").strip()
+        if normalized.startswith("file://"):
+            normalized = normalized[7:]
+        path = Path(os.path.expanduser(normalized))
+        if not path.exists() or not path.is_file():
+            raise ValueError(f"Local image file not found: {value}")
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        return {
+            "filename": path.name,
+            "content": path.read_bytes(),
+            "content_type": content_type,
+        }
+
+    @staticmethod
+    def _pop_edit_input_aliases(extra_kwargs: Dict[str, Any]) -> None:
+        for key in (
+            "image",
+            "image_url",
+            "image_urls",
+            "images",
+            "input_image",
+            "input_images",
+            "reference_images",
+            "image_paths",
+            "input_images_urls",
+        ):
+            extra_kwargs.pop(key, None)
+
+    def _resolve_edit_inputs(
+        self,
+        images: List[str],
+    ) -> Tuple[List[Dict[str, Any]], List[str]]:
+        if not images:
+            raise ValueError(
+                "Image edit requests require at least one input image. "
+                "Provide image_url/image_urls/input_image/input_images with a remote URL, local file path, or data:image/... input."
+            )
+
+        file_inputs: List[Dict[str, Any]] = []
+        url_inputs: List[str] = []
+        for candidate in images:
+            if self._is_remote_url(candidate) or self._is_data_url(candidate):
+                url_inputs.append(candidate)
+            elif self._looks_like_local_path(candidate):
+                file_inputs.append(self._read_local_image_file(candidate))
+            else:
+                raise ValueError(
+                    "Unsupported image edit input. Please provide a remote image URL, local file path, or data:image/... input for image edits."
+                )
+        return file_inputs, url_inputs
+
+    def _build_edit_form_payload(
+        self,
+        *,
+        prompt: str,
+        size: str,
+        response_format: str,
+        output_format: str,
+        negative_prompt: Optional[str],
+        output_compression: Optional[int],
+        seed: Optional[int],
+        user: Optional[str],
+        images: List[str],
+        extra_kwargs: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        file_inputs, url_inputs = self._resolve_edit_inputs(images)
+        self._pop_edit_input_aliases(extra_kwargs)
+        payload: Dict[str, Any] = {
+            "model": self._resolved_model_name(),
+            "prompt": prompt,
+            "size": self._normalize_size(size),
+            "response_format": response_format,
+            "output_format": output_format,
+        }
+        if file_inputs:
+            payload["image[]"] = file_inputs
+        if url_inputs:
+            payload["url[]"] = url_inputs
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt
+        if output_compression is not None:
+            payload["output_compression"] = output_compression
+        if seed is not None:
+            payload["seed"] = seed
+        if user:
+            payload["user"] = user
+        passthrough_keys = (
+            "n",
+            "watermark",
+            "prompt_extend",
+            "num_inference_steps",
+            "guidance_scale",
+            "strength",
+        )
+        for key in passthrough_keys:
+            value = extra_kwargs.pop(key, None)
+            if value is not None:
+                payload[key] = value
+        if extra_kwargs:
+            payload.update(extra_kwargs)
+        return payload
+
+    def _build_request(
+        self,
+        *,
+        prompt: str,
+        negative_prompt: Optional[str],
+        size: Optional[str],
+        response_format: Optional[str],
+        output_format: Optional[str],
+        output_compression: Optional[int],
+        seed: Optional[int],
+        user: Optional[str],
+        extra_kwargs: Dict[str, Any],
+    ) -> tuple[str, Dict[str, Any], str, str]:
+        images = self._coerce_image_inputs(**extra_kwargs)
+
+        size = size or self.DEFAULT_SIZE
+        response_format = response_format or self.DEFAULT_RESPONSE_FORMAT
+        output_format = output_format or self.DEFAULT_OUTPUT_FORMAT
+
+        if images:
+            payload = self._build_edit_form_payload(
+                prompt=prompt,
+                size=size,
+                response_format=response_format,
+                output_format=output_format,
+                negative_prompt=negative_prompt,
+                output_compression=output_compression,
+                seed=seed,
+                user=user,
+                images=images,
+                extra_kwargs=extra_kwargs,
+            )
+            return "/v1/images/edits", payload, output_format, "multipart"
+
+        payload = self._build_openai_payload(
+            prompt=prompt,
+            size=size,
+            response_format=response_format,
+            output_format=output_format,
+            negative_prompt=negative_prompt,
+            output_compression=output_compression,
+            seed=seed,
+            user=user,
+            extra_kwargs=extra_kwargs,
+        )
+        return "/v1/images/generations", payload, output_format, "json"
     
     def _init_provider(self) -> LLMHTTPHandler:
         """Initialize Image provider with HTTP handler.
@@ -180,27 +437,17 @@ class ImageProvider(LLMProviderBase):
                 f"Supported formats: {', '.join(self.SUPPORTED_OUTPUT_FORMATS)}"
             )
         
-        # Build request payload
-        payload = {
-            "model": self.DEFAULT_MODEL,
-            "prompt": prompt,
-            "size": size,
-            "response_format": response_format,
-            "output_format": output_format,
-        }
-        
-        # Add optional parameters
-        if negative_prompt:
-            payload["negative_prompt"] = negative_prompt
-        if output_compression is not None:
-            payload["output_compression"] = output_compression
-        if seed is not None:
-            payload["seed"] = seed
-        if user:
-            payload["user"] = user
-        
-        # Add any additional kwargs
-        payload.update(kwargs)
+        endpoint, payload, resolved_output_format, request_body_type = self._build_request(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            size=size,
+            response_format=response_format,
+            output_format=output_format,
+            output_compression=output_compression,
+            seed=seed,
+            user=user,
+            extra_kwargs=dict(kwargs),
+        )
         
         logger.info(
             f"[ImageProvider] Generating image: "
@@ -211,14 +458,15 @@ class ImageProvider(LLMProviderBase):
         try:
             # Make API request
             response_data = self.provider.sync_call(
-                payload, 
-                endpoint="/v1/images/generations"
+                payload,
+                endpoint=endpoint,
+                request_body_type=request_body_type,
             )
             
             # Parse response
             return self._parse_image_response(
                 response_data,
-                output_format=output_format,
+                output_format=resolved_output_format,
                 output_path=output_path
             )
             
@@ -287,27 +535,17 @@ class ImageProvider(LLMProviderBase):
                 f"Supported formats: {', '.join(self.SUPPORTED_OUTPUT_FORMATS)}"
             )
         
-        # Build request payload
-        payload = {
-            "model": self.DEFAULT_MODEL,
-            "prompt": prompt,
-            "size": size,
-            "response_format": response_format,
-            "output_format": output_format,
-        }
-        
-        # Add optional parameters
-        if negative_prompt:
-            payload["negative_prompt"] = negative_prompt
-        if output_compression is not None:
-            payload["output_compression"] = output_compression
-        if seed is not None:
-            payload["seed"] = seed
-        if user:
-            payload["user"] = user
-        
-        # Add any additional kwargs
-        payload.update(kwargs)
+        endpoint, payload, resolved_output_format, request_body_type = self._build_request(
+            prompt=prompt,
+            negative_prompt=negative_prompt,
+            size=size,
+            response_format=response_format,
+            output_format=output_format,
+            output_compression=output_compression,
+            seed=seed,
+            user=user,
+            extra_kwargs=dict(kwargs),
+        )
         
         logger.info(
             f"[ImageProvider] Generating image (async): "
@@ -319,13 +557,14 @@ class ImageProvider(LLMProviderBase):
             # Make async API request
             response_data = await self.async_provider.async_call(
                 payload,
-                endpoint="/v1/images/generations"
+                endpoint=endpoint,
+                request_body_type=request_body_type,
             )
             
             # Parse response
             return self._parse_image_response(
                 response_data,
-                output_format=output_format,
+                output_format=resolved_output_format,
                 output_path=output_path
             )
             
@@ -370,6 +609,20 @@ class ImageProvider(LLMProviderBase):
         # Extract image data from response
         # The API returns data in OpenAI-compatible format
         data_list = response_data.get("data", [])
+        if not data_list and isinstance(response_data.get("output"), dict):
+            output_data = response_data.get("output") or {}
+            if output_data.get("choices"):
+                message = (((output_data.get("choices") or [{}])[0]).get("message") or {})
+                content = message.get("content") or []
+                image_candidates = []
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("image"):
+                        image_candidates.append({"url": item.get("image")})
+                    elif item.get("image_url"):
+                        image_candidates.append({"url": item.get("image_url")})
+                data_list = image_candidates
         if not data_list:
             raise LLMResponseError(
                 "No image data in response",
