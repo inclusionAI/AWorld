@@ -474,7 +474,7 @@ def test_console_formats_information_style_status_bar_with_unread_cron_notificat
     assert "Cron: 1 unread" in toolbar
     assert "Workspace: aworld" in toolbar
     assert "Branch: feat/subagent-optimization-clean" in toolbar
-    assert "Hint: /cron list" in toolbar
+    assert "Hint: /cron inbox" in toolbar
 
 
 def test_console_formats_information_style_status_bar_when_cron_queue_is_clear():
@@ -494,7 +494,7 @@ def test_console_formats_information_style_status_bar_when_cron_queue_is_clear()
     assert "Cron: clear" in toolbar
     assert "Workspace: aworld" in toolbar
     assert "Branch: main" in toolbar
-    assert "Hint: /cron list" in toolbar
+    assert "Hint: /cron inbox" in toolbar
 
 
 if __name__ == "__main__":

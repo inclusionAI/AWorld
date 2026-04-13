@@ -410,4 +410,4 @@ async def test_reminder_execution_updates_toolbar_unread_count_without_inline_re
 
     assert toolbar is not None
     assert "Cron: 1 unread" in toolbar
-    assert "Hint: /cron list" in toolbar
+    assert "Hint: /cron inbox" in toolbar
