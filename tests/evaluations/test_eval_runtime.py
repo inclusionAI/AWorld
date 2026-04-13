@@ -1,11 +1,19 @@
 import unittest
 import os
 
+import pytest
+
 from dotenv import load_dotenv
 
 from aworld.config.conf import EvaluationConfig
 
 from aworld.runners.evaluate_runner import EvaluateRunner
+
+if os.getenv("AWORLD_RUN_LIVE_EVALUATION_TESTS") != "1":
+    pytest.skip(
+        "live evaluation runtime test is opt-in; set AWORLD_RUN_LIVE_EVALUATION_TESTS=1 to run it",
+        allow_module_level=True,
+    )
 
 
 class EvalRuntimeTest(unittest.IsolatedAsyncioTestCase):

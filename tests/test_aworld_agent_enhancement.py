@@ -59,6 +59,7 @@ console = Console()
 
 class TestPriority(Enum):
     """Test priority levels"""
+    __test__ = False
     CRITICAL = "🔴 CRITICAL"
     RECOMMENDED = "🟡 RECOMMENDED"
     OPTIONAL = "🟢 OPTIONAL"
@@ -67,6 +68,7 @@ class TestPriority(Enum):
 @dataclass
 class TestResult:
     """Test result container"""
+    __test__ = False
     name: str
     priority: TestPriority
     passed: bool
@@ -77,6 +79,7 @@ class TestResult:
 
 class TestRunner:
     """Main test orchestrator"""
+    __test__ = False
 
     def __init__(self, quick_mode: bool = False, run_benchmark: bool = False):
         self.quick_mode = quick_mode
@@ -121,6 +124,13 @@ class TestRunner:
 
         # Print summary
         self._print_summary()
+
+
+def test_enhancement_verifier_helpers_are_not_collected():
+    """Smoke test to keep this verification module pytest-friendly."""
+    assert TestPriority.__test__ is False
+    assert TestResult.__test__ is False
+    assert TestRunner.__test__ is False
 
     async def _test_environment(self):
         """Test 1: Environment and installation"""

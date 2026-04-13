@@ -1,4 +1,8 @@
 
+import pytest
+
+pytest.skip("manual A2A integration script; excluded from default automated test collection", allow_module_level=True)
+
 import asyncio
 
 from aworld.experimental.a2a.agent_server import AgentServer

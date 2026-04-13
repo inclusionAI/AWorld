@@ -16,8 +16,8 @@ from aworld.logs.util import logger
 from dotenv import load_dotenv
 
 
-def test_aworld_cli_configuration():
-    """Verify Aworld agent configuration when built through aworld-cli"""
+def _run_aworld_cli_configuration():
+    """Run the aworld-cli subagent configuration verification."""
     logger.info("="*70)
     logger.info("Aworld-CLI Subagent Configuration Test")
     logger.info("="*70)
@@ -119,8 +119,8 @@ def test_aworld_cli_configuration():
         return False
 
 
-def test_spawn_subagent_tool_availability():
-    """Test that spawn_subagent tool is available in Aworld agent's toolset"""
+def _run_spawn_subagent_tool_availability():
+    """Run the spawn_subagent tool availability verification."""
     logger.info("\n" + "="*70)
     logger.info("Spawn Tool Availability Test")
     logger.info("="*70)
@@ -158,9 +158,19 @@ def test_spawn_subagent_tool_availability():
         return 'spawn_subagent' in aworld_agent.tool_names
 
 
+def test_aworld_cli_configuration():
+    """Verify Aworld agent configuration when built through aworld-cli."""
+    _run_aworld_cli_configuration()
+
+
+def test_spawn_subagent_tool_availability():
+    """Test that spawn_subagent tool is available in Aworld agent's toolset."""
+    _run_spawn_subagent_tool_availability()
+
+
 if __name__ == '__main__':
-    success1 = test_aworld_cli_configuration()
-    success2 = test_spawn_subagent_tool_availability()
+    success1 = _run_aworld_cli_configuration()
+    success2 = _run_spawn_subagent_tool_availability()
 
     print("\n" + "="*70)
     print("Overall Results")
