@@ -356,7 +356,9 @@ class CronScheduler:
         if job.payload.tool_names:
             return None
 
-        return message
+        normalized_message = re.sub(r"^提醒(?:用户|您)", "提醒我", message)
+        normalized_message = re.sub(r"^提醒我进行(?=\S)", "提醒我", normalized_message)
+        return normalized_message
 
     async def _execute_job_payload(self, job: CronJob):
         """Execute a job or short-circuit legacy stop-task payloads."""

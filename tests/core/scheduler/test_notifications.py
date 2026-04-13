@@ -234,7 +234,7 @@ async def test_scheduler_short_circuits_instructional_reminders():
             name="运动提醒",
             delete_after_run=True,
             schedule=CronSchedule(kind="at", at=now.isoformat()),
-            payload=CronPayload(message="提醒用户进行运动", agent_name="default"),
+            payload=CronPayload(message="提醒用户运动", agent_name="default"),
             state=CronJobState(
                 running=True,
                 last_run_at=now.isoformat(),
@@ -251,7 +251,7 @@ async def test_scheduler_short_circuits_instructional_reminders():
         notification_sink.assert_called_once()
         call_args = notification_sink.call_args[0][0]
         assert call_args["status"] == "ok"
-        assert call_args["detail"] == "提醒用户进行运动"
+        assert call_args["detail"] == "提醒我运动"
 
 
 @pytest.mark.asyncio
