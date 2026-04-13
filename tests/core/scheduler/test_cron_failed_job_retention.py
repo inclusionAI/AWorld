@@ -36,7 +36,7 @@ async def test_failed_one_shot_job_is_retained_for_inspection():
             name="failing-one-shot",
             delete_after_run=True,
             schedule=CronSchedule(kind="at", at=now.isoformat()),
-            payload=CronPayload(message="提醒用户喝水"),
+            payload=CronPayload(message="执行一次健康检查"),
             state=CronJobState(
                 running=True,
                 last_run_at=now.isoformat(),

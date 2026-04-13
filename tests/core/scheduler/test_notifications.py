@@ -212,6 +212,49 @@ async def test_scheduler_publishes_reminder_detail_on_success():
 
 
 @pytest.mark.asyncio
+async def test_scheduler_short_circuits_instructional_reminders():
+    """Reminder payloads should publish directly instead of re-entering the agent."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_path = Path(tmpdir) / "cron.json"
+        store = FileBasedCronStore(str(store_path))
+
+        executor = AsyncMock(spec=CronExecutor)
+        executor.execute_with_retry = AsyncMock(
+            return_value=TaskResponse(success=True, msg="should not be used")
+        )
+
+        notification_sink = AsyncMock()
+        scheduler = CronScheduler(store, executor, notification_sink=notification_sink)
+
+        now = datetime.now(pytz.UTC)
+        job = CronJob(
+            name="运动提醒",
+            delete_after_run=True,
+            schedule=CronSchedule(kind="at", at=now.isoformat()),
+            payload=CronPayload(message="提醒用户进行运动", agent_name="default"),
+            state=CronJobState(
+                running=True,
+                last_run_at=now.isoformat(),
+                next_run_at=None,
+            ),
+        )
+
+        await store.add_job(job)
+        await scheduler._execute_claimed_job(job)
+
+        executor.execute_with_retry.assert_not_called()
+        assert await store.get_job(job.id) is None
+
+        notification_sink.assert_called_once()
+        call_args = notification_sink.call_args[0][0]
+        assert call_args["status"] == "ok"
+        assert call_args["detail"] == "提醒用户进行运动"
+
+
+@pytest.mark.asyncio
 async def test_scheduler_publishes_on_error():
     """Test that scheduler publishes error notification with error message."""
     import tempfile

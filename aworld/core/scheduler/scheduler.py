@@ -327,6 +327,37 @@ class CronScheduler:
         match = _LEGACY_STOP_JOB_RE.search((message or "").strip())
         return match.group("job_id") if match else None
 
+    def _get_reminder_detail(self, job: CronJob) -> Optional[str]:
+        """
+        Return user-facing reminder content for notification-only reminder jobs.
+
+        Reminder jobs are notification-style tasks, not autonomous agent work.
+        They should surface their payload directly in the CLI instead of
+        re-entering the agent and recursively scheduling more cron jobs.
+        """
+        message = (job.payload.message or "").strip()
+        if not message:
+            return None
+
+        job_name = (job.name or "").strip()
+        message_lower = message.lower()
+        name_lower = job_name.lower()
+
+        is_reminder = (
+            "提醒" in message
+            or "提醒" in job_name
+            or "remind" in message_lower
+            or "remind" in name_lower
+        )
+        if not is_reminder:
+            return None
+
+        # Tool-backed jobs are automation tasks even if their name mentions reminders.
+        if job.payload.tool_names:
+            return None
+
+        return message
+
     async def _execute_job_payload(self, job: CronJob):
         """Execute a job or short-circuit legacy stop-task payloads."""
         from aworld.core.task import TaskResponse
@@ -345,6 +376,10 @@ class CronScheduler:
                 logger.info(f"Legacy stop-job target already absent: {target_job_id}")
 
             return TaskResponse(success=True, msg=f"Stopped job {target_job_id}")
+
+        reminder_detail = self._get_reminder_detail(job)
+        if reminder_detail:
+            return TaskResponse(success=True, msg=reminder_detail, answer=reminder_detail)
 
         return await self.executor.execute_with_retry(job)
 
@@ -446,22 +481,7 @@ class CronScheduler:
         if status != "ok":
             return None
 
-        message = (job.payload.message or "").strip()
-        if not message:
-            return None
-
-        job_name = (job.name or "").strip()
-        message_lower = message.lower()
-        name_lower = job_name.lower()
-
-        is_reminder = (
-            "提醒" in message
-            or "提醒" in job_name
-            or "remind" in message_lower
-            or "remind" in name_lower
-        )
-
-        return message if is_reminder else None
+        return self._get_reminder_detail(job)
 
     async def _execute_claimed_job(self, job: CronJob):
         """

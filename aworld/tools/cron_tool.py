@@ -280,6 +280,30 @@ async def cron_tool(
             "job_ids": updated_ids,
         }
 
+    async def bulk_remove_local() -> Dict[str, Any]:
+        jobs = await scheduler.list_jobs(enabled_only=False)
+
+        if not jobs:
+            return {
+                "success": True,
+                "message": "No visible jobs to remove",
+                "removed_count": 0,
+                "job_ids": [],
+            }
+
+        removed_ids = []
+        for job in jobs:
+            removed = await scheduler.remove_job(job.id)
+            if removed:
+                removed_ids.append(job.id)
+
+        return {
+            "success": True,
+            "message": f"Removed {len(removed_ids)} visible jobs",
+            "removed_count": len(removed_ids),
+            "job_ids": removed_ids,
+        }
+
     try:
         from aworld.core.scheduler import get_scheduler
         from aworld.core.scheduler.types import CronJob, CronSchedule, CronPayload
@@ -360,6 +384,9 @@ async def cron_tool(
         elif action == "remove":
             if not job_id:
                 return {"success": False, "error": "job_id required"}
+
+            if job_id == "all":
+                return await bulk_remove_local()
 
             removed = await scheduler.remove_job(job_id)
             if removed:

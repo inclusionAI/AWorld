@@ -327,6 +327,24 @@ class TestCronCommand:
         assert "Enabled 2 reactivatable jobs" in result
 
     @pytest.mark.asyncio
+    async def test_cron_remove_all_executes_tool_directly(self, monkeypatch):
+        """Test /cron remove all calls cron_tool(remove, job_id=all)."""
+        cmd = CommandRegistry.get('cron')
+        calls = []
+
+        async def fake_cron_tool(**kwargs):
+            calls.append(kwargs)
+            return {"success": True, "message": "Removed 3 visible jobs"}
+
+        monkeypatch.setattr("aworld_cli.commands.cron_cmd.cron_tool", fake_cron_tool)
+
+        context = CommandContext(cwd=os.getcwd(), user_args='remove all')
+        result = await cmd.execute(context)
+
+        assert calls == [{"action": "remove", "job_id": "all"}]
+        assert "Removed 3 visible jobs" in result
+
+    @pytest.mark.asyncio
     async def test_cron_inbox_reads_notifications_from_runtime(self):
         """Test /cron inbox drains unread notifications from runtime."""
         from aworld_cli.runtime.cron_notifications import CronNotificationCenter

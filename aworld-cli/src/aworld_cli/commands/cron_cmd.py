@@ -37,6 +37,7 @@ class CronCommand(Command):
             "/cron list": "列出所有任务",
             "/cron show": "查看单个任务详情",
             "/cron inbox": "查看并清空未读提醒通知",
+            "/cron remove all": "批量删除当前列表中的全部任务",
             "/cron enable all": "批量启用可重新激活的任务",
             "/cron disable all": "批量禁用当前活跃任务",
             "/cron remove": "删除任务",
@@ -119,6 +120,7 @@ class CronCommand(Command):
 - /cron list               列出所有任务
 - /cron show <job_id>      查看单个任务详情
 - /cron inbox [job_id]     查看并清空未读提醒通知
+- /cron remove all         批量删除当前列表中的全部任务
 - /cron remove <job_id>    删除任务
 - /cron run <job_id>       立即执行任务
 - /cron enable <job_id|all>    启用任务或批量启用可重新激活的任务
@@ -224,6 +226,7 @@ class CronCommand(Command):
   /cron list                     列出所有任务
   /cron show <job_id>            查看单个任务详情
   /cron inbox [job_id]           查看并清空未读提醒通知
+  /cron remove all               批量删除当前列表中的全部任务
   /cron remove <job_id>          删除任务
   /cron run <job_id>             立即执行任务
   /cron enable <job_id|all>      启用任务或批量启用可重新激活的任务
