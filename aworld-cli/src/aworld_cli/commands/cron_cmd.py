@@ -30,6 +30,20 @@ class CronCommand(Command):
     def allowed_tools(self) -> Optional[List[str]]:
         return None
 
+    @property
+    def completion_items(self) -> dict[str, str]:
+        return {
+            "/cron add": "创建新任务",
+            "/cron list": "列出所有任务",
+            "/cron show": "查看单个任务详情",
+            "/cron inbox": "查看并清空未读提醒通知",
+            "/cron remove": "删除任务",
+            "/cron run": "立即执行任务",
+            "/cron enable": "启用任务",
+            "/cron disable": "禁用任务",
+            "/cron status": "查看调度器状态",
+        }
+
     async def execute(self, context: CommandContext) -> str:
         """Execute cron subcommands directly through cron_tool."""
         args = context.user_args  # FIXED: Use user_args
@@ -58,7 +72,7 @@ class CronCommand(Command):
             return self._format_result("show", result)
 
         elif action == "inbox":
-            return await self._render_inbox(context)
+            return await self._render_inbox(context, rest.strip() or None)
 
         elif action in ["remove", "rm", "delete"]:
             job_id = rest.strip()
@@ -102,7 +116,7 @@ class CronCommand(Command):
 - /cron add <描述>          创建新任务
 - /cron list               列出所有任务
 - /cron show <job_id>      查看单个任务详情
-- /cron inbox              查看并清空未读提醒通知
+- /cron inbox [job_id]     查看并清空未读提醒通知
 - /cron remove <job_id>    删除任务
 - /cron run <job_id>       立即执行任务
 - /cron enable <job_id>    启用任务
@@ -161,16 +175,26 @@ class CronCommand(Command):
 
         return result.get("message", "操作成功")
 
-    async def _render_inbox(self, context: CommandContext) -> str:
+    async def _render_inbox(self, context: CommandContext, job_id: Optional[str] = None) -> str:
         runtime = getattr(context, "runtime", None)
         if runtime is None or not hasattr(runtime, "_drain_notifications"):
             return "当前会话不支持提醒收件箱。"
 
-        notifications = await runtime._drain_notifications()
+        if job_id:
+            notifications = await runtime._drain_notifications(job_id=job_id)
+        else:
+            notifications = await runtime._drain_notifications()
         if not notifications:
+            if job_id:
+                return f"当前没有来自任务 {job_id} 的未读通知。"
             return "当前没有未读通知。"
 
-        lines = [f"未读通知（共 {len(notifications)} 条）："]
+        title = (
+            f"任务 {job_id} 的未读通知（共 {len(notifications)} 条）："
+            if job_id else
+            f"未读通知（共 {len(notifications)} 条）："
+        )
+        lines = [title]
         for item in notifications:
             next_run_at = getattr(item, "next_run_at", None)
             lines.append(
@@ -197,7 +221,7 @@ class CronCommand(Command):
   /cron add <description>        创建新任务（自然语言描述）
   /cron list                     列出所有任务
   /cron show <job_id>            查看单个任务详情
-  /cron inbox                    查看并清空未读提醒通知
+  /cron inbox [job_id]           查看并清空未读提醒通知
   /cron remove <job_id>          删除任务
   /cron run <job_id>             立即执行任务
   /cron enable <job_id>          启用任务
@@ -209,6 +233,7 @@ class CronCommand(Command):
   /cron add 30分钟后提醒我提交代码
   /cron show job-abc123
   /cron inbox
+  /cron inbox job-abc123
   /cron remove job-abc123
   /cron run job-abc123
   /cron disable job-abc123

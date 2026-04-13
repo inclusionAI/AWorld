@@ -112,6 +112,17 @@ class Command(ABC):
         """
         return []
 
+    @property
+    def completion_items(self) -> Dict[str, str]:
+        """
+        Optional slash-completion entries exposed by the command.
+
+        Returns:
+            Mapping of completion phrase -> user-facing description.
+            Example: {"/cron show": "查看单个任务详情"}
+        """
+        return {}
+
     async def execute(self, context: CommandContext) -> str:
         """
         Direct execution for tool commands.

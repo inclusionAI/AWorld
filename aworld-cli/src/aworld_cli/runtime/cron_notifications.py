@@ -8,6 +8,7 @@ Notifications are published by scheduler and drained by console for display.
 """
 import asyncio
 import uuid
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal, Optional, List
@@ -107,9 +108,13 @@ class CronNotificationCenter:
             # Graceful failure - notification system should never crash scheduler
             pass
 
-    async def drain(self) -> List[CronNotification]:
+    async def drain(self, job_id: Optional[str] = None) -> List[CronNotification]:
         """
-        Drain all pending notifications from the queue.
+        Drain pending notifications from the queue.
+
+        Args:
+            job_id: Optional job ID filter. When provided, only matching
+                notifications are drained and unmatched notifications remain unread.
 
         Returns:
             List of notifications in FIFO order (oldest first)
@@ -121,13 +126,20 @@ class CronNotificationCenter:
         notifications = []
 
         try:
-            # Drain all pending notifications (non-blocking)
+            retained = deque()
+
             while not self._queue.empty():
                 try:
                     notification = self._queue.get_nowait()
-                    notifications.append(notification)
+                    if job_id is None or notification.job_id == job_id:
+                        notifications.append(notification)
+                    else:
+                        retained.append(notification)
                 except asyncio.QueueEmpty:
                     break
+
+            while retained:
+                self._queue.put_nowait(retained.popleft())
 
         except Exception:
             # Graceful failure - return what we have so far
