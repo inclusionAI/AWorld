@@ -340,5 +340,49 @@ async def test_cron_tool_enable_all_skips_expired_one_time_history(monkeypatch):
     assert "job-expired-once" not in [item[0] for item in updated_ids]
 
 
+@pytest.mark.asyncio
+async def test_cron_tool_remove_all_targets_default_list_scope(monkeypatch):
+    """remove all should delete every job visible in the default list view."""
+    import aworld.tools.cron_tool as cron_tool_module
+    from aworld.core.scheduler.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+    removed_ids = []
+
+    class FakeScheduler:
+        async def list_jobs(self, enabled_only=False):
+            assert enabled_only is False
+            return [
+                CronJob(
+                    id="job-enabled",
+                    name="活跃提醒",
+                    enabled=True,
+                    schedule=CronSchedule(kind="every", every_seconds=60),
+                    payload=CronPayload(message="test"),
+                    state=CronJobState(next_run_at="2026-04-13T10:00:00+00:00"),
+                ),
+                CronJob(
+                    id="job-disabled",
+                    name="已禁用提醒",
+                    enabled=False,
+                    schedule=CronSchedule(kind="at", at="2026-04-14T10:00:00+00:00"),
+                    payload=CronPayload(message="test"),
+                    state=CronJobState(next_run_at=None),
+                ),
+            ]
+
+        async def remove_job(self, job_id):
+            removed_ids.append(job_id)
+            return True
+
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: FakeScheduler())
+
+    result = await cron_tool_module.cron_tool(action="remove", job_id="all")
+
+    assert result["success"] is True
+    assert result["removed_count"] == 2
+    assert result["job_ids"] == ["job-enabled", "job-disabled"]
+    assert removed_ids == ["job-enabled", "job-disabled"]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
