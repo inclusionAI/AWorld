@@ -169,7 +169,11 @@ AWorld-CLI goes beyond simple scaffolding. It acts as a central brain, the AWorl
 This multi-agent system works in concert to turn your ideas into reality:
 </p>
 
-<table>
+<table style="width: 100%; table-layout: fixed;">
+<colgroup>
+  <col style="width:32%">
+  <col style="width:68%">
+</colgroup>
 <thead>
 <tr><th style="white-space:nowrap">Agent Name</th><th>Role & Core Function</th></tr>
 </thead>
