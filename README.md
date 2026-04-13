@@ -83,12 +83,12 @@ This is what's possible today. Imagine what we'll build with *your* expertise.
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr> -->
 
-<tr>
+<!-- <tr>
   <td>Create Video: Calculus</td>
   <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• See full video on  <a href="https://youtu.be/98rrFKJBr-w">Youtube </td>
   <td style="width:22%"><img src="readme_assets/edu_equation.gif" alt="Video (calculus) demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
-</tr>
+</tr> -->
 
 <tr>
   <td>Create Video: Trig-Identity</td>
@@ -106,7 +106,7 @@ This is what's possible today. Imagine what we'll build with *your* expertise.
 
 <tr>
   <td>Create Video: Brand Marketing</td>
-  <td>• Auto-creation by Video Diffusion <br>• See full video on  <a href="https://youtu.be/dIDjABTFppg">Youtube</td>
+  <td>• Auto-creation by Video Diffusion & <a href="aworld-skills/video_subtitles_audios_insert/SKILL.md"> Audios Insert Skill</a> <br>• See full video on  <a href="https://youtu.be/dIDjABTFppg">Youtube</td>
   <td style="width:22%"><img src="readme_assets/brand_marketing.gif" alt="Video (brand marketing) demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr>
@@ -120,7 +120,7 @@ This is what's possible today. Imagine what we'll build with *your* expertise.
 
 <tr>
   <td>Create Video: Vtuber</td>
-  <td>• Auto-creation by Video Diffusion & Audio Generator <br>• See full video on  <a href="https://youtu.be/THKfbjYolqs">Youtube</td>
+  <td>• Auto-creation by Video Diffusion & Audio Generator & <a href="aworld-skills/embedded_video/SKILL.md"> Video Embedded Skill</a> <br>• See full video on  <a href="https://youtu.be/THKfbjYolqs">Youtube</td>
   <td style="width:22%"><img src="readme_assets/vtuber.gif" alt="Video (vtuber) demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr>
@@ -175,6 +175,9 @@ This multi-agent system works in concert to turn your ideas into reality:
 <tr><td style="white-space:nowrap">👑 AWorld Agent</td><td><strong>The Orchestrator</strong>: The central brain that interprets user goals, creates a plan, and delegates tasks to the appropriate sub-agents. It manages the entire workflow from start to finish.</td></tr>
 <tr><td style="white-space:nowrap">🧑‍💻 Developer</td><td><strong>The Builder</strong>: The master craftsman responsible for writing, debugging, and refactoring code.</td></tr>
 <tr><td style="white-space:nowrap">🧐 Evaluator</td><td><strong>The Judge</strong>: The quality assurance expert. It assesses the Developer's output against objective criteria, providing the critical feedback required for the evolution loop.</td></tr>
+<tr><td style="white-space:nowrap">🎬 Video Diffusion</td><td><strong>The Video Creator</strong>: A diffusion-model-based sub-agent (e.g., Kling-V3) that generates videos from text or text+image inputs.</td></tr>
+<tr><td style="white-space:nowrap">🎤 Audio Generator</td><td><strong>The Voice Creator</strong>: A TTS-model-based sub-agent that converts text input into speech audio.</td></tr>
+<tr><td style="white-space:nowrap">🖼️ Image Generator</td><td><strong>The Image Creator</strong>: A sub-agent that generates images from text or text+image inputs.</td></tr>
 </tbody>
 </table>
 
