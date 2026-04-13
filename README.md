@@ -44,6 +44,8 @@ AWorld is the platform designed for this singular purpose. We provide a complete
 
 See what happens when expert knowledge is encoded into reusable **Skills**. The creations below are orchestrated by the AWorld Agent, demonstrating our core scaling law: as the community contributes more expertise, the entire ecosystem becomes more powerful.
 
+From **one-prompt video generation** to **deep-search workflows**, each example turns specialized know-how into repeatable production capability.
+
 This is what's possible today. Imagine what we'll build with *your* expertise.
 
 <table>
@@ -91,35 +93,35 @@ This is what's possible today. Imagine what we'll build with *your* expertise.
 </tr> -->
 
 <tr>
-  <td>Create Video: Trig-Identity</td>
+  <td>One-Prompt Video: Trig-Identity</td>
   <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• See full video on  <a href="https://www.youtube.com/watch?v=qmPruOMsAKU">Youtube </td>
   <td style="width:22%"><img src="readme_assets/edu_trig.gif" alt="Video (trig) demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr>
 
 <tr>
-  <td>Create Video: Corporate Training </td>
+  <td>One-Prompt Video: Corporate Training </td>
   <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• See full video on  <a href="https://youtu.be/-QuzXw4MrHQ">Youtube </td>
   <td style="width:22%"><img src="readme_assets/corporate_training_en.gif" alt="Video (corporate training) demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr>
 
 <tr>
-  <td>Create Video: Brand Marketing</td>
+  <td>One-Prompt Video: Brand Marketing</td>
   <td>• Auto-creation by Video Diffusion & <a href="aworld-skills/video_subtitles_audios_insert/SKILL.md"> Audios Insert Skill</a> <br>• See full video on  <a href="https://youtu.be/dIDjABTFppg">Youtube</td>
   <td style="width:22%"><img src="readme_assets/brand_marketing.gif" alt="Video (brand marketing) demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr>
 
 <tr>
-  <td>Create Video: Social Media</td>
+  <td>One-Prompt Video: Social Media</td>
   <td>• Auto-creation by Video Diffusion & <a href="aworld-skills/video_subtitles_audios_insert/SKILL.md"> Audios Insert Skill</a> <br>• See full video on  <a href="https://youtu.be/L6hIwpqLy5w">Youtube</td>
   <td style="width:22%"><img src="readme_assets/social media.gif" alt="Video (social media) demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
 </tr>
 
 <tr>
-  <td>Create Video: Vtuber</td>
+  <td>One-Prompt Video: Vtuber</td>
   <td>• Auto-creation by Video Diffusion & Audio Generator & <a href="aworld-skills/embedded_video/SKILL.md"> Video Embedded Skill</a> <br>• See full video on  <a href="https://youtu.be/THKfbjYolqs">Youtube</td>
   <td style="width:22%"><img src="readme_assets/vtuber.gif" alt="Video (vtuber) demo" width="270"></td>
   <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
