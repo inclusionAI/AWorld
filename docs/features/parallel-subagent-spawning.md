@@ -49,7 +49,7 @@ spawn_subagent(
 
 2. **Configure Subagents:**
    - Add agents to TeamSwarm, OR
-   - Create `agent.md` files in `.claude/agents/`
+   - Create `agent.md` files in `.aworld/agents/`
 
 3. **Set Up Tools:**
    - Parent agent must have `spawn_subagent` tool
@@ -496,7 +496,7 @@ agent = Agent(
 swarm = TeamSwarm(parent, subagent_x, ...)
 
 # Option 2: Create agent.md
-# File: .claude/agents/subagent_x.md
+# File: .aworld/agents/subagent_x.md
 # ---
 # name: subagent_x
 # description: Does X
