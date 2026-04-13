@@ -155,6 +155,8 @@ async def main() -> None:
                         f"{notification.job_name} status={notification.status} "
                         f"summary={notification.summary}"
                     )
+                    if notification.detail:
+                        print(f"  detail={notification.detail}")
             else:
                 print("[notification] none")
 
