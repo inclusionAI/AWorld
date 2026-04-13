@@ -1,11 +1,12 @@
 import asyncio
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import Completer, Completion, WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from rich import box
@@ -26,11 +27,300 @@ from .user_input import UserInputHandler
 
 # ... existing imports ...
 
+# Notification polling configuration
+NOTIFICATION_POLL_INTERVAL = 2.0  # Seconds (1-3s latency target)
+
+
+class CronAwareCompleter(Completer):
+    """Wrap the static slash completer with dynamic cron job ID suggestions."""
+
+    _CRON_JOB_ID_PREFIXES = (
+        "/cron show ",
+        "/cron remove ",
+        "/cron rm ",
+        "/cron delete ",
+        "/cron run ",
+        "/cron enable ",
+        "/cron disable ",
+        "/cron inbox ",
+    )
+
+    def __init__(
+        self,
+        words: List[str],
+        meta_dict: dict[str, str],
+        runtime: Any = None,
+        event_loop: Optional[asyncio.AbstractEventLoop] = None,
+    ):
+        self._base_completer = WordCompleter(
+            words,
+            ignore_case=True,
+            sentence=True,
+            meta_dict=meta_dict,
+        )
+        self._runtime = runtime
+        self._event_loop = event_loop
+
+    def get_completions(self, document, complete_event):
+        yield from self._base_completer.get_completions(document, complete_event)
+
+        prefix = self._match_cron_job_prefix(document.text_before_cursor)
+        if not prefix:
+            return
+
+        partial_job_id = document.text_before_cursor[len(prefix):]
+        if partial_job_id.strip() and " " in partial_job_id.strip():
+            return
+
+        for job in sorted(self._list_cron_jobs(), key=self._job_sort_key):
+            if not self._matches_job(partial_job_id, job):
+                continue
+            yield Completion(
+                text=job.id,
+                start_position=-len(partial_job_id),
+                display_meta=self._job_meta(job),
+            )
+
+    def _match_cron_job_prefix(self, text: str) -> Optional[str]:
+        for prefix in self._CRON_JOB_ID_PREFIXES:
+            if text.startswith(prefix):
+                return prefix
+        return None
+
+    def _list_cron_jobs(self) -> List[Any]:
+        runtime = self._runtime
+        scheduler = getattr(runtime, "_scheduler", None) if runtime else None
+        if scheduler is None or not hasattr(scheduler, "list_jobs"):
+            return []
+
+        coro = scheduler.list_jobs(enabled_only=False)
+
+        if self._event_loop and self._event_loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(coro, self._event_loop)
+                return future.result(timeout=0.5)
+            except Exception:
+                return []
+
+        try:
+            return asyncio.run(coro)
+        except Exception:
+            return []
+
+    def _matches_job(self, partial_job_id: str, job: Any) -> bool:
+        query = (partial_job_id or "").strip().lower()
+        if not query:
+            return True
+
+        job_id = getattr(job, "id", "")
+        job_name = getattr(job, "name", "")
+        return query in job_id.lower() or query in job_name.lower()
+
+    def _job_meta(self, job: Any) -> str:
+        name = getattr(job, "name", "")
+        enabled = getattr(job, "enabled", True)
+        state = getattr(job, "state", None)
+        last_status = getattr(state, "last_status", None) if state else None
+        status_label = "Enabled" if enabled else "Disabled"
+        last_label = self._format_last_status(last_status)
+        return f"Name: {name or '(unnamed)'} | State: {status_label} | Last: {last_label}"
+
+    def _job_sort_key(self, job: Any) -> tuple[int, int, str, str]:
+        enabled_rank = 0 if getattr(job, "enabled", True) else 1
+        state = getattr(job, "state", None)
+        last_status = getattr(state, "last_status", None) if state else None
+        status_rank = self._status_priority(last_status)
+        name = (getattr(job, "name", "") or "").lower()
+        job_id = (getattr(job, "id", "") or "").lower()
+        return enabled_rank, status_rank, name, job_id
+
+    def _format_last_status(self, last_status: Optional[str]) -> str:
+        normalized = (last_status or "").strip().lower()
+        if not normalized:
+            return "Never"
+
+        mapping = {
+            "ok": "OK",
+            "error": "Error",
+            "timeout": "Timeout",
+        }
+        return mapping.get(normalized, normalized.capitalize())
+
+    def _status_priority(self, last_status: Optional[str]) -> int:
+        normalized = (last_status or "").strip().lower()
+        ranking = {
+            "error": 0,
+            "timeout": 1,
+            "ok": 2,
+            "": 3,
+        }
+        return ranking.get(normalized, 4)
+
+
 class AWorldCLI:
     def __init__(self):
         self.console = console
         self.user_input = UserInputHandler(console)
         # self.team_handler = InteractiveTeamHandler(console)
+
+        # Notification polling state
+        self._is_agent_executing = False
+        self._notification_poll_task = None
+        self._notification_stop_event = None
+        self._notification_drain_lock = asyncio.Lock()
+        self._toolbar_workspace_name = self._detect_workspace_name()
+        self._toolbar_git_branch = self._detect_git_branch()
+
+    def _detect_workspace_name(self) -> str:
+        """Detect the current workspace name for status-bar display."""
+        workspace_name = Path.cwd().name.strip()
+        return workspace_name or "workspace"
+
+    def _detect_git_branch(self) -> str:
+        """Best-effort detection of the current git branch for status-bar display."""
+        try:
+            result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=Path.cwd(),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=0.5,
+            )
+        except Exception:
+            return "n/a"
+
+        if result.returncode != 0:
+            return "n/a"
+
+        branch = (result.stdout or "").strip()
+        return branch or "detached"
+
+    def _build_status_bar_text(
+        self,
+        runtime,
+        agent_name: str = "Aworld",
+        mode: str = "Chat",
+    ) -> str:
+        """
+        Build plain-text status-bar content.
+
+        The bar is intentionally always present to avoid layout jumps.
+        """
+        notification_center = getattr(runtime, "_notification_center", None)
+        if not notification_center:
+            cron_status = "Cron: offline"
+        else:
+            unread_count = notification_center.get_unread_count()
+            cron_status = f"Cron: {unread_count} unread" if unread_count > 0 else "Cron: clear"
+
+        return " | ".join([
+            f"Agent: {agent_name}",
+            f"Mode: {mode}",
+            cron_status,
+            f"Workspace: {self._toolbar_workspace_name}",
+            f"Branch: {self._toolbar_git_branch}",
+            "Hint: /cron inbox",
+        ])
+
+    def _build_status_bar(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> HTML:
+        """Build a styled prompt-toolkit status bar inspired by segmented system prompts."""
+        text = self._build_status_bar_text(runtime, agent_name=agent_name, mode=mode)
+        segments = [segment.strip() for segment in text.split("|")]
+
+        segment_styles = [
+            ("#181b2d", "#84c7c6"),
+            ("#181b2d", "#d8def5"),
+            ("#181b2d", "#f2c14e" if "unread" in segments[2] else "#8ed081"),
+            ("#181b2d", "#b8c0da"),
+            ("#181b2d", "#a88bd8"),
+            ("#181b2d", "#8ea0c4"),
+        ]
+        divider_style = ("#181b2d", "#4f5877")
+
+        parts = []
+        for index, segment in enumerate(segments):
+            bg, fg = segment_styles[index] if index < len(segment_styles) else ("#181b2d", "#d8def5")
+            escaped = (
+                segment.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            parts.append(f"<style bg='{bg}' fg='{fg}'> {escaped} </style>")
+            if index < len(segments) - 1:
+                div_bg, div_fg = divider_style
+                parts.append(f"<style bg='{div_bg}' fg='{div_fg}'> | </style>")
+
+        return HTML("".join(parts))
+
+    def _build_completion_entries(self, agent_names: Optional[List[str]] = None) -> tuple[list[str], dict[str, str]]:
+        """
+        Build slash-command completion phrases and descriptions for prompt_toolkit.
+
+        Returns:
+            Tuple of (completion phrases, phrase -> description)
+        """
+        agent_names = agent_names or []
+
+        builtin_cmds = [
+            "/agents", "/skills", "/new", "/restore", "/latest",
+            "/exit", "/switch", "/cost", "/cost -all", "/compact",
+            "/team",
+            "/memory", "/memory view", "/memory reload", "/memory status",
+        ]
+        builtin_meta = {
+            "/agents": "List available agents",
+            "/skills": "List available skills",
+            "/new": "Create a new session",
+            "/restore": "Restore to a previous session",
+            "/latest": "Restore to the latest session",
+            "/exit": "Exit chat",
+            "/switch": "Switch to another agent",
+            "/cost": "View query history (current session)",
+            "/cost -all": "View global history (all sessions)",
+            "/compact": "Run context compression",
+            "/memory": "Edit AWORLD.md project context",
+            "/memory view": "View current memory content",
+            "/memory reload": "Reload memory from file",
+            "/memory status": "Show memory system status",
+            "/team": "Agent team management commands",
+            "exit": "Exit chat",
+        }
+
+        words = set(builtin_cmds)
+        meta_dict = builtin_meta.copy()
+
+        for cmd in CommandRegistry.list_commands():
+            base_phrase = f"/{cmd.name}"
+            words.add(base_phrase)
+            meta_dict[base_phrase] = cmd.description
+            for phrase, description in cmd.completion_items.items():
+                words.add(phrase)
+                meta_dict[phrase] = description
+
+        for agent_name in agent_names:
+            phrase = f"/switch {agent_name}"
+            words.add(phrase)
+            meta_dict[phrase] = f"Switch to agent: {agent_name}"
+
+        words.add("exit")
+
+        return sorted(words), meta_dict
+
+    def _build_session_completer(
+        self,
+        agent_names: Optional[List[str]] = None,
+        runtime: Any = None,
+        event_loop: Optional[asyncio.AbstractEventLoop] = None,
+    ) -> Completer:
+        """Build the prompt completer with static slash entries plus dynamic cron job IDs."""
+        all_words, meta_dict = self._build_completion_entries(agent_names=agent_names)
+        return CronAwareCompleter(
+            all_words,
+            meta_dict,
+            runtime=runtime,
+            event_loop=event_loop,
+        )
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -907,6 +1197,103 @@ class AWorldCLI:
         self.console.print(info_table)
         self.console.print()
 
+    def render_cron_notifications(self, notifications: List[Any]) -> None:
+        """
+        Render pending cron notifications.
+
+        Args:
+            notifications: List of CronNotification objects from notification center
+
+        Design (per Section 8.7):
+            - Renders up to 3 notifications inline with color-coded status
+            - Shows overflow count if more than 3 pending
+            - Uses fixed-template summaries (no raw error text)
+            - For failed tasks, directs user to /cron list for details
+        """
+        if not notifications:
+            return
+
+        # Cap visible notifications at 3
+        visible = notifications[:3]
+        overflow = len(notifications) - 3
+
+        for notif in visible:
+            status = getattr(notif, 'status', 'ok')
+            status_colors = {
+                'ok': 'green',
+                'error': 'red',
+                'timeout': 'yellow'
+            }
+            color = status_colors.get(status, 'white')
+
+            # Main notification line (fixed template summary)
+            summary = getattr(notif, 'summary', '')
+            self.console.print(f"[{color}][Cron] {summary}[/{color}]")
+
+            detail = getattr(notif, 'detail', None)
+            if detail:
+                self.console.print(f"  [bold]提醒内容：[/bold]{detail}")
+
+            # Show next run time for recurring jobs
+            next_run_at = getattr(notif, 'next_run_at', None)
+            if next_run_at:
+                self.console.print(f"  [dim]next run: {next_run_at}[/dim]")
+
+            # For failed/timeout tasks, direct to /cron list for details
+            if status in ('error', 'timeout'):
+                self.console.print(f"  [dim]details: /cron list[/dim]")
+
+        # Show overflow count
+        if overflow > 0:
+            self.console.print(f"[dim]... and {overflow} more cron notifications[/dim]")
+
+        # Add spacing after notifications
+        self.console.print()
+
+    async def _drain_notifications_safe(self, runtime) -> List:
+        """
+        Thread-safe wrapper for draining notifications.
+
+        Prevents concurrent drain from poller and main loop using asyncio.Lock.
+        Returns empty list on any error to ensure graceful failure.
+        """
+        async with self._notification_drain_lock:
+            try:
+                return await runtime._drain_notifications()
+            except Exception:
+                return []
+
+    async def _notification_poller(
+        self,
+        runtime,
+        poll_interval: float = NOTIFICATION_POLL_INTERVAL,
+        stop_event: asyncio.Event = None
+    ) -> None:
+        """
+        Background task that polls for cron notifications during idle prompt.
+
+        Runs continuously while user is at input prompt, checking every
+        `poll_interval` seconds for new notifications. Skips polling during
+        agent execution to avoid duplicate drains.
+        """
+        while not stop_event.is_set():
+            try:
+                # Only poll when idle (not executing agent)
+                if not self._is_agent_executing:
+                    notifications = await self._drain_notifications_safe(runtime)
+                    if notifications:
+                        # Print above current prompt line
+                        self.console.print()  # Add newline before notifications
+                        self.render_cron_notifications(notifications)
+
+                await asyncio.sleep(poll_interval)
+
+            except asyncio.CancelledError:
+                break
+            except Exception:
+                # Graceful failure - never crash on notification error
+                pass
+
     async def _esc_key_listener(self):
         """
         Background listener for Esc key to interrupt currently executing tasks.
@@ -1059,62 +1446,19 @@ class AWorldCLI:
         # Check if we're in a real terminal (not IDE debugger or redirected input)
         is_terminal = sys.stdin.isatty()
 
+        runtime = None
+        if executor_instance and hasattr(executor_instance, '_base_runtime'):
+            runtime = executor_instance._base_runtime
+
         # Setup completer and session only if in terminal
         agent_names = [a.name for a in available_agents] if available_agents else []
         session = None
 
         if is_terminal:
-            # Get registered commands from CommandRegistry
-            registered_commands = [f"/{cmd.name}" for cmd in CommandRegistry.list_commands()]
-
-            # 用整行前缀匹配：/ski → /skills、/age → /agents；meta_dict 在补全菜单中显示描述（命令左、描述右）
-            # Built-in commands (not in CommandRegistry)
-            builtin_cmds = [
-                "/agents", "/skills", "/new", "/restore", "/latest",
-                "/exit", "/switch", "/cost", "/cost -all", "/compact",
-                "/team",
-                "/memory", "/memory view", "/memory reload", "/memory status",
-            ]
-
-            # Combine built-in and registered commands
-            slash_cmds = list(set(builtin_cmds + registered_commands))
-
-            switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
-            all_words = slash_cmds + switch_with_agents + ["exit"]
-
-            # Meta descriptions for built-in commands
-            builtin_meta = {
-                "/agents": "List available agents",
-                "/skills": "List available skills",
-                "/new": "Create a new session",
-                "/restore": "Restore to a previous session",
-                "/latest": "Restore to the latest session",
-                "/exit": "Exit chat",
-                "/switch": "Switch to another agent",
-                "/cost": "View query history (current session)",
-                "/cost -all": "View global history (all sessions)",
-                "/compact": "Run context compression",
-                "/memory": "Edit AWORLD.md project context",
-                "/memory view": "View current memory content",
-                "/memory reload": "Reload memory from file",
-                "/memory status": "Show memory system status",
-                "/team": "Agent team management commands",
-                "exit": "Exit chat",
-            }
-
-            # Add descriptions from CommandRegistry
-            meta_dict = builtin_meta.copy()
-            for cmd in CommandRegistry.list_commands():
-                meta_dict[f"/{cmd.name}"] = cmd.description
-
-            for n in agent_names:
-                meta_dict[f"/switch {n}"] = f"Switch to agent: {n}"
-
-            completer = WordCompleter(
-                all_words,
-                ignore_case=True,
-                sentence=True,
-                meta_dict=meta_dict,
+            completer = self._build_session_completer(
+                agent_names=agent_names,
+                runtime=runtime,
+                event_loop=asyncio.get_running_loop(),
             )
             # 历史记录文件：上/下方向键可浏览并加载已执行过的指令
             from pathlib import Path
@@ -1133,7 +1477,15 @@ class AWorldCLI:
                     # Use prompt_toolkit for input with completion
                     # We use HTML for basic coloring of the prompt
                     prompt_text = "<b><cyan>You</cyan></b>: "
-                    user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text))
+                    prompt_kwargs = {}
+                    if runtime:
+                        prompt_kwargs["bottom_toolbar"] = lambda: self._build_status_bar(
+                            runtime,
+                            agent_name=agent_name,
+                            mode="Chat",
+                        )
+                        prompt_kwargs["refresh_interval"] = 0.1
+                    user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text), **prompt_kwargs)
                 else:
                     # Fallback to plain input() for non-terminal environments
                     self.console.print("[cyan]You[/cyan]: ", end="")
@@ -1171,7 +1523,7 @@ class AWorldCLI:
                                 user_args=cmd_args,
                                 sandbox=None,  # TODO: Pass actual sandbox if available
                                 agent_config=None,  # TODO: Pass agent config if needed
-                                executor=executor_instance  # NEW: Pass executor for background task manager access
+                                runtime=runtime,
                             )
 
                             try:
@@ -1759,8 +2111,13 @@ Add any custom instructions for AI agents working on this project.
                     # File parsing is now handled by FileParseHook automatically
                     # Just pass the user input as-is, the hook will process @filename references
                     # Execute the task/chat (FileParseHook will handle file parsing)
-                    response = await executor(user_input)
-                    # Response is returned for potential future use, but content is already printed by executor
+                    self._is_agent_executing = True
+                    try:
+                        response = await executor(user_input)
+                        # Response is returned for potential future use, but content is already printed by executor
+                    finally:
+                        self._is_agent_executing = False
+
                 except Exception as e:
                     import traceback
                     logger.error(f"Error executing task: {e} {traceback.format_exc()}")
@@ -1789,5 +2146,20 @@ Add any custom instructions for AI agents working on this project.
                 self.console.print(f"[red]An unexpected error occurred: {e}[/red]")
                 continue  # Add continue to prevent fall-through
 
-        return False
+        # Cleanup: Stop background notification poller
+        if self._notification_poll_task:
+            self._notification_stop_event.set()
+            try:
+                await asyncio.wait_for(self._notification_poll_task, timeout=1.0)
+            except asyncio.TimeoutError:
+                # Force cancel if graceful shutdown times out
+                self._notification_poll_task.cancel()
+                try:
+                    await self._notification_poll_task
+                except asyncio.CancelledError:
+                    pass
+            finally:
+                self._notification_poll_task = None
+                self._notification_stop_event = None
 
+        return False
