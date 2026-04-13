@@ -140,6 +140,7 @@ Claude-Sessions/
 
 # AWorld session data
 .aworld/
+.worktrees/
 
 # Temporary PR documentation
 PR_*_*.md
