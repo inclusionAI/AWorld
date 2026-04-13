@@ -384,5 +384,38 @@ async def test_cron_tool_remove_all_targets_default_list_scope(monkeypatch):
     assert removed_ids == ["job-enabled", "job-disabled"]
 
 
+@pytest.mark.asyncio
+async def test_cron_tool_show_includes_last_result_summary(monkeypatch):
+    """show should expose the persisted last execution summary."""
+    import aworld.tools.cron_tool as cron_tool_module
+    from aworld.core.scheduler.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+    class FakeScheduler:
+        async def get_job(self, job_id):
+            assert job_id == "job-123"
+            return CronJob(
+                id="job-123",
+                name="BTC价格监控",
+                enabled=True,
+                schedule=CronSchedule(kind="every", every_seconds=60),
+                payload=CronPayload(message="检查 BTC 当前价格"),
+                state=CronJobState(
+                    next_run_at="2026-04-13T06:23:26.376502+00:00",
+                    last_run_at="2026-04-13T06:22:26.376502+00:00",
+                    last_status="ok",
+                    last_result_summary="BTC 当前价格 68000 USDT，较上一分钟上涨 0.2%",
+                    run_count=3,
+                ),
+            )
+
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: FakeScheduler())
+
+    result = await cron_tool_module.cron_tool(action="show", job_id="job-123")
+
+    assert result["success"] is True
+    assert result["job"]["id"] == "job-123"
+    assert result["job"]["last_result_summary"] == "BTC 当前价格 68000 USDT，较上一分钟上涨 0.2%"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
