@@ -226,6 +226,60 @@ async def cron_tool(
             "last_error": job.state.last_error if job.state.last_error else None,
         }
 
+    def parse_iso_datetime_local(value: Optional[str]) -> Optional[datetime]:
+        if not value:
+            return None
+        return datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+    def is_reactivatable_local(job: 'CronJob', now: datetime) -> bool:
+        if job.schedule.kind in ("every", "cron"):
+            return True
+        if job.schedule.kind != "at":
+            return False
+
+        next_run = parse_iso_datetime_local(job.state.next_run_at)
+        if next_run:
+            return next_run > now
+
+        at_time = parse_iso_datetime_local(job.schedule.at)
+        return bool(at_time and at_time > now)
+
+    async def bulk_toggle_local(enable_target: bool) -> Dict[str, Any]:
+        now = datetime.now().astimezone()
+        jobs = await scheduler.list_jobs(enabled_only=enable_target is False)
+
+        if enable_target:
+            candidates = [job for job in jobs if not job.enabled and is_reactivatable_local(job, now)]
+            empty_message = "No reactivatable jobs to enable"
+            verb = "Enabled"
+            summary_label = "reactivatable jobs"
+        else:
+            candidates = [job for job in jobs if job.enabled and is_reactivatable_local(job, now)]
+            empty_message = "No active jobs to disable"
+            verb = "Disabled"
+            summary_label = "active jobs"
+
+        if not candidates:
+            return {
+                "success": True,
+                "message": empty_message,
+                "updated_count": 0,
+                "job_ids": [],
+            }
+
+        updated_ids = []
+        for job in candidates:
+            updated = await scheduler.update_job(job.id, enabled=enable_target)
+            if updated:
+                updated_ids.append(job.id)
+
+        return {
+            "success": True,
+            "message": f"{verb} {len(updated_ids)} {summary_label}",
+            "updated_count": len(updated_ids),
+            "job_ids": updated_ids,
+        }
+
     try:
         from aworld.core.scheduler import get_scheduler
         from aworld.core.scheduler.types import CronJob, CronSchedule, CronPayload
@@ -328,6 +382,9 @@ async def cron_tool(
             if not job_id:
                 return {"success": False, "error": "job_id required"}
 
+            if job_id == "all":
+                return await bulk_toggle_local(enable_target=True)
+
             updated = await scheduler.update_job(job_id, enabled=True)
             if updated:
                 return {"success": True, "message": f"Enabled job {job_id}"}
@@ -337,6 +394,9 @@ async def cron_tool(
         elif action == "disable":
             if not job_id:
                 return {"success": False, "error": "job_id required"}
+
+            if job_id == "all":
+                return await bulk_toggle_local(enable_target=False)
 
             updated = await scheduler.update_job(job_id, enabled=False)
             if updated:

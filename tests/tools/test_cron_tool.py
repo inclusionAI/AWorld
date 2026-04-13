@@ -236,5 +236,109 @@ async def test_cron_tool_normalizes_string_max_runs_and_aworld_agent_name(monkey
     assert fake_scheduler.last_job.payload.agent_name == "Aworld"
 
 
+@pytest.mark.asyncio
+async def test_cron_tool_disable_all_only_targets_enabled_jobs(monkeypatch):
+    """disable all should only disable currently enabled jobs."""
+    import aworld.tools.cron_tool as cron_tool_module
+    from aworld.core.scheduler.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+    updated_ids = []
+
+    class FakeScheduler:
+        async def list_jobs(self, enabled_only=False):
+            return [
+                CronJob(
+                    id="job-enabled-1",
+                    name="活跃提醒1",
+                    enabled=True,
+                    schedule=CronSchedule(kind="every", every_seconds=60),
+                    payload=CronPayload(message="test"),
+                    state=CronJobState(next_run_at="2026-04-13T10:00:00+00:00"),
+                ),
+                CronJob(
+                    id="job-enabled-2",
+                    name="活跃提醒2",
+                    enabled=True,
+                    schedule=CronSchedule(kind="cron", cron_expr="0 9 * * *"),
+                    payload=CronPayload(message="test"),
+                    state=CronJobState(next_run_at="2026-04-14T01:00:00+00:00"),
+                ),
+                CronJob(
+                    id="job-disabled",
+                    name="已禁用提醒",
+                    enabled=False,
+                    schedule=CronSchedule(kind="every", every_seconds=60),
+                    payload=CronPayload(message="test"),
+                    state=CronJobState(next_run_at=None),
+                ),
+            ]
+
+        async def update_job(self, job_id, **updates):
+            updated_ids.append((job_id, updates))
+            return {"id": job_id}
+
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: FakeScheduler())
+
+    result = await cron_tool_module.cron_tool(action="disable", job_id="all")
+
+    assert result["success"] is True
+    assert result["updated_count"] == 2
+    assert [item[0] for item in updated_ids] == ["job-enabled-1", "job-enabled-2"]
+    assert all(item[1]["enabled"] is False for item in updated_ids)
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_enable_all_skips_expired_one_time_history(monkeypatch):
+    """enable all should not resurrect expired one-time historical jobs."""
+    import aworld.tools.cron_tool as cron_tool_module
+    from aworld.core.scheduler.types import CronJob, CronJobState, CronPayload, CronSchedule
+
+    updated_ids = []
+    future_at = "2026-04-14T10:00:00+00:00"
+    past_at = "2026-04-10T10:00:00+00:00"
+
+    class FakeScheduler:
+        async def list_jobs(self, enabled_only=False):
+            return [
+                CronJob(
+                    id="job-recurring",
+                    name="循环提醒",
+                    enabled=False,
+                    schedule=CronSchedule(kind="every", every_seconds=60),
+                    payload=CronPayload(message="test"),
+                    state=CronJobState(next_run_at=None),
+                ),
+                CronJob(
+                    id="job-future-once",
+                    name="未来一次性提醒",
+                    enabled=False,
+                    schedule=CronSchedule(kind="at", at=future_at),
+                    payload=CronPayload(message="test"),
+                    state=CronJobState(next_run_at=future_at),
+                ),
+                CronJob(
+                    id="job-expired-once",
+                    name="历史一次性提醒",
+                    enabled=False,
+                    schedule=CronSchedule(kind="at", at=past_at),
+                    payload=CronPayload(message="test"),
+                    state=CronJobState(next_run_at=None, last_run_at=past_at),
+                ),
+            ]
+
+        async def update_job(self, job_id, **updates):
+            updated_ids.append((job_id, updates))
+            return {"id": job_id}
+
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: FakeScheduler())
+
+    result = await cron_tool_module.cron_tool(action="enable", job_id="all")
+
+    assert result["success"] is True
+    assert result["updated_count"] == 2
+    assert [item[0] for item in updated_ids] == ["job-recurring", "job-future-once"]
+    assert "job-expired-once" not in [item[0] for item in updated_ids]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
