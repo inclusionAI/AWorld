@@ -41,62 +41,51 @@ class MockSwarm:
         self.root = MagicMock(name="root_agent")
 
 
-class MockLocalAgent:
-    """Mock LocalAgent for testing."""
-    def __init__(self, swarm):
-        self._swarm = swarm
-
-    async def get_swarm(self, context=None):
-        """Return mock swarm."""
-        return self._swarm
-
-
-class MockLocalAgentRegistry:
-    """Mock LocalAgentRegistry for testing."""
-    def __init__(self, agents=None):
-        self._agents = agents or {}
-
-    def get(self, name):
-        """Get agent by name."""
-        return self._agents.get(name)
-
-
 @pytest.mark.asyncio
 async def test_resolve_swarm_success(executor):
     """
     Test that _resolve_swarm correctly resolves and caches swarm.
 
     This verifies fix for Issue #1:
-    - Properly awaits async get_swarm()
+    - Uses injected resolver instead of importing CLI registry
     - Returns full swarm without re-wrapping
     - Caches the swarm for reuse
     """
     mock_swarm = MockSwarm("TestSwarm")
-    mock_local_agent = MockLocalAgent(mock_swarm)
-    mock_registry = MockLocalAgentRegistry({"TestAgent": mock_local_agent})
+    resolve_swarm = AsyncMock(return_value=mock_swarm)
+    executor = CronExecutor(swarm_resolver=resolve_swarm)
 
-    with patch('aworld_cli.core.agent_registry.LocalAgentRegistry', return_value=mock_registry):
-        # First call should resolve and cache
-        swarm1 = await executor._resolve_swarm("TestAgent")
+    # First call should resolve and cache
+    swarm1 = await executor._resolve_swarm("TestAgent")
 
-        assert swarm1 is mock_swarm
-        assert swarm1.name == "TestSwarm"
-        assert "TestAgent" in executor._agent_cache
+    assert swarm1 is mock_swarm
+    assert swarm1.name == "TestSwarm"
+    assert "TestAgent" in executor._agent_cache
 
-        # Second call should return cached swarm
-        swarm2 = await executor._resolve_swarm("TestAgent")
-        assert swarm2 is swarm1  # Same instance
+    # Second call should return cached swarm
+    swarm2 = await executor._resolve_swarm("TestAgent")
+    assert swarm2 is swarm1  # Same instance
+    resolve_swarm.assert_awaited_once_with("TestAgent")
 
 
 @pytest.mark.asyncio
 async def test_resolve_swarm_agent_not_found(executor):
     """Test that _resolve_swarm returns None for missing agent."""
-    mock_registry = MockLocalAgentRegistry({})  # Empty registry
+    resolve_swarm = AsyncMock(return_value=None)
+    executor = CronExecutor(swarm_resolver=resolve_swarm)
 
-    with patch('aworld_cli.core.agent_registry.LocalAgentRegistry', return_value=mock_registry):
-        swarm = await executor._resolve_swarm("NonExistentAgent")
+    swarm = await executor._resolve_swarm("NonExistentAgent")
 
-        assert swarm is None
+    assert swarm is None
+    resolve_swarm.assert_awaited_once_with("NonExistentAgent")
+
+
+@pytest.mark.asyncio
+async def test_resolve_swarm_without_resolver_returns_none(executor):
+    """Core executor should fail gracefully when no resolver is configured."""
+    swarm = await executor._resolve_swarm("UnconfiguredAgent")
+
+    assert swarm is None
 
 
 @pytest.mark.asyncio
@@ -114,17 +103,27 @@ async def test_resolve_swarm_preserves_team_structure(executor):
         "worker1": MagicMock(name="worker1"),
         "worker2": MagicMock(name="worker2"),
     }
+    resolve_swarm = AsyncMock(return_value=mock_team_swarm)
+    executor = CronExecutor(swarm_resolver=resolve_swarm)
 
-    mock_local_agent = MockLocalAgent(mock_team_swarm)
-    mock_registry = MockLocalAgentRegistry({"TeamAgent": mock_local_agent})
+    swarm = await executor._resolve_swarm("TeamAgent")
 
-    with patch('aworld_cli.core.agent_registry.LocalAgentRegistry', return_value=mock_registry):
-        swarm = await executor._resolve_swarm("TeamAgent")
+    # Verify full TeamSwarm structure is preserved
+    assert swarm is mock_team_swarm
+    assert hasattr(swarm, 'agents')
+    assert len(swarm.agents) == 3
+    resolve_swarm.assert_awaited_once_with("TeamAgent")
 
-        # Verify full TeamSwarm structure is preserved
-        assert swarm is mock_team_swarm
-        assert hasattr(swarm, 'agents')
-        assert len(swarm.agents) == 3
+
+@pytest.mark.asyncio
+async def test_resolve_swarm_supports_sync_resolver():
+    """Resolver may be provided as a synchronous callback."""
+    mock_swarm = MockSwarm("SyncSwarm")
+    executor = CronExecutor(swarm_resolver=lambda agent_name: mock_swarm if agent_name == "SyncAgent" else None)
+
+    swarm = await executor._resolve_swarm("SyncAgent")
+
+    assert swarm is mock_swarm
 
 
 @pytest.mark.asyncio
@@ -235,22 +234,19 @@ async def test_cache_isolation_between_agents(executor):
     """Test that swarm cache is isolated per agent name."""
     swarm1 = MockSwarm("Swarm1")
     swarm2 = MockSwarm("Swarm2")
+    resolve_swarm = AsyncMock(side_effect=lambda agent_name: {
+        "Agent1": swarm1,
+        "Agent2": swarm2,
+    }.get(agent_name))
+    executor = CronExecutor(swarm_resolver=resolve_swarm)
 
-    agent1 = MockLocalAgent(swarm1)
-    agent2 = MockLocalAgent(swarm2)
+    result1 = await executor._resolve_swarm("Agent1")
+    result2 = await executor._resolve_swarm("Agent2")
 
-    registry = MockLocalAgentRegistry({
-        "Agent1": agent1,
-        "Agent2": agent2,
-    })
-
-    with patch('aworld_cli.core.agent_registry.LocalAgentRegistry', return_value=registry):
-        result1 = await executor._resolve_swarm("Agent1")
-        result2 = await executor._resolve_swarm("Agent2")
-
-        assert result1 is swarm1
-        assert result2 is swarm2
-        assert result1 is not result2
+    assert result1 is swarm1
+    assert result2 is swarm2
+    assert result1 is not result2
+    assert resolve_swarm.await_count == 2
 
 
 if __name__ == "__main__":
