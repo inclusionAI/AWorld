@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import Completer, Completion, WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 from rich import box
@@ -29,6 +29,132 @@ from .user_input import UserInputHandler
 
 # Notification polling configuration
 NOTIFICATION_POLL_INTERVAL = 2.0  # Seconds (1-3s latency target)
+
+
+class CronAwareCompleter(Completer):
+    """Wrap the static slash completer with dynamic cron job ID suggestions."""
+
+    _CRON_JOB_ID_PREFIXES = (
+        "/cron show ",
+        "/cron remove ",
+        "/cron rm ",
+        "/cron delete ",
+        "/cron run ",
+        "/cron enable ",
+        "/cron disable ",
+        "/cron inbox ",
+    )
+
+    def __init__(
+        self,
+        words: List[str],
+        meta_dict: dict[str, str],
+        runtime: Any = None,
+        event_loop: Optional[asyncio.AbstractEventLoop] = None,
+    ):
+        self._base_completer = WordCompleter(
+            words,
+            ignore_case=True,
+            sentence=True,
+            meta_dict=meta_dict,
+        )
+        self._runtime = runtime
+        self._event_loop = event_loop
+
+    def get_completions(self, document, complete_event):
+        yield from self._base_completer.get_completions(document, complete_event)
+
+        prefix = self._match_cron_job_prefix(document.text_before_cursor)
+        if not prefix:
+            return
+
+        partial_job_id = document.text_before_cursor[len(prefix):]
+        if partial_job_id.strip() and " " in partial_job_id.strip():
+            return
+
+        for job in sorted(self._list_cron_jobs(), key=self._job_sort_key):
+            if not self._matches_job(partial_job_id, job):
+                continue
+            yield Completion(
+                text=job.id,
+                start_position=-len(partial_job_id),
+                display_meta=self._job_meta(job),
+            )
+
+    def _match_cron_job_prefix(self, text: str) -> Optional[str]:
+        for prefix in self._CRON_JOB_ID_PREFIXES:
+            if text.startswith(prefix):
+                return prefix
+        return None
+
+    def _list_cron_jobs(self) -> List[Any]:
+        runtime = self._runtime
+        scheduler = getattr(runtime, "_scheduler", None) if runtime else None
+        if scheduler is None or not hasattr(scheduler, "list_jobs"):
+            return []
+
+        coro = scheduler.list_jobs(enabled_only=False)
+
+        if self._event_loop and self._event_loop.is_running():
+            try:
+                future = asyncio.run_coroutine_threadsafe(coro, self._event_loop)
+                return future.result(timeout=0.5)
+            except Exception:
+                return []
+
+        try:
+            return asyncio.run(coro)
+        except Exception:
+            return []
+
+    def _matches_job(self, partial_job_id: str, job: Any) -> bool:
+        query = (partial_job_id or "").strip().lower()
+        if not query:
+            return True
+
+        job_id = getattr(job, "id", "")
+        job_name = getattr(job, "name", "")
+        return query in job_id.lower() or query in job_name.lower()
+
+    def _job_meta(self, job: Any) -> str:
+        name = getattr(job, "name", "")
+        enabled = getattr(job, "enabled", True)
+        state = getattr(job, "state", None)
+        last_status = getattr(state, "last_status", None) if state else None
+        status_label = "Enabled" if enabled else "Disabled"
+        last_label = self._format_last_status(last_status)
+        return f"Name: {name or '(unnamed)'} | State: {status_label} | Last: {last_label}"
+
+    def _job_sort_key(self, job: Any) -> tuple[int, int, str, str]:
+        enabled_rank = 0 if getattr(job, "enabled", True) else 1
+        state = getattr(job, "state", None)
+        last_status = getattr(state, "last_status", None) if state else None
+        status_rank = self._status_priority(last_status)
+        name = (getattr(job, "name", "") or "").lower()
+        job_id = (getattr(job, "id", "") or "").lower()
+        return enabled_rank, status_rank, name, job_id
+
+    def _format_last_status(self, last_status: Optional[str]) -> str:
+        normalized = (last_status or "").strip().lower()
+        if not normalized:
+            return "Never"
+
+        mapping = {
+            "ok": "OK",
+            "error": "Error",
+            "timeout": "Timeout",
+        }
+        return mapping.get(normalized, normalized.capitalize())
+
+    def _status_priority(self, last_status: Optional[str]) -> int:
+        normalized = (last_status or "").strip().lower()
+        ranking = {
+            "error": 0,
+            "timeout": 1,
+            "ok": 2,
+            "": 3,
+        }
+        return ranking.get(normalized, 4)
 
 
 class AWorldCLI:
@@ -126,6 +252,75 @@ class AWorldCLI:
                 parts.append(f"<style bg='{div_bg}' fg='{div_fg}'> | </style>")
 
         return HTML("".join(parts))
+
+    def _build_completion_entries(self, agent_names: Optional[List[str]] = None) -> tuple[list[str], dict[str, str]]:
+        """
+        Build slash-command completion phrases and descriptions for prompt_toolkit.
+
+        Returns:
+            Tuple of (completion phrases, phrase -> description)
+        """
+        agent_names = agent_names or []
+
+        builtin_cmds = [
+            "/agents", "/skills", "/new", "/restore", "/latest",
+            "/exit", "/switch", "/cost", "/cost -all", "/compact",
+            "/team",
+            "/memory", "/memory view", "/memory reload", "/memory status",
+        ]
+        builtin_meta = {
+            "/agents": "List available agents",
+            "/skills": "List available skills",
+            "/new": "Create a new session",
+            "/restore": "Restore to a previous session",
+            "/latest": "Restore to the latest session",
+            "/exit": "Exit chat",
+            "/switch": "Switch to another agent",
+            "/cost": "View query history (current session)",
+            "/cost -all": "View global history (all sessions)",
+            "/compact": "Run context compression",
+            "/memory": "Edit AWORLD.md project context",
+            "/memory view": "View current memory content",
+            "/memory reload": "Reload memory from file",
+            "/memory status": "Show memory system status",
+            "/team": "Agent team management commands",
+            "exit": "Exit chat",
+        }
+
+        words = set(builtin_cmds)
+        meta_dict = builtin_meta.copy()
+
+        for cmd in CommandRegistry.list_commands():
+            base_phrase = f"/{cmd.name}"
+            words.add(base_phrase)
+            meta_dict[base_phrase] = cmd.description
+            for phrase, description in cmd.completion_items.items():
+                words.add(phrase)
+                meta_dict[phrase] = description
+
+        for agent_name in agent_names:
+            phrase = f"/switch {agent_name}"
+            words.add(phrase)
+            meta_dict[phrase] = f"Switch to agent: {agent_name}"
+
+        words.add("exit")
+
+        return sorted(words), meta_dict
+
+    def _build_session_completer(
+        self,
+        agent_names: Optional[List[str]] = None,
+        runtime: Any = None,
+        event_loop: Optional[asyncio.AbstractEventLoop] = None,
+    ) -> Completer:
+        """Build the prompt completer with static slash entries plus dynamic cron job IDs."""
+        all_words, meta_dict = self._build_completion_entries(agent_names=agent_names)
+        return CronAwareCompleter(
+            all_words,
+            meta_dict,
+            runtime=runtime,
+            event_loop=event_loop,
+        )
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -1251,62 +1446,19 @@ class AWorldCLI:
         # Check if we're in a real terminal (not IDE debugger or redirected input)
         is_terminal = sys.stdin.isatty()
 
+        runtime = None
+        if executor_instance and hasattr(executor_instance, '_base_runtime'):
+            runtime = executor_instance._base_runtime
+
         # Setup completer and session only if in terminal
         agent_names = [a.name for a in available_agents] if available_agents else []
         session = None
 
         if is_terminal:
-            # Get registered commands from CommandRegistry
-            registered_commands = [f"/{cmd.name}" for cmd in CommandRegistry.list_commands()]
-
-            # 用整行前缀匹配：/ski → /skills、/age → /agents；meta_dict 在补全菜单中显示描述（命令左、描述右）
-            # Built-in commands (not in CommandRegistry)
-            builtin_cmds = [
-                "/agents", "/skills", "/new", "/restore", "/latest",
-                "/exit", "/switch", "/cost", "/cost -all", "/compact",
-                "/team",
-                "/memory", "/memory view", "/memory reload", "/memory status",
-            ]
-
-            # Combine built-in and registered commands
-            slash_cmds = list(set(builtin_cmds + registered_commands))
-
-            switch_with_agents = [f"/switch {n}" for n in agent_names] if agent_names else []
-            all_words = slash_cmds + switch_with_agents + ["exit"]
-
-            # Meta descriptions for built-in commands
-            builtin_meta = {
-                "/agents": "List available agents",
-                "/skills": "List available skills",
-                "/new": "Create a new session",
-                "/restore": "Restore to a previous session",
-                "/latest": "Restore to the latest session",
-                "/exit": "Exit chat",
-                "/switch": "Switch to another agent",
-                "/cost": "View query history (current session)",
-                "/cost -all": "View global history (all sessions)",
-                "/compact": "Run context compression",
-                "/memory": "Edit AWORLD.md project context",
-                "/memory view": "View current memory content",
-                "/memory reload": "Reload memory from file",
-                "/memory status": "Show memory system status",
-                "/team": "Agent team management commands",
-                "exit": "Exit chat",
-            }
-
-            # Add descriptions from CommandRegistry
-            meta_dict = builtin_meta.copy()
-            for cmd in CommandRegistry.list_commands():
-                meta_dict[f"/{cmd.name}"] = cmd.description
-
-            for n in agent_names:
-                meta_dict[f"/switch {n}"] = f"Switch to agent: {n}"
-
-            completer = WordCompleter(
-                all_words,
-                ignore_case=True,
-                sentence=True,
-                meta_dict=meta_dict,
+            completer = self._build_session_completer(
+                agent_names=agent_names,
+                runtime=runtime,
+                event_loop=asyncio.get_running_loop(),
             )
             # 历史记录文件：上/下方向键可浏览并加载已执行过的指令
             from pathlib import Path
@@ -1317,10 +1469,6 @@ class AWorldCLI:
                 complete_while_typing=True,  # 输入时即显示补全列表（带描述）
                 history=FileHistory(str(history_path)),
             )
-
-        runtime = None
-        if executor_instance and hasattr(executor_instance, '_base_runtime'):
-            runtime = executor_instance._base_runtime
 
         while True:
             try:

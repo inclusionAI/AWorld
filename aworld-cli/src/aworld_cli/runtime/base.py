@@ -147,9 +147,12 @@ class BaseCliRuntime:
                 from aworld.logs.util import logger
                 logger.warning(f"Failed to stop cron scheduler: {e}")
 
-    async def _drain_notifications(self) -> List[Any]:
+    async def _drain_notifications(self, job_id: Optional[str] = None) -> List[Any]:
         """
         Drain pending notifications from notification center.
+
+        Args:
+            job_id: Optional job ID filter to drain only matching notifications
 
         Returns:
             List of CronNotification objects (empty list if no center or error)
@@ -162,7 +165,7 @@ class BaseCliRuntime:
             return []
 
         try:
-            return await self._notification_center.drain()
+            return await self._notification_center.drain(job_id=job_id)
         except Exception as e:
             from aworld.logs.util import logger
             logger.warning(f"Failed to drain notifications: {e}")
@@ -243,4 +246,3 @@ class BaseCliRuntime:
             Source location string (e.g., directory path or URL)
         """
         raise NotImplementedError("Subclasses must implement _get_source_location")
-
