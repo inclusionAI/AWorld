@@ -94,6 +94,15 @@ def function_to_tool(
     postfix = f"{uuid.uuid4().hex[0:6]}__tmp"
 
     with open(f"{tool_name}{postfix}_action.py", 'w') as write:
+        if func.__module__ != '__main__':
+            write.writelines(
+                "import importlib as _aworld_importlib\n"
+                f"_aworld_source_module = _aworld_importlib.import_module({func.__module__!r})\n"
+                "for _aworld_name, _aworld_value in vars(_aworld_source_module).items():\n"
+                "    if not _aworld_name.startswith('__'):\n"
+                "        globals().setdefault(_aworld_name, _aworld_value)\n"
+                "del _aworld_importlib, _aworld_source_module, _aworld_name, _aworld_value\n\n"
+            )
         lines = inspect.getsourcelines(func)[0]
         for idx, line in enumerate(lines):
             if line.startswith("def ") or line.startswith("async def "):
@@ -107,7 +116,9 @@ def function_to_tool(
     # async func, will use AsyncTool
     is_async = inspect.iscoroutinefunction(func)
     if is_async:
-        func_name = f"sync_exec({func_name})"
+        func_call = f"sync_exec({func_name}, **action.params)"
+    else:
+        func_call = f"{func_name}(**action.params)"
 
     name = action_name
     # build action
@@ -122,14 +133,15 @@ def function_to_tool(
         else:
             func_import = f"from {func_import} "
         con = ACTION_TEMPLATE.format(name=action_name,
-                                     desc=desc if desc else action_name,
+                                     desc_literal=repr(desc if desc else action_name),
                                      tool_name=tool_name,
                                      func_import=func_import,
-                                     func=func_name,
+                                     func_call=func_call,
+                                     func_display=func_name,
                                      call_func=name)
         with open(f"{tool_name}{postfix}_action.py", 'a+') as write:
             write.writelines(con)
-        module = importlib.import_module(f"{action_name}{postfix}_action")
+        module = importlib.import_module(f"{tool_name}{postfix}_action")
         getattr(module, f"{action_name}Act")
     else:
         logger.warning(f"{action_name} already register to the tool.")
@@ -162,7 +174,7 @@ def function_to_tool(
     # build tool
     if tool_name not in ToolFactory:
         con = TOOL_TEMPLATE.format(name=tool_name,
-                                   desc=tool_desc if tool_desc else tool_name,
+                                   desc_literal=repr(tool_desc if tool_desc else tool_name),
                                    action=f"{tool_name}Action",
                                    cls='AsyncTool' if is_async else 'Tool',
                                    async_flag='async ' if is_async else '',
