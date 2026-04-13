@@ -330,3 +330,147 @@ EOF
 
         # Verify tool WAS executed (observe-only hook doesn't block)
         assert mock_tool.execution_count == initial_count + 1, "Tool should execute with observe-only hook"
+
+    @pytest.mark.asyncio
+    async def test_claude_pre_tool_use_blocks_destructive_rm_rf(self, mock_tool, mock_context, tmp_path, monkeypatch):
+        HookManager._config_hooks_cache = {}
+        monkeypatch.setenv('AWORLD_TRUST_ALL_WORKSPACES', 'true')
+
+        config_path = tmp_path / '.aworld' / 'hooks.yaml'
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / '.aworld' / 'trusted').touch()
+
+        deny_script = tmp_path / 'block_rm_rf.sh'
+        deny_script.write_text("""#!/bin/bash
+if echo "$AWORLD_MESSAGE_JSON" | grep -q 'rm -rf /tmp/build'; then
+cat << 'EOF'
+{
+    "continue": true,
+    "permission_decision": "deny",
+    "permission_decision_reason": "Destructive command blocked by hook"
+}
+EOF
+else
+cat << 'EOF'
+{
+    "continue": true
+}
+EOF
+fi
+""")
+        deny_script.chmod(0o755)
+
+        config = {
+            'version': '2',
+            'hooks': {
+                'before_tool_call': [
+                    {
+                        'name': 'block_rm_rf',
+                        'type': 'command',
+                        'command': str(deny_script),
+                        'enabled': True
+                    }
+                ]
+            }
+        }
+
+        with open(config_path, 'w') as f:
+            yaml.safe_dump(config, f)
+
+        if str(config_path) in HookManager._config_hooks_cache:
+            del HookManager._config_hooks_cache[str(config_path)]
+        HookManager.load_config_hooks(str(config_path))
+
+        action = [ActionModel(
+            tool_name='mock_tool',
+            action_name='bash',
+            params={'command': 'rm -rf /tmp/build'},
+            agent_name='test_agent',
+            tool_call_id='test_call_rm_rf'
+        )]
+
+        message = Message(
+            category='test',
+            payload=action,
+            sender='test_agent',
+            session_id='test_session'
+        )
+        message.context = mock_context
+
+        initial_count = mock_tool.execution_count
+        with pytest.raises(ToolExecutionDenied) as exc_info:
+            await mock_tool.step(message)
+
+        assert 'Destructive command blocked by hook' in exc_info.value.reason
+        assert mock_tool.execution_count == initial_count
+
+    @pytest.mark.asyncio
+    async def test_claude_post_tool_use_adds_audit_context(self, mock_tool, mock_context, tmp_path, monkeypatch):
+        HookManager._config_hooks_cache = {}
+        monkeypatch.setenv('AWORLD_TRUST_ALL_WORKSPACES', 'true')
+
+        config_path = tmp_path / '.aworld' / 'hooks.yaml'
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / '.aworld' / 'trusted').touch()
+
+        audit_script = tmp_path / 'post_tool_audit.sh'
+        audit_script.write_text("""#!/bin/bash
+cat << 'EOF'
+{
+    "continue": true,
+    "system_message": "Tests queued after file write",
+    "updated_output": {
+        "info": {
+            "audit_logged": true,
+            "audit_source": "after_tool_call"
+        }
+    }
+}
+EOF
+""")
+        audit_script.chmod(0o755)
+
+        config = {
+            'version': '2',
+            'hooks': {
+                'after_tool_call': [
+                    {
+                        'name': 'post_tool_audit',
+                        'type': 'command',
+                        'command': str(audit_script),
+                        'enabled': True
+                    }
+                ]
+            }
+        }
+
+        with open(config_path, 'w') as f:
+            yaml.safe_dump(config, f)
+
+        if str(config_path) in HookManager._config_hooks_cache:
+            del HookManager._config_hooks_cache[str(config_path)]
+        HookManager.load_config_hooks(str(config_path))
+
+        action = [ActionModel(
+            tool_name='mock_tool',
+            action_name='write_file',
+            params={'path': 'src/app.ts'},
+            agent_name='test_agent',
+            tool_call_id='test_call_post_tool'
+        )]
+
+        message = Message(
+            category='test',
+            payload=action,
+            sender='test_agent',
+            session_id='test_session'
+        )
+        message.context = mock_context
+
+        initial_count = mock_tool.execution_count
+        result = await mock_tool.step(message)
+
+        assert mock_tool.execution_count == initial_count + 1
+        assert result.headers.get('system_message') == 'Tests queued after file write'
+        assert result.payload[4]['audit_logged'] is True
+        assert result.payload[4]['audit_source'] == 'after_tool_call'

@@ -202,6 +202,23 @@ class AsyncBaseTool(Generic[AgentInput, ToolInput]):
 
 
 class Tool(BaseTool[Observation, List[ActionModel]]):
+    def _apply_hook_headers_to_message(self, target_message: Message, hook_events: List[Message]):
+        """Propagate user-visible hook metadata onto the in-flight tool message."""
+        for hook_event in hook_events:
+            if not hook_event or not hasattr(hook_event, 'headers'):
+                continue
+
+            system_message = hook_event.headers.get('system_message')
+            if system_message:
+                target_message.headers['system_message'] = system_message
+
+            additional_context = hook_event.headers.get('additional_context')
+            if additional_context:
+                existing_context = target_message.headers.get('additional_context', '')
+                target_message.headers['additional_context'] = (
+                    f"{existing_context}\n{additional_context}".strip()
+                )
+
     def _internal_process(self, step_res: Tuple[AgentInput, float, bool, bool, Dict[str, Any]],
                           action: ToolInput,
                           input_message: Message,
@@ -320,6 +337,8 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                         logger.info(f"PRE_TOOL_CALL hook modified input for tool {self.name()}")
                         # Continue to next hook to allow chaining
 
+            self._apply_hook_headers_to_message(message, pre_hook_events)
+
             self.pre_step(action, **kwargs)
             res = self.do_step(action, message=message, **kwargs)
 
@@ -356,7 +375,11 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                         logger.info(f"POST_TOOL_CALL hook modified output for tool {self.name()}")
                         # Continue to next hook to allow chaining
 
+            self._apply_hook_headers_to_message(message, post_hook_events)
+
             final_res = self.post_step(res, action,message=message, **kwargs)
+            if isinstance(final_res, Message):
+                self._update_headers(final_res, message)
             self._internal_process(
                 res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             return final_res
@@ -492,8 +515,31 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
         return hook_events
 
+    def _update_headers(self, message: Message, input_message: Message):
+        headers = input_message.headers.copy()
+        headers['context'] = message.context
+        headers['level'] = headers.get('level', 0) + 1
+        message.headers = headers
+
 
 class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
+    def _apply_hook_headers_to_message(self, target_message: Message, hook_events: List[Message]):
+        """Propagate user-visible hook metadata onto the in-flight tool message."""
+        for hook_event in hook_events:
+            if not hook_event or not hasattr(hook_event, 'headers'):
+                continue
+
+            system_message = hook_event.headers.get('system_message')
+            if system_message:
+                target_message.headers['system_message'] = system_message
+
+            additional_context = hook_event.headers.get('additional_context')
+            if additional_context:
+                existing_context = target_message.headers.get('additional_context', '')
+                target_message.headers['additional_context'] = (
+                    f"{existing_context}\n{additional_context}".strip()
+                )
+
     async def _internal_process(self, step_res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
                                 action: List[ActionModel],
                                 input_message: Message,
@@ -643,6 +689,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                         logger.info(f"PRE_TOOL_CALL hook modified input for tool {self.name()}")
                         # Continue to next hook to allow chaining
 
+            self._apply_hook_headers_to_message(message, pre_hook_events)
+
             await self.pre_step(action, message=message,**kwargs)
             res = await self.do_step(action, message=message, **kwargs)
 
@@ -679,6 +727,8 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                             res = tuple(res_list)
                         logger.info(f"POST_TOOL_CALL hook modified output for tool {self.name()}")
                         # Continue to next hook to allow chaining
+
+            self._apply_hook_headers_to_message(message, post_hook_events)
 
             final_res = await self.post_step(res, action, message=message,**kwargs)
             await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
