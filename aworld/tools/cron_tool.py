@@ -21,6 +21,7 @@ from aworld.logs.util import logger
 Actions:
 - add: Create a new scheduled task
 - list: Show all scheduled tasks
+- show: Show one scheduled task
 - remove: Delete a task
 - run: Manually trigger a task
 - enable: Enable a disabled task
@@ -32,6 +33,7 @@ Examples:
 - add: Schedule "Reminder" at "at 2026-04-09T09:00:00+08:00"
 - add: Schedule "Daily check" with cron "0 9 * * *"
 - list: Show all tasks
+- show: Show task by ID
 - remove: Delete task by ID
 - run: Execute task immediately
 - enable: Enable task by ID
@@ -39,8 +41,8 @@ Examples:
 """
 )
 async def cron_tool(
-    action: Literal["add", "list", "remove", "run", "enable", "disable", "status"] = Field(
-        description="Action to perform: add/list/remove/run/enable/disable/status"
+    action: Literal["add", "list", "show", "remove", "run", "enable", "disable", "status"] = Field(
+        description="Action to perform: add/list/show/remove/run/enable/disable/status"
     ),
 
     # add parameters
@@ -209,6 +211,21 @@ async def cron_tool(
             return f"cron {schedule.cron_expr}"
         return "unknown"
 
+    def serialize_job_local(job: 'CronJob') -> Dict[str, Any]:
+        return {
+            "id": job.id,
+            "name": job.name,
+            "description": job.description,
+            "schedule": format_schedule_local(job.schedule),
+            "next_run": job.state.next_run_at,
+            "last_run": job.state.last_run_at,
+            "enabled": job.enabled,
+            "max_runs": job.payload.max_runs,
+            "run_count": job.state.run_count,
+            "last_status": job.state.last_status,
+            "last_error": job.state.last_error if job.state.last_error else None,
+        }
+
     try:
         from aworld.core.scheduler import get_scheduler
         from aworld.core.scheduler.types import CronJob, CronSchedule, CronPayload
@@ -270,22 +287,20 @@ async def cron_tool(
             return {
                 "success": True,
                 "count": len(jobs),
-                "jobs": [
-                    {
-                        "id": j.id,
-                        "name": j.name,
-                        "description": j.description,
-                        "schedule": format_schedule_local(j.schedule),
-                        "next_run": j.state.next_run_at,
-                        "last_run": j.state.last_run_at,
-                        "enabled": j.enabled,
-                        "max_runs": j.payload.max_runs,
-                        "run_count": j.state.run_count,
-                        "last_status": j.state.last_status,
-                        "last_error": j.state.last_error if j.state.last_error else None,
-                    }
-                    for j in jobs
-                ],
+                "jobs": [serialize_job_local(j) for j in jobs],
+            }
+
+        elif action == "show":
+            if not job_id:
+                return {"success": False, "error": "job_id required"}
+
+            job = await scheduler.get_job(job_id)
+            if not job:
+                return {"success": False, "error": f"Job not found: {job_id}"}
+
+            return {
+                "success": True,
+                "job": serialize_job_local(job),
             }
 
         elif action == "remove":

@@ -94,7 +94,7 @@ class AWorldCLI:
             cron_status,
             f"Workspace: {self._toolbar_workspace_name}",
             f"Branch: {self._toolbar_git_branch}",
-            "Hint: /cron list",
+            "Hint: /cron inbox",
         ])
 
     def _build_status_bar(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> HTML:
@@ -1374,7 +1374,8 @@ class AWorldCLI:
                                 cwd=os.getcwd(),
                                 user_args=cmd_args,
                                 sandbox=None,  # TODO: Pass actual sandbox if available
-                                agent_config=None  # TODO: Pass agent config if needed
+                                agent_config=None,  # TODO: Pass agent config if needed
+                                runtime=runtime,
                             )
 
                             try:

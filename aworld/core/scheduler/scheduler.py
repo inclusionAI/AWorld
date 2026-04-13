@@ -658,6 +658,10 @@ class CronScheduler:
         """List all jobs."""
         return await self.store.list_jobs(enabled_only=enabled_only)
 
+    async def get_job(self, job_id: str) -> Optional[CronJob]:
+        """Get a single job by ID."""
+        return await self.store.get_job(job_id)
+
     async def get_status(self):
         """Get scheduler status."""
         jobs = await self.store.list_jobs()

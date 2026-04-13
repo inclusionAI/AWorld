@@ -50,6 +50,16 @@ class CronCommand(Command):
             result = await cron_tool(action="list")
             return self._format_result("list", result)
 
+        elif action == "show":
+            job_id = rest.strip()
+            if not job_id:
+                return "请提供要查看的任务 ID。用法：/cron show <job_id>"
+            result = await cron_tool(action="show", job_id=job_id)
+            return self._format_result("show", result)
+
+        elif action == "inbox":
+            return await self._render_inbox(context)
+
         elif action in ["remove", "rm", "delete"]:
             job_id = rest.strip()
             if not job_id:
@@ -79,6 +89,8 @@ class CronCommand(Command):
             return self._format_result("disable", result)
 
         elif action == "status":
+            if rest.strip():
+                return "如需查看单个任务详情，请使用 /cron show <job_id>。/cron status 仅显示调度器整体状态。"
             result = await cron_tool(action="status")
             return self._format_result("status", result)
 
@@ -89,6 +101,8 @@ class CronCommand(Command):
 - /cron                    列出所有任务
 - /cron add <描述>          创建新任务
 - /cron list               列出所有任务
+- /cron show <job_id>      查看单个任务详情
+- /cron inbox              查看并清空未读提醒通知
 - /cron remove <job_id>    删除任务
 - /cron run <job_id>       立即执行任务
 - /cron enable <job_id>    启用任务
@@ -121,6 +135,24 @@ class CronCommand(Command):
                 )
             return "\n".join(lines)
 
+        if action == "show":
+            job = result.get("job")
+            if not job:
+                return "未找到任务详情。"
+            return (
+                "定时任务详情：\n"
+                f"- id: {job.get('id')}\n"
+                f"- name: {job.get('name')}\n"
+                f"- schedule: {job.get('schedule')}\n"
+                f"- enabled: {job.get('enabled')}\n"
+                f"- next_run: {job.get('next_run')}\n"
+                f"- last_run: {job.get('last_run')}\n"
+                f"- max_runs: {job.get('max_runs')}\n"
+                f"- run_count: {job.get('run_count')}\n"
+                f"- last_status: {job.get('last_status')}\n"
+                f"- last_error: {job.get('last_error')}"
+            )
+
         if action == "add":
             return (
                 f"{result.get('message')}\n"
@@ -128,6 +160,33 @@ class CronCommand(Command):
             )
 
         return result.get("message", "操作成功")
+
+    async def _render_inbox(self, context: CommandContext) -> str:
+        runtime = getattr(context, "runtime", None)
+        if runtime is None or not hasattr(runtime, "_drain_notifications"):
+            return "当前会话不支持提醒收件箱。"
+
+        notifications = await runtime._drain_notifications()
+        if not notifications:
+            return "当前没有未读通知。"
+
+        lines = [f"未读通知（共 {len(notifications)} 条）："]
+        for item in notifications:
+            next_run_at = getattr(item, "next_run_at", None)
+            lines.append(
+                f"- [{getattr(item, 'status', 'ok')}] {getattr(item, 'job_name', '')} | "
+                f"id={getattr(item, 'job_id', '')}"
+            )
+            lines.append(f"  summary: {getattr(item, 'summary', '')}")
+            detail = getattr(item, "detail", None)
+            if detail:
+                lines.append(f"  detail: {detail}")
+            if next_run_at:
+                lines.append(f"  next_run: {next_run_at}")
+            created_at = getattr(item, "created_at", None)
+            if created_at:
+                lines.append(f"  created_at: {created_at}")
+        return "\n".join(lines)
 
     def get_help(self) -> str:
         """Return help information."""
@@ -137,6 +196,8 @@ class CronCommand(Command):
   /cron                          列出所有定时任务
   /cron add <description>        创建新任务（自然语言描述）
   /cron list                     列出所有任务
+  /cron show <job_id>            查看单个任务详情
+  /cron inbox                    查看并清空未读提醒通知
   /cron remove <job_id>          删除任务
   /cron run <job_id>             立即执行任务
   /cron enable <job_id>          启用任务
@@ -146,6 +207,8 @@ class CronCommand(Command):
 示例：
   /cron add 每天早上9点提醒我运行测试
   /cron add 30分钟后提醒我提交代码
+  /cron show job-abc123
+  /cron inbox
   /cron remove job-abc123
   /cron run job-abc123
   /cron disable job-abc123

@@ -254,6 +254,71 @@ class TestCronCommand:
         assert "scheduler_running" in result
         assert "False" in result
 
+    @pytest.mark.asyncio
+    async def test_cron_show_executes_tool_directly(self, monkeypatch):
+        """Test /cron show <job_id> calls cron_tool(show)."""
+        cmd = CommandRegistry.get('cron')
+        calls = []
+
+        async def fake_cron_tool(**kwargs):
+            calls.append(kwargs)
+            return {
+                "success": True,
+                "job": {
+                    "id": "job-123",
+                    "name": "运动通知",
+                    "schedule": "every 3m",
+                    "enabled": True,
+                    "next_run": "2026-04-13T10:00:00+00:00",
+                    "last_run": None,
+                    "last_status": None,
+                    "last_error": None,
+                    "max_runs": 3,
+                    "run_count": 1,
+                },
+            }
+
+        monkeypatch.setattr("aworld_cli.commands.cron_cmd.cron_tool", fake_cron_tool)
+
+        context = CommandContext(cwd=os.getcwd(), user_args='show job-123')
+        result = await cmd.execute(context)
+
+        assert calls == [{"action": "show", "job_id": "job-123"}]
+        assert "job-123" in result
+        assert "运动通知" in result
+        assert "run_count" in result
+
+    @pytest.mark.asyncio
+    async def test_cron_inbox_reads_notifications_from_runtime(self):
+        """Test /cron inbox drains unread notifications from runtime."""
+        from aworld_cli.runtime.cron_notifications import CronNotificationCenter
+
+        cmd = CommandRegistry.get('cron')
+
+        class FakeRuntime:
+            def __init__(self):
+                self._notification_center = CronNotificationCenter()
+
+            async def _drain_notifications(self):
+                return await self._notification_center.drain()
+
+        runtime = FakeRuntime()
+        await runtime._notification_center.publish({
+            "job_id": "job-1",
+            "job_name": "喝水提醒",
+            "status": "ok",
+            "summary": 'Cron task "喝水提醒" completed',
+            "detail": "提醒我喝水",
+        })
+
+        context = CommandContext(cwd=os.getcwd(), user_args='inbox', runtime=runtime)
+        result = await cmd.execute(context)
+
+        assert "未读通知" in result
+        assert "喝水提醒" in result
+        assert "提醒我喝水" in result
+        assert runtime._notification_center.get_unread_count() == 0
+
 
 class TestCommandContext:
     """Test CommandContext dataclass."""
