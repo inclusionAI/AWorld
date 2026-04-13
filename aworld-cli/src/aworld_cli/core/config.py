@@ -200,10 +200,13 @@ def apply_stream_env(global_config: Dict[str, Any]) -> None:
 
 
 def _env_to_config() -> Dict[str, Any]:
-    """Build config dict from current os.environ (OPENAI_*, ANTHROPIC_*, GEMINI_*, LLM_*)."""
+    """Build config dict from current os.environ."""
     env_config: Dict[str, Any] = {}
     for key, value in os.environ.items():
-        if not key.startswith(('OPENAI_', 'ANTHROPIC_', 'GEMINI_', 'MODEL_', 'LLM_')):
+        if not key.startswith((
+            'OPENAI_', 'ANTHROPIC_', 'GEMINI_', 'MODEL_', 'LLM_',
+            'TEXT_TO_IMAGE_', 'IMAGE_TO_IMAGE_', 'IMAGE_',
+        )):
             continue
         if key == 'OPENAI_API_KEY':
             env_config.setdefault('models', {}).setdefault('openai', {})['api_key'] = value
@@ -219,6 +222,42 @@ def _env_to_config() -> Dict[str, Any]:
             env_config.setdefault('models', {}).setdefault('default', {})['base_url'] = value
         elif key == 'LLM_PROVIDER':
             env_config.setdefault('models', {}).setdefault('default', {})['provider'] = value
+        elif key.startswith('TEXT_TO_IMAGE_'):
+            text_to_image = env_config.setdefault('models', {}).setdefault('text_to_image', {})
+            if key == 'TEXT_TO_IMAGE_API_KEY':
+                text_to_image['api_key'] = value
+            elif key == 'TEXT_TO_IMAGE_MODEL_NAME':
+                text_to_image['model'] = value
+            elif key == 'TEXT_TO_IMAGE_BASE_URL':
+                text_to_image['base_url'] = value
+            elif key == 'TEXT_TO_IMAGE_PROVIDER':
+                text_to_image['provider'] = value
+            elif key == 'TEXT_TO_IMAGE_TEMPERATURE':
+                text_to_image['temperature'] = value
+        elif key.startswith('IMAGE_TO_IMAGE_'):
+            image_to_image = env_config.setdefault('models', {}).setdefault('image_to_image', {})
+            if key == 'IMAGE_TO_IMAGE_API_KEY':
+                image_to_image['api_key'] = value
+            elif key == 'IMAGE_TO_IMAGE_MODEL_NAME':
+                image_to_image['model'] = value
+            elif key == 'IMAGE_TO_IMAGE_BASE_URL':
+                image_to_image['base_url'] = value
+            elif key == 'IMAGE_TO_IMAGE_PROVIDER':
+                image_to_image['provider'] = value
+            elif key == 'IMAGE_TO_IMAGE_TEMPERATURE':
+                image_to_image['temperature'] = value
+        elif key.startswith('IMAGE_'):
+            text_to_image = env_config.setdefault('models', {}).setdefault('text_to_image', {})
+            if key == 'IMAGE_API_KEY' and 'api_key' not in text_to_image:
+                text_to_image['api_key'] = value
+            elif key == 'IMAGE_MODEL_NAME' and 'model' not in text_to_image:
+                text_to_image['model'] = value
+            elif key == 'IMAGE_BASE_URL' and 'base_url' not in text_to_image:
+                text_to_image['base_url'] = value
+            elif key == 'IMAGE_PROVIDER' and 'provider' not in text_to_image:
+                text_to_image['provider'] = value
+            elif key == 'IMAGE_TEMPERATURE' and 'temperature' not in text_to_image:
+                text_to_image['temperature'] = value
     return env_config
 
 
@@ -408,21 +447,51 @@ def _apply_audio_models_config(models_config: Dict[str, Any]) -> None:
         os.environ['AUDIO_TEMPERATURE'] = str(float(temperature))
 
 
-def _apply_image_models_config(models_config: Dict[str, Any]) -> None:
-    """
-    Apply models.image config to IMAGE_* env vars for image agent.
-    Priority: models.image config > existing IMAGE_* env vars > LLM_*.
-    """
-    image_cfg = models_config.get('image')
-    image_cfg = image_cfg if isinstance(image_cfg, dict) else {}
-    api_key = (image_cfg.get('api_key') or '').strip()
-    model_name = (image_cfg.get('model') or '').strip()
-    base_url = (image_cfg.get('base_url') or '').strip()
-    provider = (image_cfg.get('provider') or '').strip()
-    temperature = image_cfg.get('temperature')
+def _resolve_image_model_cfg(models_config: Dict[str, Any], key: str, legacy_key: Optional[str] = None) -> Dict[str, Any]:
+    cfg = models_config.get(key)
+    if isinstance(cfg, dict):
+        return cfg
+    if legacy_key:
+        legacy_cfg = models_config.get(legacy_key)
+        if isinstance(legacy_cfg, dict):
+            return legacy_cfg
+    return {}
+
+
+def _apply_named_image_model_config(
+    models_config: Dict[str, Any],
+    *,
+    config_key: str,
+    env_prefix: str,
+    legacy_env_prefix: Optional[str] = None,
+) -> None:
+    cfg = _resolve_image_model_cfg(
+        models_config,
+        config_key,
+        legacy_key='image' if config_key == 'text_to_image' else None,
+    )
+    api_key = (cfg.get('api_key') or '').strip()
+    model_name = (cfg.get('model') or '').strip()
+    base_url = (cfg.get('base_url') or '').strip()
+    provider = (cfg.get('provider') or '').strip()
+    temperature = cfg.get('temperature')
+
+    env_api_key = f'{env_prefix}_API_KEY'
+    env_model_name = f'{env_prefix}_MODEL_NAME'
+    env_base_url = f'{env_prefix}_BASE_URL'
+    env_provider = f'{env_prefix}_PROVIDER'
+    env_temperature = f'{env_prefix}_TEMPERATURE'
+
+    legacy_env_api_key = f'{legacy_env_prefix}_API_KEY' if legacy_env_prefix else None
+    legacy_env_model_name = f'{legacy_env_prefix}_MODEL_NAME' if legacy_env_prefix else None
+    legacy_env_base_url = f'{legacy_env_prefix}_BASE_URL' if legacy_env_prefix else None
+    legacy_env_provider = f'{legacy_env_prefix}_PROVIDER' if legacy_env_prefix else None
+    legacy_env_temperature = f'{legacy_env_prefix}_TEMPERATURE' if legacy_env_prefix else None
 
     if not api_key:
-        api_key = (os.environ.get('IMAGE_API_KEY') or '').strip()
+        api_key = (os.environ.get(env_api_key) or '').strip()
+    if not api_key and legacy_env_api_key:
+        api_key = (os.environ.get(legacy_env_api_key) or '').strip()
     if not api_key:
         api_key = (os.environ.get('LLM_API_KEY') or '').strip()
     if not api_key:
@@ -438,11 +507,15 @@ def _apply_image_models_config(models_config: Dict[str, Any]) -> None:
                     provider = 'gemini'
                 break
     if not model_name:
-        model_name = (os.environ.get('IMAGE_MODEL_NAME') or '').strip()
+        model_name = (os.environ.get(env_model_name) or '').strip()
+    if not model_name and legacy_env_model_name:
+        model_name = (os.environ.get(legacy_env_model_name) or '').strip()
     if not model_name:
         model_name = (os.environ.get('LLM_MODEL_NAME') or '').strip()
     if not base_url:
-        base_url = (os.environ.get('IMAGE_BASE_URL') or '').strip()
+        base_url = (os.environ.get(env_base_url) or '').strip()
+    if not base_url and legacy_env_base_url:
+        base_url = (os.environ.get(legacy_env_base_url) or '').strip()
     if not base_url:
         base_url = (os.environ.get('LLM_BASE_URL') or '').strip()
     if not base_url:
@@ -452,23 +525,45 @@ def _apply_image_models_config(models_config: Dict[str, Any]) -> None:
                 base_url = v
                 break
     if not provider:
-        provider = (os.environ.get('IMAGE_PROVIDER') or '').strip()
+        provider = (os.environ.get(env_provider) or '').strip()
+    if not provider and legacy_env_provider:
+        provider = (os.environ.get(legacy_env_provider) or '').strip()
     if not provider:
         provider = 'image'
     if temperature is None:
-        env_temp = (os.environ.get('IMAGE_TEMPERATURE') or '').strip()
+        env_temp = (os.environ.get(env_temperature) or '').strip()
+        if not env_temp and legacy_env_temperature:
+            env_temp = (os.environ.get(legacy_env_temperature) or '').strip()
         if env_temp:
             temperature = float(env_temp)
 
     if api_key:
-        os.environ['IMAGE_API_KEY'] = api_key
+        os.environ[env_api_key] = api_key
     if model_name:
-        os.environ['IMAGE_MODEL_NAME'] = model_name
+        os.environ[env_model_name] = model_name
     if base_url:
-        os.environ['IMAGE_BASE_URL'] = base_url
-    os.environ['IMAGE_PROVIDER'] = provider
+        os.environ[env_base_url] = base_url
+    os.environ[env_provider] = provider
     if temperature is not None:
-        os.environ['IMAGE_TEMPERATURE'] = str(float(temperature))
+        os.environ[env_temperature] = str(float(temperature))
+
+
+def _apply_image_models_config(models_config: Dict[str, Any]) -> None:
+    """
+    Apply models.text_to_image and models.image_to_image config to env vars.
+    Legacy models.image is treated as models.text_to_image.
+    """
+    _apply_named_image_model_config(
+        models_config,
+        config_key='text_to_image',
+        env_prefix='TEXT_TO_IMAGE',
+        legacy_env_prefix='IMAGE',
+    )
+    _apply_named_image_model_config(
+        models_config,
+        config_key='image_to_image',
+        env_prefix='IMAGE_TO_IMAGE',
+    )
 
 
 def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
@@ -567,7 +662,7 @@ def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
             'limit_strategy': os.environ.get('LIMIT_STRATEGY', 'compress'),
         },
     })
-    # Apply DIFFUSION_* from LLM_* when not set in .env
+    # Apply DIFFUSION_* and image model envs from LLM_* when not set in .env
     _apply_diffusion_models_config({})
     _apply_audio_models_config({})
     _apply_image_models_config({})
@@ -619,6 +714,9 @@ def has_model_config(config_dict: Dict[str, Any]) -> bool:
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
         "GEMINI_API_KEY",
+        "TEXT_TO_IMAGE_API_KEY",
+        "IMAGE_TO_IMAGE_API_KEY",
+        "IMAGE_API_KEY",
     )
     for key in env_keys:
         if os.environ.get(key, "").strip():
@@ -636,6 +734,9 @@ def has_model_config(config_dict: Dict[str, Any]) -> bool:
                 return True
     # Legacy: models.openai etc
     for p in ('openai', 'anthropic', 'gemini'):
+        if isinstance(models.get(p), dict) and (models[p].get("api_key") or "").strip():
+            return True
+    for p in ('text_to_image', 'image_to_image', 'image'):
         if isinstance(models.get(p), dict) and (models[p].get("api_key") or "").strip():
             return True
     return False

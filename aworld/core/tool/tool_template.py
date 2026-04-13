@@ -13,7 +13,7 @@ from aworld.logs.util import logger
 from aworld.tools.utils import build_observation
 
 
-@ToolFactory.register(name="{name}", desc={desc}, supported_action={action})
+@ToolFactory.register(name="{name}", desc={desc_literal}, supported_action={action})
 class {name}Tool({cls}):
     def __init__(self, conf: Union[Dict[str, Any], ConfigDict, ToolConfig], **kwargs) -> None:
         super().__init__(conf, **kwargs)

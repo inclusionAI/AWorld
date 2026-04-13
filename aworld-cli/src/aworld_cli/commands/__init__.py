@@ -10,7 +10,9 @@ Available Commands:
 - /review: Perform code review on changes (prompt command)
 - /diff: Summarize git changes (prompt command)
 - /history: View tool call history (tool command)
-- /cron: Manage scheduled tasks (prompt command)
+- /cron: Manage scheduled tasks (tool command)
+- /dispatch: Submit task to background execution (tool command)
+- /tasks: Manage background tasks (tool command)
 
 Usage:
     # Import to register all commands
@@ -28,12 +30,16 @@ from . import review
 from . import diff
 from . import history
 from . import cron_cmd
+from . import dispatch
+from . import tasks
 
 __all__ = [
-    'help_cmd',
-    'commit',
-    'review',
-    'diff',
-    'history',
-    'cron_cmd',
+    "help_cmd",
+    "commit",
+    "review",
+    "diff",
+    "history",
+    "cron_cmd",
+    "dispatch",
+    "tasks",
 ]

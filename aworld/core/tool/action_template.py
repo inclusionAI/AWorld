@@ -16,13 +16,12 @@ from aworld.utils.common import sync_exec
 
 
 @ActionFactory.register(name="{name}",
-                        desc="{desc}",
+                        desc={desc_literal},
                         tool_name="{tool_name}")
 class {name}Act(ExecutableAction):
     # only for function to tool.
     def act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         try:
-            {func_import_line}
             res = {sync_call}
             if not res:
                 raise ValueError(f"{call_func} no result return.")
@@ -34,7 +33,6 @@ class {name}Act(ExecutableAction):
 
     async def async_act(self, action: ActionModel, **kwargs) -> Tuple[ActionResult, Any]:
         try:
-            {func_import_line}
             res = {async_call}
             if not res:
                 raise ValueError(f"{call_func} no result return.")

@@ -190,7 +190,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                              to handle subtasks autonomously. Automatically adds spawn_subagent tool and scans for
                              available subagents (TeamSwarm members + agent.md files). Default: False.
             subagent_search_paths: Custom directories to search for agent.md files. If None, uses default paths:
-                                   ['./.claude/agents', '~/.claude/agents', './agents']. Only used when enable_subagent=True.
+                                   ['./.aworld/agents', '~/.aworld/agents', './agents']. Only used when enable_subagent=True.
         """
         if conf is None:
             model_name = os.getenv("LLM_MODEL_NAME")

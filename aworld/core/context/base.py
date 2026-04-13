@@ -472,7 +472,7 @@ class Context:
 
     def save_action_trajectory(self,
                                step,
-                               result: str,
+                               result: Any,
                                agent_name: str = None,
                                tool_name: str = None,
                                params: str = None):

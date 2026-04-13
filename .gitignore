@@ -135,6 +135,9 @@ examples/**/data
 examples/**/*.bak
 =**
 
+# gstack files
+.gstack/
+
 # Claude Code session files
 Claude-Sessions/
 

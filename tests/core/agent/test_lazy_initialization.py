@@ -27,12 +27,12 @@ class TestLazyInitialization:
         # Create SubagentManager
         manager = SubagentManager(
             agent=agent,
-            agent_md_search_paths=['./.claude/agents']
+            agent_md_search_paths=['./.aworld/agents']
         )
 
         # Verify no scanning occurred during __init__
         assert manager._scanned_agent_md_files == False
-        assert manager._agent_md_search_paths == ['./.claude/agents']
+        assert manager._agent_md_search_paths == ['./.aworld/agents']
         assert len(manager._available_subagents) == 0
 
     @pytest.mark.asyncio
@@ -44,7 +44,7 @@ class TestLazyInitialization:
 
         manager = SubagentManager(
             agent=agent,
-            agent_md_search_paths=['./.claude/agents']
+            agent_md_search_paths=['./.aworld/agents']
         )
 
         # Mock scan_agent_md_files to verify it gets called
@@ -66,7 +66,7 @@ class TestLazyInitialization:
 
             # Verify scan was called
             assert mock_scan.called
-            assert mock_scan.call_args == call(search_paths=['./.claude/agents'])
+            assert mock_scan.call_args == call(search_paths=['./.aworld/agents'])
 
             # Verify flag was set
             assert manager._scanned_agent_md_files == True
@@ -80,7 +80,7 @@ class TestLazyInitialization:
 
         manager = SubagentManager(
             agent=agent,
-            agent_md_search_paths=['./.claude/agents']
+            agent_md_search_paths=['./.aworld/agents']
         )
 
         # Mock scan_agent_md_files
@@ -103,7 +103,7 @@ class TestLazyInitialization:
 
         manager = SubagentManager(
             agent=agent,
-            agent_md_search_paths=['./.claude/agents']
+            agent_md_search_paths=['./.aworld/agents']
         )
 
         # Mock _ensure_agent_md_scanned
@@ -131,7 +131,7 @@ class TestLazyInitialization:
                 name="test_agent",
                 conf=conf,
                 enable_subagent=True,
-                subagent_search_paths=['./.claude/agents']
+                subagent_search_paths=['./.aworld/agents']
             )
 
             # Verify scan_agent_md_files was NOT called during __init__
@@ -139,7 +139,7 @@ class TestLazyInitialization:
 
             # Verify SubagentManager was created with search paths
             assert agent.subagent_manager is not None
-            assert agent.subagent_manager._agent_md_search_paths == ['./.claude/agents']
+            assert agent.subagent_manager._agent_md_search_paths == ['./.aworld/agents']
             assert agent.subagent_manager._scanned_agent_md_files == False
 
     @pytest.mark.asyncio
@@ -158,7 +158,7 @@ class TestLazyInitialization:
 
             # Verify default paths were used
             assert mock_scan.called
-            expected_paths = ['./.claude/agents', '~/.claude/agents', './agents']
+            expected_paths = ['./.aworld/agents', '~/.aworld/agents', './agents']
             assert mock_scan.call_args == call(search_paths=expected_paths)
 
 

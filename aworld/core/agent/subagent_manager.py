@@ -170,7 +170,7 @@ class SubagentManager:
 
         Args:
             search_paths: List of directories to search. Defaults to:
-                          ['./.claude/agents', '~/.claude/agents', './agents']
+                          ['./.aworld/agents', '~/.aworld/agents', './agents']
 
         Thread Safety:
             - Uses asyncio.Lock to prevent concurrent scanning
@@ -186,7 +186,7 @@ class SubagentManager:
             Consider caching parsed configs if performance becomes an issue.
         """
         if not search_paths:
-            search_paths = ['./.claude/agents', '~/.claude/agents', './agents']
+            search_paths = ['./.aworld/agents', '~/.aworld/agents', './agents']
 
         async with self._registry_lock:
             scanned_count = 0
@@ -310,7 +310,7 @@ class SubagentManager:
                 search_paths = self._agent_md_search_paths
                 if search_paths is None:
                     # Use default search paths
-                    search_paths = ['./.claude/agents', '~/.claude/agents', './agents']
+                    search_paths = ['./.aworld/agents', '~/.aworld/agents', './agents']
 
                 logger.debug(
                     f"SubagentManager._ensure_agent_md_scanned: "
