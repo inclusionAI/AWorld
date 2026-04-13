@@ -160,7 +160,7 @@ class HistoryCommand(Command):
         # Render table to string
         from io import StringIO
         string_buffer = StringIO()
-        temp_console = Console(file=string_buffer, force_terminal=True)
+        temp_console = Console(file=string_buffer, force_terminal=False, color_system=None)
         temp_console.print(table)
 
         output = string_buffer.getvalue()

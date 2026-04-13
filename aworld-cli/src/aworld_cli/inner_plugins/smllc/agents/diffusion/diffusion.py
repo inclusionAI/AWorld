@@ -69,7 +69,7 @@ Cannot process (do NOT delegate to this agent): Document reading/analysis (.pdf,
 - `content`: Required. The video generation prompt (text description of what to create).
 - `info`: Required JSON string. Use when passing image/video params, e.g.:
   {"image_url": "<data_path_or_base64_string>", "reference_images": ["<path1>", "<path2>"], "resolution": "720p", "duration": 5, "fps": 24, "output_dir": "./output", "sound": "on"}
-  Supported keys: image_url, reference_images (list of paths/URLs/base64), resolution, duration (must be ≤ 5 seconds), fps, poll, poll_interval, poll_timeout, download_video, output_dir.
+  Supported keys: image_url, reference_images (list of paths/URLs/base64), resolution, duration (must be ≤ 10 seconds), fps, poll, poll_interval, poll_timeout, download_video, output_dir.
 """
 )
 def build_diffusion_swarm():
@@ -109,7 +109,7 @@ def build_diffusion_swarm():
 
     # Create MultiTaskVideoCreatorAgent instance
     diffusion = MultiTaskVideoCreatorAgent(
-        name="diffusion",
+        name="video_diffusion",
         desc="An intelligent assistant for creating, editing, and generating video content.",
         conf=agent_config,
         system_prompt=_system_prompt,
