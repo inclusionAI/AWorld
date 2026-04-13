@@ -156,6 +156,7 @@ class Context:
         }
         # Workspace path for CLI/hook system (set by CLI on initialization)
         self._workspace_path: str = kwargs.get('workspace_path', None)
+        self._merge_token_baseline = copy.deepcopy(self._token_usage)
         # TODO workspace
         self._event_manager = None
         # checkpoint repository for saving/restoring context state
@@ -374,6 +375,10 @@ class Context:
             new_context._token_usage = copy.deepcopy(self._token_usage)
         except Exception:
             new_context._token_usage = copy.copy(self._token_usage)
+        try:
+            new_context._merge_token_baseline = copy.deepcopy(new_context._token_usage)
+        except Exception:
+            new_context._merge_token_baseline = copy.copy(new_context._token_usage)
 
         # Copy other attributes if they exist
         if hasattr(self, '_event_manager'):
@@ -423,24 +428,29 @@ class Context:
         # 3. Merge token usage statistics
         if hasattr(other_context, '_token_usage') and other_context._token_usage:
             try:
-                # Calculate net token usage increment from child context (avoid double counting tokens inherited from parent context)
-                # If child context was created through deep_copy, it already contains parent context's tokens
-                # We need to calculate the net increment
-                parent_tokens = self._token_usage.copy()
                 child_tokens = other_context._token_usage.copy()
+                baseline_tokens = getattr(other_context, '_merge_token_baseline', None) or {}
 
-                # Calculate net increment: child context tokens - parent context tokens
+                # Calculate net increment relative to the child context's baseline.
+                # This supports both:
+                # 1. deep-copied child contexts that inherit parent token totals
+                # 2. freshly created child contexts that start from zero
                 net_tokens = {}
                 for key in child_tokens:
                     child_value = child_tokens.get(key, 0)
-                    parent_value = parent_tokens.get(key, 0)
-                    net_value = child_value - parent_value
+                    baseline_value = baseline_tokens.get(key, 0)
+                    net_value = child_value - baseline_value
                     if net_value > 0:  # Only merge net increment
                         net_tokens[key] = net_value
 
                 # Add net increment to parent context
                 if net_tokens:
                     self.add_token(net_tokens)
+
+                try:
+                    other_context._merge_token_baseline = copy.deepcopy(child_tokens)
+                except Exception:
+                    other_context._merge_token_baseline = child_tokens.copy()
             except Exception as e:
                 logger.warning(f"Failed to merge token usage: {e}")
                 # If calculating net increment fails, directly add child context's tokens (may result in double counting)
@@ -474,7 +484,7 @@ class Context:
 
     def save_action_trajectory(self,
                                step,
-                               result: str,
+                               result: Any,
                                agent_name: str = None,
                                tool_name: str = None,
                                params: str = None):

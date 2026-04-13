@@ -91,6 +91,7 @@ class SubagentManager:
         # Lazy initialization support for agent.md scanning
         self._scanned_agent_md_files = False  # Whether agent.md files have been scanned
         self._agent_md_search_paths = agent_md_search_paths  # Paths to scan (deferred until first spawn)
+        self._agent_md_scan_task: Optional[asyncio.Task] = None  # Shared in-flight lazy scan task
 
         logger.debug(
             f"SubagentManager initialized for agent: {agent.name() if hasattr(agent, 'name') else 'unknown'}"
@@ -304,26 +305,40 @@ class SubagentManager:
             if self._scanned_agent_md_files:
                 return
 
-            # Perform scanning
-            search_paths = self._agent_md_search_paths
-            if search_paths is None:
-                # Use default search paths
-                search_paths = ['./.aworld/agents', '~/.aworld/agents', './agents']
+            # Reuse any in-flight scan so concurrent callers wait on the same work.
+            if self._agent_md_scan_task is None:
+                search_paths = self._agent_md_search_paths
+                if search_paths is None:
+                    # Use default search paths
+                    search_paths = ['./.aworld/agents', '~/.aworld/agents', './agents']
 
-            logger.debug(
-                f"SubagentManager._ensure_agent_md_scanned: "
-                f"Performing lazy scan of agent.md files for agent '{self.agent.name()}'"
-            )
+                logger.debug(
+                    f"SubagentManager._ensure_agent_md_scanned: "
+                    f"Performing lazy scan of agent.md files for agent '{self.agent.name()}'"
+                )
+                self._agent_md_scan_task = asyncio.create_task(
+                    self.scan_agent_md_files(search_paths=search_paths)
+                )
 
-            await self.scan_agent_md_files(search_paths=search_paths)
+            scan_task = self._agent_md_scan_task
 
-            # Mark as scanned
-            self._scanned_agent_md_files = True
+        try:
+            await scan_task
+        except Exception:
+            async with self._registry_lock:
+                if self._agent_md_scan_task is scan_task:
+                    self._agent_md_scan_task = None
+            raise
 
-            logger.debug(
-                f"SubagentManager._ensure_agent_md_scanned: "
-                f"Lazy scan completed, {len(self._available_subagents)} subagents available"
-            )
+        async with self._registry_lock:
+            if self._agent_md_scan_task is scan_task:
+                self._scanned_agent_md_files = True
+                self._agent_md_scan_task = None
+
+                logger.debug(
+                    f"SubagentManager._ensure_agent_md_scanned: "
+                    f"Lazy scan completed, {len(self._available_subagents)} subagents available"
+                )
 
     def generate_system_prompt_section(self, max_subagents: int = 10) -> str:
         """

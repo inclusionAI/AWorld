@@ -7,6 +7,7 @@ import tempfile
 from pathlib import Path
 
 from aworld.agents.llm_agent import Agent
+from aworld.config.conf import AgentConfig
 from aworld.core.agent.swarm_builder import (
     build_swarm_from_yaml,
     build_swarm_from_dict,
@@ -18,7 +19,6 @@ from aworld.core.exceptions import AWorldRuntimeException
 
 def create_test_agent(agent_id: str) -> Agent:
     """Create a test agent."""
-    from aworld.config import AgentConfig
     config = AgentConfig(llm_provider='openai', llm_model_name='gpt-4', llm_api_key='test')
     return Agent(conf=config, name=agent_id, system_prompt=f"Test agent {agent_id}")
 

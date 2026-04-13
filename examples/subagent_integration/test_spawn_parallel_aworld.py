@@ -17,6 +17,14 @@ import os
 import asyncio
 from pathlib import Path
 
+import pytest
+
+if os.getenv("AWORLD_RUN_LIVE_EXAMPLE_TESTS") != "1":
+    pytest.skip(
+        "live spawn_parallel examples require external LLM credentials; set AWORLD_RUN_LIVE_EXAMPLE_TESTS=1 to run them",
+        allow_module_level=True,
+    )
+
 # Add project root to Python path
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
@@ -104,7 +112,7 @@ IMPORTANT: Always use action="spawn_parallel" for parallel execution!
     logger.info("\n[Step 2] Executing parallel data analysis...")
     logger.info("Task: Analyze three datasets (sales, marketing, support)")
 
-    result_dict = await Runners.run(
+    task_response = await Runners.run(
         input="""Analyze these three datasets in parallel:
 1. Sales data (Q1 2024): [100, 120, 95, 130, 110] - Calculate statistics
 2. Marketing data (Q1 2024): [80, 85, 90, 85, 95] - Identify trends
@@ -115,8 +123,7 @@ Use spawn_parallel to analyze all three concurrently.""",
     )
 
     # Extract result
-    if result_dict and len(result_dict) > 0:
-        task_response = list(result_dict.values())[0]
+    if task_response:
         if task_response.success:
             result = task_response.answer
             logger.info("\n[Result]")
@@ -218,7 +225,7 @@ IMPORTANT: Use action="spawn_parallel" to run all three in parallel!
     # Execute parallel review
     logger.info("\n[Step 2] Executing parallel code review...")
 
-    result_dict = await Runners.run(
+    task_response = await Runners.run(
         input="""Review this authentication module in parallel:
 
 Code snippet:
@@ -240,8 +247,7 @@ Use spawn_parallel to run all three concurrently.""",
     )
 
     # Extract result
-    if result_dict and len(result_dict) > 0:
-        task_response = list(result_dict.values())[0]
+    if task_response:
         if task_response.success:
             result = task_response.answer
             logger.info("\n[Result]")
@@ -323,7 +329,7 @@ IMPORTANT: Set aggregate=false for structured output!
 
     logger.info("\n[Step 2] Executing parallel validation with JSON output...")
 
-    result_dict = await Runners.run(
+    task_response = await Runners.run(
         input="""Validate this user input in parallel:
 - Email: user@example.com
 - Age: 25
@@ -338,8 +344,7 @@ Use spawn_parallel with aggregate=false to get structured JSON output.""",
         swarm=swarm
     )
 
-    if result_dict and len(result_dict) > 0:
-        task_response = list(result_dict.values())[0]
+    if task_response:
         if task_response.success:
             result = task_response.answer
             logger.info("\n[Result]")
@@ -414,7 +419,7 @@ async def test_spawn_parallel_with_aworld_agent():
     logger.info("\n[Step 3] Testing spawn_parallel with AWorld agent...")
     logger.info("Task: Parallel code analysis + documentation + test generation")
 
-    result_dict = await Runners.run(
+    task_response = await Runners.run(
         input="""I have a Python module that needs comprehensive review.
 
 Use spawn_parallel to run three tasks concurrently:
@@ -435,8 +440,7 @@ Use spawn_parallel with available subagents to run all three tasks in parallel."
         swarm=aworld_swarm
     )
 
-    if result_dict and len(result_dict) > 0:
-        task_response = list(result_dict.values())[0]
+    if task_response:
         if task_response.success:
             result = task_response.answer
             logger.info("\n[Result]")

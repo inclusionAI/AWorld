@@ -10,6 +10,7 @@ or coordinated multi-agent collaboration.
 """
 import os
 import sys
+from pathlib import Path
 from typing import Optional, List
 
 from aworld.core.context.amni import AgentContextConfig
@@ -52,6 +53,10 @@ def _build_beijing_date_line() -> str:
     beijing_now = datetime.now(ZoneInfo("Asia/Shanghai"))
 
     return f"Today is {beijing_now.year} (year)-{beijing_now.month} (month)-{beijing_now.day}(day)."
+
+
+def load_aworld_system_prompt() -> str:
+    return (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")
 
 def extract_agents_from_swarm(swarm: Swarm) -> List[BaseAgent]:
     """
@@ -186,7 +191,6 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         >>> # Memory is persisted to filesystem automatically
     """
 
-    from pathlib import Path
     from aworld.utils.skill_loader import collect_skill_docs
 
     # 收集 skills
@@ -258,13 +262,14 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         name="Aworld",
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
-        system_prompt=(Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8"),
+        system_prompt=load_aworld_system_prompt(),
         mcp_servers=["terminal"],  # Enable terminal for information gathering (curl, wget, etc.)
         sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
         tool_names=[
             CONTEXT_TOOL,      # Core: Context management
             'CAST_SEARCH',     # Core: Lightweight code search
             'async_spawn_subagent',  # Core: Dynamic subagent delegation (AsyncTool, needs async_ prefix)
+            'cron',            # Core: Scheduled task management
         ],
         enable_subagent=True,  # Enable subagent capability (Aworld-specific default)
     )
