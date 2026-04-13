@@ -2,7 +2,7 @@
 Base runtime for CLI protocols.
 Provides common functionality for both local and remote runtimes.
 """
-from typing import List, Optional
+from typing import List, Optional, Any
 from ..console import AWorldCLI
 from ..models import AgentInfo
 from ..executors import AgentExecutor
@@ -39,19 +39,24 @@ class BaseCliRuntime:
     def __init__(self, agent_name: Optional[str] = None):
         """
         Initialize base runtime.
-        
+
         Args:
             agent_name: The name of the agent to interact with. If None, user will be prompted to select.
         """
         self.agent_name = agent_name
         self._running = False
         self.cli = AWorldCLI()
+        self._scheduler = None  # Cron scheduler instance
+        self._notification_center = None  # Cron notification center
     
     async def start(self) -> None:
         """Start the CLI interaction loop."""
         self._running = True
         # self.cli.display_welcome()
-        
+
+        # Start cron scheduler
+        await self._start_scheduler()
+
         # Load agents (implemented by subclasses)
         agents = await self._load_agents()
         
@@ -72,7 +77,11 @@ class BaseCliRuntime:
                 if not executor:
                     self.cli.console.print("[red]❌ Failed to create executor for agent.[/red]")
                     continue
-                
+
+                # Store runtime reference in executor for notification access
+                if executor:
+                    executor._base_runtime = self
+
                 result = await self.cli.run_chat_session(
                     selected_agent.name,
                     executor.chat,
@@ -105,7 +114,63 @@ class BaseCliRuntime:
     async def stop(self) -> None:
         """Stop the CLI loop."""
         self._running = False
-    
+
+        # Stop cron scheduler
+        await self._stop_scheduler()
+
+    async def _start_scheduler(self) -> None:
+        """Start cron scheduler with notification center."""
+        try:
+            from aworld.core.scheduler import get_scheduler
+            from aworld_cli.runtime.cron_notifications import CronNotificationCenter
+
+            # Create notification center
+            self._notification_center = CronNotificationCenter()
+
+            # Get scheduler and wire notification sink
+            self._scheduler = get_scheduler()
+            self._scheduler.notification_sink = self._notification_center.publish
+
+            await self._scheduler.start()
+            # Silent startup - no user-facing message
+        except Exception as e:
+            # Scheduler startup failure should not block CLI
+            from aworld.logs.util import logger
+            logger.warning(f"Failed to start cron scheduler: {e}")
+
+    async def _stop_scheduler(self) -> None:
+        """Stop cron scheduler."""
+        if self._scheduler:
+            try:
+                await self._scheduler.stop()
+            except Exception as e:
+                from aworld.logs.util import logger
+                logger.warning(f"Failed to stop cron scheduler: {e}")
+
+    async def _drain_notifications(self, job_id: Optional[str] = None) -> List[Any]:
+        """
+        Drain pending notifications from notification center.
+
+        Args:
+            job_id: Optional job ID filter to drain only matching notifications
+
+        Returns:
+            List of CronNotification objects (empty list if no center or error)
+
+        Note:
+            This is a non-blocking operation. Gracefully returns empty list
+            on any error to prevent crashes in chat loop.
+        """
+        if not self._notification_center:
+            return []
+
+        try:
+            return await self._notification_center.drain(job_id=job_id)
+        except Exception as e:
+            from aworld.logs.util import logger
+            logger.warning(f"Failed to drain notifications: {e}")
+            return []
+
     async def _load_agents(self) -> List[AgentInfo]:
         """
         Load available agents.
@@ -181,4 +246,3 @@ class BaseCliRuntime:
             Source location string (e.g., directory path or URL)
         """
         raise NotImplementedError("Subclasses must implement _get_source_location")
-
