@@ -23,7 +23,6 @@
 
 [中文版](./README_zh.md) |
 [Automation](#your-journey-with-aworld-cli) |
-[Manual](#total-control-manually-crafting-agent-systems) |
 [Evolution](#evolution) |
 [Contributing](#contributing) |
 
