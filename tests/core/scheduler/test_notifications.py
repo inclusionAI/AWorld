@@ -123,7 +123,7 @@ async def test_notification_center_tracks_unread_count_until_drain():
 
 @pytest.mark.asyncio
 async def test_scheduler_publishes_on_success():
-    """Test that scheduler publishes success notification."""
+    """Successful non-reminder jobs should publish and persist their result summary."""
     import tempfile
     from pathlib import Path
 
@@ -135,7 +135,7 @@ async def test_scheduler_publishes_on_success():
         # Mock executor
         executor = AsyncMock(spec=CronExecutor)
         executor.execute_with_retry = AsyncMock(
-            return_value=TaskResponse(success=True, msg="Success")
+            return_value=TaskResponse(success=True, msg="BTC 当前价格 68000 USDT")
         )
 
         # Mock notification sink
@@ -169,7 +169,11 @@ async def test_scheduler_publishes_on_success():
         assert call_args['job_name'] == 'test-job'
         assert call_args['status'] == 'ok'
         assert 'completed' in call_args['summary']
-        assert call_args.get('detail') is None
+        assert call_args['detail'] == "BTC 当前价格 68000 USDT"
+
+        persisted_job = await store.get_job(job.id)
+        assert persisted_job is not None
+        assert persisted_job.state.last_result_summary == "BTC 当前价格 68000 USDT"
 
 
 @pytest.mark.asyncio
@@ -468,7 +472,7 @@ async def test_scheduler_disables_job_after_max_runs():
 
 
 def test_console_renders_reminder_detail():
-    """CLI notification renderer should surface reminder content below status line."""
+    """CLI notification renderer should surface notification detail below status line."""
     cli = AWorldCLI()
     buffer = StringIO()
     cli.console = Console(file=buffer, force_terminal=False, color_system=None)
@@ -485,7 +489,7 @@ def test_console_renders_reminder_detail():
 
     output = buffer.getvalue()
     assert 'Cron task "喝水提醒" completed' in output
-    assert '提醒内容：提醒我喝水' in output
+    assert '内容：提醒我喝水' in output
 
 
 def test_console_formats_information_style_status_bar_with_unread_cron_notifications():

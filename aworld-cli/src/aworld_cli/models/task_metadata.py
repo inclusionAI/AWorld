@@ -4,7 +4,7 @@ Task metadata for background task tracking.
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Deque
+from typing import Optional, Deque, Any
 from collections import deque
 import asyncio
 
@@ -61,7 +61,7 @@ class TaskMetadata:
     progress_percentage: float = 0.0
 
     # Result
-    result: Optional[str] = None
+    result: Optional[Any] = None
     error: Optional[str] = None
 
     # File persistence

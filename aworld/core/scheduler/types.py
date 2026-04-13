@@ -44,6 +44,7 @@ class CronJobState:
     last_run_at: Optional[str] = None
     last_status: Optional[Literal["ok", "error", "timeout"]] = None
     last_error: Optional[str] = None
+    last_result_summary: Optional[str] = None
     running: bool = False
     consecutive_errors: int = 0
     run_count: int = 0

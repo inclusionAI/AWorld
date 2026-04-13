@@ -109,7 +109,7 @@ def build_diffusion_swarm():
 
     # Create MultiTaskVideoCreatorAgent instance
     diffusion = MultiTaskVideoCreatorAgent(
-        name="diffusion",
+        name="video_diffusion",
         desc="An intelligent assistant for creating, editing, and generating video content.",
         conf=agent_config,
         system_prompt=_system_prompt,

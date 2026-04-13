@@ -573,57 +573,65 @@ class AWorldCLI:
         if not audio_cfg:
             current_config['models'].pop('audio', None)
 
-        # Image (models.image -> IMAGE_* for image agent)
-        self.console.print("\n[bold]Image configuration[/bold] [dim](optional, for image agent)[/dim]")
-        self.console.print("  [dim]Leave empty to use default LLM config above[/dim]\n")
-        if 'image' not in current_config['models']:
-            current_config['models']['image'] = {}
-        image_cfg = current_config['models']['image']
+        legacy_image_cfg = current_config['models'].get('image')
+        if 'text_to_image' not in current_config['models'] and isinstance(legacy_image_cfg, dict):
+            current_config['models']['text_to_image'] = dict(legacy_image_cfg)
+        current_config['models'].pop('image', None)
 
-        current_image_api_key = image_cfg.get('api_key', '')
-        if current_image_api_key:
-            masked = current_image_api_key[:8] + "..." if len(current_image_api_key) > 8 else "***"
-            self.console.print(f"  [dim]Current IMAGE_API_KEY: {masked}[/dim]")
-        image_api_key = Prompt.ask("  IMAGE_API_KEY", default=current_image_api_key, password=True)
-        if image_api_key:
-            image_cfg['api_key'] = image_api_key
-        else:
-            image_cfg.pop('api_key', None)
+        def edit_image_model_config(section_key: str, title: str, env_prefix: str):
+            self.console.print(f"\n[bold]{title}[/bold] [dim](optional, for image agent)[/dim]")
+            self.console.print("  [dim]Leave empty to use default LLM config above[/dim]\n")
+            if section_key not in current_config['models']:
+                current_config['models'][section_key] = {}
+            image_cfg = current_config['models'][section_key]
 
-        current_image_model = image_cfg.get('model', '')
-        self.console.print("  [dim]e.g. qwen-image · Enter to inherit from default[/dim]")
-        image_model = Prompt.ask("  IMAGE_MODEL_NAME", default=current_image_model)
-        if image_model:
-            image_cfg['model'] = image_model
-        else:
-            image_cfg.pop('model', None)
+            current_api_key = image_cfg.get('api_key', '')
+            if current_api_key:
+                masked = current_api_key[:8] + "..." if len(current_api_key) > 8 else "***"
+                self.console.print(f"  [dim]Current {env_prefix}_API_KEY: {masked}[/dim]")
+            image_api_key = Prompt.ask(f"  {env_prefix}_API_KEY", default=current_api_key, password=True)
+            if image_api_key:
+                image_cfg['api_key'] = image_api_key
+            else:
+                image_cfg.pop('api_key', None)
 
-        current_image_base_url = image_cfg.get('base_url', '')
-        image_base_url = Prompt.ask("  IMAGE_BASE_URL", default=current_image_base_url)
-        if image_base_url:
-            image_cfg['base_url'] = image_base_url
-        else:
-            image_cfg.pop('base_url', None)
+            current_model = image_cfg.get('model', '')
+            self.console.print("  [dim]e.g. qwen-image · Enter to inherit from default[/dim]")
+            image_model = Prompt.ask(f"  {env_prefix}_MODEL_NAME", default=current_model)
+            if image_model:
+                image_cfg['model'] = image_model
+            else:
+                image_cfg.pop('model', None)
 
-        current_image_provider = image_cfg.get('provider', 'image')
-        image_provider = Prompt.ask("  IMAGE_PROVIDER", default=current_image_provider)
-        if image_provider:
-            image_cfg['provider'] = image_provider
-        else:
-            image_cfg.pop('provider', None)
+            current_base_url = image_cfg.get('base_url', '')
+            image_base_url = Prompt.ask(f"  {env_prefix}_BASE_URL", default=current_base_url)
+            if image_base_url:
+                image_cfg['base_url'] = image_base_url
+            else:
+                image_cfg.pop('base_url', None)
 
-        current_image_temp = image_cfg.get('temperature', 0.1)
-        image_temp = Prompt.ask("  IMAGE_TEMPERATURE", default=str(current_image_temp))
-        if image_temp:
-            try:
-                image_cfg['temperature'] = float(image_temp)
-            except ValueError:
+            current_provider = image_cfg.get('provider', 'image')
+            image_provider = Prompt.ask(f"  {env_prefix}_PROVIDER", default=current_provider)
+            if image_provider:
+                image_cfg['provider'] = image_provider
+            else:
+                image_cfg.pop('provider', None)
+
+            current_temp = image_cfg.get('temperature', 0.1)
+            image_temp = Prompt.ask(f"  {env_prefix}_TEMPERATURE", default=str(current_temp))
+            if image_temp:
+                try:
+                    image_cfg['temperature'] = float(image_temp)
+                except ValueError:
+                    image_cfg.pop('temperature', None)
+            else:
                 image_cfg.pop('temperature', None)
-        else:
-            image_cfg.pop('temperature', None)
 
-        if not image_cfg:
-            current_config['models'].pop('image', None)
+            if not image_cfg:
+                current_config['models'].pop(section_key, None)
+
+        edit_image_model_config('text_to_image', "Text-to-image configuration", "TEXT_TO_IMAGE")
+        edit_image_model_config('image_to_image', "Image-to-image configuration", "IMAGE_TO_IMAGE")
 
         config.save_config(current_config)
         self.console.print(f"\n[green]✅ Configuration saved to {config.get_config_path()}[/green]")
@@ -666,11 +674,11 @@ class AWorldCLI:
             self.console.print()
             self.console.print(audio_table)
 
-        if current_config['models'].get('image'):
-            image_table = Table(title="Image Configuration (IMAGE_*)", box=box.ROUNDED)
+        if current_config['models'].get('text_to_image'):
+            image_table = Table(title="Text-to-image Configuration (TEXT_TO_IMAGE_*)", box=box.ROUNDED)
             image_table.add_column("Setting", style="cyan")
             image_table.add_column("Value", style="green")
-            for key, value in current_config['models']['image'].items():
+            for key, value in current_config['models']['text_to_image'].items():
                 if key == 'api_key':
                     masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
                     image_table.add_row(key, masked_value)
@@ -678,6 +686,19 @@ class AWorldCLI:
                     image_table.add_row(key, str(value))
             self.console.print()
             self.console.print(image_table)
+
+        if current_config['models'].get('image_to_image'):
+            edit_table = Table(title="Image-to-image Configuration (IMAGE_TO_IMAGE_*)", box=box.ROUNDED)
+            edit_table.add_column("Setting", style="cyan")
+            edit_table.add_column("Value", style="green")
+            for key, value in current_config['models']['image_to_image'].items():
+                if key == 'api_key':
+                    masked_value = value[:8] + "..." if len(str(value)) > 8 else "***"
+                    edit_table.add_row(key, masked_value)
+                else:
+                    edit_table.add_row(key, str(value))
+            self.console.print()
+            self.console.print(edit_table)
 
     async def _edit_skills_config(self, config, current_config: dict):
         """Edit skills section of config (global SKILLS_PATH and per-agent XXX_SKILLS_PATH)."""
@@ -2161,5 +2182,4 @@ Add any custom instructions for AI agents working on this project.
             finally:
                 self._notification_poll_task = None
                 self._notification_stop_event = None
-
         return False

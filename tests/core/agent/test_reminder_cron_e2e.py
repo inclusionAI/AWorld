@@ -365,7 +365,7 @@ async def test_reminder_cron_execution_renders_reminder_detail_in_cli(monkeypatc
         assert "喝水提醒" in response.answer
         assert executed_tools == ["cron"]
         assert 'Cron task "喝水提醒" completed' in rendered_output
-        assert '提醒内容：提醒我喝水' in rendered_output
+        assert '内容：提醒我喝水' in rendered_output
         assert notification_center.get_unread_count() == 0
     finally:
         memory_main.MEMORY_HOLDER.clear()
