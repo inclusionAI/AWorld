@@ -406,8 +406,8 @@ async def test_reminder_execution_updates_toolbar_unread_count_without_inline_re
             self._notification_center = center
 
     cli = AWorldCLI()
-    toolbar = cli._build_cron_bottom_toolbar(FakeRuntime(notification_center))
+    toolbar = cli._build_status_bar_text(FakeRuntime(notification_center), agent_name="Aworld", mode="Chat")
 
     assert toolbar is not None
-    assert "有 1 条未读提醒" in str(toolbar)
-    assert "/cron list" in str(toolbar)
+    assert "Cron: 1 unread" in toolbar
+    assert "Hint: /cron list" in toolbar

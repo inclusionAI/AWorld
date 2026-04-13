@@ -1,5 +1,6 @@
 import asyncio
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
@@ -41,23 +42,90 @@ class AWorldCLI:
         self._notification_poll_task = None
         self._notification_stop_event = None
         self._notification_drain_lock = asyncio.Lock()
+        self._toolbar_workspace_name = self._detect_workspace_name()
+        self._toolbar_git_branch = self._detect_git_branch()
 
-    def _build_cron_bottom_toolbar(self, runtime) -> str:
+    def _detect_workspace_name(self) -> str:
+        """Detect the current workspace name for status-bar display."""
+        workspace_name = Path.cwd().name.strip()
+        return workspace_name or "workspace"
+
+    def _detect_git_branch(self) -> str:
+        """Best-effort detection of the current git branch for status-bar display."""
+        try:
+            result = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=Path.cwd(),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=0.5,
+            )
+        except Exception:
+            return "n/a"
+
+        if result.returncode != 0:
+            return "n/a"
+
+        branch = (result.stdout or "").strip()
+        return branch or "detached"
+
+    def _build_status_bar_text(
+        self,
+        runtime,
+        agent_name: str = "Aworld",
+        mode: str = "Chat",
+    ) -> str:
         """
-        Build bottom-toolbar text for unread cron notifications.
+        Build plain-text status-bar content.
 
-        Returns an empty string when there are no unread notifications so
-        prompt_toolkit keeps the prompt area clean.
+        The bar is intentionally always present to avoid layout jumps.
         """
         notification_center = getattr(runtime, "_notification_center", None)
         if not notification_center:
-            return ""
+            cron_status = "Cron: offline"
+        else:
+            unread_count = notification_center.get_unread_count()
+            cron_status = f"Cron: {unread_count} unread" if unread_count > 0 else "Cron: clear"
 
-        unread_count = notification_center.get_unread_count()
-        if unread_count <= 0:
-            return ""
+        return " | ".join([
+            f"Agent: {agent_name}",
+            f"Mode: {mode}",
+            cron_status,
+            f"Workspace: {self._toolbar_workspace_name}",
+            f"Branch: {self._toolbar_git_branch}",
+            "Hint: /cron list",
+        ])
 
-        return f"Cron: 有 {unread_count} 条未读提醒，使用 /cron list 查看"
+    def _build_status_bar(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> HTML:
+        """Build a styled prompt-toolkit status bar inspired by segmented system prompts."""
+        text = self._build_status_bar_text(runtime, agent_name=agent_name, mode=mode)
+        segments = [segment.strip() for segment in text.split("|")]
+
+        segment_styles = [
+            ("#181b2d", "#84c7c6"),
+            ("#181b2d", "#d8def5"),
+            ("#181b2d", "#f2c14e" if "unread" in segments[2] else "#8ed081"),
+            ("#181b2d", "#b8c0da"),
+            ("#181b2d", "#a88bd8"),
+            ("#181b2d", "#8ea0c4"),
+        ]
+        divider_style = ("#181b2d", "#4f5877")
+
+        parts = []
+        for index, segment in enumerate(segments):
+            bg, fg = segment_styles[index] if index < len(segment_styles) else ("#181b2d", "#d8def5")
+            escaped = (
+                segment.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            parts.append(f"<style bg='{bg}' fg='{fg}'> {escaped} </style>")
+            if index < len(segments) - 1:
+                div_bg, div_fg = divider_style
+                parts.append(f"<style bg='{div_bg}' fg='{div_fg}'> | </style>")
+
+        return HTML("".join(parts))
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -1263,7 +1331,11 @@ class AWorldCLI:
                     prompt_text = "<b><cyan>You</cyan></b>: "
                     prompt_kwargs = {}
                     if runtime:
-                        prompt_kwargs["bottom_toolbar"] = lambda: self._build_cron_bottom_toolbar(runtime)
+                        prompt_kwargs["bottom_toolbar"] = lambda: self._build_status_bar(
+                            runtime,
+                            agent_name=agent_name,
+                            mode="Chat",
+                        )
                         prompt_kwargs["refresh_interval"] = 0.1
                     user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text), **prompt_kwargs)
                 else:
