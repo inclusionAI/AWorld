@@ -5,7 +5,7 @@
 - one-time reminders
 - recurring scheduled tasks
 - task listing and cleanup
-- asynchronous notifications
+- asynchronous notifications with unread inbox flow
 - isolated cron state for repeatable demos
 
 ## Claude Scheduled Tasks Mental Model
@@ -46,12 +46,19 @@ Inside the CLI, try these steps:
 /cron list
 ```
 
-4. Wait for notifications to appear in the TUI.
+4. Wait for the reminder to fire. The main chat stays unblocked and the bottom
+   status bar should show unread cron notifications.
 
-5. Remove the demo jobs you created:
+5. Read unread reminder notifications:
 
 ```text
-/cron remove <job-id>
+/cron inbox
+```
+
+6. Remove the demo jobs you created:
+
+```text
+/cron remove all
 ```
 
 Manual-run artifacts land under:
@@ -76,7 +83,7 @@ The auto demo uses:
 It prints:
 
 - current jobs
-- terminal notifications
+- terminal notifications with reminder detail when available
 - latest heartbeat file state
 
 ## Environment Note
@@ -85,3 +92,4 @@ Both paths use the real cron scheduler, cron store, and notification center.
 
 - The manual walkthrough also uses the normal agent execution path, so it depends on a locally registered `Aworld` agent. If `Aworld` is missing, manual jobs can still be scheduled and listed, but executions may finish with `error`.
 - The automated demo uses a built-in deterministic demo executor so it can always show successful scheduling, notifications, and output-file updates even when no local `Aworld` agent is configured.
+- Reminder notifications are consumed through `/cron inbox`; they do not interrupt or block the main conversation loop.
