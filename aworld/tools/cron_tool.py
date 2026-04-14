@@ -101,7 +101,8 @@ async def cron_tool(
 ) -> Dict[str, Any]:
     """Execute cron operations."""
     # Import helpers from the canonical module path so dynamic @be_tool wrappers
-    # can still resolve them after copying only this function's source.
+    # can still resolve them even when this function source is copied before the
+    # helper definitions below are executed.
     from aworld.tools.cron_tool import (
         _parse_natural_language_add_request as parse_request_helper,
         _unwrap_fieldinfo as unwrap_fieldinfo_helper,
@@ -314,19 +315,37 @@ async def cron_tool(
         scheduler = get_scheduler()
 
         if action == "add":
-            if request and not all([name, message, schedule_type, schedule_value]):
+            request_schedule_derived = False
+            if request:
                 try:
                     parsed_request = parse_request_helper(request)
                 except ValueError as e:
-                    return {"success": False, "error": str(e)}
+                    if not all([name, message, schedule_type, schedule_value]):
+                        return {"success": False, "error": str(e)}
+                    parsed_request = None
 
-                name = name or parsed_request["name"]
-                message = message or parsed_request["message"]
-                schedule_type = schedule_type or parsed_request["schedule_type"]
-                schedule_value = schedule_value or parsed_request["schedule_value"]
-                max_runs = max_runs or parsed_request.get("max_runs")
-                if delete_after_run is None:
-                    delete_after_run = parsed_request["delete_after_run"]
+                if parsed_request:
+                    request_schedule_derived = True
+                    if schedule_type and schedule_type != parsed_request["schedule_type"]:
+                        logger.warning(
+                            "cron_tool(add): overriding LLM-provided "
+                            f"schedule_type {schedule_type!r} with request-derived value "
+                            f"{parsed_request['schedule_type']!r} for request {request!r}"
+                        )
+                    if schedule_value and schedule_value != parsed_request["schedule_value"]:
+                        logger.warning(
+                            "cron_tool(add): overriding LLM-provided "
+                            f"schedule_value {schedule_value!r} with request-derived value "
+                            f"{parsed_request['schedule_value']!r} for request {request!r}"
+                        )
+
+                    name = name or parsed_request["name"]
+                    message = message or parsed_request["message"]
+                    schedule_type = parsed_request["schedule_type"]
+                    schedule_value = parsed_request["schedule_value"]
+                    max_runs = max_runs or parsed_request.get("max_runs")
+                    if delete_after_run is None:
+                        delete_after_run = parsed_request["delete_after_run"]
 
             # Validate required parameters
             if not all([name, message, schedule_type, schedule_value]):
@@ -340,6 +359,21 @@ async def cron_tool(
                 schedule = parse_schedule_local(schedule_type, schedule_value)
             except ValueError as e:
                 return {"success": False, "error": f"Invalid schedule: {str(e)}"}
+
+            if schedule_type == "at" and schedule.at and not request_schedule_derived:
+                target_time = datetime.fromisoformat(schedule.at.replace('Z', '+00:00'))
+                current_time = _resolve_schedule_now(None)
+                if target_time.tzinfo is None:
+                    target_time = target_time.replace(tzinfo=current_time.tzinfo)
+                if target_time <= current_time.astimezone(target_time.tzinfo):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"One-time schedule is already in the past: {schedule.at}. "
+                            "Provide a future time or pass a natural-language request such as "
+                            "'一分钟后提醒我喝水'."
+                        ),
+                    }
 
             # Build job
             job = CronJob(
@@ -447,7 +481,7 @@ async def cron_tool(
             return {"success": False, "error": f"Unknown action: {action}"}
 
     except Exception as e:
-        logger.error(f"Cron tool error: {e}", exc_info=True)
+        logger.error(f"Cron tool error: {e}")
         return {
             "success": False,
             "error": f"Internal error: {str(e)}"
@@ -516,6 +550,7 @@ def _parse_natural_language_add_request(request: str, now: Optional[datetime] = 
 
     Supported examples:
     - 一分钟后提醒我喝水
+    - 提醒我一分钟后喝水
     - 30分钟后提醒我提交代码
     - 每天早上9点提醒我运行测试
     - 明天下午3点提醒我开会
@@ -534,6 +569,26 @@ def _parse_natural_language_add_request(request: str, now: Optional[datetime] = 
         quantity = _parse_natural_language_number(relative_match.group("num"))
         unit = relative_match.group("unit")
         body = relative_match.group("body")
+        delta = _natural_language_delta(quantity, unit)
+        target_time = current_time + delta
+        message = _normalize_reminder_message(body)
+        return {
+            "name": _reminder_name_from_message(message),
+            "message": message,
+            "schedule_type": "at",
+            "schedule_value": target_time.isoformat(timespec="seconds"),
+            "delete_after_run": True,
+        }
+
+    leading_relative_match = re.fullmatch(
+        r"提醒我(?P<num>\d+|[零一二两三四五六七八九十]+)\s*"
+        r"(?P<unit>秒钟?|秒|分钟|分|小时|个小时|小时|天|日)后(?P<body>.+)",
+        text,
+    )
+    if leading_relative_match:
+        quantity = _parse_natural_language_number(leading_relative_match.group("num"))
+        unit = leading_relative_match.group("unit")
+        body = leading_relative_match.group("body")
         delta = _natural_language_delta(quantity, unit)
         target_time = current_time + delta
         message = _normalize_reminder_message(body)
