@@ -7,11 +7,14 @@ This example demonstrates AWorld hook behavior through manual `aworld-cli` usage
 - Run from the repository root.
 - `aworld-cli` is installed in your environment.
 - Your normal LLM environment variables are already configured.
+- Mark this demo workspace as trusted so local config hooks can load.
 
 ## Start The Demo
 
 ```bash
 cd examples/cli_hook_acceptance
+mkdir -p .aworld
+touch .aworld/trusted
 mkdir -p tmp/build
 printf 'artifact\n' > tmp/build/demo.txt
 aworld-cli --agent-file ./agent.py --agent CliHookAcceptanceAgent
