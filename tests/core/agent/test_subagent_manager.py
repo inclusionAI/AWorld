@@ -534,6 +534,47 @@ class TestSpawnOrchestration:
             with pytest.raises(RuntimeError, match="No active context found"):
                 await manager.spawn(name="test", directive="Do something")
 
+    @pytest.mark.asyncio
+    async def test_spawn_accepts_explicit_context(self):
+        """Explicit context should bypass the current-context requirement."""
+        agent = Mock(spec=Agent)
+        agent.tool_names = []
+        agent.conf = AgentConfig()
+        manager = SubagentManager(agent=agent)
+
+        subagent = Mock(spec=Agent)
+        subagent.name.return_value = "test"
+        subagent.tool_names = []
+        subagent.handoffs = []
+        subagent.conf = AgentConfig()
+        subagent.desc.return_value = "Test subagent"
+        subagent.feedback_tool_result = True
+        subagent.wait_tool_result = False
+        subagent.sandbox = None
+
+        manager._available_subagents["test"] = SubagentInfo(
+            name="test",
+            description="Test agent",
+            source='team_member',
+            tools=[],
+            agent_instance=subagent
+        )
+
+        context = Context()
+        context.set_task(Mock())
+        context.build_sub_context = AsyncMock(return_value=context)
+        context.merge_sub_context = Mock()
+
+        with patch.object(BaseAgent, '_get_current_context', return_value=None), \
+             patch("aworld.runner.Runners.run_task", AsyncMock(return_value={"task-id": Mock(success=True, answer="done")})), \
+             patch("aworld.core.task.Task", autospec=True) as task_cls:
+            task_cls.return_value.id = "task-id"
+            result = await manager.spawn(name="test", directive="Do something", context=context)
+
+        assert result == "done"
+        context.build_sub_context.assert_awaited_once()
+        context.merge_sub_context.assert_called_once()
+
 
 if __name__ == '__main__':
     """Run tests directly with pytest"""

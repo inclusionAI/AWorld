@@ -198,3 +198,35 @@ def test_edit_request_supports_mixed_local_file_and_data_url_inputs(tmp_path: Pa
     assert len(payload["image[]"]) == 1
     assert payload["image[]"][0]["filename"] == "cat.webp"
     assert payload["url[]"] == ["data:image/png;base64,abc123"]
+
+
+def test_parse_image_response_decodes_b64_json_and_writes_output(tmp_path: Path):
+    provider = ImageProvider(
+        api_key="test-key",
+        base_url="https://antchat.alipay.com",
+        model_name="Qwen-Image-2512-Lightning",
+        sync_enabled=False,
+        async_enabled=False,
+    )
+
+    output_path = tmp_path / "image.png"
+    response = provider._parse_image_response(
+        {
+            "id": "img-test",
+            "model": "image",
+            "data": [
+                {
+                    "b64_json": "aGVsbG8=",
+                    "size": "1024x1024",
+                }
+            ],
+        },
+        output_format="png",
+        output_path=str(output_path),
+    )
+
+    assert response.id == "img-test"
+    assert response.image_data == b"hello"
+    assert response.image_bytes == 5
+    assert response.image_format == "png"
+    assert output_path.read_bytes() == b"hello"

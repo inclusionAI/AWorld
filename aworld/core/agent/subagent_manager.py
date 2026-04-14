@@ -449,8 +449,12 @@ class SubagentManager:
             f"(source={subagent_info.source}) with directive: {directive[:100]}..."
         )
 
-        # Step 2: Get current context (thread-safe via contextvars)
-        current_context = BaseAgent._get_current_context()
+        # Step 2: Get parent context.
+        # Prefer an explicit context passed by the caller (e.g. tool execution),
+        # then fall back to the current agent's contextvar-based execution context.
+        current_context = kwargs.pop('context', None) or kwargs.pop('parent_context', None)
+        if current_context is None:
+            current_context = BaseAgent._get_current_context()
         if current_context is None:
             raise RuntimeError(
                 f"SubagentManager.spawn: No active context found. "
