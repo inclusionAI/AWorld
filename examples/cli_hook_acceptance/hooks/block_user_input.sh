@@ -1,6 +1,6 @@
 #!/bin/bash
 
-if echo "$AWORLD_MESSAGE_JSON" | grep -Eiq 'rm -rf|delete everything|wipe the workspace'; then
+if echo "$AWORLD_MESSAGE_JSON" | grep -Eiq 'please run rm -rf /tmp/build immediately|delete everything|wipe the workspace'; then
 cat <<'EOF'
 {
   "continue": true,

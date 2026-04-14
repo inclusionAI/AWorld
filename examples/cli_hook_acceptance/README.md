@@ -6,8 +6,8 @@ This example demonstrates AWorld hook behavior through manual `aworld-cli` usage
 
 - Run from the repository root.
 - `aworld-cli` is installed in your environment.
-- Your normal LLM environment variables are already configured.
 - Mark this demo workspace as trusted so local config hooks can load.
+- No external model setup is required for this demo agent.
 
 ## Start The Demo
 

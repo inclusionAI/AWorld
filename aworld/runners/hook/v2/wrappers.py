@@ -272,7 +272,11 @@ class CommandHookWrapper(Hook):
                 'timestamp': message.timestamp
             }
 
-            env['AWORLD_MESSAGE_JSON'] = json.dumps(message_dict, ensure_ascii=False)
+            env['AWORLD_MESSAGE_JSON'] = json.dumps(
+                message_dict,
+                ensure_ascii=False,
+                default=str,
+            )
         except Exception as e:
             logger.warning(f"Failed to serialize message to JSON: {e}")
             # 失败时保留基本信息，而非完全退化

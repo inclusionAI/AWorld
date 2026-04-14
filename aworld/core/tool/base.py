@@ -228,6 +228,12 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             return
         for idx, act in enumerate(action):
             if eventbus is not None:
+                metadata = dict(step_res[0].action_result[idx].metadata or {})
+                if input_message.headers.get("system_message"):
+                    metadata["system_message"] = input_message.headers["system_message"]
+                updated_output = input_message.headers.get("updated_output")
+                if isinstance(updated_output, dict) and "info" in updated_output:
+                    metadata["hook_info"] = updated_output["info"]
                 tool_output = ToolResultOutput(
                     tool_type=kwargs.get("tool_id_mapping", {}).get(
                         act.tool_call_id) or self.name(),
@@ -241,7 +247,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                             "arguments": act.params,
                         }
                     }),
-                    metadata=step_res[0].action_result[idx].metadata,
+                    metadata=metadata,
                     task_id=context.task_id
                 )
                 tool_output_message = Message(
@@ -422,6 +428,10 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             raise Exception(f'{self.name()} no observation has been made.')
 
         context = message.context
+        if isinstance(step_res[4], dict):
+            merged_info = dict(step_res[0].info or {})
+            merged_info.update(step_res[4])
+            step_res[0].info = merged_info
 
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
@@ -505,7 +515,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             loop = asyncio.get_event_loop()
             if loop.is_running():
                 # In async context, use sync_exec
-                from aworld.utils.sync_utils import sync_exec
+                from aworld.utils.common import sync_exec
                 sync_exec(_run)
             else:
                 loop.run_until_complete(_run())
@@ -551,6 +561,12 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             # send tool results output
             if eventbus is not None:
+                metadata = dict(step_res[0].action_result[idx].metadata or {})
+                if input_message.headers.get("system_message"):
+                    metadata["system_message"] = input_message.headers["system_message"]
+                updated_output = input_message.headers.get("updated_output")
+                if isinstance(updated_output, dict) and "info" in updated_output:
+                    metadata["hook_info"] = updated_output["info"]
                 tool_output = ToolResultOutput(
                     tool_type=kwargs.get("tool_id_mapping", {}).get(
                         act.tool_call_id) or self.name(),
@@ -564,7 +580,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                             "arguments": act.params,
                         }
                     }),
-                    metadata=step_res[0].action_result[idx].metadata,
+                    metadata=metadata,
                     task_id=context.task_id
                 )
                 tool_output_message = Message(
@@ -779,6 +795,11 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                         **kwargs) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | Message:
         if not step_res:
             raise Exception(f'{self.name()} no observation has been made.')
+
+        if isinstance(step_res[4], dict):
+            merged_info = dict(step_res[0].info or {})
+            merged_info.update(step_res[4])
+            step_res[0].info = merged_info
 
         step_res[0].from_agent_name = action[0].agent_name
         for idx, act in enumerate(action):
