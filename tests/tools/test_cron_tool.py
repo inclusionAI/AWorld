@@ -123,6 +123,18 @@ class TestParseScheduleValidation:
         assert parsed["schedule_value"] == "2026-04-11T23:22:00+08:00"
         assert parsed["delete_after_run"] is True
 
+    def test_parse_natural_language_relative_reminder_with_leading_prefix_in_chinese(self):
+        """Test '提醒我X分钟后Y' phrasing is parsed to a one-shot schedule."""
+        now = datetime(2026, 4, 11, 23, 21, 0, tzinfo=timezone(timedelta(hours=8)))
+
+        parsed = self._parse_natural_language_add_request("提醒我两分钟后喝水", now=now)
+
+        assert parsed["name"] == "提醒：喝水"
+        assert parsed["message"] == "提醒我喝水"
+        assert parsed["schedule_type"] == "at"
+        assert parsed["schedule_value"] == "2026-04-11T23:23:00+08:00"
+        assert parsed["delete_after_run"] is True
+
     def test_parse_natural_language_daily_recurring_reminder_in_chinese(self):
         """Test common daily reminder requests are parsed to cron schedules."""
         now = datetime(2026, 4, 11, 23, 21, 0, tzinfo=timezone(timedelta(hours=8)))
@@ -201,6 +213,54 @@ async def test_cron_tool_add_accepts_raw_natural_language_request(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_cron_tool_add_prefers_request_derived_schedule_over_llm_supplied_absolute_time(monkeypatch):
+    """Raw request should be authoritative when LLM also supplies a stale absolute schedule."""
+    from aworld.core.scheduler.types import CronJobState
+    import aworld.tools.cron_tool as cron_tool_module
+
+    class FakeScheduler:
+        def __init__(self):
+            self.last_job = None
+
+        async def add_job(self, job):
+            self.last_job = job
+            job.state = CronJobState(next_run_at=job.schedule.at)
+            return job
+
+    fake_scheduler = FakeScheduler()
+
+    monkeypatch.setattr(
+        cron_tool_module,
+        "_parse_natural_language_add_request",
+        lambda request, now=None: {
+            "name": "提醒：上厕所",
+            "message": "提醒我上厕所",
+            "schedule_type": "at",
+            "schedule_value": "2026-04-14T16:25:02+08:00",
+            "delete_after_run": True,
+        },
+    )
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        request="两分钟后提醒我上厕所",
+        name="上厕所提醒",
+        message="提醒：该去上厕所了！",
+        schedule_type="at",
+        schedule_value="2026-04-14T16:07:45+08:00",
+    )
+
+    assert result["success"] is True
+    assert fake_scheduler.last_job is not None
+    assert fake_scheduler.last_job.name == "上厕所提醒"
+    assert fake_scheduler.last_job.payload.message == "提醒：该去上厕所了！"
+    assert fake_scheduler.last_job.schedule.kind == "at"
+    assert fake_scheduler.last_job.schedule.at == "2026-04-14T16:25:02+08:00"
+    assert result["next_run"] == "2026-04-14T16:25:02+08:00"
+
+
+@pytest.mark.asyncio
 async def test_cron_tool_normalizes_string_max_runs_and_aworld_agent_name(monkeypatch):
     """String max_runs and lowercase aworld agent name should be normalized before persistence."""
     from aworld.core.scheduler.types import CronJobState
@@ -234,6 +294,79 @@ async def test_cron_tool_normalizes_string_max_runs_and_aworld_agent_name(monkey
     assert fake_scheduler.last_job is not None
     assert fake_scheduler.last_job.payload.max_runs == 3
     assert fake_scheduler.last_job.payload.agent_name == "Aworld"
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_add_prefers_request_derived_schedule_for_leading_relative_phrase(monkeypatch):
+    """Leading '提醒我X分钟后Y' requests should override stale LLM absolute timestamps."""
+    from aworld.core.scheduler.types import CronJobState
+    import aworld.tools.cron_tool as cron_tool_module
+
+    class FakeScheduler:
+        def __init__(self):
+            self.last_job = None
+
+        async def add_job(self, job):
+            self.last_job = job
+            job.state = CronJobState(next_run_at=job.schedule.at)
+            return job
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+    monkeypatch.setattr(
+        cron_tool_module,
+        "_parse_natural_language_add_request",
+        lambda request, now=None: {
+            "name": "喝水提醒",
+            "message": "提醒用户喝水",
+            "schedule_type": "at",
+            "schedule_value": "2026-04-14T17:17:00+08:00",
+            "delete_after_run": True,
+        },
+    )
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        request="提醒我两分钟后喝水",
+        name="喝水提醒",
+        message="提醒用户喝水",
+        schedule_type="at",
+        schedule_value="2026-04-14T16:50:01+08:00",
+    )
+
+    assert result["success"] is True
+    assert fake_scheduler.last_job is not None
+    assert fake_scheduler.last_job.schedule.at == "2026-04-14T17:17:00+08:00"
+    assert result["next_run"] == "2026-04-14T17:17:00+08:00"
+
+
+@pytest.mark.asyncio
+async def test_cron_tool_add_rejects_past_one_time_schedule(monkeypatch):
+    """Stale absolute one-time timestamps should fail closed instead of creating a dead job."""
+    import aworld.tools.cron_tool as cron_tool_module
+
+    class FakeScheduler:
+        def __init__(self):
+            self.add_called = False
+
+        async def add_job(self, job):
+            self.add_called = True
+            return job
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    result = await cron_tool_module.cron_tool(
+        action="add",
+        name="喝水提醒",
+        message="提醒用户喝水",
+        schedule_type="at",
+        schedule_value="2026-04-14T16:50:01+08:00",
+    )
+
+    assert result["success"] is False
+    assert "already in the past" in result["error"]
+    assert fake_scheduler.add_called is False
 
 
 @pytest.mark.asyncio

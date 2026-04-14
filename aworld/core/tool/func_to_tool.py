@@ -5,7 +5,9 @@ import importlib.util
 import inspect
 import os
 import sys
+import tempfile
 import uuid
+from pathlib import Path
 
 from typing import Callable, Any, get_type_hints, get_origin, get_args
 
@@ -20,6 +22,20 @@ from aworld.core.tool.base import ToolFactory
 from aworld.core.tool.tool_template import TOOL_TEMPLATE
 from aworld.logs.util import logger
 from aworld.tools import LOCAL_TOOLS_ENV_VAR
+
+
+GENERATED_TOOL_DIR_ENV_VAR = "AWORLD_TOOL_TMP_DIR"
+
+
+def _get_generated_tool_dir() -> Path:
+    """Return the directory used for runtime-generated tool modules."""
+    configured_dir = (os.environ.get(GENERATED_TOOL_DIR_ENV_VAR) or "").strip()
+    if configured_dir:
+        output_dir = Path(os.path.expanduser(configured_dir))
+    else:
+        output_dir = Path(tempfile.gettempdir()) / "aworld_local_tools"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    return output_dir
 
 
 def _load_module_from_path(module_name: str, file_path: str):
@@ -110,9 +126,10 @@ def function_to_tool(
     action_name = name or func.__name__
 
     postfix = f"{uuid.uuid4().hex[0:6]}__tmp"
+    output_dir = _get_generated_tool_dir()
 
     action_module_name = f"{action_name}{postfix}_action"
-    action_py_path = os.path.abspath(f"{action_module_name}.py")
+    action_py_path = str((output_dir / f"{action_module_name}.py").resolve())
 
     with open(action_py_path, 'w') as write:
         write.writelines("from __future__ import annotations\n")
@@ -166,7 +183,7 @@ def function_to_tool(
     parameters = func_params(func)
 
     module_name = f'{tool_name}'
-    tool_py_path = os.path.abspath(f"{tool_name}{postfix}.py")
+    tool_py_path = str((output_dir / f"{tool_name}{postfix}.py").resolve())
     expected_action_cls = f"{tool_name}Action"
     existing_module = sys.modules.get(module_name)
     if existing_module is None or not hasattr(existing_module, expected_action_cls):
