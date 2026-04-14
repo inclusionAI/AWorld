@@ -4,6 +4,7 @@
 Cron tool - manage scheduled tasks through Agent.
 """
 import re
+import traceback
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Literal
 from pydantic import Field
@@ -481,7 +482,7 @@ async def cron_tool(
             return {"success": False, "error": f"Unknown action: {action}"}
 
     except Exception as e:
-        logger.error(f"Cron tool error: {e}")
+        logger.error(f"Cron tool error: {e}\n{traceback.format_exc()}")
         return {
             "success": False,
             "error": f"Internal error: {str(e)}"

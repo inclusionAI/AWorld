@@ -550,5 +550,27 @@ async def test_cron_tool_show_includes_last_result_summary(monkeypatch):
     assert result["job"]["last_result_summary"] == "BTC 当前价格 68000 USDT，较上一分钟上涨 0.2%"
 
 
+@pytest.mark.asyncio
+async def test_cron_tool_logs_traceback_for_unexpected_internal_errors(monkeypatch):
+    """Unexpected internal errors should still log a traceback for diagnosis."""
+    import aworld.tools.cron_tool as cron_tool_module
+
+    logged_messages = []
+
+    def fake_error(message, *args, **kwargs):
+        logged_messages.append(str(message))
+
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: (_ for _ in ()).throw(RuntimeError("boom")))
+    monkeypatch.setattr(cron_tool_module.logger, "error", fake_error)
+
+    result = await cron_tool_module.cron_tool(action="status")
+
+    assert result["success"] is False
+    assert result["error"] == "Internal error: boom"
+    assert logged_messages
+    assert "Cron tool error: boom" in logged_messages[0]
+    assert "Traceback" in logged_messages[0]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -7,6 +7,7 @@ import os
 import sys
 import tempfile
 import uuid
+import getpass
 from pathlib import Path
 
 from typing import Callable, Any, get_type_hints, get_origin, get_args
@@ -27,13 +28,25 @@ from aworld.tools import LOCAL_TOOLS_ENV_VAR
 GENERATED_TOOL_DIR_ENV_VAR = "AWORLD_TOOL_TMP_DIR"
 
 
+def _get_generated_tool_dir_name() -> str:
+    """Return a user-scoped directory name for runtime-generated tool modules."""
+    username = (getpass.getuser() or "unknown").strip() or "unknown"
+    safe_username = "".join(
+        ch if ch.isalnum() or ch in {"-", "_", "."} else "_"
+        for ch in username
+    )
+    uid_getter = getattr(os, "getuid", None)
+    uid_suffix = f"_{uid_getter()}" if callable(uid_getter) else ""
+    return f"aworld_local_tools_{safe_username}{uid_suffix}"
+
+
 def _get_generated_tool_dir() -> Path:
     """Return the directory used for runtime-generated tool modules."""
     configured_dir = (os.environ.get(GENERATED_TOOL_DIR_ENV_VAR) or "").strip()
     if configured_dir:
         output_dir = Path(os.path.expanduser(configured_dir))
     else:
-        output_dir = Path(tempfile.gettempdir()) / "aworld_local_tools"
+        output_dir = Path(tempfile.gettempdir()) / _get_generated_tool_dir_name()
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
