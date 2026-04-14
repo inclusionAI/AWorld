@@ -328,3 +328,51 @@ EOF
         assert 'workspace_a_only' not in hook_names_b, (
             "Standard workspace config from A must not leak into unrelated workspace B"
         )
+
+    @pytest.mark.asyncio
+    async def test_single_cached_nonstandard_config_does_not_leak_to_other_workspace(self, tmp_path):
+        """TC-ISOLATION-005: 单个非标准缓存配置也不能影响其他 workspace。"""
+        workspace_b = tmp_path / 'workspace_b'
+        workspace_b.mkdir()
+
+        nonstandard_dir = tmp_path / 'shared_configs'
+        nonstandard_dir.mkdir()
+
+        hook_script = tmp_path / 'nonstandard_hook.sh'
+        hook_script.write_text("""#!/bin/bash
+cat << 'EOF'
+{
+    "continue": true
+}
+EOF
+""")
+        hook_script.chmod(0o755)
+
+        config_path = nonstandard_dir / 'custom_hooks.yaml'
+        with open(config_path, 'w') as f:
+            yaml.safe_dump(
+                {
+                    'version': '2',
+                    'hooks': {
+                        'user_input_received': [
+                            {
+                                'name': 'nonstandard_only',
+                                'type': 'command',
+                                'command': str(hook_script),
+                                'enabled': True,
+                            }
+                        ]
+                    }
+                },
+                f,
+            )
+
+        HookManager._config_hooks_cache = {}
+        HookManager.load_config_hooks(str(config_path))
+
+        hooks_b = HookFactory.hooks('user_input_received', workspace_path=str(workspace_b))
+        hook_names_b = [hook._name for hook in hooks_b.get('user_input_received', [])]
+
+        assert 'nonstandard_only' not in hook_names_b, (
+            "Nonstandard cached config must not leak into unrelated workspace B"
+        )
