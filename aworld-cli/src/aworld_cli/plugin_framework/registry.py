@@ -1,0 +1,1 @@
+"""Plugin registry primitives (placeholder)."""
