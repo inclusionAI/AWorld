@@ -5,8 +5,6 @@ import random
 import time
 from typing import List
 
-import pytest
-
 from aworld.core.event.base import Constants, Message
 from aworld.runners.state_manager import (
     EventRuntimeStateManager,
@@ -17,7 +15,7 @@ from aworld.runners.state_manager import (
 )
 
 
-class StateManagerTest(unittest.TestCase):
+class StateManagerTest(unittest.IsolatedAsyncioTestCase):
     def test_runtime_state_manager(self):
         state_manager = RuntimeStateManager()
         session_id = "1"
@@ -84,7 +82,6 @@ class StateManagerTest(unittest.TestCase):
                 self._print_tree(graph, child, prefix +
                                  ("    " if is_last else "│   "), i == len(children) - 1)
 
-    @pytest.mark.asyncio
     async def test_node_group_create(self):
         state_manager: EventRuntimeStateManager = EventRuntimeStateManager.instance()
         await state_manager.create_group(
@@ -97,7 +94,6 @@ class StateManagerTest(unittest.TestCase):
         assert group is not None
         assert group.status == RunNodeStatus.INIT
 
-    @pytest.mark.asyncio
     async def test_all_proccess(self):
         state_manager: EventRuntimeStateManager = EventRuntimeStateManager.instance()
 

@@ -86,6 +86,7 @@ class LLMHTTPHandler:
         data: Dict[str, Any],
         stream: bool = False,
         headers: Optional[Dict[str, str]] = None,
+        request_body_type: str = "json",
     ) -> Union[Dict[str, Any], Generator[Dict[str, Any], None, None]]:
         """Make a synchronous HTTP request.
 
@@ -105,15 +106,30 @@ class LLMHTTPHandler:
         if headers:
             request_headers.update(headers)
 
+        if request_body_type not in {"json", "multipart"}:
+            raise ValueError(f"Unsupported request_body_type: {request_body_type}")
+
+        if request_body_type == "multipart":
+            request_headers.pop("Content-Type", None)
+
+        request_kwargs: Dict[str, Any] = {
+            "headers": request_headers,
+            "timeout": self.timeout,
+        }
+        if request_body_type == "multipart":
+            request_kwargs["files"] = self._encode_multipart_fields(data)
+        else:
+            request_kwargs["json"] = data
 
         try:
             if stream:
+                    if request_body_type != "json":
+                        raise ValueError("Streaming requests only support JSON request bodies")
+                    request_kwargs["timeout"] = (30, 60)
                     response = requests.post(
                         url,
-                        headers=request_headers,
-                        json=data,
                         stream=True,
-                        timeout=(30, 60),  # (connect timeout, read timeout)
+                        **request_kwargs,
                     )
                     response.raise_for_status()
 
@@ -144,9 +160,7 @@ class LLMHTTPHandler:
             else:
                 response = requests.post(
                     url,
-                    headers=request_headers,
-                    json=data,
-                    timeout=self.timeout,
+                    **request_kwargs,
                 )
                 response.raise_for_status()
                 return response.json()
@@ -159,6 +173,7 @@ class LLMHTTPHandler:
         endpoint: str,
         data: Dict[str, Any],
         headers: Optional[Dict[str, str]] = None,
+        request_body_type: str = "json",
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """Make an asynchronous streaming HTTP request.
 
@@ -177,6 +192,8 @@ class LLMHTTPHandler:
         request_headers = self.headers.copy()
         if headers:
             request_headers.update(headers)
+        if request_body_type != "json":
+            raise ValueError("Streaming requests only support JSON request bodies")
 
         # Configure timeout with separate read timeout for streaming
         timeout = aiohttp.ClientTimeout(
@@ -240,6 +257,7 @@ class LLMHTTPHandler:
         endpoint: str,
         data: Dict[str, Any],
         headers: Optional[Dict[str, str]] = None,
+        request_body_type: str = "json",
     ) -> Dict[str, Any]:
         """Make an asynchronous non-streaming HTTP request.
 
@@ -259,21 +277,109 @@ class LLMHTTPHandler:
         if headers:
             request_headers.update(headers)
 
+        if request_body_type not in {"json", "multipart"}:
+            raise ValueError(f"Unsupported request_body_type: {request_body_type}")
+
+        request_kwargs: Dict[str, Any] = {
+            "headers": request_headers,
+            "timeout": self.timeout,
+        }
+        if request_body_type == "multipart":
+            request_headers.pop("Content-Type", None)
+            request_kwargs["data"] = self._build_aiohttp_form_data(data)
+        else:
+            request_kwargs["json"] = data
+
         async with aiohttp.ClientSession() as session:
             async with session.post(
                 url,
-                headers=request_headers,
-                json=data,
-                timeout=self.timeout,
+                **request_kwargs,
             ) as response:
                 response.raise_for_status()
                 return await response.json()
+
+    @staticmethod
+    def _coerce_form_value(value: Any) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False)
+        return str(value)
+
+    @staticmethod
+    def _is_multipart_file_field(value: Any) -> bool:
+        return isinstance(value, dict) and "filename" in value and "content" in value
+
+    def _iter_multipart_fields(self, data: Dict[str, Any]):
+        for key, value in data.items():
+            if value is None:
+                continue
+            if isinstance(value, list):
+                for item in value:
+                    yield key, item
+            else:
+                yield key, value
+
+    def _encode_multipart_fields(self, data: Dict[str, Any]) -> List[tuple[str, Any]]:
+        encoded: List[tuple[str, Any]] = []
+        for key, value in self._iter_multipart_fields(data):
+            if self._is_multipart_file_field(value):
+                encoded.append(
+                    (
+                        key,
+                        (
+                            value["filename"],
+                            value["content"],
+                            value.get("content_type", "application/octet-stream"),
+                        ),
+                    )
+                )
+            else:
+                encoded.append((key, (None, self._coerce_form_value(value))))
+        return encoded
+
+    def _build_aiohttp_form_data(self, data: Dict[str, Any]):
+        import aiohttp
+
+        form = aiohttp.FormData(default_to_multipart=True)
+        for key, value in self._iter_multipart_fields(data):
+            if self._is_multipart_file_field(value):
+                form.add_field(
+                    key,
+                    value["content"],
+                    filename=value["filename"],
+                    content_type=value.get("content_type", "application/octet-stream"),
+                )
+            else:
+                form.add_field(key, self._coerce_form_value(value))
+        return form
+
+    def _summarize_request_data_for_log(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        def summarize(value: Any) -> Any:
+            if self._is_multipart_file_field(value):
+                content = value.get("content", b"")
+                size_bytes = len(content) if isinstance(content, (bytes, bytearray)) else None
+                return {
+                    "filename": value.get("filename"),
+                    "content_type": value.get("content_type"),
+                    "size_bytes": size_bytes,
+                }
+            if isinstance(value, list):
+                return [summarize(item) for item in value]
+            if isinstance(value, bytes):
+                return f"<bytes:{len(value)}>"
+            if isinstance(value, dict):
+                return {k: summarize(v) for k, v in value.items()}
+            return value
+
+        return {key: summarize(value) for key, value in data.items()}
 
     def sync_call(
         self,
         data: Dict[str, Any],
         endpoint: str = None,
         headers: Optional[Dict[str, str]] = None,
+        request_body_type: str = "json",
     ) -> Dict[str, Any]:
         """Make a synchronous completion request.
 
@@ -283,7 +389,7 @@ class LLMHTTPHandler:
         Returns:
             Response data.
         """
-        logger.debug(f"sync_call request data: {data}")
+        logger.debug(f"sync_call request data: {self._summarize_request_data_for_log(data)}")
 
         if not endpoint:
             endpoint = "chat/completions"
@@ -291,7 +397,12 @@ class LLMHTTPHandler:
         retries = 0
         while retries < self.max_retries:
             try:
-                response = self._make_request(endpoint, data, headers=headers)
+                response = self._make_request(
+                    endpoint,
+                    data,
+                    headers=headers,
+                    request_body_type=request_body_type,
+                )
                 return response
             except Exception as e:
                 last_error = e
@@ -310,6 +421,7 @@ class LLMHTTPHandler:
         data: Dict[str, Any],
         endpoint: str = None,
         headers: Optional[Dict[str, str]] = None,
+        request_body_type: str = "json",
     ) -> Dict[str, Any]:
         """Make an asynchronous completion request.
 
@@ -320,7 +432,7 @@ class LLMHTTPHandler:
             Response data.
         """
         import aiohttp
-        logger.info(f"async_call request data: {data}")
+        logger.info(f"async_call request data: {self._summarize_request_data_for_log(data)}")
 
         retries = 0
         last_error = None
@@ -329,7 +441,12 @@ class LLMHTTPHandler:
 
         while retries < self.max_retries:
             try:
-                response = await self._make_async_request(endpoint, data, headers=headers)
+                response = await self._make_async_request(
+                    endpoint,
+                    data,
+                    headers=headers,
+                    request_body_type=request_body_type,
+                )
                 return response
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
                 last_error = e

@@ -16,15 +16,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gorilla_file_system import GorillaFileSystem, ActionArguments
 
 
-def test_mcp_functions():
-    """Test all mcp_ functions in the GorillaFileSystem class."""
+def _run_mcp_functions():
+    """Run all mcp_ function checks for GorillaFileSystem."""
     print("🧪 Testing GorillaFileSystem MCP Functions")
     print("=" * 60)
     
     # Initialize the file system
     args = ActionArguments(
         name="GorillaFileSystem",
-        transport="sse"
+        transport="stdio",
+        unittest=True,
     )
     
     file_system = GorillaFileSystem(args)
@@ -298,13 +299,18 @@ def test_mcp_functions():
     return tests_failed == 0
 
 
+def test_mcp_functions():
+    """Test all mcp_ functions in the GorillaFileSystem class."""
+    _run_mcp_functions()
+
+
 def main():
     """Main function to run the tests."""
     print("🔧 GorillaFileSystem MCP Functions Test Suite")
     print("Testing all mcp_ functions in the GorillaFileSystem class")
     
     try:
-        success = test_mcp_functions()
+        success = _run_mcp_functions()
         if success:
             print("\n🚀 All tests completed successfully!")
         else:

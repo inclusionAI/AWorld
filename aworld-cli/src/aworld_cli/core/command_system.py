@@ -31,25 +31,13 @@ class CommandContext:
     user_args: str
     sandbox: Optional[Any] = None
     agent_config: Optional[Any] = None
-    executor: Optional[Any] = None  # NEW: Reference to executor instance
+    runtime: Optional[Any] = None
 
     def __post_init__(self):
         """Validate context"""
         if not self.cwd:
             import os
             self.cwd = os.getcwd()
-
-    @property
-    def background_task_manager(self) -> Optional[Any]:
-        """
-        Get background task manager from executor.
-
-        Returns:
-            BackgroundTaskManager instance or None if executor not available
-        """
-        if self.executor and hasattr(self.executor, 'background_task_manager'):
-            return self.executor.background_task_manager
-        return None
 
 
 class Command(ABC):
@@ -123,6 +111,17 @@ class Command(ABC):
             return ["terminal:git*", "git_status", "git_diff", "git_commit"]
         """
         return []
+
+    @property
+    def completion_items(self) -> Dict[str, str]:
+        """
+        Optional slash-completion entries exposed by the command.
+
+        Returns:
+            Mapping of completion phrase -> user-facing description.
+            Example: {"/cron show": "查看单个任务详情"}
+        """
+        return {}
 
     async def execute(self, context: CommandContext) -> str:
         """

@@ -113,7 +113,7 @@ def build_audio_swarm():
 
     # Create MultiTaskVideoCreatorAgent instance
     audio = AudioCreatorAgent(
-        name="audio",
+        name="audio_generator",
         desc="An intelligent assistant for creating, editing, and generating video content.",
         conf=agent_config,
         system_prompt=_system_prompt,

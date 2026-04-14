@@ -92,10 +92,11 @@ class FileSystemMemoryStore(MemoryStore):
                 return getattr(item.metadata, "session_id") or "default"
         return "default"
 
-    def _get_session_path(self, session_id: str) -> Path:
+    def _get_session_path(self, session_id: Optional[str]) -> Path:
         """Get the file path for a session."""
         # Sanitize session_id to be safe for filenames if necessary
-        safe_id = "".join(c for c in session_id if c.isalnum() or c in ('-', '_')).strip()
+        raw_session_id = session_id or "default"
+        safe_id = "".join(c for c in raw_session_id if c.isalnum() or c in ('-', '_')).strip()
         if not safe_id:
             safe_id = "default"
         return self.sessions_dir / f"{safe_id}.jsonl"
@@ -387,7 +388,7 @@ class FileSystemMemoryStore(MemoryStore):
             
             # Optimization: If session_id is in filters, only check that file
             target_sessions = []
-            if filters and 'session_id' in filters:
+            if filters and filters.get('session_id') is not None:
                 target_sessions = [filters['session_id']]
             else:
                 # List all session files
@@ -418,7 +419,7 @@ class FileSystemMemoryStore(MemoryStore):
             self._init_storage()
             
             target_sessions = []
-            if filters and 'session_id' in filters:
+            if filters and filters.get('session_id') is not None:
                 target_sessions = [filters['session_id']]
             else:
                 target_sessions = [p.stem for p in self.sessions_dir.glob("*.jsonl")]
@@ -444,7 +445,7 @@ class FileSystemMemoryStore(MemoryStore):
         try:
             self._init_storage()
             
-            if filters and 'session_id' in filters:
+            if filters and filters.get('session_id') is not None:
                 target_sessions = [filters['session_id']]
             else:
                 target_sessions = [p.stem for p in self.sessions_dir.glob("*.jsonl")]
@@ -477,7 +478,7 @@ class FileSystemMemoryStore(MemoryStore):
             
             # Optimization: If session_id is provided, we can just read that file
             target_sessions = []
-            if filters and 'session_id' in filters:
+            if filters and filters.get('session_id') is not None:
                 target_sessions = [filters['session_id']]
             else:
                 target_sessions = [p.stem for p in self.sessions_dir.glob("*.jsonl")]

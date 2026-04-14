@@ -900,7 +900,9 @@ class ApplicationContext(AmniContext):
     def merge_sub_context(self, sub_task_context: 'ApplicationContext', **kwargs):
         logger.info(f"merge_sub_context: {sub_task_context.task_id} -> {self.task_id}")
 
-        super().merge_sub_context(sub_task_context)
+        # AmniContext.merge_sub_context is an abstract placeholder. Call Context's
+        # concrete merge implementation directly so token/state merging actually runs.
+        Context.merge_sub_context(self, sub_task_context)
 
         # merge sub task kv_store
         sub_task_kv_store = sub_task_context.task_state_service.get_kv_store()
@@ -1636,7 +1638,32 @@ class ApplicationContext(AmniContext):
         return namespace == "default"
 
     def deep_copy(self) -> 'ApplicationContext':
-        return self
+        new_context = object.__new__(ApplicationContext)
+        Context._deep_copy(self, new_context)
+
+        try:
+            new_context.task_state = copy.deepcopy(self.task_state)
+        except Exception:
+            new_context.task_state = copy.copy(self.task_state)
+
+        # Keep runtime references shallow where shared coordination is expected.
+        new_context._task = self._task
+        new_context._workspace = self._workspace
+        new_context._parent = self._parent
+        new_context._config = self._config
+        new_context._working_dir = self._working_dir
+        new_context._initialized = self._initialized
+
+        # Lazy services must be rebound to the cloned context on first access.
+        new_context._knowledge_service = None
+        new_context._skill_service = None
+        new_context._task_state_service = None
+        new_context._memory_service = None
+        new_context._prompt_service = None
+        new_context._freedom_space_service = None
+        new_context._traj_service = None
+
+        return new_context
 
     def to_dict(self) -> dict:
         result = {}

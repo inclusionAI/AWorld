@@ -282,7 +282,7 @@ class AgentConfig(BaseConfig):
         for k, v in kwargs.items():
             if k in ModelConfig.model_fields:
                 llm_config_kwargs[k] = v
-            elif k not in self.model_fields:
+            elif k not in self.__class__.model_fields:
                 llm_config_ext[k] = v
 
         # Reassignment if it has llm config args

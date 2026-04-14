@@ -18,7 +18,7 @@ from aworld.core.context.amni import AmniConfigFactory
 from aworld.core.context.base import Context
 from aworld.core.context.session import Session
 from aworld.core.task import Task, TaskResponse, Runner
-from aworld.core.tool.base import Tool, AsyncTool
+from aworld.core.tool.base import Tool, AsyncTool, maybe_await
 from aworld.logs.util import logger
 from aworld.runners.hook.hooks import HookPoint
 from aworld.runners.hook.utils import run_hooks
@@ -131,7 +131,8 @@ class TaskRunner(Runner):
                     tool.context = self.context
                     tool_observation, info = tool.reset()
                 elif isinstance(tool, AsyncTool):
-                    tool_observation, info = await tool.reset()
+                    tool.context = self.context
+                    tool_observation, info = await maybe_await(tool.reset())
                 else:
                     logger.warning(f"Unsupported tool type: {tool}, will ignored.")
 

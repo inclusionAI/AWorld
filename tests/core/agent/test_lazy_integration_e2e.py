@@ -9,6 +9,7 @@ import pytest
 import asyncio
 import tempfile
 import os
+import builtins
 from pathlib import Path
 from unittest.mock import patch, Mock
 
@@ -60,7 +61,10 @@ Test subagent content.
             assert len(agent.subagent_manager._available_subagents) == 0
 
             # Step 2: Trigger lazy scanning via _ensure_agent_md_scanned
-            await agent.subagent_manager._ensure_agent_md_scanned()
+            await asyncio.wait_for(
+                agent.subagent_manager._ensure_agent_md_scanned(),
+                timeout=1,
+            )
 
             # Verify scanning occurred
             assert agent.subagent_manager._scanned_agent_md_files == True
@@ -77,7 +81,7 @@ Test subagent content.
         """Test that sync_exec is NOT imported during Agent initialization"""
         # Mock sync_exec to detect if it's imported
         import sys
-        original_import = __builtins__.__import__
+        original_import = builtins.__import__
 
         sync_exec_imported = []
 
@@ -137,10 +141,13 @@ Test subagent content.
 
         with patch.object(manager, 'scan_agent_md_files', side_effect=mock_scan):
             # Trigger multiple concurrent _ensure_agent_md_scanned calls
-            await asyncio.gather(
-                manager._ensure_agent_md_scanned(),
-                manager._ensure_agent_md_scanned(),
-                manager._ensure_agent_md_scanned()
+            await asyncio.wait_for(
+                asyncio.gather(
+                    manager._ensure_agent_md_scanned(),
+                    manager._ensure_agent_md_scanned(),
+                    manager._ensure_agent_md_scanned()
+                ),
+                timeout=1,
             )
 
             # Verify scan was only called once (thread-safe)
@@ -163,7 +170,10 @@ Test subagent content.
         )
 
         # Trigger lazy scanning
-        await agent.subagent_manager._ensure_agent_md_scanned()
+        await asyncio.wait_for(
+            agent.subagent_manager._ensure_agent_md_scanned(),
+            timeout=1,
+        )
 
         # Verify scanning completed without error (empty results)
         assert agent.subagent_manager._scanned_agent_md_files == True

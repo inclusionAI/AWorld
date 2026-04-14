@@ -200,12 +200,7 @@ def sync_exec(async_func: Callable[..., Any], *args, **kwargs):
         thread.join()
         result = thread.result
     else:
-        try:
-            loop = asyncio.get_event_loop()
-        except Exception as e:
-            logger.warning(f"get_event_loop fail. {e}")
-            return asyncio.run(async_func(*args, **kwargs))
-        result = loop.run_until_complete(async_func(*args, **kwargs))
+        result = asyncio.run(async_func(*args, **kwargs))
     return result
 
 

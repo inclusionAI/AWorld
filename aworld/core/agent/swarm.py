@@ -537,17 +537,21 @@ class HandoffSwarm(Swarm):
     def __init__(self,
                  *args,  # agent
                  topology: List[tuple] = None,
+                 root_agent: BaseAgent = None,
                  max_steps: int = 0,
                  register_agents: List[BaseAgent] = None,
                  builder_cls: str = None,
-                 event_driven: bool = True):
+                 event_driven: bool = True,
+                 **kwargs):
         super().__init__(*args,
                          topology=topology,
+                         root_agent=root_agent,
                          max_steps=max_steps,
                          register_agents=register_agents,
                          build_type=GraphBuildType.HANDOFF,
                          builder_cls=builder_cls,
-                         event_driven=event_driven)
+                         event_driven=event_driven,
+                         **kwargs)
 
 
 class EdgeInfo:

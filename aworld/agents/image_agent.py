@@ -41,9 +41,7 @@ Example usage:
 import os
 import traceback
 import uuid
-from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 
 from aworld.agents.llm_agent import LLMAgent
 from aworld.core.agent.base import AgentResult
@@ -68,6 +66,8 @@ class ImageAgent(LLMAgent):
     Additional image parameters can be supplied via ``Observation.info``
     (keys: ``size``, ``output_format``, ``negative_prompt``, ``seed``,
     ``response_format``, ``output_compression``, ``user``, ``output_path``).
+    When using image-edit models, the current stable input form is a remote
+    image URL passed via ``image_url``/``image_urls`` (or compatible aliases).
     Instance-level defaults are used as fallbacks.
     
     Attributes:
@@ -229,6 +229,111 @@ class ImageAgent(LLMAgent):
         self.default_seed = default_seed
         self.output_dir = output_dir or os.getcwd()
         self.auto_filename = auto_filename
+
+    @staticmethod
+    def _env_or_default(env_key: str, default: Optional[str] = None) -> Optional[str]:
+        value = os.environ.get(env_key)
+        if value is None:
+            return default
+        value = value.strip()
+        return value or default
+
+    def _resolve_provider_runtime_config(
+        self,
+        provider: ImageProvider,
+        *,
+        has_input_images: bool,
+    ) -> Dict[str, Any]:
+        prefix = "IMAGE_TO_IMAGE" if has_input_images else "TEXT_TO_IMAGE"
+        legacy_prefix = "IMAGE" if not has_input_images else None
+
+        def pick(name: str, fallback: Optional[str]) -> Optional[str]:
+            value = self._env_or_default(f"{prefix}_{name}")
+            if value is None and legacy_prefix:
+                value = self._env_or_default(f"{legacy_prefix}_{name}")
+            return value if value is not None else fallback
+
+        config = {
+            "api_key": pick("API_KEY", provider.api_key),
+            "base_url": pick("BASE_URL", provider.base_url),
+            "model_name": pick("MODEL_NAME", provider.model_name),
+            "provider": pick("PROVIDER", None) or "image",
+        }
+        temp_value = pick("TEMPERATURE", None)
+        if temp_value is not None:
+            try:
+                config["temperature"] = float(temp_value)
+            except ValueError:
+                pass
+        return config
+
+    def _apply_provider_runtime_config(
+        self,
+        provider: ImageProvider,
+        runtime_config: Dict[str, Any],
+    ) -> None:
+        provider.api_key = runtime_config.get("api_key") or provider.api_key
+        provider.base_url = runtime_config.get("base_url") or provider.base_url
+        provider.model_name = runtime_config.get("model_name") or provider.model_name
+        temperature = runtime_config.get("temperature")
+        if temperature is not None:
+            provider.kwargs["temperature"] = temperature
+
+        if provider.need_sync:
+            provider.provider = provider._init_provider()
+        else:
+            provider.provider = None
+
+        if provider.need_async:
+            provider.async_provider = provider.provider if provider.need_sync else provider._init_async_provider()
+        else:
+            provider.async_provider = None
+
+    @staticmethod
+    def _collect_input_images(
+        observation: Observation,
+        message: Optional[Message],
+        obs_info: Dict[str, Any],
+    ) -> List[str]:
+        """Collect image inputs from multiple aliases and transport layers."""
+        images: List[str] = []
+
+        def add(value: Any) -> None:
+            if value is None:
+                return
+            if isinstance(value, str):
+                normalized = value.strip()
+                if normalized:
+                    images.append(normalized)
+                return
+            if isinstance(value, list):
+                for item in value:
+                    add(item)
+
+        for key in (
+            "image",
+            "image_url",
+            "image_urls",
+            "images",
+            "input_image",
+            "input_images",
+            "reference_images",
+        ):
+            add(obs_info.pop(key, None))
+
+        add(getattr(observation, "image", None))
+        add(getattr(observation, "images", None))
+
+        if message and isinstance(message.headers, dict):
+            add(message.headers.get("image_urls"))
+
+        deduped: List[str] = []
+        seen = set()
+        for item in images:
+            if item not in seen:
+                seen.add(item)
+                deduped.append(item)
+        return deduped
     
     # ------------------------------------------------------------------
     # Core policy — single-round image generation
@@ -284,6 +389,7 @@ class ImageAgent(LLMAgent):
         seed: Optional[int] = obs_info.pop("seed", self.default_seed)
         output_compression: Optional[int] = obs_info.pop("output_compression", None)
         user: Optional[str] = obs_info.pop("user", None)
+        input_images: List[str] = self._collect_input_images(observation, message, obs_info)
         
         # Determine output path
         output_path: Optional[str] = obs_info.pop("output_path", None)
@@ -326,6 +432,7 @@ class ImageAgent(LLMAgent):
                 user=user,
                 output_path=output_path,
                 context=message.context if message else None,
+                image_urls=input_images,
                 **obs_info,  # Forward any remaining parameters
             )
             logger.info(f"[ImageAgent:{self.id()}] Image generation response: {image_response}")
@@ -452,6 +559,15 @@ class ImageAgent(LLMAgent):
             )
         
         loop = asyncio.get_event_loop()
+        runtime_config = self._resolve_provider_runtime_config(
+            provider,
+            has_input_images=bool(extra_kwargs.get("image_urls")),
+        )
+        self._apply_provider_runtime_config(provider, runtime_config)
+        logger.info(
+            f"[ImageAgent:{self.id()}] Using {'image_to_image' if extra_kwargs.get('image_urls') else 'text_to_image'} "
+            f"model={provider.model_name} base_url={provider.base_url}"
+        )
         
         # Check if provider has async method
         if hasattr(provider, "agenerate_image"):

@@ -6,8 +6,17 @@ SubagentManager.spawn() with a real Context, bypassing LLM tool invocation.
 """
 
 import asyncio
+import os
 import sys
 from pathlib import Path
+
+import pytest
+
+if os.getenv("AWORLD_RUN_LIVE_EXAMPLE_TESTS") != "1":
+    pytest.skip(
+        "live subagent spawn end-to-end example is opt-in; set AWORLD_RUN_LIVE_EXAMPLE_TESTS=1 to run it",
+        allow_module_level=True,
+    )
 
 # Add project root to Python path
 project_root = Path(__file__).parent.parent.parent

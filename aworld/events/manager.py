@@ -62,7 +62,8 @@ class EventManager:
 
     async def emit_message(self, event: Message):
         """Send the message to the event bus."""
-        await self.store.create_data(Data(block_id=event.context.get_task().id, value=event, id=event.id))
+        block_id = event.task_id or event.id
+        await self.store.create_data(Data(block_id=block_id, value=event, id=event.id))
         await self.event_bus.publish(event)
         await self._handle_streaming(event)
         return True

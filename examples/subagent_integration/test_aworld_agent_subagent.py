@@ -15,8 +15,8 @@ from aworld.logs.util import logger
 from dotenv import load_dotenv
 
 
-def test_aworld_agent_subagent():
-    """Test that Aworld agent has enable_subagent=True by default"""
+def _run_aworld_agent_subagent():
+    """Run the Aworld agent subagent capability verification."""
     logger.info("="*60)
     logger.info("Aworld Agent Subagent Capability Test")
     logger.info("="*60)
@@ -100,6 +100,11 @@ def test_aworld_agent_subagent():
     return True
 
 
+def test_aworld_agent_subagent():
+    """Test that Aworld agent has enable_subagent=True by default."""
+    _run_aworld_agent_subagent()
+
+
 if __name__ == '__main__':
-    success = test_aworld_agent_subagent()
+    success = _run_aworld_agent_subagent()
     sys.exit(0 if success else 1)
