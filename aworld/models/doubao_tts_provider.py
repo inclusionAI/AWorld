@@ -449,3 +449,7 @@ class DoubaoTTSProvider(LLMProviderBase):
             "DoubaoTTSProvider uses custom response processing. "
             "This method is not used."
         )
+
+
+# New canonical public name without the vendor-specific prefix.
+SpeechProvider = DoubaoTTSProvider
