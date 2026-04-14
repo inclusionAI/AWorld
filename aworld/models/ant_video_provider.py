@@ -1486,13 +1486,13 @@ class VeoAdapter(ModelAdapter):
 # Each entry: (compiled_regex, adapter_instance)
 # Evaluated in order; first match wins.
 _ADAPTER_REGISTRY: List[Tuple[re.Pattern, ModelAdapter]] = [
-    (re.compile(r"kling-"),        KlingAdapter()),
-    (re.compile(r"doubao-seedance-"), DoubaoAdapter()),
-    (re.compile(r"seedance-"),     DoubaoAdapter()),
-    (re.compile(r"doubao-video-"), DoubaoAdapter()),
-    (re.compile(r"veo-"),          VeoAdapter()),
-    (re.compile(r"Wan-AI/"),       WanXAdapter()),
-    (re.compile(r"wanx"),       WanXAdapter()),
+    (re.compile(r".*kling-.*"),        KlingAdapter()),
+    (re.compile(r".*doubao-seedance-.*"), DoubaoAdapter()),
+    (re.compile(r".*seedance-.*"),     DoubaoAdapter()),
+    (re.compile(r".*doubao-video-.*"), DoubaoAdapter()),
+    (re.compile(r".*veo-.*"),          VeoAdapter()),
+    (re.compile(r".*Wan-AI/.*"),       WanXAdapter()),
+    (re.compile(r".*wanx.*"),       WanXAdapter()),
 ]
 
 
