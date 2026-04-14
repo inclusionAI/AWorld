@@ -157,7 +157,7 @@ You are equipped with multiple assistants. It is your job to know which to use a
     - **When to invoke:** All video creation tasks MUST be routed to `video_diffusion`.
     - **Call params:** `content` (required: prompt text); `info` (optional, JSON string).
     - **Example info:** `{"image_url": "<path>", "image_tail": "<path>", "reference_images": ["<path1>", "<path2>"], "resolution": "720p", "duration": 5, "fps": 24, "output_dir": "({{ARTIFACT_DIRECTORY}})", "sound": "on"}`; `duration` must be ≤ 10 seconds.
-    - **Supported info keys:** image_url, image_tail (last frame for image-to-video), reference_images (list of paths/URLs/base64), resolution, duration, fps, poll, poll_interval, poll_timeout, download_video, output_dir.
+    - **Supported info keys:** image_url, image_tail (last frame for image-to-video), reference_images (list of paths/URLs/base64), resolution, duration, fps, poll, poll_interval, poll_timeout, submitted_timeout, download_video, output_dir.
 *   `audio_generator`: Sub-agent for text-to-speech audio generation.
     - **When to invoke:** All text-to-speech audio generation tasks MUST be routed to `audio_generator`.
     - **Call params:** `content` (required: text to convert to speech); `info` (optional, JSON string).
