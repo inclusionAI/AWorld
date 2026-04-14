@@ -79,19 +79,19 @@ VIDEO_PROVIDER_CLASSES: Dict[str, type] = {
 VIDEO_MODEL_REGISTRY: List[tuple] = [
     # (pattern, provider_name)
     # Ant gateway models (Kling, Doubao/Seedance, Veo via matrixcube)
-    (r"^kling-",        "video"),
-    (r"^doubao-video-", "video"),
-    (r"^seedance-",     "video"),
-    (r"^veo-",          "video"),
+    (r".*kling-.*",        "video"),
+    (r".*doubao-video-.*", "video"),
+    (r".*seedance-.*",     "video"),
+    (r".*veo-.*",          "video"),
     # Together.ai video models
-    (r"^minimax/",           "together_video"),
-    (r"^google/veo-",        "together_video"),
-    (r"^ByteDance/Seedance",  "together_video"),
-    (r"^pixverse/",          "together_video"),
-    (r"^kwaivgI/kling-",     "together_video"),
-    (r"^Wan-AI/",            "together_video"),
-    (r"^vidu/",              "together_video"),
-    (r"^openai/sora-",       "together_video"),
+    (r".*minimax/.*",           "together_video"),
+    (r".*google/veo-.*",        "together_video"),
+    (r".*ByteDance/Seedance.*",  "together_video"),
+    (r".*pixverse/.*",          "together_video"),
+    (r".*kwaivgI/kling-.*",     "together_video"),
+    (r".*Wan-AI/.*",            "together_video"),
+    (r".*vidu/.*",              "together_video"),
+    (r".*openai/sora-.*",       "together_video"),
 ]
 
 
@@ -661,12 +661,8 @@ def _match_video_registry(model_name: str) -> Optional[str]:
         Matched provider name, or ``None`` if no entry matches.
     """
     for pattern, provider_name in VIDEO_MODEL_REGISTRY:
-        if pattern.startswith("^"):
-            if re.match(pattern, model_name):
-                return provider_name
-        else:
-            if model_name.startswith(pattern) or model_name == pattern:
-                return provider_name
+        if re.match(pattern, model_name):
+            return provider_name
     return None
 
 
