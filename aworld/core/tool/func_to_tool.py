@@ -25,11 +25,16 @@ from aworld.tools import LOCAL_TOOLS_ENV_VAR, encode_local_tool_entry
 
 
 def _load_module_from_path(module_name: str, file_path: str):
-    """Load a module directly from a file path without relying on sys.path."""
-    spec = importlib.util.spec_from_file_location(module_name, file_path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Unable to load module spec for {module_name} from {file_path}")
+    """Load a module from an absolute or resolved file path.
 
+    Plain importlib.import_module() only searches sys.path; @be_tool writes
+    generated files outside the repo workspace, so direct path loading is
+    required even when cwd is not on sys.path.
+    """
+    path = os.path.abspath(file_path)
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module {module_name} from {path}")
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     spec.loader.exec_module(module)
@@ -117,7 +122,6 @@ def function_to_tool(
 
     action_module_name = f"{action_name}{postfix}_action"
     action_module_path = str(module_dir / f"{action_module_name}.py")
-
     with open(action_module_path, 'w') as write:
         write.writelines("from __future__ import annotations\n")
         write.writelines("from typing import *\n")

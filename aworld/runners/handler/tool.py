@@ -8,7 +8,7 @@ from aworld.config import ConfigDict
 from aworld.core.agent.base import is_agent
 from aworld.core.common import ActionModel, TaskItem, Observation, ActionResult
 from aworld.core.event.base import Message, Constants, TopicType, AgentMessage, MemoryEventMessage, MemoryEventType
-from aworld.core.tool.base import AsyncTool, Tool, ToolFactory
+from aworld.core.tool.base import AsyncTool, Tool, ToolFactory, maybe_await
 from aworld.events.util import send_message_with_future
 from aworld.logs.util import logger
 from aworld.runners import HandlerFactory
@@ -80,10 +80,11 @@ class DefaultToolHandler(ToolHandler):
                 try:
                     tool = ToolFactory(act.tool_name, conf=conf, asyn=conf.use_async if conf else False)
                     tool.event_driven = True
+                    tool.context = message.context
                     if isinstance(tool, Tool):
                         tool.reset()
                     elif isinstance(tool, AsyncTool):
-                        await tool.reset()
+                        await maybe_await(tool.reset())
                     tool_mapping[act.tool_name] = []
                     self.tools[act.tool_name] = tool
                     new_tools[act.tool_name] = tool
@@ -144,6 +145,7 @@ class DefaultToolHandler(ToolHandler):
             if not (isinstance(self.tools[tool_name], Tool) or isinstance(self.tools[tool_name], AsyncTool)):
                 logger.warning(f"Unsupported tool type: {self.tools[tool_name]}")
                 continue
+            self.tools[tool_name].context = message.context
 
             # send to the tool
             yield Message(
