@@ -98,6 +98,8 @@ examples/gaia/gaia_dataset/
 # Temporary files
 *.tmp
 *.temp
+*__tmp.py
+*__tmp_action.py
 .*.swp
 .*.swo
 *.webm

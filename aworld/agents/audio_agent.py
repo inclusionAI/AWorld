@@ -14,7 +14,7 @@ Example usage:
     agent = AudioAgent(
         name="audio_gen",
         conf=AgentConfig(
-            llm_provider="doubao_tts",
+            llm_provider="speech",
             llm_api_key="YOUR_API_KEY",
             llm_base_url="https://your-api-endpoint.com"
         ),
@@ -76,9 +76,9 @@ class AudioAgent(LLMAgent):
     
     @staticmethod
     def _ensure_doubao_tts_config(conf):
-        """Ensure the config uses doubao_tts provider.
-        
-        This method forcibly sets the llm_provider to 'doubao_tts' because
+        """Ensure the config uses the speech provider.
+
+        This method forcibly sets the llm_provider to 'speech' because
         AudioAgent only works with DoubaoTTSProvider. If the user provided
         a different provider, it will be overridden with a warning.
         
@@ -86,7 +86,7 @@ class AudioAgent(LLMAgent):
             conf: Input configuration (AgentConfig, dict, or ConfigDict)
             
         Returns:
-            A new config object with llm_provider set to 'doubao_tts'
+            A new config object with llm_provider set to 'speech'
             
         Raises:
             ValueError: If conf is None
@@ -109,18 +109,18 @@ class AudioAgent(LLMAgent):
             original_provider = conf.get('llm_provider')
         
         # Log warning if overriding
-        if original_provider and original_provider != "doubao_tts":
+        if original_provider and original_provider not in ("speech", "doubao_tts"):
             logger.warning(
                 f"AudioAgent: Overriding llm_provider from '{original_provider}' "
-                f"to 'doubao_tts'. AudioAgent only works with DoubaoTTSProvider."
+                f"to 'speech'. AudioAgent only works with DoubaoTTSProvider."
             )
-        
-        # Create a new AgentConfig with doubao_tts provider
+
+        # Create a new AgentConfig with speech provider
         if isinstance(conf, AgentConfig):
             # For AgentConfig, we need to modify llm_config
             # Get the llm_config dict
             llm_config_dict = conf.llm_config.model_dump(exclude_none=True)
-            llm_config_dict['llm_provider'] = "doubao_tts"
+            llm_config_dict['llm_provider'] = "speech"
             
             # Create new ModelConfig
             new_llm_config = ModelConfig(**llm_config_dict)
@@ -132,7 +132,7 @@ class AudioAgent(LLMAgent):
             return AgentConfig(**conf_dict)
         elif isinstance(conf, dict):
             # Modify dict directly
-            conf['llm_provider'] = "doubao_tts"
+            conf['llm_provider'] = "speech"
             return conf
         else:
             # For other types (ConfigDict, etc.), try to handle gracefully
@@ -163,7 +163,7 @@ class AudioAgent(LLMAgent):
             name: Agent name
             conf: AgentConfig specifying the TTS provider, API key, and base URL.
                 Must not be None. The llm_provider will be forcibly set to
-                'doubao_tts' regardless of the input value.
+                'speech' regardless of the input value.
             desc: Agent description exposed as tool description
             agent_id: Explicit agent ID; auto-generated if None
             default_voice_type: Default voice type identifier
@@ -180,7 +180,7 @@ class AudioAgent(LLMAgent):
             ValueError: If conf is None or invalid
             TypeError: If the provider is not DoubaoTTSProvider after initialization
         """
-        # Validate and ensure doubao_tts config
+        # Validate and ensure speech config
         conf = self._ensure_doubao_tts_config(conf)
         
         super().__init__(
@@ -198,7 +198,7 @@ class AudioAgent(LLMAgent):
                     f"[AudioAgent:{self.id()}] Expected DoubaoTTSProvider, "
                     f"but got {type(self.llm.provider).__name__}. "
                     f"AudioAgent only works with DoubaoTTSProvider. "
-                    f"Config llm_provider was set to 'doubao_tts', but provider "
+                    f"Config llm_provider was set to 'speech', but provider "
                     f"initialization failed. Please check your provider registry and "
                     f"ensure DoubaoTTSProvider is properly registered."
                 )
@@ -411,7 +411,7 @@ class AudioAgent(LLMAgent):
             raise TypeError(
                 f"AudioAgent requires DoubaoTTSProvider, "
                 f"but got {type(provider).__name__}. "
-                f"Please ensure conf.llm_provider is set to 'doubao_tts'."
+                f"Please ensure conf.llm_provider is set to 'speech'."
             )
         
         # Check if provider has the required methods

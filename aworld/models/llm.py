@@ -21,7 +21,7 @@ from aworld.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
 from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.ant_provider import AntProvider
 from aworld.models.together_video_provider import TogetherVideoProvider
-from aworld.models.ant_video_provider import AntVideoProvider
+from aworld.models.ant_video_provider import AntVideoProvider, VideoProvider
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
 from aworld.core.model_output_parser import ModelOutputParser, BaseContentParser
@@ -41,6 +41,7 @@ ENDPOINT_PATTERNS = {
     "azure_openai": ["openai.azure.com"],
     "ant": ["zdfmng.alipay.com"],
     "together_video": ["api.together.ai", "api.together.xyz"],
+    "video": ["matrixcube.alipay.com", "matrixcube-pool.global.alipay.com"],
     "ant_video": ["matrixcube.alipay.com", "matrixcube-pool.global.alipay.com"],
 }
 
@@ -51,6 +52,7 @@ PROVIDER_CLASSES = {
     "azure_openai": AzureOpenAIProvider,
     "ant": AntProvider,
     "together_video": TogetherVideoProvider,
+    "speech": None,  # Lazy loaded to avoid circular import
     "doubao_tts": None,  # Lazy loaded to avoid circular import
     "image": None,  # Lazy loaded to avoid circular import
 }
@@ -69,6 +71,7 @@ PROVIDER_CLASSES = {
 # ---------------------------------------------------------------------------
 
 VIDEO_PROVIDER_CLASSES: Dict[str, type] = {
+    "video":          VideoProvider,
     "ant_video":      AntVideoProvider,
     "together_video": TogetherVideoProvider,
 }
@@ -76,10 +79,10 @@ VIDEO_PROVIDER_CLASSES: Dict[str, type] = {
 VIDEO_MODEL_REGISTRY: List[tuple] = [
     # (pattern, provider_name)
     # Ant gateway models (Kling, Doubao/Seedance, Veo via matrixcube)
-    (r"^kling-",        "ant_video"),
-    (r"^doubao-video-", "ant_video"),
-    (r"^seedance-",     "ant_video"),
-    (r"^veo-",          "ant_video"),
+    (r"^kling-",        "video"),
+    (r"^doubao-video-", "video"),
+    (r"^seedance-",     "video"),
+    (r"^veo-",          "video"),
     # Together.ai video models
     (r"^minimax/",           "together_video"),
     (r"^google/veo-",        "together_video"),
@@ -358,7 +361,7 @@ class LLMModel:
         elif self.provider_name in PROVIDER_CLASSES:
             provider_class = PROVIDER_CLASSES[self.provider_name]
             # Lazy load providers to avoid circular import
-            if provider_class is None and self.provider_name == "doubao_tts":
+            if provider_class is None and self.provider_name in ("speech", "doubao_tts"):
                 from aworld.models.doubao_tts_provider import DoubaoTTSProvider
                 provider_class = DoubaoTTSProvider
                 PROVIDER_CLASSES[self.provider_name] = provider_class
