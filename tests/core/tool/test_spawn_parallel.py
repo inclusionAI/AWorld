@@ -264,6 +264,46 @@ async def test_spawn_parallel_resolves_manager_from_context_agent():
 
 
 @pytest.mark.asyncio
+async def test_spawn_parallel_resolves_manager_from_object_agent_info_without_action_agent_name():
+    """Tool should support object-like agent_info, not only dict-like access."""
+    manager = MagicMock(spec=SubagentManager)
+    manager.spawn = AsyncMock(return_value="[image_generator] ok")
+
+    caller_agent = MagicMock()
+    caller_agent.subagent_manager = manager
+
+    swarm = MagicMock()
+    swarm.agents = {"root-agent": caller_agent}
+
+    context = Context()
+    task = MagicMock()
+    task.swarm = swarm
+    context.set_task(task)
+    context.agent_info.current_agent_id = "root-agent"
+
+    tool = SpawnSubagentTool(conf=ConfigDict({}))
+    tool.context = context
+
+    action = ActionModel(
+        action_name='spawn_parallel',
+        params={
+            'tasks': [
+                {'name': 'image_generator', 'directive': 'Generate one image'}
+            ],
+            'aggregate': True,
+        }
+    )
+
+    observation, reward, _, _, info = await tool.do_step([action])
+
+    assert reward == 1.0
+    assert info['success_count'] == 1
+    assert 'image_generator' in observation.content
+    manager.spawn.assert_awaited_once()
+    assert manager.spawn.await_args.kwargs['context'] is context
+
+
+@pytest.mark.asyncio
 async def test_spawn_parallel_step_returns_error_without_secondary_index_error():
     """Error responses should not crash AsyncTool.post_step with empty action_result."""
     swarm = MagicMock()
