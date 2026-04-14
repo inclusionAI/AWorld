@@ -1,4 +1,8 @@
 import unittest
+import pytest
+
+pytest.importorskip("torch")
+
 from train.templates.templates import get_template
 
 

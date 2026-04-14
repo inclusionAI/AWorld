@@ -20,8 +20,8 @@ from dotenv import load_dotenv
 import os
 
 
-def test_explicit_control():
-    """Test that spawn_subagent must be explicitly added to tool_names"""
+def _run_explicit_control():
+    """Run the explicit spawn_subagent tool control verification."""
     logger.info("="*60)
     logger.info("Explicit Control Test: spawn_subagent Tool")
     logger.info("="*60)
@@ -106,6 +106,11 @@ def test_explicit_control():
     return True
 
 
+def test_explicit_control():
+    """Test that spawn_subagent must be explicitly added to tool_names."""
+    _run_explicit_control()
+
+
 if __name__ == '__main__':
-    success = test_explicit_control()
+    success = _run_explicit_control()
     sys.exit(0 if success else 1)

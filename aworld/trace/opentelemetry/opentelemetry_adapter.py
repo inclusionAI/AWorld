@@ -365,10 +365,11 @@ def configure_otlp_provider(
                 "storage", InMemoryStorage()) or InMemoryStorage()
             processor.add_span_processor(
                 SimpleSpanProcessor(InMemorySpanExporter(storage=storage)))
-            server_enabled = str(kwargs.get("server_enabled")) or os.getenv(
-                "START_TRACE_SERVER") or "true"
+            server_enabled = kwargs.get("server_enabled")
+            if server_enabled is None:
+                server_enabled = os.getenv("START_TRACE_SERVER", "false")
             server_port = kwargs.get("server_port") or 7079
-            if (server_enabled.lower() == "true"):
+            if str(server_enabled).lower() == "true":
                 logger.info(f"Starting trace server on port {server_port}.")
                 set_trace_server(storage=storage, port=int(
                     server_port), start_server=True)

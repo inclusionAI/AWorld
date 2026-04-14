@@ -23,7 +23,6 @@
 
 [中文版](./README_zh.md) |
 [Automation](#your-journey-with-aworld-cli) |
-[Manual](#total-control-manually-crafting-agent-systems) |
 [Evolution](#evolution) |
 [Contributing](#contributing) |
 
@@ -43,6 +42,8 @@ AWorld is the platform designed for this singular purpose. We provide a complete
 # From Expertise to Product
 
 See what happens when expert knowledge is encoded into reusable **Skills**. The creations below are orchestrated by the AWorld Agent, demonstrating our core scaling law: as the community contributes more expertise, the entire ecosystem becomes more powerful.
+
+From **one-prompt video generation** to **deep-search workflows**, each example turns specialized know-how into repeatable production capability.
 
 This is what's possible today. Imagine what we'll build with *your* expertise.
 
@@ -68,18 +69,63 @@ This is what's possible today. Imagine what we'll build with *your* expertise.
   <td style="width:22%"><img src="readme_assets/aworld_cli_app_create.gif" alt="App create demo" width="270"></td>
   <td><a href="docs/Recipe/miniapp_build_recipe.md">View Recipe</a></td>
 </tr>
-<tr>
-  <td>Create Video</td>
-  <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• Human evaluation</td>
-  <td style="width:22%"><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video create demo" width="270"></td>
-  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
-</tr>
+
 <tr>
   <td>Deep Search</td>
   <td>• Auto-search by <a href="./aworld-skills/agent-browser/SKILL.md">Agent Browser Skill</a> </td>
   <td style="width:22%"><img src="readme_assets/aworld_cli_intro_ds.gif" alt="Deep search demo" width="270"></td>
   <td><a href="docs/Recipe/deep_search_recipe.md">View Recipe</a></td>
 </tr>
+<!-- 
+<tr>
+  <td>Create Video: Self-Intro</td>
+  <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• Human evaluation</td>
+  <td style="width:22%"><img src="readme_assets/aworld_cli_intro_fast.gif" alt="Video (self-intro) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr> -->
+
+<!-- <tr>
+  <td>Create Video: Calculus</td>
+  <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• See full video on  <a href="https://youtu.be/98rrFKJBr-w">Youtube </td>
+  <td style="width:22%"><img src="readme_assets/edu_equation.gif" alt="Video (calculus) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr> -->
+
+<tr>
+  <td>One-Prompt Video: Trig-Identity</td>
+  <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• See full video on  <a href="https://www.youtube.com/watch?v=qmPruOMsAKU">Youtube </td>
+  <td style="width:22%"><img src="readme_assets/edu_trig.gif" alt="Video (trig) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+
+<tr>
+  <td>One-Prompt Video: Corporate Training </td>
+  <td>• Auto-creation by <a href="https://www.skillhub.club/skills/remotion-dev-remotion-remotion">Remotion Skill</a><br>• See full video on  <a href="https://youtu.be/-QuzXw4MrHQ">Youtube </td>
+  <td style="width:22%"><img src="readme_assets/corporate_training_en.gif" alt="Video (corporate training) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+
+<tr>
+  <td>One-Prompt Video: Brand Marketing</td>
+  <td>• Auto-creation by Video Diffusion & <a href="aworld-skills/video_subtitles_audios_insert/SKILL.md"> Audios Insert Skill</a> <br>• See full video on  <a href="https://youtu.be/dIDjABTFppg">Youtube</td>
+  <td style="width:22%"><img src="readme_assets/brand_marketing.gif" alt="Video (brand marketing) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+
+<tr>
+  <td>One-Prompt Video: Social Media</td>
+  <td>• Auto-creation by Video Diffusion & <a href="aworld-skills/video_subtitles_audios_insert/SKILL.md"> Audios Insert Skill</a> <br>• See full video on  <a href="https://youtu.be/L6hIwpqLy5w">Youtube</td>
+  <td style="width:22%"><img src="readme_assets/social media.gif" alt="Video (social media) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+
+<tr>
+  <td>One-Prompt Video: Vtuber</td>
+  <td>• Auto-creation by Video Diffusion & Audio Generator & <a href="aworld-skills/embedded_video/SKILL.md"> Video Embedded Skill</a> <br>• See full video on  <a href="https://youtu.be/THKfbjYolqs">Youtube</td>
+  <td style="width:22%"><img src="readme_assets/vtuber.gif" alt="Video (vtuber) demo" width="270"></td>
+  <td><a href="docs/Recipe/video_create_recipe.md">View Recipe</a></td>
+</tr>
+
 </tbody>
 </table>
 
@@ -122,7 +168,11 @@ AWorld-CLI goes beyond simple scaffolding. It acts as a central brain, the AWorl
 This multi-agent system works in concert to turn your ideas into reality:
 </p>
 
-<table>
+<table style="width: 100%; table-layout: fixed;">
+<colgroup>
+  <col style="width:32%">
+  <col style="width:68%">
+</colgroup>
 <thead>
 <tr><th style="white-space:nowrap">Agent Name</th><th>Role & Core Function</th></tr>
 </thead>
@@ -130,6 +180,9 @@ This multi-agent system works in concert to turn your ideas into reality:
 <tr><td style="white-space:nowrap">👑 AWorld Agent</td><td><strong>The Orchestrator</strong>: The central brain that interprets user goals, creates a plan, and delegates tasks to the appropriate sub-agents. It manages the entire workflow from start to finish.</td></tr>
 <tr><td style="white-space:nowrap">🧑‍💻 Developer</td><td><strong>The Builder</strong>: The master craftsman responsible for writing, debugging, and refactoring code.</td></tr>
 <tr><td style="white-space:nowrap">🧐 Evaluator</td><td><strong>The Judge</strong>: The quality assurance expert. It assesses the Developer's output against objective criteria, providing the critical feedback required for the evolution loop.</td></tr>
+<tr><td style="white-space:nowrap">🎬 Video Diffusion</td><td><strong>The Video Creator</strong>: A diffusion-model-based sub-agent (e.g., Kling-V3) that generates videos from text or text+image inputs.</td></tr>
+<tr><td style="white-space:nowrap">🎤 Audio Generator</td><td><strong>The Voice Creator</strong>: A TTS-model-based sub-agent that converts text input into speech audio.</td></tr>
+<tr><td style="white-space:nowrap">🖼️ Image Generator</td><td><strong>The Image Creator</strong>: A sub-agent that generates images from text or text+image inputs.</td></tr>
 </tbody>
 </table>
 
