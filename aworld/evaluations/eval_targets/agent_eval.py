@@ -1,10 +1,10 @@
 import abc
+from typing import Optional, Union
 
 from aworld.evaluations.base import EvalTarget, EvalDataCase
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig
 from aworld.runner import Runners
-from typing import Optional
 from aworld.core.task import Task, TaskResponse
 
 import os
@@ -69,9 +69,10 @@ class AworldAgentEvalTarget(EvalTarget[dict]):
 
         raise ValueError(f"Invalid agent_config type: {type(agent_config)}")
 
-    async def predict(self, index: int, input: EvalDataCase[dict]) -> dict:
+    async def predict(self, index: int, input: Union[EvalDataCase[dict], dict]) -> dict:
         query_column = self.eval_config.eval_dataset_query_column or self.query_column
-        response = await Runners.run(input.case_data[query_column], agent=self.agent)
+        case_data = input.case_data if isinstance(input, EvalDataCase) else input
+        response = await Runners.run(case_data[query_column], agent=self.agent)
         return {"answer": response.answer}
 
 

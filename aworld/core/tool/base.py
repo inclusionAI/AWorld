@@ -5,9 +5,17 @@ import abc
 import inspect
 import time
 import traceback
-from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union
+from typing import Dict, Tuple, Any, TypeVar, Generic, List, Union, Callable
 
 from pydantic import BaseModel
+
+
+class ToolExecutionDenied(Exception):
+    """Exception raised when tool execution is denied by a hook."""
+    def __init__(self, tool_name: str, reason: str):
+        self.tool_name = tool_name
+        self.reason = reason
+        super().__init__(f"Tool {tool_name} execution denied: {reason}")
 
 import aworld
 from aworld.config.conf import ToolConfig, load_config, ConfigDict
@@ -74,6 +82,192 @@ def ensure_action_results(
             action_result_kwargs["error"] = error
         observation.action_result.append(ActionResult(**action_result_kwargs))
     return observation
+
+
+def _iter_hook_headers(hook_events: List[Message]):
+    for hook_event in hook_events:
+        if hook_event and hasattr(hook_event, 'headers') and hook_event.headers is not None:
+            yield hook_event.headers
+
+
+def _apply_hook_headers_to_message(target_message: Message, hook_events: List[Message]):
+    """Propagate user-visible hook metadata onto the in-flight tool message."""
+    for headers in _iter_hook_headers(hook_events):
+        system_message = headers.get('system_message')
+        if system_message:
+            target_message.headers['system_message'] = system_message
+
+        additional_context = headers.get('additional_context')
+        if additional_context:
+            existing_context = target_message.headers.get('additional_context', '')
+            target_message.headers['additional_context'] = (
+                f"{existing_context}\n{additional_context}".strip()
+            )
+
+
+def _coerce_updated_input(updated_input: Any) -> List[ActionModel] | None:
+    if isinstance(updated_input, list):
+        if updated_input and isinstance(updated_input[0], dict):
+            return [ActionModel(**item) if isinstance(item, dict) else item for item in updated_input]
+        return updated_input
+
+    if isinstance(updated_input, dict):
+        if 'actions' in updated_input:
+            actions_data = updated_input['actions']
+            if isinstance(actions_data, list) and actions_data and isinstance(actions_data[0], dict):
+                return [ActionModel(**item) if isinstance(item, dict) else item for item in actions_data]
+            return actions_data
+        return [ActionModel(**updated_input)]
+
+    return None
+
+
+def _coerce_updated_output(
+    res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
+    updated_output: Any,
+) -> Tuple[Observation, float, bool, bool, Dict[str, Any]] | None:
+    if isinstance(updated_output, tuple) and len(updated_output) == 5:
+        return updated_output
+
+    if isinstance(updated_output, dict):
+        res_list = list(res)
+        if 'observation' in updated_output:
+            obs = updated_output['observation']
+            if isinstance(obs, dict) and not isinstance(obs, Observation):
+                res_list[0] = Observation(**obs)
+            else:
+                res_list[0] = obs
+        if 'reward' in updated_output:
+            res_list[1] = updated_output['reward']
+        if 'done' in updated_output:
+            res_list[2] = updated_output['done']
+        if 'truncated' in updated_output:
+            res_list[3] = updated_output['truncated']
+        if 'info' in updated_output:
+            res_list[4] = updated_output['info']
+        return tuple(res_list)
+
+    return None
+
+
+async def _resolve_sync_tool_permission(
+    permission_decision: str,
+    stop_reason: str,
+    context_dict: Dict[str, Any],
+) -> Tuple[str, str]:
+    from aworld.runners.hook.v2.permission import get_permission_handler
+    handler = get_permission_handler()
+    return handler.resolve_permission_sync(permission_decision, stop_reason, context_dict)
+
+
+async def _resolve_async_tool_permission(
+    permission_decision: str,
+    stop_reason: str,
+    context_dict: Dict[str, Any],
+) -> Tuple[str, str]:
+    from aworld.runners.hook.v2.permission import get_permission_handler
+    handler = get_permission_handler()
+    return await handler.resolve_permission(permission_decision, stop_reason, context_dict)
+
+
+async def _process_pre_tool_hook_events(
+    *,
+    hook_events: List[Message],
+    tool_name: str,
+    action: List[ActionModel],
+    message: Message,
+    resolve_permission: Callable[[str, str, Dict[str, Any]], Any],
+) -> List[ActionModel]:
+    for headers in _iter_hook_headers(hook_events):
+        permission_decision = headers.get('permission_decision')
+        if permission_decision not in ('deny', 'ask'):
+            continue
+
+        stop_reason = headers.get('permission_decision_reason', 'Tool execution requires permission')
+        if permission_decision == 'ask':
+            try:
+                context_dict = {
+                    'tool_name': tool_name,
+                    'action': [act.model_dump() for act in action] if action else []
+                }
+                final_decision, resolution_reason = await maybe_await(
+                    resolve_permission(permission_decision, stop_reason, context_dict)
+                )
+                if final_decision == 'deny':
+                    logger.warning(f"PRE_TOOL_CALL hook denied tool {tool_name} after resolution: {resolution_reason}")
+                    raise ToolExecutionDenied(tool_name, resolution_reason)
+                logger.info(f"PRE_TOOL_CALL hook allowed tool {tool_name} after resolution: {resolution_reason}")
+            except ToolExecutionDenied:
+                raise
+            except Exception as e:
+                logger.error(f"Failed to resolve permission 'ask': {e}")
+                raise ToolExecutionDenied(tool_name, f"Permission resolution failed: {e}")
+        else:
+            logger.warning(f"PRE_TOOL_CALL hook denied tool {tool_name}: {stop_reason}")
+            raise ToolExecutionDenied(tool_name, stop_reason)
+
+    current_action = action
+    for headers in _iter_hook_headers(hook_events):
+        updated_input = headers.get('updated_input')
+        if not updated_input:
+            continue
+
+        rewritten_action = _coerce_updated_input(updated_input)
+        if rewritten_action is not None:
+            current_action = rewritten_action
+            message.payload = current_action
+        logger.info(f"PRE_TOOL_CALL hook modified input for tool {tool_name}")
+
+    return current_action
+
+
+def _process_post_tool_hook_events(
+    *,
+    hook_events: List[Message],
+    tool_name: str,
+    res: Tuple[Observation, float, bool, bool, Dict[str, Any]],
+) -> Tuple[Observation, float, bool, bool, Dict[str, Any]]:
+    current_res = res
+    for headers in _iter_hook_headers(hook_events):
+        updated_output = headers.get('updated_output')
+        if not updated_output:
+            continue
+
+        rewritten_res = _coerce_updated_output(current_res, updated_output)
+        if rewritten_res is not None:
+            current_res = rewritten_res
+        logger.info(f"POST_TOOL_CALL hook modified output for tool {tool_name}")
+
+    return current_res
+
+
+async def _emit_tool_failed_hooks(
+    *,
+    run_hooks_fn: Callable[..., Any],
+    message: Message,
+    hook_from: str,
+    tool_name: str,
+    action: List[ActionModel],
+    error: Exception,
+    error_traceback: str,
+):
+    try:
+        await maybe_await(
+            run_hooks_fn(
+                message=message,
+                hook_point=HookPoint.TOOL_CALL_FAILED,
+                hook_from=hook_from,
+                payload={
+                    'tool_name': tool_name,
+                    'action': action,
+                    'error': str(error),
+                    'error_type': type(error).__name__,
+                    'traceback': error_traceback
+                }
+            )
+        )
+    except Exception as hook_e:
+        logger.warning(f"TOOL_CALL_FAILED hook execution failed: {hook_e}")
 
 
 class BaseTool(Generic[AgentInput, ToolInput]):
@@ -246,6 +440,12 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
             return
         for idx, act in enumerate(action):
             if eventbus is not None:
+                metadata = dict(step_res[0].action_result[idx].metadata or {})
+                if input_message.headers.get("system_message"):
+                    metadata["system_message"] = input_message.headers["system_message"]
+                updated_output = input_message.headers.get("updated_output")
+                if isinstance(updated_output, dict) and "info" in updated_output:
+                    metadata["hook_info"] = updated_output["info"]
                 tool_output = ToolResultOutput(
                     tool_type=kwargs.get("tool_id_mapping", {}).get(
                         act.tool_call_id) or self.name(),
@@ -259,7 +459,7 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                             "arguments": act.params,
                         }
                     }),
-                    metadata=step_res[0].action_result[idx].metadata,
+                    metadata=metadata,
                     task_id=context.task_id
                 )
                 tool_output_message = Message(
@@ -287,22 +487,59 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
                 tool_id = act.tool_call_id
                 tool_name = act.tool_name
                 tool_id_mapping[tool_id] = tool_name
-            self.run_hooks(message=message, hook_point=HookPoint.PRE_TOOL_CALL, hook_from=message.sender,
+            # Execute PRE_TOOL_CALL hooks and check for updated_input
+            pre_hook_events = self.run_hooks(message=message, hook_point=HookPoint.PRE_TOOL_CALL, hook_from=message.sender,
                            payload=action)
+            action = sync_exec(
+                _process_pre_tool_hook_events,
+                hook_events=pre_hook_events,
+                tool_name=self.name(),
+                action=action,
+                message=message,
+                resolve_permission=_resolve_sync_tool_permission,
+            )
+
+            _apply_hook_headers_to_message(message, pre_hook_events)
+
             self.pre_step(action, **kwargs)
             res = self.do_step(action, message=message, **kwargs)
-            self.run_hooks(message=message, hook_point=HookPoint.POST_TOOL_CALL, hook_from=message.sender, payload=res)
+
+            # Execute POST_TOOL_CALL hooks and check for updated_output
+            post_hook_events = self.run_hooks(message=message, hook_point=HookPoint.POST_TOOL_CALL, hook_from=message.sender, payload=res)
+            res = _process_post_tool_hook_events(
+                hook_events=post_hook_events,
+                tool_name=self.name(),
+                res=res,
+            )
+
+            _apply_hook_headers_to_message(message, post_hook_events)
+
             final_res = self.post_step(res, action,message=message, **kwargs)
+            if isinstance(final_res, Message):
+                self._update_headers(final_res, message)
             self._internal_process(
                 res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             return final_res
         except Exception as e:
+            error_traceback = traceback.format_exc()
             logger.error(
                 f"Failed to execute {self.name()}: {e}."
                 f"Debug info: session_id = {message.session_id}, action = {message.payload}."
-                f"Traceback:\n{traceback.format_exc()}"
+                f"Traceback:\n{error_traceback}"
             )
-            raise e
+
+            sync_exec(
+                _emit_tool_failed_hooks,
+                run_hooks_fn=self.run_hooks,
+                message=message,
+                hook_from=message.sender,
+                tool_name=self.name(),
+                action=action,
+                error=e,
+                error_traceback=error_traceback,
+            )
+
+            raise
         finally:
             logger.info(
                 f"Tool {self.name()} result: {final_res}, session_id: {message.session_id}, task_id: {message.context.task_id}"
@@ -318,6 +555,10 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
         context = message.context
         info = step_res[4] if len(step_res) > 4 and isinstance(step_res[4], dict) else {}
+        if info:
+            merged_info = dict(step_res[0].info or {})
+            merged_info.update(info)
+            step_res[0].info = merged_info
         ensure_action_results(
             step_res[0],
             action,
@@ -381,35 +622,48 @@ class Tool(BaseTool[Observation, List[ActionModel]]):
 
     def run_hooks(self, message: Message, hook_point: str, hook_from: str, payload: Any = None) -> List[Message]:
         """Execute hooks and break by exception"""
-        from aworld.runners.hook.hook_factory import HookFactory
-        from aworld.core.event.base import Message
+        import asyncio
+        from aworld.runners.hook.utils import run_hooks as async_run_hooks
 
-        # Get all hooks for the specified hook point
-        all_hooks = HookFactory.hooks(hook_point)
-        hooks = all_hooks.get(hook_point, [])
-        context = message.context
+        # If payload provided, update message instead of creating new one
+        if payload is not None:
+            message.payload = payload
+
+        # Get workspace_path from context
+        workspace_path = getattr(message.context, 'workspace_path', None)
+
+        # Use async run_hooks, passing original message
         hook_events = []
-        for hook in hooks:
-            try:
-                # Create a temporary Message object to pass to the hook
-                message = Message(
-                    category="agent_hook",
-                    payload=payload,
-                    sender=hook_from,
-                    session_id=context.session_id if hasattr(
-                        context, 'session_id') else None,
-                    headers={"context": context}
-                )
 
-                # Execute hook
-                msg = sync_exec(hook.exec, message, context)
-                if msg:
-                    logger.debug(f"Hook {hook.point()} executed successfully")
-                    hook_events.append(msg)
-            except Exception as e:
-                logger.warning(f"Hook {hook.point()} execution failed: {traceback.format_exc()}")
-                raise e
+        async def _run():
+            async for event in async_run_hooks(
+                context=message.context,
+                hook_point=hook_point,
+                hook_from=hook_from,
+                message=message,
+                workspace_path=workspace_path
+            ):
+                hook_events.append(event)
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # In async context, use sync_exec
+                from aworld.utils.common import sync_exec
+                sync_exec(_run)
+            else:
+                loop.run_until_complete(_run())
+        except Exception as e:
+            logger.warning(f"Hook {hook_point} execution failed: {traceback.format_exc()}")
+            raise e
+
         return hook_events
+
+    def _update_headers(self, message: Message, input_message: Message):
+        headers = input_message.headers.copy()
+        headers['context'] = message.context
+        headers['level'] = headers.get('level', 0) + 1
+        message.headers = headers
 
 
 class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
@@ -424,6 +678,12 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
         for idx, act in enumerate(action):
             # send tool results output
             if eventbus is not None:
+                metadata = dict(step_res[0].action_result[idx].metadata or {})
+                if input_message.headers.get("system_message"):
+                    metadata["system_message"] = input_message.headers["system_message"]
+                updated_output = input_message.headers.get("updated_output")
+                if isinstance(updated_output, dict) and "info" in updated_output:
+                    metadata["hook_info"] = updated_output["info"]
                 tool_output = ToolResultOutput(
                     tool_type=kwargs.get("tool_id_mapping", {}).get(
                         act.tool_call_id) or self.name(),
@@ -437,7 +697,7 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                             "arguments": act.params,
                         }
                     }),
-                    metadata=step_res[0].action_result[idx].metadata,
+                    metadata=metadata,
                     task_id=context.task_id
                 )
                 tool_output_message = Message(
@@ -494,12 +754,33 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 tool_id = act.tool_call_id
                 tool_name = act.tool_name
                 tool_id_mapping[tool_id] = tool_name
-            await self.run_hooks(message=message, hook_point=HookPoint.PRE_TOOL_CALL, hook_from=message.sender,
+            # Execute PRE_TOOL_CALL hooks and check for updated_input
+            pre_hook_events = await self.run_hooks(message=message, hook_point=HookPoint.PRE_TOOL_CALL, hook_from=message.sender,
                                  payload=action)
+            action = await _process_pre_tool_hook_events(
+                hook_events=pre_hook_events,
+                tool_name=self.name(),
+                action=action,
+                message=message,
+                resolve_permission=_resolve_async_tool_permission,
+            )
+
+            _apply_hook_headers_to_message(message, pre_hook_events)
+
             await self.pre_step(action, message=message,**kwargs)
             res = await self.do_step(action, message=message, **kwargs)
-            await self.run_hooks(message=message, hook_point=HookPoint.POST_TOOL_CALL, hook_from=message.sender,
+
+            # Execute POST_TOOL_CALL hooks and check for updated_output
+            post_hook_events = await self.run_hooks(message=message, hook_point=HookPoint.POST_TOOL_CALL, hook_from=message.sender,
                                  payload=res)
+            res = _process_post_tool_hook_events(
+                hook_events=post_hook_events,
+                tool_name=self.name(),
+                res=res,
+            )
+
+            _apply_hook_headers_to_message(message, post_hook_events)
+
             final_res = await self.post_step(res, action, message=message,**kwargs)
             await self._internal_process(res, action, message, tool_id_mapping=tool_id_mapping, **kwargs)
             if isinstance(final_res, Message):
@@ -511,12 +792,24 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                 final_res.headers['_tool_finished'] = True
             return final_res
         except Exception as e:
+            error_traceback = traceback.format_exc()
             logger.error(
                 f"Failed to execute {self.name()}: {e}."
                 f"Debug info: session_id = {message.session_id}, action = {message.payload}."
-                f"Traceback:\n{traceback.format_exc()}"
+                f"Traceback:\n{error_traceback}"
             )
-            raise e
+
+            await _emit_tool_failed_hooks(
+                run_hooks_fn=self.run_hooks,
+                message=message,
+                hook_from=message.sender,
+                tool_name=self.name(),
+                action=action,
+                error=e,
+                error_traceback=error_traceback,
+            )
+
+            raise
         finally:
             logger.warning(
                 f"Tool {self.name()} result: {final_res}, session_id: {message.session_id}, task_id: {message.context.task_id}"
@@ -533,6 +826,10 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
             raise Exception(f'{self.name()} no observation has been made.')
 
         info = step_res[4] if len(step_res) > 4 and isinstance(step_res[4], dict) else {}
+        if info:
+            merged_info = dict(step_res[0].info or {})
+            merged_info.update(info)
+            step_res[0].info = merged_info
         ensure_action_results(
             step_res[0],
             action,
@@ -570,6 +867,14 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
                                   message: Message,
                                   **kwargs):
         from aworld.runners.state_manager import RunNodeStatus
+
+        context = message.context
+        if not getattr(context, 'event_manager', None):
+            logger.debug(
+                f"Skip tool callback wait for message {message.id}: "
+                f"no active event_manager in context."
+            )
+            return
 
         logger.info(f"send callback message: {message}")
         # Send via message system by default
@@ -660,11 +965,13 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
 
     async def run_hooks(self, message: Message, hook_point: str, hook_from: str, payload: Any = None) -> List[Message]:
         """Execute hooks and break by exception"""
+        workspace_path = getattr(message.context, 'workspace_path', None)
         hook_events = []
         async for event in run_hooks(context=message.context,
                                      hook_from=hook_from,
                                      payload=payload,
-                                     hook_point=hook_point):
+                                     hook_point=hook_point,
+                                     workspace_path=workspace_path):
             hook_events.append(event)
         return hook_events
 

@@ -146,6 +146,8 @@ Claude-Sessions/
 # AWorld session data
 .aworld/
 .worktrees/
+failed_requests/
+cron_tool*__tmp_action.py
 
 # Temporary PR documentation
 PR_*_*.md

@@ -23,7 +23,7 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
-from aworld.core.task import Task
+from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger
 from aworld.memory.main import _default_file_memory_store
 from aworld.runner import Runners
@@ -351,9 +351,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
             _context.get_config().debug_mode=True
             await _context.init_swarm_state(_swarm)
             return _context
-        
+
         context = await build_context(task_input, self.swarm, workspace)
-        
+
+        # Set workspace_path for hook system (CLI working directory)
+        context.workspace_path = os.getcwd()
+
         # 🔥 Hook: POST_BUILD_CONTEXT
         hook_kwargs = {
             'context': context,
@@ -950,6 +953,50 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     if self.console:
                         self.console.print("\n[yellow]⏹ Interrupted.[/yellow]")
                     return answer or ""
+
+                def _coerce_final_answer(value: Any) -> str:
+                    if value is None:
+                        return ""
+                    if isinstance(value, str):
+                        return value.strip()
+                    if isinstance(value, Observation):
+                        return str(value.content or "").strip()
+                    content = getattr(value, "content", None)
+                    if isinstance(content, str):
+                        return content.strip()
+                    return str(value).strip()
+
+                hook_system_message = ""
+                visited_outputs = getattr(outputs, "_visited_outputs", None) or []
+                for visited_output in reversed(visited_outputs):
+                    metadata = getattr(visited_output, "metadata", None) or {}
+                    system_message = metadata.get("system_message")
+                    if system_message:
+                        hook_system_message = str(system_message).strip()
+                        break
+
+                final_task_response = outputs.response() if hasattr(outputs, "response") else None
+                if isinstance(final_task_response, TaskResponse):
+                    final_answer = _coerce_final_answer(final_task_response.answer)
+                    if hook_system_message and hook_system_message not in final_answer:
+                        final_answer = f"{hook_system_message}\n{final_answer}".strip()
+                    if final_answer:
+                        answer = final_answer
+                        if not last_message_output and self.console:
+                            root_agent = getattr(self.swarm, "communicate_agent", None)
+                            if isinstance(root_agent, list):
+                                root_agent = root_agent[0] if root_agent else None
+                            agent_name = None
+                            if root_agent:
+                                agent_name = getattr(root_agent, "name", None)
+                                if callable(agent_name):
+                                    agent_name = agent_name()
+                                if not agent_name:
+                                    agent_id = getattr(root_agent, "id", None)
+                                    agent_name = agent_id() if callable(agent_id) else agent_id
+                            self.console.print(f"🤖 [bold]{agent_name or 'Assistant'}[/bold]")
+                            self.console.print(answer)
+                            self.console.print()
                 
                 # 🔥 Hook: POST_RUN_TASK
                 hook_kwargs = {
