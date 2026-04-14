@@ -1,6 +1,7 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import importlib
+import importlib.util
 import inspect
 import os
 import sys
@@ -19,6 +20,23 @@ from aworld.core.tool.base import ToolFactory
 from aworld.core.tool.tool_template import TOOL_TEMPLATE
 from aworld.logs.util import logger
 from aworld.tools import LOCAL_TOOLS_ENV_VAR
+
+
+def _load_module_from_path(module_name: str, file_path: str):
+    """Load a module from an absolute or resolved file path.
+
+    Plain importlib.import_module() only searches sys.path; @be_tool writes
+    generated files to the process cwd, which is not always on sys.path when
+    the CLI is launched from another directory (sys.path[0] is the entry script dir).
+    """
+    path = os.path.abspath(file_path)
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module {module_name} from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def be_tool(
@@ -94,8 +112,9 @@ def function_to_tool(
     postfix = f"{uuid.uuid4().hex[0:6]}__tmp"
 
     action_module_name = f"{action_name}{postfix}_action"
+    action_py_path = os.path.abspath(f"{action_module_name}.py")
 
-    with open(f"{action_module_name}.py", 'w') as write:
+    with open(action_py_path, 'w') as write:
         write.writelines("from __future__ import annotations\n")
         write.writelines("from typing import *\n")
         write.writelines("from pydantic import Field\n\n")
@@ -135,9 +154,9 @@ def function_to_tool(
                                          if is_async else f"{func_name}(**action.params)"
                                      ),
                                      call_func=func_name)
-        with open(f"{action_module_name}.py", 'a+') as write:
+        with open(action_py_path, 'a+') as write:
             write.writelines(con)
-        module = importlib.import_module(action_module_name)
+        module = _load_module_from_path(action_module_name, action_py_path)
         getattr(module, f"{action_name}Act")
     else:
         logger.warning(f"{action_name} already register to the tool.")
@@ -147,6 +166,7 @@ def function_to_tool(
     parameters = func_params(func)
 
     module_name = f'{tool_name}'
+    tool_py_path = os.path.abspath(f"{tool_name}{postfix}.py")
     expected_action_cls = f"{tool_name}Action"
     existing_module = sys.modules.get(module_name)
     if existing_module is None or not hasattr(existing_module, expected_action_cls):
@@ -160,7 +180,7 @@ def function_to_tool(
                                       desc=v.get('description', k))
 
         # ToolAction process
-        with open(f"{module_name}{postfix}.py", 'w') as write:
+        with open(tool_py_path, 'w') as write:
             write.writelines(TOOL_ACTION.format(name=tool_name,
                                                 action_name_upper=action_name.upper(),
                                                 action_name=action_name,
@@ -179,9 +199,10 @@ def function_to_tool(
                                    async_underline='async_' if is_async else '',
                                    await_flag='await ' if is_async else '')
 
-        with open(f"{tool_name}{postfix}.py", 'a+') as write:
+        tool_module_name = f"{tool_name}{postfix}"
+        with open(tool_py_path, 'a+') as write:
             write.writelines(con)
-        importlib.import_module(f"{tool_name}{postfix}")
+        _load_module_from_path(tool_module_name, tool_py_path)
 
         # write to AWorld environ variables,
         val = os.environ.get(LOCAL_TOOLS_ENV_VAR, "")
