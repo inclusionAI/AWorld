@@ -202,7 +202,7 @@ class TestHookFactoryDeduplication:
 class TestHookFactoryMerging:
     """测试 Python hooks 和配置 hooks 合并"""
 
-    def test_hooks_merge_python_and_config(self, configs_dir, monkeypatch):
+    def test_hooks_merge_python_and_config(self, configs_dir, tmp_path, monkeypatch):
         """测试合并 Python hooks 和配置 hooks"""
         # 测试环境：信任所有工作区
         monkeypatch.setenv('AWORLD_TRUST_ALL_WORKSPACES', 'true')
@@ -216,12 +216,19 @@ class TestHookFactoryMerging:
             async def exec(self, message, context):
                 return message
 
-        # 加载配置
-        config_path = str(configs_dir / 'hooks_test.yaml')
-        HookFactory.load_config_hooks(config_path)
+        workspace_dir = tmp_path / 'workspace'
+        config_dir = workspace_dir / '.aworld'
+        config_dir.mkdir(parents=True)
+        (config_dir / 'trusted').touch()
+
+        source_config = configs_dir / 'hooks_test.yaml'
+        config_path = config_dir / 'hooks.yaml'
+        config_path.write_text(source_config.read_text())
+
+        HookFactory.load_config_hooks(str(config_path))
 
         # 获取所有 hooks
-        all_hooks = HookFactory.hooks()
+        all_hooks = HookFactory.hooks(workspace_path=str(workspace_dir))
 
         # 验证 session_started 点同时包含 Python hook 和 config hook
         # (注意：StartHook 的 point() 返回 HookPoint.START = "session_started")
@@ -269,7 +276,7 @@ class TestHookFactoryMerging:
             if "TestBeforeToolCallHook" in HookFactory._cls:
                 del HookFactory._cls["TestBeforeToolCallHook"]
 
-    def test_hooks_filter_by_name(self, configs_dir, monkeypatch):
+    def test_hooks_filter_by_name(self, configs_dir, tmp_path, monkeypatch):
         """测试按名称过滤 hooks"""
         # 测试环境：信任所有工作区
         monkeypatch.setenv('AWORLD_TRUST_ALL_WORKSPACES', 'true')
@@ -277,13 +284,21 @@ class TestHookFactoryMerging:
         # 清除缓存以确保测试隔离
         HookManager._config_hooks_cache = {}
 
-        config_path = str(configs_dir / 'hooks_test.yaml')
-        HookFactory.load_config_hooks(config_path)
+        workspace_dir = tmp_path / 'workspace'
+        config_dir = workspace_dir / '.aworld'
+        config_dir.mkdir(parents=True)
+        (config_dir / 'trusted').touch()
+
+        source_config = configs_dir / 'hooks_test.yaml'
+        config_path = config_dir / 'hooks.yaml'
+        config_path.write_text(source_config.read_text())
+
+        HookFactory.load_config_hooks(str(config_path))
 
         # 测试过滤 before_tool_call
         # 注意：根据当前实现，hooks(name='xxx') 仍然会返回所有 hook 点的字典
         # 但只有匹配的点会包含 hooks，其他点为空列表
-        all_hooks_unfiltered = HookFactory.hooks()
+        all_hooks_unfiltered = HookFactory.hooks(workspace_path=str(workspace_dir))
         before_tool_hooks_count = len(all_hooks_unfiltered.get('before_tool_call', []))
 
         # 验证 before_tool_call 有 hooks

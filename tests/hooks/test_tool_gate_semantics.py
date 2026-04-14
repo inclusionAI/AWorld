@@ -172,6 +172,7 @@ class TestToolGateSemantics:
         # 测试隔离：清除缓存和设置环境变量
         HookManager._config_hooks_cache = {}
         monkeypatch.setenv('AWORLD_TRUST_ALL_WORKSPACES', 'true')
+        mock_context.workspace_path = str(tmp_path)
 
         """TC-GATE-001: Hook returns deny - tool execution should be blocked."""
         # Create hooks config that denies all tool calls
@@ -251,6 +252,7 @@ EOF
         # 测试隔离：清除缓存和设置环境变量
         HookManager._config_hooks_cache = {}
         monkeypatch.setenv('AWORLD_TRUST_ALL_WORKSPACES', 'true')
+        mock_context.workspace_path = str(tmp_path)
 
         """TC-GATE-002: Hook returns allow - tool execution should continue."""
         # Create hooks config that allows tool calls
@@ -324,6 +326,7 @@ EOF
         # 测试隔离：清除缓存和设置环境变量
         HookManager._config_hooks_cache = {}
         monkeypatch.setenv('AWORLD_TRUST_ALL_WORKSPACES', 'true')
+        mock_context.workspace_path = str(tmp_path)
 
         """TC-GATE-004: No permission_decision - tool executes normally."""
         # Create hooks config without permission_decision
@@ -396,6 +399,7 @@ EOF
     async def test_claude_pre_tool_use_blocks_destructive_rm_rf(self, mock_tool, mock_context, tmp_path, monkeypatch):
         HookManager._config_hooks_cache = {}
         monkeypatch.setenv('AWORLD_TRUST_ALL_WORKSPACES', 'true')
+        mock_context.workspace_path = str(tmp_path)
 
         config_path = tmp_path / '.aworld' / 'hooks.yaml'
         config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -469,6 +473,7 @@ fi
     async def test_claude_post_tool_use_adds_audit_context(self, mock_tool, mock_context, tmp_path, monkeypatch):
         HookManager._config_hooks_cache = {}
         monkeypatch.setenv('AWORLD_TRUST_ALL_WORKSPACES', 'true')
+        mock_context.workspace_path = str(tmp_path)
 
         config_path = tmp_path / '.aworld' / 'hooks.yaml'
         config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -555,6 +560,7 @@ EOF
     ):
         HookManager._config_hooks_cache = {}
         monkeypatch.setenv('AWORLD_TRUST_ALL_WORKSPACES', 'true')
+        mock_context.workspace_path = str(tmp_path)
 
         tool = request.getfixturevalue(tool_fixture_name)
 
