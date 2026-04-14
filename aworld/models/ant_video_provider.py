@@ -621,7 +621,9 @@ class KlingAdapter(ModelAdapter):
 # ---------------------------------------------------------------------------
 
 # Doubao model-level API paths (forwarded via the ``method`` field)
-_DOUBAO_METHOD_SUBMIT = "/contents/task/generate"
+# Newer Seedance task creation uses the same task collection endpoint as status
+# queries; the task id is appended through ``pathParam`` only when polling.
+_DOUBAO_METHOD_SUBMIT = "/contents/generations/tasks"
 _DOUBAO_METHOD_STATUS = "/contents/generations/tasks"
 
 # Doubao aspect-ratio inline flag format: appended to the prompt text
@@ -684,67 +686,84 @@ class DoubaoAdapter(ModelAdapter):
                               request: VideoGenerationRequest,
                               model: str,
                               extra: Dict[str, Any]) -> Tuple[bool, Dict[str, Any]]:
-        # Build the text content item — inline flags are appended to the prompt
-        prompt_text = request.prompt or ""
+        prompt_text = (request.prompt or "").strip()
 
-        # Resolve aspect ratio: extra override → enum → nothing
-        ratio_str = extra.pop("ratio", None)
-        if not ratio_str and request.aspect_ratio is not None:
-            ratio_str = _DOUBAO_ASPECT_RATIO_MAP.get(request.aspect_ratio)
-        if ratio_str:
-            prompt_text = f"{prompt_text} --ratio {ratio_str}"
+        ratio_str = (
+            extra.pop("ratio", None)
+            or extra.pop("aspect_ratio", None)
+            or (_DOUBAO_ASPECT_RATIO_MAP.get(request.aspect_ratio) if request.aspect_ratio else None)
+        )
 
-        # Resolution: extra override → enum mapping → omitted
         resolution_str = extra.pop("resolution", None)
         if not resolution_str and request.resolution is not None:
             _res_map = {
-                VideoResolution.RES_480P:  "480p",
-                VideoResolution.RES_720P:  "720p",
+                VideoResolution.RES_480P: "480p",
+                VideoResolution.RES_720P: "720p",
                 VideoResolution.RES_1080P: "1080p",
+                VideoResolution.RES_4K: "4k",
             }
             resolution_str = _res_map.get(request.resolution)
-        if resolution_str:
-            prompt_text = f"{prompt_text} --resolution {resolution_str}"
 
-        # Duration: extra override → request field
         duration = extra.pop("duration", None)
         if duration is None and request.duration is not None:
             duration = int(request.duration)
-        if duration is not None:
-            prompt_text = f"{prompt_text} --dur {duration}"
 
-        # Seed
         seed = extra.pop("seed", None)
         if seed is None and request.seed is not None:
             seed = request.seed
-        if seed is not None:
-            prompt_text = f"{prompt_text} --seed {seed}"
 
-        content_items: List[Dict[str, Any]] = [
-            {"type": "text", "text": prompt_text},
-        ]
-
-        # Image input (image-to-video)
+        # Image input (image-to-video). The Seedance docs use ``image_url`` as the
+        # public request field name, but we still accept local files by converting
+        # them to a data URL so older call sites continue to work.
         is_image2video = False
         image_data: Optional[str] = request.image_url
         if not image_data and request.image_path:
-            b64        = VideoGenProviderBase.read_file_as_base64(request.image_path)
+            b64 = VideoGenProviderBase.read_file_as_base64(request.image_path)
             image_data = f"data:image/jpeg;base64,{b64}"
-
         if image_data:
             is_image2video = True
-            content_items.append({"type": "image_url", "image_url": {"url": image_data}})
 
         payload: Dict[str, Any] = {
-            "model":   model,
-            "method":  _DOUBAO_METHOD_SUBMIT,
-            "content": content_items,
+            "model": model,
+            "method": _DOUBAO_METHOD_SUBMIT,
+            "prompt": prompt_text,
         }
 
-        # Optional: generate_audio flag
-        generate_audio = extra.pop("generate_audio", True)
-        if generate_audio is not None:
-            payload["generate_audio"] = bool(generate_audio)
+        if request.negative_prompt:
+            payload["negative_prompt"] = request.negative_prompt
+        if image_data:
+            payload["image_url"] = image_data
+        if ratio_str:
+            payload["ratio"] = ratio_str
+        if resolution_str:
+            payload["resolution"] = resolution_str
+        if duration is not None:
+            payload["duration"] = duration
+        if seed is not None:
+            payload["seed"] = seed
+
+        # Optional vendor-specific fields documented by Seedance / commonly used
+        # by gateway callers. We forward only when explicitly provided.
+        passthrough_keys = (
+            "watermark",
+            "generate_audio",
+            "fps",
+            "camera_fixed",
+            "template_id",
+            "user_prompt",
+        )
+        for key in passthrough_keys:
+            value = extra.pop(key, None)
+            if value is not None:
+                payload[key] = value
+
+        # Keep backward compatibility with older code paths that expected an
+        # OpenAI-style ``content`` list. The newer structured fields above are the
+        # source of truth for Seedance, while ``content`` helps older gateways.
+        content_items: List[Dict[str, Any]] = [{"type": "text", "text": prompt_text}]
+        if image_data:
+            content_items.append({"type": "image_url", "image_url": {"url": image_data}})
+        payload["content"] = content_items
 
         if request.video_url or request.video_path:
             logger.warning("[DoubaoAdapter] video_url / video_path are not supported; ignoring.")
@@ -765,19 +784,49 @@ class DoubaoAdapter(ModelAdapter):
                         data: Dict[str, Any],
                         model: str,
                         is_image2video: bool = False) -> ModelResponse:
-        # ``data`` here is the full response body (Doubao has no ``data`` wrapper)
-        task_id    = data.get("id", "")
-        status_raw = data.get("status", "unknown")
+        # ``data`` here is the full response body (Doubao commonly has no
+        # ``data`` wrapper), but we still accept wrapped variants for safety.
+        if isinstance(data.get("data"), dict):
+            data = data["data"]
+
+        task_id = data.get("id") or data.get("task_id") or data.get("taskId") or ""
+        status_raw = data.get("status") or data.get("task_status") or data.get("state") or "unknown"
         status     = _DOUBAO_STATUS_MAP.get(status_raw, status_raw)
 
         video_url: Optional[str]   = None
         duration:  Optional[float] = None
 
         content = data.get("content") or {}
-        if isinstance(content, dict):
-            video_url = content.get("video_url")
+        output = data.get("output") or {}
+        result = data.get("result") or {}
 
-        raw_dur = data.get("duration")
+        if isinstance(content, dict):
+            video_url = (
+                content.get("video_url")
+                or content.get("url")
+                or (content.get("video_urls") or [None])[0]
+            )
+        if not video_url and isinstance(output, dict):
+            video_url = (
+                output.get("video_url")
+                or output.get("url")
+                or (output.get("video_urls") or [None])[0]
+            )
+        if not video_url and isinstance(result, dict):
+            video_url = (
+                result.get("video_url")
+                or result.get("url")
+                or (result.get("video_urls") or [None])[0]
+            )
+        if not video_url:
+            video_url = data.get("video_url") or data.get("url")
+
+        raw_dur = (
+            data.get("duration")
+            or (data.get("usage") or {}).get("video_duration")
+            or output.get("duration")
+            or result.get("duration")
+        )
         try:
             duration = float(raw_dur) if raw_dur is not None else None
         except (TypeError, ValueError):
@@ -787,8 +836,8 @@ class DoubaoAdapter(ModelAdapter):
             "raw_status":    status_raw,
             "created_at":    data.get("created_at"),
             "updated_at":    data.get("updated_at"),
-            "resolution":    data.get("resolution"),
-            "ratio":         data.get("ratio"),
+            "resolution":    data.get("resolution") or output.get("resolution") or result.get("resolution"),
+            "ratio":         data.get("ratio") or data.get("aspect_ratio"),
             "seed":          data.get("seed"),
             "framespersecond": data.get("framespersecond"),
             "usage":         data.get("usage"),
@@ -814,29 +863,38 @@ class DoubaoAdapter(ModelAdapter):
     # ------------------------------------------------------------------
 
     def check_submit_response(self, body: Dict[str, Any], model: str) -> None:
-        # Doubao returns HTTP 4xx/5xx on errors; LLMHTTPHandler already raises
-        # for non-2xx status.  The body has no ``code`` field for success cases.
-        # Nothing extra to check here.
-        pass
+        code = body.get("code")
+        if code not in (None, 0, "0", 200, "200"):
+            raise LLMResponseError(
+                body.get("message") or body.get("msg") or f"Doubao submit failed: {body}",
+                model,
+                "doubao",
+                body,
+            )
 
     def extract_submit_data(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        # The top-level response body IS the data (no "data" wrapper)
-        return body
+        # The top-level response body usually IS the data (no "data" wrapper),
+        # but some gateways still add a standard ``data`` envelope.
+        return body.get("data") if isinstance(body.get("data"), dict) else body
 
     def extract_task_id(self, data: Dict[str, Any]) -> str:
-        # Doubao uses "id", not "task_id"
-        return data.get("id", "")
+        return data.get("id") or data.get("task_id") or data.get("taskId") or ""
 
     def check_status_response(self, body: Dict[str, Any], model: str) -> None:
-        # Same reasoning as check_submit_response: HTTP errors already raised.
-        pass
+        code = body.get("code")
+        if code not in (None, 0, "0", 200, "200"):
+            raise LLMResponseError(
+                body.get("message") or body.get("msg") or f"Doubao status failed: {body}",
+                model,
+                "doubao",
+                body,
+            )
 
     def extract_status_data(self, body: Dict[str, Any]) -> Dict[str, Any]:
-        return body
+        return body.get("data") if isinstance(body.get("data"), dict) else body
 
     def get_status_from_data(self, data: Dict[str, Any]) -> str:
-        # Doubao uses "status", not "task_status"
-        return data.get("status", "unknown")
+        return data.get("status") or data.get("task_status") or data.get("state") or "unknown"
 
     def is_terminal_status(self, status_raw: str) -> bool:
         return status_raw in _DOUBAO_TERMINAL_STATUSES
@@ -1463,11 +1521,13 @@ class VeoAdapter(ModelAdapter):
 # Each entry: (compiled_regex, adapter_instance)
 # Evaluated in order; first match wins.
 _ADAPTER_REGISTRY: List[Tuple[re.Pattern, ModelAdapter]] = [
-    (re.compile(r"^kling-"),        KlingAdapter()),
-    (re.compile(r"^doubao-seedance-"), DoubaoAdapter()),
-    (re.compile(r"^veo-"),          VeoAdapter()),
-    (re.compile(r"^Wan-AI/"),       WanXAdapter()),
-    (re.compile(r"^wanx"),       WanXAdapter()),
+    (re.compile(r"kling-"),        KlingAdapter()),
+    (re.compile(r"doubao-seedance-"), DoubaoAdapter()),
+    (re.compile(r"seedance-"),     DoubaoAdapter()),
+    (re.compile(r"doubao-video-"), DoubaoAdapter()),
+    (re.compile(r"veo-"),          VeoAdapter()),
+    (re.compile(r"Wan-AI/"),       WanXAdapter()),
+    (re.compile(r"wanx"),       WanXAdapter()),
 ]
 
 
@@ -1640,17 +1700,15 @@ class AntVideoProvider(VideoGenProviderBase):
     def supported_models(cls) -> list:
         return [
             # Kling
-            "kling-v2-6",
-            "wanx2.1-kf2v-plus",
-            "Wan-AI/wanx2.1-kf2v-plus",
+            "kling",
+            "wanx",
+            "Wan-AI",
 
-            # Doubao / Seedance (placeholder)
-            "doubao-seedance-1-5-pro-251215",
-            "doubao-seedance-1-0-pro-250528",
+            # Doubao / Seedance
+            "doubao-seedance",
+            "seedance",
             # Google Veo (placeholder)
-            "veo-3.0-generate-001",
-            "veo-3.1-generate-preview",
-            "veo-3.1-fast-generate-preview"
+            "veo",
         ]
 
     # ------------------------------------------------------------------
@@ -2113,6 +2171,10 @@ class AntVideoProvider(VideoGenProviderBase):
             if queued_remaining is not None:
                 sleep_for = min(sleep_for, queued_remaining)
             await asyncio.sleep(max(sleep_for, 0))
+
+
+# New canonical public name without the ``ant`` prefix.
+VideoProvider = AntVideoProvider
 
 
 # ---------------------------------------------------------------------------
