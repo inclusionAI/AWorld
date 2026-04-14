@@ -19,7 +19,7 @@ from aworld.config.conf import ToolConfig
 from aworld.core.common import ActionModel, Observation
 from aworld.core.context.amni import AmniContext
 from aworld.core.event.base import Message
-from aworld.core.tool.base import AsyncTool, ToolExecutionDenied
+from aworld.core.tool.base import AsyncTool, Tool, ToolExecutionDenied
 from aworld.runners.hook.hook_factory import HookManager
 
 
@@ -79,6 +79,57 @@ class MockAsyncTool(AsyncTool):
         return result
 
 
+class MockSyncTool(Tool):
+    """Mock sync tool for testing parity with AsyncTool hook semantics."""
+
+    def __init__(self, conf: ToolConfig, **kwargs):
+        super().__init__(conf, **kwargs)
+        self.execution_count = 0
+        self.last_action = None
+
+    def reset(self, *, seed: int = None, options: Dict[str, str] = None):
+        return Observation(content="reset"), {}
+
+    def do_step(self, action, **kwargs) -> Tuple[Any, float, bool, bool, Dict[str, Any]]:
+        self.execution_count += 1
+        self.last_action = action
+        obs = Observation(content=f"Tool executed: {action[0].tool_name}")
+        from aworld.core.common import ActionResult
+        obs.action_result = [ActionResult(
+            tool_call_id=action[0].tool_call_id,
+            tool_name=action[0].tool_name,
+            content=obs.content
+        )]
+        return (
+            obs,
+            1.0,
+            False,
+            False,
+            {"execution_count": self.execution_count}
+        )
+
+    def post_step(self, step_res, action, message, **kwargs):
+        from aworld.core.event.base import AgentMessage
+
+        if not step_res:
+            raise Exception(f'{self.name()} no observation has been made.')
+
+        step_res[0].from_agent_name = action[0].agent_name
+        for idx, act in enumerate(action):
+            step_res[0].action_result[idx].tool_call_id = act.tool_call_id
+            step_res[0].action_result[idx].tool_name = act.tool_name
+
+        context = message.context
+        return AgentMessage(
+            payload=step_res,
+            caller=action[0].agent_name,
+            sender=self.name(),
+            receiver=action[0].agent_name,
+            session_id=getattr(context, 'session_id', 'test_session'),
+            headers={"context": context}
+        )
+
+
 @pytest.fixture
 def mock_tool():
     """Create a mock tool instance."""
@@ -87,6 +138,16 @@ def mock_tool():
 
     conf = ToolConfig(name="mock_tool")
     tool = MockAsyncTool(conf=conf)
+    return tool
+
+
+@pytest.fixture
+def mock_sync_tool():
+    """Create a mock sync tool instance."""
+    HookManager._config_hooks_cache = {}
+
+    conf = ToolConfig(name="mock_sync_tool")
+    tool = MockSyncTool(conf=conf)
     return tool
 
 
@@ -474,3 +535,142 @@ EOF
         assert result.headers.get('system_message') == 'Tests queued after file write'
         assert result.payload[4]['audit_logged'] is True
         assert result.payload[4]['audit_source'] == 'after_tool_call'
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("tool_fixture_name", "tool_name"),
+        [
+            ("mock_tool", "mock_tool"),
+            ("mock_sync_tool", "mock_sync_tool"),
+        ],
+    )
+    async def test_tool_step_applies_hook_rewrites_and_output_updates_for_sync_and_async(
+        self,
+        request,
+        tool_fixture_name,
+        tool_name,
+        mock_context,
+        tmp_path,
+        monkeypatch,
+    ):
+        HookManager._config_hooks_cache = {}
+        monkeypatch.setenv('AWORLD_TRUST_ALL_WORKSPACES', 'true')
+
+        tool = request.getfixturevalue(tool_fixture_name)
+
+        config_path = tmp_path / '.aworld' / 'hooks.yaml'
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / '.aworld' / 'trusted').touch()
+
+        rewrite_script = tmp_path / 'rewrite_input.sh'
+        rewrite_script.write_text("""#!/bin/bash
+cat << 'EOF'
+{
+    "continue": true,
+    "system_message": "Scoped cleanup request accepted",
+    "updated_input": {
+        "actions": [
+            {
+                "tool_name": "__TOOL_NAME__",
+                "action_name": "safe_cleanup",
+                "params": {
+                    "path": "./tmp/build",
+                    "mode": "scoped"
+                },
+                "agent_name": "test_agent",
+                "tool_call_id": "rewritten_call"
+            }
+        ]
+    }
+}
+EOF
+""".replace("__TOOL_NAME__", tool_name))
+        rewrite_script.chmod(0o755)
+
+        post_script = tmp_path / 'rewrite_output.sh'
+        post_script.write_text("""#!/bin/bash
+cat << 'EOF'
+{
+    "continue": true,
+    "updated_output": {
+        "observation": {
+            "content": "Hook-adjusted output",
+            "action_result": [
+                {
+                    "tool_call_id": "rewritten_call",
+                    "tool_name": "__TOOL_NAME__",
+                    "content": "Hook-adjusted output",
+                    "success": true,
+                    "is_done": true
+                }
+            ]
+        },
+        "info": {
+            "audit_logged": true,
+            "audit_source": "shared-helper-test"
+        }
+    }
+}
+EOF
+""".replace("__TOOL_NAME__", tool_name))
+        post_script.chmod(0o755)
+
+        config = {
+            'version': '2',
+            'hooks': {
+                'before_tool_call': [
+                    {
+                        'name': 'rewrite_input',
+                        'type': 'command',
+                        'command': str(rewrite_script),
+                        'enabled': True
+                    }
+                ],
+                'after_tool_call': [
+                    {
+                        'name': 'rewrite_output',
+                        'type': 'command',
+                        'command': str(post_script),
+                        'enabled': True
+                    }
+                ]
+            }
+        }
+
+        with open(config_path, 'w') as f:
+            yaml.safe_dump(config, f)
+
+        if str(config_path) in HookManager._config_hooks_cache:
+            del HookManager._config_hooks_cache[str(config_path)]
+        HookManager.load_config_hooks(str(config_path))
+
+        action = [ActionModel(
+            tool_name=tool_name,
+            action_name='cleanup',
+            params={'path': '.'},
+            agent_name='test_agent',
+            tool_call_id='original_call'
+        )]
+
+        message = Message(
+            category='test',
+            payload=action,
+            sender='test_agent',
+            session_id='test_session'
+        )
+        message.context = mock_context
+
+        step_result = tool.step(message)
+        if asyncio.iscoroutine(step_result):
+            result = await step_result
+        else:
+            result = step_result
+
+        assert tool.execution_count == 1
+        assert tool.last_action[0].action_name == 'safe_cleanup'
+        assert tool.last_action[0].tool_call_id == 'rewritten_call'
+        assert tool.last_action[0].params == {'path': './tmp/build', 'mode': 'scoped'}
+        assert result.headers.get('system_message') == 'Scoped cleanup request accepted'
+        assert result.payload[0].content == 'Hook-adjusted output'
+        assert result.payload[4]['audit_logged'] is True
+        assert result.payload[4]['audit_source'] == 'shared-helper-test'
