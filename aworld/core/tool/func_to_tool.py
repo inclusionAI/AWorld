@@ -1,11 +1,14 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
 import importlib
+import importlib.util
 import inspect
 import os
 import sys
+import tempfile
 import uuid
 
+from pathlib import Path
 from typing import Callable, Any, get_type_hints, get_origin, get_args
 
 from pydantic import create_model, Field, BaseModel
@@ -18,7 +21,25 @@ from aworld.core.tool.action_template import ACTION_TEMPLATE
 from aworld.core.tool.base import ToolFactory
 from aworld.core.tool.tool_template import TOOL_TEMPLATE
 from aworld.logs.util import logger
-from aworld.tools import LOCAL_TOOLS_ENV_VAR
+from aworld.tools import LOCAL_TOOLS_ENV_VAR, encode_local_tool_entry
+
+
+def _load_module_from_path(module_name: str, file_path: str):
+    """Load a module directly from a file path without relying on sys.path."""
+    spec = importlib.util.spec_from_file_location(module_name, file_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Unable to load module spec for {module_name} from {file_path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def _dynamic_tool_module_dir() -> Path:
+    module_dir = Path(tempfile.gettempdir()) / "aworld_dynamic_tools"
+    module_dir.mkdir(parents=True, exist_ok=True)
+    return module_dir
 
 
 def be_tool(
@@ -92,10 +113,12 @@ def function_to_tool(
     action_name = name or func.__name__
 
     postfix = f"{uuid.uuid4().hex[0:6]}__tmp"
+    module_dir = _dynamic_tool_module_dir()
 
     action_module_name = f"{action_name}{postfix}_action"
+    action_module_path = str(module_dir / f"{action_module_name}.py")
 
-    with open(f"{action_module_name}.py", 'w') as write:
+    with open(action_module_path, 'w') as write:
         write.writelines("from __future__ import annotations\n")
         write.writelines("from typing import *\n")
         write.writelines("from pydantic import Field\n\n")
@@ -135,9 +158,9 @@ def function_to_tool(
                                          if is_async else f"{func_name}(**action.params)"
                                      ),
                                      call_func=func_name)
-        with open(f"{action_module_name}.py", 'a+') as write:
+        with open(action_module_path, 'a+') as write:
             write.writelines(con)
-        module = importlib.import_module(action_module_name)
+        module = _load_module_from_path(action_module_name, action_module_path)
         getattr(module, f"{action_name}Act")
     else:
         logger.warning(f"{action_name} already register to the tool.")
@@ -149,6 +172,8 @@ def function_to_tool(
     module_name = f'{tool_name}'
     expected_action_cls = f"{tool_name}Action"
     existing_module = sys.modules.get(module_name)
+    tool_module_name = f"{tool_name}{postfix}"
+    tool_module_path = str(module_dir / f"{tool_module_name}.py")
     if existing_module is None or not hasattr(existing_module, expected_action_cls):
         params = {}
         if parameters:
@@ -160,7 +185,7 @@ def function_to_tool(
                                       desc=v.get('description', k))
 
         # ToolAction process
-        with open(f"{module_name}{postfix}.py", 'w') as write:
+        with open(tool_module_path, 'w') as write:
             write.writelines(TOOL_ACTION.format(name=tool_name,
                                                 action_name_upper=action_name.upper(),
                                                 action_name=action_name,
@@ -179,15 +204,18 @@ def function_to_tool(
                                    async_underline='async_' if is_async else '',
                                    await_flag='await ' if is_async else '')
 
-        with open(f"{tool_name}{postfix}.py", 'a+') as write:
+        with open(tool_module_path, 'a+') as write:
             write.writelines(con)
-        importlib.import_module(f"{tool_name}{postfix}")
+        _load_module_from_path(tool_module_name, tool_module_path)
 
         # write to AWorld environ variables,
         val = os.environ.get(LOCAL_TOOLS_ENV_VAR, "")
         if val:
             val = val + ";"
-        os.environ[LOCAL_TOOLS_ENV_VAR] = val + sys.modules[action_module_name].__file__
+        os.environ[LOCAL_TOOLS_ENV_VAR] = val + encode_local_tool_entry(
+            sys.modules[action_module_name].__file__,
+            sys.modules[tool_module_name].__file__,
+        )
         logger.debug(f'add {sys.modules[action_module_name].__file__}')
 
 
