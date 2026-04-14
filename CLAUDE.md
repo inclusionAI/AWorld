@@ -12,6 +12,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 When modifying multi-agent architecture, ensure compatibility with existing swarm topologies (Workflow, Handoff, Team, Hybrid) and maintain backward compatibility with single-agent scenarios.
 
+## Browser Routing
+
+- For browser automation tasks, prefer `agent-browser` first.
+- Treat requests like "open this page", "use the browser", "take a screenshot", "test this site", "click this button", "fill this form", "scrape this page", or "log into this site" as `agent-browser` tasks by default.
+- Do not use `browser-use` in this repository unless the user explicitly asks for it.
+
 ## Project Overview
 
 AWorld is a **multi-agent framework and harness** designed to orchestrate AI agents, tools, memory, context, and execution. Built on multi-agent architecture as its core strength while supporting single-agent scenarios.
