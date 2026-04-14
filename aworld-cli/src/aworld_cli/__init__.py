@@ -2,7 +2,12 @@
 AWorld CLI package.
 """
 import os
+import sys
+
+from ._path_bootstrap import bootstrap_aworld_repo_path
+
 os.environ['AWORLD_DISABLE_CONSOLE_LOG'] = 'true'
+bootstrap_aworld_repo_path(sys.path, __file__)
 
 from .console import AWorldCLI
 from .runtime import CliRuntime, BaseCliRuntime
@@ -21,4 +26,3 @@ __all__ = [
     "AgentExecutor",
     "CLIHumanHandler",
 ]
-
