@@ -136,6 +136,67 @@ def test_generate_video_uses_default_submitted_timeout(monkeypatch, fake_clock):
     assert fake_clock.now == 120.0
 
 
+def test_generate_video_falls_back_when_submitted_timeout_is_invalid(monkeypatch, fake_clock):
+    provider = AntVideoProvider(
+        model_name="dummy-video-model",
+        sync_enabled=False,
+        async_enabled=False,
+    )
+    provider.provider = _SequentialSyncClient(
+        [
+            {"task_id": "task-1", "task_status": "submitted"},
+            {"task_id": "task-1", "task_status": "submitted"},
+            {"task_id": "task-1", "task_status": "submitted"},
+            {"task_id": "task-1", "task_status": "submitted"},
+        ]
+    )
+    monkeypatch.setattr(ant_video_provider_module, "_resolve_adapter", lambda model: _DummyAdapter())
+
+    request = VideoGenerationRequest(
+        prompt="generate a video",
+        extra_params={
+            "poll": True,
+            "poll_interval": 60.0,
+            "poll_timeout": 600.0,
+            "submitted_timeout": "not-a-number",
+        },
+    )
+
+    with pytest.raises(TimeoutError, match="120.0s without starting processing"):
+        provider.generate_video(request)
+
+    assert fake_clock.now == 120.0
+
+
+def test_poll_until_done_counts_cumulative_time_across_queued_status_variants(fake_clock):
+    provider = AntVideoProvider(
+        model_name="dummy-video-model",
+        sync_enabled=False,
+        async_enabled=False,
+    )
+    provider.provider = _SequentialSyncClient(
+        [
+            {"task_id": "task-1", "task_status": "submitted"},
+            {"task_id": "task-1", "task_status": "pending"},
+            {"task_id": "task-1", "task_status": "queued"},
+            {"task_id": "task-1", "task_status": "queued"},
+        ]
+    )
+
+    with pytest.raises(TimeoutError, match="queued status 'queued'"):
+        provider._poll_until_done(
+            adapter=_DummyAdapter(),
+            task_id="task-1",
+            model="dummy-video-model",
+            is_image2video=False,
+            poll_interval=5.0,
+            poll_timeout=600.0,
+            submitted_timeout=15.0,
+        )
+
+    assert fake_clock.now == 15.0
+
+
 def test_poll_until_done_allows_progress_after_submitted(fake_clock):
     provider = AntVideoProvider(
         model_name="dummy-video-model",

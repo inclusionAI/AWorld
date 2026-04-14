@@ -120,10 +120,20 @@ def _resolve_submitted_timeout(submitted_timeout: Any, poll_timeout: float) -> O
     ``None`` means "use the default", and any non-positive value disables the
     queued-status timeout guard.
     """
+    default_timeout = min(poll_timeout, _DEFAULT_SUBMITTED_TIMEOUT)
     if submitted_timeout is None:
-        return min(poll_timeout, _DEFAULT_SUBMITTED_TIMEOUT)
+        return default_timeout
 
-    resolved = float(submitted_timeout)
+    try:
+        resolved = float(submitted_timeout)
+    except (TypeError, ValueError):
+        logger.warning(
+            "[AntVideoProvider] Invalid submitted_timeout %r; using default %.1fs",
+            submitted_timeout,
+            default_timeout,
+        )
+        return default_timeout
+
     if resolved <= 0:
         return None
     return resolved
@@ -1960,7 +1970,6 @@ class AntVideoProvider(VideoGenProviderBase):
         deadline = time.monotonic() + poll_timeout
         attempt  = 0
         queued_since: Optional[float] = None
-        last_status_key: Optional[str] = None
 
         while True:
             attempt += 1
@@ -1983,11 +1992,11 @@ class AntVideoProvider(VideoGenProviderBase):
             if adapter.is_terminal_status(status_raw):
                 return adapter.parse_response(data, model, is_image2video)
 
-            if status_key != last_status_key:
-                queued_since = now if status_key in _QUEUED_STATUS_KEYS else None
-                last_status_key = status_key
-            elif status_key in _QUEUED_STATUS_KEYS and queued_since is None:
-                queued_since = now
+            if status_key in _QUEUED_STATUS_KEYS:
+                if queued_since is None:
+                    queued_since = now
+            else:
+                queued_since = None
 
             if submitted_timeout is not None and status_key in _QUEUED_STATUS_KEYS and queued_since is not None:
                 queued_elapsed = now - queued_since
@@ -2049,7 +2058,6 @@ class AntVideoProvider(VideoGenProviderBase):
         deadline = time.monotonic() + poll_timeout
         attempt  = 0
         queued_since: Optional[float] = None
-        last_status_key: Optional[str] = None
 
         while True:
             attempt += 1
@@ -2072,11 +2080,11 @@ class AntVideoProvider(VideoGenProviderBase):
             if adapter.is_terminal_status(status_raw):
                 return adapter.parse_response(data, model, is_image2video)
 
-            if status_key != last_status_key:
-                queued_since = now if status_key in _QUEUED_STATUS_KEYS else None
-                last_status_key = status_key
-            elif status_key in _QUEUED_STATUS_KEYS and queued_since is None:
-                queued_since = now
+            if status_key in _QUEUED_STATUS_KEYS:
+                if queued_since is None:
+                    queued_since = now
+            else:
+                queued_since = None
 
             if submitted_timeout is not None and status_key in _QUEUED_STATUS_KEYS and queued_since is not None:
                 queued_elapsed = now - queued_since

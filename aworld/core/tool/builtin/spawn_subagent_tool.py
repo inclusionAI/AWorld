@@ -826,6 +826,15 @@ class SpawnSubagentTool(AsyncTool):
             return message.context
         return getattr(self, 'context', None)
 
+    @staticmethod
+    def _get_agent_info_value(agent_info: Any, key: str) -> Any:
+        """Read an agent_info value from either a mapping or an object."""
+        if agent_info is None:
+            return None
+        if isinstance(agent_info, dict):
+            return agent_info.get(key)
+        return getattr(agent_info, key, None)
+
     def _get_subagent_manager(self, action_model: Optional[ActionModel] = None, context=None):
         """
         Get SubagentManager from current agent context.
@@ -854,7 +863,7 @@ class SpawnSubagentTool(AsyncTool):
                 if action_model and getattr(action_model, 'agent_name', None):
                     candidate_agent_ids.append(action_model.agent_name)
                 agent_info = getattr(context, 'agent_info', None)
-                current_agent_id = agent_info.get('current_agent_id') if agent_info else None
+                current_agent_id = self._get_agent_info_value(agent_info, 'current_agent_id')
                 if current_agent_id:
                     candidate_agent_ids.append(current_agent_id)
 
