@@ -46,14 +46,6 @@ def test_registry_validates_channel_configuration(monkeypatch):
     assert registry.is_configured("web", PlaceholderChannelConfig()) is True
     assert registry.is_configured("telegram", TelegramChannelConfig()) is False
     assert registry.is_configured("unknown", PlaceholderChannelConfig()) is False
-    assert (
-        registry.is_configured(
-            "telegram",
-            TelegramChannelConfig(bot_token="telegram-token"),
-        )
-        is False
-    )
-
     monkeypatch.setenv("CUSTOM_TELEGRAM_TOKEN", "env-token")
     assert (
         registry.is_configured(

@@ -103,3 +103,31 @@ def test_gateway_http_app_honors_custom_telegram_webhook_path() -> None:
 
     assert response.status_code == 200
     assert seen["payload"] == {"message": {"text": "hi"}}
+
+
+def test_gateway_http_app_reads_live_channel_status_from_provider() -> None:
+    state = {
+        "channels": {
+            "telegram": {
+                "enabled": False,
+                "configured": False,
+                "implemented": True,
+                "running": False,
+                "state": "registered",
+                "error": None,
+            }
+        }
+    }
+
+    def runtime_status() -> dict[str, object]:
+        return state
+
+    app = create_gateway_app(runtime_status=runtime_status)
+    client = TestClient(app)
+
+    assert client.get("/channels").json()["telegram"]["running"] is False
+
+    state["channels"]["telegram"]["running"] = True
+    state["channels"]["telegram"]["state"] = "running"
+
+    assert client.get("/channels").json()["telegram"]["running"] is True

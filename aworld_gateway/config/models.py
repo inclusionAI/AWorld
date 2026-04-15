@@ -20,7 +20,6 @@ class BaseChannelConfig(StrictConfigModel):
 
 
 class TelegramChannelConfig(BaseChannelConfig):
-    bot_token: Optional[str] = None
     bot_token_env: Optional[str] = "AWORLD_TELEGRAM_BOT_TOKEN"
     webhook_path: str = "/webhooks/telegram"
 
