@@ -12,11 +12,22 @@ class ChannelRegistry:
         ChannelMetadata(name="wecom", implemented=False),
     )
 
-    def list_channels(self) -> list[dict[str, object]]:
-        return [
-            {"name": channel.name, "implemented": channel.implemented}
+    _LABELS: dict[str, str] = {
+        "telegram": "Telegram",
+        "web": "Web",
+        "dingding": "DingTalk",
+        "feishu": "Feishu",
+        "wecom": "WeCom",
+    }
+
+    def list_channels(self) -> dict[str, dict[str, object]]:
+        return {
+            channel.name: {
+                "label": self._LABELS.get(channel.name, channel.name),
+                "implemented": channel.implemented,
+            }
             for channel in self._BUILTIN_CHANNELS
-        ]
+        }
 
     def get_channel(self, name: str) -> ChannelMetadata | None:
         for channel in self._BUILTIN_CHANNELS:
