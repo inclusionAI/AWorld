@@ -68,6 +68,9 @@ class GatewayRuntime:
             }
         )
 
+    def get_started_channel(self, channel_name: str) -> ChannelAdapter | None:
+        return self._started_channels.get(channel_name)
+
     async def _stop_started_adapters(self) -> None:
         for adapter in self._started_channels.values():
             await adapter.stop()
