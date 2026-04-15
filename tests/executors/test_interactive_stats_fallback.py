@@ -2,12 +2,14 @@ import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
+from rich.console import Console
 from rich.text import Text
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld_cli.executors.local import LocalAgentExecutor
 from aworld_cli.executors.stats import StreamTokenStats
+from aworld_cli.executors.stream import StreamDisplayBuffer, StreamDisplayConfig, build_stream_renderable
 
 
 class HudRuntime:
@@ -78,3 +80,45 @@ def test_interactive_stats_gate_is_conservative_when_capability_probe_raises():
     ]
     assert text_args
     assert any("stats" in text_arg.plain.lower() for text_arg in text_args)
+
+
+def test_stream_renderable_hides_stats_when_hud_capability_is_active():
+    buffer = StreamDisplayBuffer(accumulated_content="hello", displayed_content_chars=0)
+    console = Console(record=True, width=120)
+
+    renderable = build_stream_renderable(
+        buffer=buffer,
+        stream_token_stats=_build_stats(),
+        status_start_time=None,
+        format_tool_calls_fn=lambda calls: [],
+        format_elapsed_fn=lambda elapsed: f"{elapsed:.1f}s",
+        config=StreamDisplayConfig(),
+        should_emit_interactive_stats_fn=lambda: False,
+    )
+
+    console.print(renderable)
+    output = console.export_text()
+
+    assert "Aworld stats" not in output
+    assert "🤖 Aworld" in output
+    assert "h" in output
+
+
+def test_stream_renderable_keeps_stats_when_hud_capability_is_missing():
+    buffer = StreamDisplayBuffer(accumulated_content="hello", displayed_content_chars=0)
+    console = Console(record=True, width=120)
+
+    renderable = build_stream_renderable(
+        buffer=buffer,
+        stream_token_stats=_build_stats(),
+        status_start_time=None,
+        format_tool_calls_fn=lambda calls: [],
+        format_elapsed_fn=lambda elapsed: f"{elapsed:.1f}s",
+        config=StreamDisplayConfig(),
+        should_emit_interactive_stats_fn=lambda: True,
+    )
+
+    console.print(renderable)
+    output = console.export_text()
+
+    assert "Aworld stats" in output

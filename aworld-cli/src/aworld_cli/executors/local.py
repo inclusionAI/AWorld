@@ -596,6 +596,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         format_tool_calls_fn=self._format_tool_calls_display_lines,
                         format_elapsed_fn=format_elapsed,
                         config=StreamDisplayConfig(render_interval=0.02, chars_per_render=1),
+                        should_emit_interactive_stats_fn=self._should_emit_interactive_stats,
                     )
 
                     try:
