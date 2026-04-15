@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 
 from aworld_cli.console import AWorldCLI
 from aworld_cli.core.plugin_manager import get_builtin_plugin_roots
+from aworld_cli.executors.stats import format_context_bar
 from aworld_cli.plugin_framework.discovery import discover_plugins
 from aworld_cli.plugin_framework.hud import collect_hud_lines
 
@@ -227,7 +228,7 @@ def test_status_bar_text_truncates_long_segment_after_reduction():
     assert text.endswith("...")
 
 
-def test_status_bar_text_prefers_task_and_context_over_tools_and_tokens():
+def test_status_bar_text_keeps_idle_summary_and_hides_tool_details():
     plugin_root = _get_builtin_aworld_hud_root()
     plugin = discover_plugins([plugin_root])[0]
 
@@ -235,27 +236,42 @@ def test_status_bar_text_prefers_task_and_context_over_tools_and_tokens():
         def build_hud_context(self, agent_name, mode, workspace_name, git_branch):
             return {
                 "workspace": {"name": workspace_name},
-                "session": {"agent": agent_name, "mode": mode},
-                "task": {"current_task_id": "task_001", "status": "running"},
-                "activity": {"current_tool": "bash", "tool_calls_count": 2},
-                "usage": {"input_tokens": 1200, "output_tokens": 300, "context_percent": 34},
+                "session": {
+                    "agent": agent_name,
+                    "mode": mode,
+                    "model": "claude-sonnet-4-5",
+                    "elapsed_seconds": 16.8,
+                },
+                "task": {"current_task_id": "task_20260415210612", "status": "idle"},
+                "activity": {"current_tool": None, "recent_tools": ["bash"], "tool_calls_count": 4},
+                "usage": {
+                    "input_tokens": 6500,
+                    "output_tokens": 122,
+                    "context_used": 60000,
+                    "context_max": 200000,
+                    "context_percent": 30,
+                },
                 "notifications": {"cron_unread": 0},
                 "vcs": {"branch": git_branch},
-                "plugins": {"active_count": 1},
+                "plugins": {"active_count": 2},
             }
 
         def get_hud_lines(self, context):
             return collect_hud_lines([plugin], context)
 
     cli = AWorldCLI()
-    text = cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat", max_width=36)
+    text = cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat", max_width=160)
 
-    lines = text.splitlines()
-    assert len(lines) == 2
-    assert "Task: task_001" in lines[1]
-    assert "Ctx: 34%" in lines[1]
-    assert "Tool:" not in lines[1]
-    assert "Tokens:" not in lines[1]
+    assert "Task: task_20260415210612" in text
+    assert "Tokens: in 6.5k out 122" in text
+    assert "Ctx: ███" in text
+    assert "16.8s" in text
+    assert "Tool:" not in text
+    assert "Plugins:" not in text
+
+
+def test_context_bar_uses_visual_progress_format():
+    assert "Ctx ███" in format_context_bar(60000, 200000, bar_width=10)
 
 
 def test_collect_hud_lines_treats_string_segments_as_single_segment(tmp_path):
