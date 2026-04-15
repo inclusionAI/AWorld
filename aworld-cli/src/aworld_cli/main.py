@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Optional
 
 from aworld.memory.main import _default_file_memory_store
@@ -462,12 +463,22 @@ Batch Jobs:
     # Handle gateway command specially
     from .gateway_cli import find_gateway_command_index
 
-    if find_gateway_command_index(sys.argv) is not None:
+    gateway_index = find_gateway_command_index(sys.argv)
+    if gateway_index is not None:
         from .gateway_cli import (
             build_gateway_parser,
             extract_gateway_argv,
             handle_gateway_channels_list,
             handle_gateway_status,
+            serve_gateway,
+        )
+
+        gateway_global_parser = argparse.ArgumentParser(add_help=False)
+        gateway_global_parser.add_argument("--remote-backend", action="append")
+        gateway_global_parser.add_argument("--agent-dir", action="append")
+        gateway_global_parser.add_argument("--agent-file", action="append")
+        gateway_global_args, _ = gateway_global_parser.parse_known_args(
+            sys.argv[1:gateway_index]
         )
 
         gateway_parser = build_gateway_parser()
@@ -485,6 +496,17 @@ Batch Jobs:
             and gateway_args.channels_action == "list"
         ):
             print(handle_gateway_channels_list())
+            return
+
+        if gateway_args.gateway_action == "serve":
+            asyncio.run(
+                serve_gateway(
+                    base_dir=Path.cwd(),
+                    remote_backends=gateway_global_args.remote_backend,
+                    local_dirs=gateway_global_args.agent_dir,
+                    agent_files=gateway_global_args.agent_file,
+                )
+            )
             return
 
     # Create a minimal parser to check if command needs other special handling.
