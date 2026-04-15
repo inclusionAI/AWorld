@@ -99,3 +99,48 @@ def test_runtime_initializes_framework_registry_and_context_handlers():
     assert [adapter.entrypoint_id for adapter in runtime.get_context_phase_handlers("schema")] == [
         "workspace-memory"
     ]
+
+
+def test_runtime_tracks_active_plugins_by_capability(tmp_path):
+    plugin_root = tmp_path / "runtime_capability"
+    plugin_root.mkdir()
+    (plugin_root / ".aworld-plugin").mkdir()
+    (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+        '''
+        {
+          "id": "runtime-capability",
+          "name": "runtime-capability",
+          "version": "1.0.0",
+          "entrypoints": {
+            "tools": [{"id": "tool", "target": "tools/tool.py"}],
+            "runners": [{"id": "runner", "target": "runners/runner.py"}],
+            "hud": [{"id": "hud", "target": "hud/status.py"}]
+          }
+        }
+        ''',
+        encoding="utf-8",
+    )
+
+    class DummyRuntime(BaseCliRuntime):
+        def __init__(self, plugin_dirs):
+            super().__init__()
+            self.plugin_dirs = plugin_dirs
+
+        async def _load_agents(self):
+            return []
+
+        async def _create_executor(self, agent):
+            return None
+
+        def _get_source_type(self):
+            return "TEST"
+
+        def _get_source_location(self):
+            return "test://plugins"
+
+    runtime = DummyRuntime([plugin_root])
+    runtime._initialize_plugin_framework()
+
+    assert runtime.active_plugin_capabilities() == ("hud", "runners", "tools")
+    assert [plugin.manifest.plugin_id for plugin in runtime.get_active_plugins("tools")] == ["runtime-capability"]
+    assert [entry.entrypoint.entrypoint_id for entry in runtime.get_active_entrypoints("runners")] == ["runner"]

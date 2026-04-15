@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
@@ -45,3 +46,23 @@ def test_status_bar_text_merges_plugin_hud_lines():
 
     assert "Agent: Aworld" in text
     assert "Plugin: HUD ready" in text
+
+
+def test_status_bar_text_truncates_to_max_width():
+    class FakeRuntime:
+        def build_hud_context(self, agent_name, mode, workspace_name, git_branch):
+            return {
+                "workspace": {"name": workspace_name},
+                "session": {"agent": agent_name, "mode": mode},
+                "notifications": {"cron_unread": 0},
+                "vcs": {"branch": git_branch},
+            }
+
+        def get_hud_lines(self, context):
+            return [SimpleNamespace(text="Plugin: " + ("x" * 120))]
+
+    cli = AWorldCLI()
+    text = cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat", max_width=90)
+
+    assert len(text) <= 90
+    assert text.endswith("...")

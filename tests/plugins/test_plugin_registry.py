@@ -39,3 +39,63 @@ def test_registry_rejects_duplicate_plugin_ids():
 
     with pytest.raises(ValueError, match="duplicate plugin id"):
         PluginCapabilityRegistry([plugin, plugin])
+
+
+def test_registry_indexes_full_framework_capability_set(tmp_path):
+    plugin_root = tmp_path / "full_capability"
+    plugin_root.mkdir()
+    (plugin_root / ".aworld-plugin").mkdir()
+    (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+        '''
+        {
+          "id": "full-capability",
+          "name": "full-capability",
+          "version": "1.0.0",
+          "entrypoints": {
+            "agents": [{"id": "agent", "target": "agents/agent.py"}],
+            "swarms": [{"id": "swarm", "target": "swarms/swarm.py"}],
+            "tools": [{"id": "tool", "target": "tools/tool.py"}],
+            "mcp_servers": [{"id": "mcp", "target": "mcp/server.json"}],
+            "runners": [{"id": "runner", "target": "runners/runner.py"}],
+            "hooks": [{"id": "hook", "target": "hooks/hook.py", "metadata": {"hook_point": "stop"}}],
+            "contexts": [{"id": "context", "target": "contexts/context.py"}],
+            "hud": [{"id": "hud", "target": "hud/status.py"}],
+            "skills": [{"id": "skill", "target": "skills/demo/SKILL.md"}],
+            "commands": [{"id": "command", "target": "commands/command.md"}]
+          }
+        }
+        ''',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([plugin_root])[0]
+    registry = PluginCapabilityRegistry([plugin])
+
+    assert set(registry.capabilities()) == {
+        "agents",
+        "commands",
+        "contexts",
+        "hooks",
+        "hud",
+        "mcp_servers",
+        "runners",
+        "skills",
+        "swarms",
+        "tools",
+    }
+    assert registry.get_entrypoints("tools")[0].entrypoint.entrypoint_id == "tool"
+    assert registry.get_entrypoints("mcp_servers")[0].entrypoint.entrypoint_id == "mcp"
+
+
+def test_registry_tracks_plugin_lifecycle_phase():
+    plugin = discover_plugins([Path("tests/fixtures/plugins/context_like").resolve()])[0]
+
+    registry = PluginCapabilityRegistry([plugin])
+
+    assert registry.lifecycle_phase("context-like") == "activate"
+
+    registry.deactivate("context-like")
+    assert registry.lifecycle_phase("context-like") == "deactivate"
+
+    registry.unload("context-like")
+    assert registry.lifecycle_phase("context-like") == "unload"

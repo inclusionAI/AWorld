@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from aworld.logs.util import logger
 from ..plugin_framework.discovery import discover_plugins
+from ..plugin_framework.registry import PluginCapabilityRegistry
 
 # Default plugin installation directory
 DEFAULT_PLUGIN_DIR = Path.home() / ".aworld" / "plugins"
@@ -128,6 +129,37 @@ class PluginManager:
         self._manifest[plugin_name] = entry
         self._save_manifest()
         return entry
+
+    def _iter_plugin_records(self) -> List[Dict[str, object]]:
+        records: List[Dict[str, object]] = []
+
+        for plugin_name, plugin_info in self._manifest.items():
+            plugin_path = Path(plugin_info.get('path', self.plugin_dir / plugin_name))
+            if not plugin_path.exists():
+                logger.warning(f"⚠️ Plugin '{plugin_name}' in manifest but directory not found: {plugin_path}")
+                continue
+            records.append(
+                {
+                    "name": plugin_name,
+                    "path": str(plugin_path),
+                    "source": plugin_info.get("source", "unknown"),
+                    "enabled": bool(plugin_info.get("enabled", True)),
+                }
+            )
+
+        if self.plugin_dir.exists():
+            for item in self.plugin_dir.iterdir():
+                if item.is_dir() and not item.name.startswith('.') and item.name not in self._manifest:
+                    records.append(
+                        {
+                            "name": item.name,
+                            "path": str(item),
+                            "source": "unknown (legacy plugin)",
+                            "enabled": True,
+                        }
+                    )
+
+        return records
     
     def _load_manifest(self) -> Dict[str, Dict]:
         """
@@ -487,16 +519,12 @@ class PluginManager:
             ...     print(plugin['name'], plugin['path'])
         """
         plugins = []
-        
-        # Get plugins from manifest
-        for plugin_name, plugin_info in self._manifest.items():
-            plugin_path = Path(plugin_info.get('path', self.plugin_dir / plugin_name))
-            
-            # Check if plugin still exists
-            if not plugin_path.exists():
-                logger.warning(f"⚠️ Plugin '{plugin_name}' in manifest but directory not found: {plugin_path}")
-                continue
-            
+        enabled_records = [record for record in self._iter_plugin_records() if record.get("enabled", True)]
+        enabled_registry = PluginCapabilityRegistry(discover_plugins(Path(record["path"]) for record in enabled_records))
+
+        for plugin_info in self._iter_plugin_records():
+            plugin_name = str(plugin_info["name"])
+            plugin_path = Path(str(plugin_info["path"]))
             discovered = discover_plugins([plugin_path])
             framework_plugin = discovered[0] if discovered else None
 
@@ -514,31 +542,14 @@ class PluginManager:
                 "plugin_id": framework_plugin.manifest.plugin_id if framework_plugin else plugin_name,
                 "framework_source": framework_plugin.source if framework_plugin else "unknown",
                 "capabilities": sorted(framework_plugin.manifest.capabilities) if framework_plugin else [],
+                "lifecycle_phase": (
+                    enabled_registry.lifecycle_phase(framework_plugin.manifest.plugin_id)
+                    if framework_plugin and bool(plugin_info.get("enabled", True))
+                    else ("disabled" if not bool(plugin_info.get("enabled", True)) else "unknown")
+                ),
             }
             plugins.append(plugin_data)
-        
-        # Also check for plugins in directory that aren't in manifest (legacy plugins)
-        if self.plugin_dir.exists():
-            for item in self.plugin_dir.iterdir():
-                if item.is_dir() and not item.name.startswith('.') and item.name not in self._manifest:
-                    discovered = discover_plugins([item])
-                    framework_plugin = discovered[0] if discovered else None
-                    agents_dir = item / "agents"
-                    skills_dir = get_plugin_skills_dir(item)
 
-                    plugin_data = {
-                        "name": item.name,
-                        "path": str(item),
-                        "source": "unknown (legacy plugin)",
-                        "enabled": True,
-                        "has_agents": agents_dir.exists() and any(agents_dir.iterdir()),
-                        "has_skills": skills_dir.exists() and any(skills_dir.iterdir()),
-                        "plugin_id": framework_plugin.manifest.plugin_id if framework_plugin else item.name,
-                        "framework_source": framework_plugin.source if framework_plugin else "unknown",
-                        "capabilities": sorted(framework_plugin.manifest.capabilities) if framework_plugin else [],
-                    }
-                    plugins.append(plugin_data)
-        
         return plugins
 
     def list(self) -> Dict[str, Dict[str, object]]:
@@ -604,15 +615,18 @@ class PluginManager:
         """
         plugin_roots: List[Path] = []
 
-        plugins = self.list_plugins()
-        for plugin in plugins:
+        for plugin in self._iter_plugin_records():
             if not plugin.get("enabled", True):
                 continue
-            plugin_path = Path(plugin["path"])
+            plugin_path = Path(str(plugin["path"]))
             if plugin_path.exists() and plugin_path.is_dir():
                 plugin_roots.append(plugin_path)
 
         return plugin_roots
+
+    def get_framework_registry(self) -> PluginCapabilityRegistry:
+        """Return a capability registry for currently enabled framework plugins."""
+        return PluginCapabilityRegistry(discover_plugins(self.get_plugin_roots()))
 
     async def _load_skills(self, plugin_dirs: List[Path], console=None) -> Dict[str, int]:
         """

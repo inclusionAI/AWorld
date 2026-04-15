@@ -577,7 +577,11 @@ Batch Jobs:
             console = Console()
             table = Table(show_header=True, header_style="bold magenta")
             table.add_column("Name", style="cyan")
+            table.add_column("Plugin ID", style="bright_cyan")
             table.add_column("Enabled", justify="center")
+            table.add_column("Lifecycle", justify="center")
+            table.add_column("Framework", style="green")
+            table.add_column("Capabilities", style="yellow")
             table.add_column("Source", style="green")
             table.add_column("Has Agents", justify="center")
             table.add_column("Has Skills", justify="center")
@@ -586,7 +590,11 @@ Batch Jobs:
             for plugin in plugins:
                 table.add_row(
                     plugin['name'],
+                    plugin.get('plugin_id', plugin['name']),
                     "✅" if plugin.get('enabled', True) else "❌",
+                    plugin.get('lifecycle_phase', 'unknown'),
+                    plugin.get('framework_source', 'unknown'),
+                    ", ".join(plugin.get('capabilities', [])) or "-",
                     plugin['source'],
                     "✅" if plugin['has_agents'] else "❌",
                     "✅" if plugin['has_skills'] else "❌",

@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Dict, FrozenSet, Mapping, Optional, Tuple
+from typing import FrozenSet, Mapping, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -20,6 +20,12 @@ class PluginManifest:
     plugin_id: str
     name: str
     version: str
+    activation_scope: str
+    source: Mapping[str, object]
+    policy: Mapping[str, object]
+    dependencies: Tuple[str, ...]
+    conflicts: Tuple[str, ...]
+    lifecycle: Tuple[str, ...]
     capabilities: FrozenSet[str]
     entrypoints: Mapping[str, Tuple[PluginEntrypoint, ...]]
     plugin_root: str

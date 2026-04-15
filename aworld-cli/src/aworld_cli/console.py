@@ -201,6 +201,7 @@ class AWorldCLI:
         runtime,
         agent_name: str = "Aworld",
         mode: str = "Chat",
+        max_width: int | None = 160,
     ) -> str:
         """
         Build plain-text status-bar content.
@@ -248,7 +249,10 @@ class AWorldCLI:
                 if text:
                     segments.append(str(text))
 
-        return " | ".join(segments)
+        status_text = " | ".join(segments)
+        if max_width is not None and max_width > 3 and len(status_text) > max_width:
+            return status_text[: max_width - 3].rstrip() + "..."
+        return status_text
 
     def _build_status_bar(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> HTML:
         """Build a styled prompt-toolkit status bar inspired by segmented system prompts."""
