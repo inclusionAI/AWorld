@@ -1,5 +1,5 @@
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -111,6 +111,38 @@ def test_remove_symlink_only_unlinks_managed_entry(
     assert manager.load_manifest() == []
 
 
+def test_remove_install_unlinks_broken_managed_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    external = tmp_path / "external-skills"
+    _write_skill(external, "agent-browser")
+    managed_entry = installed_root / "linked"
+    managed_entry.parent.mkdir(parents=True, exist_ok=True)
+    managed_entry.symlink_to(external, target_is_directory=True)
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.import_entry(managed_entry, scope="global")
+
+    for child in external.iterdir():
+        if child.is_file():
+            child.unlink()
+        else:
+            for nested in child.iterdir():
+                nested.unlink()
+            child.rmdir()
+    external.rmdir()
+
+    manager.remove_install("linked")
+
+    assert managed_entry.exists() is False
+    assert manager.load_manifest() == []
+
+
 def test_remove_install_rejects_manifest_path_outside_installed_root(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -211,3 +243,39 @@ def test_remove_install_handles_malformed_manifest_entries_as_unknown_install(
 
     with pytest.raises(ValueError, match="Unknown installed skill entry"):
         manager.remove_install("missing")
+
+
+def test_load_manifest_skips_malformed_records_with_bad_field_types(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    entry = installed_root / "demo"
+    _write_skill(entry, "optimizer")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    valid_record = manager.import_entry(entry, scope="global")
+    manager.save_manifest(
+        [
+            valid_record,
+            {
+                "install_id": "bad",
+                "name": "bad",
+                "source": str(entry),
+                "installed_path": 123,
+                "resolved_skill_source_path": str(entry),
+                "install_mode": "manual",
+                "scope": "global",
+                "installed_at": "2026-04-15T00:00:00+00:00",
+            },
+        ]
+    )
+
+    manifest = manager.load_manifest()
+
+    assert [item["install_id"] for item in manifest] == ["demo"]
+    with pytest.raises(ValueError, match="Unknown installed skill entry"):
+        manager.remove_install("bad")

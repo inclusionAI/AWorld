@@ -64,9 +64,36 @@ class InstalledSkillManager:
             )
 
         normalized_path = expanded_path.parent.resolve(strict=False) / expanded_path.name
-        if normalized_path.exists() and normalized_path.is_symlink():
+        if normalized_path.is_symlink():
             return normalized_path
         return normalized_path.resolve(strict=False)
+
+    def _sanitize_manifest_record(
+        self, record: Mapping[str, object], index: int
+    ) -> dict[str, str] | None:
+        required_fields = (
+            "install_id",
+            "name",
+            "source",
+            "installed_path",
+            "resolved_skill_source_path",
+            "install_mode",
+            "scope",
+            "installed_at",
+        )
+        sanitized: dict[str, str] = {}
+        for field in required_fields:
+            value = record.get(field)
+            if not isinstance(value, str):
+                logger.warning(
+                    "Skipping invalid installed skill manifest record %s in %s: bad field %s",
+                    index,
+                    self.manifest_path,
+                    field,
+                )
+                return None
+            sanitized[field] = value
+        return sanitized
 
     def _is_managed_entry_path(self, path: Path) -> bool:
         canonical_root = self.installed_root.resolve(strict=False)
@@ -91,7 +118,13 @@ class InstalledSkillManager:
             )
             return []
 
-        return [dict(item) for item in raw_manifest]
+        sanitized_records: list[dict[str, str]] = []
+        for index, item in enumerate(raw_manifest):
+            sanitized_record = self._sanitize_manifest_record(item, index)
+            if sanitized_record is not None:
+                sanitized_records.append(sanitized_record)
+
+        return sanitized_records
 
     def save_manifest(self, records: list[dict[str, str]]) -> None:
         self.manifest_path.write_text(
