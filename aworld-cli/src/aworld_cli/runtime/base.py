@@ -172,6 +172,21 @@ class BaseCliRuntime:
         normalized = (phase or "").strip().lower()
         return list(self._plugin_contexts.get(normalized, ()))
 
+    def active_plugin_capabilities(self) -> tuple[str, ...]:
+        if self._plugin_registry is None:
+            return tuple()
+        return self._plugin_registry.capabilities()
+
+    def get_active_plugins(self, capability: str) -> list[Any]:
+        if self._plugin_registry is None:
+            return []
+        return list(self._plugin_registry.get_plugins(capability))
+
+    def get_active_entrypoints(self, capability: str) -> list[Any]:
+        if self._plugin_registry is None:
+            return []
+        return list(self._plugin_registry.get_entrypoints(capability))
+
     def build_hud_context(
         self,
         agent_name: str = "Aworld",

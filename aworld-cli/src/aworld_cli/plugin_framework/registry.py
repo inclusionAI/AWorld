@@ -13,6 +13,8 @@ class PluginCapabilityRegistry:
         self._plugins: dict[str, Any] = {}
         self._capabilities: dict[str, list[Any]] = {}
         self._entrypoints: dict[str, list[RegisteredEntrypoint]] = {}
+        self._lifecycle: dict[str, str] = {}
+        self._lifecycle_history: dict[str, tuple[str, ...]] = {}
 
         for plugin in plugins:
             self.register(plugin)
@@ -23,6 +25,9 @@ class PluginCapabilityRegistry:
             raise ValueError(f"duplicate plugin id: {plugin_id}")
 
         self._plugins[plugin_id] = plugin
+        history = tuple(str(phase) for phase in plugin.manifest.lifecycle)
+        self._lifecycle_history[plugin_id] = history
+        self._lifecycle[plugin_id] = "activate" if "activate" in history else (history[-1] if history else "discover")
 
         for capability in sorted(plugin.manifest.capabilities):
             self._capabilities.setdefault(capability, []).append(plugin)
@@ -57,3 +62,19 @@ class PluginCapabilityRegistry:
 
     def plugins(self) -> tuple[Any, ...]:
         return tuple(self._plugins[plugin_id] for plugin_id in sorted(self._plugins))
+
+    def lifecycle_phase(self, plugin_id: str) -> str | None:
+        return self._lifecycle.get(plugin_id)
+
+    def lifecycle_history(self, plugin_id: str) -> tuple[str, ...]:
+        return self._lifecycle_history.get(plugin_id, tuple())
+
+    def deactivate(self, plugin_id: str) -> None:
+        if plugin_id not in self._plugins:
+            raise KeyError(plugin_id)
+        self._lifecycle[plugin_id] = "deactivate"
+
+    def unload(self, plugin_id: str) -> None:
+        if plugin_id not in self._plugins:
+            raise KeyError(plugin_id)
+        self._lifecycle[plugin_id] = "unload"

@@ -202,3 +202,44 @@ def test_entrypoint_permissions_must_be_mapping(tmp_path):
         assert "permissions must be a mapping" in str(exc).lower()
     else:
         raise AssertionError("expected non-mapping permissions to fail")
+
+
+def test_manifest_loads_framework_semantics_fields(tmp_path):
+    plugin_root = tmp_path / "plugin"
+    plugin_root.mkdir()
+    (plugin_root / ".aworld-plugin").mkdir()
+    (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+        '''
+        {
+          "id": "semantic-plugin",
+          "name": "semantic-plugin",
+          "version": "1.2.3",
+          "activation_scope": "workspace",
+          "source": {
+            "type": "git",
+            "url": "https://example.com/plugins/semantic-plugin.git"
+          },
+          "policy": {
+            "default_entrypoint_visibility": "public",
+            "allow_runtime_activation": true
+          },
+          "dependencies": ["base-tools", "shared-context"],
+          "conflicts": ["legacy-plugin"],
+          "entrypoints": {
+            "commands": [
+              {"id": "inspect", "name": "inspect", "target": "commands/inspect.md"}
+            ]
+          }
+        }
+        ''',
+        encoding="utf-8",
+    )
+
+    manifest = load_plugin_manifest(plugin_root)
+
+    assert manifest.activation_scope == "workspace"
+    assert manifest.source["type"] == "git"
+    assert manifest.policy["allow_runtime_activation"] is True
+    assert manifest.dependencies == ("base-tools", "shared-context")
+    assert manifest.conflicts == ("legacy-plugin",)
+    assert manifest.lifecycle == ("discover", "validate", "resolve", "load", "activate", "deactivate", "unload")

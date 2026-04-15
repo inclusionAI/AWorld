@@ -5,6 +5,8 @@ from typing import Mapping
 
 from .models import PluginEntrypoint, PluginManifest
 
+DEFAULT_LIFECYCLE = ("discover", "validate", "resolve", "load", "activate", "deactivate", "unload")
+
 
 def load_plugin_manifest(plugin_root: Path) -> PluginManifest:
     resolved_root = plugin_root.resolve()
@@ -21,6 +23,21 @@ def load_plugin_manifest(plugin_root: Path) -> PluginManifest:
             raise ValueError("entrypoints must be a mapping")
     else:
         entrypoints_raw = {}
+
+    source = raw.get("source") or {}
+    if not isinstance(source, Mapping):
+        raise ValueError("source must be a mapping")
+
+    policy = raw.get("policy") or {}
+    if not isinstance(policy, Mapping):
+        raise ValueError("policy must be a mapping")
+
+    dependencies = raw.get("dependencies") or []
+    if not isinstance(dependencies, list):
+        raise ValueError("dependencies must be a list")
+    conflicts = raw.get("conflicts") or []
+    if not isinstance(conflicts, list):
+        raise ValueError("conflicts must be a list")
 
     entrypoints = {}
     capabilities = set()
@@ -65,6 +82,12 @@ def load_plugin_manifest(plugin_root: Path) -> PluginManifest:
         plugin_id=raw["id"],
         name=raw.get("name", raw["id"]),
         version=raw["version"],
+        activation_scope=str(raw.get("activation_scope", "workspace")).strip().lower() or "workspace",
+        source=MappingProxyType(dict(source)),
+        policy=MappingProxyType(dict(policy)),
+        dependencies=tuple(str(item) for item in dependencies),
+        conflicts=tuple(str(item) for item in conflicts),
+        lifecycle=tuple(str(item) for item in raw.get("lifecycle", DEFAULT_LIFECYCLE)),
         capabilities=frozenset(capabilities),
         entrypoints=MappingProxyType(entrypoints),
         plugin_root=str(resolved_root),

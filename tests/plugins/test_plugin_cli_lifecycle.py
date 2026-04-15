@@ -25,3 +25,22 @@ def test_enable_disable_reload_framework_plugin(tmp_path):
 
     reloaded = manager.reload("code-review-like")
     assert reloaded["enabled"] is True
+
+
+def test_framework_registry_filters_disabled_plugins(tmp_path):
+    manager = PluginManager(plugin_dir=tmp_path / "plugins")
+    review_root = Path("tests/fixtures/plugins/code_review_like").resolve()
+    context_root = Path("tests/fixtures/plugins/context_like").resolve()
+
+    assert manager.install("code-review-like", local_path=str(review_root))
+    assert manager.install("context-like", local_path=str(context_root))
+    manager.disable("context-like")
+
+    registry = manager.get_framework_registry()
+
+    assert registry.get_plugin("code-review-like") is not None
+    assert registry.get_plugin("context-like") is None
+
+    listed = manager.list()
+    assert listed["code-review-like"]["lifecycle_phase"] == "activate"
+    assert listed["context-like"]["lifecycle_phase"] == "disabled"
