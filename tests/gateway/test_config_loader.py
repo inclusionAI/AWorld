@@ -3,7 +3,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
+from pydantic import ValidationError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -62,3 +64,33 @@ def test_load_or_init_preserves_existing_config(tmp_path):
     assert config.default_agent_id == "custom-agent"
     assert config.channels.telegram.enabled is True
     assert config.channels.telegram.default_agent_id == "telegram-agent"
+
+
+def test_load_or_init_rejects_unknown_config_keys(tmp_path):
+    base_dir = tmp_path / "project"
+    config_path = base_dir / ".aworld" / "gateway" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        (
+            "default_agent_id: aworld\n"
+            "gateway:\n"
+            "  host: 127.0.0.1\n"
+            "  port: 18888\n"
+            "channels:\n"
+            "  telegram:\n"
+            "    enabled: false\n"
+            "    typo_field: should-fail\n"
+            "  web:\n"
+            "    enabled: false\n"
+            "  dingding:\n"
+            "    enabled: false\n"
+            "  feishu:\n"
+            "    enabled: false\n"
+            "  wecom:\n"
+            "    enabled: false\n"
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValidationError):
+        GatewayConfigLoader(base_dir=base_dir).load_or_init()
