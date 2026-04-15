@@ -166,6 +166,68 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
         return hooks
 
+    def _publish_hud_task_started(self, task: Task) -> None:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None:
+            return
+        try:
+            runtime.update_hud_snapshot(
+                session={"session_id": self.session_id},
+                task={
+                    "current_task_id": task.id,
+                    "status": "running",
+                    "started_at": datetime.now().isoformat(),
+                },
+                activity={"current_tool": None, "recent_tools": [], "tool_calls_count": 0},
+            )
+        except Exception as exc:
+            logger.warning(f"HUD publish task started failed: {exc}")
+
+    def _publish_hud_stream_update(
+        self,
+        task_id: str,
+        stream_token_stats: StreamTokenStats,
+        current_tool: Optional[str],
+        elapsed_seconds: Optional[float],
+    ) -> None:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None or stream_token_stats is None:
+            return
+
+        usage = stream_token_stats.to_hud_usage()
+        activity_payload = {
+            "current_tool": current_tool,
+            "tool_calls_count": usage.get("tool_calls_count", 0),
+        }
+        if current_tool:
+            activity_payload["recent_tools"] = [current_tool]
+        try:
+            runtime.update_hud_snapshot(
+                session={
+                    "session_id": self.session_id,
+                    "model": usage.get("model"),
+                    "elapsed_seconds": elapsed_seconds,
+                },
+                task={"current_task_id": task_id, "status": "running"},
+                activity=activity_payload,
+                usage=usage,
+            )
+        except Exception as exc:
+            logger.warning(f"HUD publish stream update failed: {exc}")
+
+    def _publish_hud_task_finished(self, task_id: str, task_status: str = "idle") -> None:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None:
+            return
+        try:
+            runtime.update_hud_snapshot(task={"current_task_id": task_id})
+        except Exception as exc:
+            logger.warning(f"HUD publish task finish update failed: {exc}")
+        try:
+            runtime.settle_hud_snapshot(task_status=task_status)
+        except Exception as exc:
+            logger.warning(f"HUD settle task finish failed: {exc}")
+
     async def cleanup_resources(self) -> None:
         """
         Close MCP and other resources in the same event loop to avoid
@@ -464,6 +526,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             # Update session last used time
             self._update_session_last_used(self.session_id)
             task = await self._build_task(task_content, session_id=self.session_id, image_urls=image_urls)
+            self._publish_hud_task_started(task)
             
             # 🔥 Hook: PRE_RUN_TASK
             hook_kwargs = {
@@ -536,6 +599,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 # Handle MessageOutput
                                 if isinstance(output, MessageOutput):
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
+                                    tool_calls = output.tool_calls if hasattr(output, "tool_calls") and output.tool_calls else []
+                                    current_tool_name = None
+                                    if tool_calls:
+                                        first_tool = tool_calls[0]
+                                        tool_data = getattr(first_tool, "data", first_tool)
+                                        function = getattr(tool_data, "function", None)
+                                        current_tool_name = getattr(function, "name", None)
                                     # 💾 Save to history at end of each streaming round (before clear)
                                     stats = stream_token_stats.get_current_stats()
                                     if stats and task_content:
@@ -697,6 +767,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                     model_name=model_name,
                                                 )
                                                 logger.info(f"📊 Token stats successfully updated - current stats: {stream_token_stats.get_current_stats()}")
+                                                self._publish_hud_stream_update(
+                                                    task_id=task.id,
+                                                    stream_token_stats=stream_token_stats,
+                                                    current_tool=current_tool_name,
+                                                    elapsed_seconds=elapsed_sec,
+                                                )
                                             else:
                                                 logger.warning(f"📊 No token data available to update stats")
                                                 logger.warning(f"📊 Output structure: {output}")
@@ -760,7 +836,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     
                                     # Check if there are tool calls - if so, show "Thinking..." for agent-as-tool
                                     # Skip status for human tools as they require user interaction
-                                    tool_calls = output.tool_calls if hasattr(output, 'tool_calls') and output.tool_calls else []
                                     if tool_calls:
                                         from aworld.models.model_response import ToolCall
                                         from aworld.core.agent.base import is_agent_by_name
@@ -825,6 +900,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     ctrl.streaming_mode = True
                                     stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
                                     chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
+                                    elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
                                     if stream_on and chunk:
                                         if content := getattr(chunk, "content", None):
                                             ctrl.buffer.accumulated_content += content
@@ -888,6 +964,19 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             model_name=model_name,
                                         )
                                         logger.debug(f"📊 Token stats updated successfully - current stats: {stream_token_stats.get_current_stats()}")
+                                        current_tool_name = None
+                                        current_tool_calls = ctrl.buffer.accumulated_tool_calls or getattr(chunk, "tool_calls", None) or []
+                                        if current_tool_calls:
+                                            first_tool = current_tool_calls[0]
+                                            tool_data = getattr(first_tool, "data", first_tool)
+                                            function = getattr(tool_data, "function", None)
+                                            current_tool_name = getattr(function, "name", None)
+                                        self._publish_hud_stream_update(
+                                            task_id=task.id,
+                                            stream_token_stats=stream_token_stats,
+                                            current_tool=current_tool_name,
+                                            elapsed_seconds=elapsed_sec,
+                                        )
                                     else:
                                         logger.debug(f"📊 No token data to update - out_tok: {out_tok}, inp_tok: {inp_tok}, tc_count: {tc_count}")
                                     # When STREAM=1: buffer content; Live display is refreshed at fixed interval
@@ -952,6 +1041,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     if self.console:
                         self.console.print("\n[yellow]⏹ Interrupted.[/yellow]")
+                    self._publish_hud_task_finished(task.id, task_status="idle")
                     return answer or ""
 
                 def _coerce_final_answer(value: Any) -> str:
@@ -1140,6 +1230,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     # Don't fail the whole request if history save fails
 
 
+                self._publish_hud_task_finished(task.id, task_status="idle")
                 return answer
                 
             except Exception as err:
@@ -1160,6 +1251,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 if self.console:
                     self.console.print("[red]❌ [/red]", end=" ")
                     self.console.print(error_msg, markup=False)
+                self._publish_hud_task_finished(task.id, task_status="error")
                 raise
     
     # Note: _format_tool_call, _format_tool_calls, _render_message_output,
