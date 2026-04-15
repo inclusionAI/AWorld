@@ -42,77 +42,48 @@ class GatewayRouter:
     def __init__(
         self,
         *,
-        global_default_agent_id: str,
-        agent_backend: AgentBackend | None = None,
-        agent_resolver: AgentResolver | None = None,
+        session_binding: SessionBinding,
+        agent_resolver: AgentResolver,
+        agent_backend: AgentBackend,
     ) -> None:
-        self._agent_backend = agent_backend or LocalCliAgentBackend()
-        self._agent_resolver = agent_resolver or AgentResolver(
-            global_default_agent_id=global_default_agent_id
-        )
+        self._session_binding = session_binding
+        self._agent_resolver = agent_resolver
+        self._agent_backend = agent_backend
 
     async def handle_inbound(
         self,
         inbound: InboundEnvelope,
         *,
+        channel_default_agent_id: str | None,
         explicit_agent_id: str | None = None,
+        session_agent_id: str | None = None,
+        matched_route_agent_id: str | None = None,
     ) -> OutboundEnvelope:
-        account_id = self._coalesce(
-            inbound.payload.get("account_id"),
-            inbound.sender_id,
-            "unknown",
-        )
-        conversation_type = self._coalesce(
-            inbound.payload.get("conversation_type"),
-            "dm",
-        )
-        conversation_id = self._coalesce(
-            inbound.payload.get("conversation_id"),
-            inbound.session_id,
-            account_id,
-        )
-
         resolved_agent_id = self._agent_resolver.resolve(
             explicit_agent_id=explicit_agent_id,
-            session_agent_id=inbound.payload.get("session_agent_id"),
-            channel_default_agent_id=inbound.payload.get("channel_default_agent_id"),
-            matched_route_agent_id=inbound.payload.get("matched_route_agent_id"),
+            session_agent_id=session_agent_id,
+            channel_default_agent_id=channel_default_agent_id,
+            matched_route_agent_id=matched_route_agent_id,
         )
-        session_id = SessionBinding(
+        session_id = self._session_binding.build(
             agent_id=resolved_agent_id,
             channel=inbound.channel,
-            account_id=account_id,
-            conversation_type=conversation_type,
-            conversation_id=conversation_id,
-        ).build()
+            account_id=inbound.account_id,
+            conversation_type=inbound.conversation_type,
+            conversation_id=inbound.conversation_id,
+        )
 
-        text = inbound.text or ""
         response_text = await self._agent_backend.run(
             agent_id=resolved_agent_id,
             session_id=session_id,
-            text=text,
+            text=inbound.text,
         )
 
-        reply_to_message_id = self._coalesce(
-            inbound.payload.get("reply_to_message_id"),
-            inbound.payload.get("message_id"),
-        )
         return OutboundEnvelope(
             channel=inbound.channel,
-            recipient_id=account_id,
-            agent_id=resolved_agent_id,
+            account_id=inbound.account_id,
+            conversation_id=inbound.conversation_id,
+            reply_to_message_id=inbound.message_id,
             text=response_text,
-            payload={
-                "account_id": account_id,
-                "conversation_type": conversation_type,
-                "conversation_id": conversation_id,
-                "reply_to_message_id": reply_to_message_id,
-            },
+            metadata=dict(inbound.metadata),
         )
-
-    @staticmethod
-    def _coalesce(*values: str | None) -> str:
-        for value in values:
-            if value:
-                return value
-        return ""
