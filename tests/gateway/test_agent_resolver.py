@@ -9,7 +9,7 @@ from aworld_gateway.agent_resolver import AgentResolver
 
 
 def test_resolve_prefers_explicit_agent_id():
-    resolver = AgentResolver(global_default_agent_id="global-default")
+    resolver = AgentResolver(default_agent_id="aworld")
 
     resolved = resolver.resolve(
         explicit_agent_id="explicit",
@@ -22,7 +22,7 @@ def test_resolve_prefers_explicit_agent_id():
 
 
 def test_resolve_falls_back_by_priority_order():
-    resolver = AgentResolver(global_default_agent_id="global-default")
+    resolver = AgentResolver(default_agent_id="aworld")
 
     assert resolver.resolve(
         explicit_agent_id=None,
@@ -50,4 +50,4 @@ def test_resolve_falls_back_by_priority_order():
         session_agent_id=None,
         channel_default_agent_id=None,
         matched_route_agent_id=None,
-    ) == "global-default"
+    ) == "aworld"

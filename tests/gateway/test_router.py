@@ -6,7 +6,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from aworld_gateway.agent_resolver import AgentResolver
 from aworld_gateway.router import GatewayRouter
+from aworld_gateway.session_binding import SessionBinding
 from aworld_gateway.types import InboundEnvelope
 
 
@@ -27,22 +29,29 @@ class FakeAgentBackend:
 
 def test_handle_inbound_resolves_agent_builds_session_and_routes_execution():
     backend = FakeAgentBackend()
-    router = GatewayRouter(global_default_agent_id="global-default", agent_backend=backend)
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=backend,
+    )
     inbound = InboundEnvelope(
         channel="telegram",
+        account_id="acct-1",
+        conversation_id="conv-1",
+        conversation_type="group",
         sender_id="sender-1",
+        sender_name="Sender",
+        message_id="msg-9",
         text="hello",
-        payload={
-            "account_id": "acct-1",
-            "conversation_type": "group",
-            "conversation_id": "conv-1",
-            "message_id": "msg-9",
-            "channel_default_agent_id": "channel-agent",
-            "matched_route_agent_id": "route-agent",
-        },
     )
 
-    outbound = asyncio.run(router.handle_inbound(inbound))
+    outbound = asyncio.run(
+        router.handle_inbound(
+            inbound,
+            channel_default_agent_id="channel-agent",
+            matched_route_agent_id="route-agent",
+        )
+    )
 
     assert backend.calls == [
         {
@@ -52,33 +61,39 @@ def test_handle_inbound_resolves_agent_builds_session_and_routes_execution():
         }
     ]
     assert outbound.channel == "telegram"
-    assert outbound.recipient_id == "acct-1"
-    assert outbound.agent_id == "channel-agent"
+    assert outbound.account_id == "acct-1"
+    assert outbound.conversation_id == "conv-1"
+    assert outbound.reply_to_message_id == "msg-9"
     assert outbound.text == "backend reply"
-    assert outbound.payload["account_id"] == "acct-1"
-    assert outbound.payload["conversation_type"] == "group"
-    assert outbound.payload["conversation_id"] == "conv-1"
-    assert outbound.payload["reply_to_message_id"] == "msg-9"
 
 
 def test_handle_inbound_prefers_explicit_agent_id_over_other_sources():
     backend = FakeAgentBackend()
-    router = GatewayRouter(global_default_agent_id="global-default", agent_backend=backend)
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=backend,
+    )
     inbound = InboundEnvelope(
         channel="telegram",
+        account_id="acct-2",
+        conversation_id="conv-2",
+        conversation_type="dm",
         sender_id="acct-2",
+        sender_name=None,
+        message_id="msg-2",
         text="ping",
-        payload={
-            "conversation_type": "dm",
-            "conversation_id": "conv-2",
-            "account_id": "acct-2",
-            "session_agent_id": "session-agent",
-            "channel_default_agent_id": "channel-agent",
-            "matched_route_agent_id": "route-agent",
-        },
     )
 
-    outbound = asyncio.run(router.handle_inbound(inbound, explicit_agent_id="explicit-agent"))
+    outbound = asyncio.run(
+        router.handle_inbound(
+            inbound,
+            channel_default_agent_id="channel-agent",
+            explicit_agent_id="explicit-agent",
+            session_agent_id="session-agent",
+            matched_route_agent_id="route-agent",
+        )
+    )
 
     assert backend.calls[0]["agent_id"] == "explicit-agent"
-    assert outbound.agent_id == "explicit-agent"
+    assert outbound.reply_to_message_id == "msg-2"

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
-
-
-class AgentResolver(BaseModel):
-    global_default_agent_id: str
+class AgentResolver:
+    def __init__(self, default_agent_id: str) -> None:
+        self.default_agent_id = default_agent_id
 
     def resolve(
         self,
@@ -19,7 +17,7 @@ class AgentResolver(BaseModel):
             session_agent_id,
             channel_default_agent_id,
             matched_route_agent_id,
-            self.global_default_agent_id,
+            self.default_agent_id,
         ):
             if candidate:
                 return candidate
