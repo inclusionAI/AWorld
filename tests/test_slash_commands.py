@@ -609,6 +609,35 @@ class TestPluginsCommand:
         assert "disabled" in result
         assert "aworld-hud" in result
 
+    @pytest.mark.asyncio
+    async def test_plugins_command_refreshes_runtime_after_disable(self, monkeypatch):
+        cmd = CommandRegistry.get("plugins")
+
+        class FakePluginManager:
+            def __init__(self):
+                self.plugin_dir = Path("/tmp/plugins")
+
+            def disable(self, plugin_name):
+                assert plugin_name == "aworld-hud"
+                return {"path": "/repo/aworld-cli/src/aworld_cli/plugins/aworld_hud"}
+
+        class FakeRuntime:
+            def __init__(self):
+                self.refreshed = False
+
+            def refresh_plugin_framework(self):
+                self.refreshed = True
+
+        monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
+
+        runtime = FakeRuntime()
+        result = await cmd.execute(
+            CommandContext(cwd=os.getcwd(), user_args="disable aworld-hud", runtime=runtime)
+        )
+
+        assert "disabled" in result
+        assert runtime.refreshed is True
+
 
 class TestCommandContext:
     """Test CommandContext dataclass."""

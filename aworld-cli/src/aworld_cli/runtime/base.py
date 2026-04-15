@@ -140,11 +140,17 @@ class BaseCliRuntime:
             self._plugin_hooks = {}
             self._plugin_contexts = {}
             self._plugin_state_store = None
+            try:
+                from ..plugin_framework.commands import sync_plugin_commands
+
+                sync_plugin_commands([])
+            except Exception:
+                pass
             return
 
         try:
             from ..plugin_framework.context import CONTEXT_PHASES, load_plugin_contexts
-            from ..plugin_framework.commands import register_plugin_commands
+            from ..plugin_framework.commands import sync_plugin_commands
             from ..plugin_framework.discovery import discover_plugins
             from ..plugin_framework.hooks import load_plugin_hooks
             from ..plugin_framework.registry import PluginCapabilityRegistry
@@ -158,7 +164,7 @@ class BaseCliRuntime:
             for phase in CONTEXT_PHASES:
                 self._plugin_contexts.setdefault(phase, ())
             self._plugin_state_store = PluginStateStore(Path.cwd() / ".aworld" / "plugin_state")
-            register_plugin_commands(self._plugins)
+            sync_plugin_commands(self._plugins)
         except Exception as exc:
             logger.warning(f"Failed to initialize plugin framework surfaces: {exc}")
             self._plugins = []
@@ -166,6 +172,20 @@ class BaseCliRuntime:
             self._plugin_hooks = {}
             self._plugin_contexts = {}
             self._plugin_state_store = None
+            try:
+                from ..plugin_framework.commands import sync_plugin_commands
+
+                sync_plugin_commands([])
+            except Exception:
+                pass
+
+    def refresh_plugin_framework(self) -> None:
+        if hasattr(self, "_get_plugin_dirs"):
+            try:
+                self.plugin_dirs = self._get_plugin_dirs()
+            except Exception as exc:
+                logger.warning(f"Failed to resolve plugin directories during refresh: {exc}")
+        self._initialize_plugin_framework()
 
     def get_plugin_hooks(self, hook_point: str) -> list[Any]:
         normalized = (hook_point or "").strip().lower()

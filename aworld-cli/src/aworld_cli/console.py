@@ -209,6 +209,9 @@ class AWorldCLI:
 
         The bar is intentionally always present to avoid layout jumps.
         """
+        if not self._should_render_status_bar(runtime):
+            return ""
+
         if runtime and hasattr(runtime, "build_hud_context"):
             hud_context = runtime.build_hud_context(
                 agent_name=agent_name,
@@ -256,6 +259,18 @@ class AWorldCLI:
             return self._render_status_line(fallback_segments, max_width)
 
         return "\n".join(rendered_lines)
+
+    def _should_render_status_bar(self, runtime) -> bool:
+        if runtime is None:
+            return False
+
+        if hasattr(runtime, "active_plugin_capabilities"):
+            try:
+                return "hud" in tuple(runtime.active_plugin_capabilities())
+            except Exception:
+                return True
+
+        return True
 
     def _fallback_status_segments(self, hud_context: dict[str, Any], agent_name: str, mode: str) -> list[str]:
         unread_count = hud_context.get("notifications", {}).get("cron_unread", -1)
@@ -1859,7 +1874,7 @@ class AWorldCLI:
                     # We use HTML for basic coloring of the prompt
                     prompt_text = "<b><cyan>You</cyan></b>: "
                     prompt_kwargs = {}
-                    if runtime:
+                    if runtime and self._should_render_status_bar(runtime):
                         prompt_kwargs["bottom_toolbar"] = lambda: self._build_status_bar(
                             runtime,
                             agent_name=agent_name,

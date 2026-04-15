@@ -130,6 +130,17 @@ def test_status_bar_text_falls_back_when_plugin_rendering_raises():
     assert "boom" not in text
 
 
+def test_status_bar_is_not_rendered_without_hud_capability():
+    class FakeRuntime:
+        def active_plugin_capabilities(self):
+            return ()
+
+    cli = AWorldCLI()
+
+    assert cli._should_render_status_bar(FakeRuntime()) is False
+    assert cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat") == ""
+
+
 def test_status_bar_text_falls_back_when_hud_entrypoint_raises(tmp_path):
     hud_module = tmp_path / "hud.py"
     hud_module.write_text(

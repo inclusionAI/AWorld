@@ -235,6 +235,11 @@ class CommandRegistry:
         return cls._commands.get(name)
 
     @classmethod
+    def unregister(cls, name: str) -> None:
+        """Remove a registered command if present."""
+        cls._commands.pop(name, None)
+
+    @classmethod
     def list_commands(cls) -> List[Command]:
         """
         Get all registered commands.

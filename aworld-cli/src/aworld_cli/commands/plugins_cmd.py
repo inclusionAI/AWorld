@@ -11,6 +11,18 @@ from aworld_cli.core.plugin_manager import (
 
 @register_command
 class PluginsCommand(Command):
+    def _refresh_runtime(self, context: CommandContext) -> str:
+        runtime = getattr(context, "runtime", None)
+        if runtime is None or not hasattr(runtime, "refresh_plugin_framework"):
+            return ""
+
+        try:
+            runtime.refresh_plugin_framework()
+        except Exception as exc:
+            return f"\nWarning: current session plugin state refresh failed: {exc}"
+
+        return "\nCurrent session plugins refreshed."
+
     @property
     def name(self) -> str:
         return "plugins"
@@ -50,13 +62,25 @@ class PluginsCommand(Command):
             try:
                 if action == "enable":
                     plugin_state = manager.enable(plugin_name)
-                    return f"Plugin '{plugin_name}' enabled\nLocation: {plugin_state['path']}"
+                    return (
+                        f"Plugin '{plugin_name}' enabled\n"
+                        f"Location: {plugin_state['path']}"
+                        f"{self._refresh_runtime(context)}"
+                    )
                 if action == "disable":
                     plugin_state = manager.disable(plugin_name)
-                    return f"Plugin '{plugin_name}' disabled\nLocation: {plugin_state['path']}"
+                    return (
+                        f"Plugin '{plugin_name}' disabled\n"
+                        f"Location: {plugin_state['path']}"
+                        f"{self._refresh_runtime(context)}"
+                    )
 
                 plugin_state = manager.reload(plugin_name)
-                return f"Plugin '{plugin_name}' reloaded\nLocation: {plugin_state['path']}"
+                return (
+                    f"Plugin '{plugin_name}' reloaded\n"
+                    f"Location: {plugin_state['path']}"
+                    f"{self._refresh_runtime(context)}"
+                )
             except KeyError:
                 return f"Plugin '{plugin_name}' is not installed"
 
