@@ -19,15 +19,16 @@ def test_load_or_init_creates_default_config_when_missing(tmp_path):
     config_path = base_dir / ".aworld" / "gateway" / "config.yaml"
     assert config_path.exists()
     assert config.default_agent_id == "aworld"
-    assert config.telegram.enabled is False
-    assert config.web.enabled is False
+    assert config.channels.telegram.enabled is False
+    assert config.channels.web.enabled is False
 
     with config_path.open("r", encoding="utf-8") as fh:
         raw = yaml.safe_load(fh)
 
     assert raw["default_agent_id"] == "aworld"
-    assert raw["telegram"]["enabled"] is False
-    assert raw["web"]["enabled"] is False
+    assert raw["gateway"]["port"] == 18888
+    assert raw["channels"]["telegram"]["enabled"] is False
+    assert raw["channels"]["web"]["enabled"] is False
 
 
 def test_load_or_init_preserves_existing_config(tmp_path):
@@ -37,11 +38,21 @@ def test_load_or_init_preserves_existing_config(tmp_path):
     config_path.write_text(
         (
             "default_agent_id: custom-agent\n"
-            "telegram:\n"
-            "  enabled: true\n"
-            "  default_agent_id: telegram-agent\n"
-            "web:\n"
-            "  enabled: false\n"
+            "gateway:\n"
+            "  host: 0.0.0.0\n"
+            "  port: 19999\n"
+            "channels:\n"
+            "  telegram:\n"
+            "    enabled: true\n"
+            "    default_agent_id: telegram-agent\n"
+            "  web:\n"
+            "    enabled: false\n"
+            "  dingding:\n"
+            "    enabled: false\n"
+            "  feishu:\n"
+            "    enabled: false\n"
+            "  wecom:\n"
+            "    enabled: false\n"
         ),
         encoding="utf-8",
     )
@@ -49,5 +60,5 @@ def test_load_or_init_preserves_existing_config(tmp_path):
     config = GatewayConfigLoader(base_dir=base_dir).load_or_init()
 
     assert config.default_agent_id == "custom-agent"
-    assert config.telegram.enabled is True
-    assert config.telegram.default_agent_id == "telegram-agent"
+    assert config.channels.telegram.enabled is True
+    assert config.channels.telegram.default_agent_id == "telegram-agent"
