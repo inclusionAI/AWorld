@@ -138,20 +138,29 @@ class CliRuntime(BaseCliRuntime):
         try:
             from ..core.plugin_manager import PluginManager
             plugin_manager = PluginManager()
-            installed_plugin_dirs = plugin_manager.get_plugin_dirs()
-            # Convert agent dirs back to plugin dirs (parent directory)
-            for agent_dir in installed_plugin_dirs:
-                plugin_dir = agent_dir.parent
+            installed_plugin_roots = plugin_manager.get_plugin_roots()
+            for plugin_dir in installed_plugin_roots:
                 if plugin_dir not in plugin_dirs:
                     plugin_dirs.append(plugin_dir)
             
-            if installed_plugin_dirs and hasattr(self, 'cli') and hasattr(self.cli, 'console'):
-                self.cli.console.print(f"📦 Found {len(installed_plugin_dirs)} installed plugin(s)")
+            if installed_plugin_roots and hasattr(self, 'cli') and hasattr(self.cli, 'console'):
+                self.cli.console.print(f"📦 Found {len(installed_plugin_roots)} installed plugin(s)")
         except Exception as e:
             # Fail silently if plugin manager is not available
             pass
         
-        return plugin_dirs
+        from ..plugin_framework.discovery import discover_plugins
+
+        discovered = discover_plugins(plugin_dirs)
+        resolved = []
+        seen = set()
+        for plugin in discovered:
+            plugin_root = Path(plugin.manifest.plugin_root)
+            if plugin_root not in seen:
+                resolved.append(plugin_root)
+                seen.add(plugin_root)
+
+        return resolved
     
     async def _load_skills(self) -> Dict[str, int]:
         """
