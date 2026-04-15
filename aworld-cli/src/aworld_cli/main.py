@@ -459,22 +459,20 @@ Batch Jobs:
         help='Disable banner display on startup / 启动时不显示 banner'
     )
 
-    # Create a minimal parser to check if command needs special handling.
-    minimal_parser = argparse.ArgumentParser(add_help=False)
-    minimal_parser.add_argument('command', nargs='?', default='interactive')
-    minimal_args, _ = minimal_parser.parse_known_args()
-
     # Handle gateway command specially
-    if minimal_args.command == "gateway":
+    from .gateway_cli import find_gateway_command_index
+
+    if find_gateway_command_index(sys.argv) is not None:
         from .gateway_cli import (
             build_gateway_parser,
+            extract_gateway_argv,
             handle_gateway_channels_list,
             handle_gateway_status,
         )
 
         gateway_parser = build_gateway_parser()
         try:
-            gateway_args = gateway_parser.parse_args(sys.argv[2:])
+            gateway_args = gateway_parser.parse_args(extract_gateway_argv(sys.argv))
         except SystemExit:
             return
 
@@ -489,8 +487,10 @@ Batch Jobs:
             print(handle_gateway_channels_list())
             return
 
-        print("Gateway serve is not implemented yet.")
-        return
+    # Create a minimal parser to check if command needs other special handling.
+    minimal_parser = argparse.ArgumentParser(add_help=False)
+    minimal_parser.add_argument('command', nargs='?', default='interactive')
+    minimal_args, _ = minimal_parser.parse_known_args()
 
     # Handle plugin command specially
     if minimal_args.command == "plugin":

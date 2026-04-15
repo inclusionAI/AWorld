@@ -12,6 +12,9 @@ def create_gateway_app(*, runtime_status: dict[str, object]) -> FastAPI:
 
     @app.get("/channels")
     async def channels() -> dict[str, object]:
-        return runtime_status
+        channels_payload = runtime_status.get("channels")
+        if isinstance(channels_payload, dict):
+            return channels_payload
+        return {}
 
     return app
