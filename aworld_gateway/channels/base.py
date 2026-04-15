@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Any
 
 from aworld_gateway.config import BaseChannelConfig
+from aworld_gateway.types import OutboundEnvelope
 
 
 @dataclass(frozen=True)
@@ -22,8 +24,12 @@ class ChannelAdapter(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def start(self) -> None:
+    async def start(self) -> None:
         raise NotImplementedError
 
-    def stop(self) -> None:
+    async def stop(self) -> None:
         return None
+
+    @abstractmethod
+    async def send(self, envelope: OutboundEnvelope) -> Any:
+        raise NotImplementedError

@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from aworld_gateway.channels.base import ChannelAdapter
 from aworld_gateway.registry import ChannelRegistry
 
 
@@ -16,3 +17,19 @@ def test_list_channels_reports_phase_one_builtins_with_implementation_flags():
     assert summary["dingding"]["implemented"] is False
     assert summary["feishu"]["implemented"] is False
     assert summary["wecom"]["implemented"] is False
+
+
+def test_registry_exposes_metadata_and_adapter_class_paths():
+    registry = ChannelRegistry()
+    telegram_meta = registry.get_meta("telegram")
+    web_meta = registry.get_meta("web")
+
+    assert telegram_meta is not None
+    assert telegram_meta["implemented"] is True
+    assert registry.get_adapter_class("telegram") is None
+
+    assert web_meta is not None
+    assert web_meta["implemented"] is False
+    web_adapter_cls = registry.get_adapter_class("web")
+    assert web_adapter_cls is not None
+    assert issubclass(web_adapter_cls, ChannelAdapter)
