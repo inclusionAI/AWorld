@@ -14,6 +14,8 @@ from prompt_toolkit.document import Document
 sys.path.insert(0, str(Path(__file__).parent.parent / "aworld-cli" / "src"))
 
 from aworld_cli.core.command_system import CommandRegistry, CommandContext
+from aworld_cli.plugin_framework.commands import register_plugin_commands
+from aworld_cli.plugin_framework.discovery import discover_plugins
 from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd
 from aworld_cli.console import AWorldCLI
 
@@ -485,6 +487,22 @@ class TestSlashCommandCompletion:
         assert completion_meta["job-123"] == "Name: 喝水提醒 | State: Enabled | Last: OK"
         assert completion_meta["job-999"] == "Name: 散步提醒 | State: Enabled | Last: Never"
         assert completion_meta["job-456"] == "Name: 运动提醒 | State: Disabled | Last: Error"
+
+    def test_console_completion_includes_plugin_commands(self):
+        """Registered plugin commands should appear in slash completion entries."""
+        plugin_root = Path("tests/fixtures/plugins/code_review_like").resolve()
+        plugin = discover_plugins([plugin_root])[0]
+        snapshot = CommandRegistry.snapshot()
+        try:
+            register_plugin_commands([plugin])
+
+            cli = AWorldCLI()
+            words, meta = cli._build_completion_entries(agent_names=[])
+
+            assert "/code-review" in words
+            assert meta["/code-review"] == "Review the current pull request"
+        finally:
+            CommandRegistry.restore(snapshot)
 
 
 class TestCommandContext:

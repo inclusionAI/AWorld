@@ -245,6 +245,16 @@ class CommandRegistry:
         return list(cls._commands.values())
 
     @classmethod
+    def snapshot(cls) -> Dict[str, Command]:
+        """Return a shallow copy of the current registry (useful for tests)."""
+        return dict(cls._commands)
+
+    @classmethod
+    def restore(cls, snapshot: Dict[str, Command]) -> None:
+        """Replace registry contents with a previous snapshot."""
+        cls._commands = dict(snapshot)
+
+    @classmethod
     def help_text(cls) -> str:
         """
         Generate help text for all commands.
