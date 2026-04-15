@@ -125,21 +125,17 @@ class CliRuntime(BaseCliRuntime):
         plugin_dirs = []
         
         # Get built-in plugins from the canonical package layout.
-        from ..core.plugin_manager import get_builtin_plugin_roots
+        from ..core.plugin_manager import PluginManager
 
-        plugin_dirs.extend(get_builtin_plugin_roots())
-        
-        # Get installed plugins
         try:
-            from ..core.plugin_manager import PluginManager
             plugin_manager = PluginManager()
-            installed_plugin_roots = plugin_manager.get_plugin_roots()
-            for plugin_dir in installed_plugin_roots:
+            runtime_plugin_roots = plugin_manager.get_runtime_plugin_roots()
+            for plugin_dir in runtime_plugin_roots:
                 if plugin_dir not in plugin_dirs:
                     plugin_dirs.append(plugin_dir)
             
-            if installed_plugin_roots and hasattr(self, 'cli') and hasattr(self.cli, 'console'):
-                self.cli.console.print(f"📦 Found {len(installed_plugin_roots)} installed plugin(s)")
+            if runtime_plugin_roots and hasattr(self, 'cli') and hasattr(self.cli, 'console'):
+                self.cli.console.print(f"📦 Found {len(runtime_plugin_roots)} active plugin(s)")
         except Exception as e:
             # Fail silently if plugin manager is not available
             pass

@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "aworld-cli" / "src"))
 from aworld_cli.core.command_system import CommandRegistry, CommandContext
 from aworld_cli.plugin_framework.commands import register_plugin_commands
 from aworld_cli.plugin_framework.discovery import discover_plugins
-from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd
+from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd, plugins_cmd
 from aworld_cli.console import AWorldCLI
 
 
@@ -25,7 +25,7 @@ class TestCommandRegistration:
 
     def test_commands_registered(self):
         """Verify all commands are registered."""
-        expected_commands = ['help', 'commit', 'review', 'diff', 'cron']
+        expected_commands = ['help', 'commit', 'review', 'diff', 'cron', 'plugins']
         for cmd_name in expected_commands:
             cmd = CommandRegistry.get(cmd_name)
             assert cmd is not None, f"Command /{cmd_name} not registered"
@@ -42,8 +42,9 @@ class TestCommandRegistration:
             cmd = CommandRegistry.get(cmd_name)
             assert cmd.command_type == 'prompt', f"/{cmd_name} should be prompt command"
 
-        cron_cmd = CommandRegistry.get('cron')
-        assert cron_cmd.command_type == 'tool'
+        for cmd_name in ['cron', 'plugins']:
+            tool_cmd = CommandRegistry.get(cmd_name)
+            assert tool_cmd.command_type == 'tool'
 
     def test_list_commands(self):
         """Test listing all registered commands."""
@@ -55,6 +56,7 @@ class TestCommandRegistration:
         assert 'review' in command_names
         assert 'diff' in command_names
         assert 'cron' in command_names
+        assert 'plugins' in command_names
 
 
 class TestHelpCommand:
@@ -74,6 +76,7 @@ class TestHelpCommand:
         assert '/commit' in result
         assert '/review' in result
         assert '/diff' in result
+        assert '/plugins' in result
 
     @pytest.mark.asyncio
     async def test_help_command_with_args(self):
@@ -440,6 +443,18 @@ class TestSlashCommandCompletion:
         assert meta["/cron show"] == "查看单个任务详情"
         assert meta["/cron inbox"] == "查看并清空未读提醒通知"
 
+    def test_console_completion_entries_include_plugins_command(self):
+        cli = AWorldCLI()
+
+        words, meta = cli._build_completion_entries(agent_names=[])
+
+        assert "/plugins" in words
+        assert "/plugins list" in words
+        assert "/plugins enable" in words
+        assert "/plugins disable" in words
+        assert "/plugins reload" in words
+        assert meta["/plugins"] == "Manage CLI plugins"
+
     def test_console_completer_suggests_job_ids_for_cron_show(self):
         """Typing /cron show should suggest live cron job IDs."""
         cli = AWorldCLI()
@@ -503,6 +518,96 @@ class TestSlashCommandCompletion:
             assert meta["/code-review"] == "Review the current pull request"
         finally:
             CommandRegistry.restore(snapshot)
+
+
+class TestPluginsCommand:
+    @pytest.mark.asyncio
+    async def test_plugins_command_lists_builtin_plugins(self, monkeypatch):
+        cmd = CommandRegistry.get("plugins")
+
+        class FakePluginManager:
+            def __init__(self):
+                self.plugin_dir = Path("/tmp/plugins")
+
+        monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
+        monkeypatch.setattr(
+            "aworld_cli.commands.plugins_cmd.list_available_plugins",
+            lambda _manager: [
+                {
+                    "name": "aworld-hud",
+                    "plugin_id": "aworld-hud",
+                    "enabled": True,
+                    "lifecycle_phase": "activate",
+                    "framework_source": "manifest",
+                    "capabilities": ["hud"],
+                    "source": "built-in",
+                    "has_agents": False,
+                    "has_skills": False,
+                    "path": "/repo/aworld-cli/src/aworld_cli/plugins/aworld_hud",
+                }
+            ],
+        )
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args="list"))
+
+        assert "Available plugins (1)" in result
+
+    @pytest.mark.asyncio
+    async def test_plugins_command_enable_plugin(self, monkeypatch):
+        cmd = CommandRegistry.get("plugins")
+
+        class FakePluginManager:
+            def __init__(self):
+                self.plugin_dir = Path("/tmp/plugins")
+
+            def enable(self, plugin_name):
+                assert plugin_name == "aworld-hud"
+                return {"path": "/tmp/plugins/aworld-hud"}
+
+        monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args="enable aworld-hud"))
+
+        assert "enabled" in result
+        assert "/tmp/plugins/aworld-hud" in result
+
+    @pytest.mark.asyncio
+    async def test_plugins_command_reload_plugin(self, monkeypatch):
+        cmd = CommandRegistry.get("plugins")
+
+        class FakePluginManager:
+            def __init__(self):
+                self.plugin_dir = Path("/tmp/plugins")
+
+            def reload(self, plugin_name):
+                assert plugin_name == "aworld-hud"
+                return {"path": "/tmp/plugins/aworld-hud"}
+
+        monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args="reload aworld-hud"))
+
+        assert "reloaded" in result
+        assert "/tmp/plugins/aworld-hud" in result
+
+    @pytest.mark.asyncio
+    async def test_plugins_command_disables_builtin_plugin(self, monkeypatch):
+        cmd = CommandRegistry.get("plugins")
+
+        class FakePluginManager:
+            def __init__(self):
+                self.plugin_dir = Path("/tmp/plugins")
+
+            def disable(self, plugin_name):
+                assert plugin_name == "aworld-hud"
+                return {"path": "/repo/aworld-cli/src/aworld_cli/plugins/aworld_hud"}
+
+        monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args="disable aworld-hud"))
+
+        assert "disabled" in result
+        assert "aworld-hud" in result
 
 
 class TestCommandContext:

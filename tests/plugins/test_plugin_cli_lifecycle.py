@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from aworld_cli.core.plugin_manager import PluginManager
+from aworld_cli.runtime.cli import CliRuntime
 
 
 def test_enable_disable_reload_framework_plugin(tmp_path):
@@ -44,3 +45,43 @@ def test_framework_registry_filters_disabled_plugins(tmp_path):
     listed = manager.list()
     assert listed["code-review-like"]["lifecycle_phase"] == "activate"
     assert listed["context-like"]["lifecycle_phase"] == "disabled"
+
+
+def test_builtin_framework_plugin_can_be_disabled_and_reenabled(tmp_path):
+    manager = PluginManager(plugin_dir=tmp_path / "plugins")
+
+    disabled = manager.disable("aworld-hud")
+    assert disabled["enabled"] is False
+    assert disabled["plugin_id"] == "aworld-hud"
+    assert disabled["lifecycle_phase"] == "disabled"
+    assert all(path.name != "aworld_hud" for path in manager.get_runtime_plugin_roots())
+
+    enabled = manager.enable("aworld-hud")
+    assert enabled["enabled"] is True
+    assert enabled["plugin_id"] == "aworld-hud"
+    assert enabled["lifecycle_phase"] == "activate"
+    assert any(path.name == "aworld_hud" for path in manager.get_runtime_plugin_roots())
+
+    reloaded = manager.reload("aworld-hud")
+    assert reloaded["enabled"] is True
+
+
+def test_cli_runtime_honors_disabled_builtin_framework_plugin(tmp_path, monkeypatch):
+    manager = PluginManager(plugin_dir=tmp_path / "plugins")
+    manager.disable("aworld-hud")
+
+    class FakePluginManager:
+        def __init__(self):
+            self.plugin_dir = manager.plugin_dir
+
+        def get_runtime_plugin_roots(self):
+            return manager.get_runtime_plugin_roots()
+
+        def get_plugin_roots(self):
+            return manager.get_plugin_roots()
+
+    monkeypatch.setattr("aworld_cli.core.plugin_manager.PluginManager", FakePluginManager)
+
+    runtime = CliRuntime(local_dirs=[], remote_backends=[])
+
+    assert all(path.name != "aworld_hud" for path in runtime.plugin_dirs)
