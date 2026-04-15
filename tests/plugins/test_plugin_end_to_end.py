@@ -8,6 +8,12 @@ from aworld_cli.runtime.base import BaseCliRuntime
 from aworld_cli.runtime.cli import CliRuntime
 
 
+def _set_isolated_plugin_dir(monkeypatch, tmp_path: Path) -> Path:
+    plugin_dir = tmp_path / ".aworld" / "plugins"
+    monkeypatch.setattr("aworld_cli.core.plugin_manager.DEFAULT_PLUGIN_DIR", plugin_dir)
+    return plugin_dir
+
+
 def test_code_review_like_plugin_registers_command_and_assets(tmp_path):
     manager = PluginManager(plugin_dir=tmp_path / "plugins")
     plugin_root = Path("tests/fixtures/plugins/code_review_like").resolve()
@@ -67,10 +73,35 @@ def test_builtin_plugin_namespace_moves_to_plugins_package():
     assert new_load() == legacy_load()
 
 
-def test_cli_runtime_scans_builtin_plugins_from_plugins_dir():
+def test_cli_runtime_scans_builtin_plugins_from_plugins_dir(monkeypatch, tmp_path):
+    _set_isolated_plugin_dir(monkeypatch, tmp_path)
     runtime = CliRuntime(local_dirs=[], remote_backends=[])
 
     assert any(path.parent.name == "plugins" and path.name == "smllc" for path in runtime.plugin_dirs)
+    assert any(path.parent.name == "plugins" and path.name == "aworld_hud" for path in runtime.plugin_dirs)
+
+
+def test_cli_runtime_excludes_disabled_builtin_hud_plugin(monkeypatch, tmp_path):
+    plugin_dir = _set_isolated_plugin_dir(monkeypatch, tmp_path)
+    manager = PluginManager(plugin_dir=plugin_dir)
+
+    manager.disable("aworld-hud")
+
+    runtime = CliRuntime(local_dirs=[], remote_backends=[])
+
+    assert not any(path.name == "aworld_hud" for path in runtime.plugin_dirs)
+
+
+def test_cli_runtime_includes_enabled_builtin_hud_plugin(monkeypatch, tmp_path):
+    plugin_dir = _set_isolated_plugin_dir(monkeypatch, tmp_path)
+    manager = PluginManager(plugin_dir=plugin_dir)
+
+    manager.disable("aworld-hud")
+    manager.enable("aworld-hud")
+
+    runtime = CliRuntime(local_dirs=[], remote_backends=[])
+
+    assert any(path.name == "aworld_hud" for path in runtime.plugin_dirs)
 
 
 def test_runtime_initializes_framework_registry_and_context_handlers():

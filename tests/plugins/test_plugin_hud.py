@@ -130,6 +130,41 @@ def test_status_bar_text_falls_back_when_plugin_rendering_raises():
     assert "boom" not in text
 
 
+def test_status_bar_text_falls_back_when_hud_entrypoint_raises(tmp_path):
+    hud_module = tmp_path / "hud.py"
+    hud_module.write_text(
+        "def render_lines(context):\n"
+        "    raise RuntimeError('boom')\n",
+        encoding="utf-8",
+    )
+    entrypoint = SimpleNamespace(entrypoint_id="status", target="hud.py")
+    manifest = SimpleNamespace(
+        plugin_root=tmp_path,
+        plugin_id="test-plugin",
+        entrypoints={"hud": [entrypoint]},
+    )
+    plugin = SimpleNamespace(manifest=manifest)
+
+    class BrokenRuntime:
+        def build_hud_context(self, agent_name, mode, workspace_name, git_branch):
+            return {
+                "workspace": {"name": workspace_name},
+                "session": {"agent": agent_name, "mode": mode},
+                "notifications": {"cron_unread": 0},
+                "vcs": {"branch": git_branch},
+            }
+
+        def get_hud_lines(self, context):
+            return collect_hud_lines([plugin], context)
+
+    cli = AWorldCLI()
+    text = cli._build_status_bar_text(BrokenRuntime(), agent_name="Aworld", mode="Chat", max_width=120)
+
+    assert "Agent: Aworld" in text
+    assert "Mode: Chat" in text
+    assert "boom" not in text
+
+
 def test_status_bar_text_reduces_grouped_segments_to_fit_width():
     class FakeRuntime:
         def build_hud_context(self, agent_name, mode, workspace_name, git_branch):
