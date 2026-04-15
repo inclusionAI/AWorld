@@ -228,7 +228,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
         except Exception as exc:
             logger.warning(f"HUD settle task finish failed: {exc}")
 
-    def _should_print_interactive_stats_fallback(self) -> bool:
+    def _should_emit_interactive_stats(self) -> bool:
         runtime = getattr(self, "_base_runtime", None)
         if runtime is None or not hasattr(runtime, "active_plugin_capabilities"):
             return True
@@ -242,9 +242,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
     ) -> None:
         if elapsed_seconds is None or not self.console:
             return
-        if stream_token_stats is None or not stream_token_stats.get_current_stats():
+        if not stream_token_stats.get_current_stats():
             return
-        if not self._should_print_interactive_stats_fallback():
+        if not self._should_emit_interactive_stats():
             return
 
         elapsed_str = format_elapsed(elapsed_seconds)

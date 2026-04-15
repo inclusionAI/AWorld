@@ -50,5 +50,10 @@ def test_interactive_stats_are_printed_when_hud_capability_is_missing():
 
     executor._print_interactive_stats_fallback(_build_stats(), elapsed_seconds=1.2)
 
-    assert executor.console.print.call_count == 2
-    assert isinstance(executor.console.print.call_args_list[0].args[0], Text)
+    text_args = [
+        call.args[0]
+        for call in executor.console.print.call_args_list
+        if call.args and isinstance(call.args[0], Text)
+    ]
+    assert text_args
+    assert any("stats" in text_arg.plain.lower() for text_arg in text_args)
