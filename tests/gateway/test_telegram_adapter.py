@@ -72,3 +72,51 @@ def test_telegram_adapter_posts_send_message(monkeypatch) -> None:
         "text": "hello back",
         "reply_to_message_id": "42",
     }
+def test_telegram_adapter_routes_text_update_to_router(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeRouter:
+        async def handle_inbound(self, inbound, *, channel_default_agent_id):
+            seen["inbound"] = inbound
+            seen["channel_default_agent_id"] = channel_default_agent_id
+            return OutboundEnvelope(
+                channel="telegram",
+                account_id="telegram",
+                conversation_id=inbound.conversation_id,
+                reply_to_message_id=inbound.message_id,
+                text="pong",
+            )
+
+    from aworld_gateway.channels.telegram.adapter import TelegramChannelAdapter
+
+    monkeypatch.setenv("AWORLD_TELEGRAM_BOT_TOKEN", "token-123")
+    adapter = TelegramChannelAdapter(
+        TelegramChannelConfig(
+            default_agent_id="aworld",
+        ),
+        router=FakeRouter(),
+    )
+
+    async def fake_send(envelope):
+        seen["outbound"] = envelope
+        return {}
+
+    monkeypatch.setattr(adapter, "send", fake_send)
+    asyncio.run(adapter.start())
+    asyncio.run(
+        adapter.handle_update(
+            {
+                "message": {
+                    "message_id": 1,
+                    "chat": {"id": 1001, "type": "private"},
+                    "from": {"id": 7, "username": "user7"},
+                    "text": "ping",
+                }
+            }
+        )
+    )
+
+    assert seen["inbound"].text == "ping"
+    assert seen["inbound"].conversation_id == "1001"
+    assert seen["channel_default_agent_id"] == "aworld"
+    assert seen["outbound"].text == "pong"

@@ -68,3 +68,38 @@ def test_gateway_http_app_exposes_channel_map_and_telegram_webhook() -> None:
             "text": "hi",
         }
     }
+
+
+def test_gateway_http_app_rejects_telegram_webhook_when_adapter_missing() -> None:
+    app = create_gateway_app(
+        runtime_status={"channels": {}},
+        telegram_adapter=None,
+    )
+
+    client = TestClient(app)
+    response = client.post("/webhooks/telegram", json={"message": {"text": "hi"}})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Telegram channel is not running."
+
+
+def test_gateway_http_app_honors_custom_telegram_webhook_path() -> None:
+    seen: dict[str, object] = {}
+
+    class FakeAdapter:
+        async def handle_update(self, payload: dict[str, object]) -> None:
+            seen["payload"] = payload
+
+    app = create_gateway_app(
+        runtime_status={"channels": {}},
+        telegram_adapter=FakeAdapter(),
+        telegram_webhook_path="/hooks/custom-telegram",
+    )
+
+    client = TestClient(app)
+
+    assert client.post("/webhooks/telegram", json={}).status_code == 404
+    response = client.post("/hooks/custom-telegram", json={"message": {"text": "hi"}})
+
+    assert response.status_code == 200
+    assert seen["payload"] == {"message": {"text": "hi"}}

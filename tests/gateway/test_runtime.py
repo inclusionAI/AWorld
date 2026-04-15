@@ -116,12 +116,36 @@ def test_runtime_starts_enabled_and_configured_telegram_channel(
     assert status["channels"]["telegram"]["running"] is True
     assert status["channels"]["telegram"]["state"] == "running"
     assert status["channels"]["telegram"]["error"] is None
+    assert runtime.get_started_channel("telegram") is not None
 
     asyncio.run(runtime.stop())
     stopped_status = runtime.status()
     assert stopped_status["state"] == "configured"
     assert stopped_status["channels"]["telegram"]["running"] is False
     assert stopped_status["channels"]["telegram"]["state"] == "configured"
+
+
+def test_runtime_wires_router_into_started_telegram_adapter(monkeypatch):
+    monkeypatch.setenv("AWORLD_TELEGRAM_BOT_TOKEN", "telegram-token")
+
+    class FakeRouter:
+        async def handle_inbound(self, inbound, *, channel_default_agent_id):
+            return None
+
+    config = GatewayConfig()
+    config.channels.telegram.enabled = True
+    router = FakeRouter()
+    runtime = GatewayRuntime(
+        config=config,
+        registry=ChannelRegistry(),
+        router=router,
+    )
+
+    asyncio.run(runtime.start())
+
+    adapter = runtime.get_started_channel("telegram")
+    assert adapter is not None
+    assert getattr(adapter, "_router") is router
 
 
 def test_runtime_status_returns_deep_copy():
@@ -174,7 +198,7 @@ def test_runtime_uses_registry_adapter_builder_and_stop_reconciles_state():
         def is_configured(self, channel_id: str, config):
             return channel_id == "web"
 
-        def build_adapter(self, channel_id: str, config):
+        def build_adapter(self, channel_id: str, config, *, router=None):
             if channel_id == "web":
                 self.built_configs.append(config)
                 return FakeAdapter(config)
@@ -239,7 +263,7 @@ def test_runtime_degrades_failing_channel_without_blocking_other_channels():
         def is_configured(self, channel_id: str, config):
             return channel_id in {"web", "feishu"}
 
-        def build_adapter(self, channel_id: str, config):
+        def build_adapter(self, channel_id: str, config, *, router=None):
             if channel_id == "web":
                 return FailingAdapter(config)
             if channel_id == "feishu":
