@@ -459,10 +459,38 @@ Batch Jobs:
         help='Disable banner display on startup / 启动时不显示 banner'
     )
 
-    # Create a minimal parser to check if command is 'plugin'
+    # Create a minimal parser to check if command needs special handling.
     minimal_parser = argparse.ArgumentParser(add_help=False)
     minimal_parser.add_argument('command', nargs='?', default='interactive')
     minimal_args, _ = minimal_parser.parse_known_args()
+
+    # Handle gateway command specially
+    if minimal_args.command == "gateway":
+        from .gateway_cli import (
+            build_gateway_parser,
+            handle_gateway_channels_list,
+            handle_gateway_status,
+        )
+
+        gateway_parser = build_gateway_parser()
+        try:
+            gateway_args = gateway_parser.parse_args(sys.argv[2:])
+        except SystemExit:
+            return
+
+        if gateway_args.gateway_action == "status":
+            print(handle_gateway_status())
+            return
+
+        if (
+            gateway_args.gateway_action == "channels"
+            and gateway_args.channels_action == "list"
+        ):
+            print(handle_gateway_channels_list())
+            return
+
+        print("Gateway serve is not implemented yet.")
+        return
 
     # Handle plugin command specially
     if minimal_args.command == "plugin":
@@ -561,9 +589,9 @@ Batch Jobs:
         'command',
         nargs='?',
         default='interactive',
-        choices=['interactive', 'list', 'serve', 'batch', 'batch-job'],
+        choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'gateway'],
         help='Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers, '
-             '"batch-job" to run batch jobs.'
+             '"batch-job" to run batch jobs, or "gateway" to manage the gateway.'
     )
     
     parser.add_argument(
@@ -748,7 +776,7 @@ Batch Jobs:
         )
         parser_zh.add_argument('-zh', '--zh', action='store_true', help='显示中文帮助')
         parser_zh.add_argument('--examples', action='store_true', help='显示使用示例')
-        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugin'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugin" 管理插件。')
+        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugin', 'gateway'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugin" 管理插件，使用 "gateway" 管理网关。')
         parser_zh.add_argument('--task', type=str, help='发送给 agent 的任务（非交互模式）')
         parser_zh.add_argument('--agent', type=str, help='要使用的 agent 名称（直接运行模式必需）')
         parser_zh.add_argument('--max-runs', type=int, help='最大运行次数（直接运行模式）')
