@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,22 +58,40 @@ class InstalledSkillManager:
 
     def _normalize_entry_path(self, path: Path) -> Path:
         expanded_path = path.expanduser()
-        return expanded_path.parent.resolve(strict=False) / expanded_path.name
+        if expanded_path.name in {".", ".."}:
+            raise ValueError(
+                "Installed skill entries cannot use '.' or '..' as the entry name or resolve to the installed root itself"
+            )
+
+        normalized_path = expanded_path.parent.resolve(strict=False) / expanded_path.name
+        if normalized_path.exists() and normalized_path.is_symlink():
+            return normalized_path
+        return normalized_path.resolve(strict=False)
 
     def _is_managed_entry_path(self, path: Path) -> bool:
         canonical_root = self.installed_root.resolve(strict=False)
         normalized_path = self._normalize_entry_path(path)
-        return canonical_root in normalized_path.parents
+        return normalized_path != canonical_root and canonical_root in normalized_path.parents
 
     def load_manifest(self) -> list[dict[str, str]]:
         if not self.manifest_path.exists():
             return []
 
         try:
-            return json.loads(self.manifest_path.read_text(encoding="utf-8"))
+            raw_manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
             logger.warning("Failed to parse installed skill manifest: %s", self.manifest_path)
             return []
+
+        if not isinstance(raw_manifest, list) or any(
+            not isinstance(item, Mapping) for item in raw_manifest
+        ):
+            logger.warning(
+                "Installed skill manifest has invalid structure: %s", self.manifest_path
+            )
+            return []
+
+        return [dict(item) for item in raw_manifest]
 
     def save_manifest(self, records: list[dict[str, str]]) -> None:
         self.manifest_path.write_text(
@@ -92,7 +111,9 @@ class InstalledSkillManager:
     def import_entry(self, entry_path: Path, scope: SkillScope) -> dict[str, str]:
         entry_path = self._normalize_entry_path(entry_path)
         if not self._is_managed_entry_path(entry_path):
-            raise ValueError("Manual import path must already live under the installed root")
+            raise ValueError(
+                "Manual import path must already live under the installed root and cannot be the installed root itself"
+            )
 
         resolved_source = self.resolve_entry_source(entry_path)
         record = InstalledSkillRecord(
@@ -126,7 +147,11 @@ class InstalledSkillManager:
         if target is None:
             raise ValueError(f"Unknown installed skill entry: {install_id_or_name}")
 
-        installed_path = self._normalize_entry_path(Path(target["installed_path"]))
+        installed_path_value = target.get("installed_path")
+        if not installed_path_value:
+            raise ValueError(f"Unknown installed skill entry: {install_id_or_name}")
+
+        installed_path = self._normalize_entry_path(Path(installed_path_value))
         if not self._is_managed_entry_path(installed_path):
             raise ValueError(
                 f"Installed path resolves outside the installed root: {installed_path}"

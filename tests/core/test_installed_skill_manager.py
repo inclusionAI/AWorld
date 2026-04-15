@@ -162,3 +162,52 @@ def test_import_entry_accepts_noncanonical_path_within_installed_root(
 
     assert record["install_id"] == "demo"
     assert Path(record["installed_path"]).resolve() == entry.resolve()
+
+
+def test_import_entry_rejects_path_that_canonicalizes_to_installed_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    entry = installed_root / "demo"
+    _write_skill(entry, "optimizer")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+
+    with pytest.raises(ValueError, match="installed root itself"):
+        manager.import_entry(installed_root / "demo" / "..", scope="global")
+
+
+@pytest.mark.parametrize("raw_manifest", ["{}", "[1, 2]"])
+def test_load_manifest_rejects_structurally_invalid_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, raw_manifest: str
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manifest_path.write_text(raw_manifest, encoding="utf-8")
+
+    assert manager.load_manifest() == []
+
+
+def test_remove_install_handles_malformed_manifest_entries_as_unknown_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manifest_path.write_text('[{"broken": true}]', encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Unknown installed skill entry"):
+        manager.remove_install("missing")
