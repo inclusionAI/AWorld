@@ -467,7 +467,7 @@ Batch Jobs:
     # Handle plugin command specially.
     if minimal_args.command in {"plugin", "plugins"}:
         plugin_parser = argparse.ArgumentParser(description="Plugin management commands", prog="aworld-cli plugins")
-        plugin_subparsers = plugin_parser.add_subparsers(dest='plugin_action', help='Plugin action to perform', required=True)
+        plugin_subparsers = plugin_parser.add_subparsers(dest='plugin_action', help='Plugin action to perform')
 
         # install subcommand
         install_parser = plugin_subparsers.add_parser('install', help='Install a plugin')
@@ -501,6 +501,8 @@ Batch Jobs:
         except SystemExit:
             return
 
+        plugin_action = plugin_args.plugin_action or "list"
+
         # Handle plugin commands
         from .core.plugin_manager import (
             PluginManager,
@@ -510,7 +512,7 @@ Batch Jobs:
 
         manager = PluginManager()
 
-        if plugin_args.plugin_action == "install":
+        if plugin_action == "install":
             if not plugin_args.url and not plugin_args.local_path:
                 print("❌ Error: Either --url or --local-path must be provided")
                 install_parser.print_help()
@@ -532,12 +534,12 @@ Batch Jobs:
                 print(f"❌ Error installing plugin: {e}")
                 return
 
-        elif plugin_args.plugin_action == "remove":
+        elif plugin_action == "remove":
             success = manager.remove(plugin_args.plugin_name)
             if not success:
                 return
 
-        elif plugin_args.plugin_action == "enable":
+        elif plugin_action == "enable":
             try:
                 plugin_state = manager.enable(plugin_args.plugin_name)
                 print(f"✅ Plugin '{plugin_args.plugin_name}' enabled")
@@ -546,7 +548,7 @@ Batch Jobs:
                 print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
                 return
 
-        elif plugin_args.plugin_action == "disable":
+        elif plugin_action == "disable":
             try:
                 plugin_state = manager.disable(plugin_args.plugin_name)
                 print(f"✅ Plugin '{plugin_args.plugin_name}' disabled")
@@ -555,7 +557,7 @@ Batch Jobs:
                 print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
                 return
 
-        elif plugin_args.plugin_action == "reload":
+        elif plugin_action == "reload":
             try:
                 plugin_state = manager.reload(plugin_args.plugin_name)
                 print(f"✅ Plugin '{plugin_args.plugin_name}' reloaded")
@@ -564,7 +566,7 @@ Batch Jobs:
                 print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
                 return
 
-        elif plugin_args.plugin_action == "list":
+        elif plugin_action == "list":
             print(render_plugins_table(list_available_plugins(manager), manager.plugin_dir), end="")
 
         return
