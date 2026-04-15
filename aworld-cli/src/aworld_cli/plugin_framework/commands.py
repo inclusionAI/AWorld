@@ -24,6 +24,19 @@ class PluginPromptCommand(Command):
         tools = self._entrypoint.permissions.get("allowed_tools", [])
         return [str(item) for item in tools]
 
+    def resolve_state_path(self, context: CommandContext):
+        runtime = getattr(context, "runtime", None)
+        if runtime is None or not hasattr(runtime, "_resolve_plugin_state_path"):
+            return None
+
+        session_id = getattr(runtime, "session_id", None)
+        return runtime._resolve_plugin_state_path(
+            plugin_id=self._plugin.manifest.plugin_id,
+            scope=self._entrypoint.scope,
+            session_id=session_id,
+            workspace_path=context.cwd,
+        )
+
     async def get_prompt(self, context: CommandContext) -> str:
         prompt_path = self._resolver.resolve_asset(self._entrypoint.target)
         prompt = prompt_path.read_text(encoding="utf-8")

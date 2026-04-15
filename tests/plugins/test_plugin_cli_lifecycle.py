@@ -9,6 +9,11 @@ def test_enable_disable_reload_framework_plugin(tmp_path):
 
     assert manager.install("code-review-like", local_path=str(plugin_root))
 
+    listed = manager.list()
+    assert listed["code-review-like"]["plugin_id"] == "code-review-like"
+    assert listed["code-review-like"]["framework_source"] == "manifest"
+    assert listed["code-review-like"]["capabilities"] == ["commands"]
+
     manager.disable("code-review-like")
     disabled = manager.list()
     assert disabled["code-review-like"]["enabled"] is False

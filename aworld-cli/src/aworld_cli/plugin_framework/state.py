@@ -25,3 +25,6 @@ class PluginStateStore:
 
     def workspace_state(self, plugin_id: str, workspace_path: str) -> Path:
         return self._scope_dir("workspace", plugin_id, workspace_path) / "state.json"
+
+    def global_state(self, plugin_id: str) -> Path:
+        return self._scope_dir("global", plugin_id, plugin_id) / "state.json"

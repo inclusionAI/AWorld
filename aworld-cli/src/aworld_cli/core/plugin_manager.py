@@ -497,6 +497,9 @@ class PluginManager:
                 logger.warning(f"⚠️ Plugin '{plugin_name}' in manifest but directory not found: {plugin_path}")
                 continue
             
+            discovered = discover_plugins([plugin_path])
+            framework_plugin = discovered[0] if discovered else None
+
             # Get plugin info
             agents_dir = plugin_path / "agents"
             skills_dir = get_plugin_skills_dir(plugin_path)
@@ -508,6 +511,9 @@ class PluginManager:
                 "enabled": bool(plugin_info.get("enabled", True)),
                 "has_agents": agents_dir.exists() and any(agents_dir.iterdir()),
                 "has_skills": skills_dir.exists() and any(skills_dir.iterdir()),
+                "plugin_id": framework_plugin.manifest.plugin_id if framework_plugin else plugin_name,
+                "framework_source": framework_plugin.source if framework_plugin else "unknown",
+                "capabilities": sorted(framework_plugin.manifest.capabilities) if framework_plugin else [],
             }
             plugins.append(plugin_data)
         
@@ -515,6 +521,8 @@ class PluginManager:
         if self.plugin_dir.exists():
             for item in self.plugin_dir.iterdir():
                 if item.is_dir() and not item.name.startswith('.') and item.name not in self._manifest:
+                    discovered = discover_plugins([item])
+                    framework_plugin = discovered[0] if discovered else None
                     agents_dir = item / "agents"
                     skills_dir = get_plugin_skills_dir(item)
 
@@ -525,6 +533,9 @@ class PluginManager:
                         "enabled": True,
                         "has_agents": agents_dir.exists() and any(agents_dir.iterdir()),
                         "has_skills": skills_dir.exists() and any(skills_dir.iterdir()),
+                        "plugin_id": framework_plugin.manifest.plugin_id if framework_plugin else item.name,
+                        "framework_source": framework_plugin.source if framework_plugin else "unknown",
+                        "capabilities": sorted(framework_plugin.manifest.capabilities) if framework_plugin else [],
                     }
                     plugins.append(plugin_data)
         
