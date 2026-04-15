@@ -11,6 +11,7 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from aworld.logs.util import logger
+from ..plugin_framework.discovery import discover_plugins
 
 # Default plugin installation directory
 DEFAULT_PLUGIN_DIR = Path.home() / ".aworld" / "plugins"
@@ -490,6 +491,23 @@ class PluginManager:
         
         return agent_dirs
 
+    def get_plugin_roots(self) -> List[Path]:
+        """
+        Get list of installed plugin root directories (including skill-only plugins).
+
+        Returns:
+            List of plugin root directories
+        """
+        plugin_roots: List[Path] = []
+
+        plugins = self.list_plugins()
+        for plugin in plugins:
+            plugin_path = Path(plugin["path"])
+            if plugin_path.exists() and plugin_path.is_dir():
+                plugin_roots.append(plugin_path)
+
+        return plugin_roots
+
     async def _load_skills(self, plugin_dirs: List[Path], console=None) -> Dict[str, int]:
         """
         Load skills from all plugin directories.
@@ -510,7 +528,10 @@ class PluginManager:
         registry = get_skill_registry()
         loaded_skills: Dict[str, int] = {}
         
-        for plugin_dir in plugin_dirs:
+        discovered = discover_plugins(plugin_dirs)
+
+        for plugin in discovered:
+            plugin_dir = Path(plugin.manifest.plugin_root)
             skills_dir = get_plugin_skills_dir(plugin_dir)
 
             if not skills_dir.exists() or not skills_dir.is_dir():
@@ -531,17 +552,17 @@ class PluginManager:
                 # Only register if there are valid skill directories (with SKILL.md)
                 if skill_count > 0:
                     count = registry.register_source(str(skills_dir), source_name=str(skills_dir))
-                    plugin_name = plugin_dir.name
+                    plugin_name = plugin.manifest.plugin_id
                     loaded_skills[plugin_name] = count
                     
                     if console and count > 0:
                         console.print(f"[dim]📚 Loaded {count} skill(s) from plugin: {plugin_name}[/dim]")
                 else:
                     # No valid skill directories found (no SKILL.md files)
-                    plugin_name = plugin_dir.name
+                    plugin_name = plugin.manifest.plugin_id
                     loaded_skills[plugin_name] = 0
             except Exception as e:
-                plugin_name = plugin_dir.name
+                plugin_name = plugin.manifest.plugin_id
                 if console:
                     console.print(f"[yellow]⚠️ Failed to load skills from plugin {plugin_name}: {e}[/yellow]")
                 loaded_skills[plugin_name] = 0
@@ -581,10 +602,14 @@ class PluginManager:
         agent_sources_map: Dict[str, Dict] = {}  # Track sources for executor creation
         
         # ========== Lifecycle Step 1: Load Plugins ==========
+        discovered = discover_plugins(plugin_dirs)
+
         # For each plugin: load skills, then load agents
-        for plugin_dir in plugin_dirs:
+        for plugin in discovered:
+            plugin_dir = Path(plugin.manifest.plugin_root)
+            plugin_id = plugin.manifest.plugin_id
             try:
-                loader = PluginLoader(plugin_dir, console=console)
+                loader = PluginLoader(plugin_dir, plugin_id=plugin_id, console=console)
                 
                 # Load agents from plugin (this also loads skills internally)
                 plugin_agents = await loader.load_agents()
@@ -595,6 +620,7 @@ class PluginManager:
                         agent_sources_map[agent.name] = {
                             "type": "plugin",
                             "location": str(plugin_dir),
+                            "plugin_id": plugin_id,
                             "agents_dir": str(plugin_dir / "agents")  # Store agents dir for executor creation
                         }
                         all_agents.append(agent)
