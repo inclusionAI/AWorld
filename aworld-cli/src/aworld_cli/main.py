@@ -309,19 +309,19 @@ Server Mode:
 
 Plugin Management:
   # Install a plugin from GitHub
-  aworld-cli plugin install my-plugin --url https://github.com/user/repo
+  aworld-cli plugins install my-plugin --url https://github.com/user/repo
   
   # Install a plugin from local path
-  aworld-cli plugin install local-plugin --local-path ./local/plugin
+  aworld-cli plugins install local-plugin --local-path ./local/plugin
   
   # Install with force (overwrite existing)
-  aworld-cli plugin install my-plugin --url https://github.com/user/repo --force
+  aworld-cli plugins install my-plugin --url https://github.com/user/repo --force
   
   # List installed plugins
-  aworld-cli plugin list
+  aworld-cli plugins list
   
   # Remove a plugin
-  aworld-cli plugin remove my-plugin
+  aworld-cli plugins remove my-plugin
 """
     
     # Chinese help text
@@ -418,19 +418,19 @@ Batch Jobs:
 
 插件管理：
   # 从 GitHub 安装插件
-  aworld-cli plugin install my-plugin --url https://github.com/user/repo
+  aworld-cli plugins install my-plugin --url https://github.com/user/repo
   
   # 从本地路径安装插件
-  aworld-cli plugin install local-plugin --local-path ./local/plugin
+  aworld-cli plugins install local-plugin --local-path ./local/plugin
   
   # 强制安装（覆盖已存在的插件）
-  aworld-cli plugin install my-plugin --url https://github.com/user/repo --force
+  aworld-cli plugins install my-plugin --url https://github.com/user/repo --force
   
   # 列出已安装的插件
-  aworld-cli plugin list
+  aworld-cli plugins list
   
   # 移除插件
-  aworld-cli plugin remove my-plugin
+  aworld-cli plugins remove my-plugin
 """
     
     description_en = "AWorld Agent CLI - Interact with agents directly from the terminal"
@@ -459,14 +459,14 @@ Batch Jobs:
         help='Disable banner display on startup / 启动时不显示 banner'
     )
 
-    # Create a minimal parser to check if command is 'plugin'
+    # Create a minimal parser to check if command is 'plugins'
     minimal_parser = argparse.ArgumentParser(add_help=False)
     minimal_parser.add_argument('command', nargs='?', default='interactive')
     minimal_args, _ = minimal_parser.parse_known_args()
 
-    # Handle plugin command specially
-    if minimal_args.command == "plugin":
-        plugin_parser = argparse.ArgumentParser(description="Plugin management commands", prog="aworld-cli plugin")
+    # Handle plugin command specially.
+    if minimal_args.command in {"plugin", "plugins"}:
+        plugin_parser = argparse.ArgumentParser(description="Plugin management commands", prog="aworld-cli plugins")
         plugin_subparsers = plugin_parser.add_subparsers(dest='plugin_action', help='Plugin action to perform', required=True)
 
         # install subcommand
@@ -502,7 +502,11 @@ Batch Jobs:
             return
 
         # Handle plugin commands
-        from .core.plugin_manager import PluginManager
+        from .core.plugin_manager import (
+            PluginManager,
+            list_available_plugins,
+            render_plugins_table,
+        )
 
         manager = PluginManager()
 
@@ -561,47 +565,7 @@ Batch Jobs:
                 return
 
         elif plugin_args.plugin_action == "list":
-            plugins = manager.list_plugins()
-
-            if not plugins:
-                print("📦 No plugins installed")
-                print(f"📍 Plugin directory: {manager.plugin_dir}")
-                return
-
-            print(f"📦 Installed plugins ({len(plugins)}):")
-            print(f"📍 Plugin directory: {manager.plugin_dir}\n")
-
-            from rich.console import Console
-            from rich.table import Table
-
-            console = Console()
-            table = Table(show_header=True, header_style="bold magenta")
-            table.add_column("Name", style="cyan")
-            table.add_column("Plugin ID", style="bright_cyan")
-            table.add_column("Enabled", justify="center")
-            table.add_column("Lifecycle", justify="center")
-            table.add_column("Framework", style="green")
-            table.add_column("Capabilities", style="yellow")
-            table.add_column("Source", style="green")
-            table.add_column("Has Agents", justify="center")
-            table.add_column("Has Skills", justify="center")
-            table.add_column("Path", style="dim")
-
-            for plugin in plugins:
-                table.add_row(
-                    plugin['name'],
-                    plugin.get('plugin_id', plugin['name']),
-                    "✅" if plugin.get('enabled', True) else "❌",
-                    plugin.get('lifecycle_phase', 'unknown'),
-                    plugin.get('framework_source', 'unknown'),
-                    ", ".join(plugin.get('capabilities', [])) or "-",
-                    plugin['source'],
-                    "✅" if plugin['has_agents'] else "❌",
-                    "✅" if plugin['has_skills'] else "❌",
-                    plugin['path']
-                )
-
-            console.print(table)
+            print(render_plugins_table(list_available_plugins(manager), manager.plugin_dir), end="")
 
         return
 
@@ -610,7 +574,7 @@ Batch Jobs:
         'command',
         nargs='?',
         default='interactive',
-        choices=['interactive', 'list', 'serve', 'batch', 'batch-job'],
+        choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugins'],
         help='Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers, '
              '"batch-job" to run batch jobs.'
     )
@@ -797,7 +761,7 @@ Batch Jobs:
         )
         parser_zh.add_argument('-zh', '--zh', action='store_true', help='显示中文帮助')
         parser_zh.add_argument('--examples', action='store_true', help='显示使用示例')
-        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugin'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugin" 管理插件。')
+        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugins'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugins" 管理插件。')
         parser_zh.add_argument('--task', type=str, help='发送给 agent 的任务（非交互模式）')
         parser_zh.add_argument('--agent', type=str, help='要使用的 agent 名称（直接运行模式必需）')
         parser_zh.add_argument('--max-runs', type=int, help='最大运行次数（直接运行模式）')
@@ -835,7 +799,7 @@ Batch Jobs:
 
     # Display configuration source
     from ._globals import console
-    # Require model config for commands that use the agent (skip for 'list' and plugin)
+    # Require model config for commands that use the agent (skip for 'list' and 'plugins')
     if args.command != "list" and not has_model_config(config_dict):
         console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
         console.print("[dim]Run: aworld-cli --config[/dim]")

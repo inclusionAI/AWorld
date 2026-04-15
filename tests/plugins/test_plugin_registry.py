@@ -2,14 +2,22 @@ from pathlib import Path
 
 import pytest
 
+from aworld_cli.core.plugin_manager import get_builtin_plugin_roots
 from aworld_cli.plugin_framework.discovery import discover_plugins
 from aworld_cli.plugin_framework.registry import PluginCapabilityRegistry
+
+
+def _get_builtin_aworld_hud_root() -> Path:
+    for root in get_builtin_plugin_roots():
+        if root.name == "aworld_hud":
+            return root
+    raise AssertionError("built-in aworld_hud plugin root not found")
 
 
 def test_registry_indexes_plugins_by_capability():
     roots = [
         Path("tests/fixtures/plugins/code_review_like").resolve(),
-        Path("tests/fixtures/plugins/hud_like").resolve(),
+        _get_builtin_aworld_hud_root(),
         Path("tests/fixtures/plugins/ralph_like").resolve(),
         Path("tests/fixtures/plugins/context_like").resolve(),
     ]
@@ -18,7 +26,7 @@ def test_registry_indexes_plugins_by_capability():
     registry = PluginCapabilityRegistry(plugins)
 
     assert [plugin.manifest.plugin_id for plugin in registry.get_plugins("commands")] == ["code-review-like"]
-    assert [plugin.manifest.plugin_id for plugin in registry.get_plugins("hud")] == ["hud-like"]
+    assert [plugin.manifest.plugin_id for plugin in registry.get_plugins("hud")] == ["aworld-hud"]
     assert [plugin.manifest.plugin_id for plugin in registry.get_plugins("hooks")] == ["ralph-like"]
     assert [plugin.manifest.plugin_id for plugin in registry.get_plugins("contexts")] == ["context-like"]
 

@@ -6,6 +6,7 @@ import json
 import re
 import shutil
 import subprocess
+from io import StringIO
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
@@ -64,6 +65,115 @@ def get_plugin_skills_dir(plugin_path: Path) -> Path:
     return Path(plugin_path) / "skills"
 
 
+def list_builtin_plugins() -> List[Dict[str, object]]:
+    """Return built-in plugins using the same display schema as installed plugins."""
+    plugin_roots = get_builtin_plugin_roots()
+    discovered = discover_plugins(plugin_roots)
+    registry = PluginCapabilityRegistry(discovered) if discovered else None
+
+    plugins: List[Dict[str, object]] = []
+    for plugin in discovered:
+        plugin_root = Path(plugin.manifest.plugin_root)
+        agents_dir = plugin_root / "agents"
+        skills_dir = get_plugin_skills_dir(plugin_root)
+        plugins.append(
+            {
+                "name": plugin.manifest.name,
+                "path": str(plugin_root),
+                "source": "built-in",
+                "enabled": True,
+                "has_agents": agents_dir.exists() and any(agents_dir.iterdir()),
+                "has_skills": skills_dir.exists() and any(skills_dir.iterdir()),
+                "plugin_id": plugin.manifest.plugin_id,
+                "framework_source": plugin.source,
+                "capabilities": sorted(plugin.manifest.capabilities),
+                "lifecycle_phase": registry.lifecycle_phase(plugin.manifest.plugin_id) if registry else "unknown",
+            }
+        )
+
+    return plugins
+
+
+def get_builtin_framework_plugin(plugin_name: str) -> Optional[Dict[str, object]]:
+    """Return a built-in framework plugin by name or plugin_id."""
+    normalized = (plugin_name or "").strip()
+    if not normalized:
+        return None
+
+    for plugin in list_builtin_plugins():
+        if plugin.get("framework_source") != "manifest":
+            continue
+        if normalized in {plugin.get("name"), plugin.get("plugin_id")}:
+            return plugin
+    return None
+
+
+def list_available_plugins(manager: "PluginManager") -> List[Dict[str, object]]:
+    """Return installed and built-in framework plugins merged into one display list."""
+    plugins = [
+        plugin
+        for plugin in manager.list_plugins()
+        if plugin.get("framework_source") == "manifest"
+    ]
+    seen_plugin_ids = {plugin.get("plugin_id", plugin["name"]) for plugin in plugins}
+
+    for plugin in list_builtin_plugins():
+        if plugin.get("framework_source") != "manifest":
+            continue
+        plugin_id = plugin.get("plugin_id", plugin["name"])
+        if plugin_id not in seen_plugin_ids:
+            plugins.append(plugin)
+            seen_plugin_ids.add(plugin_id)
+
+    return plugins
+
+
+def render_plugins_table(plugins: List[Dict[str, object]], plugin_dir: Path | str) -> str:
+    """Render plugin rows as a human-readable table."""
+    from rich.console import Console
+    from rich.table import Table
+
+    buffer = StringIO()
+    console = Console(file=buffer, force_terminal=False, color_system=None, width=200)
+
+    if not plugins:
+        console.print("📦 No plugins available")
+        console.print(f"📍 Plugin directory: {plugin_dir}")
+        return buffer.getvalue()
+
+    console.print(f"📦 Available plugins ({len(plugins)}):")
+    console.print(f"📍 Plugin directory: {plugin_dir}\n")
+
+    table = Table(show_header=True, header_style="bold magenta")
+    table.add_column("Name", style="cyan")
+    table.add_column("Plugin ID", style="bright_cyan")
+    table.add_column("Enabled", justify="center")
+    table.add_column("Lifecycle", justify="center")
+    table.add_column("Framework", style="green")
+    table.add_column("Capabilities", style="yellow")
+    table.add_column("Source", style="green")
+    table.add_column("Has Agents", justify="center")
+    table.add_column("Has Skills", justify="center")
+    table.add_column("Path", style="dim")
+
+    for plugin in plugins:
+        table.add_row(
+            plugin["name"],
+            plugin.get("plugin_id", plugin["name"]),
+            "✅" if plugin.get("enabled", True) else "❌",
+            plugin.get("lifecycle_phase", "unknown"),
+            plugin.get("framework_source", "unknown"),
+            ", ".join(plugin.get("capabilities", [])) or "-",
+            plugin["source"],
+            "✅" if plugin["has_agents"] else "❌",
+            "✅" if plugin["has_skills"] else "❌",
+            plugin["path"],
+        )
+
+    console.print(table)
+    return buffer.getvalue()
+
+
 class PluginManager:
     """
     Manager for AWorld CLI plugins.
@@ -115,6 +225,20 @@ class PluginManager:
     def _ensure_manifest_entry(self, plugin_name: str) -> Dict[str, object]:
         if plugin_name in self._manifest:
             return self._manifest[plugin_name]
+
+        builtin_plugin = get_builtin_framework_plugin(plugin_name)
+        if builtin_plugin is not None:
+            manifest_key = str(builtin_plugin.get("plugin_id") or builtin_plugin.get("name") or plugin_name)
+            entry = self._build_manifest_entry(
+                plugin_name=manifest_key,
+                plugin_path=Path(str(builtin_plugin["path"])),
+                source=str(builtin_plugin.get("source", "built-in")),
+                enabled=bool(builtin_plugin.get("enabled", True)),
+            )
+            entry["name"] = str(builtin_plugin.get("name", manifest_key))
+            self._manifest[manifest_key] = entry
+            self._save_manifest()
+            return entry
 
         plugin_path = self.plugin_dir / plugin_name
         if not plugin_path.exists():
@@ -551,6 +675,32 @@ class PluginManager:
             plugins.append(plugin_data)
 
         return plugins
+
+    def get_runtime_plugin_roots(self) -> List[Path]:
+        """Return runtime-visible plugin roots with built-in framework overrides applied."""
+        plugin_roots: List[Path] = []
+        seen: set[Path] = set()
+
+        for builtin_root in get_builtin_plugin_roots():
+            builtin_path = builtin_root.resolve()
+            discovered = discover_plugins([builtin_path])
+            if discovered:
+                plugin = discovered[0]
+                if plugin.source == "manifest":
+                    manifest_entry = self._manifest.get(plugin.manifest.plugin_id)
+                    if manifest_entry is not None and not bool(manifest_entry.get("enabled", True)):
+                        continue
+            if builtin_path not in seen:
+                plugin_roots.append(builtin_path)
+                seen.add(builtin_path)
+
+        for plugin_path in self.get_plugin_roots():
+            resolved = plugin_path.resolve()
+            if resolved not in seen:
+                plugin_roots.append(resolved)
+                seen.add(resolved)
+
+        return plugin_roots
 
     def list(self) -> Dict[str, Dict[str, object]]:
         """Return installed plugins keyed by plugin name, including enabled state."""
