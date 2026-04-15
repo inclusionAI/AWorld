@@ -11,7 +11,41 @@ from aworld_gateway.registry import ChannelRegistry
 from aworld_gateway.runtime import GatewayRuntime
 
 
-def test_runtime_start_reports_running_when_no_channels_enabled():
+def test_runtime_status_is_initialized_before_start(monkeypatch):
+    monkeypatch.delenv("AWORLD_TELEGRAM_BOT_TOKEN", raising=False)
+
+    runtime = GatewayRuntime(
+        config=GatewayConfig(),
+        registry=ChannelRegistry(),
+        router=None,
+    )
+
+    status = runtime.status()
+    assert status["state"] == "registered"
+    assert status["channels"]["telegram"]["state"] == "registered"
+    assert status["channels"]["web"]["state"] == "registered"
+
+
+def test_runtime_status_derives_pre_start_state_from_non_default_config():
+    config = GatewayConfig()
+    config.channels.web.enabled = True
+
+    runtime = GatewayRuntime(
+        config=config,
+        registry=ChannelRegistry(),
+        router=None,
+    )
+
+    status = runtime.status()
+    assert status["state"] == "degraded"
+    assert status["channels"]["web"]["state"] == "degraded"
+
+
+def test_runtime_start_reports_registered_channels_when_no_channels_enabled(
+    monkeypatch,
+):
+    monkeypatch.delenv("AWORLD_TELEGRAM_BOT_TOKEN", raising=False)
+
     runtime = GatewayRuntime(
         config=GatewayConfig(),
         registry=ChannelRegistry(),
@@ -21,16 +55,22 @@ def test_runtime_start_reports_running_when_no_channels_enabled():
     asyncio.run(runtime.start())
 
     status = runtime.status()
-    assert status["state"] == "running"
+    assert status["state"] == "registered"
     assert status["channels"]["telegram"]["enabled"] is False
+    assert status["channels"]["telegram"]["configured"] is False
     assert status["channels"]["telegram"]["implemented"] is True
-    assert status["channels"]["telegram"]["state"] == "disabled"
+    assert status["channels"]["telegram"]["running"] is False
+    assert status["channels"]["telegram"]["state"] == "registered"
     assert status["channels"]["web"]["enabled"] is False
+    assert status["channels"]["web"]["configured"] is True
     assert status["channels"]["web"]["implemented"] is False
-    assert status["channels"]["web"]["state"] == "disabled"
+    assert status["channels"]["web"]["running"] is False
+    assert status["channels"]["web"]["state"] == "registered"
 
     asyncio.run(runtime.stop())
-    assert runtime.status()["state"] == "stopped"
+    stopped_status = runtime.status()
+    assert stopped_status["state"] == "registered"
+    assert stopped_status["channels"]["telegram"]["state"] == "registered"
 
 
 def test_runtime_start_degrades_when_enabled_channel_is_not_implemented():
@@ -47,11 +87,17 @@ def test_runtime_start_degrades_when_enabled_channel_is_not_implemented():
     status = runtime.status()
     assert status["state"] == "degraded"
     assert status["channels"]["web"]["enabled"] is True
+    assert status["channels"]["web"]["configured"] is True
     assert status["channels"]["web"]["implemented"] is False
+    assert status["channels"]["web"]["running"] is False
     assert status["channels"]["web"]["state"] == "degraded"
 
 
-def test_runtime_degrades_for_enabled_metadata_only_channel_without_adapter():
+def test_runtime_degrades_for_enabled_but_builderless_telegram_channel(
+    monkeypatch,
+):
+    monkeypatch.setenv("AWORLD_TELEGRAM_BOT_TOKEN", "telegram-token")
+
     config = GatewayConfig()
     config.channels.telegram.enabled = True
     runtime = GatewayRuntime(
@@ -65,8 +111,11 @@ def test_runtime_degrades_for_enabled_metadata_only_channel_without_adapter():
     status = runtime.status()
     assert status["state"] == "degraded"
     assert status["channels"]["telegram"]["enabled"] is True
+    assert status["channels"]["telegram"]["configured"] is True
     assert status["channels"]["telegram"]["implemented"] is True
+    assert status["channels"]["telegram"]["running"] is False
     assert status["channels"]["telegram"]["state"] == "degraded"
+    assert status["channels"]["telegram"]["error"] == "Channel adapter is not available."
 
 
 def test_runtime_status_returns_deep_copy():
@@ -79,9 +128,11 @@ def test_runtime_status_returns_deep_copy():
     asyncio.run(runtime.start())
     first = runtime.status()
     first["channels"]["web"]["state"] = "tampered"
+    first["channels"]["web"]["running"] = True
 
     second = runtime.status()
-    assert second["channels"]["web"]["state"] == "disabled"
+    assert second["channels"]["web"]["state"] == "registered"
+    assert second["channels"]["web"]["running"] is False
 
 
 def test_runtime_uses_registry_adapter_builder_and_stop_reconciles_state():
@@ -102,6 +153,10 @@ def test_runtime_uses_registry_adapter_builder_and_stop_reconciles_state():
             self.stopped = True
 
     class FakeRegistry(ChannelRegistry):
+        def __init__(self) -> None:
+            super().__init__()
+            self.built_configs = []
+
         def list_channels(self):
             return {"web": {"label": "Web", "implemented": True}}
 
@@ -110,21 +165,92 @@ def test_runtime_uses_registry_adapter_builder_and_stop_reconciles_state():
                 return {"label": "Web", "implemented": True}
             return None
 
-        def get_adapter_class(self, channel_id: str):
+        def is_configured(self, channel_id: str, config):
+            return channel_id == "web"
+
+        def build_adapter(self, channel_id: str, config):
             if channel_id == "web":
-                return FakeAdapter
+                self.built_configs.append(config)
+                return FakeAdapter(config)
             return None
 
     config = GatewayConfig()
     config.channels.web.enabled = True
-    runtime = GatewayRuntime(config=config, registry=FakeRegistry(), router=None)
+    registry = FakeRegistry()
+    runtime = GatewayRuntime(config=config, registry=registry, router=None)
 
     asyncio.run(runtime.start())
     started_status = runtime.status()
     assert started_status["state"] == "running"
-    assert started_status["channels"]["web"]["state"] == "registered"
+    assert started_status["channels"]["web"]["enabled"] is True
+    assert started_status["channels"]["web"]["configured"] is True
+    assert started_status["channels"]["web"]["implemented"] is True
+    assert started_status["channels"]["web"]["running"] is True
+    assert started_status["channels"]["web"]["state"] == "running"
+    assert registry.built_configs == [config.channels.web]
 
     asyncio.run(runtime.stop())
     stopped_status = runtime.status()
-    assert stopped_status["state"] == "stopped"
-    assert stopped_status["channels"]["web"]["state"] == "stopped"
+    assert stopped_status["state"] == "configured"
+    assert stopped_status["channels"]["web"]["running"] is False
+    assert stopped_status["channels"]["web"]["state"] == "configured"
+
+
+def test_runtime_degrades_failing_channel_without_blocking_other_channels():
+    class FailingAdapter:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        async def start(self) -> None:
+            raise RuntimeError("boom")
+
+        async def stop(self) -> None:
+            return None
+
+    class RunningAdapter:
+        def __init__(self, config) -> None:
+            self.config = config
+            self.started = False
+
+        async def start(self) -> None:
+            self.started = True
+
+        async def stop(self) -> None:
+            return None
+
+    class FakeRegistry(ChannelRegistry):
+        def list_channels(self):
+            return {
+                "web": {"label": "Web", "implemented": True},
+                "feishu": {"label": "Feishu", "implemented": True},
+            }
+
+        def get_meta(self, channel_id: str):
+            if channel_id in {"web", "feishu"}:
+                return {"label": channel_id.title(), "implemented": True}
+            return None
+
+        def is_configured(self, channel_id: str, config):
+            return channel_id in {"web", "feishu"}
+
+        def build_adapter(self, channel_id: str, config):
+            if channel_id == "web":
+                return FailingAdapter(config)
+            if channel_id == "feishu":
+                return RunningAdapter(config)
+            return None
+
+    config = GatewayConfig()
+    config.channels.web.enabled = True
+    config.channels.feishu.enabled = True
+    runtime = GatewayRuntime(config=config, registry=FakeRegistry(), router=None)
+
+    asyncio.run(runtime.start())
+
+    status = runtime.status()
+    assert status["state"] == "degraded"
+    assert status["channels"]["web"]["running"] is False
+    assert status["channels"]["web"]["state"] == "degraded"
+    assert status["channels"]["web"]["error"] == "boom"
+    assert status["channels"]["feishu"]["running"] is True
+    assert status["channels"]["feishu"]["state"] == "running"

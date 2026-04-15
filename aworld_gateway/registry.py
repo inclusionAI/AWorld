@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TypeAlias
@@ -9,7 +10,7 @@ from aworld_gateway.channels.dingding.adapter import DingdingChannelAdapter
 from aworld_gateway.channels.feishu.adapter import FeishuChannelAdapter
 from aworld_gateway.channels.web.adapter import WebChannelAdapter
 from aworld_gateway.channels.wecom.adapter import WecomChannelAdapter
-from aworld_gateway.config import BaseChannelConfig
+from aworld_gateway.config import BaseChannelConfig, TelegramChannelConfig
 
 ChannelMetaSummary: TypeAlias = dict[str, object]
 
@@ -79,6 +80,26 @@ class ChannelRegistry:
         if adapter_class is None:
             return None
         return adapter_class(config)
+
+    def is_configured(
+        self,
+        channel_id: str,
+        config: BaseChannelConfig | None,
+    ) -> bool:
+        registration = self._registrations.get(channel_id)
+        if registration is None or config is None:
+            return False
+
+        if channel_id != "telegram":
+            return True
+
+        if not isinstance(config, TelegramChannelConfig):
+            return False
+        if config.bot_token:
+            return True
+        if not config.bot_token_env:
+            return False
+        return bool(os.getenv(config.bot_token_env))
 
     @staticmethod
     def _meta_summary(registration: ChannelRegistration) -> ChannelMetaSummary:
