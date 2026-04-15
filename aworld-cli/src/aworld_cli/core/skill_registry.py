@@ -61,7 +61,7 @@ def collect_plugin_and_user_skills(plugin_base_dir: Path, user_dir: Optional[Uni
     Collect skills from plugin skills dir and user skills dirs, with dedup, skill_path fix, and aworld_metadata filter.
 
     Resolution order:
-    1. Plugin skills dir: plugin_base_dir/skills (e.g. inner_plugins/smllc/skills)
+    1. Plugin skills dir: plugin_base_dir/skills (e.g. plugins/smllc/skills)
     2. User skills dirs: user_dir (if set, semicolon-separated) + SKILLS_PATH / SKILLS_DIR / ~/.aworld/skills (user path overrides plugin on conflict)
     3. Each skill gets skill_path ensured for context_skill_tool
     4. Only skills with aworld_metadata.eligible=True (or no aworld_metadata) are included
@@ -318,4 +318,3 @@ def register_skill_source(source: str, source_name: Optional[str] = None) -> int
     """
     registry = get_skill_registry()
     return registry.register_source(source, source_name=source_name)
-

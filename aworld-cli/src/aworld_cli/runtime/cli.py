@@ -124,15 +124,10 @@ class CliRuntime(BaseCliRuntime):
         """
         plugin_dirs = []
         
-        # Get built-in plugins (inner_plugins)
-        import pathlib
-        current_dir = pathlib.Path(__file__).parent.parent
-        inner_plugins_dir = current_dir / "inner_plugins"
-        
-        if inner_plugins_dir.exists() and inner_plugins_dir.is_dir():
-            for plugin_dir in inner_plugins_dir.iterdir():
-                if plugin_dir.is_dir():
-                    plugin_dirs.append(plugin_dir)
+        # Get built-in plugins from the canonical package layout.
+        from ..core.plugin_manager import get_builtin_plugin_roots
+
+        plugin_dirs.extend(get_builtin_plugin_roots())
         
         # Get installed plugins
         try:

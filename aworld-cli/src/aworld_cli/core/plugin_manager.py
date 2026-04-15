@@ -18,6 +18,32 @@ DEFAULT_PLUGIN_DIR = Path.home() / ".aworld" / "plugins"
 PLUGIN_MANIFEST_FILE = DEFAULT_PLUGIN_DIR / ".manifest.json"
 
 
+def get_builtin_plugins_base_dir() -> Path:
+    """Return the canonical built-in plugin package directory."""
+    return Path(__file__).resolve().parent.parent / "plugins"
+
+
+def get_legacy_builtin_plugins_base_dir() -> Path:
+    """Return the legacy built-in plugin package directory."""
+    return Path(__file__).resolve().parent.parent / "inner_plugins"
+
+
+def get_builtin_plugin_roots() -> List[Path]:
+    """Return built-in plugin root directories, preferring `plugins/` over legacy layout."""
+    plugin_dirs: List[Path] = []
+
+    for base_dir in (get_builtin_plugins_base_dir(), get_legacy_builtin_plugins_base_dir()):
+        if not base_dir.exists() or not base_dir.is_dir():
+            continue
+        for plugin_dir in base_dir.iterdir():
+            if plugin_dir.is_dir():
+                plugin_dirs.append(plugin_dir)
+        if plugin_dirs:
+            break
+
+    return plugin_dirs
+
+
 def get_plugin_skills_dir(plugin_path: Path) -> Path:
     """
     Return the skills directory for a plugin (plugin root path + "skills").
@@ -25,7 +51,7 @@ def get_plugin_skills_dir(plugin_path: Path) -> Path:
     This is the directory where aworld built-in/plugin skills are stored.
 
     Args:
-        plugin_path: Root path of the plugin (e.g. inner_plugins/smllc or ~/.aworld/plugins/foo).
+        plugin_path: Root path of the plugin (e.g. plugins/smllc or ~/.aworld/plugins/foo).
 
     Returns:
         Path to the plugin's skills subdirectory.

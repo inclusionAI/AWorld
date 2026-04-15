@@ -5,6 +5,7 @@ from aworld_cli.core.plugin_manager import PluginManager
 from aworld_cli.plugin_framework.commands import register_plugin_commands
 from aworld_cli.plugin_framework.discovery import discover_plugins
 from aworld_cli.runtime.base import BaseCliRuntime
+from aworld_cli.runtime.cli import CliRuntime
 
 
 def test_code_review_like_plugin_registers_command_and_assets(tmp_path):
@@ -57,3 +58,16 @@ def test_runtime_initialization_registers_enabled_plugin_commands(tmp_path):
         assert CommandRegistry.get("code-review") is not None
     finally:
         CommandRegistry.restore(snapshot)
+
+
+def test_builtin_plugin_namespace_moves_to_plugins_package():
+    from aworld_cli.plugins.smllc.agents.aworld_agent import load_aworld_system_prompt as new_load
+    from aworld_cli.inner_plugins.smllc.agents.aworld_agent import load_aworld_system_prompt as legacy_load
+
+    assert new_load() == legacy_load()
+
+
+def test_cli_runtime_scans_builtin_plugins_from_plugins_dir():
+    runtime = CliRuntime(local_dirs=[], remote_backends=[])
+
+    assert any(path.parent.name == "plugins" and path.name == "smllc" for path in runtime.plugin_dirs)

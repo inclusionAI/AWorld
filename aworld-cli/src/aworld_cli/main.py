@@ -893,7 +893,7 @@ Batch Jobs:
         return
 
     # Handle inner plugin commands (e.g. 'batch-job', 'batch')
-    from .inner_plugins.batch import get_commands as get_batch_commands
+    from .plugins.batch import get_commands as get_batch_commands
     batch_commands = get_batch_commands()
     if args.command in batch_commands:
         handler = batch_commands[args.command]
