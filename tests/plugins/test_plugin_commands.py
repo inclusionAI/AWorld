@@ -3,7 +3,7 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from aworld_cli.core.command_system import CommandContext, CommandRegistry
-from aworld_cli.plugin_framework.commands import PluginPromptCommand, register_plugin_commands
+from aworld_cli.plugin_framework.commands import PluginPromptCommand, register_plugin_commands, sync_plugin_commands
 from aworld_cli.plugin_framework.discovery import discover_plugins
 from aworld_cli.plugin_framework.state import PluginStateStore
 from aworld_cli.runtime.base import BaseCliRuntime
@@ -39,6 +39,23 @@ async def test_plugin_prompt_command_reads_packaged_prompt():
 
         assert "Provide a code review for the given pull request." in prompt
         assert "--comment" in prompt
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+def test_sync_plugin_commands_removes_stale_plugin_commands():
+    plugin_root = Path("tests/fixtures/plugins/code_review_like").resolve()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+        assert CommandRegistry.get("code-review") is not None
+
+        sync_plugin_commands([])
+
+        assert CommandRegistry.get("code-review") is None
     finally:
         CommandRegistry.restore(snapshot)
 

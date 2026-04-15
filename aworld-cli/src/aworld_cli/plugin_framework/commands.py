@@ -52,3 +52,11 @@ def register_plugin_commands(plugins) -> None:
             if CommandRegistry.get(command_name) is not None:
                 continue
             CommandRegistry.register(PluginPromptCommand(plugin, entrypoint))
+
+
+def sync_plugin_commands(plugins) -> None:
+    for command in list(CommandRegistry.list_commands()):
+        if isinstance(command, PluginPromptCommand):
+            CommandRegistry.unregister(command.name)
+
+    register_plugin_commands(plugins)
