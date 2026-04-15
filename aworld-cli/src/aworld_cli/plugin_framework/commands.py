@@ -35,4 +35,7 @@ def register_plugin_commands(plugins) -> None:
         for entrypoint in plugin.manifest.entrypoints.get("commands", []):
             if entrypoint.visibility == "hidden":
                 continue
+            command_name = entrypoint.name or entrypoint.entrypoint_id
+            if CommandRegistry.get(command_name) is not None:
+                continue
             CommandRegistry.register(PluginPromptCommand(plugin, entrypoint))

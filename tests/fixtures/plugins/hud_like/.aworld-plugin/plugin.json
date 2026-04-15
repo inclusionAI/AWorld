@@ -1,0 +1,18 @@
+{
+  "id": "hud-like",
+  "name": "hud-like",
+  "version": "1.0.0",
+  "entrypoints": {
+    "hud": [
+      {
+        "id": "status-lines",
+        "name": "status-lines",
+        "target": "hud/status.py",
+        "scope": "workspace",
+        "metadata": {
+          "surface": "bottom_toolbar"
+        }
+      }
+    ]
+  }
+}
