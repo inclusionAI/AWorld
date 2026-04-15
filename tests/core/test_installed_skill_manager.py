@@ -1,4 +1,5 @@
 import sys
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,21 @@ def _write_skill(root: Path, skill_name: str) -> None:
         "---\nname: test-skill\ndescription: test\n---\n\n# Test\n",
         encoding="utf-8",
     )
+
+
+def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _commit_all(repo: Path, message: str) -> None:
+    _run_git(repo, "add", ".")
+    _run_git(repo, "commit", "-m", message)
 
 
 def test_resolve_source_prefers_nested_skills_dir(
@@ -85,6 +101,120 @@ def test_manifest_round_trip(
     assert manifest[0]["install_id"] == record["install_id"]
     assert manifest[0]["scope"] == "global"
     assert Path(manifest[0]["resolved_skill_source_path"]) == entry
+
+
+def test_install_local_copy_creates_managed_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source = tmp_path / "local-source"
+    _write_skill(source / "skills", "brainstorming")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    record = manager.install(
+        source=source,
+        mode="copy",
+        scope="project",
+        install_id="copied-skill",
+    )
+
+    installed_entry = installed_root / "copied-skill"
+
+    assert installed_entry.is_dir() is True
+    assert (installed_entry / "skills" / "brainstorming" / "SKILL.md").exists() is True
+    assert record["install_id"] == "copied-skill"
+    assert record["name"] == "copied-skill"
+    assert record["source"] == str(source)
+    assert Path(record["installed_path"]) == installed_entry
+    assert Path(record["resolved_skill_source_path"]) == installed_entry / "skills"
+    assert record["install_mode"] == "copy"
+    assert record["scope"] == "project"
+    assert manager.load_manifest() == [record]
+
+
+def test_list_installs_reports_skill_counts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    managed_entry = installed_root / "managed-entry"
+    manual_entry = installed_root / "manual-entry"
+    _write_skill(managed_entry / "skills", "brainstorming")
+    _write_skill(managed_entry / "skills", "writing-plans")
+    _write_skill(manual_entry, "agent-browser")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.import_entry(managed_entry, scope="project")
+
+    installs = sorted(manager.list_installs(), key=lambda item: item["install_id"])
+
+    assert [
+        (
+            item["install_id"],
+            item["install_mode"],
+            item["scope"],
+            item["skill_count"],
+        )
+        for item in installs
+    ] == [
+        ("managed-entry", "manual", "project", 2),
+        ("manual-entry", "manual", "global", 1),
+    ]
+
+    second_listing = sorted(manager.list_installs(), key=lambda item: item["install_id"])
+
+    assert second_listing == installs
+    assert [item["install_id"] for item in manager.load_manifest()] == [
+        "managed-entry",
+        "manual-entry",
+    ]
+
+
+def test_update_git_install_pulls_existing_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source_repo = tmp_path / "git-source"
+    source_repo.mkdir()
+    _run_git(source_repo, "init")
+    _run_git(source_repo, "config", "user.name", "Test User")
+    _run_git(source_repo, "config", "user.email", "test@example.com")
+    _write_skill(source_repo / "skills", "brainstorming")
+    _commit_all(source_repo, "initial commit")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.install(
+        source=source_repo,
+        mode="clone",
+        scope="global",
+        install_id="git-skill",
+    )
+
+    _write_skill(source_repo / "skills", "writing-plans")
+    _commit_all(source_repo, "add another skill")
+
+    updated = manager.update_install("git-skill")
+    clone_entry = installed_root / "git-skill"
+
+    assert (clone_entry / "skills" / "writing-plans" / "SKILL.md").exists() is True
+    assert updated["install_id"] == "git-skill"
+    assert updated["install_mode"] == "clone"
+    assert Path(updated["installed_path"]) == clone_entry
+    assert Path(updated["resolved_skill_source_path"]) == clone_entry / "skills"
+    assert next(
+        item for item in manager.list_installs() if item["install_id"] == "git-skill"
+    )["skill_count"] == 2
 
 
 def test_remove_symlink_only_unlinks_managed_entry(
