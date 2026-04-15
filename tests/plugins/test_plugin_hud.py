@@ -78,10 +78,8 @@ def test_collect_hud_lines_preserves_grouped_segments():
 
     assert [line.section for line in lines] == ["identity", "activity"]
     assert lines[0].segments[0].startswith("Agent: Aworld / Chat")
-    assert "Task: task_001" in lines[1].segments
-    assert "Task: task_001 (running)" not in lines[1].segments
-    assert "Elapsed: 12.5s" not in lines[1].segments
-    assert "12.5s" in lines[1].segments
+    assert "Task: task_001 (running)" in lines[1].segments
+    assert "Elapsed: 12.5s" in lines[1].segments
 
 
 def test_status_bar_text_renders_two_lines_from_grouped_hud_segments():
@@ -265,12 +263,10 @@ def test_status_bar_text_keeps_idle_summary_and_hides_tool_details():
     cli = AWorldCLI()
     text = cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat", max_width=160)
 
-    assert "Task: task_20260415210612" in text
-    assert "Task: task_20260415210612 (idle)" not in text
+    assert "Task: task_20260415210612 (idle)" in text
     assert "Tokens: in 6.5k out 122" in text
     assert "Ctx: ███" in text
-    assert "16.8s" in text
-    assert "Elapsed:" not in text
+    assert "Elapsed: 16.8s" in text
     assert "Tool:" not in text
     assert "Plugins:" not in text
 
