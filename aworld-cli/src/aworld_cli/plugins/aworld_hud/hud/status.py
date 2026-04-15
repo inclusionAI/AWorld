@@ -35,7 +35,7 @@ def _activity_segments(context):
     segments = []
     current_task_id = task.get("current_task_id")
     if current_task_id:
-        segments.append(f"Task: {current_task_id}")
+        segments.append(f"Task: {current_task_id} ({task.get('status', 'idle')})")
 
     if usage.get("input_tokens") is not None or usage.get("output_tokens") is not None:
         input_tokens = usage.get("input_tokens") or 0
@@ -51,7 +51,7 @@ def _activity_segments(context):
 
     elapsed = session.get("elapsed_seconds")
     if elapsed is not None:
-        segments.append(format_elapsed(elapsed))
+        segments.append(f"Elapsed: {format_elapsed(elapsed)}")
 
     return segments
 
