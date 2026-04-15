@@ -5,15 +5,11 @@ Installed skill manager for aworld-cli.
 from __future__ import annotations
 
 import json
-import re
 import shutil
-import subprocess
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
-from urllib.parse import urlparse
-from uuid import uuid4
 
 from aworld.utils.skill_loader import collect_skill_docs
 
@@ -80,11 +76,6 @@ class InstalledSkillManager:
             return entry_path.resolve()
         raise ValueError(f"No skill directories found under {entry_path}")
 
-    def _build_install_id(self, source: str, name: Optional[str] = None) -> str:
-        raw_name = name or Path(urlparse(source).path).stem or Path(source).name or "skill"
-        slug = re.sub(r"[^a-z0-9._-]+", "-", raw_name.lower()).strip("-") or "skill"
-        return f"{slug}-{uuid4().hex[:8]}"
-
     def import_entry(self, entry_path: Path, scope: SkillScope) -> dict[str, str]:
         entry_path = entry_path.expanduser()
         if self.installed_root.resolve() not in entry_path.absolute().parents:
@@ -107,120 +98,6 @@ class InstalledSkillManager:
         records.append(asdict(record))
         self.save_manifest(records)
         return asdict(record)
-
-    def install(
-        self,
-        source: str,
-        mode: InstallMode,
-        scope: SkillScope,
-        install_id: Optional[str] = None,
-    ) -> dict[str, str]:
-        install_id = install_id or self._build_install_id(source)
-        target = self.installed_root / install_id
-        if target.exists():
-            raise ValueError(f"Install target already exists: {target}")
-
-        if mode == "copy":
-            shutil.copytree(Path(source).expanduser().resolve(), target)
-        elif mode == "symlink":
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.symlink_to(Path(source).expanduser().resolve(), target_is_directory=True)
-        elif mode == "clone":
-            subprocess.run(
-                ["git", "clone", "--depth", "1", source, str(target)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-        else:
-            raise ValueError(f"Unsupported install mode: {mode}")
-
-        resolved_source = self.resolve_entry_source(target)
-        record = InstalledSkillRecord(
-            install_id=install_id,
-            name=Path(install_id).name,
-            source=source,
-            installed_path=str(target),
-            resolved_skill_source_path=str(resolved_source),
-            install_mode=mode,
-            scope=scope,
-            installed_at=datetime.now(timezone.utc).isoformat(),
-        )
-        records = [item for item in self.load_manifest() if item.get("install_id") != install_id]
-        records.append(asdict(record))
-        self.save_manifest(records)
-        return asdict(record)
-
-    def list_installs(self) -> list[dict[str, str]]:
-        installs: list[dict[str, str]] = []
-        manifest_by_id = {
-            item["install_id"]: item for item in self.load_manifest() if "install_id" in item
-        }
-
-        for entry_path in sorted(self.installed_root.iterdir()):
-            if entry_path.name.startswith("."):
-                continue
-
-            manifest_record = manifest_by_id.get(entry_path.name)
-            if manifest_record is None:
-                try:
-                    resolved_source = self.resolve_entry_source(entry_path)
-                except ValueError:
-                    continue
-
-                discovered_record = InstalledSkillRecord(
-                    install_id=entry_path.name,
-                    name=entry_path.name,
-                    source=str(entry_path),
-                    installed_path=str(entry_path),
-                    resolved_skill_source_path=str(resolved_source),
-                    install_mode="manual",
-                    scope="global",
-                    installed_at=datetime.now(timezone.utc).isoformat(),
-                )
-                records = [
-                    item
-                    for item in self.load_manifest()
-                    if item.get("install_id") != discovered_record.install_id
-                ]
-                records.append(asdict(discovered_record))
-                self.save_manifest(records)
-                manifest_record = asdict(discovered_record)
-
-            discovered_skills = collect_skill_docs(
-                manifest_record["resolved_skill_source_path"]
-            )
-            installs.append({**manifest_record, "skill_count": len(discovered_skills)})
-
-        return installs
-
-    def update_install(self, install_id_or_name: str) -> dict[str, str]:
-        records = self.load_manifest()
-        target = next(
-            (
-                item
-                for item in records
-                if item.get("install_id") == install_id_or_name
-                or item.get("name") == install_id_or_name
-            ),
-            None,
-        )
-        if target is None:
-            raise ValueError(f"Unknown installed skill entry: {install_id_or_name}")
-        if target.get("install_mode") != "clone":
-            raise ValueError("Only git-backed installs support update")
-
-        installed_path = Path(target["installed_path"])
-        subprocess.run(
-            ["git", "pull", "--ff-only"],
-            cwd=installed_path,
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        target["resolved_skill_source_path"] = str(self.resolve_entry_source(installed_path))
-        self.save_manifest(records)
-        return target
 
     def remove_install(self, install_id_or_name: str) -> None:
         records = self.load_manifest()
