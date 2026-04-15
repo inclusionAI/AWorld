@@ -20,6 +20,11 @@ class NoHudRuntime:
         return ("tools",)
 
 
+class BrokenCapabilityRuntime:
+    def active_plugin_capabilities(self):
+        raise RuntimeError("capability probe failed")
+
+
 def _build_stats() -> StreamTokenStats:
     stats = StreamTokenStats()
     stats.update(
@@ -46,6 +51,22 @@ def test_interactive_stats_are_suppressed_when_hud_capability_is_active():
 def test_interactive_stats_are_printed_when_hud_capability_is_missing():
     executor = object.__new__(LocalAgentExecutor)
     executor._base_runtime = NoHudRuntime()
+    executor.console = MagicMock()
+
+    executor._print_interactive_stats_fallback(_build_stats(), elapsed_seconds=1.2)
+
+    text_args = [
+        call.args[0]
+        for call in executor.console.print.call_args_list
+        if call.args and isinstance(call.args[0], Text)
+    ]
+    assert text_args
+    assert any("stats" in text_arg.plain.lower() for text_arg in text_args)
+
+
+def test_interactive_stats_gate_is_conservative_when_capability_probe_raises():
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = BrokenCapabilityRuntime()
     executor.console = MagicMock()
 
     executor._print_interactive_stats_fallback(_build_stats(), elapsed_seconds=1.2)
