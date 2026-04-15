@@ -5,6 +5,7 @@ Installed skill manager for aworld-cli.
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -12,6 +13,8 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from aworld.utils.skill_loader import collect_skill_docs
+
+logger = logging.getLogger(__name__)
 
 InstallMode = Literal["clone", "copy", "symlink", "manual"]
 SkillScope = str
@@ -52,6 +55,15 @@ class InstalledSkillManager:
         self.installed_root.mkdir(parents=True, exist_ok=True)
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
+    def _normalize_entry_path(self, path: Path) -> Path:
+        expanded_path = path.expanduser()
+        return expanded_path.parent.resolve(strict=False) / expanded_path.name
+
+    def _is_managed_entry_path(self, path: Path) -> bool:
+        canonical_root = self.installed_root.resolve(strict=False)
+        normalized_path = self._normalize_entry_path(path)
+        return canonical_root in normalized_path.parents
+
     def load_manifest(self) -> list[dict[str, str]]:
         if not self.manifest_path.exists():
             return []
@@ -59,6 +71,7 @@ class InstalledSkillManager:
         try:
             return json.loads(self.manifest_path.read_text(encoding="utf-8"))
         except json.JSONDecodeError:
+            logger.warning("Failed to parse installed skill manifest: %s", self.manifest_path)
             return []
 
     def save_manifest(self, records: list[dict[str, str]]) -> None:
@@ -77,8 +90,8 @@ class InstalledSkillManager:
         raise ValueError(f"No skill directories found under {entry_path}")
 
     def import_entry(self, entry_path: Path, scope: SkillScope) -> dict[str, str]:
-        entry_path = entry_path.expanduser()
-        if self.installed_root.resolve() not in entry_path.absolute().parents:
+        entry_path = self._normalize_entry_path(entry_path)
+        if not self._is_managed_entry_path(entry_path):
             raise ValueError("Manual import path must already live under the installed root")
 
         resolved_source = self.resolve_entry_source(entry_path)
@@ -113,7 +126,12 @@ class InstalledSkillManager:
         if target is None:
             raise ValueError(f"Unknown installed skill entry: {install_id_or_name}")
 
-        installed_path = Path(target["installed_path"])
+        installed_path = self._normalize_entry_path(Path(target["installed_path"]))
+        if not self._is_managed_entry_path(installed_path):
+            raise ValueError(
+                f"Installed path resolves outside the installed root: {installed_path}"
+            )
+
         if installed_path.is_symlink():
             installed_path.unlink()
         elif installed_path.is_dir():

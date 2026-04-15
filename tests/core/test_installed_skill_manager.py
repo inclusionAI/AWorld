@@ -109,3 +109,56 @@ def test_remove_symlink_only_unlinks_managed_entry(
     assert external.exists() is True
     assert managed_entry.exists() is False
     assert manager.load_manifest() == []
+
+
+def test_remove_install_rejects_manifest_path_outside_installed_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    external = tmp_path / "external-skills"
+    _write_skill(external, "rogue-skill")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.save_manifest(
+        [
+            {
+                "install_id": "rogue",
+                "name": "rogue",
+                "source": str(external),
+                "installed_path": str(external),
+                "resolved_skill_source_path": str(external),
+                "install_mode": "manual",
+                "scope": "global",
+                "installed_at": "2026-04-15T00:00:00+00:00",
+            }
+        ]
+    )
+
+    with pytest.raises(ValueError, match="outside the installed root"):
+        manager.remove_install("rogue")
+
+    assert external.exists() is True
+    assert manager.load_manifest()[0]["installed_path"] == str(external)
+
+
+def test_import_entry_accepts_noncanonical_path_within_installed_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    entry = installed_root / "demo"
+    _write_skill(entry, "optimizer")
+    (installed_root / "alias").mkdir(parents=True)
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    record = manager.import_entry(installed_root / "alias" / ".." / "demo", scope="global")
+
+    assert record["install_id"] == "demo"
+    assert Path(record["installed_path"]).resolve() == entry.resolve()
