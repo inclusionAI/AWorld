@@ -2,15 +2,19 @@ from __future__ import annotations
 
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
-class GatewayServerConfig(BaseModel):
+class StrictConfigModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class GatewayServerConfig(StrictConfigModel):
     host: str = "127.0.0.1"
     port: int = 18888
 
 
-class BaseChannelConfig(BaseModel):
+class BaseChannelConfig(StrictConfigModel):
     enabled: bool = False
     default_agent_id: Optional[str] = None
 
@@ -22,10 +26,10 @@ class TelegramChannelConfig(BaseChannelConfig):
 
 
 class PlaceholderChannelConfig(BaseChannelConfig):
-    implemented: bool = False
+    implemented: bool = Field(default=False, exclude=True)
 
 
-class ChannelConfigMap(BaseModel):
+class ChannelConfigMap(StrictConfigModel):
     web: PlaceholderChannelConfig = Field(default_factory=PlaceholderChannelConfig)
     telegram: TelegramChannelConfig = Field(default_factory=TelegramChannelConfig)
     dingding: PlaceholderChannelConfig = Field(default_factory=PlaceholderChannelConfig)
@@ -33,7 +37,7 @@ class ChannelConfigMap(BaseModel):
     wecom: PlaceholderChannelConfig = Field(default_factory=PlaceholderChannelConfig)
 
 
-class RouteRule(BaseModel):
+class RouteRule(StrictConfigModel):
     channel: Optional[str] = None
     account_id: Optional[str] = None
     conversation_type: Optional[Literal["dm", "group", "web"]] = None
@@ -42,7 +46,7 @@ class RouteRule(BaseModel):
     agent_id: str
 
 
-class GatewayConfig(BaseModel):
+class GatewayConfig(StrictConfigModel):
     default_agent_id: str = "aworld"
     gateway: GatewayServerConfig = Field(default_factory=GatewayServerConfig)
     channels: ChannelConfigMap = Field(default_factory=ChannelConfigMap)
