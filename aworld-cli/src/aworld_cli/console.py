@@ -1,5 +1,6 @@
 import asyncio
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -228,61 +229,122 @@ class AWorldCLI:
                 "vcs": {"branch": self._toolbar_git_branch},
             }
 
+        try:
+            plugin_lines = runtime.get_hud_lines(hud_context) if runtime and hasattr(runtime, "get_hud_lines") else []
+        except Exception as exc:
+            logger.warning(f"Failed to render HUD plugin lines: {exc}")
+            plugin_lines = []
+
+        if not plugin_lines:
+            fallback_segments = self._fallback_status_segments(hud_context, agent_name, mode)
+            return self._render_status_line(fallback_segments, max_width)
+
+        rendered_lines = []
+        for line in plugin_lines[:2]:
+            segments = list(getattr(line, "segments", ()) or ())
+            if not segments:
+                text = getattr(line, "text", "")
+                if text:
+                    segments = [str(text)]
+            if not segments:
+                continue
+            section = getattr(line, "section", "")
+            rendered_lines.append(self._render_status_line(segments, max_width, section=section))
+
+        if not rendered_lines:
+            fallback_segments = self._fallback_status_segments(hud_context, agent_name, mode)
+            return self._render_status_line(fallback_segments, max_width)
+
+        return "\n".join(rendered_lines)
+
+    def _fallback_status_segments(self, hud_context: dict[str, Any], agent_name: str, mode: str) -> list[str]:
         unread_count = hud_context.get("notifications", {}).get("cron_unread", -1)
         if unread_count < 0:
             cron_status = "Cron: offline"
+        elif unread_count > 0:
+            cron_status = f"Cron: {unread_count} unread"
         else:
-            cron_status = f"Cron: {unread_count} unread" if unread_count > 0 else "Cron: clear"
+            cron_status = "Cron: clear"
 
-        segments = [
+        return [
             f"Agent: {hud_context.get('session', {}).get('agent', agent_name)}",
             f"Mode: {hud_context.get('session', {}).get('mode', mode)}",
             cron_status,
             f"Workspace: {hud_context.get('workspace', {}).get('name', self._toolbar_workspace_name)}",
             f"Branch: {hud_context.get('vcs', {}).get('branch', self._toolbar_git_branch)}",
-            "Hint: /cron inbox",
         ]
 
-        if runtime and hasattr(runtime, "get_hud_lines"):
-            for line in runtime.get_hud_lines(hud_context):
-                text = getattr(line, "text", None)
-                if text:
-                    segments.append(str(text))
+    def _reduce_segments(
+        self,
+        segments: list[str],
+        max_width: int | None,
+        priority_labels: set[str] | None = None,
+    ) -> list[str]:
+        if max_width is None:
+            return list(segments)
+        kept = list(segments)
+        priority_labels = priority_labels or set()
+        while len(kept) > 1 and len(" | ".join(kept)) > max_width:
+            if len(kept) <= 2:
+                kept.pop()
+                continue
+            removable_index = None
+            for index in range(len(kept) - 1, -1, -1):
+                segment = kept[index]
+                label = segment.split(":", 1)[0].strip().lower()
+                if label not in priority_labels:
+                    removable_index = index
+                    break
+            if removable_index is None:
+                removable_index = len(kept) - 1
+            kept.pop(removable_index)
+        return kept
 
-        status_text = " | ".join(segments)
-        if max_width is not None and max_width > 3 and len(status_text) > max_width:
-            return status_text[: max_width - 3].rstrip() + "..."
-        return status_text
+    def _render_status_line(self, segments: list[str], max_width: int | None, section: str | None = None) -> str:
+        priority_labels = None
+        if section == "activity":
+            priority_labels = {"task", "ctx"}
+        reduced = self._reduce_segments(segments, max_width, priority_labels=priority_labels)
+        text = " | ".join(reduced)
+        if max_width is not None and max_width > 3 and len(text) > max_width:
+            return text[: max_width - 3].rstrip() + "..."
+        return text
 
     def _build_status_bar(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> HTML:
         """Build a styled prompt-toolkit status bar inspired by segmented system prompts."""
-        text = self._build_status_bar_text(runtime, agent_name=agent_name, mode=mode)
-        segments = [segment.strip() for segment in text.split("|")]
+        columns = shutil.get_terminal_size(fallback=(160, 0)).columns
+        max_width = columns if columns > 0 else None
+        text = self._build_status_bar_text(runtime, agent_name=agent_name, mode=mode, max_width=max_width)
+        lines = text.splitlines() or [text]
 
-        segment_styles = [
-            ("#181b2d", "#84c7c6"),
-            ("#181b2d", "#d8def5"),
-            ("#181b2d", "#f2c14e" if "unread" in segments[2] else "#8ed081"),
-            ("#181b2d", "#b8c0da"),
-            ("#181b2d", "#a88bd8"),
-            ("#181b2d", "#8ea0c4"),
-        ]
-        divider_style = ("#181b2d", "#4f5877")
+        def _render_line(line_text: str) -> str:
+            segments = [segment.strip() for segment in line_text.split("|")]
+            has_unread = any("unread" in segment for segment in segments)
+            segment_styles = [
+                ("#181b2d", "#84c7c6"),
+                ("#181b2d", "#d8def5"),
+                ("#181b2d", "#f2c14e" if has_unread else "#8ed081"),
+                ("#181b2d", "#b8c0da"),
+                ("#181b2d", "#a88bd8"),
+                ("#181b2d", "#8ea0c4"),
+            ]
+            divider_style = ("#181b2d", "#4f5877")
 
-        parts = []
-        for index, segment in enumerate(segments):
-            bg, fg = segment_styles[index] if index < len(segment_styles) else ("#181b2d", "#d8def5")
-            escaped = (
-                segment.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
-            )
-            parts.append(f"<style bg='{bg}' fg='{fg}'> {escaped} </style>")
-            if index < len(segments) - 1:
-                div_bg, div_fg = divider_style
-                parts.append(f"<style bg='{div_bg}' fg='{div_fg}'> | </style>")
+            parts = []
+            for index, segment in enumerate(segments):
+                bg, fg = segment_styles[index] if index < len(segment_styles) else ("#181b2d", "#d8def5")
+                escaped = (
+                    segment.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                )
+                parts.append(f"<style bg='{bg}' fg='{fg}'> {escaped} </style>")
+                if index < len(segments) - 1:
+                    div_bg, div_fg = divider_style
+                    parts.append(f"<style bg='{div_bg}' fg='{div_fg}'> | </style>")
+            return "".join(parts)
 
-        return HTML("".join(parts))
+        return HTML("\n".join(_render_line(line) for line in lines if line))
 
     def _build_completion_entries(self, agent_names: Optional[List[str]] = None) -> tuple[list[str], dict[str, str]]:
         """
