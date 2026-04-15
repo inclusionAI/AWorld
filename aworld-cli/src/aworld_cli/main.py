@@ -474,9 +474,11 @@ Batch Jobs:
         )
 
         gateway_global_parser = argparse.ArgumentParser(add_help=False)
+        gateway_global_parser.add_argument("--env-file", default=".env")
         gateway_global_parser.add_argument("--remote-backend", action="append")
         gateway_global_parser.add_argument("--agent-dir", action="append")
         gateway_global_parser.add_argument("--agent-file", action="append")
+        gateway_global_parser.add_argument("--skill-path", action="append")
         gateway_global_args, _ = gateway_global_parser.parse_known_args(
             sys.argv[1:gateway_index]
         )
@@ -499,11 +501,43 @@ Batch Jobs:
             return
 
         if gateway_args.gateway_action == "serve":
+            from .core.config import load_config_with_env, has_model_config
+
+            config_dict, source_type, source_path = load_config_with_env(
+                gateway_global_args.env_file
+            )
+            init_middlewares(
+                init_memory=True,
+                init_retriever=False,
+                custom_memory_store=_default_file_memory_store(),
+            )
+            _show_banner()
+
+            from ._globals import console
+
+            if not has_model_config(config_dict):
+                console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
+                console.print("[dim]Run: aworld-cli --config[/dim]")
+                console.print("[dim]Or create .env in the current directory. See: [link=https://github.com/inclusionAI/AWorld/blob/main/README.md]README[/link][/dim]")
+                sys.exit(1)
+
+            from .core.skill_registry import get_skill_registry
+
+            if gateway_global_args.skill_path:
+                registry = get_skill_registry(skill_paths=gateway_global_args.skill_path)
+            else:
+                registry = get_skill_registry()
+
+            all_skills = registry.get_all_skills()
+            if all_skills:
+                skill_names = list(all_skills.keys())
+                logger.info("Loaded %d global skill(s): %s", len(skill_names), ", ".join(skill_names))
+
             asyncio.run(
                 serve_gateway(
                     base_dir=Path.cwd(),
                     remote_backends=gateway_global_args.remote_backend,
-                    local_dirs=gateway_global_args.agent_dir,
+                    local_dirs=_resolve_agent_dirs(gateway_global_args.agent_dir),
                     agent_files=gateway_global_args.agent_file,
                 )
             )

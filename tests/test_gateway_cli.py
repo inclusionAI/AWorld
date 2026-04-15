@@ -100,6 +100,10 @@ def test_main_dispatches_gateway_actions(
 ) -> None:
     calls = {"status": 0, "channels": 0, "serve": []}
 
+    class FakeRegistry:
+        def get_all_skills(self):
+            return {}
+
     async def fake_serve_gateway(
         *,
         base_dir,
@@ -127,6 +131,18 @@ def test_main_dispatches_gateway_actions(
         or {"telegram": {"enabled": False}},
     )
     monkeypatch.setattr("aworld_cli.gateway_cli.serve_gateway", fake_serve_gateway)
+    monkeypatch.setattr("aworld_cli.main._show_banner", lambda: None)
+    monkeypatch.setattr("aworld_cli.main.init_middlewares", lambda **kwargs: None)
+    monkeypatch.setattr("aworld_cli.main._resolve_agent_dirs", lambda agent_dirs: agent_dirs)
+    monkeypatch.setattr(
+        "aworld_cli.core.config.load_config_with_env",
+        lambda env_file: ({}, "env", env_file),
+    )
+    monkeypatch.setattr("aworld_cli.core.config.has_model_config", lambda config: True)
+    monkeypatch.setattr(
+        "aworld_cli.core.skill_registry.get_skill_registry",
+        lambda skill_paths=None: FakeRegistry(),
+    )
     monkeypatch.setattr(sys, "argv", argv)
 
     cli_main.main()
@@ -134,6 +150,103 @@ def test_main_dispatches_gateway_actions(
     captured = capsys.readouterr()
     assert captured.out == expected_stdout
     assert calls == expected_calls
+
+
+def test_main_bootstraps_gateway_serve_like_normal_cli(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: dict[str, object] = {
+        "load_config_with_env": None,
+        "init_middlewares": [],
+        "show_banner": 0,
+        "get_skill_registry": [],
+        "resolve_agent_dirs": [],
+        "serve_gateway": [],
+    }
+
+    class FakeRegistry:
+        def get_all_skills(self):
+            return {"demo": object()}
+
+    async def fake_serve_gateway(
+        *,
+        base_dir,
+        remote_backends,
+        local_dirs,
+        agent_files,
+    ) -> None:
+        calls["serve_gateway"].append(
+            {
+                "base_dir": base_dir,
+                "remote_backends": remote_backends,
+                "local_dirs": local_dirs,
+                "agent_files": agent_files,
+            }
+        )
+
+    monkeypatch.setattr(
+        "aworld_cli.gateway_cli.serve_gateway",
+        fake_serve_gateway,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.main._show_banner",
+        lambda: calls.__setitem__("show_banner", calls["show_banner"] + 1),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.main.init_middlewares",
+        lambda **kwargs: calls["init_middlewares"].append(kwargs),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.main._resolve_agent_dirs",
+        lambda agent_dirs: calls["resolve_agent_dirs"].append(agent_dirs) or ["./resolved-agents"],
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.config.load_config_with_env",
+        lambda env_file: calls.__setitem__("load_config_with_env", env_file)
+        or ({"provider": "demo"}, "env", env_file),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.config.has_model_config",
+        lambda config: True,
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.skill_registry.get_skill_registry",
+        lambda skill_paths=None: calls["get_skill_registry"].append(skill_paths)
+        or FakeRegistry(),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "aworld-cli",
+            "--env-file",
+            "custom.env",
+            "--skill-path",
+            "./skills",
+            "--agent-dir",
+            "./agents",
+            "--remote-backend",
+            "http://backend",
+            "gateway",
+            "serve",
+        ],
+    )
+
+    cli_main.main()
+
+    assert calls["load_config_with_env"] == "custom.env"
+    assert calls["show_banner"] == 1
+    assert len(calls["init_middlewares"]) == 1
+    assert calls["get_skill_registry"] == [["./skills"]]
+    assert calls["resolve_agent_dirs"] == [["./agents"]]
+    assert calls["serve_gateway"] == [
+        {
+            "base_dir": Path.cwd(),
+            "remote_backends": ["http://backend"],
+            "local_dirs": ["./resolved-agents"],
+            "agent_files": None,
+        }
+    ]
 
 
 def test_gateway_http_app_exposes_health_and_channel_status() -> None:

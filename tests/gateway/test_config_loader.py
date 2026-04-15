@@ -94,3 +94,35 @@ def test_load_or_init_rejects_unknown_config_keys(tmp_path):
 
     with pytest.raises(ValidationError):
         GatewayConfigLoader(base_dir=base_dir).load_or_init()
+
+
+def test_load_or_init_ignores_legacy_empty_telegram_bot_token_field(tmp_path):
+    base_dir = tmp_path / "project"
+    config_path = base_dir / ".aworld" / "gateway" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        (
+            "default_agent_id: aworld\n"
+            "gateway:\n"
+            "  host: 127.0.0.1\n"
+            "  port: 18888\n"
+            "channels:\n"
+            "  telegram:\n"
+            "    enabled: false\n"
+            "    bot_token: null\n"
+            "    bot_token_env: AWORLD_TELEGRAM_BOT_TOKEN\n"
+            "  web:\n"
+            "    enabled: false\n"
+            "  dingding:\n"
+            "    enabled: false\n"
+            "  feishu:\n"
+            "    enabled: false\n"
+            "  wecom:\n"
+            "    enabled: false\n"
+        ),
+        encoding="utf-8",
+    )
+
+    config = GatewayConfigLoader(base_dir=base_dir).load_or_init()
+
+    assert config.channels.telegram.bot_token_env == "AWORLD_TELEGRAM_BOT_TOKEN"

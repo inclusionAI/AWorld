@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from fastapi import FastAPI
 
 from aworld_gateway.channels.telegram.webhook import register_telegram_webhook
@@ -7,7 +9,7 @@ from aworld_gateway.channels.telegram.webhook import register_telegram_webhook
 
 def create_gateway_app(
     *,
-    runtime_status: dict[str, object],
+    runtime_status: dict[str, object] | Callable[[], dict[str, object]],
     telegram_adapter: object | None = None,
     telegram_webhook_path: str = "/webhooks/telegram",
 ) -> FastAPI:
@@ -19,7 +21,8 @@ def create_gateway_app(
 
     @app.get("/channels")
     async def channels() -> dict[str, object]:
-        channels_payload = runtime_status.get("channels")
+        status_payload = runtime_status() if callable(runtime_status) else runtime_status
+        channels_payload = status_payload.get("channels")
         if isinstance(channels_payload, dict):
             return channels_payload
         return {}

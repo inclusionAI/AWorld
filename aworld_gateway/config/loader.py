@@ -17,6 +17,7 @@ class GatewayConfigLoader:
         if self.config_path.exists():
             with self.config_path.open("r", encoding="utf-8") as fh:
                 raw = yaml.safe_load(fh) or {}
+            self._normalize_legacy_payload(raw)
             return GatewayConfig.model_validate(raw)
 
         config = GatewayConfig()
@@ -29,3 +30,16 @@ class GatewayConfigLoader:
                 allow_unicode=True,
             )
         return config
+
+    @staticmethod
+    def _normalize_legacy_payload(raw: dict) -> None:
+        channels = raw.get("channels")
+        if not isinstance(channels, dict):
+            return
+
+        telegram = channels.get("telegram")
+        if not isinstance(telegram, dict):
+            return
+
+        if telegram.get("bot_token") in (None, ""):
+            telegram.pop("bot_token", None)
