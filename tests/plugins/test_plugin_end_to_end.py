@@ -88,8 +88,10 @@ def test_cli_runtime_excludes_disabled_builtin_hud_plugin(monkeypatch, tmp_path)
     manager.disable("aworld-hud")
 
     runtime = CliRuntime(local_dirs=[], remote_backends=[])
+    runtime._initialize_plugin_framework()
 
     assert not any(path.name == "aworld_hud" for path in runtime.plugin_dirs)
+    assert "hud" not in runtime.active_plugin_capabilities()
 
 
 def test_cli_runtime_includes_enabled_builtin_hud_plugin(monkeypatch, tmp_path):
