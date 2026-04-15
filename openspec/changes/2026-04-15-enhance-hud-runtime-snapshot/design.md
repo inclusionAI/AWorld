@@ -33,13 +33,15 @@ The `claude_hud` implementation remains a useful reference for line-oriented sta
 - Keep the runtime/HUD boundary explicit: executors report state, runtime stores state, plugins render state, CLI presents state.
 - Define a two-line layered HUD that is informative without becoming visually noisy.
 - Ensure HUD density stays bounded and width-aware.
+- In interactive chat mode, make HUD the primary state surface instead of duplicating the same state in message-stream stats output.
 - Keep `aworld-hud` as the first built-in plugin case, not the definition of the framework.
 
 **Non-Goals**
 - Introduce a general event bus or subscription framework for all plugins in this change.
 - Let HUD plugins take over the full toolbar renderer.
 - Force every runtime to expose every HUD field if the underlying data is unavailable.
-- Replace detailed console logs such as task-start or stream diagnostics; HUD complements those logs and summarizes them.
+- Change non-interactive task mode or batch-mode stats output behavior in this change.
+- Remove all textual stats fallback behavior; interactive chat still needs a degraded path when HUD is unavailable.
 
 ## Decisions
 
@@ -143,6 +145,51 @@ This split matches user expectations:
 - line 1 answers "where am I and what session is this?"
 - line 2 answers "what is happening right now and how full is the session?"
 
+For the current interactive chat experience, the line composition is:
+
+- line 1 priority
+  - `Agent/Mode`
+  - `Workspace`
+  - `Branch`
+  - `Cron`
+  - `Model`
+- line 2 runtime summary
+  - `Task: <real_task_id>`
+  - `Tokens: in <input> out <output>`
+  - `Ctx: <bar> <percent>`
+  - `<elapsed>`
+
+During active execution, line 2 can still include transient activity such as tool usage if width allows. Once the task transitions to idle, the HUD should retain only the last stable summary state and should not continue showing transient tool fields.
+
+### Decision: Interactive Chat Uses HUD As The Primary State Surface
+
+Interactive chat mode should not present the same runtime status in two places at once.
+
+When a HUD capability is active:
+
+- the bottom HUD is the only primary state surface
+- interactive message flow should no longer emit the normal `Aworld stats ...` status line
+- executor/runtime state still flows through the same telemetry path, but presentation is HUD-first
+
+This keeps a single user-facing mental model:
+
+- message area for answers and events
+- HUD for live session/task/resource state
+
+This decision only applies to interactive chat mode. Direct-run tasks, batch execution, and non-interactive flows keep their current textual stats output unless changed by a future spec.
+
+### Decision: `Aworld stats ...` Remains The Interactive Fallback Path
+
+HUD cannot be the only status path if users can disable the HUD plugin or if a provider fails.
+
+In interactive chat mode:
+
+- if `aworld-hud` is enabled and HUD rendering succeeds, only HUD is shown
+- if the `hud` capability is unavailable because the plugin is disabled, missing, or not loaded, the CLI should fall back to the current `Aworld stats ...` output behavior
+- if HUD rendering fails at runtime, the CLI should degrade to `Aworld stats ...` rather than leaving the user with no state feedback
+
+This preserves robustness while still making HUD the normal path.
+
 ### Decision: HUD Density Must Stay Bounded
 
 The HUD must remain readable. It should not grow into an unbounded wall of columns.
@@ -185,6 +232,16 @@ Rules:
 
 This preserves CLI stability while still allowing richer status behavior.
 
+### Decision: Plugin-Count Is Internal, Not A Primary HUD Field
+
+The current `Plugins: <count>` field is not meaningful enough for end users and can be actively confusing because it exposes implementation-level plugin counts rather than user-understandable capabilities.
+
+For this change:
+
+- plugin count should not be a normal HUD segment
+- the HUD should favor stable execution summary fields over internal framework counts
+- plugin metadata can remain visible in `/plugins` and CLI plugin-management surfaces where it is operationally useful
+
 ## Data Flow
 
 The executor-driven runtime snapshot updates should look like this:
@@ -223,10 +280,18 @@ Update:
 - clear `activity.current_tool`
 - keep a short `recent_tools` tail
 - preserve latest cumulative usage summary
+- preserve latest elapsed seconds for idle summary rendering
 
 ### Idle / Transition
 
-The runtime should retain the last good snapshot briefly rather than blanking the HUD immediately. This reduces flicker and makes the toolbar remain informative between turns.
+The runtime should retain the last good stable snapshot rather than blanking the HUD immediately. In interactive chat mode, idle state should continue to show the last useful summary:
+
+- `Task`
+- `Tokens`
+- `Ctx`
+- `Elapsed`
+
+Idle state should drop transient activity fields such as `Tool`.
 
 ## Testing Strategy
 
@@ -257,6 +322,16 @@ Verify:
 - duplicate identity fields are not repeated
 - width reduction hides lower-priority grouped segments first
 - line 2 prefers task and context over plugin-detail segments
+- line 2 idle state keeps stable summary fields and drops transient tool fields
+
+### Interactive Chat Presentation Tests
+
+Verify:
+
+- interactive chat suppresses `Aworld stats ...` when a HUD capability is active
+- disabling `aworld-hud` removes the bottom toolbar from interactive chat
+- disabling or breaking HUD restores `Aworld stats ...` output in interactive chat
+- non-interactive flows keep their existing textual stats behavior
 
 ### CLI Integration Tests
 
