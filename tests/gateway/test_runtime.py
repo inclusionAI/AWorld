@@ -93,7 +93,7 @@ def test_runtime_start_degrades_when_enabled_channel_is_not_implemented():
     assert status["channels"]["web"]["state"] == "degraded"
 
 
-def test_runtime_degrades_for_enabled_but_builderless_telegram_channel(
+def test_runtime_starts_enabled_and_configured_telegram_channel(
     monkeypatch,
 ):
     monkeypatch.setenv("AWORLD_TELEGRAM_BOT_TOKEN", "telegram-token")
@@ -109,13 +109,19 @@ def test_runtime_degrades_for_enabled_but_builderless_telegram_channel(
     asyncio.run(runtime.start())
 
     status = runtime.status()
-    assert status["state"] == "degraded"
+    assert status["state"] == "running"
     assert status["channels"]["telegram"]["enabled"] is True
     assert status["channels"]["telegram"]["configured"] is True
     assert status["channels"]["telegram"]["implemented"] is True
-    assert status["channels"]["telegram"]["running"] is False
-    assert status["channels"]["telegram"]["state"] == "degraded"
-    assert status["channels"]["telegram"]["error"] == "Channel adapter is not available."
+    assert status["channels"]["telegram"]["running"] is True
+    assert status["channels"]["telegram"]["state"] == "running"
+    assert status["channels"]["telegram"]["error"] is None
+
+    asyncio.run(runtime.stop())
+    stopped_status = runtime.status()
+    assert stopped_status["state"] == "configured"
+    assert stopped_status["channels"]["telegram"]["running"] is False
+    assert stopped_status["channels"]["telegram"]["state"] == "configured"
 
 
 def test_runtime_status_returns_deep_copy():

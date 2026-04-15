@@ -27,7 +27,9 @@ def test_registry_exposes_metadata_and_adapter_class_paths():
 
     assert telegram_meta is not None
     assert telegram_meta["implemented"] is True
-    assert registry.get_adapter_class("telegram") is None
+    telegram_adapter_cls = registry.get_adapter_class("telegram")
+    assert telegram_adapter_cls is not None
+    assert issubclass(telegram_adapter_cls, ChannelAdapter)
 
     assert web_meta is not None
     assert web_meta["implemented"] is False

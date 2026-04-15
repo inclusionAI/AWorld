@@ -8,6 +8,7 @@ from typing import TypeAlias
 from aworld_gateway.channels.base import ChannelAdapter, ChannelMetadata
 from aworld_gateway.channels.dingding.adapter import DingdingChannelAdapter
 from aworld_gateway.channels.feishu.adapter import FeishuChannelAdapter
+from aworld_gateway.channels.telegram.adapter import TelegramChannelAdapter
 from aworld_gateway.channels.web.adapter import WebChannelAdapter
 from aworld_gateway.channels.wecom.adapter import WecomChannelAdapter
 from aworld_gateway.config import BaseChannelConfig, TelegramChannelConfig
@@ -28,7 +29,7 @@ class ChannelRegistry:
                 "telegram": ChannelRegistration(
                     metadata=ChannelMetadata(name="telegram", implemented=True),
                     label="Telegram",
-                    adapter_class=None,
+                    adapter_class=TelegramChannelAdapter,
                 ),
                 "web": ChannelRegistration(
                     metadata=ChannelMetadata(name="web", implemented=False),
