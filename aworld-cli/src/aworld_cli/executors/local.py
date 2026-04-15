@@ -228,6 +228,31 @@ class LocalAgentExecutor(BaseAgentExecutor):
         except Exception as exc:
             logger.warning(f"HUD settle task finish failed: {exc}")
 
+    def _should_print_interactive_stats_fallback(self) -> bool:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None or not hasattr(runtime, "active_plugin_capabilities"):
+            return True
+        try:
+            return "hud" not in tuple(runtime.active_plugin_capabilities())
+        except Exception:
+            return True
+
+    def _print_interactive_stats_fallback(
+        self, stream_token_stats: StreamTokenStats, elapsed_seconds: Optional[float]
+    ) -> None:
+        if elapsed_seconds is None or not self.console:
+            return
+        if stream_token_stats is None or not stream_token_stats.get_current_stats():
+            return
+        if not self._should_print_interactive_stats_fallback():
+            return
+
+        elapsed_str = format_elapsed(elapsed_seconds)
+        msg = stream_token_stats.format_streaming_line(elapsed_str)
+        if msg:
+            self.console.print(Text.from_markup(msg))
+            self.console.print()  # Add spacing
+
     async def cleanup_resources(self) -> None:
         """
         Close MCP and other resources in the same event loop to avoid
@@ -817,15 +842,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         
                                         # 🔧 FIX: Display token stats after rendering message output (STREAM=0 mode)
                                         # This ensures the stats line is shown even when not streaming
-                                        if stream_token_stats and stream_token_stats.get_current_stats():
-                                            elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
-                                            if elapsed_sec is not None:
-                                                elapsed_str = format_elapsed(elapsed_sec)
-                                                msg = stream_token_stats.format_streaming_line(elapsed_str)
-                                                if msg and self.console:
-                                                    from rich.text import Text
-                                                    self.console.print(Text.from_markup(msg))
-                                                    self.console.print()  # Add spacing
+                                        elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
+                                        self._print_interactive_stats_fallback(stream_token_stats, elapsed_sec)
                                     else:
                                         response_text = str(output.response) if hasattr(output, 'response') and output.response else ""
                                         if response_text.strip():
