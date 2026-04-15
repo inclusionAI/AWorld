@@ -164,6 +164,7 @@ def build_stream_renderable(
     format_elapsed_fn: Callable[[float], str],
     config: StreamDisplayConfig,
     should_emit_interactive_stats_fn: Optional[Callable[[], bool]] = None,
+    hud_lines_fn: Optional[Callable[[], List[str]]] = None,
 ) -> Group:
     """
     Build the combined Rich renderable for Live display.
@@ -257,6 +258,15 @@ def build_stream_renderable(
         if tr_str:
             parts.append(Text.from_markup(tr_str))
 
+    if not should_emit_interactive_stats and hud_lines_fn is not None:
+        try:
+            hud_lines = [line for line in hud_lines_fn() if line]
+        except Exception:
+            hud_lines = []
+        if hud_lines:
+            for hud_line in hud_lines:
+                parts.append(Text(hud_line))
+
     return Group(*parts) if parts else Text("")
 
 
@@ -312,6 +322,7 @@ def print_buffer_to_console(
     status_start_time: Optional[datetime] = None,
     format_elapsed_fn: Optional[Callable[[float], str]] = None,
     should_emit_interactive_stats_fn: Optional[Callable[[], bool]] = None,
+    hud_lines_fn: Optional[Callable[[], List[str]]] = None,
 ) -> None:
     """Print buffer content to console so it persists after Live stops."""
     if not (buffer.has_content() or buffer.has_tool_calls() or buffer.has_tool_results()):
@@ -357,6 +368,13 @@ def print_buffer_to_console(
                     console.print("   " + line)
     if buffer.accumulated_tool_result_lines:
         _print_tool_result_lines(console, buffer.accumulated_tool_result_lines)
+    if not should_emit_interactive_stats and hud_lines_fn is not None:
+        try:
+            hud_lines = [line for line in hud_lines_fn() if line]
+        except Exception:
+            hud_lines = []
+        for hud_line in hud_lines:
+            console.print(Text(hud_line))
 
 
 class StreamDisplayController:
@@ -373,6 +391,7 @@ class StreamDisplayController:
         format_elapsed_fn: Callable[[float], str] = format_elapsed,
         config: Optional[StreamDisplayConfig] = None,
         should_emit_interactive_stats_fn: Optional[Callable[[], bool]] = None,
+        hud_lines_fn: Optional[Callable[[], List[str]]] = None,
     ):
         self.console = console
         self.stream_token_stats = stream_token_stats
@@ -380,6 +399,7 @@ class StreamDisplayController:
         self.format_elapsed_fn = format_elapsed_fn
         self.config = config or StreamDisplayConfig()
         self.should_emit_interactive_stats_fn = should_emit_interactive_stats_fn
+        self.hud_lines_fn = hud_lines_fn
 
         self.buffer = StreamDisplayBuffer()
         self.loading_status: Optional[Status] = None
@@ -438,6 +458,7 @@ class StreamDisplayController:
                     status_start_time=self.status_start_time,
                     format_elapsed_fn=self.format_elapsed_fn,
                     should_emit_interactive_stats_fn=self.should_emit_interactive_stats_fn,
+                    hud_lines_fn=self.hud_lines_fn,
                 )
                 self.buffer.clear()
             self.stream_live.stop()
@@ -482,6 +503,7 @@ class StreamDisplayController:
             self.format_elapsed_fn,
             self.config,
             should_emit_interactive_stats_fn=self.should_emit_interactive_stats_fn,
+            hud_lines_fn=self.hud_lines_fn,
         )
         tool_lines = self.format_tool_calls_fn(self.buffer.accumulated_tool_calls) if self.buffer.accumulated_tool_calls else []
         if (
@@ -512,6 +534,7 @@ class StreamDisplayController:
                     status_start_time=self.status_start_time,
                     format_elapsed_fn=self.format_elapsed_fn,
                     should_emit_interactive_stats_fn=self.should_emit_interactive_stats_fn,
+                    hud_lines_fn=self.hud_lines_fn,
                 )
             self.stream_token_stats.clear()
             self.buffer.clear()
@@ -577,12 +600,17 @@ class StreamDisplayController:
                             should_emit_interactive_stats = self.should_emit_interactive_stats_fn()
                         except Exception:
                             should_emit_interactive_stats = True
-                    msg = (
-                        self.stream_token_stats.format_streaming_line(elapsed_str)
-                        if should_emit_interactive_stats
-                        else None
-                    )
-                    status_msg = f"[dim]{msg}[/dim]" if msg else f"[dim]   {self.base_message} [{elapsed_str}][/dim]"
+                    if should_emit_interactive_stats:
+                        msg = self.stream_token_stats.format_streaming_line(elapsed_str)
+                        status_msg = f"[dim]{msg}[/dim]" if msg else f"[dim]   {self.base_message} [{elapsed_str}][/dim]"
+                    else:
+                        hud_lines = []
+                        if self.hud_lines_fn is not None:
+                            try:
+                                hud_lines = [line for line in self.hud_lines_fn() if line]
+                            except Exception:
+                                hud_lines = []
+                        status_msg = "\n".join(f"[dim]{line}[/dim]" for line in hud_lines) if hud_lines else f"[dim]   {self.base_message} [{elapsed_str}][/dim]"
                 else:
                     status_msg = f"[dim]   {self.base_message} [{elapsed_str}][/dim]"
                 self.loading_status.update(status_msg)

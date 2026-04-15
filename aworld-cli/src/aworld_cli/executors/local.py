@@ -31,6 +31,7 @@ from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
 from .stats import StreamTokenStats, format_elapsed
 from .stream import StreamDisplayConfig, StreamDisplayController, _print_tool_result_lines
+from ..status_text import build_execution_hud_lines
 
 # Try to import WorkSpace for local workspace creation
 try:
@@ -252,6 +253,44 @@ class LocalAgentExecutor(BaseAgentExecutor):
         if msg:
             self.console.print(Text.from_markup(msg))
             self.console.print()  # Add spacing
+
+    def _build_execution_hud_lines(self) -> list[str]:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None:
+            return []
+        try:
+            return build_execution_hud_lines(
+                runtime,
+                agent_name="Aworld",
+                mode="Chat",
+                workspace_name=Path.cwd().name,
+                git_branch=self._detect_git_branch_for_hud(),
+                max_width=shutil.get_terminal_size(fallback=(160, 24)).columns,
+            )
+        except Exception:
+            return []
+
+    def _detect_git_branch_for_hud(self) -> str:
+        try:
+            result = shutil.which("git")
+            if not result:
+                return "n/a"
+            import subprocess
+
+            completed = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=Path.cwd(),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=0.5,
+            )
+            if completed.returncode != 0:
+                return "n/a"
+            branch = (completed.stdout or "").strip()
+            return branch or "detached"
+        except Exception:
+            return "n/a"
 
     async def cleanup_resources(self) -> None:
         """
@@ -597,6 +636,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         format_elapsed_fn=format_elapsed,
                         config=StreamDisplayConfig(render_interval=0.02, chars_per_render=1),
                         should_emit_interactive_stats_fn=self._should_emit_interactive_stats,
+                        hud_lines_fn=self._build_execution_hud_lines,
                     )
 
                     try:
