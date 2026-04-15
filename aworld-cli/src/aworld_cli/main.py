@@ -497,7 +497,7 @@ Batch Jobs:
 
         # Parse plugin subcommand arguments
         try:
-            plugin_args = plugin_parser.parse_args()
+            plugin_args = plugin_parser.parse_args(sys.argv[2:])
         except SystemExit:
             return
 
