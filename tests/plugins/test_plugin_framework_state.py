@@ -28,3 +28,14 @@ def test_state_store_sanitizes_plugin_id_to_prevent_escape(tmp_path):
     escaped = store.session_state("../../evil", "session-escape")
 
     assert tmp_path.resolve() in escaped.resolve().parents
+
+
+def test_global_state_is_stable_for_same_plugin(tmp_path):
+    store = PluginStateStore(base_dir=tmp_path)
+
+    first = store.global_state("plugin-a")
+    first.write_text('{"enabled": true}', encoding="utf-8")
+
+    second = store.global_state("plugin-a")
+
+    assert second.read_text(encoding="utf-8") == '{"enabled": true}'

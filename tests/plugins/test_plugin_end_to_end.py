@@ -71,3 +71,31 @@ def test_cli_runtime_scans_builtin_plugins_from_plugins_dir():
     runtime = CliRuntime(local_dirs=[], remote_backends=[])
 
     assert any(path.parent.name == "plugins" and path.name == "smllc" for path in runtime.plugin_dirs)
+
+
+def test_runtime_initializes_framework_registry_and_context_handlers():
+    class DummyRuntime(BaseCliRuntime):
+        def __init__(self, plugin_dirs):
+            super().__init__()
+            self.plugin_dirs = plugin_dirs
+
+        async def _load_agents(self):
+            return []
+
+        async def _create_executor(self, agent):
+            return None
+
+        def _get_source_type(self):
+            return "TEST"
+
+        def _get_source_location(self):
+            return "test://plugins"
+
+    runtime = DummyRuntime([Path("tests/fixtures/plugins/context_like").resolve()])
+    runtime._initialize_plugin_framework()
+
+    assert runtime._plugin_registry is not None
+    assert runtime._plugin_registry.capabilities() == ("contexts",)
+    assert [adapter.entrypoint_id for adapter in runtime.get_context_phase_handlers("schema")] == [
+        "workspace-memory"
+    ]

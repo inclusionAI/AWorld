@@ -52,7 +52,9 @@ class BaseCliRuntime:
         self._scheduler = None  # Cron scheduler instance
         self._notification_center = None  # Cron notification center
         self._plugins = []
+        self._plugin_registry = None
         self._plugin_hooks = {}
+        self._plugin_contexts = {}
         self._plugin_state_store = None
     
     async def start(self) -> None:
@@ -131,30 +133,44 @@ class BaseCliRuntime:
         plugin_dirs = getattr(self, "plugin_dirs", None) or []
         if not plugin_dirs:
             self._plugins = []
+            self._plugin_registry = None
             self._plugin_hooks = {}
+            self._plugin_contexts = {}
             self._plugin_state_store = None
             return
 
         try:
+            from ..plugin_framework.context import CONTEXT_PHASES, load_plugin_contexts
             from ..plugin_framework.commands import register_plugin_commands
             from ..plugin_framework.discovery import discover_plugins
             from ..plugin_framework.hooks import load_plugin_hooks
+            from ..plugin_framework.registry import PluginCapabilityRegistry
             from ..plugin_framework.state import PluginStateStore
 
             plugin_roots = [Path(path) for path in plugin_dirs]
             self._plugins = discover_plugins(plugin_roots)
+            self._plugin_registry = PluginCapabilityRegistry(self._plugins)
             self._plugin_hooks = load_plugin_hooks(self._plugins)
+            self._plugin_contexts = load_plugin_contexts(self._plugins)
+            for phase in CONTEXT_PHASES:
+                self._plugin_contexts.setdefault(phase, ())
             self._plugin_state_store = PluginStateStore(Path.cwd() / ".aworld" / "plugin_state")
             register_plugin_commands(self._plugins)
         except Exception as exc:
             logger.warning(f"Failed to initialize plugin framework surfaces: {exc}")
             self._plugins = []
+            self._plugin_registry = None
             self._plugin_hooks = {}
+            self._plugin_contexts = {}
             self._plugin_state_store = None
 
     def get_plugin_hooks(self, hook_point: str) -> list[Any]:
         normalized = (hook_point or "").strip().lower()
         return list(self._plugin_hooks.get(normalized, ()))
+
+    def get_context_phase_handlers(self, phase: str) -> list[Any]:
+        normalized = (phase or "").strip().lower()
+        return list(self._plugin_contexts.get(normalized, ()))
 
     def build_hud_context(
         self,
@@ -227,6 +243,8 @@ class BaseCliRuntime:
     ) -> Optional[Path]:
         if self._plugin_state_store is None:
             return None
+        if scope == "global":
+            return self._plugin_state_store.global_state(plugin_id)
         if scope == "session" and session_id:
             return self._plugin_state_store.session_state(plugin_id, session_id)
         if workspace_path:

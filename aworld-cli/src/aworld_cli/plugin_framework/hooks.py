@@ -132,6 +132,10 @@ class PluginHookAdapter:
         return self._entrypoint.scope
 
     @property
+    def priority(self) -> int:
+        return int(self._entrypoint.metadata.get("priority", 100))
+
+    @property
     def hook_point(self) -> str:
         return str(self._entrypoint.metadata["hook_point"]).strip().lower()
 
@@ -174,4 +178,13 @@ def load_plugin_hooks(plugins: Iterable[Any]) -> dict[str, tuple[PluginHookAdapt
                     "is missing metadata.hook_point"
                 )
             loaded.setdefault(hook_point, []).append(PluginHookAdapter(plugin, entrypoint))
-    return {hook_point: tuple(hooks) for hook_point, hooks in loaded.items()}
+
+    ordered: dict[str, tuple[PluginHookAdapter, ...]] = {}
+    for hook_point, hooks in loaded.items():
+        ordered[hook_point] = tuple(
+            sorted(
+                hooks,
+                key=lambda hook: (hook.priority, hook.plugin_id, hook.entrypoint_id),
+            )
+        )
+    return ordered
