@@ -182,6 +182,36 @@ class StreamTokenStats:
             return inp + out_val
         return None
 
+    def to_hud_usage(self) -> Dict[str, Any]:
+        """Export current stats as a HUD-friendly usage snapshot."""
+        stats = self.get_current_stats() or self._last_for_history
+        if not stats:
+            return {}
+
+        input_tokens = stats.get("input_tokens") or 0
+        output_tokens = stats.get("output_tokens") or 0
+        total_tokens = self._compute_total_tokens(stats) or (input_tokens + output_tokens)
+        model_name = stats.get("model_name")
+
+        context_max = 0
+        if model_name and ModelUtils:
+            try:
+                context_max = ModelUtils.get_context_window(model_name)
+            except Exception:
+                context_max = 0
+
+        context_percent = int((total_tokens / context_max) * 100) if context_max else None
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "context_used": total_tokens,
+            "context_max": context_max or None,
+            "context_percent": context_percent,
+            "model": model_name,
+            "tool_calls_count": stats.get("tool_calls_count", 0),
+        }
+
     def format_streaming_line(self, elapsed_str: str) -> Optional[str]:
         """Format the streaming status line for the current agent. Returns None if no stats."""
         stats = self.get_current_stats()

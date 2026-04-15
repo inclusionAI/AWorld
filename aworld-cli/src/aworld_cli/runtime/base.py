@@ -56,6 +56,9 @@ class BaseCliRuntime:
         self._plugin_hooks = {}
         self._plugin_contexts = {}
         self._plugin_state_store = None
+        from .hud_snapshot import HudSnapshotStore
+
+        self._hud_snapshot_store = HudSnapshotStore()
     
     async def start(self) -> None:
         """Start the CLI interaction loop."""
@@ -201,12 +204,35 @@ class BaseCliRuntime:
             except Exception:
                 unread_count = 0
 
-        return {
-            "workspace": {"name": workspace_name or Path.cwd().name},
+        context: dict[str, Any] = {
+            "workspace": {"name": workspace_name or Path.cwd().name, "path": str(Path.cwd())},
             "session": {"agent": agent_name, "mode": mode},
             "notifications": {"cron_unread": unread_count},
             "vcs": {"branch": git_branch or "n/a"},
+            "plugins": {
+                "active_count": len(self._plugins),
+                "active_ids": [
+                    plugin.manifest.plugin_id
+                    for plugin in self._plugins
+                    if getattr(plugin, "manifest", None) is not None
+                ],
+            },
         }
+
+        for bucket, payload in self.get_hud_snapshot().items():
+            context.setdefault(bucket, {})
+            context[bucket].update(payload)
+
+        return context
+
+    def update_hud_snapshot(self, **sections: dict[str, Any]) -> dict[str, dict[str, Any]]:
+        return self._hud_snapshot_store.update(**sections)
+
+    def settle_hud_snapshot(self, task_status: str = "idle") -> dict[str, dict[str, Any]]:
+        return self._hud_snapshot_store.settle(task_status=task_status)
+
+    def get_hud_snapshot(self) -> dict[str, dict[str, Any]]:
+        return self._hud_snapshot_store.snapshot()
 
     def get_hud_lines(self, context: dict[str, Any]) -> list[Any]:
         from ..plugin_framework.hud import collect_hud_lines
