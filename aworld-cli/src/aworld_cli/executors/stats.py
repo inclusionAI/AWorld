@@ -87,6 +87,16 @@ def format_context_bar(used_tokens: int, max_tokens: int, bar_width: int = 10) -
     return f"[{color}]Ctx {bar} {percentage}%[/{color}]"
 
 
+def format_context_bar_hud(used_tokens: int, max_tokens: int, bar_width: int = 10) -> str:
+    """Format context bar for HUD summary line without rich color markup."""
+    context_bar = format_context_bar(used_tokens, max_tokens, bar_width=bar_width)
+    for tag in ("[green]", "[/green]", "[yellow]", "[/yellow]", "[red]", "[/red]"):
+        context_bar = context_bar.replace(tag, "")
+    if context_bar.startswith("Ctx "):
+        return f"Ctx: {context_bar[4:]}"
+    return context_bar
+
+
 class StreamTokenStats:
     """
     Tracks token stats for the current (last) streaming agent.

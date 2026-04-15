@@ -1,4 +1,4 @@
-from aworld_cli.executors.stats import format_elapsed, format_tokens
+from aworld_cli.executors.stats import format_context_bar_hud, format_elapsed, format_tokens
 
 def _identity_segments(context):
     session = context.get("session", {})
@@ -8,7 +8,6 @@ def _identity_segments(context):
     agent = session.get("agent", "Aworld")
     mode = session.get("mode", "Chat")
     model = session.get("model")
-    elapsed = session.get("elapsed_seconds")
     cron = notifications.get("cron_unread", 0)
 
     segments = [f"Agent: {agent} / {mode}"]
@@ -24,17 +23,14 @@ def _identity_segments(context):
     else:
         cron_segment = "Cron: clear"
 
-    if elapsed:
-        cron_segment = f"{cron_segment} ({format_elapsed(elapsed)})"
     segments.append(cron_segment)
     return segments
 
 
 def _activity_segments(context):
     task = context.get("task", {})
-    activity = context.get("activity", {})
+    session = context.get("session", {})
     usage = context.get("usage", {})
-    plugins = context.get("plugins", {})
 
     segments = []
     current_task_id = task.get("current_task_id")
@@ -46,21 +42,16 @@ def _activity_segments(context):
         output_tokens = usage.get("output_tokens") or 0
         segments.append(f"Tokens: in {format_tokens(input_tokens)} out {format_tokens(output_tokens)}")
 
-    if usage.get("context_percent") is not None:
+    context_used = usage.get("context_used")
+    context_max = usage.get("context_max")
+    if context_used is not None and context_max:
+        segments.append(format_context_bar_hud(context_used, context_max, bar_width=10))
+    elif usage.get("context_percent") is not None:
         segments.append(f"Ctx: {usage['context_percent']}%")
 
-    current_tool = activity.get("current_tool")
-    tool_calls_count = activity.get("tool_calls_count", 0)
-    if current_tool:
-        if tool_calls_count:
-            segments.append(f"Tool: {current_tool} x{tool_calls_count}")
-        else:
-            segments.append(f"Tool: {current_tool}")
-    elif tool_calls_count:
-        segments.append(f"Tools: {tool_calls_count}")
-
-    if plugins.get("active_count", 0) > 1:
-        segments.append(f"Plugins: {plugins['active_count']}")
+    elapsed = session.get("elapsed_seconds")
+    if elapsed is not None:
+        segments.append(f"Elapsed: {format_elapsed(elapsed)}")
 
     return segments
 

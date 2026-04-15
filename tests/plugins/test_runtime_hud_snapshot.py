@@ -55,8 +55,10 @@ def test_settle_hud_snapshot_keeps_last_useful_state():
     runtime = DummyRuntime()
 
     runtime.update_hud_snapshot(
+        session={"elapsed_seconds": 16.8},
         task={"current_task_id": "task_001", "status": "running"},
         activity={"current_tool": "bash", "recent_tools": ["bash"], "tool_calls_count": 1},
+        usage={"input_tokens": 1200, "output_tokens": 300, "context_used": 60000, "context_max": 200000, "context_percent": 30},
     )
 
     runtime.settle_hud_snapshot(task_status="idle")
@@ -71,6 +73,8 @@ def test_settle_hud_snapshot_keeps_last_useful_state():
     assert context["task"]["current_task_id"] == "task_001"
     assert context["activity"]["current_tool"] is None
     assert context["activity"]["recent_tools"] == ["bash"]
+    assert context["session"]["elapsed_seconds"] == 16.8
+    assert context["usage"]["context_percent"] == 30
 
 
 def test_stream_token_stats_exports_hud_usage_snapshot():
