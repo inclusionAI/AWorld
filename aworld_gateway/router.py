@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+from datetime import datetime
+from inspect import isawaitable
 from typing import Any, Protocol
 
 from aworld_gateway.agent_resolver import AgentResolver
 from aworld_gateway.session_binding import SessionBinding
 from aworld_gateway.types import InboundEnvelope, OutboundEnvelope
+
+try:
+    from aworld.core.context.amni import ApplicationContext, TaskInput
+except ImportError:  # pragma: no cover
+    ApplicationContext = None
+    TaskInput = None
 
 
 class AgentBackend(Protocol):
@@ -13,11 +21,13 @@ class AgentBackend(Protocol):
 
 class LocalCliAgentBackend:
     def __init__(self, registry_cls: Any = None, executor_cls: Any = None) -> None:
-        if registry_cls is None or executor_cls is None:
+        if registry_cls is None:
             from aworld_cli.core.agent_registry import LocalAgentRegistry
-            from aworld_cli.executors.local import LocalAgentExecutor
 
             registry_cls = LocalAgentRegistry
+        if executor_cls is None:
+            from aworld_cli.executors.local import LocalAgentExecutor
+
             executor_cls = LocalAgentExecutor
 
         self._registry_cls = registry_cls
@@ -28,14 +38,39 @@ class LocalCliAgentBackend:
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")
 
-        swarm = await agent.get_swarm()
-        executor = self._executor_cls(
-            swarm=swarm,
-            context_config=agent.context_config,
-            session_id=session_id,
-            hooks=agent.hooks,
-        )
-        return await executor.chat(text)
+        context_config = getattr(agent, "context_config", None)
+        try:
+            swarm = await agent.get_swarm(None)
+        except (TypeError, AttributeError):
+            if TaskInput is None or ApplicationContext is None:
+                raise
+            temp_task_input = TaskInput(
+                user_id="gateway_user",
+                session_id=f"temp_session_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                task_id=f"temp_task_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                task_content="",
+                origin_user_input="",
+            )
+            temp_context = await ApplicationContext.from_input(
+                temp_task_input,
+                context_config=context_config,
+            )
+            swarm = await agent.get_swarm(temp_context)
+
+        executor = None
+        try:
+            executor = self._executor_cls(
+                swarm=swarm,
+                context_config=context_config,
+                session_id=session_id,
+                hooks=getattr(agent, "hooks", None),
+            )
+            return await executor.chat(text)
+        finally:
+            if executor is not None and hasattr(executor, "cleanup_resources"):
+                cleanup_result = executor.cleanup_resources()
+                if isawaitable(cleanup_result):
+                    await cleanup_result
 
 
 class GatewayRouter:
