@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import os
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -76,10 +77,15 @@ class ChannelRegistry:
         self,
         channel_id: str,
         config: BaseChannelConfig,
+        *,
+        router: object | None = None,
     ) -> ChannelAdapter | None:
         adapter_class = self.get_adapter_class(channel_id)
         if adapter_class is None:
             return None
+        init_params = inspect.signature(adapter_class.__init__).parameters
+        if router is not None and "router" in init_params:
+            return adapter_class(config, router=router)
         return adapter_class(config)
 
     def is_configured(
@@ -96,8 +102,6 @@ class ChannelRegistry:
 
         if not isinstance(config, TelegramChannelConfig):
             return False
-        if config.bot_token:
-            return True
         if not config.bot_token_env:
             return False
         return bool(os.getenv(config.bot_token_env))

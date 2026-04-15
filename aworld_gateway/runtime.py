@@ -36,7 +36,11 @@ class GatewayRuntime:
                 continue
 
             channel_config = getattr(self._config.channels, channel_name, None)
-            adapter = self._registry.build_adapter(channel_name, channel_config)
+            adapter = self._registry.build_adapter(
+                channel_name,
+                channel_config,
+                router=self._router,
+            )
             if adapter is None:
                 channel_state["state"] = "degraded"
                 channel_state["error"] = "Channel adapter is not available."

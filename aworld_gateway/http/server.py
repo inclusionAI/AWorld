@@ -9,6 +9,7 @@ def create_gateway_app(
     *,
     runtime_status: dict[str, object],
     telegram_adapter: object | None = None,
+    telegram_webhook_path: str = "/webhooks/telegram",
 ) -> FastAPI:
     app = FastAPI(title="Aworld Gateway", version="0.1.0")
 
@@ -23,6 +24,10 @@ def create_gateway_app(
             return channels_payload
         return {}
 
-    register_telegram_webhook(app, adapter=telegram_adapter)
+    register_telegram_webhook(
+        app,
+        adapter=telegram_adapter,
+        path=telegram_webhook_path,
+    )
 
     return app

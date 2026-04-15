@@ -51,7 +51,7 @@ def test_registry_validates_channel_configuration(monkeypatch):
             "telegram",
             TelegramChannelConfig(bot_token="telegram-token"),
         )
-        is True
+        is False
     )
 
     monkeypatch.setenv("CUSTOM_TELEGRAM_TOKEN", "env-token")
