@@ -480,6 +480,18 @@ Batch Jobs:
         remove_parser = plugin_subparsers.add_parser('remove', help='Remove a plugin')
         remove_parser.add_argument('plugin_name', help='Name of the plugin to remove')
 
+        # enable subcommand
+        enable_parser = plugin_subparsers.add_parser('enable', help='Enable an installed plugin')
+        enable_parser.add_argument('plugin_name', help='Name of the plugin to enable')
+
+        # disable subcommand
+        disable_parser = plugin_subparsers.add_parser('disable', help='Disable an installed plugin')
+        disable_parser.add_argument('plugin_name', help='Name of the plugin to disable')
+
+        # reload subcommand
+        reload_parser = plugin_subparsers.add_parser('reload', help='Reload plugin metadata from disk')
+        reload_parser.add_argument('plugin_name', help='Name of the plugin to reload')
+
         # list subcommand
         list_parser = plugin_subparsers.add_parser('list', help='List installed plugins')
 
@@ -521,6 +533,33 @@ Batch Jobs:
             if not success:
                 return
 
+        elif plugin_args.plugin_action == "enable":
+            try:
+                plugin_state = manager.enable(plugin_args.plugin_name)
+                print(f"✅ Plugin '{plugin_args.plugin_name}' enabled")
+                print(f"📍 Location: {plugin_state['path']}")
+            except KeyError:
+                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
+                return
+
+        elif plugin_args.plugin_action == "disable":
+            try:
+                plugin_state = manager.disable(plugin_args.plugin_name)
+                print(f"✅ Plugin '{plugin_args.plugin_name}' disabled")
+                print(f"📍 Location: {plugin_state['path']}")
+            except KeyError:
+                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
+                return
+
+        elif plugin_args.plugin_action == "reload":
+            try:
+                plugin_state = manager.reload(plugin_args.plugin_name)
+                print(f"✅ Plugin '{plugin_args.plugin_name}' reloaded")
+                print(f"📍 Location: {plugin_state['path']}")
+            except KeyError:
+                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
+                return
+
         elif plugin_args.plugin_action == "list":
             plugins = manager.list_plugins()
 
@@ -538,6 +577,7 @@ Batch Jobs:
             console = Console()
             table = Table(show_header=True, header_style="bold magenta")
             table.add_column("Name", style="cyan")
+            table.add_column("Enabled", justify="center")
             table.add_column("Source", style="green")
             table.add_column("Has Agents", justify="center")
             table.add_column("Has Skills", justify="center")
@@ -546,6 +586,7 @@ Batch Jobs:
             for plugin in plugins:
                 table.add_row(
                     plugin['name'],
+                    "✅" if plugin.get('enabled', True) else "❌",
                     plugin['source'],
                     "✅" if plugin['has_agents'] else "❌",
                     "✅" if plugin['has_skills'] else "❌",

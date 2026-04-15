@@ -2,7 +2,10 @@
 Base runtime for CLI protocols.
 Provides common functionality for both local and remote runtimes.
 """
+import json
+from pathlib import Path
 from typing import List, Optional, Any
+from aworld.logs.util import logger
 from ..console import AWorldCLI
 from ..models import AgentInfo
 from ..executors import AgentExecutor
@@ -48,6 +51,9 @@ class BaseCliRuntime:
         self.cli = AWorldCLI()
         self._scheduler = None  # Cron scheduler instance
         self._notification_center = None  # Cron notification center
+        self._plugins = []
+        self._plugin_hooks = {}
+        self._plugin_state_store = None
     
     async def start(self) -> None:
         """Start the CLI interaction loop."""
@@ -56,6 +62,9 @@ class BaseCliRuntime:
 
         # Start cron scheduler
         await self._start_scheduler()
+
+        # Initialize framework plugin surfaces needed by the CLI session loop.
+        self._initialize_plugin_framework()
 
         # Load agents (implemented by subclasses)
         agents = await self._load_agents()
@@ -118,6 +127,112 @@ class BaseCliRuntime:
         # Stop cron scheduler
         await self._stop_scheduler()
 
+    def _initialize_plugin_framework(self) -> None:
+        plugin_dirs = getattr(self, "plugin_dirs", None) or []
+        if not plugin_dirs:
+            self._plugins = []
+            self._plugin_hooks = {}
+            self._plugin_state_store = None
+            return
+
+        try:
+            from ..plugin_framework.commands import register_plugin_commands
+            from ..plugin_framework.discovery import discover_plugins
+            from ..plugin_framework.hooks import load_plugin_hooks
+            from ..plugin_framework.state import PluginStateStore
+
+            plugin_roots = [Path(path) for path in plugin_dirs]
+            self._plugins = discover_plugins(plugin_roots)
+            self._plugin_hooks = load_plugin_hooks(self._plugins)
+            self._plugin_state_store = PluginStateStore(Path.cwd() / ".aworld" / "plugin_state")
+            register_plugin_commands(self._plugins)
+        except Exception as exc:
+            logger.warning(f"Failed to initialize plugin framework surfaces: {exc}")
+            self._plugins = []
+            self._plugin_hooks = {}
+            self._plugin_state_store = None
+
+    def get_plugin_hooks(self, hook_point: str) -> list[Any]:
+        normalized = (hook_point or "").strip().lower()
+        return list(self._plugin_hooks.get(normalized, ()))
+
+    def build_hud_context(
+        self,
+        agent_name: str = "Aworld",
+        mode: str = "Chat",
+        workspace_name: str | None = None,
+        git_branch: str | None = None,
+    ) -> dict[str, Any]:
+        unread_count = 0
+        if self._notification_center and hasattr(self._notification_center, "get_unread_count"):
+            try:
+                unread_count = int(self._notification_center.get_unread_count())
+            except Exception:
+                unread_count = 0
+
+        return {
+            "workspace": {"name": workspace_name or Path.cwd().name},
+            "session": {"agent": agent_name, "mode": mode},
+            "notifications": {"cron_unread": unread_count},
+            "vcs": {"branch": git_branch or "n/a"},
+        }
+
+    def get_hud_lines(self, context: dict[str, Any]) -> list[Any]:
+        from ..plugin_framework.hud import collect_hud_lines
+
+        return collect_hud_lines(self._plugins, context)
+
+    def build_plugin_hook_state(
+        self,
+        plugin_id: str,
+        scope: str,
+        executor_instance: Any = None,
+    ) -> dict[str, Any]:
+        context = getattr(executor_instance, "context", None) if executor_instance else None
+        workspace_path = getattr(context, "workspace_path", None)
+        session_id = getattr(executor_instance, "session_id", None)
+        if not session_id and context is not None:
+            session_id = getattr(context, "session_id", None)
+
+        state: dict[str, Any] = {}
+        state_path = self._resolve_plugin_state_path(
+            plugin_id=plugin_id,
+            scope=scope,
+            session_id=session_id,
+            workspace_path=workspace_path,
+        )
+        if state_path is not None and state_path.exists():
+            try:
+                payload = json.loads(state_path.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    state.update(payload)
+            except Exception as exc:
+                logger.warning(f"Failed to read plugin state for {plugin_id}: {exc}")
+
+        if session_id:
+            state.setdefault("session_id", session_id)
+        if workspace_path:
+            state.setdefault("workspace_path", workspace_path)
+        if context is not None and getattr(context, "task_id", None):
+            state.setdefault("task_id", context.task_id)
+
+        return state
+
+    def _resolve_plugin_state_path(
+        self,
+        plugin_id: str,
+        scope: str,
+        session_id: Optional[str],
+        workspace_path: Optional[str],
+    ) -> Optional[Path]:
+        if self._plugin_state_store is None:
+            return None
+        if scope == "session" and session_id:
+            return self._plugin_state_store.session_state(plugin_id, session_id)
+        if workspace_path:
+            return self._plugin_state_store.workspace_state(plugin_id, workspace_path)
+        return None
+
     async def _start_scheduler(self) -> None:
         """Start cron scheduler with notification center."""
         try:
@@ -144,7 +259,6 @@ class BaseCliRuntime:
             # Silent startup - no user-facing message
         except Exception as e:
             # Scheduler startup failure should not block CLI
-            from aworld.logs.util import logger
             logger.warning(f"Failed to start cron scheduler: {e}")
 
     async def _stop_scheduler(self) -> None:
@@ -153,7 +267,6 @@ class BaseCliRuntime:
             try:
                 await self._scheduler.stop()
             except Exception as e:
-                from aworld.logs.util import logger
                 logger.warning(f"Failed to stop cron scheduler: {e}")
 
     async def _drain_notifications(self, job_id: Optional[str] = None) -> List[Any]:
@@ -176,7 +289,6 @@ class BaseCliRuntime:
         try:
             return await self._notification_center.drain(job_id=job_id)
         except Exception as e:
-            from aworld.logs.util import logger
             logger.warning(f"Failed to drain notifications: {e}")
             return []
 

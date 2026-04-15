@@ -67,6 +67,41 @@ class PluginManager:
         
         # Load manifest
         self._manifest = self._load_manifest()
+
+    def _build_manifest_entry(
+        self,
+        plugin_name: str,
+        plugin_path: Path,
+        source: str = "unknown",
+        enabled: bool = True,
+    ) -> Dict[str, object]:
+        existing = self._manifest.get(plugin_name, {})
+        entry = dict(existing)
+        entry.setdefault("name", plugin_name)
+        entry["path"] = str(plugin_path)
+        entry["source"] = existing.get("source", source)
+        entry["enabled"] = bool(existing.get("enabled", enabled))
+        if "installed_at" in existing:
+            entry["installed_at"] = existing["installed_at"]
+        return entry
+
+    def _ensure_manifest_entry(self, plugin_name: str) -> Dict[str, object]:
+        if plugin_name in self._manifest:
+            return self._manifest[plugin_name]
+
+        plugin_path = self.plugin_dir / plugin_name
+        if not plugin_path.exists():
+            raise KeyError(plugin_name)
+
+        entry = self._build_manifest_entry(
+            plugin_name=plugin_name,
+            plugin_path=plugin_path,
+            source="unknown (legacy plugin)",
+            enabled=True,
+        )
+        self._manifest[plugin_name] = entry
+        self._save_manifest()
+        return entry
     
     def _load_manifest(self) -> Dict[str, Dict]:
         """
@@ -360,6 +395,7 @@ class PluginManager:
                 "path": str(plugin_path),
                 "source": plugin_url,
                 "installed_at": datetime.now().isoformat(),
+                "enabled": True,
             }
             self._save_manifest()
             
@@ -411,7 +447,7 @@ class PluginManager:
             logger.error(f"❌ Failed to remove plugin '{plugin_name}': {e}")
             return False
     
-    def list_plugins(self) -> List[Dict[str, str]]:
+    def list_plugins(self) -> List[Dict[str, object]]:
         """
         List all installed plugins.
         
@@ -443,6 +479,7 @@ class PluginManager:
                 "name": plugin_name,
                 "path": str(plugin_path),
                 "source": plugin_info.get("source", "unknown"),
+                "enabled": bool(plugin_info.get("enabled", True)),
                 "has_agents": agents_dir.exists() and any(agents_dir.iterdir()),
                 "has_skills": skills_dir.exists() and any(skills_dir.iterdir()),
             }
@@ -459,12 +496,42 @@ class PluginManager:
                         "name": item.name,
                         "path": str(item),
                         "source": "unknown (legacy plugin)",
+                        "enabled": True,
                         "has_agents": agents_dir.exists() and any(agents_dir.iterdir()),
                         "has_skills": skills_dir.exists() and any(skills_dir.iterdir()),
                     }
                     plugins.append(plugin_data)
         
         return plugins
+
+    def list(self) -> Dict[str, Dict[str, object]]:
+        """Return installed plugins keyed by plugin name, including enabled state."""
+        return {plugin["name"]: plugin for plugin in self.list_plugins()}
+
+    def enable(self, plugin_name: str) -> Dict[str, object]:
+        """Enable a framework plugin for runtime activation."""
+        entry = self._ensure_manifest_entry(plugin_name)
+        entry["enabled"] = True
+        self._manifest[plugin_name] = entry
+        self._save_manifest()
+        return self.list()[plugin_name]
+
+    def disable(self, plugin_name: str) -> Dict[str, object]:
+        """Disable a framework plugin without removing its files."""
+        entry = self._ensure_manifest_entry(plugin_name)
+        entry["enabled"] = False
+        self._manifest[plugin_name] = entry
+        self._save_manifest()
+        return self.list()[plugin_name]
+
+    def reload(self, plugin_name: str) -> Dict[str, object]:
+        """Reload plugin metadata from disk and return the current framework view."""
+        self._manifest = self._load_manifest()
+        if plugin_name not in self._manifest and not (self.plugin_dir / plugin_name).exists():
+            raise KeyError(plugin_name)
+        self._ensure_manifest_entry(plugin_name)
+        self._manifest = self._load_manifest()
+        return self.list()[plugin_name]
     
     def get_plugin_dirs(self) -> List[Path]:
         """
@@ -502,6 +569,8 @@ class PluginManager:
 
         plugins = self.list_plugins()
         for plugin in plugins:
+            if not plugin.get("enabled", True):
+                continue
             plugin_path = Path(plugin["path"])
             if plugin_path.exists() and plugin_path.is_dir():
                 plugin_roots.append(plugin_path)

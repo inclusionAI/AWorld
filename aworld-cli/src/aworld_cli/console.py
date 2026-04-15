@@ -207,21 +207,48 @@ class AWorldCLI:
 
         The bar is intentionally always present to avoid layout jumps.
         """
-        notification_center = getattr(runtime, "_notification_center", None)
-        if not notification_center:
+        if runtime and hasattr(runtime, "build_hud_context"):
+            hud_context = runtime.build_hud_context(
+                agent_name=agent_name,
+                mode=mode,
+                workspace_name=self._toolbar_workspace_name,
+                git_branch=self._toolbar_git_branch,
+            )
+        else:
+            notification_center = getattr(runtime, "_notification_center", None)
+            if not notification_center:
+                unread_count = -1
+            else:
+                unread_count = notification_center.get_unread_count()
+            hud_context = {
+                "workspace": {"name": self._toolbar_workspace_name},
+                "session": {"agent": agent_name, "mode": mode},
+                "notifications": {"cron_unread": unread_count},
+                "vcs": {"branch": self._toolbar_git_branch},
+            }
+
+        unread_count = hud_context.get("notifications", {}).get("cron_unread", -1)
+        if unread_count < 0:
             cron_status = "Cron: offline"
         else:
-            unread_count = notification_center.get_unread_count()
             cron_status = f"Cron: {unread_count} unread" if unread_count > 0 else "Cron: clear"
 
-        return " | ".join([
-            f"Agent: {agent_name}",
-            f"Mode: {mode}",
+        segments = [
+            f"Agent: {hud_context.get('session', {}).get('agent', agent_name)}",
+            f"Mode: {hud_context.get('session', {}).get('mode', mode)}",
             cron_status,
-            f"Workspace: {self._toolbar_workspace_name}",
-            f"Branch: {self._toolbar_git_branch}",
+            f"Workspace: {hud_context.get('workspace', {}).get('name', self._toolbar_workspace_name)}",
+            f"Branch: {hud_context.get('vcs', {}).get('branch', self._toolbar_git_branch)}",
             "Hint: /cron inbox",
-        ])
+        ]
+
+        if runtime and hasattr(runtime, "get_hud_lines"):
+            for line in runtime.get_hud_lines(hud_context):
+                text = getattr(line, "text", None)
+                if text:
+                    segments.append(str(text))
+
+        return " | ".join(segments)
 
     def _build_status_bar(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> HTML:
         """Build a styled prompt-toolkit status bar inspired by segmented system prompts."""
@@ -1429,6 +1456,100 @@ class AWorldCLI:
             self.console.print(f"[red]Error during permission prompt: {e}[/red]")
             return 'deny'
 
+    def _resolve_hook_text(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            content = value.get('content')
+            if isinstance(content, str):
+                return content
+        return str(value)
+
+    def _get_plugin_runtime(self, executor_instance: Any = None) -> Any:
+        if executor_instance and hasattr(executor_instance, '_base_runtime'):
+            return executor_instance._base_runtime
+        return None
+
+    async def _run_plugin_hooks(
+        self,
+        hook_point: str,
+        event: dict[str, Any],
+        executor_instance: Any = None,
+    ) -> list[tuple[Any, Any]]:
+        runtime = self._get_plugin_runtime(executor_instance)
+        if runtime is None or not hasattr(runtime, 'get_plugin_hooks'):
+            return []
+
+        results = []
+        for hook in runtime.get_plugin_hooks(hook_point):
+            try:
+                state = {}
+                if hasattr(runtime, 'build_plugin_hook_state'):
+                    state = runtime.build_plugin_hook_state(hook.plugin_id, hook.scope, executor_instance)
+                results.append((hook, await hook.run(event=dict(event), state=state)))
+            except Exception as e:
+                logger.warning(
+                    f"Plugin hook '{getattr(hook, 'entrypoint_id', 'unknown')}' failed "
+                    f"at '{hook_point}': {e}"
+                )
+        return results
+
+    async def _execute_follow_up_prompt(
+        self,
+        agent_name: str,
+        executor: Callable[[str], Any],
+        follow_up_prompt: str,
+    ) -> None:
+        self.console.print(f"[bold green]{agent_name}[/bold green]:")
+        self._is_agent_executing = True
+        try:
+            await executor(follow_up_prompt)
+        finally:
+            self._is_agent_executing = False
+
+    async def _apply_stop_hooks(self, executor_instance: Any = None) -> tuple[bool, Optional[str]]:
+        from .core.context import get_default_history_path
+
+        context = None
+        if executor_instance and hasattr(executor_instance, 'context'):
+            context = executor_instance.context
+
+        workspace_path = getattr(context, 'workspace_path', None) or os.getcwd()
+        event = {
+            'transcript_path': str(get_default_history_path()),
+            'workspace_path': workspace_path,
+            'session_id': getattr(executor_instance, 'session_id', None),
+            'task_id': getattr(context, 'task_id', None) if context else None,
+        }
+
+        for _, result in await self._run_plugin_hooks(
+            hook_point='stop',
+            event=event,
+            executor_instance=executor_instance,
+        ):
+            if result.system_message:
+                self.console.print(f"[dim]{result.system_message}[/dim]")
+
+            if result.action == 'allow':
+                continue
+
+            if result.action == 'deny':
+                reason = result.reason or 'Session termination blocked by plugin hook'
+                self.console.print(f"[yellow]⚠️ {reason}[/yellow]")
+                return False, None
+
+            if result.action == 'block_and_continue':
+                follow_up_prompt = self._resolve_hook_text(result.follow_up_prompt or result.updated_input)
+                if not follow_up_prompt:
+                    reason = result.reason or 'Session termination blocked by plugin hook'
+                    self.console.print(f"[yellow]⚠️ {reason}[/yellow]")
+                    return False, None
+                return False, follow_up_prompt
+
+        return True, None
+
     async def _apply_user_input_hooks(self, user_input: str, executor_instance: Any = None) -> tuple[bool, str]:
         """Run CLI user_input hooks and return whether execution should continue."""
         from aworld.core.event.base import Message
@@ -1497,16 +1618,41 @@ class AWorldCLI:
 
             updated_input = hook_result.headers.get('updated_input')
             if updated_input:
-                if isinstance(updated_input, dict) and 'content' in updated_input:
-                    user_input = updated_input['content']
-                elif isinstance(updated_input, str):
-                    user_input = updated_input
+                resolved_input = self._resolve_hook_text(updated_input)
+                if resolved_input:
+                    user_input = resolved_input
 
             if hook_result.headers.get('prevent_continuation'):
                 stop_reason = hook_result.headers.get('stop_reason', 'Hook stopped execution')
                 self.console.print(f"[yellow]⚠️ {stop_reason}[/yellow]")
                 should_execute = False
                 break
+
+        if should_execute:
+            plugin_event = {
+                'user_input': user_input,
+                'workspace_path': workspace_path,
+                'session_id': getattr(user_input_msg, 'session_id', None),
+                'task_id': getattr(context, 'task_id', None) if context else None,
+            }
+            for _, result in await self._run_plugin_hooks(
+                hook_point='user_input_received',
+                event=plugin_event,
+                executor_instance=executor_instance,
+            ):
+                if result.system_message:
+                    self.console.print(f"[dim]{result.system_message}[/dim]")
+
+                resolved_input = self._resolve_hook_text(result.updated_input)
+                if resolved_input:
+                    user_input = resolved_input
+                    plugin_event['user_input'] = user_input
+
+                if result.action == 'deny':
+                    decision_reason = result.reason or 'User input blocked by plugin hook'
+                    self.console.print(f"[red]🚫 {decision_reason}[/red]")
+                    should_execute = False
+                    break
 
         return should_execute, user_input
 
@@ -1752,6 +1898,22 @@ class AWorldCLI:
 
                 # Handle explicit exit commands
                 if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
+                    try:
+                        should_exit, follow_up_prompt = await self._apply_stop_hooks(
+                            executor_instance=executor_instance
+                        )
+                    except Exception as e:
+                        logger.warning(f"STOP hook execution failed: {e}")
+                        should_exit, follow_up_prompt = True, None
+
+                    if not should_exit:
+                        if follow_up_prompt:
+                            await self._execute_follow_up_prompt(
+                                agent_name=agent_name,
+                                executor=executor,
+                                follow_up_prompt=follow_up_prompt,
+                            )
+                        continue
                     self.console.print("[dim]Bye[/dim]")
                     return False
 
@@ -2316,6 +2478,22 @@ Add any custom instructions for AI agents working on this project.
                     logger.info(f"\n[yellow]Interrupted. Input buffer: {buf_content!r}[/yellow]")
                     continue  # Stay in chat loop, show prompt again
                 else:
+                    try:
+                        should_exit, follow_up_prompt = await self._apply_stop_hooks(
+                            executor_instance=executor_instance
+                        )
+                    except Exception as e:
+                        logger.warning(f"STOP hook execution failed: {e}")
+                        should_exit, follow_up_prompt = True, None
+
+                    if not should_exit:
+                        if follow_up_prompt:
+                            await self._execute_follow_up_prompt(
+                                agent_name=agent_name,
+                                executor=executor,
+                                follow_up_prompt=follow_up_prompt,
+                            )
+                        continue
                     logger.info("\n[yellow]Interrupted. Exiting...[/yellow]")
                     self.console.print("[dim]Bye[/dim]")
                     return False  # Exit CLI when buffer is empty
