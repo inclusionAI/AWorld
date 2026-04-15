@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 from aworld_cli.executors.local import LocalAgentExecutor
 from aworld_cli.executors.stats import StreamTokenStats
 from aworld_cli.executors.stream import StreamDisplayBuffer, StreamDisplayConfig, build_stream_renderable
+from aworld_cli.console import AWorldCLI
 
 
 class HudRuntime:
@@ -25,6 +26,54 @@ class NoHudRuntime:
 class BrokenCapabilityRuntime:
     def active_plugin_capabilities(self):
         raise RuntimeError("capability probe failed")
+
+
+class HudRenderRuntime:
+    def active_plugin_capabilities(self):
+        return ("hud",)
+
+    def build_hud_context(self, agent_name, mode, workspace_name, git_branch):
+        return {
+            "workspace": {"name": workspace_name},
+            "session": {"agent": agent_name, "mode": mode, "model": "gpt-5", "elapsed_seconds": 12.5},
+            "task": {"current_task_id": "task_001", "status": "running"},
+            "activity": {"current_tool": "bash", "recent_tools": ["bash"], "tool_calls_count": 2},
+            "usage": {"input_tokens": 1200, "output_tokens": 300, "context_percent": 34},
+            "notifications": {"cron_unread": 0},
+            "vcs": {"branch": git_branch},
+            "plugins": {"active_count": 1},
+        }
+
+    def get_hud_lines(self, context):
+        return [
+            type(
+                "HudLine",
+                (),
+                {
+                    "section": "identity",
+                    "segments": (
+                        "Agent: Aworld / Chat",
+                        "Model: gpt-5",
+                        "Workspace: aworld",
+                        "Branch: feat/hud",
+                        "Cron: clear",
+                    ),
+                },
+            )(),
+            type(
+                "HudLine",
+                (),
+                {
+                    "section": "activity",
+                    "segments": (
+                        "Task: task_001 (running)",
+                        "Tokens: in 1.2k out 300",
+                        "Ctx: 34%",
+                        "Elapsed: 12.5s",
+                    ),
+                },
+            )(),
+        ]
 
 
 def _build_stats() -> StreamTokenStats:
@@ -122,3 +171,70 @@ def test_stream_renderable_keeps_stats_when_hud_capability_is_missing():
     output = console.export_text()
 
     assert "Aworld stats" in output
+
+
+def test_stream_renderable_appends_hud_lines_when_hud_render_fn_is_available():
+    buffer = StreamDisplayBuffer(accumulated_content="hello", displayed_content_chars=0)
+    console = Console(record=True, width=120)
+
+    renderable = build_stream_renderable(
+        buffer=buffer,
+        stream_token_stats=_build_stats(),
+        status_start_time=None,
+        format_tool_calls_fn=lambda calls: [],
+        format_elapsed_fn=lambda elapsed: f"{elapsed:.1f}s",
+        config=StreamDisplayConfig(),
+        should_emit_interactive_stats_fn=lambda: False,
+        hud_lines_fn=lambda: [
+            "Agent: Aworld / Chat | Workspace: aworld | Branch: feat/hud | Cron: clear",
+            "Task: task_001 (running) | Tokens: in 1.2k out 300 | Ctx: 34% | Elapsed: 12.5s",
+        ],
+    )
+
+    console.print(renderable)
+    output = console.export_text()
+
+    assert "Aworld stats" not in output
+    assert "Task: task_001 (running)" in output
+    assert "Ctx: 34%" in output
+
+
+def test_stream_renderable_keeps_activity_hud_line_when_width_is_constrained():
+    buffer = StreamDisplayBuffer(accumulated_content="hello", displayed_content_chars=0)
+    console = Console(record=True, width=80)
+
+    renderable = build_stream_renderable(
+        buffer=buffer,
+        stream_token_stats=_build_stats(),
+        status_start_time=None,
+        format_tool_calls_fn=lambda calls: [],
+        format_elapsed_fn=lambda elapsed: f"{elapsed:.1f}s",
+        config=StreamDisplayConfig(),
+        should_emit_interactive_stats_fn=lambda: False,
+        hud_lines_fn=lambda: [
+            "Agent: Aworld / Chat | Workspace: aworld | Branch: feat/hud | Cron: clear",
+            "Task: task_001 (running) | Tokens: in 1.2k out 300 | Ctx: 34% | Elapsed: 12.5s",
+        ],
+    )
+
+    console.print(renderable)
+    output = console.export_text()
+
+    assert "Task: task_001 (running)" in output
+    assert "Ctx: 34%" in output
+
+
+def test_cli_can_build_execution_hud_lines_with_activity_priority():
+    cli = AWorldCLI()
+    cli._toolbar_workspace_name = "aworld"
+    cli._toolbar_git_branch = "feat/hud"
+
+    lines = cli._build_status_bar_text(
+        HudRenderRuntime(),
+        agent_name="Aworld",
+        mode="Chat",
+        max_width=80,
+    ).splitlines()
+
+    assert len(lines) == 2
+    assert "Task: task_001 (running)" in lines[1]
