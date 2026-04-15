@@ -1,36 +1,88 @@
 from __future__ import annotations
 
-from aworld_gateway.channels.base import ChannelMetadata
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import TypeAlias
+
+from aworld_gateway.channels.base import ChannelAdapter, ChannelMetadata
+from aworld_gateway.channels.dingding.adapter import DingdingChannelAdapter
+from aworld_gateway.channels.feishu.adapter import FeishuChannelAdapter
+from aworld_gateway.channels.web.adapter import WebChannelAdapter
+from aworld_gateway.channels.wecom.adapter import WecomChannelAdapter
+from aworld_gateway.config import BaseChannelConfig
+
+ChannelMetaSummary: TypeAlias = dict[str, object]
+
+@dataclass(frozen=True)
+class ChannelRegistration:
+    metadata: ChannelMetadata
+    label: str
+    adapter_class: type[ChannelAdapter] | None = None
 
 
 class ChannelRegistry:
-    _BUILTIN_CHANNELS: tuple[ChannelMetadata, ...] = (
-        ChannelMetadata(name="telegram", implemented=True),
-        ChannelMetadata(name="web", implemented=False),
-        ChannelMetadata(name="dingding", implemented=False),
-        ChannelMetadata(name="feishu", implemented=False),
-        ChannelMetadata(name="wecom", implemented=False),
-    )
-
-    _LABELS: dict[str, str] = {
-        "telegram": "Telegram",
-        "web": "Web",
-        "dingding": "DingTalk",
-        "feishu": "Feishu",
-        "wecom": "WeCom",
-    }
-
-    def list_channels(self) -> dict[str, dict[str, object]]:
-        return {
-            channel.name: {
-                "label": self._LABELS.get(channel.name, channel.name),
-                "implemented": channel.implemented,
+    def __init__(self) -> None:
+        self._registrations: OrderedDict[str, ChannelRegistration] = OrderedDict(
+            {
+                "telegram": ChannelRegistration(
+                    metadata=ChannelMetadata(name="telegram", implemented=True),
+                    label="Telegram",
+                    adapter_class=None,
+                ),
+                "web": ChannelRegistration(
+                    metadata=ChannelMetadata(name="web", implemented=False),
+                    label="Web",
+                    adapter_class=WebChannelAdapter,
+                ),
+                "dingding": ChannelRegistration(
+                    metadata=ChannelMetadata(name="dingding", implemented=False),
+                    label="DingTalk",
+                    adapter_class=DingdingChannelAdapter,
+                ),
+                "feishu": ChannelRegistration(
+                    metadata=ChannelMetadata(name="feishu", implemented=False),
+                    label="Feishu",
+                    adapter_class=FeishuChannelAdapter,
+                ),
+                "wecom": ChannelRegistration(
+                    metadata=ChannelMetadata(name="wecom", implemented=False),
+                    label="WeCom",
+                    adapter_class=WecomChannelAdapter,
+                ),
             }
-            for channel in self._BUILTIN_CHANNELS
+        )
+
+    def list_channels(self) -> dict[str, ChannelMetaSummary]:
+        return {
+            channel_id: self._meta_summary(registration)
+            for channel_id, registration in self._registrations.items()
         }
 
-    def get_channel(self, name: str) -> ChannelMetadata | None:
-        for channel in self._BUILTIN_CHANNELS:
-            if channel.name == name:
-                return channel
-        return None
+    def get_meta(self, channel_id: str) -> ChannelMetaSummary | None:
+        registration = self._registrations.get(channel_id)
+        if registration is None:
+            return None
+        return self._meta_summary(registration)
+
+    def get_adapter_class(self, channel_id: str) -> type[ChannelAdapter] | None:
+        registration = self._registrations.get(channel_id)
+        if registration is None:
+            return None
+        return registration.adapter_class
+
+    def build_adapter(
+        self,
+        channel_id: str,
+        config: BaseChannelConfig,
+    ) -> ChannelAdapter | None:
+        adapter_class = self.get_adapter_class(channel_id)
+        if adapter_class is None:
+            return None
+        return adapter_class(config)
+
+    @staticmethod
+    def _meta_summary(registration: ChannelRegistration) -> ChannelMetaSummary:
+        return {
+            "label": registration.label,
+            "implemented": registration.metadata.implemented,
+        }

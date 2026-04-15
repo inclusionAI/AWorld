@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from aworld_gateway.channels.base import ChannelAdapter, ChannelMetadata
+from aworld_gateway.types import OutboundEnvelope
 
 
 class WebChannelAdapter(ChannelAdapter):
@@ -8,5 +9,11 @@ class WebChannelAdapter(ChannelAdapter):
     def metadata(cls) -> ChannelMetadata:
         return ChannelMetadata(name="web", implemented=False)
 
-    def start(self) -> None:
+    async def start(self) -> None:
+        raise NotImplementedError("Web channel adapter is not implemented yet.")
+
+    async def stop(self) -> None:
+        return None
+
+    async def send(self, envelope: OutboundEnvelope):
         raise NotImplementedError("Web channel adapter is not implemented yet.")
