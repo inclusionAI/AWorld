@@ -271,7 +271,7 @@ class CronExecutor:
 
         except Exception as e:
             logger.error(
-                f"Cron job execution error: {job.id} - {e}\n{traceback.format_exc()}"
+                f"Cron job execution error: {job.id}\n{traceback.format_exc()}"
             )
             return TaskResponse(
                 success=False,
@@ -393,7 +393,7 @@ class CronExecutor:
             logger.debug(f"Cached swarm from configured resolver: {agent_name}")
         except Exception as e:
             logger.error(
-                f"Failed to resolve swarm for {agent_name}: {e}\n{traceback.format_exc()}"
+                f"Failed to resolve swarm for {agent_name}\n{traceback.format_exc()}"
             )
             return None
 

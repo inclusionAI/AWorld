@@ -190,7 +190,7 @@ class CronScheduler:
                     await asyncio.sleep(sleep_time)
 
             except Exception as e:
-                logger.error(f"Scheduler loop error: {e}\n{traceback.format_exc()}")
+                logger.error(f"Scheduler loop error\n{traceback.format_exc()}")
                 await asyncio.sleep(5)  # Brief pause before retry
 
     def _find_next_job(self, jobs: List[CronJob]) -> Tuple[Optional[CronJob], float]:
@@ -624,7 +624,7 @@ class CronScheduler:
                 await self._publish_notification(job, "timeout")
 
             except Exception as e:
-                logger.error(f"Job {job.id} trigger error: {e}\n{traceback.format_exc()}")
+                logger.error(f"Job {job.id} trigger error\n{traceback.format_exc()}")
                 await self.store.update_job(
                     job.id,
                     state={
@@ -785,7 +785,7 @@ class CronScheduler:
 
             except Exception as e:
                 logger.error(
-                    f"Manual job {job_id} execution error: {e}\n{traceback.format_exc()}"
+                    f"Manual job {job_id} execution error\n{traceback.format_exc()}"
                 )
                 await self.store.update_job(
                     job_id,
