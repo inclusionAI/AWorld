@@ -132,7 +132,7 @@ def test_runtime_start_degrades_when_enabled_dingding_is_not_configured(
     )
 
 
-def test_runtime_start_degrades_when_enabled_and_configured_dingding_stub_fails(
+def test_runtime_start_degrades_when_enabled_and_configured_dingding_missing_dependency(
     monkeypatch,
 ):
     monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-client")
@@ -157,7 +157,7 @@ def test_runtime_start_degrades_when_enabled_and_configured_dingding_stub_fails(
     assert status["channels"]["dingding"]["state"] == "degraded"
     assert (
         status["channels"]["dingding"]["error"]
-        == "Dingding channel adapter is not implemented yet."
+        == "Missing optional dependency 'dingtalk_stream' for DingTalk channel."
     )
 
 

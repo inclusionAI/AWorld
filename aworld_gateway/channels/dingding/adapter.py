@@ -53,6 +53,11 @@ class DingdingChannelAdapter(ChannelAdapter):
         return {"session_webhook": session_webhook, "text": envelope.text}
 
     def _import_stream_module(self):
-        import dingtalk_stream
+        try:
+            import dingtalk_stream
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Missing optional dependency 'dingtalk_stream' for DingTalk channel."
+            ) from exc
 
         return dingtalk_stream
