@@ -260,6 +260,28 @@ async def test_scheduler_publishes_live_progress_logs():
 
 
 @pytest.mark.asyncio
+async def test_notification_center_logs_warning_when_progress_store_fails(monkeypatch):
+    """Progress-log buffering failures should be surfaced as warnings."""
+    center = CronNotificationCenter()
+    warnings = []
+
+    monkeypatch.setattr(
+        "aworld_cli.runtime.cron_notifications.logger.warning",
+        lambda message: warnings.append(message),
+    )
+    monkeypatch.setattr(center, "_progress_logs", None)
+
+    await center.publish_progress({
+        "job_id": "job-1",
+        "job_name": "test",
+        "message": "step",
+    })
+
+    assert len(warnings) == 1
+    assert "Failed to store cron progress log" in warnings[0]
+
+
+@pytest.mark.asyncio
 async def test_scheduler_short_circuits_instructional_reminders():
     """Reminder payloads should publish directly instead of re-entering the agent."""
     import tempfile
