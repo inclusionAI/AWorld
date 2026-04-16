@@ -14,6 +14,8 @@ from datetime import datetime
 from typing import Literal, Optional, List, Dict, Any
 import pytz
 
+from aworld.logs.util import logger
+
 
 @dataclass
 class CronNotification:
@@ -182,8 +184,8 @@ class CronNotificationCenter:
                 deque(maxlen=self._progress_limit),
             )
             buffer.append(log)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to store cron progress log: {e}")
 
     def get_progress_logs(self, job_id: str) -> List[CronProgressLog]:
         """Return a snapshot of the in-memory live log buffer for a cron job."""
