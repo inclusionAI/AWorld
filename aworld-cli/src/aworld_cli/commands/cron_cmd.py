@@ -229,7 +229,10 @@ class CronCommand(Command):
             lines.append(f"  summary: {getattr(item, 'summary', '')}")
             detail = getattr(item, "detail", None)
             if detail:
-                lines.append(f"  content: {detail}")
+                detail_lines = str(detail).splitlines() or [""]
+                lines.append(f"  content: {detail_lines[0]}")
+                for extra_line in detail_lines[1:]:
+                    lines.append(f"           {extra_line}")
             if next_run_at:
                 lines.append(f"  next_run: {next_run_at}")
             created_at = getattr(item, "created_at", None)
