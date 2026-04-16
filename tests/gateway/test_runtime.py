@@ -132,6 +132,35 @@ def test_runtime_start_degrades_when_enabled_dingding_is_not_configured(
     )
 
 
+def test_runtime_start_degrades_when_enabled_and_configured_dingding_stub_fails(
+    monkeypatch,
+):
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-client")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+
+    config = GatewayConfig()
+    config.channels.dingding.enabled = True
+    runtime = GatewayRuntime(
+        config=config,
+        registry=ChannelRegistry(),
+        router=None,
+    )
+
+    asyncio.run(runtime.start())
+
+    status = runtime.status()
+    assert status["state"] == "degraded"
+    assert status["channels"]["dingding"]["enabled"] is True
+    assert status["channels"]["dingding"]["configured"] is True
+    assert status["channels"]["dingding"]["implemented"] is True
+    assert status["channels"]["dingding"]["running"] is False
+    assert status["channels"]["dingding"]["state"] == "degraded"
+    assert (
+        status["channels"]["dingding"]["error"]
+        == "Dingding channel adapter is not implemented yet."
+    )
+
+
 def test_runtime_starts_enabled_and_configured_telegram_channel(
     monkeypatch,
 ):
