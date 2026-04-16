@@ -66,9 +66,17 @@ class _FakeStreamClient:
     def __init__(self, credential) -> None:
         self.credential = credential
         self.register_calls: list[tuple[str, object]] = []
+        self.start_forever_calls = 0
+        self.stop_calls = 0
 
     def register_callback_handler(self, topic: str, handler: object) -> None:
         self.register_calls.append((topic, handler))
+
+    def start_forever(self) -> None:
+        self.start_forever_calls += 1
+
+    def stop(self) -> None:
+        self.stop_calls += 1
 
 
 class _FakeStreamModule:
@@ -77,6 +85,18 @@ class _FakeStreamModule:
     ChatbotHandler = _FakeChatbotHandler
     ChatbotMessage = _FakeChatbotMessage
     AckMessage = _FakeAckMessage
+
+
+class _FakeThread:
+    def __init__(self, *, target, name: str, daemon: bool) -> None:
+        self.target = target
+        self.name = name
+        self.daemon = daemon
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+        self.target()
 
 
 class _FakeResponse:
@@ -135,18 +155,45 @@ def test_connector_start_registers_stream_callback_handler(monkeypatch) -> None:
     assert message == "OK"
 
 
-def test_connector_stop_closes_http_client() -> None:
+def test_connector_start_launches_stream_client_runner(monkeypatch) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld"),
+        bridge=_FakeBridge(),
+        stream_module=_FakeStreamModule,
+        http_client=_FakeHttpClient(),
+        thread_cls=_FakeThread,
+    )
+
+    asyncio.run(connector.start())
+
+    assert isinstance(connector._client, _FakeStreamClient)
+    assert connector._client.start_forever_calls == 1
+    assert connector._stream_thread is not None
+    assert connector._stream_thread.started is True
+
+
+def test_connector_stop_closes_http_client(monkeypatch) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+
     http_client = _FakeHttpClient()
     connector = DingTalkConnector(
         config=DingdingChannelConfig(default_agent_id="aworld"),
         bridge=_FakeBridge(),
-        stream_module=object(),
+        stream_module=_FakeStreamModule,
         http_client=http_client,
+        thread_cls=_FakeThread,
     )
 
+    asyncio.run(connector.start())
     asyncio.run(connector.stop())
 
     assert http_client.closed is True
+    assert connector._client is not None
+    assert connector._client.stop_calls == 1
 
 
 def test_connector_reset_command_rotates_session_and_sends_confirmation() -> None:
