@@ -185,6 +185,43 @@ def test_prompt_kwargs_clear_bottom_toolbar_when_hud_is_disabled():
     assert "refresh_interval" not in prompt_kwargs
 
 
+def test_runtime_plugin_refresh_clears_active_prompt_session_when_hud_toggles():
+    class FakeRuntime:
+        def active_plugin_capabilities(self):
+            return ()
+
+    cli = AWorldCLI()
+    active_session = object()
+    cli._active_prompt_session = active_session
+
+    cli._handle_runtime_plugin_capability_refresh(("hud",), FakeRuntime())
+
+    assert cli._active_prompt_session is None
+
+
+def test_ensure_prompt_session_recreates_when_active_prompt_session_was_cleared(monkeypatch):
+    created = []
+
+    class FakePromptSession:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            created.append(self)
+
+    monkeypatch.setattr("aworld_cli.console.PromptSession", FakePromptSession)
+
+    cli = AWorldCLI()
+    stale_session = object()
+    cli._active_prompt_session = None
+
+    session = cli._ensure_prompt_session(
+        stale_session,
+        completer=object(),
+    )
+
+    assert session is created[0]
+    assert cli._active_prompt_session is created[0]
+
+
 def test_status_bar_text_falls_back_when_hud_entrypoint_raises(tmp_path):
     hud_module = tmp_path / "hud.py"
     hud_module.write_text(

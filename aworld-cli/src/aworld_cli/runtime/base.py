@@ -183,12 +183,18 @@ class BaseCliRuntime:
                 pass
 
     def refresh_plugin_framework(self) -> None:
+        previous_capabilities = self.active_plugin_capabilities()
         if hasattr(self, "_get_plugin_dirs"):
             try:
                 self.plugin_dirs = self._get_plugin_dirs()
             except Exception as exc:
                 logger.warning(f"Failed to resolve plugin directories during refresh: {exc}")
         self._initialize_plugin_framework()
+        if hasattr(self, "cli") and hasattr(self.cli, "_handle_runtime_plugin_capability_refresh"):
+            try:
+                self.cli._handle_runtime_plugin_capability_refresh(previous_capabilities, self)
+            except Exception as exc:
+                logger.warning(f"Failed to refresh CLI prompt session after plugin refresh: {exc}")
 
     def get_plugin_hooks(self, hook_point: str) -> list[Any]:
         normalized = (hook_point or "").strip().lower()
