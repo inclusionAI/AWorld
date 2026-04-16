@@ -58,6 +58,35 @@ def test_status_bar_text_merges_plugin_hud_lines():
     assert "Workspace: aworld" in text
 
 
+def test_status_bar_text_shows_unread_cron_count_from_plugin_hud():
+    plugin_root = _get_builtin_aworld_hud_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    class FakeNotificationCenter:
+        def get_unread_count(self):
+            return 1
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = FakeNotificationCenter()
+
+        def build_hud_context(self, agent_name, mode, workspace_name, git_branch):
+            return {
+                "workspace": {"name": workspace_name},
+                "session": {"agent": agent_name, "mode": mode},
+                "notifications": {"cron_unread": self._notification_center.get_unread_count()},
+                "vcs": {"branch": git_branch},
+            }
+
+        def get_hud_lines(self, context):
+            return collect_hud_lines([plugin], context)
+
+    cli = AWorldCLI()
+    text = cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat")
+
+    assert "Cron: 1 unread" in text
+
+
 def test_collect_hud_lines_preserves_grouped_segments():
     plugin_root = _get_builtin_aworld_hud_root()
     plugin = discover_plugins([plugin_root])[0]
@@ -229,7 +258,7 @@ def test_status_bar_text_truncates_long_segment_after_reduction():
     assert text.endswith("...")
 
 
-def test_status_bar_text_keeps_idle_summary_and_hides_tool_details():
+def test_status_bar_text_keeps_idle_hud_stable_without_execution_stats():
     plugin_root = _get_builtin_aworld_hud_root()
     plugin = discover_plugins([plugin_root])[0]
 
@@ -263,10 +292,16 @@ def test_status_bar_text_keeps_idle_summary_and_hides_tool_details():
     cli = AWorldCLI()
     text = cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat", max_width=160)
 
-    assert "Task: task_20260415210612 (idle)" in text
-    assert "Tokens: in 6.5k out 122" in text
-    assert "Ctx: ███" in text
-    assert "Elapsed: 16.8s" in text
+    assert "Agent: Aworld / Chat" in text
+    assert "Model: claude-sonnet-4-5" in text
+    assert "Workspace: aworld" in text
+    assert "Branch:" in text
+    assert "Cron: clear" in text
+    assert "Status: idle" in text
+    assert "Task: task_20260415210612 (idle)" not in text
+    assert "Tokens: in 6.5k out 122" not in text
+    assert "Ctx: ███" not in text
+    assert "Elapsed: 16.8s" not in text
     assert "Tool:" not in text
     assert "Plugins:" not in text
 

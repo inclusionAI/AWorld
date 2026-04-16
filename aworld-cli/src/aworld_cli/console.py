@@ -169,6 +169,7 @@ class AWorldCLI:
         self._notification_poll_task = None
         self._notification_stop_event = None
         self._notification_drain_lock = asyncio.Lock()
+        self._active_prompt_session = None
         self._toolbar_workspace_name = self._detect_workspace_name()
         self._toolbar_git_branch = self._detect_git_branch()
 
@@ -1392,6 +1393,53 @@ class AWorldCLI:
             except Exception:
                 return []
 
+    def _invalidate_active_prompt(self) -> None:
+        session = self._active_prompt_session
+        if session is None:
+            return
+        app = getattr(session, "app", None)
+        if app is None or not hasattr(app, "invalidate"):
+            return
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+    async def _ensure_notification_poller(self, runtime) -> None:
+        if runtime is None or getattr(runtime, "_notification_center", None) is None:
+            return
+        if self._notification_poll_task and not self._notification_poll_task.done():
+            return
+        self._notification_stop_event = asyncio.Event()
+        self._notification_poll_task = asyncio.create_task(
+            self._notification_poller(runtime, stop_event=self._notification_stop_event)
+        )
+
+    async def _stop_notification_poller(self) -> None:
+        if not self._notification_poll_task:
+            return
+        if self._notification_stop_event:
+            self._notification_stop_event.set()
+        try:
+            await asyncio.wait_for(self._notification_poll_task, timeout=1.0)
+        except asyncio.TimeoutError:
+            self._notification_poll_task.cancel()
+            try:
+                await self._notification_poll_task
+            except asyncio.CancelledError:
+                pass
+        finally:
+            self._notification_poll_task = None
+            self._notification_stop_event = None
+
+    def _hud_owns_notification_state(self, runtime) -> bool:
+        if runtime is None or not hasattr(runtime, "active_plugin_capabilities"):
+            return False
+        try:
+            return "hud" in tuple(runtime.active_plugin_capabilities())
+        except Exception:
+            return False
+
     async def _notification_poller(
         self,
         runtime,
@@ -1409,6 +1457,12 @@ class AWorldCLI:
             try:
                 # Only poll when idle (not executing agent)
                 if not self._is_agent_executing:
+                    # When HUD is active, keep notifications unread so the toolbar/HUD
+                    # can surface the live inbox count until the user explicitly opens it.
+                    if self._hud_owns_notification_state(runtime):
+                        self._invalidate_active_prompt()
+                        await asyncio.sleep(poll_interval)
+                        continue
                     notifications = await self._drain_notifications_safe(runtime)
                     if notifications:
                         # Print above current prompt line
@@ -1865,6 +1919,10 @@ class AWorldCLI:
                 complete_while_typing=True,  # 输入时即显示补全列表（带描述）
                 history=FileHistory(str(history_path)),
             )
+            self._active_prompt_session = session
+            await self._ensure_notification_poller(runtime)
+        else:
+            self._active_prompt_session = None
 
         while True:
             try:
@@ -1996,6 +2054,7 @@ class AWorldCLI:
                             )
                         continue
                     self.console.print("[dim]Bye[/dim]")
+                    await self._stop_notification_poller()
                     return False
 
                 # Handle help command - show system information
@@ -2031,11 +2090,13 @@ class AWorldCLI:
                          target_agent = parts[1]
                          # Validate agent existence
                          if target_agent in agent_names:
+                             await self._stop_notification_poller()
                              return target_agent
                          else:
                              self.console.print(f"[red]Agent '{target_agent}' not found.[/red]")
                              continue
                     else:
+                        await self._stop_notification_poller()
                         return True # Return True to switch agent (show list)
                 
                 # Handle skills command
@@ -2577,6 +2638,7 @@ Add any custom instructions for AI agents working on this project.
                         continue
                     logger.info("\n[yellow]Interrupted. Exiting...[/yellow]")
                     self.console.print("[dim]Bye[/dim]")
+                    await self._stop_notification_poller()
                     return False  # Exit CLI when buffer is empty
             except Exception as e:
                 import traceback
@@ -2584,19 +2646,5 @@ Add any custom instructions for AI agents working on this project.
                 self.console.print(f"[red]An unexpected error occurred: {e}[/red]")
                 continue  # Add continue to prevent fall-through
 
-        # Cleanup: Stop background notification poller
-        if self._notification_poll_task:
-            self._notification_stop_event.set()
-            try:
-                await asyncio.wait_for(self._notification_poll_task, timeout=1.0)
-            except asyncio.TimeoutError:
-                # Force cancel if graceful shutdown times out
-                self._notification_poll_task.cancel()
-                try:
-                    await self._notification_poll_task
-                except asyncio.CancelledError:
-                    pass
-            finally:
-                self._notification_poll_task = None
-                self._notification_stop_event = None
+        await self._stop_notification_poller()
         return False
