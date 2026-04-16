@@ -11,9 +11,12 @@ from pydantic import Field
 from pydantic.fields import FieldInfo
 
 from croniter import croniter
+from aworld.core.scheduler.normalization import (
+    normalize_tool_names,
+    resolve_effective_tool_names,
+)
 from aworld.core.tool.func_to_tool import be_tool
 from aworld.logs.util import logger
-from aworld.core.scheduler.normalization import normalize_tool_names
 
 DEFAULT_ADVANCE_REMINDER_MINUTES = 10
 
@@ -254,21 +257,6 @@ async def cron_tool(
             return normalize_agent_name_local(bound_agent_name)
         return normalize_agent_name_local(raw_agent_name)
 
-    def resolve_effective_tool_names_local(
-        resolved_agent_name: str,
-        requested_tools: List[str],
-    ) -> List[str]:
-        """
-        Do not restrict Aworld/root-agent cron tasks unless explicitly designed otherwise.
-
-        Cron-created automation tasks are often open-ended instructions. When the
-        selected runtime root agent is Aworld, constraining tools based on an LLM-
-        invented comma string degrades execution quality and can block required tools.
-        """
-        if resolved_agent_name == "Aworld":
-            return []
-        return requested_tools
-
     def is_reactivatable_local(job: 'CronJob', now: datetime) -> bool:
         if job.schedule.kind in ("every", "cron"):
             return True
@@ -348,7 +336,7 @@ async def cron_tool(
 
         scheduler = get_scheduler()
         agent_name = resolve_bound_agent_name_local(agent_name, scheduler)
-        tools = resolve_effective_tool_names_local(agent_name, tools)
+        tools = resolve_effective_tool_names(agent_name, tools)
 
         if action == "add":
             request_schedule_derived = False
