@@ -163,8 +163,8 @@ if __name__ == '__main__':
     # standard structure
     for line in outline:
         for k, v in line.items():
-            index_content.append(f"## {k}")
             if isinstance(v, dict):
+                index_content.append(f"## {k}")
                 for s_k, s_v in v.items():
                     index_content.append(f"[{s_k}]({s_v})")
             else:
