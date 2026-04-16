@@ -362,6 +362,17 @@ class AWorldCLI:
 
         return HTML("\n".join(_render_line(line) for line in lines if line))
 
+    def _build_prompt_kwargs(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> dict[str, Any]:
+        prompt_kwargs: dict[str, Any] = {"bottom_toolbar": None}
+        if runtime and self._should_render_status_bar(runtime):
+            prompt_kwargs["bottom_toolbar"] = lambda: self._build_status_bar(
+                runtime,
+                agent_name=agent_name,
+                mode=mode,
+            )
+            prompt_kwargs["refresh_interval"] = 0.1
+        return prompt_kwargs
+
     def _build_completion_entries(self, agent_names: Optional[List[str]] = None) -> tuple[list[str], dict[str, str]]:
         """
         Build slash-command completion phrases and descriptions for prompt_toolkit.
@@ -1931,14 +1942,11 @@ class AWorldCLI:
                     # Use prompt_toolkit for input with completion
                     # We use HTML for basic coloring of the prompt
                     prompt_text = "<b><cyan>You</cyan></b>: "
-                    prompt_kwargs = {}
-                    if runtime and self._should_render_status_bar(runtime):
-                        prompt_kwargs["bottom_toolbar"] = lambda: self._build_status_bar(
-                            runtime,
-                            agent_name=agent_name,
-                            mode="Chat",
-                        )
-                        prompt_kwargs["refresh_interval"] = 0.1
+                    prompt_kwargs = self._build_prompt_kwargs(
+                        runtime,
+                        agent_name=agent_name,
+                        mode="Chat",
+                    )
                     user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text), **prompt_kwargs)
                 else:
                     # Fallback to plain input() for non-terminal environments
