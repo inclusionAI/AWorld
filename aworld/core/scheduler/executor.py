@@ -10,6 +10,7 @@ from typing import Dict, Any, Callable, Optional, Awaitable
 
 from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger
+from .normalization import resolve_effective_tool_names
 from .types import CronJob
 
 
@@ -44,10 +45,8 @@ class CronExecutor:
         return self.default_agent_name
 
     def _resolve_effective_tool_names(self, job: CronJob) -> list[str]:
-        """Aworld/root-agent cron tasks should not be constrained by persisted tool allowlists."""
-        if job.payload.agent_name == "Aworld":
-            return []
-        return job.payload.tool_names
+        """Resolve the effective tool allowlist for execution."""
+        return resolve_effective_tool_names(job.payload.agent_name, job.payload.tool_names)
 
     def _truncate_text(self, value: Any, limit: int = 400) -> Optional[str]:
         """Convert stream payloads to compact, readable progress lines."""

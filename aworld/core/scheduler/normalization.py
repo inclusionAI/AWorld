@@ -32,3 +32,16 @@ def normalize_tool_names(value: Any) -> List[str]:
 
     text = str(value).strip()
     return [text] if text else []
+
+
+def resolve_effective_tool_names(agent_name: str, tool_names: List[str]) -> List[str]:
+    """
+    Return the effective tool allowlist for a cron job.
+
+    Aworld/root-agent cron tasks should not be constrained by persisted tool
+    allowlists because cron-created automation is often open-ended and requires
+    the runtime agent to choose the necessary tools dynamically.
+    """
+    if agent_name == "Aworld":
+        return []
+    return tool_names
