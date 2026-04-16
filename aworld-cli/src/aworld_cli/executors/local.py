@@ -317,6 +317,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
         response_text = str(getattr(last_message_output, "response", "") or "").strip()
         return not bool(response_text)
 
+    @staticmethod
+    def _has_visible_response_content(content: Any) -> bool:
+        if content is None:
+            return False
+        return bool(str(content).strip())
+
     async def cleanup_resources(self) -> None:
         """
         Close MCP and other resources in the same event loop to avoid
@@ -678,6 +684,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         current_agent_name = None
                         last_agent_name = None
                         received_chunk_output = False
+                        received_visible_chunk_output = False
 
                         try:
                             # Ensure console is set before processing stream events
@@ -918,12 +925,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                 answer,
                                                 agent_name=current_agent_name,
                                                 is_handoff=is_handoff,
-                                                content_already_streamed=received_chunk_output,
+                                                content_already_streamed=received_visible_chunk_output,
                                             )
 
                                         answer, _ = ctrl.print_with_hud_suspended(_render_message_output)
-                                        if response_text.strip():
+                                        if self._has_visible_response_content(response_text):
                                             response_rendered_to_console = True
+                                        received_visible_chunk_output = False
                                         
                                         # 🔧 FIX: Display token stats after rendering message output (STREAM=0 mode)
                                         # This ensures the stats line is shown even when not streaming
@@ -1023,7 +1031,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     if capture_stream_output and chunk:
                                         if content := getattr(chunk, "content", None):
                                             ctrl.buffer.accumulated_content += content
-                                            response_rendered_to_console = True
+                                            if self._has_visible_response_content(content):
+                                                response_rendered_to_console = True
+                                                received_visible_chunk_output = True
                                             if ctrl.use_fixed_hud_layout:
                                                 ctrl.stream_fixed_chunk_content(chunk_agent_name or "Assistant", content)
                                         if tool_calls := getattr(chunk, "tool_calls", None):

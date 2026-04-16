@@ -394,6 +394,21 @@ def test_final_task_answer_should_not_render_when_message_already_had_response()
     assert should_render is False
 
 
+def test_visible_response_content_helper_ignores_empty_and_whitespace_only_chunks():
+    executor = object.__new__(LocalAgentExecutor)
+
+    assert executor._has_visible_response_content("") is False
+    assert executor._has_visible_response_content("   \n\t") is False
+    assert executor._has_visible_response_content(None) is False
+
+
+def test_visible_response_content_helper_detects_actual_text():
+    executor = object.__new__(LocalAgentExecutor)
+
+    assert executor._has_visible_response_content("已为你创建提醒。") is True
+    assert executor._has_visible_response_content("\n已为你创建提醒。") is True
+
+
 def test_stream_renderable_keeps_hud_fixed_to_bottom_lines_when_content_is_long():
     buffer = StreamDisplayBuffer(
         accumulated_content="\n".join(f"line{i}" for i in range(12)),
