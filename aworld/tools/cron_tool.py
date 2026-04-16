@@ -14,6 +14,8 @@ from croniter import croniter
 from aworld.core.tool.func_to_tool import be_tool
 from aworld.logs.util import logger
 
+DEFAULT_ADVANCE_REMINDER_MINUTES = 10
+
 
 @be_tool(
     tool_name='cron',
@@ -105,6 +107,7 @@ async def cron_tool(
     # can still resolve them even when this function source is copied before the
     # helper definitions below are executed.
     from aworld.tools.cron_tool import (
+        _build_advance_reminder_spec as build_advance_reminder_spec_helper,
         _parse_natural_language_add_request as parse_request_helper,
         _unwrap_fieldinfo as unwrap_fieldinfo_helper,
     )
@@ -141,11 +144,32 @@ async def cron_tool(
             raise ValueError(f"Invalid max_runs value: {raw_max_runs}. Expected a positive integer.")
         return parsed
 
+    def normalize_tool_names_local(raw_tools: Optional[Any]) -> List[str]:
+        if raw_tools is None or raw_tools == "":
+            return []
+        if isinstance(raw_tools, list):
+            normalized = []
+            for item in raw_tools:
+                text = str(item).strip()
+                if not text:
+                    continue
+                if "," in text:
+                    normalized.extend(part.strip() for part in text.split(",") if part.strip())
+                else:
+                    normalized.append(text)
+            return normalized
+        if isinstance(raw_tools, str):
+            stripped = raw_tools.strip()
+            if not stripped:
+                return []
+            return [part.strip() for part in stripped.split(",") if part.strip()]
+        return [str(raw_tools).strip()]
+
     try:
         max_runs = normalize_max_runs_local(max_runs)
     except ValueError as e:
         return {"success": False, "error": str(e)}
-    agent_name = normalize_agent_name_local(agent_name)
+    tools = normalize_tool_names_local(tools)
 
     def parse_duration_local(duration_str: str) -> int:
         match = re.fullmatch(r'(\d+)([smhd])', duration_str.strip())
@@ -222,6 +246,7 @@ async def cron_tool(
             "next_run": job.state.next_run_at,
             "last_run": job.state.last_run_at,
             "enabled": job.enabled,
+            "running": job.state.running,
             "max_runs": job.payload.max_runs,
             "run_count": job.state.run_count,
             "last_status": job.state.last_status,
@@ -235,6 +260,34 @@ async def cron_tool(
         if not value:
             return None
         return datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+    def resolve_bound_agent_name_local(raw_agent_name: Optional[str], current_scheduler: Any) -> str:
+        bound_agent_name = None
+        executor = getattr(current_scheduler, "executor", None)
+        if executor and hasattr(executor, "get_default_agent_name"):
+            try:
+                bound_agent_name = executor.get_default_agent_name()
+            except Exception:
+                bound_agent_name = None
+
+        if bound_agent_name:
+            return normalize_agent_name_local(bound_agent_name)
+        return normalize_agent_name_local(raw_agent_name)
+
+    def resolve_effective_tool_names_local(
+        resolved_agent_name: str,
+        requested_tools: List[str],
+    ) -> List[str]:
+        """
+        Do not restrict Aworld/root-agent cron tasks unless explicitly designed otherwise.
+
+        Cron-created automation tasks are often open-ended instructions. When the
+        selected runtime root agent is Aworld, constraining tools based on an LLM-
+        invented comma string degrades execution quality and can block required tools.
+        """
+        if resolved_agent_name == "Aworld":
+            return []
+        return requested_tools
 
     def is_reactivatable_local(job: 'CronJob', now: datetime) -> bool:
         if job.schedule.kind in ("every", "cron"):
@@ -314,9 +367,12 @@ async def cron_tool(
         from aworld.core.scheduler.types import CronJob, CronSchedule, CronPayload
 
         scheduler = get_scheduler()
+        agent_name = resolve_bound_agent_name_local(agent_name, scheduler)
+        tools = resolve_effective_tool_names_local(agent_name, tools)
 
         if action == "add":
             request_schedule_derived = False
+            parsed_request = None
             if request:
                 try:
                     parsed_request = parse_request_helper(request)
@@ -391,12 +447,59 @@ async def cron_tool(
 
             result = await scheduler.add_job(job)
 
-            return {
+            advance_reminder = None
+            try:
+                reminder_body_hint = None
+                if parsed_request:
+                    reminder_body_hint = parsed_request.get("message")
+
+                advance_spec = build_advance_reminder_spec_helper(
+                    name=name,
+                    message=message,
+                    schedule_type=schedule_type,
+                    schedule_value=schedule_value,
+                    request_text=request,
+                    tools=tools,
+                    reminder_body_hint=reminder_body_hint,
+                )
+                if advance_spec:
+                    advance_job = CronJob(
+                        name=advance_spec["name"],
+                        schedule=parse_schedule_local(
+                            advance_spec["schedule_type"],
+                            advance_spec["schedule_value"],
+                        ),
+                        payload=CronPayload(
+                            message=advance_spec["message"],
+                            agent_name=agent_name or "Aworld",
+                            tool_names=[],
+                        ),
+                        delete_after_run=advance_spec["delete_after_run"],
+                    )
+                    advance_result = await scheduler.add_job(advance_job)
+                    advance_reminder = {
+                        "job_id": advance_result.id,
+                        "name": advance_result.name,
+                        "next_run": advance_result.state.next_run_at,
+                        "display": _format_confirmed_time_display(advance_result.state.next_run_at),
+                        "lead_minutes": DEFAULT_ADVANCE_REMINDER_MINUTES,
+                    }
+            except Exception as advance_error:
+                logger.warning(
+                    "cron_tool(add): failed to create advance reminder for "
+                    f"{name!r}: {advance_error}"
+                )
+
+            response = {
                 "success": True,
                 "job_id": result.id,
                 "message": f"Created task '{name}' (ID: {result.id})",
                 "next_run": result.state.next_run_at,
+                "next_run_display": _format_confirmed_time_display(result.state.next_run_at),
             }
+            if advance_reminder:
+                response["advance_reminder"] = advance_reminder
+            return response
 
         elif action == "list":
             jobs = await scheduler.list_jobs(enabled_only=not include_disabled)
@@ -666,11 +769,52 @@ def _parse_natural_language_add_request(request: str, now: Optional[datetime] = 
             "delete_after_run": True,
         }
 
+    weekday_match = _parse_weekday_timed_reminder(text, current_time)
+    if weekday_match:
+        return weekday_match
+
     raise ValueError(
         f"Unsupported natural-language schedule request: {request}. "
         "Use explicit schedule fields or a supported reminder phrase such as "
-        "'一分钟后提醒我喝水' or '每天早上9点提醒我运行测试'."
+        "'一分钟后提醒我喝水', '每天早上9点提醒我运行测试', or '下周三中午12点提醒我开会'."
     )
+
+
+def _parse_weekday_timed_reminder(text: str, current_time: datetime) -> Optional[Dict[str, Any]]:
+    patterns = (
+        r"(?P<week_ref>下周|下星期|本周|这周|本星期|这星期|周|星期)(?P<weekday>[一二三四五六日天])"
+        r"\s*[，,]?\s*(?:(?P<period>早上|上午|中午|下午|晚上))?\s*(?P<hour>\d{1,2})点(?P<half>半)?"
+        r"提醒我(?P<body>.+)",
+        r"(?P<week_ref>下周|下星期|本周|这周|本星期|这星期|周|星期)(?P<weekday>[一二三四五六日天])"
+        r"\s*[，,]?\s*(?:(?P<period>早上|上午|中午|下午|晚上))?\s*(?P<hour>\d{1,2})点(?P<half>半)?"
+        r"(?P<body>.+?)(?:的)?提醒",
+    )
+
+    for pattern in patterns:
+        match = re.fullmatch(pattern, text)
+        if not match:
+            continue
+
+        hour = _normalize_hour(match.group("period"), int(match.group("hour")))
+        minute = 30 if match.group("half") else 0
+        body = match.group("body")
+        target_time = _resolve_weekday_target_time(
+            current_time=current_time,
+            week_ref=match.group("week_ref"),
+            weekday_token=match.group("weekday"),
+            hour=hour,
+            minute=minute,
+        )
+        message = _normalize_reminder_message(body)
+        return {
+            "name": _reminder_name_from_message(message),
+            "message": message,
+            "schedule_type": "at",
+            "schedule_value": target_time.isoformat(timespec="seconds"),
+            "delete_after_run": True,
+        }
+
+    return None
 
 
 def _resolve_schedule_now(now: Optional[datetime]) -> datetime:
@@ -679,6 +823,63 @@ def _resolve_schedule_now(now: Optional[datetime]) -> datetime:
     if now.tzinfo is None:
         return now.replace(tzinfo=datetime.now().astimezone().tzinfo)
     return now
+
+
+def _resolve_weekday_target_time(
+    current_time: datetime,
+    week_ref: str,
+    weekday_token: str,
+    hour: int,
+    minute: int,
+) -> datetime:
+    weekday_index = _weekday_token_to_index(weekday_token)
+    week_scope = _normalize_week_reference(week_ref)
+    current_date = current_time.date()
+
+    if week_scope in {"current", "next"}:
+        start_of_week = current_date - timedelta(days=current_time.weekday())
+        days_offset = weekday_index + (7 if week_scope == "next" else 0)
+        target_date = start_of_week + timedelta(days=days_offset)
+    else:
+        days_ahead = weekday_index - current_time.weekday()
+        target_date = current_date + timedelta(days=days_ahead)
+
+    target_time = current_time.replace(
+        year=target_date.year,
+        month=target_date.month,
+        day=target_date.day,
+        hour=hour,
+        minute=minute,
+        second=0,
+        microsecond=0,
+    )
+    if target_time <= current_time:
+        target_time += timedelta(days=7)
+    return target_time
+
+
+def _normalize_week_reference(value: str) -> str:
+    if value.startswith("下"):
+        return "next"
+    if value.startswith("本") or value.startswith("这"):
+        return "current"
+    return "upcoming"
+
+
+def _weekday_token_to_index(value: str) -> int:
+    weekday_map = {
+        "一": 0,
+        "二": 1,
+        "三": 2,
+        "四": 3,
+        "五": 4,
+        "六": 5,
+        "日": 6,
+        "天": 6,
+    }
+    if value not in weekday_map:
+        raise ValueError(f"Unsupported weekday token in reminder request: {value}")
+    return weekday_map[value]
 
 
 def _natural_language_delta(quantity: int, unit: str) -> timedelta:
@@ -750,6 +951,128 @@ def _reminder_name_from_message(message: str) -> str:
     if body.startswith("提醒我"):
         body = body[len("提醒我"):]
     return f"提醒：{body.strip()}"
+
+
+def _build_advance_reminder_spec(
+    name: str,
+    message: str,
+    schedule_type: str,
+    schedule_value: str,
+    request_text: Optional[str] = None,
+    tools: Optional[List[str]] = None,
+    reminder_body_hint: Optional[str] = None,
+    now: Optional[datetime] = None,
+) -> Optional[Dict[str, Any]]:
+    if not _is_notification_reminder(name=name, message=message, tools=tools):
+        return None
+    if _is_relative_reminder_request(request_text):
+        return None
+
+    lead_time = timedelta(minutes=DEFAULT_ADVANCE_REMINDER_MINUTES)
+    reminder_body = _extract_reminder_body(reminder_body_hint) or _extract_reminder_body(message) or _extract_reminder_body(name)
+    if not reminder_body:
+        return None
+
+    if schedule_type != "at":
+        shifted_cron = _shift_simple_daily_cron(schedule_value, lead_time) if schedule_type == "cron" else None
+        if not shifted_cron:
+            return None
+        return {
+            "name": f"{_reminder_name_from_message(f'提醒我{reminder_body}')}（提前{DEFAULT_ADVANCE_REMINDER_MINUTES}分钟）",
+            "message": f"提醒我{reminder_body}，还有{DEFAULT_ADVANCE_REMINDER_MINUTES}分钟",
+            "schedule_type": "cron",
+            "schedule_value": shifted_cron,
+            "delete_after_run": False,
+        }
+
+    target_time = _parse_iso_datetime(schedule_value)
+    current_time = _resolve_schedule_now(now)
+    if target_time.tzinfo is None:
+        target_time = target_time.replace(tzinfo=current_time.tzinfo)
+    current_time = current_time.astimezone(target_time.tzinfo)
+    advance_time = target_time - lead_time
+    if advance_time <= current_time:
+        return None
+
+    return {
+        "name": f"{_reminder_name_from_message(f'提醒我{reminder_body}')}（提前{DEFAULT_ADVANCE_REMINDER_MINUTES}分钟）",
+        "message": f"提醒我{reminder_body}，还有{DEFAULT_ADVANCE_REMINDER_MINUTES}分钟",
+        "schedule_type": "at",
+        "schedule_value": advance_time.isoformat(timespec="seconds"),
+        "delete_after_run": True,
+    }
+
+
+def _is_notification_reminder(name: str, message: str, tools: Optional[List[str]] = None) -> bool:
+    if tools:
+        return False
+
+    name_text = (name or "").strip().lower()
+    message_text = (message or "").strip().lower()
+    if not name_text and not message_text:
+        return False
+
+    keywords = ("提醒", "remind", "reminder")
+    return any(keyword in name_text or keyword in message_text for keyword in keywords)
+
+
+def _extract_reminder_body(text: Optional[str]) -> Optional[str]:
+    value = (text or "").strip()
+    if not value:
+        return None
+
+    value = re.sub(r"^提醒(?:我|用户|您)?[:：]?", "", value).strip()
+    value = re.sub(r"[:：]?提醒$", "", value).strip()
+    value = re.sub(r"^还有\d+\s*分钟[，,]?", "", value).strip()
+    value = re.sub(r"[（(]提前\d+分钟[）)]$", "", value).strip()
+    return value or None
+
+
+def _parse_iso_datetime(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+
+def _format_confirmed_time_display(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+
+    try:
+        dt = _parse_iso_datetime(value)
+    except ValueError:
+        return None
+
+    weekday_map = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
+    return (
+        f"{dt.year}年{dt.month}月{dt.day}日"
+        f"（{weekday_map[dt.weekday()]}）"
+        f"{dt.hour:02d}:{dt.minute:02d}"
+    )
+
+
+def _shift_simple_daily_cron(schedule_value: str, lead_time: timedelta) -> Optional[str]:
+    parts = schedule_value.split()
+    if len(parts) != 5 or parts[2:] != ["*", "*", "*"]:
+        return None
+    if not parts[0].isdigit() or not parts[1].isdigit():
+        return None
+
+    base_time = datetime(2000, 1, 2, int(parts[1]), int(parts[0]), 0)
+    shifted_time = base_time - lead_time
+    return f"{shifted_time.minute} {shifted_time.hour} * * *"
+
+
+def _is_relative_reminder_request(text: Optional[str]) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+
+    return bool(
+        re.search(
+            r"(?:\d+|[零一二两三四五六七八九十百]+)\s*(?:秒钟?|秒|分钟|分|小时|个小时|小时|天|日)后提醒我"
+            r"|提醒我(?:\d+|[零一二两三四五六七八九十百]+)\s*(?:秒钟?|秒|分钟|分|小时|个小时|小时|天|日)后",
+            value,
+        )
+    )
 
 
 def _normalize_hour(period: Optional[str], hour: int) -> int:

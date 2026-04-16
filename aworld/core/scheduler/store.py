@@ -37,10 +37,23 @@ def _coerce_tool_names(value: Any) -> List[str]:
     if value is None:
         return []
     if isinstance(value, list):
-        return [str(item) for item in value]
+        normalized = []
+        for item in value:
+            text = str(item).strip()
+            if not text:
+                continue
+            if "," in text:
+                normalized.extend(part.strip() for part in text.split(",") if part.strip())
+            else:
+                normalized.append(text)
+        return normalized
     if isinstance(value, str):
         stripped = value.strip()
-        return [stripped] if stripped else []
+        if not stripped:
+            return []
+        if "," in stripped:
+            return [part.strip() for part in stripped.split(",") if part.strip()]
+        return [stripped]
     return [str(value)]
 
 
