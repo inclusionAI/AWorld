@@ -22,7 +22,8 @@ from aworld_cli.executors.stream import (
 )
 from aworld_cli.console import AWorldCLI
 from aworld_cli.status_text import build_status_bar_rich_lines
-from aworld.output.base import MessageOutput
+from aworld.output.base import MessageOutput, ToolCallOutput
+from aworld.models.model_response import Function, ToolCall
 
 
 class HudRuntime:
@@ -353,6 +354,41 @@ def test_render_simple_message_output_skips_response_when_content_already_stream
     assert answer == "hello from stream"
     assert rendered == "hello from stream"
     assert "hello from stream" not in output
+
+
+def test_render_simple_message_output_can_hide_tool_call_details():
+    executor = object.__new__(LocalAgentExecutor)
+    executor.console = Console(record=True, width=120)
+    executor._collapsed_sections = {"message": False, "tools": False, "results": True}
+
+    tool_call = ToolCallOutput.from_tool_call(
+        ToolCall(
+            id="tool-call-1",
+            function=Function(
+                name="cron__cron_tool",
+                arguments='{"action":"add","request":"一分钟后提醒我站立"}',
+            ),
+        ),
+        task_id="task-1",
+    )
+
+    answer, rendered = executor._render_simple_message_output(
+        MessageOutput(
+            response="好的，我来为你设置一个一分钟后的站立提醒。",
+            tool_calls=[tool_call],
+        ),
+        answer="",
+        agent_name="Aworld",
+        show_tool_calls=False,
+    )
+
+    output = executor.console.export_text()
+
+    assert "Tool calls" not in output
+    assert "cron__cron_tool" not in output
+    assert "一分钟后提醒我站立" not in output
+    assert answer == "好的，我来为你设置一个一分钟后的站立提醒。"
+    assert "Used 1 tools" in rendered
 
 
 def test_final_task_answer_should_render_when_last_message_had_no_visible_response():

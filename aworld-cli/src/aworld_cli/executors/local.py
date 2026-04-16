@@ -966,6 +966,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                 agent_name=current_agent_name,
                                                 is_handoff=is_handoff,
                                                 content_already_streamed=content_already_streamed,
+                                                show_tool_calls=self._should_emit_interactive_stats(),
                                             )
 
                                         answer, _ = ctrl.print_with_hud_suspended(_render_message_output)
