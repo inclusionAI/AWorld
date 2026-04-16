@@ -404,6 +404,20 @@ class CronScheduler:
             return f"{text[:277]}..."
         return text
 
+    def _stringify_result_detail(self, value: Any, limit: int = 4000) -> Optional[str]:
+        """Best-effort conversion of task output to a richer multiline detail string."""
+        if value is None:
+            return None
+
+        text = value if isinstance(value, str) else str(value)
+        text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not text:
+            return None
+
+        if len(text) > limit:
+            return f"{text[:limit - 3]}..."
+        return text
+
     def _get_result_summary(self, result: Any) -> Optional[str]:
         """Extract a short execution summary from TaskResponse-like objects."""
         if result is None:
@@ -414,6 +428,32 @@ class CronScheduler:
             return answer_text
 
         return self._stringify_result_value(getattr(result, "msg", None))
+
+    def _get_result_detail(self, result: Any) -> Optional[str]:
+        """Extract a richer notification detail from TaskResponse-like objects."""
+        if result is None:
+            return None
+
+        answer_text = self._stringify_result_detail(getattr(result, "answer", None))
+        msg_text = self._stringify_result_detail(getattr(result, "msg", None), limit=1000)
+        generic_msgs = {"ok", "success", "task completed", "执行完成"}
+
+        if answer_text:
+            normalized_answer = answer_text.strip().lower()
+            normalized_msg = (msg_text or "").strip().lower()
+            if (
+                msg_text
+                and normalized_msg
+                and normalized_msg not in generic_msgs
+                and normalized_msg not in normalized_answer
+            ):
+                return f"最终回答：\n{answer_text}\n\n结果消息：\n{msg_text}"
+            return f"最终回答：\n{answer_text}"
+
+        if msg_text:
+            return msg_text
+
+        return None
 
     async def _execute_job_payload(self, job: CronJob):
         """Execute a job or short-circuit legacy stop-task payloads."""
@@ -479,7 +519,8 @@ class CronScheduler:
         self,
         job: CronJob,
         status: Literal["ok", "error", "timeout"],
-        error: Optional[str] = None
+        error: Optional[str] = None,
+        result: Optional[Any] = None,
     ):
         """
         Publish notification if sink is configured.
@@ -512,7 +553,7 @@ class CronScheduler:
                 # Fixed template - do NOT include raw error text in notification
                 summary = f'Cron task "{job.name}" failed'
 
-            detail = self._build_notification_detail(job, status)
+            detail = self._build_notification_detail(job, status, result=result)
 
             notification_data = {
                 'job_id': job.id,
@@ -534,6 +575,7 @@ class CronScheduler:
         self,
         job: CronJob,
         status: Literal["ok", "error", "timeout"],
+        result: Optional[Any] = None,
     ) -> Optional[str]:
         """
         Build optional user-facing detail for notifications.
@@ -547,6 +589,10 @@ class CronScheduler:
         reminder_detail = self._get_reminder_detail(job)
         if reminder_detail:
             return reminder_detail
+
+        result_detail = self._get_result_detail(result)
+        if result_detail:
+            return result_detail
 
         return job.state.last_result_summary
 
@@ -589,7 +635,7 @@ class CronScheduler:
                         "任务执行完成"
                     )
                     await self._publish_progress(notification_job, "success", success_message, terminal=True)
-                    await self._publish_notification(notification_job, "ok")
+                    await self._publish_notification(notification_job, "ok", result=result)
                     if removed:
                         logger.info(f"Deleted one-time job: {job.id}")
                 else:
@@ -747,7 +793,7 @@ class CronScheduler:
                         "任务执行完成"
                     )
                     await self._publish_progress(notification_job, "success", success_message, terminal=True)
-                    await self._publish_notification(notification_job, "ok")
+                    await self._publish_notification(notification_job, "ok", result=result)
                 else:
                     await self._publish_progress(
                         notification_job,
