@@ -13,6 +13,7 @@ from pydantic.fields import FieldInfo
 from croniter import croniter
 from aworld.core.tool.func_to_tool import be_tool
 from aworld.logs.util import logger
+from aworld.core.scheduler.normalization import normalize_tool_names
 
 DEFAULT_ADVANCE_REMINDER_MINUTES = 10
 
@@ -144,32 +145,11 @@ async def cron_tool(
             raise ValueError(f"Invalid max_runs value: {raw_max_runs}. Expected a positive integer.")
         return parsed
 
-    def normalize_tool_names_local(raw_tools: Optional[Any]) -> List[str]:
-        if raw_tools is None or raw_tools == "":
-            return []
-        if isinstance(raw_tools, list):
-            normalized = []
-            for item in raw_tools:
-                text = str(item).strip()
-                if not text:
-                    continue
-                if "," in text:
-                    normalized.extend(part.strip() for part in text.split(",") if part.strip())
-                else:
-                    normalized.append(text)
-            return normalized
-        if isinstance(raw_tools, str):
-            stripped = raw_tools.strip()
-            if not stripped:
-                return []
-            return [part.strip() for part in stripped.split(",") if part.strip()]
-        return [str(raw_tools).strip()]
-
     try:
         max_runs = normalize_max_runs_local(max_runs)
     except ValueError as e:
         return {"success": False, "error": str(e)}
-    tools = normalize_tool_names_local(tools)
+    tools = normalize_tool_names(tools)
 
     def parse_duration_local(duration_str: str) -> int:
         match = re.fullmatch(r'(\d+)([smhd])', duration_str.strip())
