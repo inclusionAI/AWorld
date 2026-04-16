@@ -31,11 +31,15 @@ def _activity_segments(context):
     task = context.get("task", {})
     session = context.get("session", {})
     usage = context.get("usage", {})
+    task_status = task.get("status", "idle")
+
+    if task_status == "idle":
+        return ["Status: idle"]
 
     segments = []
     current_task_id = task.get("current_task_id")
     if current_task_id:
-        segments.append(f"Task: {current_task_id} ({task.get('status', 'idle')})")
+        segments.append(f"Task: {current_task_id} ({task_status})")
 
     if usage.get("input_tokens") is not None or usage.get("output_tokens") is not None:
         input_tokens = usage.get("input_tokens") or 0

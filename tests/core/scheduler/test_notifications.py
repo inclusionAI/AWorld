@@ -521,7 +521,153 @@ def test_console_formats_information_style_status_bar_with_unread_cron_notificat
     assert "Cron: 1 unread" in toolbar
     assert "Workspace: aworld" in toolbar
     assert "Branch: feat/subagent-optimization-clean" in toolbar
-    assert "Hint: /cron inbox" in toolbar
+    assert "Hint: /cron inbox" not in toolbar
+
+
+@pytest.mark.asyncio
+async def test_notification_poller_keeps_unread_notifications_when_hud_is_active():
+    center = CronNotificationCenter()
+    await center.publish({
+        "job_id": "job-hud",
+        "job_name": "HUD Job",
+        "status": "ok",
+        "summary": "HUD Job completed",
+        "created_at": datetime.now(pytz.UTC).isoformat(),
+    })
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = center
+
+        async def _drain_notifications(self):
+            return await center.drain()
+
+        def active_plugin_capabilities(self):
+            return ("hud",)
+
+    cli = AWorldCLI()
+    buffer = StringIO()
+    cli.console = Console(file=buffer, force_terminal=False, color_system=None)
+    stop_event = asyncio.Event()
+
+    task = asyncio.create_task(cli._notification_poller(FakeRuntime(), poll_interval=0.01, stop_event=stop_event))
+    await asyncio.sleep(0.03)
+    stop_event.set()
+    await task
+
+    assert center.get_unread_count() == 1
+    assert buffer.getvalue() == ""
+
+
+@pytest.mark.asyncio
+async def test_notification_poller_drains_and_renders_without_hud():
+    center = CronNotificationCenter()
+    await center.publish({
+        "job_id": "job-inline",
+        "job_name": "Inline Job",
+        "status": "ok",
+        "summary": "Inline Job completed",
+        "created_at": datetime.now(pytz.UTC).isoformat(),
+    })
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = center
+
+        async def _drain_notifications(self):
+            return await center.drain()
+
+        def active_plugin_capabilities(self):
+            return ()
+
+    cli = AWorldCLI()
+    buffer = StringIO()
+    cli.console = Console(file=buffer, force_terminal=False, color_system=None)
+    stop_event = asyncio.Event()
+
+    task = asyncio.create_task(cli._notification_poller(FakeRuntime(), poll_interval=0.01, stop_event=stop_event))
+    await asyncio.sleep(0.03)
+    stop_event.set()
+    await task
+
+    assert center.get_unread_count() == 0
+    assert "Inline Job completed" in buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_ensure_notification_poller_starts_once_and_stops_cleanly():
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = object()
+
+    cli = AWorldCLI()
+    starts = []
+
+    async def fake_poller(runtime, poll_interval=2.0, stop_event=None):
+        starts.append((runtime, stop_event))
+        await stop_event.wait()
+
+    cli._notification_poller = fake_poller
+
+    await cli._ensure_notification_poller(FakeRuntime())
+    first_task = cli._notification_poll_task
+    await asyncio.sleep(0)
+
+    assert first_task is not None
+    assert len(starts) == 1
+
+    await cli._ensure_notification_poller(FakeRuntime())
+    assert cli._notification_poll_task is first_task
+    assert len(starts) == 1
+
+    await cli._stop_notification_poller()
+    assert cli._notification_poll_task is None
+    assert cli._notification_stop_event is None
+
+
+@pytest.mark.asyncio
+async def test_notification_poller_invalidates_active_prompt_when_hud_is_active():
+    center = CronNotificationCenter()
+    await center.publish({
+        "job_id": "job-hud-refresh",
+        "job_name": "HUD Refresh Job",
+        "status": "ok",
+        "summary": "HUD Refresh Job completed",
+        "created_at": datetime.now(pytz.UTC).isoformat(),
+    })
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = center
+
+        async def _drain_notifications(self):
+            return await center.drain()
+
+        def active_plugin_capabilities(self):
+            return ("hud",)
+
+    class FakeApp:
+        def __init__(self):
+            self.invalidate_calls = 0
+
+        def invalidate(self):
+            self.invalidate_calls += 1
+
+    class FakeSession:
+        def __init__(self):
+            self.app = FakeApp()
+
+    cli = AWorldCLI()
+    cli._active_prompt_session = FakeSession()
+    stop_event = asyncio.Event()
+
+    task = asyncio.create_task(cli._notification_poller(FakeRuntime(), poll_interval=0.01, stop_event=stop_event))
+    await asyncio.sleep(0.03)
+    stop_event.set()
+    await task
+
+    assert center.get_unread_count() == 1
+    assert cli._active_prompt_session.app.invalidate_calls > 0
 
 
 def test_console_formats_information_style_status_bar_when_cron_queue_is_clear():
@@ -541,7 +687,7 @@ def test_console_formats_information_style_status_bar_when_cron_queue_is_clear()
     assert "Cron: clear" in toolbar
     assert "Workspace: aworld" in toolbar
     assert "Branch: main" in toolbar
-    assert "Hint: /cron inbox" in toolbar
+    assert "Hint: /cron inbox" not in toolbar
 
 
 if __name__ == "__main__":

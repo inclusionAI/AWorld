@@ -228,6 +228,15 @@ class LocalAgentExecutor(BaseAgentExecutor):
         except Exception as exc:
             logger.warning(f"HUD settle task finish failed: {exc}")
 
+    def _hud_is_active(self) -> bool:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None or not hasattr(runtime, "active_plugin_capabilities"):
+            return False
+        try:
+            return "hud" in tuple(runtime.active_plugin_capabilities())
+        except Exception:
+            return False
+
     async def cleanup_resources(self) -> None:
         """
         Close MCP and other resources in the same event loop to avoid
@@ -564,6 +573,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     """Consume stream events and collect outputs with beautiful formatting."""
                     nonlocal answer, last_message_output, stream_token_stats, saved_any_round
                     stream_token_stats = StreamTokenStats()
+                    show_stream_stats = not self._hud_is_active()
                     logger.info(f"📊 Starting consume_stream - stream_token_stats initialized")
                     ctrl = StreamDisplayController(
                         console=self.console,
@@ -571,6 +581,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         format_tool_calls_fn=self._format_tool_calls_display_lines,
                         format_elapsed_fn=format_elapsed,
                         config=StreamDisplayConfig(render_interval=0.02, chars_per_render=1),
+                        show_stats_line=show_stream_stats,
                     )
 
                     try:
@@ -817,7 +828,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         
                                         # 🔧 FIX: Display token stats after rendering message output (STREAM=0 mode)
                                         # This ensures the stats line is shown even when not streaming
-                                        if stream_token_stats and stream_token_stats.get_current_stats():
+                                        if show_stream_stats and stream_token_stats and stream_token_stats.get_current_stats():
                                             elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
                                             if elapsed_sec is not None:
                                                 elapsed_str = format_elapsed(elapsed_sec)
