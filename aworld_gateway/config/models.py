@@ -24,6 +24,15 @@ class TelegramChannelConfig(BaseChannelConfig):
     webhook_path: str = "/webhooks/telegram"
 
 
+class DingdingChannelConfig(BaseChannelConfig):
+    client_id_env: Optional[str] = "AWORLD_DINGTALK_CLIENT_ID"
+    client_secret_env: Optional[str] = "AWORLD_DINGTALK_CLIENT_SECRET"
+    card_template_id_env: Optional[str] = "AWORLD_DINGTALK_CARD_TEMPLATE_ID"
+    enable_ai_card: bool = True
+    enable_attachments: bool = True
+    workspace_dir: Optional[str] = None
+
+
 class PlaceholderChannelConfig(BaseChannelConfig):
     implemented: bool = Field(default=False, exclude=True)
 
@@ -31,7 +40,7 @@ class PlaceholderChannelConfig(BaseChannelConfig):
 class ChannelConfigMap(StrictConfigModel):
     web: PlaceholderChannelConfig = Field(default_factory=PlaceholderChannelConfig)
     telegram: TelegramChannelConfig = Field(default_factory=TelegramChannelConfig)
-    dingding: PlaceholderChannelConfig = Field(default_factory=PlaceholderChannelConfig)
+    dingding: DingdingChannelConfig = Field(default_factory=DingdingChannelConfig)
     feishu: PlaceholderChannelConfig = Field(default_factory=PlaceholderChannelConfig)
     wecom: PlaceholderChannelConfig = Field(default_factory=PlaceholderChannelConfig)
 

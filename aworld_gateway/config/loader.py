@@ -38,8 +38,9 @@ class GatewayConfigLoader:
             return
 
         telegram = channels.get("telegram")
-        if not isinstance(telegram, dict):
-            return
-
-        if telegram.get("bot_token") in (None, ""):
+        if isinstance(telegram, dict) and telegram.get("bot_token") in (None, ""):
             telegram.pop("bot_token", None)
+
+        dingding = channels.get("dingding")
+        if isinstance(dingding, dict):
+            dingding.pop("implemented", None)

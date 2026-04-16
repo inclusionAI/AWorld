@@ -12,7 +12,11 @@ from aworld_gateway.channels.feishu.adapter import FeishuChannelAdapter
 from aworld_gateway.channels.telegram.adapter import TelegramChannelAdapter
 from aworld_gateway.channels.web.adapter import WebChannelAdapter
 from aworld_gateway.channels.wecom.adapter import WecomChannelAdapter
-from aworld_gateway.config import BaseChannelConfig, TelegramChannelConfig
+from aworld_gateway.config import (
+    BaseChannelConfig,
+    DingdingChannelConfig,
+    TelegramChannelConfig,
+)
 
 ChannelMetaSummary: TypeAlias = dict[str, object]
 
@@ -38,7 +42,7 @@ class ChannelRegistry:
                     adapter_class=WebChannelAdapter,
                 ),
                 "dingding": ChannelRegistration(
-                    metadata=ChannelMetadata(name="dingding", implemented=False),
+                    metadata=ChannelMetadata(name="dingding", implemented=True),
                     label="DingTalk",
                     adapter_class=DingdingChannelAdapter,
                 ),
@@ -97,14 +101,23 @@ class ChannelRegistry:
         if registration is None or config is None:
             return False
 
-        if channel_id != "telegram":
-            return True
+        if channel_id == "telegram":
+            if not isinstance(config, TelegramChannelConfig):
+                return False
+            if not config.bot_token_env:
+                return False
+            return bool(os.getenv(config.bot_token_env))
 
-        if not isinstance(config, TelegramChannelConfig):
-            return False
-        if not config.bot_token_env:
-            return False
-        return bool(os.getenv(config.bot_token_env))
+        if channel_id == "dingding":
+            if not isinstance(config, DingdingChannelConfig):
+                return False
+            if not config.client_id_env or not config.client_secret_env:
+                return False
+            return bool(os.getenv(config.client_id_env)) and bool(
+                os.getenv(config.client_secret_env)
+            )
+
+        return True
 
     @staticmethod
     def _meta_summary(registration: ChannelRegistration) -> ChannelMetaSummary:

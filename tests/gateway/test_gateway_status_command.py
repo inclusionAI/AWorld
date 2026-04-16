@@ -22,6 +22,8 @@ def test_gateway_status_reports_default_agent_and_channel_flags(
     assert status["default_agent_id"] == "aworld"
     assert status["channels"]["telegram"]["enabled"] is False
     assert status["channels"]["telegram"]["implemented"] is True
+    assert status["channels"]["dingding"]["enabled"] is False
+    assert status["channels"]["dingding"]["implemented"] is True
     assert status["channels"]["web"]["implemented"] is False
 
 
@@ -33,6 +35,8 @@ def test_gateway_channels_list_contains_placeholder_channels(
     assert set(rows) >= {"telegram", "web", "dingding", "feishu", "wecom"}
     assert rows["telegram"]["enabled"] is False
     assert rows["telegram"]["implemented"] is True
+    assert rows["dingding"]["enabled"] is False
+    assert rows["dingding"]["implemented"] is True
     assert rows["web"]["implemented"] is False
 
 

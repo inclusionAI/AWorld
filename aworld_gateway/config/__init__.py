@@ -2,6 +2,7 @@ from aworld_gateway.config.loader import GatewayConfigLoader
 from aworld_gateway.config.models import (
     BaseChannelConfig,
     ChannelConfigMap,
+    DingdingChannelConfig,
     GatewayConfig,
     GatewayServerConfig,
     PlaceholderChannelConfig,
@@ -12,6 +13,7 @@ from aworld_gateway.config.models import (
 __all__ = [
     "BaseChannelConfig",
     "ChannelConfigMap",
+    "DingdingChannelConfig",
     "GatewayConfig",
     "GatewayConfigLoader",
     "GatewayServerConfig",
