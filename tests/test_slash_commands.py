@@ -7,8 +7,10 @@ import asyncio
 import os
 import sys
 import pytest
+from io import StringIO
 from pathlib import Path
 from prompt_toolkit.document import Document
+from rich.console import Console as RichConsole
 
 # Add aworld-cli to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "aworld-cli" / "src"))
@@ -299,6 +301,98 @@ class TestCronCommand:
         assert "BTC 当前价格 68000 USDT" in result
 
     @pytest.mark.asyncio
+    async def test_cron_show_follows_live_logs_for_running_job(self, monkeypatch):
+        """Running jobs should switch `/cron show` into live follow mode."""
+        from aworld_cli.runtime.cron_notifications import CronNotificationCenter
+
+        cmd = CommandRegistry.get('cron')
+        call_count = 0
+
+        async def fake_cron_tool(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return {
+                    "success": True,
+                    "job": {
+                        "id": "job-live",
+                        "name": "爬取 X",
+                        "schedule": "at 2026-04-15T17:37:22+08:00",
+                        "enabled": True,
+                        "running": True,
+                        "next_run": None,
+                        "last_run": "2026-04-15T09:37:22.005051+00:00",
+                        "last_status": None,
+                        "last_error": None,
+                        "max_runs": None,
+                        "run_count": 0,
+                        "last_result_summary": None,
+                    },
+                }
+            return {
+                "success": True,
+                "job": {
+                    "id": "job-live",
+                    "name": "爬取 X",
+                    "schedule": "at 2026-04-15T17:37:22+08:00",
+                    "enabled": True,
+                    "running": False,
+                    "next_run": None,
+                    "last_run": "2026-04-15T09:37:22.005051+00:00",
+                    "last_status": "ok",
+                    "last_error": None,
+                    "max_runs": None,
+                    "run_count": 1,
+                    "last_result_summary": "已保存 10 条内容",
+                },
+            }
+
+        monkeypatch.setattr("aworld_cli.commands.cron_cmd.cron_tool", fake_cron_tool)
+
+        class FakeRuntime:
+            def __init__(self):
+                buffer = StringIO()
+                self._buffer = buffer
+                self.cli = type("FakeCli", (), {"console": RichConsole(file=buffer, force_terminal=False, color_system=None)})()
+                self._notification_center = CronNotificationCenter()
+
+            def _get_cron_progress_logs(self, job_id):
+                return self._notification_center.get_progress_logs(job_id)
+
+        runtime = FakeRuntime()
+        await runtime._notification_center.publish_progress({
+            "job_id": "job-live",
+            "job_name": "爬取 X",
+            "level": "info",
+            "message": "开始第 1/4 次执行",
+        })
+        await runtime._notification_center.publish_progress({
+            "job_id": "job-live",
+            "job_name": "爬取 X",
+            "level": "success",
+            "message": "最终回答：\n已保存 10 条内容\n输出文件：twitter_latest_10_posts.md",
+        })
+        await runtime._notification_center.publish_progress({
+            "job_id": "job-live",
+            "job_name": "爬取 X",
+            "level": "success",
+            "message": "任务执行完成：已保存 10 条内容",
+            "terminal": True,
+        })
+
+        context = CommandContext(cwd=os.getcwd(), user_args="show job-live", runtime=runtime)
+        result = await cmd.execute(context)
+
+        assert result == ""
+        output = runtime._buffer.getvalue()
+        assert "跟踪定时任务执行" in output
+        assert "开始第 1/4 次执行" in output
+        assert "最终回答：" in output
+        assert "输出文件：twitter_latest_10_posts.md" in output
+        assert "任务执行完成：已保存 10 条内容" in output
+        assert "定时任务执行结束" in output
+
+    @pytest.mark.asyncio
     async def test_cron_disable_all_executes_tool_directly(self, monkeypatch):
         """Test /cron disable all calls cron_tool(disable, job_id=all)."""
         cmd = CommandRegistry.get('cron')
@@ -382,6 +476,36 @@ class TestCronCommand:
         assert "喝水提醒" in result
         assert "提醒我喝水" in result
         assert runtime._notification_center.get_unread_count() == 0
+
+    @pytest.mark.asyncio
+    async def test_cron_inbox_formats_multiline_result_detail(self):
+        """Multiline result detail should remain readable in inbox output."""
+        from aworld_cli.runtime.cron_notifications import CronNotificationCenter
+
+        cmd = CommandRegistry.get('cron')
+
+        class FakeRuntime:
+            def __init__(self):
+                self._notification_center = CronNotificationCenter()
+
+            async def _drain_notifications(self):
+                return await self._notification_center.drain()
+
+        runtime = FakeRuntime()
+        await runtime._notification_center.publish({
+            "job_id": "job-1",
+            "job_name": "twitter_scraper_200_posts",
+            "status": "ok",
+            "summary": 'Cron task "twitter_scraper_200_posts" completed',
+            "detail": "最终回答：\n已保存 200 条内容\n输出文件：twitter_for_you_posts_200.md",
+        })
+
+        context = CommandContext(cwd=os.getcwd(), user_args='inbox', runtime=runtime)
+        result = await cmd.execute(context)
+
+        assert "content: 最终回答：" in result
+        assert "已保存 200 条内容" in result
+        assert "输出文件：twitter_for_you_posts_200.md" in result
 
     @pytest.mark.asyncio
     async def test_cron_inbox_reads_only_notifications_for_requested_job(self):

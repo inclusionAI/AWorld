@@ -981,11 +981,13 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         next_run = content.get("next_run")
         job_id = content.get("job_id")
+        next_run_display = content.get("next_run_display")
         if next_run:
             return (
                 f"{serialized}\n"
                 f"Confirmed cron schedule: next_run={next_run}; job_id={job_id}. "
-                "Use this cron result as the source of truth and do not reuse any earlier guessed schedule_value."
+                f"{'Use next_run_display=' + next_run_display + ' for any user-facing date or weekday wording. ' if next_run_display else ''}"
+                "Use this cron result as the source of truth and do not reuse any earlier guessed schedule_value or infer the weekday yourself."
             )
 
         return (
