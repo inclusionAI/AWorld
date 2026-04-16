@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Optional
 
 from aworld.memory.main import _default_file_memory_store
@@ -322,6 +323,20 @@ Plugin Management:
   
   # Remove a plugin
   aworld-cli plugin remove my-plugin
+
+Skill Management:
+  # Install skills from a local directory
+  aworld-cli skill install ./local-skills
+
+  # Install skills from git
+  aworld-cli skill install https://github.com/user/repo.git
+
+  # List installed skill packages
+  aworld-cli skill list
+
+  # Remove or update an installed skill package
+  aworld-cli skill remove my-skills
+  aworld-cli skill update my-skills
 """
     
     # Chinese help text
@@ -431,6 +446,20 @@ Batch Jobs:
   
   # 移除插件
   aworld-cli plugin remove my-plugin
+
+技能包管理：
+  # 从本地目录安装技能包
+  aworld-cli skill install ./local-skills
+
+  # 从 git 安装技能包
+  aworld-cli skill install https://github.com/user/repo.git
+
+  # 列出已安装的技能包
+  aworld-cli skill list
+
+  # 移除或更新已安装的技能包
+  aworld-cli skill remove my-skills
+  aworld-cli skill update my-skills
 """
     
     description_en = "AWorld Agent CLI - Interact with agents directly from the terminal"
@@ -459,7 +488,7 @@ Batch Jobs:
         help='Disable banner display on startup / 启动时不显示 banner'
     )
 
-    # Create a minimal parser to check if command is 'plugin'
+    # Create a minimal parser to check if command is a special-case command
     minimal_parser = argparse.ArgumentParser(add_help=False)
     minimal_parser.add_argument('command', nargs='?', default='interactive')
     minimal_args, _ = minimal_parser.parse_known_args()
@@ -556,14 +585,107 @@ Batch Jobs:
 
         return
 
+    if minimal_args.command == "skill":
+        skill_parser = argparse.ArgumentParser(
+            description="Installed skill management commands",
+            prog="aworld-cli skill",
+        )
+        skill_subparsers = skill_parser.add_subparsers(
+            dest="skill_action",
+            help="Skill action to perform",
+            required=True,
+        )
+
+        install_parser = skill_subparsers.add_parser(
+            "install", help="Install a skill package"
+        )
+        install_parser.add_argument("source", help="Git URL or local skill directory")
+        install_parser.add_argument(
+            "--scope",
+            default="global",
+            help="Install scope: global or agent:<name>",
+        )
+        install_parser.add_argument(
+            "--mode",
+            choices=["clone", "copy", "symlink"],
+            default=None,
+            help="Install mode override",
+        )
+
+        skill_subparsers.add_parser("list", help="List installed skill packages")
+
+        remove_parser = skill_subparsers.add_parser(
+            "remove", help="Remove an installed skill package"
+        )
+        remove_parser.add_argument("install_id", help="Install id or name")
+
+        update_parser = skill_subparsers.add_parser(
+            "update", help="Update a git-backed skill package"
+        )
+        update_parser.add_argument("install_id", help="Install id or name")
+
+        import_parser = skill_subparsers.add_parser(
+            "import", help="Import a manually placed installed skill entry"
+        )
+        import_parser.add_argument("path", help="Path under ~/.aworld/skills/installed")
+        import_parser.add_argument(
+            "--scope",
+            default="global",
+            help="Install scope: global or agent:<name>",
+        )
+
+        try:
+            skill_args = skill_parser.parse_args(sys.argv[2:])
+        except SystemExit:
+            return
+
+        from .core.installed_skill_manager import InstalledSkillManager
+
+        manager = InstalledSkillManager()
+
+        if skill_args.skill_action == "install":
+            source_path = Path(skill_args.source).expanduser()
+            mode = skill_args.mode or ("copy" if source_path.exists() else "clone")
+            record = manager.install(
+                source=skill_args.source,
+                mode=mode,
+                scope=skill_args.scope,
+            )
+            print(f"✅ Skill package '{record['install_id']}' installed successfully")
+            print(f"📍 Location: {record['installed_path']}")
+        elif skill_args.skill_action == "list":
+            installs = sorted(
+                manager.list_installs(), key=lambda item: str(item["install_id"])
+            )
+            if not installs:
+                print("📦 No installed skill packages")
+                print(f"📍 Installed root: {manager.installed_root}")
+                return
+            for install in installs:
+                print(
+                    f"{install['install_id']} | scope={install['scope']} | "
+                    f"skill_count={install['skill_count']} | source={install['source']}"
+                )
+        elif skill_args.skill_action == "remove":
+            manager.remove_install(skill_args.install_id)
+            print(f"✅ Skill package '{skill_args.install_id}' removed successfully")
+        elif skill_args.skill_action == "update":
+            record = manager.update_install(skill_args.install_id)
+            print(f"✅ Skill package '{record['install_id']}' updated successfully")
+        elif skill_args.skill_action == "import":
+            record = manager.import_entry(Path(skill_args.path), scope=skill_args.scope)
+            print(f"✅ Skill package '{record['install_id']}' imported successfully")
+
+        return
+
     # Continue with normal argument parsing for other commands
     parser.add_argument(
         'command',
         nargs='?',
         default='interactive',
-        choices=['interactive', 'list', 'serve', 'batch', 'batch-job'],
+        choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'skill'],
         help='Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers, '
-             '"batch-job" to run batch jobs.'
+             '"batch-job" to run batch jobs, and "skill" to manage installed skills.'
     )
     
     parser.add_argument(
@@ -748,7 +870,7 @@ Batch Jobs:
         )
         parser_zh.add_argument('-zh', '--zh', action='store_true', help='显示中文帮助')
         parser_zh.add_argument('--examples', action='store_true', help='显示使用示例')
-        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugin'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugin" 管理插件。')
+        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugin', 'skill'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugin" 管理插件，使用 "skill" 管理已安装技能包。')
         parser_zh.add_argument('--task', type=str, help='发送给 agent 的任务（非交互模式）')
         parser_zh.add_argument('--agent', type=str, help='要使用的 agent 名称（直接运行模式必需）')
         parser_zh.add_argument('--max-runs', type=int, help='最大运行次数（直接运行模式）')
@@ -786,7 +908,7 @@ Batch Jobs:
 
     # Display configuration source
     from ._globals import console
-    # Require model config for commands that use the agent (skip for 'list' and plugin)
+    # Require model config for commands that use the agent (skip for 'list', 'plugin', and 'skill')
     if args.command != "list" and not has_model_config(config_dict):
         console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
         console.print("[dim]Run: aworld-cli --config[/dim]")
