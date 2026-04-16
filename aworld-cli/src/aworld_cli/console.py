@@ -22,10 +22,8 @@ from aworld.logs.util import logger
 from ._globals import console
 from .core.skill_registry import get_skill_registry, get_user_skills_paths
 from .core.command_system import CommandRegistry, CommandContext
-from .executors.stream import FixedBottomHudRenderer
 from .models import AgentInfo
 from .status_text import (
-    build_execution_hud_lines,
     build_status_bar_text,
     fallback_status_segments,
     reduce_segments,
@@ -286,53 +284,16 @@ class AWorldCLI:
 
         return HTML("\n".join(_render_line(line) for line in lines if line))
 
-    def _should_use_fixed_prompt_hud(self, runtime) -> bool:
-        if runtime is None or not self._should_render_status_bar(runtime):
-            return False
-        try:
-            return bool(hasattr(sys.stdout, "isatty") and sys.stdout.isatty())
-        except Exception:
-            return False
-
-    def _build_fixed_prompt_hud_lines(
-        self,
-        runtime,
-        agent_name: str = "Aworld",
-        mode: str = "Chat",
-    ) -> list[str]:
-        return build_execution_hud_lines(
-            runtime,
-            agent_name=agent_name,
-            mode=mode,
-            workspace_name=self._toolbar_workspace_name,
-            git_branch=self._toolbar_git_branch,
-            max_width=max(40, shutil.get_terminal_size(fallback=(160, 24)).columns - 2),
-        )
-
-    async def _prompt_with_fixed_hud(
-        self,
-        session,
-        prompt,
-        runtime,
-        agent_name: str = "Aworld",
-        mode: str = "Chat",
-    ) -> str:
-        if not self._should_use_fixed_prompt_hud(runtime):
-            return await asyncio.to_thread(session.prompt, prompt)
-
-        renderer = FixedBottomHudRenderer(
-            self.console,
-            hud_lines_fn=lambda: self._build_fixed_prompt_hud_lines(
+    def _build_prompt_kwargs(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> dict[str, Any]:
+        prompt_kwargs: dict[str, Any] = {}
+        if runtime and self._should_render_status_bar(runtime):
+            prompt_kwargs["bottom_toolbar"] = lambda: self._build_status_bar(
                 runtime,
                 agent_name=agent_name,
                 mode=mode,
-            ),
-        )
-        renderer.start()
-        try:
-            return await asyncio.to_thread(session.prompt, prompt)
-        finally:
-            renderer.stop()
+            )
+            prompt_kwargs["refresh_interval"] = 0.1
+        return prompt_kwargs
 
     def _build_completion_entries(self, agent_names: Optional[List[str]] = None) -> tuple[list[str], dict[str, str]]:
         """
@@ -1846,13 +1807,12 @@ class AWorldCLI:
                     # Use prompt_toolkit for input with completion
                     # We use HTML for basic coloring of the prompt
                     prompt_text = "<b><cyan>You</cyan></b>: "
-                    user_input = await self._prompt_with_fixed_hud(
-                        session,
-                        HTML(prompt_text),
-                        runtime=runtime,
+                    prompt_kwargs = self._build_prompt_kwargs(
+                        runtime,
                         agent_name=agent_name,
                         mode="Chat",
                     )
+                    user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text), **prompt_kwargs)
                 else:
                     # Fallback to plain input() for non-terminal environments
                     self.console.print("[cyan]You[/cyan]: ", end="")
