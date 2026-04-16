@@ -337,14 +337,17 @@ class LocalAgentExecutor(BaseAgentExecutor):
         return bool(str(content).strip())
 
     @staticmethod
-    def _should_defer_fixed_hud_message_render(
+    def _should_skip_fixed_hud_secondary_message_render(
         use_fixed_hud_layout: bool,
+        received_visible_chunk_output: bool,
         saw_tool_result_output: bool,
         response_text: Any,
     ) -> bool:
-        if not use_fixed_hud_layout or not saw_tool_result_output:
+        if not use_fixed_hud_layout:
             return False
-        return bool(str(response_text or "").strip())
+        if not str(response_text or "").strip():
+            return False
+        return received_visible_chunk_output or saw_tool_result_output
 
     @staticmethod
     def _resolve_streamed_response_match(streamed_content: Any, response_text: Any) -> tuple[str, str]:
@@ -710,14 +713,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 stream_token_stats = None  # Set by consume_stream, used for history
                 response_rendered_to_console = False
                 current_round_streamed_content = ""
-                deferred_fixed_hud_message_output = None
-                deferred_fixed_hud_agent_name = None
                 
                 saved_any_round = False
 
                 async def consume_stream():
                     """Consume stream events and collect outputs with beautiful formatting."""
-                    nonlocal answer, last_message_output, stream_token_stats, saved_any_round, response_rendered_to_console, current_round_streamed_content, deferred_fixed_hud_message_output, deferred_fixed_hud_agent_name
+                    nonlocal answer, last_message_output, stream_token_stats, saved_any_round, response_rendered_to_console, current_round_streamed_content
                     stream_token_stats = StreamTokenStats()
                     logger.info(f"📊 Starting consume_stream - stream_token_stats initialized")
                     ctrl: StreamDisplayController | None = None
@@ -1005,13 +1006,15 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         elif streamed_match_mode == "render" and streamed_match_text != response_text:
                                             render_output = output.model_copy(update={"response": streamed_match_text})
 
-                                        if self._should_defer_fixed_hud_message_render(
+                                        if self._should_skip_fixed_hud_secondary_message_render(
                                             use_fixed_hud_layout=ctrl.use_fixed_hud_layout,
+                                            received_visible_chunk_output=received_visible_chunk_output,
                                             saw_tool_result_output=saw_tool_result_output,
                                             response_text=getattr(render_output, "response", ""),
                                         ):
-                                            deferred_fixed_hud_message_output = render_output
-                                            deferred_fixed_hud_agent_name = current_agent_name
+                                            if ctrl.use_fixed_hud_layout and received_visible_chunk_output:
+                                                ctrl.finish_fixed_stream_content()
+                                            response_rendered_to_console = True
                                             received_visible_chunk_output = False
                                             current_round_streamed_content = ""
                                             last_agent_name = current_agent_name
@@ -1276,19 +1279,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         self.console.print("\n[yellow]⏹ Interrupted.[/yellow]")
                     self._publish_hud_task_finished(task.id, task_status="idle")
                     return answer or ""
-
-                if deferred_fixed_hud_message_output is not None and self.console:
-                    rendered_answer, _ = self._render_simple_message_output(
-                        deferred_fixed_hud_message_output,
-                        answer,
-                        agent_name=deferred_fixed_hud_agent_name,
-                        content_already_streamed=False,
-                        show_tool_calls=self._should_emit_interactive_stats(),
-                    )
-                    answer = rendered_answer
-                    response_rendered_to_console = True
-                    deferred_fixed_hud_message_output = None
-                    deferred_fixed_hud_agent_name = None
 
                 def _coerce_final_answer(value: Any) -> str:
                     if value is None:
