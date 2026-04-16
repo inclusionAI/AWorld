@@ -164,6 +164,46 @@ Place the file in the directory specified by `LOCAL_AGENTS_DIR` or use `--agent-
 
 **Note:** Built-in agents from `inner_plugins/*/agents` directories are always loaded automatically, regardless of environment variable configuration. Only the `agents` subdirectories are scanned to avoid loading unnecessary files.
 
+## Installed Skills
+
+The recommended way to make skills persistently available is the installed-skill root:
+
+```text
+~/.aworld/skills/installed/
+```
+
+AWorld scans this directory automatically on startup.
+
+### CLI-managed install
+
+```bash
+aworld-cli skill install https://github.com/example/skills.git
+aworld-cli skill install ./local-skills
+aworld-cli skill list
+aworld-cli skill remove <install-id>
+```
+
+### Manual install
+
+You can also manually place a directory or symlink under `~/.aworld/skills/installed/`.
+If you want it tracked in the manifest, run:
+
+```bash
+aworld-cli skill import ~/.aworld/skills/installed/<entry-name>
+```
+
+### Source layouts
+
+Both of these layouts are supported:
+
+```text
+repo/skills/<skill-name>/SKILL.md
+repo/<skill-name>/SKILL.md
+```
+
+### Scope
+
+Installed skills default to `global`, and `aworld-cli skill install --scope agent:<name>` limits them to a single agent.
 
 
 ## More Help
