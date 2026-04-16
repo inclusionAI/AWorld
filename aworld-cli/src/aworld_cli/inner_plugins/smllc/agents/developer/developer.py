@@ -66,7 +66,9 @@ def build_developer_swarm(sandbox: 'Sandbox' = None):
     # Get user skills directory from environment (optional)
     env_skills_path = os.environ.get("DEVELOPER_SKILLS_PATH")
     env_skills_dir = Path(os.path.expanduser(env_skills_path)).resolve() if env_skills_path else None
-    skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
+    skill_configs = collect_plugin_and_user_skills(
+        plugin_base_dir, user_dir=env_skills_dir, agent_name="developer"
+    )
 
     # Create Agent configuration
     agent_config = AgentConfig(

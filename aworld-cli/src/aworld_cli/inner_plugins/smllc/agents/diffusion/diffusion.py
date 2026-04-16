@@ -79,7 +79,9 @@ def build_diffusion_swarm():
     # Get user skills directory from environment (optional)
     env_skills_path = os.environ.get("SKILLS_PATH")
     env_skills_dir = Path(os.path.expanduser(env_skills_path)).resolve() if env_skills_path else None
-    skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
+    skill_configs = collect_plugin_and_user_skills(
+        plugin_base_dir, user_dir=env_skills_dir, agent_name="video_diffusion"
+    )
 
     # Create Agent configuration (DIFFUSION_* from models.diffusion or fallback to MEDIA_LLM_*/LLM_*)
     agent_config = AgentConfig(

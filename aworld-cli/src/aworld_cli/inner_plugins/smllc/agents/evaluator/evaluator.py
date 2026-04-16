@@ -80,7 +80,9 @@ def build_evaluator_swarm():
     # Get user skills directory from environment (optional)
     env_skills_path = os.environ.get("EVALUATOR_SKILLS_PATH")
     env_skills_dir = Path(os.path.expanduser(env_skills_path)).resolve() if env_skills_path else None
-    skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
+    skill_configs = collect_plugin_and_user_skills(
+        plugin_base_dir, user_dir=env_skills_dir, agent_name="evaluator"
+    )
 
     # Create Agent configuration with Claude Sonnet model
     agent_config = AgentConfig(

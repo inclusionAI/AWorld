@@ -107,8 +107,11 @@ def build_image_swarm():
     """Build and configure the image generation agent swarm."""
     # APP_EVALUATOR_SKILLS_DIR: override skill read directory (plugin root with skills/ subdir)
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
-    env_skills_dir = Path(os.path.expanduser(os.environ.get("SKILLS_PATH"))).resolve()
-    skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
+    env_skills_path = os.environ.get("SKILLS_PATH")
+    env_skills_dir = Path(os.path.expanduser(env_skills_path)).resolve() if env_skills_path else None
+    skill_configs = collect_plugin_and_user_skills(
+        plugin_base_dir, user_dir=env_skills_dir, agent_name="image_generator"
+    )
 
     # Create Agent configuration (TEXT_TO_IMAGE_* as base image config)
     agent_config = AgentConfig(
