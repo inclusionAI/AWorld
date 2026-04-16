@@ -216,6 +216,72 @@ async def test_scheduler_publishes_reminder_detail_on_success():
 
 
 @pytest.mark.asyncio
+async def test_scheduler_publishes_live_progress_logs():
+    """Scheduler should publish live execution progress for `/cron show` follow mode."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_path = Path(tmpdir) / "cron.json"
+        store = FileBasedCronStore(str(store_path))
+
+        executor = AsyncMock(spec=CronExecutor)
+
+        async def fake_execute_with_retry(job, progress_callback=None, **kwargs):
+            if progress_callback:
+                await progress_callback("info", "子步骤：准备执行")
+            return TaskResponse(success=True, msg="执行完成")
+
+        executor.execute_with_retry = AsyncMock(side_effect=fake_execute_with_retry)
+
+        progress_sink = AsyncMock()
+        scheduler = CronScheduler(store, executor, progress_sink=progress_sink)
+
+        now = datetime.now(pytz.UTC)
+        job = CronJob(
+            name="live-job",
+            schedule=CronSchedule(kind="at", at=now.isoformat()),
+            payload=CronPayload(message="test"),
+            state=CronJobState(
+                running=True,
+                last_run_at=now.isoformat(),
+                next_run_at=None,
+            ),
+        )
+
+        await store.add_job(job)
+        await scheduler._execute_claimed_job(job)
+
+        assert progress_sink.await_count >= 3
+        messages = [call.args[0]["message"] for call in progress_sink.await_args_list]
+        assert any("任务开始执行" in message for message in messages)
+        assert any("子步骤：准备执行" in message for message in messages)
+        assert any("任务执行完成" in message for message in messages)
+
+
+@pytest.mark.asyncio
+async def test_notification_center_logs_warning_when_progress_store_fails(monkeypatch):
+    """Progress-log buffering failures should be surfaced as warnings."""
+    center = CronNotificationCenter()
+    warnings = []
+
+    monkeypatch.setattr(
+        "aworld_cli.runtime.cron_notifications.logger.warning",
+        lambda message: warnings.append(message),
+    )
+    monkeypatch.setattr(center, "_progress_logs", None)
+
+    await center.publish_progress({
+        "job_id": "job-1",
+        "job_name": "test",
+        "message": "step",
+    })
+
+    assert len(warnings) == 1
+    assert "Failed to store cron progress log" in warnings[0]
+
+
+@pytest.mark.asyncio
 async def test_scheduler_short_circuits_instructional_reminders():
     """Reminder payloads should publish directly instead of re-entering the agent."""
     import tempfile
@@ -319,7 +385,7 @@ async def test_scheduler_publishes_on_timeout():
         store = FileBasedCronStore(str(store_path))
 
         # Mock executor that times out
-        async def timeout_executor(job):
+        async def timeout_executor(job, progress_callback=None):
             await asyncio.sleep(10)  # Will be cancelled by timeout
             return TaskResponse(success=True, msg="Should not reach here")
 

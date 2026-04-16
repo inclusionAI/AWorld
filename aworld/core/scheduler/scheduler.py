@@ -5,6 +5,7 @@ Cron scheduler - timer loop with startup recovery.
 """
 import asyncio
 import re
+import traceback
 from datetime import datetime, timedelta
 from typing import Optional, Tuple, List, Callable, Any, Awaitable, Literal
 import pytz
@@ -35,7 +36,8 @@ class CronScheduler:
         store: FileBasedCronStore,
         executor: CronExecutor,
         max_concurrent: int = 5,
-        notification_sink: Optional[Callable[[Any], Awaitable[None]]] = None
+        notification_sink: Optional[Callable[[Any], Awaitable[None]]] = None,
+        progress_sink: Optional[Callable[[Any], Awaitable[None]]] = None,
     ):
         """
         Initialize scheduler.
@@ -52,6 +54,30 @@ class CronScheduler:
         self.running = False
         self._timer_task: Optional[asyncio.Task] = None
         self.notification_sink = notification_sink
+        self.progress_sink = progress_sink
+
+    async def _publish_progress(
+        self,
+        job: CronJob,
+        level: Literal["info", "warning", "error", "success"],
+        message: str,
+        terminal: bool = False,
+    ) -> None:
+        """Publish live execution logs for `/cron show` follow mode."""
+        if not self.progress_sink:
+            return
+
+        try:
+            await self.progress_sink({
+                "job_id": job.id,
+                "job_name": job.name,
+                "level": level,
+                "message": message,
+                "terminal": terminal,
+                "created_at": datetime.now(pytz.UTC).isoformat(),
+            })
+        except Exception as e:
+            logger.warning(f"Failed to publish progress for job {job.id}: {e}")
 
     async def start(self):
         """Start scheduler with recovery."""
@@ -164,7 +190,7 @@ class CronScheduler:
                     await asyncio.sleep(sleep_time)
 
             except Exception as e:
-                logger.error(f"Scheduler loop error: {e}", exc_info=True)
+                logger.error(f"Scheduler loop error\n{traceback.format_exc()}")
                 await asyncio.sleep(5)  # Brief pause before retry
 
     def _find_next_job(self, jobs: List[CronJob]) -> Tuple[Optional[CronJob], float]:
@@ -410,9 +436,13 @@ class CronScheduler:
 
         reminder_detail = self._get_reminder_detail(job)
         if reminder_detail:
+            await self._publish_progress(job, "info", "识别为提醒类任务，直接生成提醒内容")
             return TaskResponse(success=True, msg=reminder_detail, answer=reminder_detail)
 
-        return await self.executor.execute_with_retry(job)
+        return await self.executor.execute_with_retry(
+            job,
+            progress_callback=lambda level, message: self._publish_progress(job, level, message),
+        )
 
     async def _persist_job_result(self, job: CronJob, result) -> tuple[Optional[CronJob], bool]:
         """Persist terminal execution state and return the updated job."""
@@ -533,6 +563,12 @@ class CronScheduler:
         async with self.semaphore:  # Concurrency control
             try:
                 logger.info(f"Executing claimed cron job: {job.id} ({job.name})")
+                tools_text = job.payload.tool_names if job.payload.tool_names else "auto"
+                await self._publish_progress(
+                    job,
+                    "info",
+                    f"任务开始执行，agent={job.payload.agent_name}，tools={tools_text}",
+                )
 
                 # Execute with timeout
                 timeout = job.payload.timeout_seconds or 600
@@ -546,10 +582,23 @@ class CronScheduler:
 
                 # Publish notification (after state persistence and deletion)
                 if result.success:
+                    success_summary = self._get_result_summary(result)
+                    success_message = (
+                        f"任务执行完成：{success_summary}"
+                        if success_summary else
+                        "任务执行完成"
+                    )
+                    await self._publish_progress(notification_job, "success", success_message, terminal=True)
                     await self._publish_notification(notification_job, "ok")
                     if removed:
                         logger.info(f"Deleted one-time job: {job.id}")
                 else:
+                    await self._publish_progress(
+                        notification_job,
+                        "error",
+                        f"任务执行失败：{result.msg}",
+                        terminal=True,
+                    )
                     await self._publish_notification(notification_job, "error", result.msg)
 
             except asyncio.TimeoutError:
@@ -564,12 +613,18 @@ class CronScheduler:
                         "consecutive_errors": job.state.consecutive_errors + 1,
                     }
                 )
+                await self._publish_progress(
+                    job,
+                    "error",
+                    f"任务执行超时：{job.payload.timeout_seconds or 600}s",
+                    terminal=True,
+                )
 
                 # Publish timeout notification
                 await self._publish_notification(job, "timeout")
 
             except Exception as e:
-                logger.error(f"Job {job.id} trigger error: {e}", exc_info=True)
+                logger.error(f"Job {job.id} trigger error\n{traceback.format_exc()}")
                 await self.store.update_job(
                     job.id,
                     state={
@@ -579,6 +634,12 @@ class CronScheduler:
                         "last_result_summary": None,
                         "consecutive_errors": job.state.consecutive_errors + 1,
                     }
+                )
+                await self._publish_progress(
+                    job,
+                    "error",
+                    f"任务执行异常：{e}",
+                    terminal=True,
                 )
 
                 # Publish error notification
@@ -662,6 +723,12 @@ class CronScheduler:
         async with self.semaphore:
             try:
                 logger.info(f"Manually running job: {job_id}")
+                tools_text = updated_job.payload.tool_names if updated_job.payload.tool_names else "auto"
+                await self._publish_progress(
+                    updated_job,
+                    "info",
+                    f"手动触发执行，agent={updated_job.payload.agent_name}，tools={tools_text}",
+                )
                 timeout = job.payload.timeout_seconds or 600
                 result = await asyncio.wait_for(
                     self._execute_job_payload(updated_job),
@@ -673,8 +740,21 @@ class CronScheduler:
 
                 # Publish notification for manual run
                 if result.success:
+                    success_summary = self._get_result_summary(result)
+                    success_message = (
+                        f"任务执行完成：{success_summary}"
+                        if success_summary else
+                        "任务执行完成"
+                    )
+                    await self._publish_progress(notification_job, "success", success_message, terminal=True)
                     await self._publish_notification(notification_job, "ok")
                 else:
+                    await self._publish_progress(
+                        notification_job,
+                        "error",
+                        f"任务执行失败：{result.msg}",
+                        terminal=True,
+                    )
                     await self._publish_notification(notification_job, "error", result.msg)
 
                 return result
@@ -691,6 +771,12 @@ class CronScheduler:
                         "consecutive_errors": job.state.consecutive_errors + 1,
                     }
                 )
+                await self._publish_progress(
+                    updated_job,
+                    "error",
+                    f"任务执行超时：{job.payload.timeout_seconds or 600}s",
+                    terminal=True,
+                )
 
                 # Publish timeout notification for manual run
                 await self._publish_notification(job, "timeout")
@@ -698,7 +784,9 @@ class CronScheduler:
                 return TaskResponse(success=False, msg="Execution timeout")
 
             except Exception as e:
-                logger.error(f"Manual job {job_id} execution error: {e}", exc_info=True)
+                logger.error(
+                    f"Manual job {job_id} execution error\n{traceback.format_exc()}"
+                )
                 await self.store.update_job(
                     job_id,
                     state={
@@ -708,6 +796,12 @@ class CronScheduler:
                         "last_result_summary": None,
                         "consecutive_errors": job.state.consecutive_errors + 1,
                     }
+                )
+                await self._publish_progress(
+                    updated_job,
+                    "error",
+                    f"任务执行异常：{e}",
+                    terminal=True,
                 )
 
                 # Publish error notification for manual run

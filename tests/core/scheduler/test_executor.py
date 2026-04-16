@@ -3,9 +3,11 @@
 """
 Tests for CronExecutor - agent resolution and execution.
 """
+import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 from datetime import datetime
+from types import SimpleNamespace
 import pytz
 
 from aworld.core.scheduler.executor import CronExecutor
@@ -165,6 +167,39 @@ async def test_execute_success(executor, sample_job):
 
 
 @pytest.mark.asyncio
+async def test_execute_ignores_persisted_tool_restrictions_for_aworld(executor):
+    """Legacy Aworld cron jobs should run without persisted tool allowlists."""
+    aworld_job = CronJob(
+        name="aworld-job",
+        schedule=CronSchedule(kind="every", every_seconds=3600),
+        payload=CronPayload(
+            message="Run aworld task",
+            agent_name="Aworld",
+            tool_names=["CAST_SEARCH", "bash", "SKILL"],
+        ),
+        state=CronJobState(next_run_at=datetime.now(pytz.UTC).isoformat()),
+    )
+
+    mock_swarm = MockSwarm()
+    mock_result = TaskResponse(success=True, msg="Task completed", answer="Result")
+
+    executor._resolve_swarm = AsyncMock(return_value=mock_swarm)
+
+    with patch('aworld.runner.Runners.run', new_callable=AsyncMock) as mock_run:
+        mock_run.return_value = mock_result
+
+        result = await executor.execute(aworld_job)
+
+        mock_run.assert_called_once_with(
+            input="Run aworld task",
+            swarm=mock_swarm,
+            tool_names=[],
+            session_id=None,
+        )
+        assert result.success is True
+
+
+@pytest.mark.asyncio
 async def test_execute_agent_not_found(executor, sample_job):
     """Test execution fails gracefully when agent not found."""
     executor._resolve_swarm = AsyncMock(return_value=None)
@@ -227,6 +262,85 @@ async def test_execute_with_retry_exception_handling(executor, sample_job):
 
     assert result.success is False
     assert "failed after 1 retries" in result.msg
+
+
+@pytest.mark.asyncio
+async def test_execute_with_retry_streams_detailed_progress(executor, sample_job):
+    """Cron execution should surface stream events and final answer to follow mode."""
+    mock_swarm = MockSwarm()
+    executor._resolve_swarm = AsyncMock(return_value=mock_swarm)
+
+    events = [
+        SimpleNamespace(
+            output_type=lambda: "step",
+            alias_name="读取 skill 文档",
+            name="ReadSkill",
+            status="START",
+            step_num=1,
+        ),
+        SimpleNamespace(
+            output_type=lambda: "tool_call",
+            data=SimpleNamespace(
+                function=SimpleNamespace(
+                    name="bash",
+                    arguments='{"cmd":"python twitter_scraper_10_posts.py"}',
+                )
+            ),
+        ),
+        SimpleNamespace(
+            output_type=lambda: "tool_call_result",
+            tool_name="bash",
+            data="saved twitter_latest_10_posts.md",
+        ),
+        SimpleNamespace(
+            output_type=lambda: "message",
+            response="已抓取完成，并保存到当前目录。",
+            reasoning=None,
+        ),
+    ]
+
+    class FakeStreamingOutputs:
+        def __init__(self):
+            self._task_response = TaskResponse(
+                success=True,
+                answer="已抓取完成，并保存到当前目录。",
+                msg="ok",
+            )
+            self._run_impl_task = asyncio.create_task(self._result())
+
+        async def _result(self):
+            return {
+                "task-123": self._task_response
+            }
+
+        async def stream_events(self):
+            for event in events:
+                yield event
+
+        def response(self):
+            return self._task_response
+
+        def get_message_output_content(self):
+            return "Aworld:已抓取完成，并保存到当前目录。"
+
+    progress_messages = []
+
+    async def record_progress(level, message):
+        progress_messages.append((level, message))
+
+    with patch("aworld.runner.Runners.streamed_run_task", return_value=FakeStreamingOutputs()):
+        result = await executor.execute_with_retry(
+            sample_job,
+            max_retries=0,
+            progress_callback=record_progress,
+        )
+
+    assert result.success is True
+    assert any("步骤 #1 开始：读取 skill 文档" in message for _, message in progress_messages)
+    assert any("工具调用：bash" in message for _, message in progress_messages)
+    assert any("工具结果：bash" in message for _, message in progress_messages)
+    assert any("Agent 输出：" in message for _, message in progress_messages)
+    assert any("最终回答：" in message for _, message in progress_messages)
 
 
 @pytest.mark.asyncio
