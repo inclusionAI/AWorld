@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime
 from inspect import isawaitable
 from typing import Any
 
 from aworld.runner import Runners
 
 from aworld_gateway.channels.dingding.types import DingdingBridgeResult
+
+try:
+    from aworld.core.context.amni import ApplicationContext, TaskInput
+except ImportError:  # pragma: no cover
+    ApplicationContext = None
+    TaskInput = None
 
 
 class AworldDingdingBridge:
@@ -34,7 +41,7 @@ class AworldDingdingBridge:
         if agent is None:
             raise ValueError(f"Agent not found: {agent_id}")
 
-        swarm = await agent.get_swarm(None)
+        swarm = await self._get_swarm_with_context_fallback(agent)
         executor = self._executor_cls(
             swarm=swarm,
             context_config=getattr(agent, "context_config", None),
@@ -70,12 +77,33 @@ class AworldDingdingBridge:
         session_id: str,
     ) -> AsyncIterator[str]:
         task = await executor._build_task(text, session_id=session_id)
-        outputs = Runners.streamed_run_task(task)
+        outputs = Runners.streamed_run_task(task=task)
 
         async for output in outputs.stream_events():
             chunk = self._extract_text(output)
             if chunk:
                 yield chunk
+
+    @staticmethod
+    async def _get_swarm_with_context_fallback(agent: Any) -> Any:
+        context_config = getattr(agent, "context_config", None)
+        try:
+            return await agent.get_swarm(None)
+        except (TypeError, AttributeError):
+            if TaskInput is None or ApplicationContext is None:
+                raise
+            temp_task_input = TaskInput(
+                user_id="gateway_user",
+                session_id=f"temp_session_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                task_id=f"temp_task_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                task_content="",
+                origin_user_input="",
+            )
+            temp_context = await ApplicationContext.from_input(
+                temp_task_input,
+                context_config=context_config,
+            )
+            return await agent.get_swarm(temp_context)
 
     @staticmethod
     def _extract_text(output: Any) -> str:
