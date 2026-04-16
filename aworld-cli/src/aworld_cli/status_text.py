@@ -5,6 +5,26 @@ from rich.style import Style
 from rich.text import Text
 
 
+_DEFAULT_SEGMENT_STYLE = ("#181b2d", "#d8def5")
+_SEGMENT_STYLES = [
+    ("#181b2d", "#84c7c6"),
+    ("#181b2d", "#d8def5"),
+    ("#181b2d", "#8ed081"),
+    ("#181b2d", "#b8c0da"),
+    ("#181b2d", "#a88bd8"),
+    ("#181b2d", "#8ea0c4"),
+]
+_SEGMENT_STYLES_WITH_UNREAD = [
+    ("#181b2d", "#84c7c6"),
+    ("#181b2d", "#d8def5"),
+    ("#181b2d", "#f2c14e"),
+    ("#181b2d", "#b8c0da"),
+    ("#181b2d", "#a88bd8"),
+    ("#181b2d", "#8ea0c4"),
+]
+_DIVIDER_STYLE = ("#181b2d", "#4f5877")
+
+
 def should_render_status_bar(runtime) -> bool:
     if runtime is None:
         return False
@@ -101,19 +121,15 @@ def _build_hud_context(runtime, agent_name: str, mode: str, workspace_name: str,
     }
 
 
-def build_status_bar_lines(
+def _render_status_bar_lines_from_context(
     runtime,
-    agent_name: str = "Aworld",
-    mode: str = "Chat",
-    workspace_name: str = "workspace",
-    git_branch: str = "n/a",
-    max_width: int | None = 160,
+    hud_context: dict[str, Any],
+    agent_name: str,
+    mode: str,
+    workspace_name: str,
+    git_branch: str,
+    max_width: int | None,
 ) -> list[str]:
-    if not should_render_status_bar(runtime):
-        return []
-
-    hud_context = _build_hud_context(runtime, agent_name, mode, workspace_name, git_branch)
-
     try:
         plugin_lines = runtime.get_hud_lines(hud_context) if runtime and hasattr(runtime, "get_hud_lines") else []
     except Exception:
@@ -154,6 +170,51 @@ def build_status_bar_lines(
     return rendered_lines
 
 
+def build_status_bar_lines(
+    runtime,
+    agent_name: str = "Aworld",
+    mode: str = "Chat",
+    workspace_name: str = "workspace",
+    git_branch: str = "n/a",
+    max_width: int | None = 160,
+) -> list[str]:
+    if not should_render_status_bar(runtime):
+        return []
+
+    hud_context = _build_hud_context(runtime, agent_name, mode, workspace_name, git_branch)
+    return _render_status_bar_lines_from_context(
+        runtime,
+        hud_context,
+        agent_name,
+        mode,
+        workspace_name,
+        git_branch,
+        max_width,
+    )
+
+
+def build_status_bar_lines_from_context(
+    runtime,
+    hud_context: dict[str, Any],
+    agent_name: str = "Aworld",
+    mode: str = "Chat",
+    workspace_name: str = "workspace",
+    git_branch: str = "n/a",
+    max_width: int | None = 160,
+) -> list[str]:
+    if not should_render_status_bar(runtime):
+        return []
+    return _render_status_bar_lines_from_context(
+        runtime,
+        hud_context,
+        agent_name,
+        mode,
+        workspace_name,
+        git_branch,
+        max_width,
+    )
+
+
 def build_execution_hud_lines(
     runtime,
     agent_name: str = "Aworld",
@@ -162,7 +223,7 @@ def build_execution_hud_lines(
     git_branch: str = "n/a",
     max_width: int | None = 160,
 ) -> list[str]:
-    lines = build_status_bar_lines(
+    return build_status_bar_lines(
         runtime,
         agent_name=agent_name,
         mode=mode,
@@ -170,11 +231,6 @@ def build_execution_hud_lines(
         git_branch=git_branch,
         max_width=max_width,
     )
-    if not lines:
-        return []
-    if max_width is not None and max_width <= 100 and len(lines) > 1:
-        return [lines[-1]]
-    return lines
 
 
 def build_status_bar_text(
@@ -206,27 +262,28 @@ def build_status_bar_rich_lines(lines: list[str]) -> list[Text]:
     return renderables
 
 
-def build_status_bar_rich_line(line_text: str) -> Text | None:
+def iter_status_bar_segments(line_text: str) -> list[tuple[str, tuple[str, str]]]:
     segments = [segment.strip() for segment in line_text.split("|") if segment.strip()]
     if not segments:
-        return None
+        return []
     has_unread = any("unread" in segment.lower() for segment in segments)
-    segment_styles = [
-        ("#181b2d", "#84c7c6"),
-        ("#181b2d", "#d8def5"),
-        ("#181b2d", "#f2c14e" if has_unread else "#8ed081"),
-        ("#181b2d", "#b8c0da"),
-        ("#181b2d", "#a88bd8"),
-        ("#181b2d", "#8ea0c4"),
-    ]
-    divider_style = ("#181b2d", "#4f5877")
-
-    text = Text()
+    palette = _SEGMENT_STYLES_WITH_UNREAD if has_unread else _SEGMENT_STYLES
+    styled_segments: list[tuple[str, tuple[str, str]]] = []
     for index, segment in enumerate(segments):
-        bg, fg = segment_styles[index] if index < len(segment_styles) else ("#181b2d", "#d8def5")
+        style = palette[index] if index < len(palette) else _DEFAULT_SEGMENT_STYLE
+        styled_segments.append((segment, style))
+    return styled_segments
+
+
+def build_status_bar_rich_line(line_text: str) -> Text | None:
+    styled_segments = iter_status_bar_segments(line_text)
+    if not styled_segments:
+        return None
+    text = Text()
+    for index, (segment, (bg, fg)) in enumerate(styled_segments):
         text.append(f" {segment} ", style=Style(color=fg, bgcolor=bg))
-        if index < len(segments) - 1:
-            div_bg, div_fg = divider_style
+        if index < len(styled_segments) - 1:
+            div_bg, div_fg = _DIVIDER_STYLE
             text.append(" | ", style=Style(color=div_fg, bgcolor=div_bg))
     return text
 

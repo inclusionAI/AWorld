@@ -32,7 +32,7 @@ from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
 from .stats import StreamTokenStats, format_elapsed
 from .stream import StreamDisplayConfig, StreamDisplayController, _print_tool_result_lines
-from ..status_text import build_execution_hud_lines
+from ..status_text import build_status_bar_lines_from_context
 
 # Try to import WorkSpace for local workspace creation
 try:
@@ -255,18 +255,31 @@ class LocalAgentExecutor(BaseAgentExecutor):
             self.console.print(Text.from_markup(msg))
             self.console.print()  # Add spacing
 
-    def _build_execution_hud_lines(self) -> list[str]:
+    def _build_execution_hud_lines(self, elapsed_seconds: Optional[float] = None) -> list[str]:
         runtime = getattr(self, "_base_runtime", None)
         if runtime is None:
             return []
         try:
-            return build_execution_hud_lines(
-                runtime,
+            workspace_name = Path.cwd().name
+            git_branch = self._detect_git_branch_for_hud()
+            max_width = shutil.get_terminal_size(fallback=(160, 24)).columns or 160
+            hud_context = runtime.build_hud_context(
                 agent_name="Aworld",
                 mode="Chat",
-                workspace_name=Path.cwd().name,
-                git_branch=self._detect_git_branch_for_hud(),
-                max_width=max(40, shutil.get_terminal_size(fallback=(160, 24)).columns - 2),
+                workspace_name=workspace_name,
+                git_branch=git_branch,
+            )
+            if elapsed_seconds is not None:
+                hud_context.setdefault("session", {})
+                hud_context["session"]["elapsed_seconds"] = elapsed_seconds
+            return build_status_bar_lines_from_context(
+                runtime,
+                hud_context,
+                agent_name="Aworld",
+                mode="Chat",
+                workspace_name=workspace_name,
+                git_branch=git_branch,
+                max_width=max_width,
             )
         except Exception:
             return []
@@ -683,6 +696,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     nonlocal answer, last_message_output, stream_token_stats, saved_any_round, response_rendered_to_console, current_round_streamed_content
                     stream_token_stats = StreamTokenStats()
                     logger.info(f"📊 Starting consume_stream - stream_token_stats initialized")
+                    ctrl: StreamDisplayController | None = None
+
+                    def _execution_hud_lines() -> list[str]:
+                        if ctrl is None or ctrl.status_start_time is None:
+                            return self._build_execution_hud_lines()
+                        elapsed_seconds = (datetime.now() - ctrl.status_start_time).total_seconds()
+                        return self._build_execution_hud_lines(elapsed_seconds=elapsed_seconds)
+
                     ctrl = StreamDisplayController(
                         console=self.console,
                         stream_token_stats=stream_token_stats,
@@ -690,7 +711,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         format_elapsed_fn=format_elapsed,
                         config=StreamDisplayConfig(render_interval=0.02, chars_per_render=1),
                         should_emit_interactive_stats_fn=self._should_emit_interactive_stats,
-                        hud_lines_fn=self._build_execution_hud_lines,
+                        hud_lines_fn=_execution_hud_lines,
                         use_fixed_hud_layout=self._should_use_fixed_execution_hud_layout(),
                     )
 

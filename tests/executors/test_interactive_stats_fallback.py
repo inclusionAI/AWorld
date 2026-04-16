@@ -21,7 +21,11 @@ from aworld_cli.executors.stream import (
     print_buffer_to_console,
 )
 from aworld_cli.console import AWorldCLI
-from aworld_cli.status_text import build_status_bar_rich_lines
+from aworld_cli.status_text import (
+    build_execution_hud_lines,
+    build_status_bar_lines,
+    build_status_bar_rich_lines,
+)
 from aworld.output.base import MessageOutput, ToolCallOutput
 from aworld.models.model_response import Function, ToolCall
 
@@ -336,6 +340,48 @@ def test_fixed_bottom_hud_renderer_uses_segment_styles():
     assert ";48;2;" in rendered
     assert "\x1b[1;" in rendered
     assert "r" in rendered
+
+
+def test_execution_hud_lines_match_status_bar_shape_at_narrow_width():
+    status_lines = build_status_bar_lines(
+        HudRenderRuntime(),
+        agent_name="Aworld",
+        mode="Chat",
+        workspace_name="aworld",
+        git_branch="feat/hud",
+        max_width=80,
+    )
+    execution_lines = build_execution_hud_lines(
+        HudRenderRuntime(),
+        agent_name="Aworld",
+        mode="Chat",
+        workspace_name="aworld",
+        git_branch="feat/hud",
+        max_width=80,
+    )
+
+    assert execution_lines == status_lines
+    assert len(execution_lines) == 2
+
+
+def test_fixed_bottom_hud_renderer_stop_does_not_clear_bottom_lines_again():
+    output = _TtyBuffer()
+    console = Console(file=output, force_terminal=True, width=120, color_system="truecolor")
+    renderer = FixedBottomHudRenderer(
+        console=console,
+        hud_lines_fn=lambda: [
+            "Agent: Aworld / Chat | Workspace: aworld | Branch: feat/hud | Cron: clear",
+            "Task: task_001 (running) | Tokens: in 1.2k out 300 | Ctx: 34% | Elapsed: 12.5s",
+        ],
+    )
+
+    renderer.start()
+    output.seek(0)
+    output.truncate(0)
+
+    renderer.stop()
+
+    assert output.getvalue() == "\x1b[r"
 
 
 def test_render_simple_message_output_skips_response_when_content_already_streamed():
