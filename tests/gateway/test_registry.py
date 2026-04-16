@@ -6,7 +6,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from aworld_gateway.channels.base import ChannelAdapter
-from aworld_gateway.config import PlaceholderChannelConfig, TelegramChannelConfig
+from aworld_gateway.config import (
+    DingdingChannelConfig,
+    PlaceholderChannelConfig,
+    TelegramChannelConfig,
+)
 from aworld_gateway.registry import ChannelRegistry
 
 
@@ -15,7 +19,7 @@ def test_list_channels_reports_phase_one_builtins_with_implementation_flags():
 
     assert summary["telegram"]["implemented"] is True
     assert summary["web"]["implemented"] is False
-    assert summary["dingding"]["implemented"] is False
+    assert summary["dingding"]["implemented"] is True
     assert summary["feishu"]["implemented"] is False
     assert summary["wecom"]["implemented"] is False
 
@@ -42,10 +46,14 @@ def test_registry_validates_channel_configuration(monkeypatch):
     registry = ChannelRegistry()
 
     monkeypatch.delenv("AWORLD_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("AWORLD_DINGTALK_CLIENT_ID", raising=False)
+    monkeypatch.delenv("AWORLD_DINGTALK_CLIENT_SECRET", raising=False)
 
     assert registry.is_configured("web", PlaceholderChannelConfig()) is True
     assert registry.is_configured("telegram", TelegramChannelConfig()) is False
+    assert registry.is_configured("dingding", DingdingChannelConfig()) is False
     assert registry.is_configured("unknown", PlaceholderChannelConfig()) is False
+
     monkeypatch.setenv("CUSTOM_TELEGRAM_TOKEN", "env-token")
     assert (
         registry.is_configured(
@@ -54,3 +62,9 @@ def test_registry_validates_channel_configuration(monkeypatch):
         )
         is True
     )
+
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-client")
+    assert registry.is_configured("dingding", DingdingChannelConfig()) is False
+
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+    assert registry.is_configured("dingding", DingdingChannelConfig()) is True

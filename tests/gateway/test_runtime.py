@@ -13,6 +13,8 @@ from aworld_gateway.runtime import GatewayRuntime
 
 def test_runtime_status_is_initialized_before_start(monkeypatch):
     monkeypatch.delenv("AWORLD_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("AWORLD_DINGTALK_CLIENT_ID", raising=False)
+    monkeypatch.delenv("AWORLD_DINGTALK_CLIENT_SECRET", raising=False)
 
     runtime = GatewayRuntime(
         config=GatewayConfig(),
@@ -23,6 +25,7 @@ def test_runtime_status_is_initialized_before_start(monkeypatch):
     status = runtime.status()
     assert status["state"] == "registered"
     assert status["channels"]["telegram"]["state"] == "registered"
+    assert status["channels"]["dingding"]["state"] == "registered"
     assert status["channels"]["web"]["state"] == "registered"
 
 
@@ -45,6 +48,8 @@ def test_runtime_start_reports_registered_channels_when_no_channels_enabled(
     monkeypatch,
 ):
     monkeypatch.delenv("AWORLD_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("AWORLD_DINGTALK_CLIENT_ID", raising=False)
+    monkeypatch.delenv("AWORLD_DINGTALK_CLIENT_SECRET", raising=False)
 
     runtime = GatewayRuntime(
         config=GatewayConfig(),
@@ -66,6 +71,11 @@ def test_runtime_start_reports_registered_channels_when_no_channels_enabled(
     assert status["channels"]["web"]["implemented"] is False
     assert status["channels"]["web"]["running"] is False
     assert status["channels"]["web"]["state"] == "registered"
+    assert status["channels"]["dingding"]["enabled"] is False
+    assert status["channels"]["dingding"]["configured"] is False
+    assert status["channels"]["dingding"]["implemented"] is True
+    assert status["channels"]["dingding"]["running"] is False
+    assert status["channels"]["dingding"]["state"] == "registered"
 
     asyncio.run(runtime.stop())
     stopped_status = runtime.status()
@@ -91,6 +101,35 @@ def test_runtime_start_degrades_when_enabled_channel_is_not_implemented():
     assert status["channels"]["web"]["implemented"] is False
     assert status["channels"]["web"]["running"] is False
     assert status["channels"]["web"]["state"] == "degraded"
+
+
+def test_runtime_start_degrades_when_enabled_dingding_is_not_configured(
+    monkeypatch,
+):
+    monkeypatch.delenv("AWORLD_DINGTALK_CLIENT_ID", raising=False)
+    monkeypatch.delenv("AWORLD_DINGTALK_CLIENT_SECRET", raising=False)
+
+    config = GatewayConfig()
+    config.channels.dingding.enabled = True
+    runtime = GatewayRuntime(
+        config=config,
+        registry=ChannelRegistry(),
+        router=None,
+    )
+
+    asyncio.run(runtime.start())
+
+    status = runtime.status()
+    assert status["state"] == "degraded"
+    assert status["channels"]["dingding"]["enabled"] is True
+    assert status["channels"]["dingding"]["configured"] is False
+    assert status["channels"]["dingding"]["implemented"] is True
+    assert status["channels"]["dingding"]["running"] is False
+    assert status["channels"]["dingding"]["state"] == "degraded"
+    assert (
+        status["channels"]["dingding"]["error"]
+        == "Channel is enabled but not configured enough to start."
+    )
 
 
 def test_runtime_starts_enabled_and_configured_telegram_channel(
