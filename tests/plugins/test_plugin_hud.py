@@ -172,6 +172,19 @@ def test_status_bar_is_not_rendered_without_hud_capability():
     assert cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat") == ""
 
 
+def test_prompt_kwargs_clear_bottom_toolbar_when_hud_is_disabled():
+    class FakeRuntime:
+        def active_plugin_capabilities(self):
+            return ()
+
+    cli = AWorldCLI()
+    prompt_kwargs = cli._build_prompt_kwargs(FakeRuntime(), agent_name="Aworld", mode="Chat")
+
+    assert "bottom_toolbar" in prompt_kwargs
+    assert prompt_kwargs["bottom_toolbar"] is None
+    assert "refresh_interval" not in prompt_kwargs
+
+
 def test_status_bar_text_falls_back_when_hud_entrypoint_raises(tmp_path):
     hud_module = tmp_path / "hud.py"
     hud_module.write_text(
