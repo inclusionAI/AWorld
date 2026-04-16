@@ -5,8 +5,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
-from aworld_cli.plugin_framework.discovery import discover_plugins
-from aworld_cli.plugin_framework.hooks import PluginHookResult, load_plugin_hooks
+from aworld.plugins.discovery import discover_plugins
+from aworld_cli.plugin_runtime.hooks import PluginHookResult, load_plugin_hooks
 
 
 def test_load_plugin_hook_entrypoints():

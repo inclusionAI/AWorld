@@ -1,8 +1,8 @@
 from pathlib import Path
 from types import MappingProxyType
 
-from aworld_cli.plugin_framework.manifest import load_plugin_manifest
-from aworld_cli.plugin_framework.models import PluginEntrypoint
+from aworld.plugins.manifest import load_plugin_manifest
+from aworld.plugins.models import PluginEntrypoint
 
 
 def test_load_plugin_manifest_exposes_typed_entrypoints():

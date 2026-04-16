@@ -90,7 +90,7 @@ def test_plugins_list_includes_builtin_plugins(monkeypatch, capsys):
                 "source": "built-in",
                 "has_agents": False,
                 "has_skills": False,
-                "path": "/repo/aworld-cli/src/aworld_cli/plugins/aworld_hud",
+                "path": "/repo/aworld-cli/src/aworld_cli/builtin_plugins/aworld_hud",
             }
         ],
     )
@@ -139,7 +139,7 @@ def test_plugins_list_hides_legacy_builtin_plugins(monkeypatch, capsys):
                 "source": "built-in",
                 "has_agents": False,
                 "has_skills": False,
-                "path": "/repo/aworld-cli/src/aworld_cli/plugins/aworld_hud",
+                "path": "/repo/aworld-cli/src/aworld_cli/builtin_plugins/aworld_hud",
             },
         ],
     )

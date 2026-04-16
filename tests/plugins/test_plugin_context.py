@@ -1,11 +1,11 @@
 from pathlib import Path
 
-from aworld_cli.plugin_framework.context import (
+from aworld.plugins.discovery import discover_plugins
+from aworld_cli.plugin_runtime.context import (
     CONTEXT_PHASES,
     load_plugin_contexts,
     run_context_phase,
 )
-from aworld_cli.plugin_framework.discovery import discover_plugins
 
 
 def test_load_plugin_contexts_groups_adapters_by_phase():
