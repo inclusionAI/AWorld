@@ -88,6 +88,35 @@ def test_dingding_adapter_send_requires_started_connector() -> None:
         )
 
 
+def test_dingding_adapter_send_requires_session_webhook_metadata(monkeypatch) -> None:
+    stream_module = object()
+    monkeypatch.setattr(
+        DingdingChannelAdapter,
+        "_import_stream_module",
+        lambda self: stream_module,
+    )
+
+    adapter = DingdingChannelAdapter(
+        DingdingChannelConfig(),
+        bridge=_FakeBridge(),
+        connector_cls=_FakeConnector,
+    )
+    asyncio.run(adapter.start())
+
+    with pytest.raises(ValueError, match="session_webhook"):
+        asyncio.run(
+            adapter.send(
+                OutboundEnvelope(
+                    channel="dingding",
+                    account_id="dingding",
+                    conversation_id="conv-1",
+                    text="reply text",
+                    metadata={},
+                )
+            )
+        )
+
+
 def test_dingding_adapter_send_delegates_to_connector(monkeypatch) -> None:
     stream_module = object()
     monkeypatch.setattr(
@@ -116,3 +145,23 @@ def test_dingding_adapter_send_delegates_to_connector(monkeypatch) -> None:
     )
 
     assert adapter._connector.send_calls == [("https://callback", "reply text")]
+
+
+def test_dingding_adapter_stop_delegates_to_connector(monkeypatch) -> None:
+    stream_module = object()
+    monkeypatch.setattr(
+        DingdingChannelAdapter,
+        "_import_stream_module",
+        lambda self: stream_module,
+    )
+
+    adapter = DingdingChannelAdapter(
+        DingdingChannelConfig(),
+        bridge=_FakeBridge(),
+        connector_cls=_FakeConnector,
+    )
+    asyncio.run(adapter.start())
+    asyncio.run(adapter.stop())
+
+    assert adapter._connector is not None
+    assert adapter._connector.stopped is True
