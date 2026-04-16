@@ -742,15 +742,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                             tool_lines.append("   [dim red]Argument parsing failed[/dim red]")
         return tool_lines
 
-    def _render_simple_message_output(
-        self,
-        output,
-        answer: str,
-        agent_name: str = None,
-        is_handoff: bool = False,
-        content_already_streamed: bool = False,
-        show_tool_calls: bool = True,
-    ) -> tuple[str, str]:
+    def _render_simple_message_output(self, output, answer: str, agent_name: str = None, is_handoff: bool = False, content_already_streamed: bool = False) -> tuple[str, str]:
         """
         Simplified message output rendering with modern, clean Claude Code style.
 
@@ -767,7 +759,6 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             agent_name: Name of the current agent
             is_handoff: Whether this is a handoff to a new agent
             content_already_streamed: If True, skip printing response content (already shown via ChunkOutput)
-            show_tool_calls: If False, do not print tool call details to the console
 
         Returns:
             Tuple of (updated_answer, rendered_content)
@@ -801,7 +792,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         display_parts = []
 
         # Add main response with collapsible content
-        if response_text.strip() and not content_already_streamed:
+        if response_text.strip():
             # Prepare content lines for collapsible rendering
             response_lines = []
 
@@ -825,7 +816,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             header = f"🤖 [bold]{agent_name}[/bold]"
             self._render_collapsible_content('message', header, response_lines, max_lines=10)
             self.console.print()  # Add spacing after message
-        elif not content_already_streamed:
+        else:
             # Empty content: show agent header + placeholder when response was actually empty
             if not response_text.strip():
                 header = f"🤖 [bold]{agent_name}[/bold]"
@@ -834,7 +825,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
                 self.console.print()
 
         # Handle tool calls with collapsible display
-        if tool_calls and show_tool_calls:
+        if tool_calls:
             tool_lines = self._format_tool_calls_display_lines(tool_calls)
             if tool_lines:
                 header = "🔧 [bold]Tool calls[/bold]"
