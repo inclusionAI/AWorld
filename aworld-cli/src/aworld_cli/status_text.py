@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from typing import Any
+from rich.style import Style
+from rich.text import Text
 
 
 def should_render_status_bar(runtime) -> bool:
@@ -193,3 +195,31 @@ def build_status_bar_text(
             max_width=max_width,
         )
     )
+
+
+def build_status_bar_rich_lines(lines: list[str]) -> list[Text]:
+    renderables: list[Text] = []
+    for line_text in lines:
+        segments = [segment.strip() for segment in line_text.split("|") if segment.strip()]
+        if not segments:
+            continue
+        has_unread = any("unread" in segment.lower() for segment in segments)
+        segment_styles = [
+            ("#181b2d", "#84c7c6"),
+            ("#181b2d", "#d8def5"),
+            ("#181b2d", "#f2c14e" if has_unread else "#8ed081"),
+            ("#181b2d", "#b8c0da"),
+            ("#181b2d", "#a88bd8"),
+            ("#181b2d", "#8ea0c4"),
+        ]
+        divider_style = ("#181b2d", "#4f5877")
+
+        text = Text()
+        for index, segment in enumerate(segments):
+            bg, fg = segment_styles[index] if index < len(segment_styles) else ("#181b2d", "#d8def5")
+            text.append(f" {segment} ", style=Style(color=fg, bgcolor=bg))
+            if index < len(segments) - 1:
+                div_bg, div_fg = divider_style
+                text.append(" | ", style=Style(color=div_fg, bgcolor=div_bg))
+        renderables.append(text)
+    return renderables

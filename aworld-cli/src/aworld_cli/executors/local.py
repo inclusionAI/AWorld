@@ -3,6 +3,7 @@ Local agent executor.
 """
 import asyncio
 import os
+import sys
 import time
 import re
 import shutil
@@ -269,6 +270,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
             )
         except Exception:
             return []
+
+    def _should_use_fixed_execution_hud_layout(self) -> bool:
+        if self._should_emit_interactive_stats():
+            return False
+        try:
+            return bool(hasattr(sys.stdout, "isatty") and sys.stdout.isatty())
+        except Exception:
+            return False
 
     def _detect_git_branch_for_hud(self) -> str:
         try:
@@ -637,6 +646,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         config=StreamDisplayConfig(render_interval=0.02, chars_per_render=1),
                         should_emit_interactive_stats_fn=self._should_emit_interactive_stats,
                         hud_lines_fn=self._build_execution_hud_lines,
+                        use_fixed_hud_layout=self._should_use_fixed_execution_hud_layout(),
                     )
 
                     try:
