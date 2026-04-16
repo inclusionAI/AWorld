@@ -301,6 +301,22 @@ class LocalAgentExecutor(BaseAgentExecutor):
         except Exception:
             return "n/a"
 
+    def _should_render_final_task_answer(
+        self,
+        final_answer: str,
+        last_message_output: Any,
+        response_rendered_to_console: bool,
+    ) -> bool:
+        if not self.console or not str(final_answer or "").strip():
+            return False
+        if response_rendered_to_console:
+            return False
+        if last_message_output is None:
+            return True
+
+        response_text = str(getattr(last_message_output, "response", "") or "").strip()
+        return not bool(response_text)
+
     async def cleanup_resources(self) -> None:
         """
         Close MCP and other resources in the same event loop to avoid
@@ -630,12 +646,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 answer = ""
                 last_message_output = None
                 stream_token_stats = None  # Set by consume_stream, used for history
+                response_rendered_to_console = False
                 
                 saved_any_round = False
 
                 async def consume_stream():
                     """Consume stream events and collect outputs with beautiful formatting."""
-                    nonlocal answer, last_message_output, stream_token_stats, saved_any_round
+                    nonlocal answer, last_message_output, stream_token_stats, saved_any_round, response_rendered_to_console
                     stream_token_stats = StreamTokenStats()
                     logger.info(f"📊 Starting consume_stream - stream_token_stats initialized")
                     ctrl = StreamDisplayController(
@@ -675,6 +692,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 # Handle MessageOutput
                                 if isinstance(output, MessageOutput):
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
+                                    response_text = str(output.response) if hasattr(output, "response") and output.response else ""
                                     tool_calls = output.tool_calls if hasattr(output, "tool_calls") and output.tool_calls else []
                                     current_tool_name = None
                                     if tool_calls:
@@ -904,6 +922,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             )
 
                                         answer, _ = ctrl.print_with_hud_suspended(_render_message_output)
+                                        if response_text.strip():
+                                            response_rendered_to_console = True
                                         
                                         # 🔧 FIX: Display token stats after rendering message output (STREAM=0 mode)
                                         # This ensures the stats line is shown even when not streaming
@@ -1003,6 +1023,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     if capture_stream_output and chunk:
                                         if content := getattr(chunk, "content", None):
                                             ctrl.buffer.accumulated_content += content
+                                            response_rendered_to_console = True
                                             if ctrl.use_fixed_hud_layout:
                                                 ctrl.stream_fixed_chunk_content(chunk_agent_name or "Assistant", content)
                                         if tool_calls := getattr(chunk, "tool_calls", None):
@@ -1172,7 +1193,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         final_answer = f"{hook_system_message}\n{final_answer}".strip()
                     if final_answer:
                         answer = final_answer
-                        if not last_message_output and self.console:
+                        if self._should_render_final_task_answer(
+                            final_answer=final_answer,
+                            last_message_output=last_message_output,
+                            response_rendered_to_console=response_rendered_to_console,
+                        ):
                             root_agent = getattr(self.swarm, "communicate_agent", None)
                             if isinstance(root_agent, list):
                                 root_agent = root_agent[0] if root_agent else None
@@ -1181,12 +1206,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 agent_name = getattr(root_agent, "name", None)
                                 if callable(agent_name):
                                     agent_name = agent_name()
-                                if not agent_name:
-                                    agent_id = getattr(root_agent, "id", None)
-                                    agent_name = agent_id() if callable(agent_id) else agent_id
+                            if not agent_name:
+                                agent_id = getattr(root_agent, "id", None) if root_agent else None
+                                agent_name = agent_id() if callable(agent_id) else agent_id
                             self.console.print(f"🤖 [bold]{agent_name or 'Assistant'}[/bold]")
                             self.console.print(answer)
                             self.console.print()
+                            response_rendered_to_console = True
                 
                 # 🔥 Hook: POST_RUN_TASK
                 hook_kwargs = {
