@@ -235,20 +235,46 @@ class PluginManager:
             entry["installed_at"] = existing["installed_at"]
         return entry
 
+    def _refresh_builtin_manifest_entry(self, plugin_name: str) -> Dict[str, object] | None:
+        builtin_plugin = get_builtin_framework_plugin(plugin_name)
+        if builtin_plugin is None:
+            return None
+
+        entry = self._build_manifest_entry(
+            plugin_name=plugin_name,
+            plugin_path=Path(str(builtin_plugin["path"])),
+            source=str(builtin_plugin.get("source", "built-in")),
+            enabled=bool(
+                self._manifest.get(plugin_name, {}).get(
+                    "enabled",
+                    builtin_plugin.get("enabled", True),
+                )
+            ),
+        )
+        entry["name"] = str(builtin_plugin.get("name", plugin_name))
+        return entry
+
     def _ensure_manifest_entry(self, plugin_name: str) -> Dict[str, object]:
         if plugin_name in self._manifest:
+            refreshed_builtin = self._refresh_builtin_manifest_entry(plugin_name)
+            if refreshed_builtin is not None:
+                current_path = Path(str(self._manifest[plugin_name].get("path", "")))
+                refreshed_path = Path(str(refreshed_builtin["path"]))
+                if current_path != refreshed_path or self._manifest[plugin_name].get("source") != refreshed_builtin.get("source"):
+                    self._manifest[plugin_name] = refreshed_builtin
+                    self._save_manifest()
+                    return refreshed_builtin
             return self._manifest[plugin_name]
 
         builtin_plugin = get_builtin_framework_plugin(plugin_name)
-        if builtin_plugin is not None:
-            manifest_key = str(builtin_plugin.get("plugin_id") or builtin_plugin.get("name") or plugin_name)
-            entry = self._build_manifest_entry(
-                plugin_name=manifest_key,
-                plugin_path=Path(str(builtin_plugin["path"])),
-                source=str(builtin_plugin.get("source", "built-in")),
-                enabled=bool(builtin_plugin.get("enabled", True)),
+        refreshed_builtin = self._refresh_builtin_manifest_entry(plugin_name)
+        if refreshed_builtin is not None and builtin_plugin is not None:
+            manifest_key = str(
+                builtin_plugin.get("plugin_id")
+                or builtin_plugin.get("name")
+                or plugin_name
             )
-            entry["name"] = str(builtin_plugin.get("name", manifest_key))
+            entry = dict(refreshed_builtin)
             self._manifest[manifest_key] = entry
             self._save_manifest()
             return entry
@@ -273,8 +299,15 @@ class PluginManager:
         for plugin_name, plugin_info in self._manifest.items():
             plugin_path = Path(plugin_info.get('path', self.plugin_dir / plugin_name))
             if not plugin_path.exists():
-                logger.warning(f"⚠️ Plugin '{plugin_name}' in manifest but directory not found: {plugin_path}")
-                continue
+                refreshed_builtin = self._refresh_builtin_manifest_entry(plugin_name)
+                if refreshed_builtin is not None:
+                    self._manifest[plugin_name] = refreshed_builtin
+                    self._save_manifest()
+                    plugin_info = refreshed_builtin
+                    plugin_path = Path(str(plugin_info["path"]))
+                if not plugin_path.exists():
+                    logger.warning(f"⚠️ Plugin '{plugin_name}' in manifest but directory not found: {plugin_path}")
+                    continue
             records.append(
                 {
                     "name": plugin_name,

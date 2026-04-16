@@ -66,6 +66,26 @@ def test_builtin_framework_plugin_can_be_disabled_and_reenabled(tmp_path):
     assert reloaded["enabled"] is True
 
 
+def test_builtin_framework_plugin_disable_recovers_from_stale_builtin_path(tmp_path):
+    manager = PluginManager(plugin_dir=tmp_path / "plugins")
+    manager._manifest = {
+        "aworld-hud": {
+            "name": "aworld-hud",
+            "path": str((Path(__file__).resolve().parents[2] / "aworld-cli" / "src" / "aworld_cli" / "plugins" / "aworld_hud").resolve()),
+            "source": "built-in",
+            "enabled": True,
+        }
+    }
+    manager._save_manifest()
+    manager._manifest = manager._load_manifest()
+
+    disabled = manager.disable("aworld-hud")
+
+    assert disabled["enabled"] is False
+    assert Path(str(disabled["path"])).parent.name == "builtin_plugins"
+    assert disabled["plugin_id"] == "aworld-hud"
+
+
 def test_cli_runtime_honors_disabled_builtin_framework_plugin(tmp_path, monkeypatch):
     manager = PluginManager(plugin_dir=tmp_path / "plugins")
     manager.disable("aworld-hud")
