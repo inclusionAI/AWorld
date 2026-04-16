@@ -286,6 +286,7 @@ def test_loading_status_renderable_keeps_hud_on_last_lines_in_fixed_layout():
     console.print(renderable)
     lines = [line.rstrip() for line in console.export_text().splitlines() if line.strip()]
 
+    assert "Layout(name='body')" not in console.export_text()
     assert "Agent: Aworld / Chat" in lines[-2]
     assert "Task: task_001 (running)" in lines[-1]
 
@@ -327,5 +328,6 @@ def test_stream_renderable_keeps_hud_fixed_to_bottom_lines_when_content_is_long(
     console.print(renderable)
     lines = [line.rstrip() for line in console.export_text().splitlines() if line.strip()]
 
+    assert "Layout(name='body')" not in console.export_text()
     assert "Agent: Aworld / Chat" in lines[-2]
     assert "Task: task_001 (running)" in lines[-1]

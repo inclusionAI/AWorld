@@ -158,8 +158,17 @@ def _compute_lines_step(displayed: int, total: int, config: StreamDisplayConfig)
     return min(1 + pending // 5, config.tool_lines_step_max)
 
 
+def _normalize_fixed_layout_body(body_renderable: Any) -> Any:
+    if isinstance(body_renderable, Text) and not body_renderable.plain:
+        return Text(" ")
+    if isinstance(body_renderable, Group) and not body_renderable.renderables:
+        return Text(" ")
+    return body_renderable
+
+
 def _build_fixed_hud_layout(body_renderable: Any, hud_lines: List[str]) -> Layout:
     hud_renderables = build_status_bar_rich_lines(hud_lines)
+    body_renderable = _normalize_fixed_layout_body(body_renderable)
     layout = Layout()
     layout.split_column(
         Layout(body_renderable, name="body", ratio=1),
