@@ -1,3 +1,5 @@
+import os
+import json
 import sys
 import subprocess
 from pathlib import Path
@@ -136,6 +138,164 @@ def test_install_local_copy_creates_managed_entry(
     assert manager.load_manifest() == [record]
 
 
+def test_install_rolls_back_filesystem_and_manifest_when_manifest_replace_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    existing_entry = installed_root / "existing-skill"
+    source = tmp_path / "local-source"
+    _write_skill(existing_entry, "optimizer")
+    _write_skill(source / "skills", "brainstorming")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    existing_record = manager.import_entry(existing_entry, scope="global")
+    original_manifest = manifest_path.read_text(encoding="utf-8")
+
+    original_replace = Path.replace
+
+    def _raise_on_replace(self: Path, target: Path) -> Path:
+        if target == manifest_path:
+            raise OSError("manifest replace failed")
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", _raise_on_replace)
+
+    with pytest.raises(OSError, match="manifest replace failed"):
+        manager.install(
+            source=source,
+            mode="copy",
+            scope="project",
+            install_id="copied-skill",
+        )
+
+    installed_entry = installed_root / "copied-skill"
+    assert installed_entry.exists() is False
+    assert installed_entry.is_symlink() is False
+    assert manifest_path.read_text(encoding="utf-8") == original_manifest
+    assert manager.load_manifest() == [existing_record]
+
+
+def test_save_manifest_uses_unique_temp_path_when_default_tmp_name_is_occupied(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    occupied_temp_path = manifest_path.with_suffix(f"{manifest_path.suffix}.tmp")
+    occupied_temp_path.mkdir(parents=True, exist_ok=True)
+
+    manager.save_manifest(
+        [
+            {
+                "install_id": "demo",
+                "name": "demo",
+                "source": "/tmp/demo",
+                "installed_path": "/tmp/demo",
+                "resolved_skill_source_path": "/tmp/demo/skills",
+                "install_mode": "manual",
+                "scope": "global",
+                "installed_at": "2026-04-15T00:00:00+00:00",
+            }
+        ]
+    )
+
+    assert occupied_temp_path.is_dir() is True
+    assert manager.load_manifest()[0]["install_id"] == "demo"
+
+
+def test_save_manifest_updates_symlink_target_without_replacing_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_target = tmp_path / "shared-manifest.json"
+    manifest_target.write_text("[]", encoding="utf-8")
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.symlink_to(manifest_target)
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.save_manifest(
+        [
+            {
+                "install_id": "demo",
+                "name": "demo",
+                "source": "/tmp/demo",
+                "installed_path": "/tmp/demo",
+                "resolved_skill_source_path": "/tmp/demo/skills",
+                "install_mode": "manual",
+                "scope": "global",
+                "installed_at": "2026-04-15T00:00:00+00:00",
+            }
+        ]
+    )
+
+    assert manifest_path.is_symlink() is True
+    assert json.loads(manifest_target.read_text(encoding="utf-8"))[0]["install_id"] == "demo"
+    assert manifest_path.resolve() == manifest_target.resolve()
+
+
+def test_save_manifest_preserves_existing_permissions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.save_manifest([])
+    manifest_path.chmod(0o640)
+    original_mode = manifest_path.stat().st_mode & 0o777
+
+    manager.save_manifest(
+        [
+            {
+                "install_id": "demo",
+                "name": "demo",
+                "source": "/tmp/demo",
+                "installed_path": "/tmp/demo",
+                "resolved_skill_source_path": "/tmp/demo/skills",
+                "install_mode": "manual",
+                "scope": "global",
+                "installed_at": "2026-04-15T00:00:00+00:00",
+            }
+        ]
+    )
+
+    assert (manifest_path.stat().st_mode & 0o777) == original_mode
+
+
+def test_save_manifest_respects_umask_for_new_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    original_umask = os.umask(0o027)
+    try:
+        manager.save_manifest([])
+    finally:
+        os.umask(original_umask)
+
+    assert (manifest_path.stat().st_mode & 0o777) == 0o640
+
+
 def test_list_installs_reports_skill_counts(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -215,6 +375,53 @@ def test_update_git_install_pulls_existing_checkout(
     assert next(
         item for item in manager.list_installs() if item["install_id"] == "git-skill"
     )["skill_count"] == 2
+
+
+def test_update_install_rejects_symlink_backed_installed_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source_repo = tmp_path / "git-source"
+    source_repo.mkdir()
+    _run_git(source_repo, "init")
+    _run_git(source_repo, "config", "user.name", "Test User")
+    _run_git(source_repo, "config", "user.email", "test@example.com")
+    _write_skill(source_repo / "skills", "brainstorming")
+    _commit_all(source_repo, "initial commit")
+
+    linked_entry = installed_root / "git-symlink"
+    linked_entry.parent.mkdir(parents=True, exist_ok=True)
+    linked_entry.symlink_to(source_repo, target_is_directory=True)
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.save_manifest(
+        [
+            {
+                "install_id": "git-symlink",
+                "name": "git-symlink",
+                "source": str(source_repo),
+                "installed_path": str(linked_entry),
+                "resolved_skill_source_path": str(source_repo / "skills"),
+                "install_mode": "clone",
+                "scope": "global",
+                "installed_at": "2026-04-15T00:00:00+00:00",
+            }
+        ]
+    )
+
+    def _unexpected_git_pull(*args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        raise AssertionError("git pull should not run for symlink-backed installs")
+
+    monkeypatch.setattr(subprocess, "run", _unexpected_git_pull)
+
+    with pytest.raises(ValueError, match="symlink-backed installed entries cannot be updated"):
+        manager.update_install("git-symlink")
+
+    assert manager.load_manifest()[0]["installed_path"] == str(linked_entry)
 
 
 def test_remove_symlink_only_unlinks_managed_entry(

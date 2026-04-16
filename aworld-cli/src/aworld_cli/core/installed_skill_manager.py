@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import shutil
+import tempfile
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -188,10 +190,37 @@ class InstalledSkillManager:
         return sanitized_records
 
     def save_manifest(self, records: list[dict[str, str]]) -> None:
-        self.manifest_path.write_text(
-            json.dumps(records, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        serialized = json.dumps(records, indent=2, ensure_ascii=False)
+        target_manifest_path = self.manifest_path.resolve(strict=False)
+        target_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        target_mode: int | None = None
+        if target_manifest_path.exists():
+            target_mode = target_manifest_path.stat().st_mode & 0o777
+        else:
+            current_umask = os.umask(0)
+            os.umask(current_umask)
+            target_mode = 0o666 & ~current_umask
+        temp_manifest_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                dir=target_manifest_path.parent,
+                prefix=f"{target_manifest_path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as temp_file:
+                temp_file.write(serialized)
+                temp_manifest_path = Path(temp_file.name)
+            if target_mode is not None:
+                temp_manifest_path.chmod(target_mode)
+            temp_manifest_path.replace(target_manifest_path)
+        except Exception:
+            if temp_manifest_path and (
+                temp_manifest_path.is_file() or temp_manifest_path.is_symlink()
+            ):
+                temp_manifest_path.unlink()
+            raise
 
     def resolve_entry_source(self, entry_path: Path) -> Path:
         entry_path = entry_path.expanduser()
@@ -269,7 +298,11 @@ class InstalledSkillManager:
             scope=scope,
             installed_at=datetime.now(timezone.utc).isoformat(),
         )
-        return self._upsert_manifest_record(asdict(record))
+        try:
+            return self._upsert_manifest_record(asdict(record))
+        except Exception:
+            self._cleanup_installed_entry(target_path)
+            raise
 
     def list_installs(self) -> list[dict[str, str | int]]:
         records = self.load_manifest()
@@ -330,6 +363,10 @@ class InstalledSkillManager:
         if not self._is_managed_entry_path(installed_path):
             raise ValueError(
                 f"Installed path resolves outside the installed root: {installed_path}"
+            )
+        if installed_path.is_symlink():
+            raise ValueError(
+                "symlink-backed installed entries cannot be updated"
             )
         if not installed_path.exists():
             raise ValueError(f"Installed path does not exist: {installed_path}")
