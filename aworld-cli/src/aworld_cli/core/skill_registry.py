@@ -54,19 +54,25 @@ def get_user_skills_paths() -> List[Path]:
     return paths
 
 
-def collect_plugin_and_user_skills(plugin_base_dir: Path, user_dir: Optional[Union[str, Path]] = None) -> Dict[str, Any]:
+def collect_plugin_and_user_skills(
+    plugin_base_dir: Path,
+    user_dir: Optional[Union[str, Path]] = None,
+    agent_name: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Collect skills from plugin skills dir and user skills dirs, with dedup, skill_path fix, and aworld_metadata filter.
 
     Resolution order:
     1. Plugin skills dir: plugin_base_dir/skills (e.g. inner_plugins/smllc/skills)
     2. User skills dirs: user_dir (if set, semicolon-separated) + SKILLS_PATH / SKILLS_DIR (user path overrides plugin on conflict)
-    3. Each skill gets skill_path ensured for context_skill_tool
-    4. Only skills with aworld_metadata.eligible=True (or no aworld_metadata) are included
+    3. Installed skill entries: global for all agents, agent:<name> only for matching agent
+    4. Each skill gets skill_path ensured for context_skill_tool
+    5. Only skills with aworld_metadata.eligible=True (or no aworld_metadata) are included
 
     Args:
         plugin_base_dir: Plugin root path (e.g. Path(__file__).resolve().parents[1] for smllc).
         user_dir: Optional user skills dir(s); semicolon-separated for multiple paths. Loaded first (highest priority). Default None.
+        agent_name: Optional current agent name used to include matching installed agent-scoped skills.
 
     Returns:
         Dict mapping skill name to skill config (ready for AgentConfig.skill_configs).
@@ -102,6 +108,47 @@ def collect_plugin_and_user_skills(plugin_base_dir: Path, user_dir: Optional[Uni
                 logger.info(f"✅ Loaded {len(additional_skills)} skill(s) from {user_skills_path}")
         except Exception as e:
             logger.warning(f"⚠️ Failed to load skills from '{user_skills_path}': {e}")
+
+    installed_skill_manager = InstalledSkillManager()
+    for install in sorted(
+        installed_skill_manager.list_installs(),
+        key=lambda item: str(item.get("install_id", "")),
+    ):
+        scope = install.get("scope")
+        if scope == "global":
+            pass
+        elif (
+            isinstance(scope, str)
+            and scope.startswith("agent:")
+            and agent_name is not None
+            and scope == f"agent:{agent_name}"
+        ):
+            pass
+        else:
+            continue
+
+        source_path = install.get("resolved_skill_source_path")
+        install_id = install.get("install_id", "<unknown>")
+        if not isinstance(source_path, str) or not source_path:
+            logger.warning(f"⚠️ Installed skill entry '{install_id}' has no resolved source path, skipping")
+            continue
+
+        try:
+            logger.info(f"📚 Loading skills from installed source: {source_path}")
+            additional_skills = collect_skill_docs(source_path)
+            if additional_skills:
+                for skill_name, skill_data in additional_skills.items():
+                    if skill_name in custom_skills:
+                        logger.warning(
+                            f"⚠️ Duplicate skill name '{skill_name}' in installed source '{install_id}', skipping"
+                        )
+                    else:
+                        custom_skills[skill_name] = skill_data
+                logger.info(
+                    f"✅ Loaded {len(additional_skills)} skill(s) from installed source '{install_id}'"
+                )
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load skills from installed source '{install_id}': {e}")
 
     for skill_name, skill_config in custom_skills.items():
         if "skill_path" not in skill_config:

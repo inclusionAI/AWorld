@@ -6,7 +6,11 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
-from aworld_cli.core.skill_registry import get_skill_registry, reset_skill_registry
+from aworld_cli.core.skill_registry import (
+    collect_plugin_and_user_skills,
+    get_skill_registry,
+    reset_skill_registry,
+)
 
 
 def _write_skill(root: Path, skill_name: str, description: str) -> None:
@@ -75,3 +79,37 @@ def test_explicit_skill_path_overrides_installed_entry(
 
     assert shared_skill is not None
     assert shared_skill["description"] == "explicit version"
+
+
+def test_collect_plugin_and_user_skills_merges_global_and_matching_agent_installs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_PATH", raising=False)
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    monkeypatch.delenv("SKILLS_CACHE_DIR", raising=False)
+
+    plugin_root = tmp_path / "plugin"
+    _write_skill(plugin_root / "skills", "plugin-only", "plugin version")
+
+    manager = InstalledSkillManager()
+    global_entry = manager.installed_root / "global-pack"
+    matching_agent_entry = manager.installed_root / "developer-pack"
+    other_agent_entry = manager.installed_root / "evaluator-pack"
+    project_entry = manager.installed_root / "project-pack"
+    _write_skill(global_entry / "skills", "global-only", "global version")
+    _write_skill(matching_agent_entry / "skills", "developer-only", "developer version")
+    _write_skill(other_agent_entry / "skills", "evaluator-only", "evaluator version")
+    _write_skill(project_entry / "skills", "project-only", "project version")
+    manager.import_entry(global_entry, scope="global")
+    manager.import_entry(matching_agent_entry, scope="agent:developer")
+    manager.import_entry(other_agent_entry, scope="agent:evaluator")
+    manager.import_entry(project_entry, scope="project")
+
+    skills = collect_plugin_and_user_skills(plugin_root, agent_name="developer")
+
+    assert skills["plugin-only"]["description"] == "plugin version"
+    assert skills["global-only"]["description"] == "global version"
+    assert skills["developer-only"]["description"] == "developer version"
+    assert "evaluator-only" not in skills
+    assert "project-only" not in skills
