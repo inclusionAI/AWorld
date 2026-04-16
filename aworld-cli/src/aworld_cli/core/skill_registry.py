@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
+from aworld_cli.core.installed_skill_manager import InstalledSkillManager
 from aworld_cli.core.plugin_manager import get_plugin_skills_dir
 
 from aworld.logs.util import logger
@@ -29,8 +30,7 @@ def get_user_skills_paths() -> List[Path]:
 
     Resolution order:
     1. SKILLS_PATH env (semicolon-separated list of paths)
-    2. If unset, default to ~/.aworld/skills
-    3. SKILLS_DIR env (legacy, single directory) is appended if set
+    2. SKILLS_DIR env (legacy, single directory) is appended if set
 
     Returns:
         List of resolved Paths; directories may or may not exist.
@@ -48,8 +48,6 @@ def get_user_skills_paths() -> List[Path]:
             for s in skills_path_env.split(";")
             if s.strip()
         ]
-    else:
-        paths = [Path.home() / ".aworld" / "skills"]
     skills_dir_env = os.getenv(ENV_SKILLS_DIR)
     if skills_dir_env:
         paths.append(Path(os.path.expanduser(skills_dir_env)).resolve())
@@ -62,7 +60,7 @@ def collect_plugin_and_user_skills(plugin_base_dir: Path, user_dir: Optional[Uni
 
     Resolution order:
     1. Plugin skills dir: plugin_base_dir/skills (e.g. inner_plugins/smllc/skills)
-    2. User skills dirs: user_dir (if set, semicolon-separated) + SKILLS_PATH / SKILLS_DIR / ~/.aworld/skills (user path overrides plugin on conflict)
+    2. User skills dirs: user_dir (if set, semicolon-separated) + SKILLS_PATH / SKILLS_DIR (user path overrides plugin on conflict)
     3. Each skill gets skill_path ensured for context_skill_tool
     4. Only skills with aworld_metadata.eligible=True (or no aworld_metadata) are included
 
@@ -153,9 +151,10 @@ def get_skill_registry(
     Get or initialize the global SkillRegistry instance.
     
     On first call, automatically registers skill sources from:
-    1. Environment variables (SKILLS_PATH, SKILLS_DIR)
-    2. Default skills directory (./skills) if exists
-    3. Provided parameters (skill_paths, skills_dir)
+    1. Provided parameters (skill_paths)
+    2. Environment variables (SKILLS_PATH, SKILLS_DIR)
+    3. Default skills directory (./skills) if exists
+    4. Installed global skill entries
     
     Subsequent calls return the same instance.
     
@@ -194,9 +193,6 @@ def get_skill_registry(
         _global_registry = SkillRegistry(cache_dir=cache_dir)
         
         if auto_init:
-            # Register skills from environment variables
-            _register_from_env(_global_registry)
-
             # Register skills from provided skill_paths parameter
             if skill_paths:
                 for skill_path in skill_paths:
@@ -208,6 +204,9 @@ def get_skill_registry(
                     except Exception as e:
                         logger.error(f"⚠️ Failed to register skill source '{skill_path}': {e}")
                         logger.warning(f"⚠️ Failed to register skill source '{skill_path}': {e}")
+
+            # Register skills from environment variables
+            _register_from_env(_global_registry)
             
             # Register default skills directory if provided or exists
             if skills_dir is None:
@@ -232,6 +231,8 @@ def get_skill_registry(
                     logger.debug(f"ℹ️ Default skills directory already registered or failed: {default_skills_dir}: {e}")
             else:
                 logger.debug(f"ℹ️ Default skills directory not found: {default_skills_dir}, skipping auto-registration")
+
+            _register_installed_sources(_global_registry)
     
     return _global_registry
 
@@ -256,19 +257,6 @@ def _register_from_env(registry: SkillRegistry) -> None:
             except Exception as e:
                 print(f"⚠️ Failed to register skill source from env '{source}': {e}")
                 logger.warning(f"⚠️ Failed to register skill source from env '{source}': {e}")
-    else:
-        # Default to ~/.aworld/skills if ENV_SKILLS_PATH is not set
-        default_skills_path = Path.home() / ".aworld" / "skills"
-        try:
-            # Create directory if it doesn't exist
-            default_skills_path.mkdir(parents=True, exist_ok=True)
-            # Register the default directory
-            count = registry.register_source(str(default_skills_path), source_name=str(default_skills_path))
-            if count > 0:
-                print(f"📚 Registered default skill source: {default_skills_path} ({count} skills)")
-            logger.info(f"📚 Registered default skill source: {default_skills_path} ({count} skills)")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to register default skill source '{default_skills_path}': {e}")
     
     # Register from SKILLS_DIR (legacy, single directory for backward compatibility)
     skills_dir_env = os.getenv(ENV_SKILLS_DIR)
@@ -286,6 +274,25 @@ def _register_from_env(registry: SkillRegistry) -> None:
         except Exception as e:
             print(f"⚠️ Failed to register skill source from {ENV_SKILLS_DIR}: {e}")
             logger.warning(f"⚠️ Failed to register skill source from {ENV_SKILLS_DIR}: {e}")
+
+
+def _register_installed_sources(registry: SkillRegistry) -> None:
+    """Register installed global skill sources after higher-priority sources."""
+    manager = InstalledSkillManager()
+
+    for install in sorted(
+        manager.list_installs(), key=lambda item: str(item["install_id"])
+    ):
+        if install.get("scope") != "global":
+            continue
+
+        source = install["resolved_skill_source_path"]
+        try:
+            count = registry.register_source(source, source_name=source)
+            if count > 0:
+                logger.info(f"📚 Registered installed global skill source: {source} ({count} skills)")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to register installed global skill source '{source}': {e}")
 
 
 def reset_skill_registry() -> None:
@@ -318,4 +325,3 @@ def register_skill_source(source: str, source_name: Optional[str] = None) -> int
     """
     registry = get_skill_registry()
     return registry.register_source(source, source_name=source_name)
-
