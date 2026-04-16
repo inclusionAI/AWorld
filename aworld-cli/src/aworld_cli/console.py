@@ -442,6 +442,34 @@ class AWorldCLI:
             event_loop=event_loop,
         )
 
+    def _create_prompt_session(self, completer: Completer) -> PromptSession:
+        history_path = Path.home() / ".aworld" / "cli_history"
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        session = PromptSession(
+            completer=completer,
+            complete_while_typing=True,
+            history=FileHistory(str(history_path)),
+        )
+        self._active_prompt_session = session
+        return session
+
+    def _ensure_prompt_session(self, session: PromptSession | None, completer: Completer) -> PromptSession:
+        if session is not None and session is self._active_prompt_session:
+            return session
+        return self._create_prompt_session(completer)
+
+    def _handle_runtime_plugin_capability_refresh(self, previous_capabilities: tuple[str, ...], runtime) -> None:
+        had_hud = "hud" in tuple(previous_capabilities or ())
+        has_hud = False
+        if runtime is not None and hasattr(runtime, "active_plugin_capabilities"):
+            try:
+                has_hud = "hud" in tuple(runtime.active_plugin_capabilities())
+            except Exception:
+                has_hud = had_hud
+
+        if had_hud != has_hud:
+            self._active_prompt_session = None
+
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
         result = Text()
@@ -1914,6 +1942,7 @@ class AWorldCLI:
         # Setup completer and session only if in terminal
         agent_names = [a.name for a in available_agents] if available_agents else []
         session = None
+        completer = None
 
         if is_terminal:
             completer = self._build_session_completer(
@@ -1921,16 +1950,7 @@ class AWorldCLI:
                 runtime=runtime,
                 event_loop=asyncio.get_running_loop(),
             )
-            # 历史记录文件：上/下方向键可浏览并加载已执行过的指令
-            from pathlib import Path
-            history_path = Path.home() / ".aworld" / "cli_history"
-            history_path.parent.mkdir(parents=True, exist_ok=True)
-            session = PromptSession(
-                completer=completer,
-                complete_while_typing=True,  # 输入时即显示补全列表（带描述）
-                history=FileHistory(str(history_path)),
-            )
-            self._active_prompt_session = session
+            session = self._create_prompt_session(completer)
             await self._ensure_notification_poller(runtime)
         else:
             self._active_prompt_session = None
@@ -1938,7 +1958,9 @@ class AWorldCLI:
         while True:
             try:
                 # Use prompt_toolkit in terminal, plain input() in non-terminal (e.g., IDE debugger)
-                if is_terminal and session:
+                if is_terminal and completer:
+                    session = self._ensure_prompt_session(session, completer)
+                    await self._ensure_notification_poller(runtime)
                     # Use prompt_toolkit for input with completion
                     # We use HTML for basic coloring of the prompt
                     prompt_text = "<b><cyan>You</cyan></b>: "
