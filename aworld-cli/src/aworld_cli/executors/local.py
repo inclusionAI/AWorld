@@ -337,15 +337,37 @@ class LocalAgentExecutor(BaseAgentExecutor):
         return bool(str(content).strip())
 
     @staticmethod
+    def _should_defer_fixed_hud_message_render(
+        use_fixed_hud_layout: bool,
+        saw_tool_result_output: bool,
+        response_text: Any,
+    ) -> bool:
+        if not use_fixed_hud_layout or not saw_tool_result_output:
+            return False
+        return bool(str(response_text or "").strip())
+
+    @staticmethod
     def _resolve_streamed_response_match(streamed_content: Any, response_text: Any) -> tuple[str, str]:
+        def _normalize_visible_text(value: str) -> str:
+            text = value.replace("\r\n", "\n").replace("\r", "\n")
+            text = "\n".join(line.rstrip() for line in text.split("\n"))
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            return text.strip()
+
         final_text = "" if response_text is None else str(response_text)
         streamed_text = "" if streamed_content is None else str(streamed_content)
+        normalized_final = _normalize_visible_text(final_text)
+        normalized_streamed = _normalize_visible_text(streamed_text)
 
-        if not final_text.strip():
+        if not normalized_final:
             return "skip", ""
-        if not streamed_text.strip():
+        if not normalized_streamed:
             return "render", final_text
-        if final_text == streamed_text or final_text.strip() == streamed_text.strip():
+        if (
+            final_text == streamed_text
+            or final_text.strip() == streamed_text.strip()
+            or normalized_final == normalized_streamed
+        ):
             return "skip", ""
         if final_text.startswith(streamed_text):
             return "append", final_text[len(streamed_text):]
@@ -688,12 +710,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 stream_token_stats = None  # Set by consume_stream, used for history
                 response_rendered_to_console = False
                 current_round_streamed_content = ""
+                deferred_fixed_hud_message_output = None
+                deferred_fixed_hud_agent_name = None
                 
                 saved_any_round = False
 
                 async def consume_stream():
                     """Consume stream events and collect outputs with beautiful formatting."""
-                    nonlocal answer, last_message_output, stream_token_stats, saved_any_round, response_rendered_to_console, current_round_streamed_content
+                    nonlocal answer, last_message_output, stream_token_stats, saved_any_round, response_rendered_to_console, current_round_streamed_content, deferred_fixed_hud_message_output, deferred_fixed_hud_agent_name
                     stream_token_stats = StreamTokenStats()
                     logger.info(f"📊 Starting consume_stream - stream_token_stats initialized")
                     ctrl: StreamDisplayController | None = None
@@ -728,6 +752,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         last_agent_name = None
                         received_chunk_output = False
                         received_visible_chunk_output = False
+                        saw_tool_result_output = False
 
                         try:
                             # Ensure console is set before processing stream events
@@ -980,6 +1005,18 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         elif streamed_match_mode == "render" and streamed_match_text != response_text:
                                             render_output = output.model_copy(update={"response": streamed_match_text})
 
+                                        if self._should_defer_fixed_hud_message_render(
+                                            use_fixed_hud_layout=ctrl.use_fixed_hud_layout,
+                                            saw_tool_result_output=saw_tool_result_output,
+                                            response_text=getattr(render_output, "response", ""),
+                                        ):
+                                            deferred_fixed_hud_message_output = render_output
+                                            deferred_fixed_hud_agent_name = current_agent_name
+                                            received_visible_chunk_output = False
+                                            current_round_streamed_content = ""
+                                            last_agent_name = current_agent_name
+                                            continue
+
                                         def _render_message_output():
                                             return self._render_simple_message_output(
                                                 render_output,
@@ -1043,6 +1080,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 
                                 # Handle ToolResultOutput - add to buffer for gradual display
                                 elif isinstance(output, ToolResultOutput):
+                                    saw_tool_result_output = True
                                     tr_lines = self._format_tool_result_display_lines(output)
                                     if tr_lines:
                                         ctrl.buffer.accumulated_tool_result_lines.extend(tr_lines)
@@ -1238,6 +1276,19 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         self.console.print("\n[yellow]⏹ Interrupted.[/yellow]")
                     self._publish_hud_task_finished(task.id, task_status="idle")
                     return answer or ""
+
+                if deferred_fixed_hud_message_output is not None and self.console:
+                    rendered_answer, _ = self._render_simple_message_output(
+                        deferred_fixed_hud_message_output,
+                        answer,
+                        agent_name=deferred_fixed_hud_agent_name,
+                        content_already_streamed=False,
+                        show_tool_calls=self._should_emit_interactive_stats(),
+                    )
+                    answer = rendered_answer
+                    response_rendered_to_console = True
+                    deferred_fixed_hud_message_output = None
+                    deferred_fixed_hud_agent_name = None
 
                 def _coerce_final_answer(value: Any) -> str:
                     if value is None:

@@ -491,6 +491,28 @@ def test_visible_response_content_helper_detects_actual_text():
     assert executor._has_visible_response_content("\n已为你创建提醒。") is True
 
 
+def test_fixed_hud_defers_post_tool_messages_until_hud_closes():
+    executor = object.__new__(LocalAgentExecutor)
+
+    assert executor._should_defer_fixed_hud_message_render(
+        use_fixed_hud_layout=True,
+        saw_tool_result_output=True,
+        response_text="✅ 已成功创建站立提醒！",
+    ) is True
+
+    assert executor._should_defer_fixed_hud_message_render(
+        use_fixed_hud_layout=True,
+        saw_tool_result_output=False,
+        response_text="✅ 已成功创建站立提醒！",
+    ) is False
+
+    assert executor._should_defer_fixed_hud_message_render(
+        use_fixed_hud_layout=False,
+        saw_tool_result_output=True,
+        response_text="✅ 已成功创建站立提醒！",
+    ) is False
+
+
 def test_resolve_streamed_response_match_skips_when_stream_fully_matches():
     executor = object.__new__(LocalAgentExecutor)
 
@@ -525,6 +547,18 @@ def test_resolve_streamed_response_match_renders_full_when_stream_diverges():
 
     assert mode == "render"
     assert text == "我是 AWorld，第二版"
+
+
+def test_resolve_streamed_response_match_skips_when_only_blank_line_formatting_differs():
+    executor = object.__new__(LocalAgentExecutor)
+
+    mode, text = executor._resolve_streamed_response_match(
+        streamed_content="第一段\n\n第二段\n- 项目A\n- 项目B\n",
+        response_text="第一段\n\n\n第二段\n- 项目A\n- 项目B",
+    )
+
+    assert mode == "skip"
+    assert text == ""
 
 
 def test_stream_renderable_keeps_hud_fixed_to_bottom_lines_when_content_is_long():
