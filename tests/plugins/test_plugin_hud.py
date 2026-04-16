@@ -326,34 +326,3 @@ def test_status_bar_renders_multiline_html(monkeypatch):
 
     assert "\n" in rendered
     assert "Task: task_001" in rendered
-
-
-def test_prompt_kwargs_use_bottom_toolbar_when_status_bar_enabled():
-    class FakeRuntime:
-        def build_hud_context(self, agent_name, mode, workspace_name, git_branch):
-            return {
-                "workspace": {"name": workspace_name},
-                "session": {"agent": agent_name, "mode": mode},
-                "notifications": {"cron_unread": 0},
-                "vcs": {"branch": git_branch},
-            }
-
-        def get_hud_lines(self, context):
-            return [SimpleNamespace(segments=("Agent: Aworld / Chat", "Workspace: aworld"))]
-
-    cli = AWorldCLI()
-    kwargs = cli._build_prompt_kwargs(FakeRuntime(), agent_name="Aworld", mode="Chat")
-
-    assert "bottom_toolbar" in kwargs
-    assert callable(kwargs["bottom_toolbar"])
-    assert kwargs["refresh_interval"] == 0.1
-
-
-def test_prompt_kwargs_are_empty_when_status_bar_is_disabled():
-    class FakeRuntime:
-        def active_plugin_capabilities(self):
-            return ()
-
-    cli = AWorldCLI()
-
-    assert cli._build_prompt_kwargs(FakeRuntime(), agent_name="Aworld", mode="Chat") == {}

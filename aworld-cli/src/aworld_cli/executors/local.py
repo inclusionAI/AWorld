@@ -3,7 +3,6 @@ Local agent executor.
 """
 import asyncio
 import os
-import sys
 import time
 import re
 import shutil
@@ -32,7 +31,6 @@ from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
 from .stats import StreamTokenStats, format_elapsed
 from .stream import StreamDisplayConfig, StreamDisplayController, _print_tool_result_lines
-from ..status_text import build_status_bar_lines_from_context
 
 # Try to import WorkSpace for local workspace creation
 try:
@@ -229,163 +227,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
             runtime.settle_hud_snapshot(task_status=task_status)
         except Exception as exc:
             logger.warning(f"HUD settle task finish failed: {exc}")
-
-    def _should_emit_interactive_stats(self) -> bool:
-        runtime = getattr(self, "_base_runtime", None)
-        if runtime is None or not hasattr(runtime, "active_plugin_capabilities"):
-            return True
-        try:
-            return "hud" not in tuple(runtime.active_plugin_capabilities())
-        except Exception:
-            return True
-
-    def _print_interactive_stats_fallback(
-        self, stream_token_stats: StreamTokenStats, elapsed_seconds: Optional[float]
-    ) -> None:
-        if elapsed_seconds is None or not self.console:
-            return
-        if not stream_token_stats.get_current_stats():
-            return
-        if not self._should_emit_interactive_stats():
-            return
-
-        elapsed_str = format_elapsed(elapsed_seconds)
-        msg = stream_token_stats.format_streaming_line(elapsed_str)
-        if msg:
-            self.console.print(Text.from_markup(msg))
-            self.console.print()  # Add spacing
-
-    def _build_execution_hud_lines(self, elapsed_seconds: Optional[float] = None) -> list[str]:
-        runtime = getattr(self, "_base_runtime", None)
-        if runtime is None:
-            return []
-        try:
-            workspace_name = Path.cwd().name
-            git_branch = self._detect_git_branch_for_hud()
-            max_width = shutil.get_terminal_size(fallback=(160, 24)).columns or 160
-            hud_context = runtime.build_hud_context(
-                agent_name="Aworld",
-                mode="Chat",
-                workspace_name=workspace_name,
-                git_branch=git_branch,
-            )
-            if elapsed_seconds is not None:
-                hud_context.setdefault("session", {})
-                hud_context["session"]["elapsed_seconds"] = elapsed_seconds
-            return build_status_bar_lines_from_context(
-                runtime,
-                hud_context,
-                agent_name="Aworld",
-                mode="Chat",
-                workspace_name=workspace_name,
-                git_branch=git_branch,
-                max_width=max_width,
-            )
-        except Exception:
-            return []
-
-    def _should_use_fixed_execution_hud_layout(self) -> bool:
-        if self._should_emit_interactive_stats():
-            return False
-        try:
-            return bool(hasattr(sys.stdout, "isatty") and sys.stdout.isatty())
-        except Exception:
-            return False
-
-    def _detect_git_branch_for_hud(self) -> str:
-        try:
-            result = shutil.which("git")
-            if not result:
-                return "n/a"
-            import subprocess
-
-            completed = subprocess.run(
-                ["git", "branch", "--show-current"],
-                cwd=Path.cwd(),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=0.5,
-            )
-            if completed.returncode != 0:
-                return "n/a"
-            branch = (completed.stdout or "").strip()
-            return branch or "detached"
-        except Exception:
-            return "n/a"
-
-    def _should_render_final_task_answer(
-        self,
-        final_answer: str,
-        last_message_output: Any,
-        response_rendered_to_console: bool,
-    ) -> bool:
-        if not self.console or not str(final_answer or "").strip():
-            return False
-        if response_rendered_to_console:
-            return False
-        if last_message_output is None:
-            return True
-
-        response_text = str(getattr(last_message_output, "response", "") or "").strip()
-        return not bool(response_text)
-
-    @staticmethod
-    def _has_visible_response_content(content: Any) -> bool:
-        if content is None:
-            return False
-        return bool(str(content).strip())
-
-    @staticmethod
-    def _get_fixed_hud_message_action(
-        use_fixed_hud_layout: bool,
-        received_visible_chunk_output: bool,
-        saw_tool_result_output: bool,
-        streamed_match_mode: str,
-        response_text: Any,
-    ) -> str:
-        if not use_fixed_hud_layout:
-            return "render"
-        if not str(response_text or "").strip():
-            return "skip"
-        if saw_tool_result_output:
-            return "render"
-        if received_visible_chunk_output and streamed_match_mode in {"skip", "append"}:
-            return "skip"
-        return "render"
-
-    @staticmethod
-    def _resolve_streamed_response_match(streamed_content: Any, response_text: Any) -> tuple[str, str]:
-        def _normalize_visible_text(value: str) -> str:
-            text = value.replace("\r\n", "\n").replace("\r", "\n")
-            text = "\n".join(line.rstrip() for line in text.split("\n"))
-            text = re.sub(r"\n{3,}", "\n\n", text)
-            return text.strip()
-
-        final_text = "" if response_text is None else str(response_text)
-        streamed_text = "" if streamed_content is None else str(streamed_content)
-        normalized_final = _normalize_visible_text(final_text)
-        normalized_streamed = _normalize_visible_text(streamed_text)
-
-        if not normalized_final:
-            return "skip", ""
-        if not normalized_streamed:
-            return "render", final_text
-        if (
-            final_text == streamed_text
-            or final_text.strip() == streamed_text.strip()
-            or normalized_final == normalized_streamed
-        ):
-            return "skip", ""
-        if final_text.startswith(streamed_text):
-            return "append", final_text[len(streamed_text):]
-
-        stripped_final = final_text.strip()
-        stripped_streamed = streamed_text.strip()
-        if stripped_streamed and stripped_final.startswith(stripped_streamed):
-            return "append", stripped_final[len(stripped_streamed):]
-
-        return "render", final_text
 
     async def cleanup_resources(self) -> None:
         """
@@ -716,33 +557,20 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 answer = ""
                 last_message_output = None
                 stream_token_stats = None  # Set by consume_stream, used for history
-                response_rendered_to_console = False
-                current_round_streamed_content = ""
                 
                 saved_any_round = False
 
                 async def consume_stream():
                     """Consume stream events and collect outputs with beautiful formatting."""
-                    nonlocal answer, last_message_output, stream_token_stats, saved_any_round, response_rendered_to_console, current_round_streamed_content
+                    nonlocal answer, last_message_output, stream_token_stats, saved_any_round
                     stream_token_stats = StreamTokenStats()
                     logger.info(f"📊 Starting consume_stream - stream_token_stats initialized")
-                    ctrl: StreamDisplayController | None = None
-
-                    def _execution_hud_lines() -> list[str]:
-                        if ctrl is None or ctrl.status_start_time is None:
-                            return self._build_execution_hud_lines()
-                        elapsed_seconds = (datetime.now() - ctrl.status_start_time).total_seconds()
-                        return self._build_execution_hud_lines(elapsed_seconds=elapsed_seconds)
-
                     ctrl = StreamDisplayController(
                         console=self.console,
                         stream_token_stats=stream_token_stats,
                         format_tool_calls_fn=self._format_tool_calls_display_lines,
                         format_elapsed_fn=format_elapsed,
                         config=StreamDisplayConfig(render_interval=0.02, chars_per_render=1),
-                        should_emit_interactive_stats_fn=self._should_emit_interactive_stats,
-                        hud_lines_fn=_execution_hud_lines,
-                        use_fixed_hud_layout=self._should_use_fixed_execution_hud_layout(),
                     )
 
                     try:
@@ -757,8 +585,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         current_agent_name = None
                         last_agent_name = None
                         received_chunk_output = False
-                        received_visible_chunk_output = False
-                        saw_tool_result_output = False
 
                         try:
                             # Ensure console is set before processing stream events
@@ -773,11 +599,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 # Handle MessageOutput
                                 if isinstance(output, MessageOutput):
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
-                                    response_text = str(output.response) if hasattr(output, "response") and output.response else ""
-                                    streamed_match_mode, streamed_match_text = self._resolve_streamed_response_match(
-                                        current_round_streamed_content,
-                                        response_text,
-                                    )
                                     tool_calls = output.tool_calls if hasattr(output, "tool_calls") and output.tool_calls else []
                                     current_tool_name = None
                                     if tool_calls:
@@ -810,10 +631,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             logger.info(f"💾 Saved round to history - model: {model_name}")
                                         except Exception as save_err:
                                             logger.warning(f"💾 Failed to save round to history: {save_err}")
-                                    stream_on = (
-                                        os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
-                                        and not ctrl.use_fixed_hud_layout
-                                    )
+                                    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
                                     tool_result_pending = ctrl.buffer.has_tool_result_pending()
                                     has_pending_display = ctrl.has_pending_display(stream_on, received_chunk_output, tool_result_pending)
                                     if has_pending_display:
@@ -995,59 +813,19 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         logger.info(f"Output: {output}")
                                         logger.info(f"Answer: {answer}")
                                         logger.info(f"Is handoff: {is_handoff}")
-                                        content_already_streamed = streamed_match_mode == "skip"
-                                        render_output = output
-
-                                        if ctrl.use_fixed_hud_layout and received_visible_chunk_output:
-                                            if streamed_match_mode == "append" and streamed_match_text:
-                                                ctrl.stream_fixed_chunk_content(current_agent_name, streamed_match_text)
-                                                current_round_streamed_content += streamed_match_text
-                                                response_rendered_to_console = True
-                                                content_already_streamed = True
-                                            ctrl.finish_fixed_stream_content()
-
-                                        if streamed_match_mode == "append" and not ctrl.use_fixed_hud_layout:
-                                            content_already_streamed = False
-                                        elif streamed_match_mode == "render" and streamed_match_text != response_text:
-                                            render_output = output.model_copy(update={"response": streamed_match_text})
-
-                                        fixed_hud_message_action = self._get_fixed_hud_message_action(
-                                            use_fixed_hud_layout=ctrl.use_fixed_hud_layout,
-                                            received_visible_chunk_output=received_visible_chunk_output,
-                                            saw_tool_result_output=saw_tool_result_output,
-                                            streamed_match_mode=streamed_match_mode,
-                                            response_text=getattr(render_output, "response", ""),
-                                        )
-
-                                        if fixed_hud_message_action == "skip":
-                                            if ctrl.use_fixed_hud_layout and received_visible_chunk_output:
-                                                ctrl.finish_fixed_stream_content()
-                                            response_rendered_to_console = True
-                                            received_visible_chunk_output = False
-                                            current_round_streamed_content = ""
-                                            last_agent_name = current_agent_name
-                                            continue
-
-                                        def _render_message_output():
-                                            return self._render_simple_message_output(
-                                                render_output,
-                                                answer,
-                                                agent_name=current_agent_name,
-                                                is_handoff=is_handoff,
-                                                content_already_streamed=content_already_streamed,
-                                                show_tool_calls=self._should_emit_interactive_stats(),
-                                            )
-
-                                        answer, _ = ctrl.print_with_hud_suspended(_render_message_output)
-                                        if self._has_visible_response_content(response_text) and streamed_match_mode != "skip":
-                                            response_rendered_to_console = True
-                                        received_visible_chunk_output = False
-                                        current_round_streamed_content = ""
+                                        answer, _ = self._render_simple_message_output(output, answer, agent_name=current_agent_name, is_handoff=is_handoff, content_already_streamed=received_chunk_output)
                                         
                                         # 🔧 FIX: Display token stats after rendering message output (STREAM=0 mode)
                                         # This ensures the stats line is shown even when not streaming
-                                        elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
-                                        self._print_interactive_stats_fallback(stream_token_stats, elapsed_sec)
+                                        if stream_token_stats and stream_token_stats.get_current_stats():
+                                            elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
+                                            if elapsed_sec is not None:
+                                                elapsed_str = format_elapsed(elapsed_sec)
+                                                msg = stream_token_stats.format_streaming_line(elapsed_str)
+                                                if msg and self.console:
+                                                    from rich.text import Text
+                                                    self.console.print(Text.from_markup(msg))
+                                                    self.console.print()  # Add spacing
                                     else:
                                         response_text = str(output.response) if hasattr(output, 'response') and output.response else ""
                                         if response_text.strip():
@@ -1091,14 +869,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 
                                 # Handle ToolResultOutput - add to buffer for gradual display
                                 elif isinstance(output, ToolResultOutput):
-                                    saw_tool_result_output = True
                                     tr_lines = self._format_tool_result_display_lines(output)
                                     if tr_lines:
                                         ctrl.buffer.accumulated_tool_result_lines.extend(tr_lines)
-                                    stream_on = (
-                                        os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
-                                        and not ctrl.use_fixed_hud_layout
-                                    )
+                                    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
                                     has_pending_display = ctrl.has_any_pending(stream_on)
                                     if has_pending_display:
                                         ctrl.set_pending_clear()
@@ -1110,12 +884,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     if not has_pending_display:
                                         ctrl.stop_loading()
                                         if ctrl.buffer.has_tool_results() and self.console:
-                                            ctrl.print_with_hud_suspended(
-                                                lambda: _print_tool_result_lines(
-                                                    self.console,
-                                                    ctrl.buffer.accumulated_tool_result_lines,
-                                                )
-                                            )
+                                            _print_tool_result_lines(self.console, ctrl.buffer.accumulated_tool_result_lines)
                                             # STREAM=0: clear tool results after printing to avoid multi-round accumulation
                                             ctrl.buffer.accumulated_tool_result_lines.clear()
                                             ctrl.buffer.displayed_tool_result_lines = 0
@@ -1129,28 +898,15 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 elif isinstance(output, ChunkOutput):
                                     received_chunk_output = True
                                     ctrl.streaming_mode = True
-                                    stream_on = (
-                                        os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
-                                        and not ctrl.use_fixed_hud_layout
-                                    )
-                                    capture_stream_output = stream_on or ctrl.use_fixed_hud_layout
-                                    meta = getattr(output, "metadata", None) or {}
-                                    chunk_agent_name = meta.get("agent_name")
-                                    if not chunk_agent_name and hasattr(self.swarm, "cur_agent") and self.swarm.cur_agent:
-                                        chunk_agent_name = getattr(self.swarm.cur_agent, "name", None)
+                                    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
                                     chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
-                                    if capture_stream_output and chunk:
+                                    if stream_on and chunk:
                                         if content := getattr(chunk, "content", None):
                                             ctrl.buffer.accumulated_content += content
-                                            if self._has_visible_response_content(content):
-                                                current_round_streamed_content += content
-                                                response_rendered_to_console = True
-                                                received_visible_chunk_output = True
-                                            if ctrl.use_fixed_hud_layout:
-                                                ctrl.stream_fixed_chunk_content(chunk_agent_name or "Assistant", content)
                                         if tool_calls := getattr(chunk, "tool_calls", None):
                                             ctrl.buffer.accumulated_tool_calls = list(tool_calls)
+                                    meta = getattr(output, "metadata", None) or {}
                                     out_tok = meta.get("output_tokens")
                                     inp_tok = meta.get("input_tokens")
                                     tc_count = meta.get("tool_calls_count")
@@ -1253,11 +1009,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                 border_style="dim",
                                                 padding=(1, 2)
                                             )
-                                            ctrl.print_with_hud_suspended(lambda: self.console.print(generic_panel))
-                                            ctrl.print_with_hud_suspended(lambda: self.console.print())
+                                            self.console.print(generic_panel)
+                                            self.console.print()
                         finally:
                             await ctrl.wait_for_display_done()
-                            ctrl.close()
+                            ctrl.stop_loading()
                             # 🔧 FIX: Log final token stats before exiting consume_stream
                             logger.info(f"📊 Finishing consume_stream - final token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
                     
@@ -1275,8 +1031,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 border_style="red",
                                 padding=(1, 2)
                             )
-                            ctrl.print_with_hud_suspended(lambda: self.console.print(error_panel))
-                            ctrl.print_with_hud_suspended(lambda: self.console.print())
+                            self.console.print(error_panel)
+                            self.console.print()
                         raise
                 
                 # Consume all stream events (Ctrl+C raises CancelledError/KeyboardInterrupt → abort and return)
@@ -1316,11 +1072,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         final_answer = f"{hook_system_message}\n{final_answer}".strip()
                     if final_answer:
                         answer = final_answer
-                        if self._should_render_final_task_answer(
-                            final_answer=final_answer,
-                            last_message_output=last_message_output,
-                            response_rendered_to_console=response_rendered_to_console,
-                        ):
+                        if not last_message_output and self.console:
                             root_agent = getattr(self.swarm, "communicate_agent", None)
                             if isinstance(root_agent, list):
                                 root_agent = root_agent[0] if root_agent else None
@@ -1329,13 +1081,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 agent_name = getattr(root_agent, "name", None)
                                 if callable(agent_name):
                                     agent_name = agent_name()
-                            if not agent_name:
-                                agent_id = getattr(root_agent, "id", None) if root_agent else None
-                                agent_name = agent_id() if callable(agent_id) else agent_id
+                                if not agent_name:
+                                    agent_id = getattr(root_agent, "id", None)
+                                    agent_name = agent_id() if callable(agent_id) else agent_id
                             self.console.print(f"🤖 [bold]{agent_name or 'Assistant'}[/bold]")
                             self.console.print(answer)
                             self.console.print()
-                            response_rendered_to_console = True
                 
                 # 🔥 Hook: POST_RUN_TASK
                 hook_kwargs = {
@@ -1474,6 +1225,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     
                 except Exception as e:
                     logger.error(f"💾 Failed to save to history: {e}")
+                    import traceback
                     logger.error(f"💾 Traceback: {traceback.format_exc()}")
                     # Don't fail the whole request if history save fails
 
