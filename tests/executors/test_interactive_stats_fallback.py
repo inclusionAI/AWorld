@@ -491,25 +491,53 @@ def test_visible_response_content_helper_detects_actual_text():
     assert executor._has_visible_response_content("\n已为你创建提醒。") is True
 
 
-def test_fixed_hud_defers_post_tool_messages_until_hud_closes():
+def test_fixed_hud_skips_post_tool_followup_message_render():
     executor = object.__new__(LocalAgentExecutor)
 
-    assert executor._should_defer_fixed_hud_message_render(
+    assert executor._should_skip_fixed_hud_secondary_message_render(
         use_fixed_hud_layout=True,
+        received_visible_chunk_output=False,
         saw_tool_result_output=True,
         response_text="✅ 已成功创建站立提醒！",
     ) is True
 
-    assert executor._should_defer_fixed_hud_message_render(
+    assert executor._should_skip_fixed_hud_secondary_message_render(
         use_fixed_hud_layout=True,
+        received_visible_chunk_output=False,
         saw_tool_result_output=False,
         response_text="✅ 已成功创建站立提醒！",
     ) is False
 
-    assert executor._should_defer_fixed_hud_message_render(
+    assert executor._should_skip_fixed_hud_secondary_message_render(
         use_fixed_hud_layout=False,
+        received_visible_chunk_output=False,
         saw_tool_result_output=True,
         response_text="✅ 已成功创建站立提醒！",
+    ) is False
+
+
+def test_fixed_hud_skips_secondary_message_render_after_visible_chunk_stream():
+    executor = object.__new__(LocalAgentExecutor)
+
+    assert executor._should_skip_fixed_hud_secondary_message_render(
+        use_fixed_hud_layout=True,
+        received_visible_chunk_output=True,
+        saw_tool_result_output=False,
+        response_text="我是 **AWorld**。",
+    ) is True
+
+    assert executor._should_skip_fixed_hud_secondary_message_render(
+        use_fixed_hud_layout=True,
+        received_visible_chunk_output=False,
+        saw_tool_result_output=False,
+        response_text="我是 **AWorld**。",
+    ) is False
+
+    assert executor._should_skip_fixed_hud_secondary_message_render(
+        use_fixed_hud_layout=False,
+        received_visible_chunk_output=True,
+        saw_tool_result_output=False,
+        response_text="我是 **AWorld**。",
     ) is False
 
 
