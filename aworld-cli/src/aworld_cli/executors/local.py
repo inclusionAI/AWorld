@@ -337,17 +337,22 @@ class LocalAgentExecutor(BaseAgentExecutor):
         return bool(str(content).strip())
 
     @staticmethod
-    def _should_skip_fixed_hud_secondary_message_render(
+    def _get_fixed_hud_message_action(
         use_fixed_hud_layout: bool,
         received_visible_chunk_output: bool,
         saw_tool_result_output: bool,
+        streamed_match_mode: str,
         response_text: Any,
-    ) -> bool:
+    ) -> str:
         if not use_fixed_hud_layout:
-            return False
+            return "render"
         if not str(response_text or "").strip():
-            return False
-        return received_visible_chunk_output or saw_tool_result_output
+            return "skip"
+        if saw_tool_result_output:
+            return "render"
+        if received_visible_chunk_output and streamed_match_mode in {"skip", "append"}:
+            return "skip"
+        return "render"
 
     @staticmethod
     def _resolve_streamed_response_match(streamed_content: Any, response_text: Any) -> tuple[str, str]:
@@ -1006,12 +1011,15 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         elif streamed_match_mode == "render" and streamed_match_text != response_text:
                                             render_output = output.model_copy(update={"response": streamed_match_text})
 
-                                        if self._should_skip_fixed_hud_secondary_message_render(
+                                        fixed_hud_message_action = self._get_fixed_hud_message_action(
                                             use_fixed_hud_layout=ctrl.use_fixed_hud_layout,
                                             received_visible_chunk_output=received_visible_chunk_output,
                                             saw_tool_result_output=saw_tool_result_output,
+                                            streamed_match_mode=streamed_match_mode,
                                             response_text=getattr(render_output, "response", ""),
-                                        ):
+                                        )
+
+                                        if fixed_hud_message_action == "skip":
                                             if ctrl.use_fixed_hud_layout and received_visible_chunk_output:
                                                 ctrl.finish_fixed_stream_content()
                                             response_rendered_to_console = True
