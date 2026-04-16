@@ -1,15 +1,22 @@
 """Plugin framework primitives."""
 
+from aworld.plugins import (
+    DiscoveredPlugin,
+    PluginCapabilityRegistry,
+    PluginEntrypoint,
+    PluginManifest,
+    PluginResourceResolver,
+    RegisteredEntrypoint,
+    discover_plugins,
+    load_plugin_manifest,
+)
 from .context import CONTEXT_PHASES, PluginContextAdapter, load_plugin_contexts, run_context_phase
 from .hud import HudLine, collect_hud_lines
 from .hooks import PluginHookResult, load_plugin_hooks
-from .manifest import load_plugin_manifest
-from .models import PluginEntrypoint, PluginManifest
-from .registry import PluginCapabilityRegistry, RegisteredEntrypoint
-from .resources import PluginResourceResolver
 
 __all__ = [
     "CONTEXT_PHASES",
+    "DiscoveredPlugin",
     "HudLine",
     "PluginCapabilityRegistry",
     "PluginContextAdapter",
@@ -19,6 +26,7 @@ __all__ = [
     "PluginResourceResolver",
     "RegisteredEntrypoint",
     "collect_hud_lines",
+    "discover_plugins",
     "load_plugin_contexts",
     "load_plugin_hooks",
     "load_plugin_manifest",

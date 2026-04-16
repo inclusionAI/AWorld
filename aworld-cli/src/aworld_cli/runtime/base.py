@@ -69,7 +69,7 @@ class BaseCliRuntime:
         # Start cron scheduler
         await self._start_scheduler()
 
-        # Initialize framework plugin surfaces needed by the CLI session loop.
+        # Initialize plugin runtime surfaces needed by the CLI session loop.
         self._initialize_plugin_framework()
 
         # Load agents (implemented by subclasses)
@@ -144,7 +144,7 @@ class BaseCliRuntime:
             self._plugin_contexts = {}
             self._plugin_state_store = None
             try:
-                from ..plugin_framework.commands import sync_plugin_commands
+                from ..plugin_runtime.commands import sync_plugin_commands
 
                 sync_plugin_commands([])
             except Exception:
@@ -152,12 +152,12 @@ class BaseCliRuntime:
             return
 
         try:
-            from ..plugin_framework.context import CONTEXT_PHASES, load_plugin_contexts
-            from ..plugin_framework.commands import sync_plugin_commands
-            from ..plugin_framework.discovery import discover_plugins
-            from ..plugin_framework.hooks import load_plugin_hooks
-            from ..plugin_framework.registry import PluginCapabilityRegistry
-            from ..plugin_framework.state import PluginStateStore
+            from aworld.plugins.discovery import discover_plugins
+            from aworld.plugins.registry import PluginCapabilityRegistry
+            from ..plugin_runtime.commands import sync_plugin_commands
+            from ..plugin_runtime.context import CONTEXT_PHASES, load_plugin_contexts
+            from ..plugin_runtime.hooks import load_plugin_hooks
+            from ..plugin_runtime.state import PluginStateStore
 
             plugin_roots = [Path(path) for path in plugin_dirs]
             self._plugins = discover_plugins(plugin_roots)
@@ -176,7 +176,7 @@ class BaseCliRuntime:
             self._plugin_contexts = {}
             self._plugin_state_store = None
             try:
-                from ..plugin_framework.commands import sync_plugin_commands
+                from ..plugin_runtime.commands import sync_plugin_commands
 
                 sync_plugin_commands([])
             except Exception:
@@ -258,7 +258,7 @@ class BaseCliRuntime:
         return self._hud_snapshot_store.snapshot()
 
     def get_hud_lines(self, context: dict[str, Any]) -> list[Any]:
-        from ..plugin_framework.hud import collect_hud_lines
+        from ..plugin_runtime.hud import collect_hud_lines
 
         return collect_hud_lines(self._plugins, context)
 

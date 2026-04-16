@@ -3,8 +3,8 @@ from pathlib import Path
 import pytest
 
 from aworld_cli.core.plugin_manager import get_builtin_plugin_roots
-from aworld_cli.plugin_framework.discovery import discover_plugins
-from aworld_cli.plugin_framework.registry import PluginCapabilityRegistry
+from aworld.plugins.discovery import discover_plugins
+from aworld.plugins.registry import PluginCapabilityRegistry
 
 
 def _get_builtin_aworld_hud_root() -> Path:

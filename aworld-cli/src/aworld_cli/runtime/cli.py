@@ -140,7 +140,7 @@ class CliRuntime(BaseCliRuntime):
             # Fail silently if plugin manager is not available
             pass
         
-        from ..plugin_framework.discovery import discover_plugins
+        from aworld.plugins.discovery import discover_plugins
 
         discovered = discover_plugins(plugin_dirs)
         resolved = []

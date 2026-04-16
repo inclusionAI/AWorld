@@ -12,8 +12,8 @@ from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
 from aworld.logs.util import logger
-from ..plugin_framework.discovery import discover_plugins
-from ..plugin_framework.registry import PluginCapabilityRegistry
+from aworld.plugins.discovery import discover_plugins
+from aworld.plugins.registry import PluginCapabilityRegistry
 
 # Default plugin installation directory
 DEFAULT_PLUGIN_DIR = Path.home() / ".aworld" / "plugins"
@@ -22,6 +22,11 @@ PLUGIN_MANIFEST_FILE = DEFAULT_PLUGIN_DIR / ".manifest.json"
 
 def get_builtin_plugins_base_dir() -> Path:
     """Return the canonical built-in plugin package directory."""
+    return Path(__file__).resolve().parent.parent / "builtin_plugins"
+
+
+def get_compat_builtin_plugins_base_dir() -> Path:
+    """Return the compatibility built-in plugin package directory."""
     return Path(__file__).resolve().parent.parent / "plugins"
 
 
@@ -31,17 +36,25 @@ def get_legacy_builtin_plugins_base_dir() -> Path:
 
 
 def get_builtin_plugin_roots() -> List[Path]:
-    """Return built-in plugin root directories, preferring `plugins/` over legacy layout."""
+    """Return built-in plugin root directories across current and compatibility layouts."""
     plugin_dirs: List[Path] = []
+    seen: set[Path] = set()
 
-    for base_dir in (get_builtin_plugins_base_dir(), get_legacy_builtin_plugins_base_dir()):
+    for base_dir in (
+        get_builtin_plugins_base_dir(),
+        get_compat_builtin_plugins_base_dir(),
+        get_legacy_builtin_plugins_base_dir(),
+    ):
         if not base_dir.exists() or not base_dir.is_dir():
             continue
         for plugin_dir in base_dir.iterdir():
-            if plugin_dir.is_dir():
-                plugin_dirs.append(plugin_dir)
-        if plugin_dirs:
-            break
+            if not plugin_dir.is_dir():
+                continue
+            resolved = plugin_dir.resolve()
+            if resolved in seen:
+                continue
+            plugin_dirs.append(plugin_dir)
+            seen.add(resolved)
 
     return plugin_dirs
 

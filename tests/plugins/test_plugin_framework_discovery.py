@@ -3,7 +3,7 @@ from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
-from aworld_cli.plugin_framework.discovery import discover_plugins
+from aworld.plugins.discovery import discover_plugins
 from aworld_cli.core.plugin_manager import PluginManager
 from aworld_cli.runtime.loaders import PluginLoader
 

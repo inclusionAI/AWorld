@@ -16,8 +16,8 @@ from rich.console import Console as RichConsole
 sys.path.insert(0, str(Path(__file__).parent.parent / "aworld-cli" / "src"))
 
 from aworld_cli.core.command_system import CommandRegistry, CommandContext
-from aworld_cli.plugin_framework.commands import register_plugin_commands
-from aworld_cli.plugin_framework.discovery import discover_plugins
+from aworld.plugins.discovery import discover_plugins
+from aworld_cli.plugin_runtime.commands import register_plugin_commands
 from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd, plugins_cmd
 from aworld_cli.console import AWorldCLI
 
@@ -667,7 +667,7 @@ class TestPluginsCommand:
                     "source": "built-in",
                     "has_agents": False,
                     "has_skills": False,
-                    "path": "/repo/aworld-cli/src/aworld_cli/plugins/aworld_hud",
+                    "path": "/repo/aworld-cli/src/aworld_cli/builtin_plugins/aworld_hud",
                 }
             ],
         )
@@ -724,7 +724,7 @@ class TestPluginsCommand:
 
             def disable(self, plugin_name):
                 assert plugin_name == "aworld-hud"
-                return {"path": "/repo/aworld-cli/src/aworld_cli/plugins/aworld_hud"}
+                return {"path": "/repo/aworld-cli/src/aworld_cli/builtin_plugins/aworld_hud"}
 
         monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
 
@@ -743,7 +743,7 @@ class TestPluginsCommand:
 
             def disable(self, plugin_name):
                 assert plugin_name == "aworld-hud"
-                return {"path": "/repo/aworld-cli/src/aworld_cli/plugins/aworld_hud"}
+                return {"path": "/repo/aworld-cli/src/aworld_cli/builtin_plugins/aworld_hud"}
 
         class FakeRuntime:
             def __init__(self):

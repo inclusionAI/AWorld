@@ -3,9 +3,9 @@ from types import SimpleNamespace
 from pathlib import Path
 
 from aworld_cli.core.command_system import CommandContext, CommandRegistry
-from aworld_cli.plugin_framework.commands import PluginPromptCommand, register_plugin_commands, sync_plugin_commands
-from aworld_cli.plugin_framework.discovery import discover_plugins
-from aworld_cli.plugin_framework.state import PluginStateStore
+from aworld.plugins.discovery import discover_plugins
+from aworld_cli.plugin_runtime.commands import PluginPromptCommand, register_plugin_commands, sync_plugin_commands
+from aworld_cli.plugin_runtime.state import PluginStateStore
 from aworld_cli.runtime.base import BaseCliRuntime
 
 

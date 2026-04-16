@@ -8,8 +8,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 from aworld_cli.console import AWorldCLI
 from aworld_cli.core.plugin_manager import get_builtin_plugin_roots
 from aworld_cli.executors.stats import format_context_bar
-from aworld_cli.plugin_framework.discovery import discover_plugins
-from aworld_cli.plugin_framework.hud import collect_hud_lines
+from aworld.plugins.discovery import discover_plugins
+from aworld_cli.plugin_runtime.hud import collect_hud_lines
 
 
 def _get_builtin_aworld_hud_root() -> Path:

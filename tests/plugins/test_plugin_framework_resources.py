@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from aworld_cli.plugin_framework.manifest import load_plugin_manifest
-from aworld_cli.plugin_framework.resources import PluginResourceResolver
+from aworld.plugins.manifest import load_plugin_manifest
+from aworld.plugins.resources import PluginResourceResolver
 
 
 def test_resolve_packaged_asset_within_plugin_root():

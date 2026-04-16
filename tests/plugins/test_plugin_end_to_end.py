@@ -1,9 +1,9 @@
 from pathlib import Path
 
 from aworld_cli.core.command_system import CommandRegistry
-from aworld_cli.core.plugin_manager import PluginManager
-from aworld_cli.plugin_framework.commands import register_plugin_commands
-from aworld_cli.plugin_framework.discovery import discover_plugins
+from aworld_cli.core.plugin_manager import PluginManager, get_builtin_plugin_roots
+from aworld.plugins.discovery import discover_plugins
+from aworld_cli.plugin_runtime.commands import register_plugin_commands
 from aworld_cli.runtime.base import BaseCliRuntime
 from aworld_cli.runtime.cli import CliRuntime
 
@@ -73,12 +73,18 @@ def test_builtin_plugin_namespace_moves_to_plugins_package():
     assert new_load() == legacy_load()
 
 
+def test_get_builtin_plugin_roots_prefers_builtin_plugins_for_aworld_hud():
+    roots = get_builtin_plugin_roots()
+
+    assert any(root.parent.name == "builtin_plugins" and root.name == "aworld_hud" for root in roots)
+
+
 def test_cli_runtime_scans_builtin_plugins_from_plugins_dir(monkeypatch, tmp_path):
     _set_isolated_plugin_dir(monkeypatch, tmp_path)
     runtime = CliRuntime(local_dirs=[], remote_backends=[])
 
     assert any(path.parent.name == "plugins" and path.name == "smllc" for path in runtime.plugin_dirs)
-    assert any(path.parent.name == "plugins" and path.name == "aworld_hud" for path in runtime.plugin_dirs)
+    assert any(path.parent.name == "builtin_plugins" and path.name == "aworld_hud" for path in runtime.plugin_dirs)
 
 
 def test_cli_runtime_excludes_disabled_builtin_hud_plugin(monkeypatch, tmp_path):
