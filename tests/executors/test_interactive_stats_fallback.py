@@ -9,8 +9,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 
 from aworld_cli.executors.local import LocalAgentExecutor
 from aworld_cli.executors.stats import StreamTokenStats
-from aworld_cli.executors.stream import StreamDisplayBuffer, StreamDisplayConfig, build_stream_renderable
+from aworld_cli.executors.stream import (
+    StreamDisplayBuffer,
+    StreamDisplayConfig,
+    build_loading_status_renderable,
+    build_stream_renderable,
+)
 from aworld_cli.console import AWorldCLI
+from aworld_cli.status_text import build_status_bar_rich_lines
 
 
 class HudRuntime:
@@ -238,3 +244,88 @@ def test_cli_can_build_execution_hud_lines_with_activity_priority():
 
     assert len(lines) == 2
     assert "Task: task_001 (running)" in lines[1]
+
+
+def test_loading_status_renderable_uses_hud_lines_before_streaming_starts():
+    renderable = build_loading_status_renderable(
+        base_message="💭 Thinking...",
+        elapsed_str="0.0s",
+        streaming_mode=False,
+        should_emit_interactive_stats=False,
+        stream_token_stats=_build_stats(),
+        hud_lines_fn=lambda: [
+            "Agent: Aworld / Chat | Workspace: aworld | Branch: feat/hud | Cron: clear",
+            "Task: task_001 (running) | Tokens: in 1.2k out 300 | Ctx: 34% | Elapsed: 12.5s",
+        ],
+        use_fixed_hud_layout=True,
+    )
+
+    console = Console(record=True, width=120)
+    console.print(renderable)
+    output = console.export_text()
+
+    assert "Task: task_001 (running)" in output
+    assert "Thinking" not in output
+
+
+def test_loading_status_renderable_keeps_hud_on_last_lines_in_fixed_layout():
+    renderable = build_loading_status_renderable(
+        base_message="💭 Thinking...",
+        elapsed_str="0.0s",
+        streaming_mode=False,
+        should_emit_interactive_stats=False,
+        stream_token_stats=_build_stats(),
+        hud_lines_fn=lambda: [
+            "Agent: Aworld / Chat | Workspace: aworld | Branch: feat/hud | Cron: clear",
+            "Task: task_001 (running) | Tokens: in 1.2k out 300 | Ctx: 34% | Elapsed: 12.5s",
+        ],
+        use_fixed_hud_layout=True,
+    )
+
+    console = Console(record=True, width=120, height=8)
+    console.print(renderable)
+    lines = [line.rstrip() for line in console.export_text().splitlines() if line.strip()]
+
+    assert "Agent: Aworld / Chat" in lines[-2]
+    assert "Task: task_001 (running)" in lines[-1]
+
+
+def test_execution_hud_lines_are_rendered_with_segment_styles():
+    renderables = build_status_bar_rich_lines(
+        [
+            "Agent: Aworld / Chat | Workspace: aworld | Branch: feat/hud | Cron: clear",
+            "Task: task_001 (running) | Tokens: in 1.2k out 300 | Ctx: 34% | Elapsed: 12.5s",
+        ]
+    )
+
+    assert len(renderables) == 2
+    assert all(renderable.spans for renderable in renderables)
+
+
+def test_stream_renderable_keeps_hud_fixed_to_bottom_lines_when_content_is_long():
+    buffer = StreamDisplayBuffer(
+        accumulated_content="\n".join(f"line{i}" for i in range(12)),
+        displayed_content_chars=0,
+    )
+    console = Console(record=True, width=120, height=8)
+
+    renderable = build_stream_renderable(
+        buffer=buffer,
+        stream_token_stats=_build_stats(),
+        status_start_time=None,
+        format_tool_calls_fn=lambda calls: [],
+        format_elapsed_fn=lambda elapsed: f"{elapsed:.1f}s",
+        config=StreamDisplayConfig(chars_per_render=200),
+        should_emit_interactive_stats_fn=lambda: False,
+        hud_lines_fn=lambda: [
+            "Agent: Aworld / Chat | Workspace: aworld | Branch: feat/hud | Cron: clear",
+            "Task: task_001 (running) | Tokens: in 1.2k out 300 | Ctx: 34% | Elapsed: 12.5s",
+        ],
+        use_fixed_hud_layout=True,
+    )
+
+    console.print(renderable)
+    lines = [line.rstrip() for line in console.export_text().splitlines() if line.strip()]
+
+    assert "Agent: Aworld / Chat" in lines[-2]
+    assert "Task: task_001 (running)" in lines[-1]

@@ -13,12 +13,14 @@ from datetime import datetime
 from typing import Any, Callable, List, Optional
 
 from rich.console import Console, Group
+from rich.layout import Layout
 from rich.live import Live
 from rich.status import Status
 from rich.text import Text
 from aworld.logs.util import logger
 
 from .stats import StreamTokenStats, format_elapsed
+from ..status_text import build_status_bar_rich_lines
 
 
 def get_terminal_size() -> tuple[int, int]:
@@ -156,6 +158,44 @@ def _compute_lines_step(displayed: int, total: int, config: StreamDisplayConfig)
     return min(1 + pending // 5, config.tool_lines_step_max)
 
 
+def _build_fixed_hud_layout(body_renderable: Any, hud_lines: List[str]) -> Layout:
+    hud_renderables = build_status_bar_rich_lines(hud_lines)
+    layout = Layout()
+    layout.split_column(
+        Layout(body_renderable, name="body", ratio=1),
+        Layout(Group(*hud_renderables) if hud_renderables else Text(""), name="hud", size=max(1, len(hud_renderables))),
+    )
+    return layout
+
+
+def build_loading_status_renderable(
+    *,
+    base_message: str,
+    elapsed_str: str,
+    streaming_mode: bool,
+    should_emit_interactive_stats: bool,
+    stream_token_stats: StreamTokenStats,
+    hud_lines_fn: Optional[Callable[[], List[str]]] = None,
+    use_fixed_hud_layout: bool = False,
+):
+    if not should_emit_interactive_stats and hud_lines_fn is not None:
+        try:
+            hud_lines = [line for line in hud_lines_fn() if line]
+        except Exception:
+            hud_lines = []
+        if hud_lines:
+            if use_fixed_hud_layout:
+                return _build_fixed_hud_layout(Text(""), hud_lines)
+            return Group(*build_status_bar_rich_lines(hud_lines))
+
+    if should_emit_interactive_stats and streaming_mode:
+        msg = stream_token_stats.format_streaming_line(elapsed_str)
+        if msg:
+            return Text.from_markup(msg)
+
+    return Text.from_markup(f"[dim]   {base_message} [{elapsed_str}][/dim]")
+
+
 def build_stream_renderable(
     buffer: StreamDisplayBuffer,
     stream_token_stats: StreamTokenStats,
@@ -165,7 +205,8 @@ def build_stream_renderable(
     config: StreamDisplayConfig,
     should_emit_interactive_stats_fn: Optional[Callable[[], bool]] = None,
     hud_lines_fn: Optional[Callable[[], List[str]]] = None,
-) -> Group:
+    use_fixed_hud_layout: bool = False,
+) -> Any:
     """
     Build the combined Rich renderable for Live display.
     Advances buffer display counters and optionally clears when caught up.
@@ -264,8 +305,9 @@ def build_stream_renderable(
         except Exception:
             hud_lines = []
         if hud_lines:
-            for hud_line in hud_lines:
-                parts.append(Text(hud_line))
+            if use_fixed_hud_layout:
+                return _build_fixed_hud_layout(Group(*parts) if parts else Text(""), hud_lines)
+            parts.extend(build_status_bar_rich_lines(hud_lines))
 
     return Group(*parts) if parts else Text("")
 
@@ -323,6 +365,7 @@ def print_buffer_to_console(
     format_elapsed_fn: Optional[Callable[[float], str]] = None,
     should_emit_interactive_stats_fn: Optional[Callable[[], bool]] = None,
     hud_lines_fn: Optional[Callable[[], List[str]]] = None,
+    use_fixed_hud_layout: bool = False,
 ) -> None:
     """Print buffer content to console so it persists after Live stops."""
     if not (buffer.has_content() or buffer.has_tool_calls() or buffer.has_tool_results()):
@@ -373,8 +416,8 @@ def print_buffer_to_console(
             hud_lines = [line for line in hud_lines_fn() if line]
         except Exception:
             hud_lines = []
-        for hud_line in hud_lines:
-            console.print(Text(hud_line))
+        for hud_line in build_status_bar_rich_lines(hud_lines):
+            console.print(hud_line)
 
 
 class StreamDisplayController:
@@ -392,6 +435,7 @@ class StreamDisplayController:
         config: Optional[StreamDisplayConfig] = None,
         should_emit_interactive_stats_fn: Optional[Callable[[], bool]] = None,
         hud_lines_fn: Optional[Callable[[], List[str]]] = None,
+        use_fixed_hud_layout: bool = False,
     ):
         self.console = console
         self.stream_token_stats = stream_token_stats
@@ -400,6 +444,7 @@ class StreamDisplayController:
         self.config = config or StreamDisplayConfig()
         self.should_emit_interactive_stats_fn = should_emit_interactive_stats_fn
         self.hud_lines_fn = hud_lines_fn
+        self.use_fixed_hud_layout = use_fixed_hud_layout
 
         self.buffer = StreamDisplayBuffer()
         self.loading_status: Optional[Status] = None
@@ -420,14 +465,35 @@ class StreamDisplayController:
             return
         self.base_message = message
         self.status_start_time = datetime.now()
-        msg = f"{message} [0.0s]" if ("Thinking" in message or "Calling tool" in message) else message
+        should_emit_interactive_stats = True
+        if self.should_emit_interactive_stats_fn is not None:
+            try:
+                should_emit_interactive_stats = self.should_emit_interactive_stats_fn()
+            except Exception:
+                should_emit_interactive_stats = True
+        renderable = build_loading_status_renderable(
+            base_message=message,
+            elapsed_str="0.0s",
+            streaming_mode=self.streaming_mode,
+            should_emit_interactive_stats=should_emit_interactive_stats,
+            stream_token_stats=self.stream_token_stats,
+            hud_lines_fn=self.hud_lines_fn,
+            use_fixed_hud_layout=self.use_fixed_hud_layout,
+        )
+        if self.use_fixed_hud_layout and not should_emit_interactive_stats:
+            self.ensure_live_running()
+            if self.stream_live is not None:
+                self.stream_live.update(renderable)
+            if ("Thinking" in message or "Calling tool" in message) and self.status_update_task is None:
+                self.status_update_task = asyncio.create_task(self._update_elapsed_loop())
+            return
         if self.loading_status:
-            self.loading_status.update(f"[dim]{msg}[/dim]")
+            self.loading_status.update(renderable)
         else:
             if self.stream_live:
                 self.stream_live.stop()
                 self.stream_live = None
-            self.loading_status = Status(f"[dim]{msg}[/dim]", console=self.console)
+            self.loading_status = Status(renderable, console=self.console)
             self.loading_status.start()
         if ("Thinking" in message or "Calling tool" in message) and self.status_update_task is None:
             self.status_update_task = asyncio.create_task(self._update_elapsed_loop())
@@ -459,6 +525,7 @@ class StreamDisplayController:
                     format_elapsed_fn=self.format_elapsed_fn,
                     should_emit_interactive_stats_fn=self.should_emit_interactive_stats_fn,
                     hud_lines_fn=self.hud_lines_fn,
+                    use_fixed_hud_layout=self.use_fixed_hud_layout,
                 )
                 self.buffer.clear()
             self.stream_live.stop()
@@ -504,6 +571,7 @@ class StreamDisplayController:
             self.config,
             should_emit_interactive_stats_fn=self.should_emit_interactive_stats_fn,
             hud_lines_fn=self.hud_lines_fn,
+            use_fixed_hud_layout=self.use_fixed_hud_layout,
         )
         tool_lines = self.format_tool_calls_fn(self.buffer.accumulated_tool_calls) if self.buffer.accumulated_tool_calls else []
         if (
@@ -535,6 +603,7 @@ class StreamDisplayController:
                     format_elapsed_fn=self.format_elapsed_fn,
                     should_emit_interactive_stats_fn=self.should_emit_interactive_stats_fn,
                     hud_lines_fn=self.hud_lines_fn,
+                    use_fixed_hud_layout=self.use_fixed_hud_layout,
                 )
             self.stream_token_stats.clear()
             self.buffer.clear()
@@ -600,19 +669,31 @@ class StreamDisplayController:
                             should_emit_interactive_stats = self.should_emit_interactive_stats_fn()
                         except Exception:
                             should_emit_interactive_stats = True
-                    if should_emit_interactive_stats:
-                        msg = self.stream_token_stats.format_streaming_line(elapsed_str)
-                        status_msg = f"[dim]{msg}[/dim]" if msg else f"[dim]   {self.base_message} [{elapsed_str}][/dim]"
-                    else:
-                        hud_lines = []
-                        if self.hud_lines_fn is not None:
-                            try:
-                                hud_lines = [line for line in self.hud_lines_fn() if line]
-                            except Exception:
-                                hud_lines = []
-                        status_msg = "\n".join(f"[dim]{line}[/dim]" for line in hud_lines) if hud_lines else f"[dim]   {self.base_message} [{elapsed_str}][/dim]"
+                    status_msg = build_loading_status_renderable(
+                        base_message=self.base_message,
+                        elapsed_str=elapsed_str,
+                        streaming_mode=True,
+                        should_emit_interactive_stats=should_emit_interactive_stats,
+                        stream_token_stats=self.stream_token_stats,
+                        hud_lines_fn=self.hud_lines_fn,
+                        use_fixed_hud_layout=self.use_fixed_hud_layout,
+                    )
                 else:
-                    status_msg = f"[dim]   {self.base_message} [{elapsed_str}][/dim]"
+                    should_emit_interactive_stats = True
+                    if self.should_emit_interactive_stats_fn is not None:
+                        try:
+                            should_emit_interactive_stats = self.should_emit_interactive_stats_fn()
+                        except Exception:
+                            should_emit_interactive_stats = True
+                    status_msg = build_loading_status_renderable(
+                        base_message=self.base_message,
+                        elapsed_str=elapsed_str,
+                        streaming_mode=False,
+                        should_emit_interactive_stats=should_emit_interactive_stats,
+                        stream_token_stats=self.stream_token_stats,
+                        hud_lines_fn=self.hud_lines_fn,
+                        use_fixed_hud_layout=self.use_fixed_hud_layout,
+                    )
                 self.loading_status.update(status_msg)
             await asyncio.sleep(0.15)
 
