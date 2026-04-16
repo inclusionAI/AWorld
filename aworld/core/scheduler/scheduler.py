@@ -519,7 +519,6 @@ class CronScheduler:
         self,
         job: CronJob,
         status: Literal["ok", "error", "timeout"],
-        error: Optional[str] = None,
         result: Optional[Any] = None,
     ):
         """
@@ -528,7 +527,6 @@ class CronScheduler:
         Args:
             job: Job that reached terminal state
             status: Terminal status (ok/error/timeout)
-            error: Optional error message (for persistence, not notification display)
 
         Note:
             Per design doc Section 8.4, notification summary uses fixed templates
@@ -645,7 +643,7 @@ class CronScheduler:
                         f"任务执行失败：{result.msg}",
                         terminal=True,
                     )
-                    await self._publish_notification(notification_job, "error", result.msg)
+                    await self._publish_notification(notification_job, "error")
 
             except asyncio.TimeoutError:
                 logger.error(f"Job {job.id} execution timeout")
@@ -689,7 +687,7 @@ class CronScheduler:
                 )
 
                 # Publish error notification
-                await self._publish_notification(job, "error", str(e))
+                await self._publish_notification(job, "error")
 
     # Public API
 
@@ -801,7 +799,7 @@ class CronScheduler:
                         f"任务执行失败：{result.msg}",
                         terminal=True,
                     )
-                    await self._publish_notification(notification_job, "error", result.msg)
+                    await self._publish_notification(notification_job, "error")
 
                 return result
 
@@ -851,7 +849,7 @@ class CronScheduler:
                 )
 
                 # Publish error notification for manual run
-                await self._publish_notification(job, "error", str(e))
+                await self._publish_notification(job, "error")
 
                 return TaskResponse(success=False, msg=f"Execution error: {str(e)}")
 
