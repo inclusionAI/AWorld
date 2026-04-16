@@ -16,6 +16,20 @@ class IncomingAttachment:
     file_name: str
 
 
+@dataclass
+class AICardInstance:
+    card_instance_id: str
+    access_token: str
+    inputing_started: bool = False
+
+
+@dataclass(frozen=True)
+class PendingFileMessage:
+    media_id: str
+    file_name: str
+    file_type: str
+
+
 @dataclass(frozen=True)
 class ExtractedMessage:
     text: str
