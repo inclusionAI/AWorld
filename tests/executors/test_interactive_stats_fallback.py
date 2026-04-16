@@ -1,7 +1,9 @@
 import sys
+from io import StringIO
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
 from rich.console import Console
 from rich.text import Text
 
@@ -10,10 +12,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 from aworld_cli.executors.local import LocalAgentExecutor
 from aworld_cli.executors.stats import StreamTokenStats
 from aworld_cli.executors.stream import (
+    FixedBottomHudRenderer,
     StreamDisplayBuffer,
     StreamDisplayConfig,
+    StreamDisplayController,
     build_loading_status_renderable,
     build_stream_renderable,
+    print_buffer_to_console,
 )
 from aworld_cli.console import AWorldCLI
 from aworld_cli.status_text import build_status_bar_rich_lines
@@ -303,6 +308,32 @@ def test_execution_hud_lines_are_rendered_with_segment_styles():
     assert all(renderable.spans for renderable in renderables)
 
 
+class _TtyBuffer(StringIO):
+    def isatty(self):
+        return True
+
+
+def test_fixed_bottom_hud_renderer_uses_segment_styles():
+    output = _TtyBuffer()
+    console = Console(file=output, force_terminal=True, width=120, color_system="truecolor")
+    renderer = FixedBottomHudRenderer(
+        console=console,
+        hud_lines_fn=lambda: [
+            "Agent: Aworld / Chat | Workspace: aworld | Branch: feat/hud | Cron: clear",
+            "Task: task_001 (running) | Tokens: in 1.2k out 300 | Ctx: 34% | Elapsed: 12.5s",
+        ],
+    )
+
+    renderer.start()
+
+    rendered = output.getvalue()
+
+    assert "Agent: Aworld / Chat" in rendered
+    assert "Task: task_001 (running)" in rendered
+    assert "\x1b[38;2;" in rendered
+    assert ";48;2;" in rendered
+
+
 def test_stream_renderable_keeps_hud_fixed_to_bottom_lines_when_content_is_long():
     buffer = StreamDisplayBuffer(
         accumulated_content="\n".join(f"line{i}" for i in range(12)),
@@ -331,3 +362,55 @@ def test_stream_renderable_keeps_hud_fixed_to_bottom_lines_when_content_is_long(
     assert "Layout(name='body')" not in console.export_text()
     assert "Agent: Aworld / Chat" in lines[-2]
     assert "Task: task_001 (running)" in lines[-1]
+
+
+def test_print_buffer_to_console_omits_hud_lines_in_fixed_hud_mode():
+    buffer = StreamDisplayBuffer(accumulated_content="hello world", displayed_content_chars=0)
+    console = Console(record=True, width=120)
+
+    print_buffer_to_console(
+        console=console,
+        buffer=buffer,
+        stream_token_stats=_build_stats(),
+        format_tool_calls_fn=lambda calls: [],
+        should_emit_interactive_stats_fn=lambda: False,
+        hud_lines_fn=lambda: [
+            "Agent: Aworld / Chat | Workspace: aworld | Branch: feat/hud | Cron: clear",
+            "Task: task_001 (running) | Tokens: in 1.2k out 300 | Ctx: 34% | Elapsed: 12.5s",
+        ],
+        use_fixed_hud_layout=True,
+    )
+
+    output = console.export_text()
+
+    assert "🤖 Aworld" in output
+    assert "hello world" in output
+    assert "Task: task_001 (running)" not in output
+    assert "Tokens: in 1.2k out 300" not in output
+
+
+@pytest.mark.asyncio
+async def test_fixed_hud_mode_avoids_live_stream_rendering():
+    controller = StreamDisplayController(
+        console=Console(record=True, width=120),
+        stream_token_stats=_build_stats(),
+        format_tool_calls_fn=lambda calls: [],
+        config=StreamDisplayConfig(),
+        should_emit_interactive_stats_fn=lambda: False,
+        hud_lines_fn=lambda: [
+            "Agent: Aworld / Chat | Workspace: aworld | Branch: feat/hud | Cron: clear",
+            "Task: task_001 (running) | Tokens: in 1.2k out 300 | Ctx: 34% | Elapsed: 12.5s",
+        ],
+        use_fixed_hud_layout=True,
+    )
+
+    controller.start_loading("💭 Thinking...")
+
+    assert controller.stream_live is None
+    assert controller.loading_status is None
+    assert controller.status_start_time is not None
+
+    controller.stop_loading()
+    assert controller.status_start_time is not None
+
+    controller.close()

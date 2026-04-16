@@ -707,7 +707,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             logger.info(f"💾 Saved round to history - model: {model_name}")
                                         except Exception as save_err:
                                             logger.warning(f"💾 Failed to save round to history: {save_err}")
-                                    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+                                    stream_on = (
+                                        os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+                                        and not ctrl.use_fixed_hud_layout
+                                    )
                                     tool_result_pending = ctrl.buffer.has_tool_result_pending()
                                     has_pending_display = ctrl.has_pending_display(stream_on, received_chunk_output, tool_result_pending)
                                     if has_pending_display:
@@ -889,7 +892,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         logger.info(f"Output: {output}")
                                         logger.info(f"Answer: {answer}")
                                         logger.info(f"Is handoff: {is_handoff}")
-                                        answer, _ = self._render_simple_message_output(output, answer, agent_name=current_agent_name, is_handoff=is_handoff, content_already_streamed=received_chunk_output)
+                                        def _render_message_output():
+                                            return self._render_simple_message_output(
+                                                output,
+                                                answer,
+                                                agent_name=current_agent_name,
+                                                is_handoff=is_handoff,
+                                                content_already_streamed=received_chunk_output,
+                                            )
+
+                                        answer, _ = ctrl.print_with_hud_suspended(_render_message_output)
                                         
                                         # 🔧 FIX: Display token stats after rendering message output (STREAM=0 mode)
                                         # This ensures the stats line is shown even when not streaming
@@ -941,7 +953,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     tr_lines = self._format_tool_result_display_lines(output)
                                     if tr_lines:
                                         ctrl.buffer.accumulated_tool_result_lines.extend(tr_lines)
-                                    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+                                    stream_on = (
+                                        os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+                                        and not ctrl.use_fixed_hud_layout
+                                    )
                                     has_pending_display = ctrl.has_any_pending(stream_on)
                                     if has_pending_display:
                                         ctrl.set_pending_clear()
@@ -953,7 +968,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     if not has_pending_display:
                                         ctrl.stop_loading()
                                         if ctrl.buffer.has_tool_results() and self.console:
-                                            _print_tool_result_lines(self.console, ctrl.buffer.accumulated_tool_result_lines)
+                                            ctrl.print_with_hud_suspended(
+                                                lambda: _print_tool_result_lines(
+                                                    self.console,
+                                                    ctrl.buffer.accumulated_tool_result_lines,
+                                                )
+                                            )
                                             # STREAM=0: clear tool results after printing to avoid multi-round accumulation
                                             ctrl.buffer.accumulated_tool_result_lines.clear()
                                             ctrl.buffer.displayed_tool_result_lines = 0
@@ -967,7 +987,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 elif isinstance(output, ChunkOutput):
                                     received_chunk_output = True
                                     ctrl.streaming_mode = True
-                                    stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+                                    stream_on = (
+                                        os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
+                                        and not ctrl.use_fixed_hud_layout
+                                    )
                                     chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
                                     if stream_on and chunk:
@@ -1078,11 +1101,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                 border_style="dim",
                                                 padding=(1, 2)
                                             )
-                                            self.console.print(generic_panel)
-                                            self.console.print()
+                                            ctrl.print_with_hud_suspended(lambda: self.console.print(generic_panel))
+                                            ctrl.print_with_hud_suspended(lambda: self.console.print())
                         finally:
                             await ctrl.wait_for_display_done()
-                            ctrl.stop_loading()
+                            ctrl.close()
                             # 🔧 FIX: Log final token stats before exiting consume_stream
                             logger.info(f"📊 Finishing consume_stream - final token stats: {stream_token_stats.get_current_stats() if stream_token_stats else None}")
                     
@@ -1100,8 +1123,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 border_style="red",
                                 padding=(1, 2)
                             )
-                            self.console.print(error_panel)
-                            self.console.print()
+                            ctrl.print_with_hud_suspended(lambda: self.console.print(error_panel))
+                            ctrl.print_with_hud_suspended(lambda: self.console.print())
                         raise
                 
                 # Consume all stream events (Ctrl+C raises CancelledError/KeyboardInterrupt → abort and return)
