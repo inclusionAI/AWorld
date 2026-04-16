@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from inspect import isawaitable
 import json
 import mimetypes
 import os
 import re
+import threading
 import time
 from pathlib import Path
 from urllib.parse import unquote
@@ -40,13 +42,16 @@ class DingTalkConnector:
         bridge: AworldDingdingBridge,
         stream_module,
         http_client: httpx.AsyncClient | None = None,
+        thread_cls: type[threading.Thread] = threading.Thread,
     ) -> None:
         self._config = config
         self._bridge = bridge
         self._stream_module = stream_module
         self._http = http_client or httpx.AsyncClient(timeout=60.0)
+        self._thread_cls = thread_cls
         self._session_ids: dict[str, str] = {}
         self._client = None
+        self._stream_thread: threading.Thread | None = None
         self._access_token: str | None = None
         self._access_token_expiry: float = 0.0
         self._oapi_access_token: str | None = None
@@ -76,7 +81,32 @@ class DingTalkConnector:
             _MessageHandler(),
         )
 
+        start_forever = getattr(self._client, "start_forever", None)
+        if callable(start_forever):
+            self._stream_thread = self._thread_cls(
+                target=start_forever,
+                name="aworld-gateway-dingtalk-stream",
+                daemon=True,
+            )
+            self._stream_thread.start()
+            return
+
+        start = getattr(self._client, "start", None)
+        if callable(start):
+            start_result = start()
+            if isawaitable(start_result):
+                await start_result
+
     async def stop(self) -> None:
+        if self._client is not None:
+            for method_name in ("stop", "close", "shutdown"):
+                stop_method = getattr(self._client, method_name, None)
+                if not callable(stop_method):
+                    continue
+                stop_result = stop_method()
+                if isawaitable(stop_result):
+                    await stop_result
+                break
         await self._http.aclose()
 
     async def handle_callback(self, callback_payload) -> None:
