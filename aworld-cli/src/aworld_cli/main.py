@@ -1132,6 +1132,9 @@ async def _run_direct_mode(
         return
     
     # Create agent executor using CliRuntime (session_id is already passed to runtime)
+    from aworld.core.scheduler import get_scheduler
+    runtime._scheduler = get_scheduler()
+    runtime._bind_scheduler_default_agent(selected_agent.name)
     agent_executor = await runtime._create_executor(selected_agent)
 
     if not agent_executor:

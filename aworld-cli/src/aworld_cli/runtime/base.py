@@ -59,6 +59,7 @@ class BaseCliRuntime:
         from .hud_snapshot import HudSnapshotStore
 
         self._hud_snapshot_store = HudSnapshotStore()
+        self._current_root_agent_name: Optional[str] = None
     
     async def start(self) -> None:
         """Start the CLI interaction loop."""
@@ -85,6 +86,8 @@ class BaseCliRuntime:
                 selected_agent = await self._select_agent(agents)
                 if not selected_agent:
                     return
+
+                self._bind_scheduler_default_agent(selected_agent.name)
                 
                 # Start chat session
                 executor = await self._create_executor(selected_agent)
@@ -331,6 +334,7 @@ class BaseCliRuntime:
             # Get scheduler and wire notification sink
             self._scheduler = get_scheduler()
             self._scheduler.notification_sink = self._notification_center.publish
+            self._scheduler.progress_sink = self._notification_center.publish_progress
             if hasattr(self._scheduler.executor, "set_swarm_resolver"):
                 self._scheduler.executor.set_swarm_resolver(resolve_swarm)
 
@@ -347,6 +351,14 @@ class BaseCliRuntime:
                 await self._scheduler.stop()
             except Exception as e:
                 logger.warning(f"Failed to stop cron scheduler: {e}")
+
+    def _bind_scheduler_default_agent(self, agent_name: Optional[str]) -> None:
+        """Bind cron task creation to the currently selected CLI root agent."""
+        self._current_root_agent_name = agent_name
+        if not self._scheduler or not getattr(self._scheduler, "executor", None):
+            return
+        if hasattr(self._scheduler.executor, "set_default_agent_name"):
+            self._scheduler.executor.set_default_agent_name(agent_name)
 
     async def _drain_notifications(self, job_id: Optional[str] = None) -> List[Any]:
         """
@@ -369,6 +381,17 @@ class BaseCliRuntime:
             return await self._notification_center.drain(job_id=job_id)
         except Exception as e:
             logger.warning(f"Failed to drain notifications: {e}")
+            return []
+
+    def _get_cron_progress_logs(self, job_id: str) -> List[Any]:
+        """Return in-memory live execution logs for a cron job."""
+        if not self._notification_center or not hasattr(self._notification_center, "get_progress_logs"):
+            return []
+        try:
+            return self._notification_center.get_progress_logs(job_id)
+        except Exception as e:
+            from aworld.logs.util import logger
+            logger.warning(f"Failed to read cron progress logs: {e}")
             return []
 
     async def _load_agents(self) -> List[AgentInfo]:
