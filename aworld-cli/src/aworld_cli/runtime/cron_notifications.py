@@ -11,7 +11,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, Optional, List
+from typing import Literal, Optional, List, Dict, Any
 import pytz
 
 
@@ -40,6 +40,18 @@ class CronNotification:
     next_run_at: Optional[str] = None
 
 
+@dataclass
+class CronProgressLog:
+    """In-memory live execution log for a running cron job."""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    job_id: str = ""
+    job_name: str = ""
+    level: Literal["info", "warning", "error", "success"] = "info"
+    message: str = ""
+    created_at: str = field(default_factory=lambda: datetime.now(pytz.UTC).isoformat())
+    terminal: bool = False
+
+
 class CronNotificationCenter:
     """
     In-memory notification center for cron task completions.
@@ -66,6 +78,8 @@ class CronNotificationCenter:
         self._max_size = max_size
         self._queue = asyncio.Queue(maxsize=max_size)
         self._unread_count = 0
+        self._progress_logs: Dict[str, deque[CronProgressLog]] = {}
+        self._progress_limit = 200
 
     async def publish(self, notification_data: dict) -> None:
         """
@@ -148,6 +162,35 @@ class CronNotificationCenter:
         self._unread_count = self._queue.qsize()
 
         return notifications
+
+    async def publish_progress(self, progress_data: Dict[str, Any]) -> None:
+        """Store live cron execution logs for follow-mode inspection."""
+        try:
+            log = CronProgressLog(
+                job_id=progress_data.get("job_id", ""),
+                job_name=progress_data.get("job_name", ""),
+                level=progress_data.get("level", "info"),
+                message=progress_data.get("message", ""),
+                created_at=progress_data.get("created_at", datetime.now(pytz.UTC).isoformat()),
+                terminal=bool(progress_data.get("terminal", False)),
+            )
+            if not log.job_id:
+                return
+
+            buffer = self._progress_logs.setdefault(
+                log.job_id,
+                deque(maxlen=self._progress_limit),
+            )
+            buffer.append(log)
+        except Exception:
+            pass
+
+    def get_progress_logs(self, job_id: str) -> List[CronProgressLog]:
+        """Return a snapshot of the in-memory live log buffer for a cron job."""
+        buffer = self._progress_logs.get(job_id)
+        if not buffer:
+            return []
+        return list(buffer)
 
     def get_unread_count(self) -> int:
         """Return current unread notification count without draining the queue."""
