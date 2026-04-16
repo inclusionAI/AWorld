@@ -230,9 +230,8 @@ class FixedBottomHudRenderer:
     def stop(self) -> None:
         if not self._active:
             return
-        self.clear()
-        self._disable_scroll_region()
         self._active = False
+        self._disable_scroll_region()
 
     def suspend(self) -> None:
         if not self.is_active():
@@ -940,6 +939,9 @@ class StreamDisplayController:
     def close(self) -> None:
         if self._fixed_stream_agent_name is not None:
             self.finish_fixed_stream_content()
+        self.status_start_time = None
+        if self.fixed_hud_renderer is not None:
+            self.fixed_hud_renderer.stop()
         if self.status_update_task:
             self.status_update_task.cancel()
             self.status_update_task = None
@@ -949,6 +951,3 @@ class StreamDisplayController:
         if self.loading_status:
             self.loading_status.stop()
             self.loading_status = None
-        if self.fixed_hud_renderer is not None:
-            self.fixed_hud_renderer.stop()
-        self.status_start_time = None

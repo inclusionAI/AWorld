@@ -26,6 +26,7 @@ from .models import AgentInfo
 from .status_text import (
     build_status_bar_text,
     fallback_status_segments,
+    iter_status_bar_segments,
     reduce_segments,
     render_status_line,
     should_render_status_bar,
@@ -256,29 +257,18 @@ class AWorldCLI:
         lines = text.splitlines() or [text]
 
         def _render_line(line_text: str) -> str:
-            segments = [segment.strip() for segment in line_text.split("|")]
-            has_unread = any("unread" in segment for segment in segments)
-            segment_styles = [
-                ("#181b2d", "#84c7c6"),
-                ("#181b2d", "#d8def5"),
-                ("#181b2d", "#f2c14e" if has_unread else "#8ed081"),
-                ("#181b2d", "#b8c0da"),
-                ("#181b2d", "#a88bd8"),
-                ("#181b2d", "#8ea0c4"),
-            ]
-            divider_style = ("#181b2d", "#4f5877")
+            styled_segments = iter_status_bar_segments(line_text)
 
             parts = []
-            for index, segment in enumerate(segments):
-                bg, fg = segment_styles[index] if index < len(segment_styles) else ("#181b2d", "#d8def5")
+            for index, (segment, (bg, fg)) in enumerate(styled_segments):
                 escaped = (
                     segment.replace("&", "&amp;")
                     .replace("<", "&lt;")
                     .replace(">", "&gt;")
                 )
                 parts.append(f"<style bg='{bg}' fg='{fg}'> {escaped} </style>")
-                if index < len(segments) - 1:
-                    div_bg, div_fg = divider_style
+                if index < len(styled_segments) - 1:
+                    div_bg, div_fg = ("#181b2d", "#4f5877")
                     parts.append(f"<style bg='{div_bg}' fg='{div_fg}'> | </style>")
             return "".join(parts)
 
