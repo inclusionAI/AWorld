@@ -1,7 +1,11 @@
 import os
 import sys
+from unittest.mock import patch
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
+from prompt_toolkit.formatted_text import HTML
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
@@ -326,3 +330,88 @@ def test_status_bar_renders_multiline_html(monkeypatch):
 
     assert "\n" in rendered
     assert "Task: task_001" in rendered
+
+
+@pytest.mark.asyncio
+async def test_prompt_with_fixed_hud_uses_single_renderer_and_no_bottom_toolbar(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        def prompt(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            return "你是谁"
+
+    class FakeRenderer:
+        instances = []
+
+        def __init__(self, console, hud_lines_fn=None, reserved_lines=2):
+            self.console = console
+            self.hud_lines_fn = hud_lines_fn
+            self.reserved_lines = reserved_lines
+            self.started = 0
+            self.stopped = 0
+            FakeRenderer.instances.append(self)
+
+        def start(self):
+            self.started += 1
+
+        def stop(self):
+            self.stopped += 1
+
+    async def fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    cli = AWorldCLI()
+    session = FakeSession()
+
+    monkeypatch.setattr("aworld_cli.console.FixedBottomHudRenderer", FakeRenderer)
+    monkeypatch.setattr("aworld_cli.console.asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr(cli, "_should_use_fixed_prompt_hud", lambda runtime: True)
+
+    result = await cli._prompt_with_fixed_hud(
+        session,
+        HTML("<b><cyan>You</cyan></b>: "),
+        runtime=object(),
+        agent_name="Aworld",
+        mode="Chat",
+    )
+
+    assert result == "你是谁"
+    assert len(FakeRenderer.instances) == 1
+    assert FakeRenderer.instances[0].started == 1
+    assert FakeRenderer.instances[0].stopped == 1
+    assert "bottom_toolbar" not in session.calls[0][1]
+
+
+@pytest.mark.asyncio
+async def test_prompt_with_fixed_hud_falls_back_to_plain_prompt_when_disabled(monkeypatch):
+    class FakeSession:
+        def __init__(self):
+            self.calls = []
+
+        def prompt(self, prompt, **kwargs):
+            self.calls.append((prompt, kwargs))
+            return "exit"
+
+    async def fake_to_thread(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    cli = AWorldCLI()
+    session = FakeSession()
+
+    monkeypatch.setattr("aworld_cli.console.asyncio.to_thread", fake_to_thread)
+    monkeypatch.setattr(cli, "_should_use_fixed_prompt_hud", lambda runtime: False)
+
+    with patch("aworld_cli.console.FixedBottomHudRenderer") as renderer_cls:
+        result = await cli._prompt_with_fixed_hud(
+            session,
+            HTML("<b><cyan>You</cyan></b>: "),
+            runtime=object(),
+            agent_name="Aworld",
+            mode="Chat",
+        )
+
+    assert result == "exit"
+    assert len(session.calls) == 1
+    renderer_cls.assert_not_called()
