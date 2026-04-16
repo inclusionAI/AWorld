@@ -42,6 +42,10 @@ def scan_path(path: str) -> List[dict]:
         # Apply directory name mapping
         display_name = file_mapping.get(k, k)
 
+        if not isinstance(v, dict):
+            res.append({display_name: v})
+            continue
+
         # files in dir
         final_map = OrderedDict()
         for file in file_priority.get(display_name, []):
@@ -160,8 +164,11 @@ if __name__ == '__main__':
     for line in outline:
         for k, v in line.items():
             index_content.append(f"## {k}")
-            for s_k, s_v in v.items():
-                index_content.append(f"[{s_k}]({s_v})")
+            if isinstance(v, dict):
+                for s_k, s_v in v.items():
+                    index_content.append(f"[{s_k}]({s_v})")
+            else:
+                index_content.append(f"[{k}]({v})")
 
     with open("index.md", 'w') as index_file:
         index_file.write("\n\n".join(index_content))
