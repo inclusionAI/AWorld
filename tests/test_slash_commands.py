@@ -473,6 +473,36 @@ class TestCronCommand:
         assert runtime._notification_center.get_unread_count() == 0
 
     @pytest.mark.asyncio
+    async def test_cron_inbox_formats_multiline_result_detail(self):
+        """Multiline result detail should remain readable in inbox output."""
+        from aworld_cli.runtime.cron_notifications import CronNotificationCenter
+
+        cmd = CommandRegistry.get('cron')
+
+        class FakeRuntime:
+            def __init__(self):
+                self._notification_center = CronNotificationCenter()
+
+            async def _drain_notifications(self):
+                return await self._notification_center.drain()
+
+        runtime = FakeRuntime()
+        await runtime._notification_center.publish({
+            "job_id": "job-1",
+            "job_name": "twitter_scraper_200_posts",
+            "status": "ok",
+            "summary": 'Cron task "twitter_scraper_200_posts" completed',
+            "detail": "最终回答：\n已保存 200 条内容\n输出文件：twitter_for_you_posts_200.md",
+        })
+
+        context = CommandContext(cwd=os.getcwd(), user_args='inbox', runtime=runtime)
+        result = await cmd.execute(context)
+
+        assert "content: 最终回答：" in result
+        assert "已保存 200 条内容" in result
+        assert "输出文件：twitter_for_you_posts_200.md" in result
+
+    @pytest.mark.asyncio
     async def test_cron_inbox_reads_only_notifications_for_requested_job(self):
         """Test /cron inbox <job_id> drains only matching unread notifications."""
         from aworld_cli.runtime.cron_notifications import CronNotificationCenter

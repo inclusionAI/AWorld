@@ -216,6 +216,52 @@ async def test_scheduler_publishes_reminder_detail_on_success():
 
 
 @pytest.mark.asyncio
+async def test_scheduler_publishes_full_result_detail_for_deleted_one_time_job():
+    """One-time jobs should still publish full result detail even after deletion."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_path = Path(tmpdir) / "cron.json"
+        store = FileBasedCronStore(str(store_path))
+
+        executor = AsyncMock(spec=CronExecutor)
+        executor.execute_with_retry = AsyncMock(
+            return_value=TaskResponse(
+                success=True,
+                msg="Task completed",
+                answer="已保存 200 条内容\n输出文件：twitter_for_you_posts_200.md\n日志：twitter_scraper_200.log",
+            )
+        )
+
+        notification_sink = AsyncMock()
+        scheduler = CronScheduler(store, executor, notification_sink=notification_sink)
+
+        now = datetime.now(pytz.UTC)
+        job = CronJob(
+            name="twitter_scraper_200_posts",
+            delete_after_run=True,
+            schedule=CronSchedule(kind="at", at=now.isoformat()),
+            payload=CronPayload(message="run scraper", tool_names=["bash"]),
+            state=CronJobState(
+                running=True,
+                last_run_at=now.isoformat(),
+                next_run_at=None,
+            ),
+        )
+
+        await store.add_job(job)
+        await scheduler._execute_claimed_job(job)
+
+        notification_sink.assert_called_once()
+        call_args = notification_sink.call_args[0][0]
+        assert call_args["status"] == "ok"
+        assert "最终回答：" in call_args["detail"]
+        assert "twitter_for_you_posts_200.md" in call_args["detail"]
+        assert await store.get_job(job.id) is None
+
+
+@pytest.mark.asyncio
 async def test_scheduler_publishes_live_progress_logs():
     """Scheduler should publish live execution progress for `/cron show` follow mode."""
     import tempfile
