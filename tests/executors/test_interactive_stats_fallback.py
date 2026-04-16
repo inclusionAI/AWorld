@@ -491,54 +491,68 @@ def test_visible_response_content_helper_detects_actual_text():
     assert executor._has_visible_response_content("\n已为你创建提醒。") is True
 
 
-def test_fixed_hud_skips_post_tool_followup_message_render():
+def test_fixed_hud_message_action_renders_post_tool_followup_message():
     executor = object.__new__(LocalAgentExecutor)
 
-    assert executor._should_skip_fixed_hud_secondary_message_render(
+    assert executor._get_fixed_hud_message_action(
         use_fixed_hud_layout=True,
         received_visible_chunk_output=False,
         saw_tool_result_output=True,
+        streamed_match_mode="render",
         response_text="✅ 已成功创建站立提醒！",
-    ) is True
+    ) == "render"
 
-    assert executor._should_skip_fixed_hud_secondary_message_render(
+    assert executor._get_fixed_hud_message_action(
         use_fixed_hud_layout=True,
         received_visible_chunk_output=False,
         saw_tool_result_output=False,
+        streamed_match_mode="render",
         response_text="✅ 已成功创建站立提醒！",
-    ) is False
+    ) == "render"
 
-    assert executor._should_skip_fixed_hud_secondary_message_render(
+    assert executor._get_fixed_hud_message_action(
         use_fixed_hud_layout=False,
         received_visible_chunk_output=False,
         saw_tool_result_output=True,
+        streamed_match_mode="render",
         response_text="✅ 已成功创建站立提醒！",
-    ) is False
+    ) == "render"
 
 
-def test_fixed_hud_skips_secondary_message_render_after_visible_chunk_stream():
+def test_fixed_hud_message_action_skips_only_when_stream_fully_covers_response():
     executor = object.__new__(LocalAgentExecutor)
 
-    assert executor._should_skip_fixed_hud_secondary_message_render(
+    assert executor._get_fixed_hud_message_action(
         use_fixed_hud_layout=True,
         received_visible_chunk_output=True,
         saw_tool_result_output=False,
+        streamed_match_mode="skip",
         response_text="我是 **AWorld**。",
-    ) is True
+    ) == "skip"
 
-    assert executor._should_skip_fixed_hud_secondary_message_render(
+    assert executor._get_fixed_hud_message_action(
         use_fixed_hud_layout=True,
-        received_visible_chunk_output=False,
+        received_visible_chunk_output=True,
         saw_tool_result_output=False,
+        streamed_match_mode="append",
         response_text="我是 **AWorld**。",
-    ) is False
+    ) == "skip"
 
-    assert executor._should_skip_fixed_hud_secondary_message_render(
+    assert executor._get_fixed_hud_message_action(
+        use_fixed_hud_layout=True,
+        received_visible_chunk_output=True,
+        saw_tool_result_output=False,
+        streamed_match_mode="render",
+        response_text="我是 **AWorld**。",
+    ) == "render"
+
+    assert executor._get_fixed_hud_message_action(
         use_fixed_hud_layout=False,
         received_visible_chunk_output=True,
         saw_tool_result_output=False,
+        streamed_match_mode="skip",
         response_text="我是 **AWorld**。",
-    ) is False
+    ) == "render"
 
 
 def test_resolve_streamed_response_match_skips_when_stream_fully_matches():
