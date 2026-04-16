@@ -79,3 +79,25 @@ def test_skill_update_cli_rejects_non_git_install(
         ValueError, match="Only git-backed installed skill entries can be updated"
     ):
         main_module.main()
+
+
+def test_skill_install_accepts_agent_scope(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source = tmp_path / "developer-skills"
+    _write_skill(source, "optimizer")
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["aworld-cli", "skill", "install", str(source), "--scope", "agent:developer"],
+    )
+    main_module.main()
+    capsys.readouterr()
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "list"])
+    main_module.main()
+    output = capsys.readouterr().out
+
+    assert "agent:developer" in output
