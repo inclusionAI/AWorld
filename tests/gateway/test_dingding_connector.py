@@ -10,7 +10,12 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from aworld_gateway.channels.dingding.connector import DingTalkConnector
-from aworld_gateway.channels.dingding.types import DingdingBridgeResult
+from aworld_gateway.channels.dingding.types import (
+    AICardInstance,
+    DingdingBridgeResult,
+    IncomingAttachment,
+    PendingFileMessage,
+)
 from aworld_gateway.config import DingdingChannelConfig
 
 
@@ -33,6 +38,9 @@ class _FakeBridge:
                 "text": text,
             }
         )
+        if on_text_chunk is not None:
+            await on_text_chunk("echo:")
+            await on_text_chunk(text)
         return DingdingBridgeResult(text=f"echo:{text}")
 
 
@@ -85,8 +93,16 @@ class _FakeHttpClient:
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.response = _FakeResponse()
 
-    async def post(self, url: str, *, json: dict[str, object]):
-        self.calls.append((url, json))
+    async def post(self, url: str, **kwargs):
+        self.calls.append((url, kwargs))
+        return self.response
+
+    async def get(self, url: str, **kwargs):
+        self.calls.append((url, kwargs))
+        return self.response
+
+    async def request(self, method: str, url: str, **kwargs):
+        self.calls.append((f"{method} {url}", kwargs))
         return self.response
 
     async def aclose(self) -> None:
@@ -338,6 +354,7 @@ def test_connector_send_text_posts_dingtalk_text_payload() -> None:
         stream_module=object(),
         http_client=http_client,
     )
+    connector._get_access_token = lambda: asyncio.sleep(0, result="access-token")  # type: ignore[method-assign]
 
     asyncio.run(
         connector.send_text(
@@ -349,7 +366,13 @@ def test_connector_send_text_posts_dingtalk_text_payload() -> None:
     assert http_client.calls == [
         (
             "https://callback",
-            {"msgtype": "text", "text": {"content": "hello"}},
+            {
+                "headers": {
+                    "x-acs-dingtalk-access-token": "access-token",
+                    "Content-Type": "application/json",
+                },
+                "json": {"msgtype": "text", "text": {"content": "hello"}},
+            },
         )
     ]
     assert http_client.response.raised is True
@@ -360,3 +383,158 @@ def test_connector_required_env_raises_on_missing(monkeypatch) -> None:
 
     with pytest.raises(ValueError, match="AWORLD_DINGTALK_CLIENT_ID"):
         DingTalkConnector._required_env("AWORLD_DINGTALK_CLIENT_ID")
+
+
+def test_connector_extract_message_supports_rich_text_and_attachments() -> None:
+    message = DingTalkConnector._extract_message(
+        {
+            "msgtype": "richText",
+            "content": {
+                "richText": [
+                    {"text": "请分析"},
+                    {"text": "这个文件"},
+                    {"downloadCode": "code-1", "fileName": "report.pdf"},
+                ]
+            },
+        }
+    )
+
+    assert message.text == "请分析这个文件"
+    assert message.attachments == [
+        IncomingAttachment(download_code="code-1", file_name="report.pdf")
+    ]
+
+
+def test_connector_process_local_media_links_uploads_and_collects_files(
+    tmp_path: Path,
+) -> None:
+    image_path = tmp_path / "chart.png"
+    file_path = tmp_path / "report.txt"
+    image_path.write_bytes(b"img")
+    file_path.write_text("report", encoding="utf-8")
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(enable_attachments=True),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+    )
+    connector._get_oapi_access_token = lambda: asyncio.sleep(0, result="oapi-token")  # type: ignore[method-assign]
+
+    async def fake_upload(local_path: Path, media_type: str, oapi_token: str) -> str | None:
+        assert oapi_token == "oapi-token"
+        return f"{media_type}:{local_path.name}"
+
+    connector._upload_local_file_to_dingtalk = fake_upload  # type: ignore[method-assign]
+
+    content = (
+        f"结果如下 ![图表](attachment://{image_path})\n"
+        f"[下载报告](attachment://{file_path})"
+    )
+    cleaned, pending_files = asyncio.run(connector._process_local_media_links(content))
+
+    assert cleaned == "结果如下 ![图表](image:chart.png)"
+    assert pending_files == [
+        PendingFileMessage(
+            media_id="file:report.txt",
+            file_name="report.txt",
+            file_type="txt",
+        )
+    ]
+
+
+def test_connector_streams_ai_card_and_sends_pending_files() -> None:
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld", enable_ai_card=True),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+    )
+    calls: list[tuple[str, str]] = []
+
+    async def fake_create_ai_card(data):
+        return AICardInstance(card_instance_id="card-1", access_token="token")
+
+    async def fake_stream_ai_card(card: AICardInstance, content: str, finished: bool) -> bool:
+        calls.append(("stream", f"final:{content}" if finished else content))
+        return True
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        calls.append(("text", text))
+
+    async def fake_process_local_media_links(content: str):
+        return content.replace(" [下载]", ""), [
+            PendingFileMessage(
+                media_id="file:report.txt",
+                file_name="report.txt",
+                file_type="txt",
+            )
+        ]
+
+    async def fake_send_pending_files(session_webhook: str, pending_files: list[PendingFileMessage]) -> None:
+        calls.append(("file", pending_files[0].file_name))
+
+    connector._try_create_ai_card = fake_create_ai_card  # type: ignore[method-assign]
+    connector._stream_ai_card = fake_stream_ai_card  # type: ignore[method-assign]
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    connector._process_local_media_links = fake_process_local_media_links  # type: ignore[method-assign]
+    connector._send_pending_files = fake_send_pending_files  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "hi"},
+            }
+        )
+    )
+
+    assert calls == [
+        ("stream", "echo:"),
+        ("stream", "echo:hi"),
+        ("stream", "final:echo:hi"),
+        ("file", "report.txt"),
+    ]
+
+
+def test_connector_falls_back_to_text_when_ai_card_finalize_fails() -> None:
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld", enable_ai_card=True),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+    )
+    calls: list[tuple[str, str]] = []
+
+    async def fake_create_ai_card(data):
+        return AICardInstance(card_instance_id="card-1", access_token="token")
+
+    async def fake_stream_ai_card(card: AICardInstance, content: str, finished: bool) -> bool:
+        calls.append(("stream", f"final:{content}" if finished else content))
+        return not finished
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        calls.append(("text", text))
+
+    async def fake_process_local_media_links(content: str):
+        return content, []
+
+    connector._try_create_ai_card = fake_create_ai_card  # type: ignore[method-assign]
+    connector._stream_ai_card = fake_stream_ai_card  # type: ignore[method-assign]
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    connector._process_local_media_links = fake_process_local_media_links  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "hi"},
+            }
+        )
+    )
+
+    assert calls[-1] == ("text", "echo:hi")
