@@ -27,6 +27,7 @@ def test_list_channels_reports_phase_one_builtins_with_implementation_flags():
 def test_registry_exposes_metadata_and_adapter_class_paths():
     registry = ChannelRegistry()
     telegram_meta = registry.get_meta("telegram")
+    dingding_meta = registry.get_meta("dingding")
     web_meta = registry.get_meta("web")
 
     assert telegram_meta is not None
@@ -40,6 +41,13 @@ def test_registry_exposes_metadata_and_adapter_class_paths():
     web_adapter_cls = registry.get_adapter_class("web")
     assert web_adapter_cls is not None
     assert issubclass(web_adapter_cls, ChannelAdapter)
+
+    assert dingding_meta is not None
+    assert dingding_meta["implemented"] is True
+    dingding_adapter_cls = registry.get_adapter_class("dingding")
+    assert dingding_adapter_cls is not None
+    assert issubclass(dingding_adapter_cls, ChannelAdapter)
+    assert dingding_adapter_cls.metadata().implemented is True
 
 
 def test_registry_validates_channel_configuration(monkeypatch):
