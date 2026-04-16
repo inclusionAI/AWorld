@@ -323,6 +323,27 @@ class LocalAgentExecutor(BaseAgentExecutor):
             return False
         return bool(str(content).strip())
 
+    @staticmethod
+    def _resolve_streamed_response_match(streamed_content: Any, response_text: Any) -> tuple[str, str]:
+        final_text = "" if response_text is None else str(response_text)
+        streamed_text = "" if streamed_content is None else str(streamed_content)
+
+        if not final_text.strip():
+            return "skip", ""
+        if not streamed_text.strip():
+            return "render", final_text
+        if final_text == streamed_text or final_text.strip() == streamed_text.strip():
+            return "skip", ""
+        if final_text.startswith(streamed_text):
+            return "append", final_text[len(streamed_text):]
+
+        stripped_final = final_text.strip()
+        stripped_streamed = streamed_text.strip()
+        if stripped_streamed and stripped_final.startswith(stripped_streamed):
+            return "append", stripped_final[len(stripped_streamed):]
+
+        return "render", final_text
+
     async def cleanup_resources(self) -> None:
         """
         Close MCP and other resources in the same event loop to avoid
@@ -653,12 +674,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 last_message_output = None
                 stream_token_stats = None  # Set by consume_stream, used for history
                 response_rendered_to_console = False
+                current_round_streamed_content = ""
                 
                 saved_any_round = False
 
                 async def consume_stream():
                     """Consume stream events and collect outputs with beautiful formatting."""
-                    nonlocal answer, last_message_output, stream_token_stats, saved_any_round, response_rendered_to_console
+                    nonlocal answer, last_message_output, stream_token_stats, saved_any_round, response_rendered_to_console, current_round_streamed_content
                     stream_token_stats = StreamTokenStats()
                     logger.info(f"📊 Starting consume_stream - stream_token_stats initialized")
                     ctrl = StreamDisplayController(
@@ -700,6 +722,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 if isinstance(output, MessageOutput):
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
                                     response_text = str(output.response) if hasattr(output, "response") and output.response else ""
+                                    streamed_match_mode, streamed_match_text = self._resolve_streamed_response_match(
+                                        current_round_streamed_content,
+                                        response_text,
+                                    )
                                     tool_calls = output.tool_calls if hasattr(output, "tool_calls") and output.tool_calls else []
                                     current_tool_name = None
                                     if tool_calls:
@@ -917,21 +943,36 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         logger.info(f"Output: {output}")
                                         logger.info(f"Answer: {answer}")
                                         logger.info(f"Is handoff: {is_handoff}")
-                                        if ctrl.use_fixed_hud_layout and received_chunk_output:
+                                        content_already_streamed = streamed_match_mode == "skip"
+                                        render_output = output
+
+                                        if ctrl.use_fixed_hud_layout and received_visible_chunk_output:
+                                            if streamed_match_mode == "append" and streamed_match_text:
+                                                ctrl.stream_fixed_chunk_content(current_agent_name, streamed_match_text)
+                                                current_round_streamed_content += streamed_match_text
+                                                response_rendered_to_console = True
+                                                content_already_streamed = True
                                             ctrl.finish_fixed_stream_content()
+
+                                        if streamed_match_mode == "append" and not ctrl.use_fixed_hud_layout:
+                                            content_already_streamed = False
+                                        elif streamed_match_mode == "render" and streamed_match_text != response_text:
+                                            render_output = output.model_copy(update={"response": streamed_match_text})
+
                                         def _render_message_output():
                                             return self._render_simple_message_output(
-                                                output,
+                                                render_output,
                                                 answer,
                                                 agent_name=current_agent_name,
                                                 is_handoff=is_handoff,
-                                                content_already_streamed=received_visible_chunk_output,
+                                                content_already_streamed=content_already_streamed,
                                             )
 
                                         answer, _ = ctrl.print_with_hud_suspended(_render_message_output)
-                                        if self._has_visible_response_content(response_text):
+                                        if self._has_visible_response_content(response_text) and streamed_match_mode != "skip":
                                             response_rendered_to_console = True
                                         received_visible_chunk_output = False
+                                        current_round_streamed_content = ""
                                         
                                         # 🔧 FIX: Display token stats after rendering message output (STREAM=0 mode)
                                         # This ensures the stats line is shown even when not streaming
@@ -1032,6 +1073,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         if content := getattr(chunk, "content", None):
                                             ctrl.buffer.accumulated_content += content
                                             if self._has_visible_response_content(content):
+                                                current_round_streamed_content += content
                                                 response_rendered_to_console = True
                                                 received_visible_chunk_output = True
                                             if ctrl.use_fixed_hud_layout:

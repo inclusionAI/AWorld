@@ -409,6 +409,42 @@ def test_visible_response_content_helper_detects_actual_text():
     assert executor._has_visible_response_content("\n已为你创建提醒。") is True
 
 
+def test_resolve_streamed_response_match_skips_when_stream_fully_matches():
+    executor = object.__new__(LocalAgentExecutor)
+
+    mode, text = executor._resolve_streamed_response_match(
+        streamed_content="我是 AWorld。",
+        response_text="我是 AWorld。",
+    )
+
+    assert mode == "skip"
+    assert text == ""
+
+
+def test_resolve_streamed_response_match_appends_missing_suffix():
+    executor = object.__new__(LocalAgentExecutor)
+
+    mode, text = executor._resolve_streamed_response_match(
+        streamed_content="我是 AWorld，",
+        response_text="我是 AWorld，一个多功能 AI 助手。",
+    )
+
+    assert mode == "append"
+    assert text == "一个多功能 AI 助手。"
+
+
+def test_resolve_streamed_response_match_renders_full_when_stream_diverges():
+    executor = object.__new__(LocalAgentExecutor)
+
+    mode, text = executor._resolve_streamed_response_match(
+        streamed_content="我是 AWorld，第一版",
+        response_text="我是 AWorld，第二版",
+    )
+
+    assert mode == "render"
+    assert text == "我是 AWorld，第二版"
+
+
 def test_stream_renderable_keeps_hud_fixed_to_bottom_lines_when_content_is_long():
     buffer = StreamDisplayBuffer(
         accumulated_content="\n".join(f"line{i}" for i in range(12)),
