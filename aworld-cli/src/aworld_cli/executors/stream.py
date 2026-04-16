@@ -197,6 +197,15 @@ class FixedBottomHudRenderer:
         self.hud_lines_fn = hud_lines_fn
         self.reserved_lines = max(1, reserved_lines)
         self._active = False
+        self._scroll_region_enabled = False
+
+    @staticmethod
+    def _save_cursor() -> str:
+        return "\x1b7"
+
+    @staticmethod
+    def _restore_cursor() -> str:
+        return "\x1b8"
 
     def _output_file(self):
         return getattr(self.console, "file", None) or sys.stdout
@@ -214,6 +223,7 @@ class FixedBottomHudRenderer:
     def start(self) -> None:
         if not self._supports_terminal_positioning():
             return
+        self._enable_scroll_region()
         self._active = True
         self.render()
 
@@ -221,6 +231,7 @@ class FixedBottomHudRenderer:
         if not self._active:
             return
         self.clear()
+        self._disable_scroll_region()
         self._active = False
 
     def suspend(self) -> None:
@@ -254,16 +265,35 @@ class FixedBottomHudRenderer:
         color_system = getattr(self.console, "color_system", None) or "truecolor"
         return build_status_bar_ansi_lines(plain_lines, color_system=str(color_system))
 
+    def _enable_scroll_region(self) -> None:
+        if self._scroll_region_enabled or not self._supports_terminal_positioning():
+            return
+        _, rows = get_terminal_size()
+        body_bottom = max(1, rows - self.reserved_lines)
+        ops = [
+            self._save_cursor(),
+            f"\x1b[1;{body_bottom}r",
+            self._restore_cursor(),
+        ]
+        self._write("".join(ops))
+        self._scroll_region_enabled = True
+
+    def _disable_scroll_region(self) -> None:
+        if not self._scroll_region_enabled or not self._supports_terminal_positioning():
+            return
+        self._write("\x1b[r")
+        self._scroll_region_enabled = False
+
     def clear(self) -> None:
         if not self._supports_terminal_positioning():
             return
         _, rows = get_terminal_size()
         start_row = max(1, rows - self.reserved_lines + 1)
-        ops = ["\x1b[s"]
+        ops = [self._save_cursor()]
         for offset in range(self.reserved_lines):
             ops.append(f"\x1b[{start_row + offset};1H")
             ops.append("\x1b[2K")
-        ops.append("\x1b[u")
+        ops.append(self._restore_cursor())
         self._write("".join(ops))
 
     def render(self) -> None:
@@ -273,14 +303,14 @@ class FixedBottomHudRenderer:
         lines = self._build_ansi_hud_lines(cols)
         start_row = max(1, rows - self.reserved_lines + 1)
         display_start = max(start_row, rows - len(lines) + 1) if lines else rows
-        ops = ["\x1b[s"]
+        ops = [self._save_cursor()]
         for offset in range(self.reserved_lines):
             ops.append(f"\x1b[{start_row + offset};1H")
             ops.append("\x1b[2K")
         for index, line in enumerate(lines):
             ops.append(f"\x1b[{display_start + index};1H")
             ops.append(line)
-        ops.append("\x1b[u")
+        ops.append(self._restore_cursor())
         self._write("".join(ops))
 
 
@@ -578,6 +608,8 @@ class StreamDisplayController:
         self._deferred_start_thinking = False
         self._deferred_thinking_message = ""
         self._deferred_stop_and_start_thinking = False
+        self._fixed_stream_agent_name: Optional[str] = None
+        self._fixed_stream_at_line_start = True
 
     def _fixed_hud_is_active(self) -> bool:
         return bool(self.fixed_hud_renderer and self.fixed_hud_renderer.is_active())
@@ -590,6 +622,54 @@ class StreamDisplayController:
             return callback()
         finally:
             self.fixed_hud_renderer.resume()
+
+    def _format_fixed_stream_chunk(self, content: str) -> str:
+        if not content:
+            return ""
+        out: list[str] = []
+        line_start = self._fixed_stream_at_line_start
+        for ch in content.replace("\r", ""):
+            if line_start:
+                out.append("   ")
+                line_start = False
+            out.append(ch)
+            if ch == "\n":
+                line_start = True
+        self._fixed_stream_at_line_start = line_start
+        return "".join(out)
+
+    def stream_fixed_chunk_content(self, agent_name: str, content: str) -> None:
+        if not self.console or not content:
+            return
+
+        normalized_agent_name = agent_name or "Assistant"
+
+        def _write_chunk() -> None:
+            if self._fixed_stream_agent_name != normalized_agent_name:
+                if self._fixed_stream_agent_name is not None and not self._fixed_stream_at_line_start:
+                    self.console.print()
+                    self._fixed_stream_at_line_start = True
+                self.console.print(f"🤖 [bold]{normalized_agent_name}[/bold]")
+                self._fixed_stream_agent_name = normalized_agent_name
+                self._fixed_stream_at_line_start = True
+            formatted = self._format_fixed_stream_chunk(content)
+            if formatted:
+                self.console.print(Text(formatted), end="")
+
+        _write_chunk()
+
+    def finish_fixed_stream_content(self) -> None:
+        if not self.console or self._fixed_stream_agent_name is None:
+            return
+
+        def _finish() -> None:
+            if not self._fixed_stream_at_line_start:
+                self.console.print()
+            self.console.print()
+
+        self.print_with_hud_suspended(_finish)
+        self._fixed_stream_agent_name = None
+        self._fixed_stream_at_line_start = True
 
     def start_loading(self, message: str) -> None:
         """Start or update loading status."""
@@ -858,6 +938,8 @@ class StreamDisplayController:
             await asyncio.sleep(self.config.render_interval)
 
     def close(self) -> None:
+        if self._fixed_stream_agent_name is not None:
+            self.finish_fixed_stream_content()
         if self.status_update_task:
             self.status_update_task.cancel()
             self.status_update_task = None

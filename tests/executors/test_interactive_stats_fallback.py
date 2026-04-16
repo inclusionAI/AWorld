@@ -22,6 +22,7 @@ from aworld_cli.executors.stream import (
 )
 from aworld_cli.console import AWorldCLI
 from aworld_cli.status_text import build_status_bar_rich_lines
+from aworld.output.base import MessageOutput
 
 
 class HudRuntime:
@@ -332,6 +333,26 @@ def test_fixed_bottom_hud_renderer_uses_segment_styles():
     assert "Task: task_001 (running)" in rendered
     assert "\x1b[38;2;" in rendered
     assert ";48;2;" in rendered
+    assert "\x1b[1;" in rendered
+    assert "r" in rendered
+
+
+def test_render_simple_message_output_skips_response_when_content_already_streamed():
+    executor = object.__new__(LocalAgentExecutor)
+    executor.console = Console(record=True, width=120)
+
+    answer, rendered = executor._render_simple_message_output(
+        MessageOutput(response="hello from stream"),
+        answer="",
+        agent_name="Aworld",
+        content_already_streamed=True,
+    )
+
+    output = executor.console.export_text()
+
+    assert answer == "hello from stream"
+    assert rendered == "hello from stream"
+    assert "hello from stream" not in output
 
 
 def test_stream_renderable_keeps_hud_fixed_to_bottom_lines_when_content_is_long():
@@ -414,3 +435,58 @@ async def test_fixed_hud_mode_avoids_live_stream_rendering():
     assert controller.status_start_time is not None
 
     controller.close()
+
+
+def test_fixed_hud_mode_streams_chunk_content_without_repeating_header():
+    controller = StreamDisplayController(
+        console=Console(record=True, width=120),
+        stream_token_stats=_build_stats(),
+        format_tool_calls_fn=lambda calls: [],
+        config=StreamDisplayConfig(),
+        should_emit_interactive_stats_fn=lambda: False,
+        use_fixed_hud_layout=True,
+    )
+
+    controller.stream_fixed_chunk_content("Aworld", "hello")
+    controller.stream_fixed_chunk_content("Aworld", " world\nnext")
+    controller.finish_fixed_stream_content()
+
+    output = controller.console.export_text()
+
+    assert output.count("🤖 Aworld") == 1
+    assert "hello world" in output
+    assert "next" in output
+
+
+def test_fixed_hud_mode_does_not_suspend_hud_for_each_stream_chunk():
+    controller = StreamDisplayController(
+        console=Console(record=True, width=120),
+        stream_token_stats=_build_stats(),
+        format_tool_calls_fn=lambda calls: [],
+        config=StreamDisplayConfig(),
+        should_emit_interactive_stats_fn=lambda: False,
+        use_fixed_hud_layout=True,
+    )
+
+    class DummyHud:
+        def __init__(self):
+            self.suspend_calls = 0
+            self.resume_calls = 0
+
+        def is_active(self):
+            return True
+
+        def suspend(self):
+            self.suspend_calls += 1
+
+        def resume(self):
+            self.resume_calls += 1
+
+    dummy_hud = DummyHud()
+    controller.fixed_hud_renderer = dummy_hud
+
+    controller.stream_fixed_chunk_content("Aworld", "hello")
+    controller.stream_fixed_chunk_content("Aworld", " world")
+
+    assert dummy_hud.suspend_calls == 0
+    assert dummy_hud.resume_calls == 0

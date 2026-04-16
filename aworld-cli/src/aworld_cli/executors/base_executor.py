@@ -792,7 +792,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         display_parts = []
 
         # Add main response with collapsible content
-        if response_text.strip():
+        if response_text.strip() and not content_already_streamed:
             # Prepare content lines for collapsible rendering
             response_lines = []
 
@@ -816,7 +816,7 @@ class BaseAgentExecutor(ABC, AgentExecutor):
             header = f"🤖 [bold]{agent_name}[/bold]"
             self._render_collapsible_content('message', header, response_lines, max_lines=10)
             self.console.print()  # Add spacing after message
-        else:
+        elif not content_already_streamed:
             # Empty content: show agent header + placeholder when response was actually empty
             if not response_text.strip():
                 header = f"🤖 [bold]{agent_name}[/bold]"
