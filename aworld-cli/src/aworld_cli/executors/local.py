@@ -266,7 +266,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 mode="Chat",
                 workspace_name=Path.cwd().name,
                 git_branch=self._detect_git_branch_for_hud(),
-                max_width=shutil.get_terminal_size(fallback=(160, 24)).columns,
+                max_width=max(40, shutil.get_terminal_size(fallback=(160, 24)).columns - 2),
             )
         except Exception:
             return []
@@ -892,6 +892,8 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         logger.info(f"Output: {output}")
                                         logger.info(f"Answer: {answer}")
                                         logger.info(f"Is handoff: {is_handoff}")
+                                        if ctrl.use_fixed_hud_layout and received_chunk_output:
+                                            ctrl.finish_fixed_stream_content()
                                         def _render_message_output():
                                             return self._render_simple_message_output(
                                                 output,
@@ -991,14 +993,20 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
                                         and not ctrl.use_fixed_hud_layout
                                     )
+                                    capture_stream_output = stream_on or ctrl.use_fixed_hud_layout
+                                    meta = getattr(output, "metadata", None) or {}
+                                    chunk_agent_name = meta.get("agent_name")
+                                    if not chunk_agent_name and hasattr(self.swarm, "cur_agent") and self.swarm.cur_agent:
+                                        chunk_agent_name = getattr(self.swarm.cur_agent, "name", None)
                                     chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
-                                    if stream_on and chunk:
+                                    if capture_stream_output and chunk:
                                         if content := getattr(chunk, "content", None):
                                             ctrl.buffer.accumulated_content += content
+                                            if ctrl.use_fixed_hud_layout:
+                                                ctrl.stream_fixed_chunk_content(chunk_agent_name or "Assistant", content)
                                         if tool_calls := getattr(chunk, "tool_calls", None):
                                             ctrl.buffer.accumulated_tool_calls = list(tool_calls)
-                                    meta = getattr(output, "metadata", None) or {}
                                     out_tok = meta.get("output_tokens")
                                     inp_tok = meta.get("input_tokens")
                                     tc_count = meta.get("tool_calls_count")
@@ -1317,7 +1325,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     
                 except Exception as e:
                     logger.error(f"💾 Failed to save to history: {e}")
-                    import traceback
                     logger.error(f"💾 Traceback: {traceback.format_exc()}")
                     # Don't fail the whole request if history save fails
 
