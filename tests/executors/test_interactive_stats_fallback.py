@@ -355,6 +355,45 @@ def test_render_simple_message_output_skips_response_when_content_already_stream
     assert "hello from stream" not in output
 
 
+def test_final_task_answer_should_render_when_last_message_had_no_visible_response():
+    executor = object.__new__(LocalAgentExecutor)
+    executor.console = MagicMock()
+
+    should_render = executor._should_render_final_task_answer(
+        final_answer="一分钟后提醒你站立",
+        last_message_output=MessageOutput(response=""),
+        response_rendered_to_console=False,
+    )
+
+    assert should_render is True
+
+
+def test_final_task_answer_should_not_render_when_response_already_rendered():
+    executor = object.__new__(LocalAgentExecutor)
+    executor.console = MagicMock()
+
+    should_render = executor._should_render_final_task_answer(
+        final_answer="一分钟后提醒你站立",
+        last_message_output=MessageOutput(response=""),
+        response_rendered_to_console=True,
+    )
+
+    assert should_render is False
+
+
+def test_final_task_answer_should_not_render_when_message_already_had_response():
+    executor = object.__new__(LocalAgentExecutor)
+    executor.console = MagicMock()
+
+    should_render = executor._should_render_final_task_answer(
+        final_answer="一分钟后提醒你站立",
+        last_message_output=MessageOutput(response="我会在一分钟后提醒你站立。"),
+        response_rendered_to_console=False,
+    )
+
+    assert should_render is False
+
+
 def test_stream_renderable_keeps_hud_fixed_to_bottom_lines_when_content_is_long():
     buffer = StreamDisplayBuffer(
         accumulated_content="\n".join(f"line{i}" for i in range(12)),
