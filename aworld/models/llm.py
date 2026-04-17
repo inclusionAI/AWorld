@@ -21,7 +21,7 @@ from aworld.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
 from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.ant_provider import AntProvider
 from aworld.models.together_video_provider import TogetherVideoProvider
-from aworld.models.ant_video_provider import AntVideoProvider, VideoProvider
+from aworld.models.ant_video_provider import AntVideoProvider
 from aworld.models.kling_provider import KlingProvider
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
@@ -74,7 +74,8 @@ PROVIDER_CLASSES = {
 # ---------------------------------------------------------------------------
 
 VIDEO_PROVIDER_CLASSES: Dict[str, type] = {
-    "video":          VideoProvider,
+    # MatrixCube: alias "video" matches endpoint detection; implementation is AntVideoProvider only
+    "video":          AntVideoProvider,
     "ant_video":      AntVideoProvider,
     "kling_video":    KlingProvider,
     "together_video": TogetherVideoProvider,
@@ -84,7 +85,7 @@ VIDEO_MODEL_REGISTRY: List[tuple] = [
     # (pattern, provider_name) — first match wins.
     # Direct Kling official API (kling_provider.KlingProvider), not MatrixCube
     (r"^kling-",        "kling_video"),
-    # Ant gateway (Doubao/Seedance, Veo via matrixcube) — same as AntVideoProvider / VideoProvider
+    # Ant gateway (Doubao/Seedance, Veo via matrixcube) — AntVideoProvider
     (r"^doubao-video-", "ant_video"),
     (r"^seedance-",     "ant_video"),
     (r"^veo-",          "ant_video"),
