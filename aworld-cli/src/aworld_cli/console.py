@@ -338,32 +338,31 @@ class AWorldCLI:
             segments = [segment.strip() for segment in line_text.split("|")]
             has_unread = any("unread" in segment for segment in segments)
             segment_styles = [
-                ("#181b2d", "#84c7c6"),
-                ("#181b2d", "#d8def5"),
-                ("#181b2d", "#f2c14e" if has_unread else "#8ed081"),
-                ("#181b2d", "#b8c0da"),
-                ("#181b2d", "#a88bd8"),
-                ("#181b2d", "#8ea0c4"),
+                "#84c7c6",
+                "#d8def5",
+                "#f2c14e" if has_unread else "#8ed081",
+                "#b8c0da",
+                "#a88bd8",
+                "#8ea0c4",
             ]
-            divider_style = ("#181b2d", "#4f5877")
+            divider_style = "#4f5877"
 
             parts = []
             for index, segment in enumerate(segments):
-                bg, fg = segment_styles[index] if index < len(segment_styles) else ("#181b2d", "#d8def5")
+                fg = segment_styles[index] if index < len(segment_styles) else "#d8def5"
                 escaped = (
                     segment.replace("&", "&amp;")
                     .replace("<", "&lt;")
                     .replace(">", "&gt;")
                 )
-                parts.append(f"<style bg='{bg}' fg='{fg}'> {escaped} </style>")
+                parts.append(f"<style fg='{fg}'> {escaped} </style>")
                 if index < len(segments) - 1:
-                    div_bg, div_fg = divider_style
-                    parts.append(f"<style bg='{div_bg}' fg='{div_fg}'> | </style>")
+                    parts.append(f"<style fg='{divider_style}'> | </style>")
             if max_width is not None:
                 rendered_width = sum(len(segment) + 2 for segment in segments) + max(0, len(segments) - 1) * 3
                 pad_width = max(0, max_width - rendered_width)
                 if pad_width:
-                    parts.append(f"<style bg='#181b2d' fg='#181b2d'>{' ' * pad_width}</style>")
+                    parts.append(" " * pad_width)
             return "".join(parts)
 
         return HTML("\n".join(_render_line(line) for line in lines if line))
@@ -378,7 +377,7 @@ class AWorldCLI:
             )
             prompt_kwargs["style"] = PromptToolkitStyle.from_dict(
                 {
-                    "bottom-toolbar": "bg:#181b2d #d8def5",
+                    "bottom-toolbar": "fg:#d8def5 bg:default noreverse",
                 }
             )
             prompt_kwargs["refresh_interval"] = 0.1

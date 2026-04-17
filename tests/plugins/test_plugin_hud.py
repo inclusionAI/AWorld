@@ -186,7 +186,7 @@ def test_prompt_kwargs_clear_bottom_toolbar_when_hud_is_disabled():
     assert "refresh_interval" not in prompt_kwargs
 
 
-def test_prompt_kwargs_apply_dark_toolbar_style_when_hud_is_enabled():
+def test_prompt_kwargs_avoid_toolbar_background_when_hud_is_enabled():
     class FakeRuntime:
         def active_plugin_capabilities(self):
             return ("hud",)
@@ -196,10 +196,16 @@ def test_prompt_kwargs_apply_dark_toolbar_style_when_hud_is_enabled():
 
     assert "style" in prompt_kwargs
     style_rules = getattr(prompt_kwargs["style"], "style_rules", [])
-    assert any(name == "bottom-toolbar" and "bg:#181b2d" in rule for name, rule in style_rules)
+    assert any(
+        name == "bottom-toolbar"
+        and "fg:#d8def5" in rule
+        and "bg:default" in rule
+        and "noreverse" in rule
+        for name, rule in style_rules
+    )
 
 
-def test_status_bar_html_pads_remaining_width_with_dark_background(monkeypatch):
+def test_status_bar_html_uses_text_color_without_background_markup(monkeypatch):
     class FakeRuntime:
         def active_plugin_capabilities(self):
             return ("hud",)
@@ -229,7 +235,8 @@ def test_status_bar_html_pads_remaining_width_with_dark_background(monkeypatch):
     html = cli._build_status_bar(FakeRuntime(), agent_name="Aworld", mode="Chat")
     rendered = getattr(html, "value", str(html))
 
-    assert "bg='#181b2d' fg='#181b2d'" in rendered
+    assert "bg='" not in rendered
+    assert "fg='#84c7c6'" in rendered
 
 
 def test_runtime_plugin_refresh_clears_active_prompt_session_when_hud_toggles():
