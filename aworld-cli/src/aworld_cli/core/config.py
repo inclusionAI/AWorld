@@ -447,6 +447,55 @@ def _apply_audio_models_config(models_config: Dict[str, Any]) -> None:
         os.environ['AUDIO_TEMPERATURE'] = str(float(temperature))
 
 
+def _apply_avatar_models_config(models_config: Dict[str, Any]) -> None:
+    """
+    Apply models.avatar config to AVATAR_* env vars for avatar agent.
+    Priority: models.avatar config > existing AVATAR_* env vars.
+    """
+    avatar_cfg = models_config.get('avatar')
+    avatar_cfg = avatar_cfg if isinstance(avatar_cfg, dict) else {}
+    api_key = (avatar_cfg.get('api_key') or '').strip()
+    model_name = (avatar_cfg.get('model') or '').strip()
+    base_url = (avatar_cfg.get('base_url') or '').strip()
+    provider = (avatar_cfg.get('provider') or '').strip()
+    submit_endpoint = (avatar_cfg.get('submit_endpoint') or '').strip()
+    status_endpoint = (avatar_cfg.get('status_endpoint') or '').strip()
+    temperature = avatar_cfg.get('temperature')
+
+    if not api_key:
+        api_key = (os.environ.get('AVATAR_API_KEY') or '').strip()
+    if not model_name:
+        model_name = (os.environ.get('AVATAR_MODEL_NAME') or '').strip()
+    if not base_url:
+        base_url = (os.environ.get('AVATAR_BASE_URL') or '').strip()
+    if not provider:
+        provider = (os.environ.get('AVATAR_PROVIDER') or '').strip()
+    if not submit_endpoint:
+        submit_endpoint = (os.environ.get('KLING_AVATAR_SUBMIT_ENDPOINT') or '').strip()
+    if not status_endpoint:
+        status_endpoint = (os.environ.get('KLING_AVATAR_STATUS_ENDPOINT') or '').strip()
+    if not provider:
+        provider = 'kling_avatar'
+    if temperature is None:
+        env_temp = (os.environ.get('AVATAR_TEMPERATURE') or '').strip()
+        if env_temp:
+            temperature = float(env_temp)
+
+    if api_key:
+        os.environ['AVATAR_API_KEY'] = api_key
+    if model_name:
+        os.environ['AVATAR_MODEL_NAME'] = model_name
+    if base_url:
+        os.environ['AVATAR_BASE_URL'] = base_url
+    os.environ['AVATAR_PROVIDER'] = provider
+    if submit_endpoint:
+        os.environ['KLING_AVATAR_SUBMIT_ENDPOINT'] = submit_endpoint
+    if status_endpoint:
+        os.environ['KLING_AVATAR_STATUS_ENDPOINT'] = status_endpoint
+    if temperature is not None:
+        os.environ['AVATAR_TEMPERATURE'] = str(float(temperature))
+
+
 def _resolve_image_model_cfg(models_config: Dict[str, Any], key: str, legacy_key: Optional[str] = None) -> Dict[str, Any]:
     cfg = models_config.get(key)
     if isinstance(cfg, dict):
@@ -570,7 +619,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
     """
     Apply models config (api_key, model, base_url) to os.environ.
     Supports: models.default (flat) and legacy models.default.{openai|anthropic|gemini}.
-    Also applies models.diffusion to DIFFUSION_*.
+    Also applies models.diffusion to DIFFUSION_* and models.avatar to AVATAR_*.
     """
     if not models_config:
         return
@@ -602,6 +651,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
         if base_url:
             os.environ['LLM_BASE_URL'] = base_url
         _apply_diffusion_models_config(models_config)
+        _apply_avatar_models_config(models_config)
         _apply_audio_models_config(models_config)
         _apply_image_models_config(models_config)
         return
@@ -645,6 +695,7 @@ def _apply_models_config_to_env(models_config: Dict[str, Any]) -> None:
                 os.environ['LLM_BASE_URL'] = base_url
 
     _apply_diffusion_models_config(models_config)
+    _apply_avatar_models_config(models_config)
     _apply_audio_models_config(models_config)
     _apply_image_models_config(models_config)
 
@@ -664,6 +715,7 @@ def _load_from_local_env(source_path: str) -> tuple[Dict[str, Any], str, str]:
     })
     # Apply DIFFUSION_* and image model envs from LLM_* when not set in .env
     _apply_diffusion_models_config({})
+    _apply_avatar_models_config({})
     _apply_audio_models_config({})
     _apply_image_models_config({})
     # Removed debug print statement that was leaking to stdout
@@ -717,6 +769,7 @@ def has_model_config(config_dict: Dict[str, Any]) -> bool:
         "TEXT_TO_IMAGE_API_KEY",
         "IMAGE_TO_IMAGE_API_KEY",
         "IMAGE_API_KEY",
+        "AVATAR_API_KEY",
     )
     for key in env_keys:
         if os.environ.get(key, "").strip():
@@ -736,7 +789,7 @@ def has_model_config(config_dict: Dict[str, Any]) -> bool:
     for p in ('openai', 'anthropic', 'gemini'):
         if isinstance(models.get(p), dict) and (models[p].get("api_key") or "").strip():
             return True
-    for p in ('text_to_image', 'image_to_image', 'image'):
+    for p in ('text_to_image', 'image_to_image', 'image', 'avatar'):
         if isinstance(models.get(p), dict) and (models[p].get("api_key") or "").strip():
             return True
     return False

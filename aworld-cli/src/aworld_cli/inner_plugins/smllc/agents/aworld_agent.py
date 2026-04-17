@@ -19,6 +19,7 @@ from aworld.experimental.cast.tools import CAST_ANALYSIS, CAST_CODER
 from aworld.logs.util import logger
 from aworld_cli.core.context_tool import CONTEXT_TOOL
 from .audio.audio import build_audio_swarm
+from .avatar.avatar import build_avatar_swarm
 from .developer.developer import build_developer_swarm
 from .evaluator.evaluator import build_evaluator_swarm
 from .diffusion.diffusion import build_diffusion_swarm
@@ -280,12 +281,14 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         developer_swarm = build_developer_swarm(sandbox=sandbox)  # ✅ Share sandbox
         evaluator_swarm = build_evaluator_swarm()  # TODO: Add sandbox parameter
         diffusion_swarm = build_diffusion_swarm()  # TODO: Add sandbox parameter
+        avatar_swarm = build_avatar_swarm()
         audio_swarm = build_audio_swarm()  # TODO: Add sandbox parameter
         image_swarm = build_image_swarm()
         sub_agents = (
             extract_agents_from_swarm(developer_swarm)
             + extract_agents_from_swarm(evaluator_swarm)
             + extract_agents_from_swarm(diffusion_swarm)
+            + extract_agents_from_swarm(avatar_swarm)
             + extract_agents_from_swarm(audio_swarm)
             + extract_agents_from_swarm(image_swarm)
         )
