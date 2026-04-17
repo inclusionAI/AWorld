@@ -22,6 +22,7 @@ from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.ant_provider import AntProvider
 from aworld.models.together_video_provider import TogetherVideoProvider
 from aworld.models.ant_video_provider import AntVideoProvider, VideoProvider
+from aworld.models.kling_provider import KlingProvider
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
 from aworld.core.model_output_parser import ModelOutputParser, BaseContentParser
@@ -43,6 +44,8 @@ ENDPOINT_PATTERNS = {
     "together_video": ["api.together.ai", "api.together.xyz"],
     "video": ["matrixcube.alipay.com", "matrixcube-pool.global.alipay.com"],
     "ant_video": ["matrixcube.alipay.com", "matrixcube-pool.global.alipay.com"],
+    # Kling official HTTP API (direct; distinct from MatrixCube gateway routing)
+    "kling_video": ["api-beijing.klingai.com"],
 }
 
 # Provider class mapping (LLM providers)
@@ -73,20 +76,22 @@ PROVIDER_CLASSES = {
 VIDEO_PROVIDER_CLASSES: Dict[str, type] = {
     "video":          VideoProvider,
     "ant_video":      AntVideoProvider,
+    "kling_video":    KlingProvider,
     "together_video": TogetherVideoProvider,
 }
 
 VIDEO_MODEL_REGISTRY: List[tuple] = [
-    # (pattern, provider_name)
-    # Ant gateway models (Kling, Doubao/Seedance, Veo via matrixcube)
-    (r".*kling-.*",        "video"),
-    (r".*doubao-video-.*", "video"),
-    (r".*seedance-.*",     "video"),
-    (r".*veo-.*",          "video"),
-    # Together.ai video models
+    # (pattern, provider_name) — first match wins.
+    # Direct Kling official API (kling_provider.KlingProvider), not MatrixCube
+    (r"^kling-",        "kling_video"),
+    # Ant gateway (Doubao/Seedance, Veo via matrixcube) — same as AntVideoProvider / VideoProvider
+    (r"^doubao-video-", "ant_video"),
+    (r"^seedance-",     "ant_video"),
+    (r"^veo-",          "ant_video"),
+    # Together.ai video models (use regex; matched with re.match from model_name start)
     (r".*minimax/.*",           "together_video"),
     (r".*google/veo-.*",        "together_video"),
-    (r".*ByteDance/Seedance.*",  "together_video"),
+    (r".*ByteDance/Seedance.*", "together_video"),
     (r".*pixverse/.*",          "together_video"),
     (r".*kwaivgI/kling-.*",     "together_video"),
     (r".*Wan-AI/.*",            "together_video"),
@@ -848,9 +853,8 @@ def _match_video_registry(model_name: str) -> Optional[str]:
     """Return the video provider name for *model_name* using VIDEO_MODEL_REGISTRY.
 
     Each entry in VIDEO_MODEL_REGISTRY is a ``(pattern, provider_name)`` tuple.
-    Patterns starting with ``^`` are treated as regular expressions; all others
-    are used as plain prefix strings.  Entries are evaluated in order and the
-    first match wins.
+    Patterns are matched with :func:`re.match` against *model_name* (regex).
+    Entries are evaluated in order and the first match wins.
 
     Args:
         model_name: The model identifier to look up.
