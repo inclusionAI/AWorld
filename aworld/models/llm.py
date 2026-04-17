@@ -23,6 +23,7 @@ from aworld.models.ant_provider import AntProvider
 from aworld.models.together_video_provider import TogetherVideoProvider
 from aworld.models.ant_video_provider import AntVideoProvider
 from aworld.models.kling_provider import KlingProvider
+from aworld.models.kling_avatar_provider import KlingAvatarProvider
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
 from aworld.core.model_output_parser import ModelOutputParser, BaseContentParser
@@ -78,6 +79,7 @@ VIDEO_PROVIDER_CLASSES: Dict[str, type] = {
     "video":          AntVideoProvider,
     "ant_video":      AntVideoProvider,
     "kling_video":    KlingProvider,
+    "kling_avatar":   KlingAvatarProvider,
     "together_video": TogetherVideoProvider,
 }
 
