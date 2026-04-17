@@ -54,7 +54,8 @@ def test_status_bar_text_merges_plugin_hud_lines():
     cli = AWorldCLI()
     text = cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat")
 
-    assert text.startswith("Agent: Aworld / Chat")
+    assert text.startswith("Agent: Aworld")
+    assert "Agent: Aworld / Chat" not in text
     assert "Workspace: aworld" in text
 
 
@@ -106,7 +107,7 @@ def test_collect_hud_lines_preserves_grouped_segments():
     )
 
     assert [line.section for line in lines] == ["identity", "activity"]
-    assert lines[0].segments[0].startswith("Agent: Aworld / Chat")
+    assert lines[0].segments[0] == "Agent: Aworld"
     assert "Task: task_001 (running)" in lines[1].segments
     assert "Elapsed: 12.5s" in lines[1].segments
 
@@ -136,7 +137,7 @@ def test_status_bar_text_renders_two_lines_from_grouped_hud_segments():
 
     lines = text.splitlines()
     assert len(lines) == 2
-    assert lines[0].startswith("Agent: Aworld / Chat")
+    assert lines[0].startswith("Agent: Aworld")
     assert "Task: task_001" in lines[1]
 
 
@@ -183,6 +184,52 @@ def test_prompt_kwargs_clear_bottom_toolbar_when_hud_is_disabled():
     assert "bottom_toolbar" in prompt_kwargs
     assert prompt_kwargs["bottom_toolbar"] is None
     assert "refresh_interval" not in prompt_kwargs
+
+
+def test_prompt_kwargs_apply_dark_toolbar_style_when_hud_is_enabled():
+    class FakeRuntime:
+        def active_plugin_capabilities(self):
+            return ("hud",)
+
+    cli = AWorldCLI()
+    prompt_kwargs = cli._build_prompt_kwargs(FakeRuntime(), agent_name="Aworld", mode="Chat")
+
+    assert "style" in prompt_kwargs
+    style_rules = getattr(prompt_kwargs["style"], "style_rules", [])
+    assert any(name == "bottom-toolbar" and "bg:#181b2d" in rule for name, rule in style_rules)
+
+
+def test_status_bar_html_pads_remaining_width_with_dark_background(monkeypatch):
+    class FakeRuntime:
+        def active_plugin_capabilities(self):
+            return ("hud",)
+
+        def build_hud_context(self, agent_name, mode, workspace_name, git_branch):
+            return {
+                "workspace": {"name": workspace_name},
+                "session": {"agent": agent_name, "mode": mode},
+                "notifications": {"cron_unread": 0},
+                "vcs": {"branch": git_branch},
+            }
+
+        def get_hud_lines(self, context):
+            return [
+                SimpleNamespace(
+                    section="identity",
+                    segments=("Agent: Aworld",),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "aworld_cli.console.shutil.get_terminal_size",
+        lambda fallback=(160, 24): os.terminal_size((60, 24)),
+    )
+
+    cli = AWorldCLI()
+    html = cli._build_status_bar(FakeRuntime(), agent_name="Aworld", mode="Chat")
+    rendered = getattr(html, "value", str(html))
+
+    assert "bg='#181b2d' fg='#181b2d'" in rendered
 
 
 def test_runtime_plugin_refresh_clears_active_prompt_session_when_hud_toggles():
@@ -271,7 +318,7 @@ def test_status_bar_text_reduces_grouped_segments_to_fit_width():
             return [
                 SimpleNamespace(
                     segments=(
-                        "Agent: Aworld / Chat",
+                        "Agent: Aworld",
                         "Workspace: aworld",
                         "Branch: main",
                     )
@@ -281,7 +328,7 @@ def test_status_bar_text_reduces_grouped_segments_to_fit_width():
     cli = AWorldCLI()
     text = cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat", max_width=30)
 
-    assert text == "Agent: Aworld / Chat"
+    assert text == "Agent: Aworld"
 
 
 def test_status_bar_text_truncates_long_segment_after_reduction():
@@ -342,7 +389,8 @@ def test_status_bar_text_keeps_idle_hud_stable_without_execution_stats():
     cli = AWorldCLI()
     text = cli._build_status_bar_text(FakeRuntime(), agent_name="Aworld", mode="Chat", max_width=160)
 
-    assert "Agent: Aworld / Chat" in text
+    assert "Agent: Aworld" in text
+    assert "Agent: Aworld / Chat" not in text
     assert "Model: claude-sonnet-4-5" in text
     assert "Workspace: aworld" in text
     assert "Branch:" in text

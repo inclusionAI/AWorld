@@ -6,11 +6,10 @@ def _identity_segments(context):
     vcs = context.get("vcs", {})
     notifications = context.get("notifications", {})
     agent = session.get("agent", "Aworld")
-    mode = session.get("mode", "Chat")
     model = session.get("model")
     cron = notifications.get("cron_unread", 0)
 
-    segments = [f"Agent: {agent} / {mode}"]
+    segments = [f"Agent: {agent}"]
     if model:
         segments.append(f"Model: {model}")
     segments.append(f"Workspace: {workspace.get('name', 'workspace')}")

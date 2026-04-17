@@ -10,6 +10,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.completion import Completer, Completion, WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.styles import Style as PromptToolkitStyle
 from rich import box
 from rich.color import Color
 from rich.panel import Panel
@@ -358,6 +359,11 @@ class AWorldCLI:
                 if index < len(segments) - 1:
                     div_bg, div_fg = divider_style
                     parts.append(f"<style bg='{div_bg}' fg='{div_fg}'> | </style>")
+            if max_width is not None:
+                rendered_width = sum(len(segment) + 2 for segment in segments) + max(0, len(segments) - 1) * 3
+                pad_width = max(0, max_width - rendered_width)
+                if pad_width:
+                    parts.append(f"<style bg='#181b2d' fg='#181b2d'>{' ' * pad_width}</style>")
             return "".join(parts)
 
         return HTML("\n".join(_render_line(line) for line in lines if line))
@@ -369,6 +375,11 @@ class AWorldCLI:
                 runtime,
                 agent_name=agent_name,
                 mode=mode,
+            )
+            prompt_kwargs["style"] = PromptToolkitStyle.from_dict(
+                {
+                    "bottom-toolbar": "bg:#181b2d #d8def5",
+                }
             )
             prompt_kwargs["refresh_interval"] = 0.1
         return prompt_kwargs
