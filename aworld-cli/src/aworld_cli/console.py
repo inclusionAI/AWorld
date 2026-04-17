@@ -333,6 +333,7 @@ class AWorldCLI:
         max_width = columns if columns > 0 else None
         text = self._build_status_bar_text(runtime, agent_name=agent_name, mode=mode, max_width=max_width)
         lines = text.splitlines() or [text]
+        divider_style = "#4f5877"
 
         def _render_line(line_text: str) -> str:
             segments = [segment.strip() for segment in line_text.split("|")]
@@ -345,7 +346,6 @@ class AWorldCLI:
                 "#a88bd8",
                 "#8ea0c4",
             ]
-            divider_style = "#4f5877"
 
             parts = []
             for index, segment in enumerate(segments):
@@ -365,7 +365,11 @@ class AWorldCLI:
                     parts.append(" " * pad_width)
             return "".join(parts)
 
-        return HTML("\n".join(_render_line(line) for line in lines if line))
+        rendered_lines = []
+        if max_width is not None:
+            rendered_lines.append(f"<style fg='{divider_style}'>{'─' * max_width}</style>")
+        rendered_lines.extend(_render_line(line) for line in lines if line)
+        return HTML("\n".join(rendered_lines))
 
     def _build_prompt_kwargs(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> dict[str, Any]:
         prompt_kwargs: dict[str, Any] = {"bottom_toolbar": None}
