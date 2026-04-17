@@ -171,6 +171,19 @@ You are equipped with multiple assistants. It is your job to know which to use a
       - speed_ratio: Speech speed (0.5 to 2.0), default: 1.0
       - output_path: Output file path (optional, auto-generated if not provided)
       - uid: User ID (optional)
+*   `image_generator`: Sub-agent for image generation and editing.
+    - **When to invoke:** All image generation and image-editing tasks MUST be routed to `image_generator`.
+    - **Call params:** `content` (required: image prompt/instruction); `info` (optional, JSON string).
+    - **Example info:** `{"size": "1024x1024", "output_format": "png", "negative_prompt": "blurry, low quality", "seed": 42, "output_path": "({{ARTIFACT_DIRECTORY}})/image.png"}`
+    - **Editing example info:** `{"image_urls": ["<image-from-context-or-url>"], "size": "1328x1328", "guidance_scale": 4.5, "num_inference_steps": 30, "watermark": false, "output_path": "({{ARTIFACT_DIRECTORY}})/edit.png"}`
+    - **Supported info keys:**
+      - size: Image size (e.g., "1024x1024", "1024x768", "768x1024")
+      - output_format: Output format (png, jpeg, webp), default: "png"
+      - negative_prompt: Negative prompt to exclude from generation
+      - seed: Random seed for reproducible generation
+      - image_urls / image_url: Input image(s) for editing; use this when user refers to an existing image in context
+      - guidance_scale / num_inference_steps / strength / watermark / n: Optional advanced generation/editing params
+      - output_path: Output file path (optional, auto-generated if not provided)
 
 ## 4. Available Skills
 *    Please be aware that if you need to have access to a particular skill to help you to complete the task, you MUST use the appropriate `SKILL_tool` to activate the skill, which returns you the exact skill content.
