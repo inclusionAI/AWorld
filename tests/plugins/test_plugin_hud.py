@@ -239,6 +239,39 @@ def test_status_bar_html_uses_text_color_without_background_markup(monkeypatch):
     assert "fg='#84c7c6'" in rendered
 
 
+def test_status_bar_html_renders_top_separator_line(monkeypatch):
+    class FakeRuntime:
+        def active_plugin_capabilities(self):
+            return ("hud",)
+
+        def build_hud_context(self, agent_name, mode, workspace_name, git_branch):
+            return {
+                "workspace": {"name": workspace_name},
+                "session": {"agent": agent_name, "mode": mode},
+                "notifications": {"cron_unread": 0},
+                "vcs": {"branch": git_branch},
+            }
+
+        def get_hud_lines(self, context):
+            return [
+                SimpleNamespace(
+                    section="identity",
+                    segments=("Agent: Aworld",),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "aworld_cli.console.shutil.get_terminal_size",
+        lambda fallback=(160, 24): os.terminal_size((20, 24)),
+    )
+
+    cli = AWorldCLI()
+    html = cli._build_status_bar(FakeRuntime(), agent_name="Aworld", mode="Chat")
+    rendered = getattr(html, "value", str(html))
+
+    assert rendered.startswith("<style fg='#4f5877'>────────────────────</style>\n")
+
+
 def test_runtime_plugin_refresh_clears_active_prompt_session_when_hud_toggles():
     class FakeRuntime:
         def active_plugin_capabilities(self):
