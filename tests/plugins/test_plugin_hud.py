@@ -397,9 +397,9 @@ def test_status_bar_text_keeps_idle_hud_stable_without_execution_stats():
     assert "Cron: clear" in text
     assert "Status: idle" in text
     assert "Task: task_20260415210612 (idle)" not in text
-    assert "Tokens: in 6.5k out 122" not in text
-    assert "Ctx: ███" not in text
-    assert "Elapsed: 16.8s" not in text
+    assert "Tokens: in 6.5k out 122" in text
+    assert "Ctx:" in text
+    assert "Elapsed: 16.8s" in text
     assert "Tool:" not in text
     assert "Plugins:" not in text
 

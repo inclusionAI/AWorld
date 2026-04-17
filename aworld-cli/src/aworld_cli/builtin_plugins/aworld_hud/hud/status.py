@@ -32,12 +32,12 @@ def _activity_segments(context):
     usage = context.get("usage", {})
     task_status = task.get("status", "idle")
 
-    if task_status == "idle":
-        return ["Status: idle"]
-
     segments = []
+    if task_status == "idle":
+        segments.append("Status: idle")
+
     current_task_id = task.get("current_task_id")
-    if current_task_id:
+    if task_status != "idle" and current_task_id:
         segments.append(f"Task: {current_task_id} ({task_status})")
 
     if usage.get("input_tokens") is not None or usage.get("output_tokens") is not None:
@@ -56,7 +56,7 @@ def _activity_segments(context):
     if elapsed is not None:
         segments.append(f"Elapsed: {format_elapsed(elapsed)}")
 
-    return segments
+    return segments or ["Status: idle"]
 
 
 def render_lines(context):
