@@ -1,6 +1,6 @@
 ---
 name: ad_video_create
-description: Create ad-ready product video from product images, with or without character/subject images. The workflow leverages AI-powered image composition, scene understanding, and video generation to produce engaging marketing content.
+description: Create ad-ready product video from product images, with or without character/subject images. The workflow leverages AI-powered image composition, scene understanding, and video generation. Video prompts should follow commercial shot language—visual hooks, product presence, hero shots, detail showcase, function expression, and dynamic visuals.
 ---
 
 ## Workflow Architecture
@@ -79,16 +79,32 @@ description: Create ad-ready product video from product images, with or without 
 ### Phase 4: Video Generation
 **Objective**: Transform static composition into dynamic advertisement video
 
+**Shot & visual language (required):** Across the ~10s runtime, the motion and camera work should **cover** these elements where applicable (not necessarily every second, but the final cut should feel like a mini commercial, not a single static pan):
+
+| Element | Meaning |
+|--------|---------|
+| **Visual hooks (视觉因子)** | Strong focal points, contrast, color, light, or composition that hold attention |
+| **Product presence (产品出现)** | Clear establishment of the product in frame—viewer knows what is being advertised |
+| **Product / hero shots (产品镜头)** | Dedicated beats where the product is the clear subject (center framing, readable silhouette) |
+| **Detail showcase (细节展示)** | Close-ups or slow emphasis on materials, texture, craftsmanship, or key parts |
+| **Function / benefit expression (功能表达)** | Motion that implies use, outcome, or core selling point (interaction, before/after feel, problem–solution rhythm) |
+| **Dynamic visuals (动态视觉)** | Varied motion: camera (push, pan, subtle orbit), parallax, light shifts, or subject micro-movement—avoid one flat move for the whole clip |
+
+When writing `video_diffusion` prompts, **spell out** which of the above appear in sequence (e.g. establish product → detail → function beat → dynamic wrap). If the source image is character-heavy, still reserve beats for product-first shots.
+
 **Audio Handling Strategy:**
 
 #### Case A: User-Provided Audio (MP3 exists in directory)
 1. Generate video WITHOUT audio first via `video_diffusion`:
    ```json
    {
-     "content": "Create dynamic advertisement video with natural motion effects:
-                 - Subtle camera movement (push-in or pan)
-                 - Character micro-movements (if applicable)
-                 - Light and shadow variations
+     "content": "Create dynamic advertisement video (mini-commercial pacing, ~10s):
+                 - Visual hooks: strong focal points, light/color contrast where fitting
+                 - Product presence: early establishment of the product in frame
+                 - Product hero shots: beats where the product is clearly the subject
+                 - Detail showcase: close-up or emphasis on texture/material/key parts
+                 - Function expression: motion suggesting use, benefit, or core value
+                 - Dynamic visuals: varied motion (camera push/pan/subtle orbit, parallax, light shifts, optional character micro-movements)
                  - Professional commercial quality",
      "info": {
        "image_url": "./composed_ad_image.png",
@@ -112,8 +128,8 @@ description: Create ad-ready product video from product images, with or without 
 1. Call `video_diffusion` with audio generation enabled:
    ```json
    {
-     "content": "Create dynamic advertisement video with suitable background music:
-                 - Natural motion effects
+     "content": "Create dynamic advertisement video with suitable background music (mini-commercial pacing, ~10s):
+                 - Visual hooks; product presence; hero product shots; detail showcase; function/benefit expression; dynamic visuals (varied camera and motion)
                  - AI-generated background music matching product mood
                  - Professional commercial quality",
      "info": {
@@ -151,7 +167,8 @@ description: Create ad-ready product video from product images, with or without 
 - **Request professional style**: "Product photography style, commercial quality"
 
 ### Video Motion Guidelines
-- **Subtle over dramatic**: Gentle camera movements maintain product focus
+- **Shot vocabulary**: Align prompts with visual hooks, product presence, hero product shots, detail showcase, function expression, and dynamic visuals (see Phase 4 table); sequence beats so the ad reads as product-led, not only ambiance
+- **Subtle over dramatic**: Gentle camera movements maintain product focus; avoid a single monotonous move for the entire clip
 - **Duration constraint**: Keep videos ≤10 seconds for social media optimization
 - **Resolution**: 720p (960x960 or 1280x720) balances quality and file size
 
