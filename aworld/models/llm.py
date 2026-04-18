@@ -59,6 +59,7 @@ PROVIDER_CLASSES = {
     "speech": None,  # Lazy loaded to avoid circular import
     "doubao_tts": None,  # Lazy loaded to avoid circular import
     "image": None,  # Lazy loaded to avoid circular import
+    "kling_image": None,  # Lazy loaded to avoid circular import
 }
 
 # ---------------------------------------------------------------------------
@@ -376,6 +377,10 @@ class LLMModel:
             elif provider_class is None and self.provider_name == "image":
                 from aworld.models.image_provider import ImageProvider
                 provider_class = ImageProvider
+                PROVIDER_CLASSES[self.provider_name] = provider_class
+            elif provider_class is None and self.provider_name == "kling_image":
+                from aworld.models.kling_image_provider import KlingImageProvider
+                provider_class = KlingImageProvider
                 PROVIDER_CLASSES[self.provider_name] = provider_class
             self.provider = provider_class(**kwargs)
         else:
