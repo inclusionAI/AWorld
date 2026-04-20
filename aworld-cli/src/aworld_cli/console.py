@@ -1554,7 +1554,6 @@ class AWorldCLI:
             pass
         finally:
             self._subscribed_notification_center = None
-
     async def _render_cron_notifications_safe(self, notifications: List[Any]) -> None:
         if not notifications:
             return
