@@ -111,6 +111,43 @@ def test_cli_runtime_includes_enabled_builtin_hud_plugin(monkeypatch, tmp_path):
     assert any(path.name == "aworld_hud" for path in runtime.plugin_dirs)
 
 
+def test_cli_runtime_reports_discovered_plugin_count_not_raw_runtime_roots(monkeypatch, tmp_path):
+    valid_root = tmp_path / "valid-plugin"
+    cache_root = tmp_path / "__pycache__"
+    valid_root.mkdir()
+    cache_root.mkdir()
+
+    class FakePluginManager:
+        def get_runtime_plugin_roots(self):
+            return [valid_root, cache_root]
+
+    discovered_plugin = type(
+        "Plugin",
+        (),
+        {
+            "manifest": type("Manifest", (), {"plugin_root": str(valid_root)})(),
+        },
+    )()
+
+    printed = []
+    runtime = CliRuntime(local_dirs=[], remote_backends=[])
+    runtime.cli = type(
+        "Cli",
+        (),
+        {
+            "console": type("Console", (), {"print": lambda self, message: printed.append(message)})(),
+        },
+    )()
+
+    monkeypatch.setattr("aworld_cli.core.plugin_manager.PluginManager", FakePluginManager)
+    monkeypatch.setattr("aworld.plugins.discovery.discover_plugins", lambda roots: [discovered_plugin])
+
+    resolved = runtime._get_plugin_dirs()
+
+    assert resolved == [valid_root]
+    assert printed == ["📦 Found 1 active plugin(s)"]
+
+
 def test_runtime_initializes_framework_registry_and_context_handlers():
     class DummyRuntime(BaseCliRuntime):
         def __init__(self, plugin_dirs):
