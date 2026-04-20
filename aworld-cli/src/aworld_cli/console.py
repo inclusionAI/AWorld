@@ -2567,7 +2567,8 @@ Add any custom instructions for AI agents working on this project.
                         try:
                             # Get built-in plugin directories
                             runtime = CliRuntime()
-                            plugin_dirs = runtime.plugin_dirs
+                            plugin_dirs = list(runtime.plugin_dirs)
+                            plugin_dirs.extend(getattr(runtime, "builtin_agent_dirs", []))
 
                             # Load agents from each plugin using PluginLoader
                             for plugin_dir in plugin_dirs:

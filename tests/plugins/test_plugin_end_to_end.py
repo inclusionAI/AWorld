@@ -1,7 +1,11 @@
 from pathlib import Path
 
 from aworld_cli.core.command_system import CommandRegistry
-from aworld_cli.core.plugin_manager import PluginManager, get_builtin_plugin_roots
+from aworld_cli.core.plugin_manager import (
+    PluginManager,
+    get_builtin_agent_bundle_roots,
+    get_builtin_plugin_roots,
+)
 from aworld.plugins.discovery import discover_plugins
 from aworld_cli.console import AWorldCLI
 from aworld_cli.plugin_capabilities.commands import register_plugin_commands
@@ -78,14 +82,22 @@ def test_get_builtin_plugin_roots_prefers_builtin_plugins_for_aworld_hud():
     roots = get_builtin_plugin_roots()
 
     assert any(root.parent.name == "builtin_plugins" and root.name == "aworld_hud" for root in roots)
+    assert not any(root.name == "smllc" for root in roots)
 
 
-def test_cli_runtime_scans_builtin_plugins_from_plugins_dir(monkeypatch, tmp_path):
+def test_get_builtin_agent_bundle_roots_includes_smllc_only_as_agent_bundle():
+    roots = get_builtin_agent_bundle_roots()
+
+    assert any(root.parent.name == "plugins" and root.name == "smllc" for root in roots)
+    assert not any(root.name == "aworld_hud" for root in roots)
+
+
+def test_cli_runtime_separates_framework_plugins_from_builtin_agent_bundles(monkeypatch, tmp_path):
     _set_isolated_plugin_dir(monkeypatch, tmp_path)
     runtime = CliRuntime(local_dirs=[], remote_backends=[])
 
-    assert any(path.parent.name == "plugins" and path.name == "smllc" for path in runtime.plugin_dirs)
     assert any(path.parent.name == "builtin_plugins" and path.name == "aworld_hud" for path in runtime.plugin_dirs)
+    assert any(path.parent.name == "plugins" and path.name == "smllc" for path in runtime.builtin_agent_dirs)
 
 
 def test_cli_runtime_excludes_disabled_builtin_hud_plugin(monkeypatch, tmp_path):
@@ -125,6 +137,7 @@ def test_cli_runtime_reports_discovered_plugin_count_not_raw_runtime_roots(monke
         "Plugin",
         (),
         {
+            "source": "manifest",
             "manifest": type("Manifest", (), {"plugin_root": str(valid_root)})(),
         },
     )()
@@ -145,6 +158,55 @@ def test_cli_runtime_reports_discovered_plugin_count_not_raw_runtime_roots(monke
     resolved = runtime._get_plugin_dirs()
 
     assert resolved == [valid_root]
+    assert printed == ["📦 Found 1 active plugin(s)"]
+
+
+def test_cli_runtime_reports_only_manifest_plugins_in_active_plugin_count(monkeypatch, tmp_path):
+    manifest_root = tmp_path / "manifest-plugin"
+    legacy_root = tmp_path / "legacy-plugin"
+    manifest_root.mkdir()
+    legacy_root.mkdir()
+
+    class FakePluginManager:
+        def get_runtime_plugin_roots(self):
+            return [manifest_root, legacy_root]
+
+    manifest_plugin = type(
+        "Plugin",
+        (),
+        {
+            "source": "manifest",
+            "manifest": type("Manifest", (), {"plugin_root": str(manifest_root)})(),
+        },
+    )()
+    legacy_plugin = type(
+        "Plugin",
+        (),
+        {
+            "source": "legacy",
+            "manifest": type("Manifest", (), {"plugin_root": str(legacy_root)})(),
+        },
+    )()
+
+    printed = []
+    runtime = CliRuntime(local_dirs=[], remote_backends=[])
+    runtime.cli = type(
+        "Cli",
+        (),
+        {
+            "console": type("Console", (), {"print": lambda self, message: printed.append(message)})(),
+        },
+    )()
+
+    monkeypatch.setattr("aworld_cli.core.plugin_manager.PluginManager", FakePluginManager)
+    monkeypatch.setattr(
+        "aworld.plugins.discovery.discover_plugins",
+        lambda roots: [manifest_plugin, legacy_plugin],
+    )
+
+    resolved = runtime._get_plugin_dirs()
+
+    assert resolved == [manifest_root, legacy_root]
     assert printed == ["📦 Found 1 active plugin(s)"]
 
 

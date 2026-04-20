@@ -94,8 +94,9 @@ class CliRuntime(BaseCliRuntime):
             remote_backends: Optional list of remote backend URLs (overrides environment variables)
             local_dirs: Optional list of local agent directories (overrides environment variables)
         """
-        # Get plugin directories
+        # Get framework plugin directories and built-in agent bundle directories.
         self.plugin_dirs = self._get_plugin_dirs()
+        self.builtin_agent_dirs = self._get_builtin_agent_dirs()
         
         # Parse local directories
         if local_dirs:
@@ -112,12 +113,17 @@ class CliRuntime(BaseCliRuntime):
             self.remote_backends = [b.strip().rstrip("/") for b in remote_backends_str.split(";") if b.strip()]
         
         # If no config, use current working directory as default
-        if not self.plugin_dirs and not self.local_dirs and not self.remote_backends:
+        if (
+            not self.plugin_dirs
+            and not self.builtin_agent_dirs
+            and not self.local_dirs
+            and not self.remote_backends
+        ):
             self.local_dirs.append(os.getcwd())
     
     def _get_plugin_dirs(self) -> List[Path]:
         """
-        Get all plugin directories (built-in and installed).
+        Get all framework plugin directories (built-in and installed).
         
         Returns:
             List of plugin directory paths
@@ -142,16 +148,33 @@ class CliRuntime(BaseCliRuntime):
         discovered = discover_plugins(plugin_dirs)
         resolved = []
         seen = set()
+        active_framework_plugins = 0
         for plugin in discovered:
             plugin_root = Path(plugin.manifest.plugin_root)
             if plugin_root not in seen:
                 resolved.append(plugin_root)
                 seen.add(plugin_root)
+            if getattr(plugin, "source", None) == "manifest":
+                active_framework_plugins += 1
 
-        if resolved and hasattr(self, 'cli') and hasattr(self.cli, 'console'):
-            self.cli.console.print(f"📦 Found {len(resolved)} active plugin(s)")
+        if active_framework_plugins and hasattr(self, 'cli') and hasattr(self.cli, 'console'):
+            self.cli.console.print(f"📦 Found {active_framework_plugins} active plugin(s)")
 
         return resolved
+
+    def _get_builtin_agent_dirs(self) -> List[Path]:
+        """Get built-in agent bundle directories such as smllc."""
+        from ..core.plugin_manager import get_builtin_agent_bundle_roots
+
+        bundle_dirs: List[Path] = []
+        seen = set()
+        for bundle_dir in get_builtin_agent_bundle_roots():
+            resolved = Path(bundle_dir).resolve()
+            if resolved in seen:
+                continue
+            bundle_dirs.append(resolved)
+            seen.add(resolved)
+        return bundle_dirs
     
     async def _load_skills(self) -> Dict[str, int]:
         """
@@ -169,7 +192,10 @@ class CliRuntime(BaseCliRuntime):
         plugin_manager = PluginManager()
         console = self.cli.console if hasattr(self, 'cli') and hasattr(self.cli, 'console') and self.cli.console else None
         
-        return await plugin_manager._load_skills(self.plugin_dirs, console=console)
+        return await plugin_manager._load_skills(
+            self.plugin_dirs + self.builtin_agent_dirs,
+            console=console,
+        )
     
     async def _load_agents(self) -> List[AgentInfo]:
         """
@@ -192,6 +218,7 @@ class CliRuntime(BaseCliRuntime):
         # Load agents using plugin_manager
         all_agents, agent_sources_map = await plugin_manager._load_agents(
             self.plugin_dirs,
+            builtin_agent_dirs=self.builtin_agent_dirs,
             local_dirs=self.local_dirs,
             remote_backends=self.remote_backends,
             console=console
@@ -231,7 +258,7 @@ class CliRuntime(BaseCliRuntime):
         source_type = source_info.get("type")
         
         # Create executor based on source type
-        if source_type in ["plugin", "local"]:
+        if source_type in ["plugin", "builtin", "local"]:
             return await self._create_local_executor(agent, source_info)
         elif source_type == "remote":
             return self._create_remote_executor(agent, source_info)
@@ -343,6 +370,8 @@ class CliRuntime(BaseCliRuntime):
         types = []
         if self.plugin_dirs:
             types.append("PLUGIN")
+        if self.builtin_agent_dirs:
+            types.append("BUILTIN")
         if self.local_dirs:
             types.append("LOCAL")
         if self.remote_backends:
@@ -354,6 +383,8 @@ class CliRuntime(BaseCliRuntime):
         locations = []
         if self.plugin_dirs:
             locations.extend([str(d) for d in self.plugin_dirs])
+        if self.builtin_agent_dirs:
+            locations.extend([str(d) for d in self.builtin_agent_dirs])
         if self.local_dirs:
             locations.extend(self.local_dirs)
         if self.remote_backends:

@@ -242,6 +242,11 @@ class BaseCliRuntime:
                 self.plugin_dirs = self._get_plugin_dirs()
             except Exception as exc:
                 logger.warning(f"Failed to resolve plugin directories during refresh: {exc}")
+        if hasattr(self, "_get_builtin_agent_dirs"):
+            try:
+                self.builtin_agent_dirs = self._get_builtin_agent_dirs()
+            except Exception as exc:
+                logger.warning(f"Failed to resolve built-in agent directories during refresh: {exc}")
         self._initialize_plugin_framework()
         if hasattr(self, "cli") and hasattr(self.cli, "_handle_runtime_plugin_capability_refresh"):
             try:

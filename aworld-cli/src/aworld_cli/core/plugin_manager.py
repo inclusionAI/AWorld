@@ -26,38 +26,62 @@ def get_builtin_plugins_base_dir() -> Path:
     return Path(__file__).resolve().parent.parent / "builtin_plugins"
 
 
-def get_compat_builtin_plugins_base_dir() -> Path:
-    """Return the compatibility built-in plugin package directory."""
+def get_builtin_agent_bundles_base_dir() -> Path:
+    """Return the built-in agent bundle package directory."""
     return Path(__file__).resolve().parent.parent / "plugins"
 
 
 def get_legacy_builtin_plugins_base_dir() -> Path:
-    """Return the legacy built-in plugin package directory."""
+    """Return the legacy built-in agent bundle compatibility directory."""
     return Path(__file__).resolve().parent.parent / "inner_plugins"
 
 
 def get_builtin_plugin_roots() -> List[Path]:
-    """Return built-in plugin root directories across current and compatibility layouts."""
+    """Return built-in manifest plugin root directories."""
     plugin_dirs: List[Path] = []
     seen: set[Path] = set()
 
+    base_dir = get_builtin_plugins_base_dir()
+    if not base_dir.exists() or not base_dir.is_dir():
+        return plugin_dirs
+
+    for plugin_dir in base_dir.iterdir():
+        if not plugin_dir.is_dir():
+            continue
+        resolved = plugin_dir.resolve()
+        if resolved in seen:
+            continue
+        plugin_dirs.append(plugin_dir)
+        seen.add(resolved)
+
+    return plugin_dirs
+
+
+def get_builtin_agent_bundle_roots() -> List[Path]:
+    """Return built-in legacy agent bundle roots such as smllc."""
+    bundle_dirs: List[Path] = []
+    seen: set[Path] = set()
+
     for base_dir in (
-        get_builtin_plugins_base_dir(),
-        get_compat_builtin_plugins_base_dir(),
+        get_builtin_agent_bundles_base_dir(),
         get_legacy_builtin_plugins_base_dir(),
     ):
         if not base_dir.exists() or not base_dir.is_dir():
             continue
-        for plugin_dir in base_dir.iterdir():
-            if not plugin_dir.is_dir():
+        for bundle_dir in base_dir.iterdir():
+            if not bundle_dir.is_dir():
                 continue
-            resolved = plugin_dir.resolve()
+            if (bundle_dir / ".aworld-plugin" / "plugin.json").exists():
+                continue
+            if not (bundle_dir / "agents").exists():
+                continue
+            resolved = bundle_dir.resolve()
             if resolved in seen:
                 continue
-            plugin_dirs.append(plugin_dir)
+            bundle_dirs.append(bundle_dir)
             seen.add(resolved)
 
-    return plugin_dirs
+    return bundle_dirs
 
 
 def get_plugin_skills_dir(plugin_path: Path) -> Path:
@@ -731,7 +755,7 @@ class PluginManager:
         return plugins
 
     def get_runtime_plugin_roots(self) -> List[Path]:
-        """Return runtime-visible plugin roots with built-in framework overrides applied."""
+        """Return runtime-visible framework plugin roots with built-in overrides applied."""
         plugin_roots: List[Path] = []
         seen: set[Path] = set()
 
@@ -740,10 +764,9 @@ class PluginManager:
             discovered = discover_plugins([builtin_path])
             if discovered:
                 plugin = discovered[0]
-                if plugin.source == "manifest":
-                    manifest_entry = self._manifest.get(plugin.manifest.plugin_id)
-                    if manifest_entry is not None and not bool(manifest_entry.get("enabled", True)):
-                        continue
+                manifest_entry = self._manifest.get(plugin.manifest.plugin_id)
+                if manifest_entry is not None and not bool(manifest_entry.get("enabled", True)):
+                    continue
             if builtin_path not in seen:
                 plugin_roots.append(builtin_path)
                 seen.add(builtin_path)
@@ -901,6 +924,7 @@ class PluginManager:
     async def _load_agents(
         self,
         plugin_dirs: List[Path],
+        builtin_agent_dirs: Optional[List[Path]] = None,
         local_dirs: Optional[List[str]] = None,
         remote_backends: Optional[List[str]] = None,
         console=None
@@ -915,7 +939,8 @@ class PluginManager:
         Loaders are responsible ONLY for loading, not for creating executors.
         
         Args:
-            plugin_dirs: List of plugin directory paths
+            plugin_dirs: List of framework plugin directory paths
+            builtin_agent_dirs: Optional list of built-in agent bundle directories
             local_dirs: Optional list of local agent directories
             remote_backends: Optional list of remote backend URLs
             console: Optional Rich console for output
@@ -929,36 +954,37 @@ class PluginManager:
         
         all_agents: List[AgentInfo] = []
         agent_sources_map: Dict[str, Dict] = {}  # Track sources for executor creation
-        
-        # ========== Lifecycle Step 1: Load Plugins ==========
-        discovered = discover_plugins(plugin_dirs)
 
-        # For each plugin: load skills, then load agents
-        for plugin in discovered:
-            plugin_dir = Path(plugin.manifest.plugin_root)
-            plugin_id = plugin.manifest.plugin_id
-            try:
-                loader = PluginLoader(plugin_dir, plugin_id=plugin_id, console=console)
-                
-                # Load agents from plugin (this also loads skills internally)
-                plugin_agents = await loader.load_agents()
-                
-                # Track source information
-                for agent in plugin_agents:
-                    if agent.name not in agent_sources_map:
-                        agent_sources_map[agent.name] = {
-                            "type": "plugin",
-                            "location": str(plugin_dir),
-                            "plugin_id": plugin_id,
-                            "agents_dir": str(plugin_dir / "agents")  # Store agents dir for executor creation
-                        }
-                        all_agents.append(agent)
-                    else:
-                        logger.warning(f"Duplicate agent '{agent.name}' from plugin, keeping first")
-                        
-            except Exception as e:
-                if console:
-                    console.print(f"[yellow]⚠️ Failed to load plugin {plugin_dir}: {e}[/yellow]")
+        async def _load_discovered_sources(source_dirs: List[Path], source_type: str) -> None:
+            discovered = discover_plugins(source_dirs)
+
+            for plugin in discovered:
+                plugin_dir = Path(plugin.manifest.plugin_root)
+                plugin_id = plugin.manifest.plugin_id
+                try:
+                    loader = PluginLoader(plugin_dir, plugin_id=plugin_id, console=console)
+                    plugin_agents = await loader.load_agents()
+
+                    for agent in plugin_agents:
+                        if agent.name not in agent_sources_map:
+                            agent_sources_map[agent.name] = {
+                                "type": source_type,
+                                "location": str(plugin_dir),
+                                "plugin_id": plugin_id,
+                                "agents_dir": str(plugin_dir / "agents"),
+                            }
+                            all_agents.append(agent)
+                        else:
+                            logger.warning(f"Duplicate agent '{agent.name}' from {source_type}, keeping first")
+                except Exception as e:
+                    if console:
+                        console.print(f"[yellow]⚠️ Failed to load {source_type} source {plugin_dir}: {e}[/yellow]")
+
+        # ========== Lifecycle Step 1: Load Framework Plugins ==========
+        await _load_discovered_sources(plugin_dirs, "plugin")
+
+        # ========== Lifecycle Step 1b: Load Built-in Agent Bundles ==========
+        await _load_discovered_sources(builtin_agent_dirs or [], "builtin")
         
         # ========== Lifecycle Step 2: Load Local Agents ==========
         if local_dirs:
@@ -1061,11 +1087,15 @@ class PluginManager:
         
         # Summary log
         plugin_count = len([a for a in all_agents if agent_sources_map.get(a.name, {}).get("type") == "plugin"])
+        builtin_count = len([a for a in all_agents if agent_sources_map.get(a.name, {}).get("type") == "builtin"])
         local_count = len([a for a in all_agents if agent_sources_map.get(a.name, {}).get("type") == "local"])
         remote_count = len([a for a in all_agents if agent_sources_map.get(a.name, {}).get("type") == "remote"])
         
         if all_agents:
-            logger.info(f"Agent loading complete: {len(all_agents)} total agent(s) (plugin: {plugin_count}, local: {local_count}, remote: {remote_count})")
+            logger.info(
+                f"Agent loading complete: {len(all_agents)} total agent(s) "
+                f"(plugin: {plugin_count}, builtin: {builtin_count}, local: {local_count}, remote: {remote_count})"
+            )
         if not all_agents:
             logger.info("No agents found from any source.")
         
