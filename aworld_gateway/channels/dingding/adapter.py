@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 from aworld_gateway.channels.base import ChannelAdapter, ChannelMetadata
 from aworld_gateway.channels.dingding.bridge import AworldDingdingBridge
 from aworld_gateway.channels.dingding.connector import DingTalkConnector
@@ -14,6 +16,7 @@ class DingdingChannelAdapter(ChannelAdapter):
         *,
         bridge: AworldDingdingBridge | None = None,
         connector_cls: type[DingTalkConnector] = DingTalkConnector,
+        artifact_service: object | None = None,
     ) -> None:
         if config is None:
             config = DingdingChannelConfig()
@@ -21,6 +24,7 @@ class DingdingChannelAdapter(ChannelAdapter):
         self._config = config
         self._bridge = bridge or AworldDingdingBridge()
         self._connector_cls = connector_cls
+        self._artifact_service = artifact_service
         self._connector: DingTalkConnector | None = None
 
     @classmethod
@@ -29,10 +33,15 @@ class DingdingChannelAdapter(ChannelAdapter):
 
     async def start(self) -> None:
         stream_module = self._import_stream_module()
+        init_params = inspect.signature(self._connector_cls.__init__).parameters
+        connector_kwargs: dict[str, object] = {}
+        if self._artifact_service is not None and "artifact_service" in init_params:
+            connector_kwargs["artifact_service"] = self._artifact_service
         self._connector = self._connector_cls(
             config=self._config,
             bridge=self._bridge,
             stream_module=stream_module,
+            **connector_kwargs,
         )
         await self._connector.start()
 
