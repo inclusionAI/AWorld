@@ -162,6 +162,57 @@ def test_status_bar_text_falls_back_when_plugin_rendering_raises():
     assert "boom" not in text
 
 
+def test_collect_hud_lines_skips_broken_provider_and_keeps_healthy_provider(tmp_path):
+    good_root = tmp_path / "good"
+    bad_root = tmp_path / "bad"
+
+    for root, plugin_id, source in (
+        (
+            good_root,
+            "good-hud",
+            "def render_lines(context):\n    return [{'section': 'identity', 'segments': ['Agent: Healthy'], 'priority': 10}]\n",
+        ),
+        (
+            bad_root,
+            "bad-hud",
+            "def render_lines(context):\n    raise RuntimeError('boom')\n",
+        ),
+    ):
+        (root / ".aworld-plugin").mkdir(parents=True)
+        (root / "hud").mkdir()
+        (root / ".aworld-plugin" / "plugin.json").write_text(
+            (
+                "{"
+                f"\"id\": \"{plugin_id}\", "
+                f"\"name\": \"{plugin_id}\", "
+                "\"version\": \"1.0.0\", "
+                "\"entrypoints\": {"
+                "\"hud\": ["
+                "{"
+                "\"id\": \"status\", "
+                "\"target\": \"hud/status.py\""
+                "}"
+                "]"
+                "}"
+                "}"
+            ),
+            encoding="utf-8",
+        )
+        (root / "hud" / "status.py").write_text(source, encoding="utf-8")
+
+    plugins = discover_plugins([bad_root, good_root])
+
+    lines = collect_hud_lines(
+        plugins=plugins,
+        context={
+            "workspace": {"name": "aworld"},
+            "session": {"agent": "Aworld", "mode": "Chat"},
+        },
+    )
+
+    assert [line.text for line in lines] == ["Agent: Healthy"]
+
+
 def test_status_bar_is_not_rendered_without_hud_capability():
     class FakeRuntime:
         def active_plugin_capabilities(self):

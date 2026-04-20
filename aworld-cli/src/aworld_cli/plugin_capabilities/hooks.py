@@ -9,6 +9,7 @@ from typing import Any, Iterable, Mapping
 from aworld.plugins.resources import PluginResourceResolver
 
 DEFAULT_PLUGIN_HOOK_TIMEOUT_SECONDS = 5.0
+_HOOK_HANDLER_CACHE: dict[str, Any] = {}
 
 
 def _normalize_hook_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -156,6 +157,10 @@ class PluginHookAdapter:
             raise ValueError(f"plugin hook '{self.entrypoint_id}' is missing a target")
 
         hook_path = self._resolver.resolve_asset(self._entrypoint.target)
+        cache_key = str(hook_path)
+        cached = _HOOK_HANDLER_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
         spec = spec_from_file_location(
             f"aworld_plugin_{self.plugin_id}_{self.entrypoint_id}",
             hook_path,
@@ -171,6 +176,7 @@ class PluginHookAdapter:
             raise AttributeError(
                 f"plugin hook '{self.entrypoint_id}' must define handle_event(event, state)"
             )
+        _HOOK_HANDLER_CACHE[cache_key] = handler
         return handler
 
     async def _invoke_handler(self, event: Mapping[str, Any], state: Mapping[str, Any]) -> Any:

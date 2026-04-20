@@ -218,3 +218,45 @@ async def test_runtime_plugin_hooks_continue_after_timeout(tmp_path):
 
     assert [hook.plugin_id for hook, _ in results] == ["fast"]
     assert results[0][1].reason == "fast-path"
+
+
+@pytest.mark.asyncio
+async def test_plugin_hook_adapter_caches_loaded_handler_module(tmp_path):
+    plugin_root = tmp_path / "cached"
+    import_log = tmp_path / "imports.log"
+    (plugin_root / ".aworld-plugin").mkdir(parents=True)
+    (plugin_root / "hooks").mkdir()
+    (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+        (
+            "{"
+            "\"id\": \"cached\", "
+            "\"name\": \"cached\", "
+            "\"version\": \"1.0.0\", "
+            "\"entrypoints\": {"
+            "\"hooks\": ["
+            "{"
+            "\"id\": \"stop-hook\", "
+            "\"target\": \"hooks/stop.py\", "
+            "\"metadata\": {\"hook_point\": \"stop\"}"
+            "}"
+            "]"
+            "}"
+            "}"
+        ),
+        encoding="utf-8",
+    )
+    (plugin_root / "hooks" / "stop.py").write_text(
+        "from pathlib import Path\n"
+        f"Path({str(import_log)!r}).write_text(Path({str(import_log)!r}).read_text(encoding='utf-8') + 'x' if Path({str(import_log)!r}).exists() else 'x', encoding='utf-8')\n"
+        "def handle_event(event, state):\n"
+        "    return {'action': 'allow'}\n",
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([plugin_root])[0]
+    hook = load_plugin_hooks([plugin])["stop"][0]
+
+    await hook.run(event={}, state={})
+    await hook.run(event={}, state={})
+
+    assert import_log.read_text(encoding="utf-8") == "x"
