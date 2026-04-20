@@ -1,6 +1,7 @@
+import json
 import os
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Any, Dict, List
 
 from aworld.agents.audio_agent import AudioAgent
 from aworld.config import AgentConfig, ModelConfig
@@ -67,9 +68,9 @@ Cannot process (do NOT delegate to this agent): Video generation, document readi
 **Invocation format (MUST follow when calling):**
 - `content`: Required. The text to convert to speech.
 - `info`: Optional JSON string. Use when passing audio params, e.g.:
-  {"voice_type": "zh_male_M392_conversation_wvae_bigtts", "encoding": "mp3", "speed_ratio": 1.0, "output_path": "./output/audio.mp3", "uid": "user_123"}
+  {"voice_type": "zh_male_taocheng_uranus_bigtts", "encoding": "mp3", "speed_ratio": 1.0, "output_path": "./output/audio.mp3", "uid": "user_123"}
   Supported keys:
-  - voice_type: Voice type identifier (e.g., "zh_male_M392_conversation_wvae_bigtts")
+  - voice_type: Voice type identifier (e.g., "zh_male_taocheng_uranus_bigtts")
   - encoding: Audio format (mp3, wav, pcm, ogg_opus), default: "mp3"
   - speed_ratio: Speech speed (0.5 to 2.0), default: 1.0
   - output_path: Output file path (optional, auto-generated if not provided)
@@ -85,6 +86,18 @@ def build_audio_swarm():
     env_skills_dir = Path(os.path.expanduser(env_skills_path)).resolve() if env_skills_path else None
     skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
 
+    # Merge optional params from ~/.aworld/aworld.json models.audio.params (via AUDIO_MODEL_PARAMS_JSON)
+    _audio_params: Dict[str, Any] = {"max_completion_tokens": 59000}
+    _extra = os.environ.get("AUDIO_MODEL_PARAMS_JSON", "").strip()
+    if _extra:
+        try:
+            _audio_params.update(json.loads(_extra))
+        except json.JSONDecodeError:
+            pass
+    _appid = (os.environ.get("AUDIO_APPID") or os.environ.get("VOLCANO_TTS_APPID") or "").strip()
+    if _appid:
+        _audio_params.setdefault("appid", _appid)
+
     # Create Agent configuration (AUDIO_* from models.audio or fallback to MEDIA_LLM_*/LLM_*)
     agent_config = AgentConfig(
         llm_config=ModelConfig(
@@ -93,7 +106,7 @@ def build_audio_swarm():
             llm_api_key=os.environ.get("AUDIO_API_KEY", os.environ.get("LLM_API_KEY")),
             llm_base_url=os.environ.get("AUDIO_BASE_URL", os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")),
             llm_temperature=float(os.environ.get("AUDIO_TEMPERATURE", os.environ.get("LLM_TEMPERATURE", "0.1"))),
-            params={"max_completion_tokens": 59000},
+            params=_audio_params,
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
         skill_configs=skill_configs
