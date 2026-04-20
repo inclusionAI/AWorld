@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -167,3 +168,65 @@ def test_gateway_http_app_rejects_unknown_artifact_token(tmp_path: Path) -> None
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Artifact not found."
+
+
+def test_gateway_http_app_rejects_requests_when_artifact_service_missing() -> None:
+    app = create_gateway_app(runtime_status={"channels": {}}, artifact_service=None)
+
+    client = TestClient(app)
+    response = client.get("/artifacts/some-token")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Artifact service is not running."
+
+
+def test_gateway_http_app_rejects_artifact_when_published_file_is_replaced_with_out_of_root_symlink(
+    tmp_path: Path,
+) -> None:
+    escape_target = Path("/etc/hosts")
+    if not escape_target.exists() or not escape_target.is_file():
+        pytest.skip("/etc/hosts is not available on this machine")
+
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    artifact_file = artifact_root / "report.html"
+    artifact_file.write_text("<html><body>report</body></html>", encoding="utf-8")
+
+    service = ArtifactService(
+        public_base_url="http://127.0.0.1:18888",
+        allowed_roots=[artifact_root],
+    )
+    token = service.publish(artifact_file)
+
+    artifact_file.unlink()
+    try:
+        artifact_file.symlink_to(escape_target)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Symlink creation unsupported: {exc}")
+
+    app = create_gateway_app(runtime_status={"channels": {}}, artifact_service=service)
+    client = TestClient(app)
+    response = client.get(f"/artifacts/{token}")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Artifact not found."
+
+
+def test_gateway_http_app_serves_unicode_named_artifact(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    artifact_file = artifact_root / "名字.html"
+    artifact_file.write_text("<html><body>report</body></html>", encoding="utf-8")
+
+    service = ArtifactService(
+        public_base_url="http://127.0.0.1:18888",
+        allowed_roots=[artifact_root],
+    )
+    token = service.publish(artifact_file)
+
+    app = create_gateway_app(runtime_status={"channels": {}}, artifact_service=service)
+    client = TestClient(app)
+    response = client.get(f"/artifacts/{token}")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
