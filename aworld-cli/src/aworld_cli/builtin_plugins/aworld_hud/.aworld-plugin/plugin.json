@@ -3,12 +3,59 @@
   "name": "aworld-hud",
   "version": "1.0.0",
   "entrypoints": {
+    "hooks": [
+      {
+        "id": "task-started",
+        "name": "task-started",
+        "target": "hooks/task_started.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "task_started"
+        }
+      },
+      {
+        "id": "task-progress",
+        "name": "task-progress",
+        "target": "hooks/task_progress.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "task_progress"
+        }
+      },
+      {
+        "id": "task-completed",
+        "name": "task-completed",
+        "target": "hooks/task_completed.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "task_completed"
+        }
+      },
+      {
+        "id": "task-error",
+        "name": "task-error",
+        "target": "hooks/task_error.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "task_error"
+        }
+      },
+      {
+        "id": "task-interrupted",
+        "name": "task-interrupted",
+        "target": "hooks/task_interrupted.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "task_interrupted"
+        }
+      }
+    ],
     "hud": [
       {
         "id": "status-lines",
         "name": "status-lines",
         "target": "hud/status.py",
-        "scope": "workspace",
+        "scope": "session",
         "metadata": {
           "surface": "bottom_toolbar"
         }
