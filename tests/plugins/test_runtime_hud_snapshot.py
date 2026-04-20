@@ -2,7 +2,7 @@ import sys
 import threading
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -311,3 +311,26 @@ async def test_local_executor_task_hook_delegates_to_runtime():
     )
 
     runtime.run_plugin_hooks.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_local_executor_task_interrupted_hook_reports_interrupted_status():
+    executor = object.__new__(LocalAgentExecutor)
+    executor.session_id = "session-1"
+    executor._run_plugin_task_hook = AsyncMock(return_value=[])
+    executor._publish_hud_task_finished = MagicMock()
+
+    task = SimpleNamespace(id="task-1")
+
+    await executor._handle_task_interrupted(task, answer="partial answer")
+
+    executor._run_plugin_task_hook.assert_awaited_once_with(
+        "task_interrupted",
+        {
+            "task_id": "task-1",
+            "session_id": "session-1",
+            "task_status": "interrupted",
+            "partial_answer": "partial answer",
+        },
+    )
+    executor._publish_hud_task_finished.assert_called_once_with("task-1", task_status="idle")

@@ -153,6 +153,7 @@ class BaseCliRuntime:
 
         try:
             from aworld.plugins.discovery import discover_plugins
+            from aworld.plugins.resolution import resolve_plugin_activation
             from aworld.plugins.registry import PluginCapabilityRegistry
             from ..plugin_capabilities.commands import sync_plugin_commands
             from ..plugin_capabilities.context import CONTEXT_PHASES, load_plugin_contexts
@@ -160,6 +161,7 @@ class BaseCliRuntime:
             from ..plugin_capabilities.state import PluginStateStore
 
             plugin_roots = [Path(path) for path in plugin_dirs]
+            discovered_plugins = []
             registry = PluginCapabilityRegistry()
             loaded_plugins = []
             loaded_hooks = defaultdict(list)
@@ -171,24 +173,29 @@ class BaseCliRuntime:
                 except Exception as exc:
                     logger.warning(f"Skipping plugin root '{plugin_root}': {exc}")
                     continue
+                discovered_plugins.extend(discovered)
 
-                for plugin in discovered:
-                    try:
-                        plugin_hooks = load_plugin_hooks([plugin])
-                        plugin_contexts = load_plugin_contexts([plugin])
-                        registry.register(plugin)
-                    except Exception as exc:
-                        logger.warning(
-                            f"Skipping plugin '{plugin_root}' "
-                            f"({getattr(plugin.manifest, 'plugin_id', plugin_root.name)}): {exc}"
-                        )
-                        continue
+            active_plugins, skipped_plugins = resolve_plugin_activation(discovered_plugins)
+            for plugin_id, reason in skipped_plugins.items():
+                logger.warning(f"Skipping plugin '{plugin_id}': {reason}")
 
-                    loaded_plugins.append(plugin)
-                    for hook_point, hooks in plugin_hooks.items():
-                        loaded_hooks[hook_point].extend(hooks)
-                    for phase in CONTEXT_PHASES:
-                        loaded_contexts[phase].extend(plugin_contexts.get(phase, ()))
+            for plugin in active_plugins:
+                try:
+                    plugin_hooks = load_plugin_hooks([plugin])
+                    plugin_contexts = load_plugin_contexts([plugin])
+                    registry.register(plugin)
+                except Exception as exc:
+                    logger.warning(
+                        f"Skipping plugin "
+                        f"({getattr(plugin.manifest, 'plugin_id', 'unknown')}): {exc}"
+                    )
+                    continue
+
+                loaded_plugins.append(plugin)
+                for hook_point, hooks in plugin_hooks.items():
+                    loaded_hooks[hook_point].extend(hooks)
+                for phase in CONTEXT_PHASES:
+                    loaded_contexts[phase].extend(plugin_contexts.get(phase, ()))
 
             self._plugins = loaded_plugins
             self._plugin_registry = registry
