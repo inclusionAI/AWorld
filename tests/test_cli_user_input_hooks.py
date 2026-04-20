@@ -12,7 +12,7 @@ from aworld.core.context.session import Session
 from aworld.runners.hook.hook_factory import HookManager
 from aworld.runners.hook.v2 import permission
 from aworld_cli.console import AWorldCLI
-from aworld_cli.plugin_runtime.hooks import PluginHookResult
+from aworld_cli.plugin_capabilities.hooks import PluginHookResult
 
 
 class TestCliUserInputHooks:
