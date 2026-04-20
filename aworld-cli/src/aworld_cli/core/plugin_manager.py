@@ -18,7 +18,7 @@ from aworld.plugins.registry import PluginCapabilityRegistry
 
 # Default plugin installation directory
 DEFAULT_PLUGIN_DIR = Path.home() / ".aworld" / "plugins"
-PLUGIN_MANIFEST_FILE = DEFAULT_PLUGIN_DIR / ".manifest.json"
+UNMANAGED_PLUGIN_SOURCE = "unmanaged plugin directory"
 
 
 def get_builtin_plugins_base_dir() -> Path:
@@ -53,7 +53,7 @@ def get_builtin_plugin_roots() -> List[Path]:
 
 
 def get_builtin_agent_bundle_roots() -> List[Path]:
-    """Return built-in legacy agent bundle roots such as smllc."""
+    """Return built-in agent bundle roots such as smllc."""
     bundle_dirs: List[Path] = []
     seen: set[Path] = set()
 
@@ -308,7 +308,7 @@ class PluginManager:
         entry = self._build_manifest_entry(
             plugin_name=plugin_name,
             plugin_path=plugin_path,
-            source="unknown (legacy plugin)",
+            source=UNMANAGED_PLUGIN_SOURCE,
             enabled=True,
         )
         self._manifest[plugin_name] = entry
@@ -346,7 +346,7 @@ class PluginManager:
                         {
                             "name": item.name,
                             "path": str(item),
-                            "source": "unknown (legacy plugin)",
+                            "source": UNMANAGED_PLUGIN_SOURCE,
                             "enabled": True,
                         }
                     )

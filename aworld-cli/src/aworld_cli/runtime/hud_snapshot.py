@@ -7,19 +7,6 @@ from dataclasses import dataclass, field
 from threading import RLock
 from typing import Any
 
-
-DEFAULT_BUCKETS = (
-    "workspace",
-    "session",
-    "task",
-    "activity",
-    "usage",
-    "notifications",
-    "vcs",
-    "plugins",
-)
-
-
 @dataclass
 class HudSnapshotStore:
     _snapshot: dict[str, dict[str, Any]] = field(default_factory=dict)

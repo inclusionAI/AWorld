@@ -10,6 +10,7 @@ or coordinated multi-agent collaboration.
 """
 import os
 import sys
+import traceback
 from pathlib import Path
 from typing import Optional, List
 
@@ -20,10 +21,8 @@ from aworld.logs.util import logger
 from aworld_cli.core.context_tool import CONTEXT_TOOL
 from .audio.audio import build_audio_swarm
 from .developer.developer import build_developer_swarm
-from .evaluator.evaluator import build_evaluator_swarm
 from .diffusion.diffusion import build_diffusion_swarm
-import traceback
-
+from .evaluator.evaluator import build_evaluator_swarm
 from .image.image import build_image_swarm
 
 # Import SpawnSubagentTool to ensure it's registered in ToolFactory
@@ -40,20 +39,6 @@ from aworld.config import AgentConfig, ModelConfig
 
 # for skills use
 CAST_ANALYSIS, CAST_CODER
-
-global_agent_registry = None
-AGENT_REGISTRY = None
-
-from datetime import datetime
-from zoneinfo import ZoneInfo
-
-
-def _build_beijing_date_line() -> str:
-    """Return a line stating today's Beijing date in Chinese format."""
-    beijing_now = datetime.now(ZoneInfo("Asia/Shanghai"))
-
-    return f"Today is {beijing_now.year} (year)-{beijing_now.month} (month)-{beijing_now.day}(day)."
-
 
 def load_aworld_system_prompt() -> str:
     return (Path(__file__).resolve().parent / "prompt.txt").read_text(encoding="utf-8")

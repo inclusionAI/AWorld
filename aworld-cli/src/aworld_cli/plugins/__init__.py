@@ -1,1 +1,1 @@
-"""Package namespace for plugin-adjacent modules."""
+"""Non-framework CLI extension modules."""
