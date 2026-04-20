@@ -15,6 +15,7 @@ Included:
 - Full message receive/reply flow using DingTalk Stream + `sessionWebhook`
 - Session reset semantics such as `/new` and `新会话`
 - Attachment download/upload bridging
+- Temporary artifact HTTP publishing for generated files
 - AI card creation, streaming update, and finalization
 - Gateway config/runtime/CLI exposure for DingTalk
 - Test coverage for config, runtime state, connector behavior, and CLI smoke
@@ -66,6 +67,23 @@ Instead, DingTalk gets a dedicated execution bridge that can:
 
 This avoids destabilizing the generic router while still allowing DingTalk to deliver near-complete parity with the existing `aworldclaw` user experience.
 
+### 4. Add a gateway-local artifact publishing service
+
+Temporary file-to-HTTP publishing should not be implemented inside `aworld/core` or inside agent business logic.
+
+Instead, the current change should introduce a gateway-local artifact publishing capability:
+- hosted under `aworld_gateway/http/`
+- registered on the existing gateway FastAPI app
+- reusable across DingTalk and future channels
+- scoped to the gateway process lifetime only
+
+This keeps the responsibility split clean:
+- agent logic decides which generated artifact should be shared
+- gateway runtime decides whether and how that artifact becomes externally reachable
+- channel adapters consume a final published URL or a channel-native media payload
+
+This is infrastructure coupling, not business coupling, and it matches the way `openclaw` keeps HTTP file serving outside the agent core.
+
 ## Configuration Design
 
 ### 1. Replace DingTalk placeholder config with a dedicated model
@@ -89,6 +107,17 @@ Introduce a dedicated `DingdingChannelConfig` with these fields:
 DingTalk is considered “configured enough to start” only when:
 - `client_id_env` is present and resolves to a non-empty environment variable
 - `client_secret_env` is present and resolves to a non-empty environment variable
+
+Gateway artifact publishing needs one additional runtime concept:
+- `gateway.public_base_url: str | None = None`
+
+`public_base_url` is optional for startup, but required when gateway needs to convert generated artifact references into externally reachable HTTP URLs for push channels such as DingTalk.
+
+If `public_base_url` is unset:
+- gateway still starts normally
+- DingTalk channel still works
+- channel-native file/image upload remains available
+- generic artifact URL publishing is skipped or degraded per message round rather than failing the channel startup
 
 AI card support is optional at runtime:
 - if `enable_ai_card` is `False`, the channel still starts and replies with text/file messages only
@@ -159,6 +188,88 @@ The bridge must:
 
 This bridge can wrap existing Aworld streaming primitives already available in the repository instead of depending on the `aworldclaw` external agent-server path.
 
+### 4. Artifact reference handling
+
+This change should define a gateway-level artifact reference contract.
+
+Preferred output contract:
+- `artifact://<relative-path>`
+
+Compatibility inputs that gateway should continue to recognize:
+- local absolute paths
+- `attachment://...`
+
+Processing rule:
+1. agent output is collected by the DingTalk execution bridge
+2. gateway scans the final text for publishable artifact references
+3. each reference is registered into the gateway-local artifact service
+4. the original reference is replaced with a temporary HTTP URL such as `/artifacts/{token}`
+5. DingTalk then decides whether to:
+   - send the published HTTP URL directly
+   - keep using native image/file upload for richer channel-native delivery
+
+The important constraint is that agent output should not hardcode final HTTP addresses. Final URL construction belongs to gateway runtime because it depends on deployment-time values such as host, port, base URL, and process lifetime.
+
+## Artifact Publishing Design
+
+### 1. Service shape
+
+Add a small gateway-local artifact service under `aworld_gateway/http/`, for example:
+- `artifact_service.py`
+- `artifact_router.py`
+
+The service should:
+- accept a local artifact reference and publish it into an in-memory registry
+- generate an opaque token rather than exposing raw file paths
+- resolve the token back to a safe file path at request time
+- serve the file with a correct MIME type
+- reject traversal, missing files, expired entries, and out-of-root paths
+
+Suggested external route:
+- `GET /artifacts/{token}`
+
+This route should live on the same FastAPI app created by `aworld-cli gateway serve`.
+
+### 2. Lifetime model
+
+Published links are intentionally ephemeral:
+- valid only while the gateway process is alive
+- stored in memory only
+- no persistence across restart
+
+Optional policy knobs can be added later, but this phase only needs:
+- process-lifetime validity
+- optional TTL support
+- optional single-use invalidation as an internal extension point, not a requirement for the first implementation
+
+### 3. Root and path policy
+
+The artifact service must not publish arbitrary host files.
+
+Allowed publish roots should be limited to gateway-managed artifact/workspace roots, for example:
+- DingTalk workspace under `.aworld/gateway/dingding/`
+- later, other channel/workflow-specific artifact roots registered explicitly
+
+Publishing a file should fail when:
+- the file is outside an allowed root
+- the file does not exist
+- the path escapes by symlink or traversal
+
+### 4. DingTalk compatibility strategy
+
+DingTalk must remain compatible with current behavior.
+
+That means:
+- existing local absolute path output still works
+- existing `attachment://...` output still works
+- image and regular file upload via DingTalk native media APIs still remains the preferred rich delivery path when available
+- published HTTP URLs are an additional generic delivery path, not a forced replacement for native DingTalk media
+
+In practice:
+- images may still be rewritten to DingTalk-native media payloads
+- regular files may still be sent as DingTalk file messages
+- plain links are especially useful for HTML reports, previews, or outputs that do not map cleanly to DingTalk native media types
+
 ## Attachments Design
 
 The attachment path should be migrated largely as-is from `aworldclaw`, but localized under `aworld_gateway/channels/dingding/`.
@@ -168,7 +279,9 @@ Included behaviors:
 - download supported incoming files to the DingTalk workspace directory
 - enrich user input with downloaded local file references where appropriate
 - detect local file/image references in final agent output
+- detect `artifact://...` references in final agent output
 - upload local images/files to DingTalk using the correct media endpoints
+- publish compatible generated files through the gateway-local artifact service when a generic external link is more appropriate than a native DingTalk media payload
 - inline image references where possible
 - send file messages separately for regular files
 
@@ -230,6 +343,8 @@ Modify:
 - `aworld_gateway/config/loader.py`
 - `aworld_gateway/registry.py`
 - `aworld_gateway/runtime.py` only if startup/status semantics need extension
+- `aworld_gateway/http/server.py`
+- new gateway-local HTTP modules such as `aworld_gateway/http/artifact_service.py` and `aworld_gateway/http/artifact_router.py`
 - packaging/dependency files to include `dingtalk_stream`
 - `aworld-cli/src/aworld_cli/gateway_cli.py` only where status/serve integration requires it
 
@@ -266,6 +381,8 @@ Tests must cover:
 - `sessionWebhook` text reply
 - AI card create/update/finalize flows
 - attachment upload/download flows
+- artifact reference conversion
+- compatibility with `artifact://...`, local absolute paths, and `attachment://...`
 - fallback when AI card or attachment behavior fails
 
 These tests should prefer fakes/mocks for `httpx` and the Stream SDK.
@@ -275,6 +392,7 @@ Local verification should include:
 - `aworld-cli gateway status`
 - `aworld-cli gateway channels list`
 - `aworld-cli gateway serve`
+- temporary artifact URL serving on the gateway HTTP app
 - mocked DingTalk callback / fake Stream client flow sufficient to verify startup and main round-trip behavior without requiring a live DingTalk tenant
 
 ## Delivery Boundary
