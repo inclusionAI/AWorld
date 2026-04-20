@@ -27,7 +27,10 @@ def test_registry_indexes_plugins_by_capability():
 
     assert [plugin.manifest.plugin_id for plugin in registry.get_plugins("commands")] == ["code-review-like"]
     assert [plugin.manifest.plugin_id for plugin in registry.get_plugins("hud")] == ["aworld-hud"]
-    assert [plugin.manifest.plugin_id for plugin in registry.get_plugins("hooks")] == ["ralph-like"]
+    assert [plugin.manifest.plugin_id for plugin in registry.get_plugins("hooks")] == [
+        "aworld-hud",
+        "ralph-like",
+    ]
     assert [plugin.manifest.plugin_id for plugin in registry.get_plugins("contexts")] == ["context-like"]
 
 

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.completion import Completer, Completion, WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
@@ -1459,6 +1460,20 @@ class AWorldCLI:
         except Exception:
             pass
 
+    async def _render_cron_notifications_safe(self, notifications: List[Any]) -> None:
+        if not notifications:
+            return
+
+        def _render() -> None:
+            self.console.print()
+            self.render_cron_notifications(notifications)
+
+        if self._active_prompt_session is not None:
+            await run_in_terminal(_render)
+            return
+
+        _render()
+
     async def _ensure_notification_poller(self, runtime) -> None:
         if runtime is None or getattr(runtime, "_notification_center", None) is None:
             return
@@ -1519,9 +1534,7 @@ class AWorldCLI:
                         continue
                     notifications = await self._drain_notifications_safe(runtime)
                     if notifications:
-                        # Print above current prompt line
-                        self.console.print()  # Add newline before notifications
-                        self.render_cron_notifications(notifications)
+                        await self._render_cron_notifications_safe(notifications)
 
                 await asyncio.sleep(poll_interval)
 

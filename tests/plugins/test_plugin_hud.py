@@ -36,6 +36,21 @@ def test_collect_hud_lines_orders_by_section_and_priority():
     assert lines[0].segments[0].startswith("Agent:")
 
 
+def test_builtin_aworld_hud_manifest_declares_hook_entrypoints():
+    plugin_root = _get_builtin_aworld_hud_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    hook_entrypoints = plugin.manifest.entrypoints.get("hooks", ())
+
+    assert [entry.entrypoint_id for entry in hook_entrypoints] == [
+        "task-started",
+        "task-progress",
+        "task-completed",
+        "task-error",
+        "task-interrupted",
+    ]
+
+
 def test_status_bar_text_merges_plugin_hud_lines():
     plugin_root = _get_builtin_aworld_hud_root()
     plugin = discover_plugins([plugin_root])[0]
@@ -109,6 +124,34 @@ def test_collect_hud_lines_preserves_grouped_segments():
     assert [line.section for line in lines] == ["identity", "activity"]
     assert lines[0].segments[0] == "Agent: Aworld"
     assert "Task: task_001 (running)" in lines[1].segments
+    assert "Elapsed: 12.5s" in lines[1].segments
+
+
+def test_builtin_aworld_hud_prefers_plugin_state_for_dynamic_segments():
+    plugin_root = _get_builtin_aworld_hud_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    lines = collect_hud_lines(
+        plugins=[plugin],
+        context={
+            "workspace": {"name": "aworld"},
+            "session": {"agent": "Aworld", "mode": "Chat", "model": "stale-model", "elapsed_seconds": 1.0},
+            "task": {"current_task_id": "stale-task", "status": "idle"},
+            "usage": {"input_tokens": 1, "output_tokens": 2, "context_percent": 1},
+            "notifications": {"cron_unread": 0},
+            "vcs": {"branch": "feat/hud"},
+        },
+        plugin_state_provider=lambda plugin_id, scope, context: {
+            "session": {"model": "gpt-5", "elapsed_seconds": 12.5},
+            "task": {"current_task_id": "task_001", "status": "running"},
+            "usage": {"input_tokens": 1200, "output_tokens": 300, "context_percent": 34},
+        },
+    )
+
+    assert lines[0].segments[1] == "Model: gpt-5"
+    assert "Task: task_001 (running)" in lines[1].segments
+    assert "Tokens: in 1.2k out 300" in lines[1].segments
+    assert "Ctx: 34%" in lines[1].segments
     assert "Elapsed: 12.5s" in lines[1].segments
 
 

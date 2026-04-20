@@ -384,3 +384,75 @@ async def test_runtime_renders_third_party_hud_plugin_from_hook_driven_state(tmp
     assert "Observed Task: task-1" in text
     assert "Usage: in 1.2k out 300" in text
     assert "Elapsed: 12.5s" in text
+
+
+async def test_runtime_renders_builtin_aworld_hud_from_hook_driven_state(tmp_path):
+    plugin_root = next(
+        root for root in get_builtin_plugin_roots() if root.name == "aworld_hud"
+    )
+
+    class DummyRuntime(BaseCliRuntime):
+        def __init__(self, plugin_dirs):
+            super().__init__(agent_name="Aworld")
+            self.plugin_dirs = plugin_dirs
+
+        async def _load_agents(self):
+            return []
+
+        async def _create_executor(self, agent):
+            return None
+
+        def _get_source_type(self):
+            return "TEST"
+
+        def _get_source_location(self):
+            return "test://builtin-aworld-hud"
+
+    runtime = DummyRuntime([plugin_root])
+    runtime._initialize_plugin_framework()
+    runtime._plugin_state_store = type(runtime._plugin_state_store)(tmp_path / "plugin-state")
+
+    executor_instance = type(
+        "Executor",
+        (),
+        {
+            "session_id": "session-1",
+            "context": type("Context", (), {"workspace_path": str(tmp_path), "task_id": "task-1"})(),
+        },
+    )()
+
+    await runtime.run_plugin_hooks(
+        "task_started",
+        event={"task_id": "task-1", "session_id": "session-1", "message": "hello"},
+        executor_instance=executor_instance,
+    )
+    await runtime.run_plugin_hooks(
+        "task_progress",
+        event={
+            "task_id": "task-1",
+            "session_id": "session-1",
+            "elapsed_seconds": 12.5,
+            "usage": {
+                "input_tokens": 1200,
+                "output_tokens": 300,
+                "context_percent": 34,
+                "model": "gpt-5",
+            },
+        },
+        executor_instance=executor_instance,
+    )
+
+    runtime.update_hud_snapshot(
+        session={"session_id": "session-1", "model": "stale-model", "elapsed_seconds": 1.0},
+        task={"current_task_id": "stale-task", "status": "idle"},
+        usage={"input_tokens": 1, "output_tokens": 2, "context_percent": 1},
+    )
+
+    cli = AWorldCLI()
+    text = cli._build_status_bar_text(runtime, agent_name="Aworld", mode="Chat", max_width=160)
+
+    assert "Model: gpt-5" in text
+    assert "Task: task-1 (running)" in text
+    assert "Tokens: in 1.2k out 300" in text
+    assert "Ctx: 34%" in text
+    assert "Elapsed: 12.5s" in text

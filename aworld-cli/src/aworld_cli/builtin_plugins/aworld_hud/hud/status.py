@@ -4,8 +4,19 @@ from aworld_cli.plugin_capabilities.hud_helpers import (
     format_hud_tokens,
 )
 
-def _identity_segments(context):
-    session = context.get("session", {})
+def _merge_bucket(context, plugin_state, bucket):
+    merged = {}
+    context_bucket = context.get(bucket, {})
+    if isinstance(context_bucket, dict):
+        merged.update(context_bucket)
+    state_bucket = plugin_state.get(bucket, {})
+    if isinstance(state_bucket, dict):
+        merged.update(state_bucket)
+    return merged
+
+
+def _identity_segments(context, plugin_state):
+    session = _merge_bucket(context, plugin_state, "session")
     workspace = context.get("workspace", {})
     vcs = context.get("vcs", {})
     notifications = context.get("notifications", {})
@@ -30,10 +41,10 @@ def _identity_segments(context):
     return segments
 
 
-def _activity_segments(context):
-    task = context.get("task", {})
-    session = context.get("session", {})
-    usage = context.get("usage", {})
+def _activity_segments(context, plugin_state):
+    task = _merge_bucket(context, plugin_state, "task")
+    session = _merge_bucket(context, plugin_state, "session")
+    usage = _merge_bucket(context, plugin_state, "usage")
     task_status = task.get("status", "idle")
 
     segments = []
@@ -63,8 +74,8 @@ def _activity_segments(context):
     return segments or ["Status: idle"]
 
 
-def render_lines(context):
+def render_lines(context, plugin_state):
     return [
-        {"section": "identity", "priority": 10, "segments": _identity_segments(context)},
-        {"section": "activity", "priority": 20, "segments": _activity_segments(context)},
+        {"section": "identity", "priority": 10, "segments": _identity_segments(context, plugin_state)},
+        {"section": "activity", "priority": 20, "segments": _activity_segments(context, plugin_state)},
     ]

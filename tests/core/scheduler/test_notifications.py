@@ -707,6 +707,50 @@ async def test_notification_poller_drains_and_renders_without_hud():
 
 
 @pytest.mark.asyncio
+async def test_notification_poller_uses_prompt_safe_rendering_without_hud_when_prompt_is_active(monkeypatch):
+    center = CronNotificationCenter()
+    await center.publish({
+        "job_id": "job-inline-active",
+        "job_name": "Inline Active Job",
+        "status": "ok",
+        "summary": "Inline Active Job completed",
+        "created_at": datetime.now(pytz.UTC).isoformat(),
+    })
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = center
+
+        async def _drain_notifications(self):
+            return await center.drain()
+
+        def active_plugin_capabilities(self):
+            return ()
+
+    cli = AWorldCLI()
+    buffer = StringIO()
+    cli.console = Console(file=buffer, force_terminal=False, color_system=None)
+    cli._active_prompt_session = MagicMock()
+    stop_event = asyncio.Event()
+    calls = []
+
+    async def fake_run_in_terminal(func, render_cli_done=False, in_executor=False):
+        calls.append((render_cli_done, in_executor))
+        func()
+
+    monkeypatch.setattr("aworld_cli.console.run_in_terminal", fake_run_in_terminal, raising=False)
+
+    task = asyncio.create_task(cli._notification_poller(FakeRuntime(), poll_interval=0.01, stop_event=stop_event))
+    await asyncio.sleep(0.03)
+    stop_event.set()
+    await task
+
+    assert center.get_unread_count() == 0
+    assert calls == [(False, False)]
+    assert "Inline Active Job completed" in buffer.getvalue()
+
+
+@pytest.mark.asyncio
 async def test_ensure_notification_poller_starts_once_and_stops_cleanly():
     class FakeRuntime:
         def __init__(self):
