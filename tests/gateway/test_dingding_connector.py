@@ -17,6 +17,7 @@ from aworld_gateway.channels.dingding.types import (
     PendingFileMessage,
 )
 from aworld_gateway.config import DingdingChannelConfig
+from aworld_gateway.http.artifact_service import ArtifactService
 
 
 class _FakeBridge:
@@ -721,6 +722,103 @@ def test_connector_skips_artifact_publish_when_build_external_url_fails(tmp_path
     original = "查看 [HTML 报告](artifact://reports/summary.html)"
     cleaned, pending_files = asyncio.run(connector._process_local_media_links(original))
 
-    assert calls["publish"] >= 1
+    assert calls["publish"] == 1
     assert cleaned == original
+    assert pending_files == []
+
+
+def test_connector_does_not_publish_artifact_when_public_base_url_missing(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    report_path = workspace_dir / "report.html"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("summary", encoding="utf-8")
+    service = ArtifactService(public_base_url=None, allowed_roots=[workspace_dir])
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(enable_attachments=True, workspace_dir=str(workspace_dir)),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+        artifact_service=service,
+    )
+    connector._get_oapi_access_token = lambda: asyncio.sleep(0, result=None)  # type: ignore[method-assign]
+
+    original = "[HTML 报告](artifact://report.html)"
+    cleaned, pending_files = asyncio.run(connector._process_local_media_links(original))
+
+    assert cleaned == original
+    assert pending_files == []
+    assert len(service._artifacts) == 0
+
+
+def test_connector_rewrites_plain_artifact_reference_with_trailing_period(
+    tmp_path: Path,
+) -> None:
+    workspace_dir = tmp_path / "workspace"
+    report_path = workspace_dir / "reports" / "summary.html"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("summary", encoding="utf-8")
+
+    class _FakeArtifactService:
+        def publish(self, path: Path | str) -> str:
+            assert Path(path) == report_path
+            return "token"
+
+        def build_external_url(self, token: str) -> str:
+            assert token == "token"
+            return "https://gateway.example.com/artifacts/token"
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(enable_attachments=True, workspace_dir=str(workspace_dir)),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+        artifact_service=_FakeArtifactService(),
+    )
+    connector._get_oapi_access_token = lambda: asyncio.sleep(0, result=None)  # type: ignore[method-assign]
+
+    cleaned, pending_files = asyncio.run(
+        connector._process_local_media_links("请查看 artifact://reports/summary.html.")
+    )
+
+    assert cleaned == "请查看 https://gateway.example.com/artifacts/token."
+    assert pending_files == []
+
+
+def test_connector_rewrites_bare_windows_path_in_plain_text(tmp_path: Path) -> None:
+    local_file = tmp_path / "report.txt"
+    local_file.write_text("report", encoding="utf-8")
+
+    class _FakeArtifactService:
+        def publish(self, path: Path | str) -> str:
+            assert Path(path) == local_file
+            return "windows-token"
+
+        def build_external_url(self, token: str) -> str:
+            assert token == "windows-token"
+            return "https://gateway.example.com/artifacts/windows-token"
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(enable_attachments=True),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+        artifact_service=_FakeArtifactService(),
+    )
+    connector._get_oapi_access_token = lambda: asyncio.sleep(0, result=None)  # type: ignore[method-assign]
+
+    original_extract_local_file_path = connector._extract_local_file_path
+
+    def fake_extract_local_file_path(raw_url: str):  # type: ignore[no-untyped-def]
+        if raw_url == "C:/tmp/report.txt":
+            return local_file
+        return original_extract_local_file_path(raw_url)
+
+    connector._extract_local_file_path = fake_extract_local_file_path  # type: ignore[assignment]
+
+    cleaned, pending_files = asyncio.run(
+        connector._process_local_media_links("请查看 C:/tmp/report.txt")
+    )
+
+    assert cleaned == "请查看 https://gateway.example.com/artifacts/windows-token"
     assert pending_files == []
