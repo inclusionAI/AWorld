@@ -186,8 +186,7 @@ async def load_all_agents(
             except Exception as e:
                 print(f"⚠️ Failed to load agent file {agent_file}: {e}")
     
-    # Use CliRuntime to load agents (it handles all sources)
-    # Create a temporary runtime instance just for loading agents
+    # Use a short-lived CliRuntime to load agents from all supported sources.
     runtime = CliRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
     return await runtime._load_agents()
 
@@ -310,19 +309,19 @@ Server Mode:
 
 Plugin Management:
   # Install a plugin from GitHub
-  aworld-cli plugin install my-plugin --url https://github.com/user/repo
+  aworld-cli plugins install my-plugin --url https://github.com/user/repo
   
   # Install a plugin from local path
-  aworld-cli plugin install local-plugin --local-path ./local/plugin
+  aworld-cli plugins install local-plugin --local-path ./local/plugin
   
   # Install with force (overwrite existing)
-  aworld-cli plugin install my-plugin --url https://github.com/user/repo --force
+  aworld-cli plugins install my-plugin --url https://github.com/user/repo --force
   
   # List installed plugins
-  aworld-cli plugin list
+  aworld-cli plugins list
   
   # Remove a plugin
-  aworld-cli plugin remove my-plugin
+  aworld-cli plugins remove my-plugin
 """
     
     # Chinese help text
@@ -419,19 +418,19 @@ Batch Jobs:
 
 插件管理：
   # 从 GitHub 安装插件
-  aworld-cli plugin install my-plugin --url https://github.com/user/repo
+  aworld-cli plugins install my-plugin --url https://github.com/user/repo
   
   # 从本地路径安装插件
-  aworld-cli plugin install local-plugin --local-path ./local/plugin
+  aworld-cli plugins install local-plugin --local-path ./local/plugin
   
   # 强制安装（覆盖已存在的插件）
-  aworld-cli plugin install my-plugin --url https://github.com/user/repo --force
+  aworld-cli plugins install my-plugin --url https://github.com/user/repo --force
   
   # 列出已安装的插件
-  aworld-cli plugin list
+  aworld-cli plugins list
   
   # 移除插件
-  aworld-cli plugin remove my-plugin
+  aworld-cli plugins remove my-plugin
 """
     
     description_en = "AWorld Agent CLI - Interact with agents directly from the terminal"
@@ -543,15 +542,15 @@ Batch Jobs:
             )
             return
 
-    # Create a minimal parser to check if command needs other special handling.
+    # Create a minimal parser to check if command is 'plugins'
     minimal_parser = argparse.ArgumentParser(add_help=False)
     minimal_parser.add_argument('command', nargs='?', default='interactive')
     minimal_args, _ = minimal_parser.parse_known_args()
 
-    # Handle plugin command specially
-    if minimal_args.command == "plugin":
-        plugin_parser = argparse.ArgumentParser(description="Plugin management commands", prog="aworld-cli plugin")
-        plugin_subparsers = plugin_parser.add_subparsers(dest='plugin_action', help='Plugin action to perform', required=True)
+    # Handle plugin command specially.
+    if minimal_args.command in {"plugin", "plugins"}:
+        plugin_parser = argparse.ArgumentParser(description="Plugin management commands", prog="aworld-cli plugins")
+        plugin_subparsers = plugin_parser.add_subparsers(dest='plugin_action', help='Plugin action to perform')
 
         # install subcommand
         install_parser = plugin_subparsers.add_parser('install', help='Install a plugin')
@@ -564,21 +563,45 @@ Batch Jobs:
         remove_parser = plugin_subparsers.add_parser('remove', help='Remove a plugin')
         remove_parser.add_argument('plugin_name', help='Name of the plugin to remove')
 
+        # enable subcommand
+        enable_parser = plugin_subparsers.add_parser('enable', help='Enable an installed plugin')
+        enable_parser.add_argument('plugin_name', help='Name of the plugin to enable')
+
+        # disable subcommand
+        disable_parser = plugin_subparsers.add_parser('disable', help='Disable an installed plugin')
+        disable_parser.add_argument('plugin_name', help='Name of the plugin to disable')
+
+        # reload subcommand
+        reload_parser = plugin_subparsers.add_parser('reload', help='Reload plugin metadata from disk')
+        reload_parser.add_argument('plugin_name', help='Name of the plugin to reload')
+
+        # validate subcommand
+        validate_parser = plugin_subparsers.add_parser('validate', help='Validate a plugin manifest or plugin root')
+        validate_parser.add_argument('plugin_name', nargs='?', help='Installed plugin name to validate')
+        validate_parser.add_argument('--path', type=str, help='Explicit plugin root path to validate')
+
         # list subcommand
         list_parser = plugin_subparsers.add_parser('list', help='List installed plugins')
 
         # Parse plugin subcommand arguments
         try:
-            plugin_args = plugin_parser.parse_args()
+            plugin_args = plugin_parser.parse_args(sys.argv[2:])
         except SystemExit:
             return
 
+        plugin_action = plugin_args.plugin_action or "list"
+
         # Handle plugin commands
-        from .core.plugin_manager import PluginManager
+        from .core.plugin_manager import (
+            PluginManager,
+            list_available_plugins,
+            render_plugins_table,
+            validate_plugin_path,
+        )
 
         manager = PluginManager()
 
-        if plugin_args.plugin_action == "install":
+        if plugin_action == "install":
             if not plugin_args.url and not plugin_args.local_path:
                 print("❌ Error: Either --url or --local-path must be provided")
                 install_parser.print_help()
@@ -600,43 +623,65 @@ Batch Jobs:
                 print(f"❌ Error installing plugin: {e}")
                 return
 
-        elif plugin_args.plugin_action == "remove":
+        elif plugin_action == "remove":
             success = manager.remove(plugin_args.plugin_name)
             if not success:
                 return
 
-        elif plugin_args.plugin_action == "list":
-            plugins = manager.list_plugins()
-
-            if not plugins:
-                print("📦 No plugins installed")
-                print(f"📍 Plugin directory: {manager.plugin_dir}")
+        elif plugin_action == "enable":
+            try:
+                plugin_state = manager.enable(plugin_args.plugin_name)
+                print(f"✅ Plugin '{plugin_args.plugin_name}' enabled")
+                print(f"📍 Location: {plugin_state['path']}")
+            except KeyError:
+                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
                 return
 
-            print(f"📦 Installed plugins ({len(plugins)}):")
-            print(f"📍 Plugin directory: {manager.plugin_dir}\n")
+        elif plugin_action == "disable":
+            try:
+                plugin_state = manager.disable(plugin_args.plugin_name)
+                print(f"✅ Plugin '{plugin_args.plugin_name}' disabled")
+                print(f"📍 Location: {plugin_state['path']}")
+            except KeyError:
+                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
+                return
 
-            from rich.console import Console
-            from rich.table import Table
+        elif plugin_action == "reload":
+            try:
+                plugin_state = manager.reload(plugin_args.plugin_name)
+                print(f"✅ Plugin '{plugin_args.plugin_name}' reloaded")
+                print(f"📍 Location: {plugin_state['path']}")
+            except KeyError:
+                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
+                return
 
-            console = Console()
-            table = Table(show_header=True, header_style="bold magenta")
-            table.add_column("Name", style="cyan")
-            table.add_column("Source", style="green")
-            table.add_column("Has Agents", justify="center")
-            table.add_column("Has Skills", justify="center")
-            table.add_column("Path", style="dim")
+        elif plugin_action == "validate":
+            try:
+                if plugin_args.path:
+                    plugin_state = validate_plugin_path(Path(plugin_args.path))
+                    label = plugin_state["plugin_id"]
+                elif plugin_args.plugin_name:
+                    plugin_state = manager.validate(plugin_args.plugin_name)
+                    label = plugin_args.plugin_name
+                else:
+                    print("❌ Error: specify either <plugin_name> or --path")
+                    validate_parser.print_help()
+                    return
 
-            for plugin in plugins:
-                table.add_row(
-                    plugin['name'],
-                    plugin['source'],
-                    "✅" if plugin['has_agents'] else "❌",
-                    "✅" if plugin['has_skills'] else "❌",
-                    plugin['path']
-                )
+                print(f"✅ Plugin '{label}' is valid")
+                print(f"📍 Location: {plugin_state['path']}")
+                print(f"🆔 Plugin ID: {plugin_state['plugin_id']}")
+                print(f"🧩 Framework: {plugin_state['framework_source']}")
+                print(f"⚙️ Capabilities: {', '.join(plugin_state['capabilities']) or '-'}")
+            except KeyError:
+                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
+                return
+            except Exception as e:
+                print(f"❌ Plugin validation failed: {e}")
+                return
 
-            console.print(table)
+        elif plugin_action == "list":
+            print(render_plugins_table(list_available_plugins(manager), manager.plugin_dir), end="")
 
         return
 
@@ -645,9 +690,9 @@ Batch Jobs:
         'command',
         nargs='?',
         default='interactive',
-        choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'gateway'],
+        choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugins', 'gateway'],
         help='Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers, '
-             '"batch-job" to run batch jobs, or "gateway" to manage the gateway.'
+             '"batch-job" to run batch jobs, "plugins" to manage plugins, or "gateway" to manage the gateway.'
     )
     
     parser.add_argument(
@@ -832,7 +877,7 @@ Batch Jobs:
         )
         parser_zh.add_argument('-zh', '--zh', action='store_true', help='显示中文帮助')
         parser_zh.add_argument('--examples', action='store_true', help='显示使用示例')
-        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugin', 'gateway'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugin" 管理插件，使用 "gateway" 管理网关。')
+        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugins', 'gateway'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugins" 管理插件，使用 "gateway" 管理网关。')
         parser_zh.add_argument('--task', type=str, help='发送给 agent 的任务（非交互模式）')
         parser_zh.add_argument('--agent', type=str, help='要使用的 agent 名称（直接运行模式必需）')
         parser_zh.add_argument('--max-runs', type=int, help='最大运行次数（直接运行模式）')
@@ -870,7 +915,7 @@ Batch Jobs:
 
     # Display configuration source
     from ._globals import console
-    # Require model config for commands that use the agent (skip for 'list' and plugin)
+    # Require model config for commands that use the agent (skip for 'list' and 'plugins')
     if args.command != "list" and not has_model_config(config_dict):
         console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
         console.print("[dim]Run: aworld-cli --config[/dim]")
@@ -936,7 +981,7 @@ Batch Jobs:
         return
 
     # Handle inner plugin commands (e.g. 'batch-job', 'batch')
-    from .inner_plugins.batch import get_commands as get_batch_commands
+    from .plugins.batch import get_commands as get_batch_commands
     batch_commands = get_batch_commands()
     if args.command in batch_commands:
         handler = batch_commands[args.command]
@@ -1201,6 +1246,9 @@ async def _run_direct_mode(
         return
     
     # Create agent executor using CliRuntime (session_id is already passed to runtime)
+    from aworld.core.scheduler import get_scheduler
+    runtime._scheduler = get_scheduler()
+    runtime._bind_scheduler_default_agent(selected_agent.name)
     agent_executor = await runtime._create_executor(selected_agent)
 
     if not agent_executor:

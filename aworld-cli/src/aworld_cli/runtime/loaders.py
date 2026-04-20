@@ -76,7 +76,7 @@ class PluginLoader(AgentLoader):
         >>> agents = await loader.load_agents()
     """
     
-    def __init__(self, plugin_path: Path, console=None):
+    def __init__(self, plugin_path: Path, plugin_id: str | None = None, console=None):
         """
         Initialize plugin loader.
         
@@ -85,7 +85,8 @@ class PluginLoader(AgentLoader):
             console: Optional Rich console for output
         """
         super().__init__(console)
-        self.plugin_path = Path(plugin_path)
+        self.plugin_path = Path(plugin_path).resolve()
+        self.plugin_id = plugin_id or self.plugin_path.name
         self.skills_dir = self.plugin_path / "skills"
         self.agents_dir = self.plugin_path / "agents"
     
@@ -104,7 +105,7 @@ class PluginLoader(AgentLoader):
             # Register skills from this plugin
             registry.register_source(str(self.skills_dir))
             if self.console:
-                self.console.print(f"[dim]📚 Loaded skills from plugin: {self.plugin_path.name}[/dim]")
+                self.console.print(f"[dim]📚 Loaded skills from plugin: {self.plugin_id}[/dim]")
         except Exception as e:
             if self.console:
                 self.console.print(f"[yellow]⚠️ Failed to load skills from {self.plugin_path}: {e}[/yellow]")
@@ -114,7 +115,7 @@ class PluginLoader(AgentLoader):
         Load agents from plugin directory.
         
         Returns:
-            List of AgentInfo objects (filtered to only include agents from inner_plugins directory)
+            List of AgentInfo objects registered under this plugin's agents directory.
         """
         if not self.agents_dir.exists():
             return []
@@ -131,17 +132,22 @@ class PluginLoader(AgentLoader):
             agents = LocalAgentRegistry.list_agents()
             agents_info = []
             
-            # Filter agents: only keep those from inner_plugins directory
+            agents_dir = self.agents_dir.resolve()
+
+            # Filter agents: only keep those registered under this plugin's agents directory
             for agent in agents:
-                # Only include agents that have register_dir set and contain "inner_plugins"
-                if agent.register_dir:
-                    register_dir_path = Path(agent.register_dir)
-                    # Check if "inner_plugins" is in the path
-                    if "inner_plugins" in str(register_dir_path):
-                        agent_info = AgentInfo.from_local_agent(agent, source_location=str(self.agents_dir))
-                        agents_info.append(agent_info)
-                        self._loaded_agents[agent_info.name] = agent_info
-                # If register_dir is not set, skip the agent (cannot determine if from inner_plugins)
+                if not agent.register_dir:
+                    continue
+
+                register_dir_path = Path(agent.register_dir).resolve()
+                try:
+                    register_dir_path.relative_to(agents_dir)
+                except ValueError:
+                    continue
+
+                agent_info = AgentInfo.from_local_agent(agent, source_location=str(self.agents_dir))
+                agents_info.append(agent_info)
+                self._loaded_agents[agent_info.name] = agent_info
             
             return agents_info
         except Exception as e:

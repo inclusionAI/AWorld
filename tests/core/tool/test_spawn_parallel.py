@@ -10,6 +10,9 @@ import asyncio
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from aworld.config.conf import ConfigDict
+from aworld.core.context.base import Context
+from aworld.core.event.base import Constants, Message
 from aworld.core.tool.builtin.spawn_subagent_tool import SpawnSubagentTool
 from aworld.core.common import ActionModel, Observation
 from aworld.core.agent.subagent_manager import SubagentManager
@@ -217,6 +220,125 @@ async def test_spawn_parallel_concurrency_limit(mock_subagent_manager):
 
     # Verify max concurrent was respected
     assert max_active <= 3
+
+
+@pytest.mark.asyncio
+async def test_spawn_parallel_resolves_manager_from_context_agent():
+    """Tool should resolve the caller agent's SubagentManager from context."""
+    manager = MagicMock(spec=SubagentManager)
+    manager.spawn = AsyncMock(return_value="[image_generator] ok")
+
+    caller_agent = MagicMock()
+    caller_agent.subagent_manager = manager
+
+    swarm = MagicMock()
+    swarm.agents = {"root-agent": caller_agent}
+
+    context = Context()
+    task = MagicMock()
+    task.swarm = swarm
+    context.set_task(task)
+    context.agent_info.current_agent_id = "root-agent"
+
+    tool = SpawnSubagentTool(conf=ConfigDict({}))
+    tool.context = context
+
+    action = ActionModel(
+        agent_name="root-agent",
+        action_name='spawn_parallel',
+        params={
+            'tasks': [
+                {'name': 'image_generator', 'directive': 'Generate one image'}
+            ],
+            'aggregate': True,
+        }
+    )
+
+    observation, reward, _, _, info = await tool.do_step([action])
+
+    assert reward == 1.0
+    assert info['success_count'] == 1
+    assert 'image_generator' in observation.content
+    manager.spawn.assert_awaited_once()
+    assert manager.spawn.await_args.kwargs['context'] is context
+
+
+@pytest.mark.asyncio
+async def test_spawn_parallel_resolves_manager_from_object_agent_info_without_action_agent_name():
+    """Tool should support object-like agent_info, not only dict-like access."""
+    manager = MagicMock(spec=SubagentManager)
+    manager.spawn = AsyncMock(return_value="[image_generator] ok")
+
+    caller_agent = MagicMock()
+    caller_agent.subagent_manager = manager
+
+    swarm = MagicMock()
+    swarm.agents = {"root-agent": caller_agent}
+
+    context = Context()
+    task = MagicMock()
+    task.swarm = swarm
+    context.set_task(task)
+    context.agent_info.current_agent_id = "root-agent"
+
+    tool = SpawnSubagentTool(conf=ConfigDict({}))
+    tool.context = context
+
+    action = ActionModel(
+        action_name='spawn_parallel',
+        params={
+            'tasks': [
+                {'name': 'image_generator', 'directive': 'Generate one image'}
+            ],
+            'aggregate': True,
+        }
+    )
+
+    observation, reward, _, _, info = await tool.do_step([action])
+
+    assert reward == 1.0
+    assert info['success_count'] == 1
+    assert 'image_generator' in observation.content
+    manager.spawn.assert_awaited_once()
+    assert manager.spawn.await_args.kwargs['context'] is context
+
+
+@pytest.mark.asyncio
+async def test_spawn_parallel_step_returns_error_without_secondary_index_error():
+    """Error responses should not crash AsyncTool.post_step with empty action_result."""
+    swarm = MagicMock()
+    caller_agent = MagicMock(feedback_tool_result=True)
+    caller_agent.subagent_manager = None
+    swarm.agents = {"root-agent": caller_agent}
+
+    context = Context()
+    task = MagicMock()
+    task.swarm = swarm
+    context.set_task(task)
+
+    tool = SpawnSubagentTool(conf=ConfigDict({}))
+    message = Message(
+        category=Constants.TOOL,
+        payload=[
+            ActionModel(
+                tool_name='async_spawn_subagent',
+                tool_call_id='call-1',
+                agent_name='root-agent',
+                action_name='spawn_parallel',
+                params={'tasks': [{'name': 'image_generator', 'directive': 'Generate one image'}]},
+            )
+        ],
+        headers={'context': context},
+    )
+
+    with patch("aworld.core.tool.base.send_message", AsyncMock()), patch(
+        "aworld.core.tool.base.send_message_with_future",
+        AsyncMock(side_effect=RuntimeError("skip callback in unit test"))
+    ):
+        result = await tool.step(message)
+
+    assert result.payload[0].content == "spawn_parallel: No SubagentManager available"
+    assert result.payload[0].action_result[0].error == "No SubagentManager"
 
 
 @pytest.mark.asyncio

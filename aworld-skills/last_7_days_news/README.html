@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>last_7_days_news README</title>
+  <style>
+    :root {
+      --bg: #eceef3;
+      --dot: rgba(120, 126, 142, 0.16);
+      --ink: #2f3947;
+      --muted: #818b9b;
+      --line: #ef6a1f;
+      --line-soft: rgba(239, 106, 31, 0.2);
+      --node-bg: rgba(245, 247, 250, 0.92);
+      --node-border: #8f99ab;
+      --decision-border: #b678ff;
+      --input-border: #6fa3ff;
+      --output-border: #56c977;
+      --node-shadow: 0 18px 34px rgba(109, 124, 146, 0.14);
+      --node-shadow-hover: 0 26px 42px rgba(109, 124, 146, 0.2);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Avenir Next", "PingFang SC", "Helvetica Neue", sans-serif;
+      background:
+        radial-gradient(circle at top center, rgba(255, 255, 255, 0.74), transparent 40%),
+        radial-gradient(circle, var(--dot) 0.8px, transparent 0.9px),
+        linear-gradient(180deg, #eef1f5 0%, #e8ebf0 100%);
+      background-size: auto, 18px 18px, auto;
+    }
+
+    .page {
+      width: 1080px;
+      margin: 0 auto;
+      padding: 18px 0 48px;
+    }
+
+    .board {
+      position: relative;
+      height: 2350px;
+      border-top: 4px solid #111827;
+      border-radius: 0 0 28px 28px;
+      background:
+        linear-gradient(180deg, rgba(255, 255, 255, 0.34), transparent 20%),
+        radial-gradient(circle, var(--dot) 0.8px, transparent 0.9px);
+      background-size: auto, 18px 18px;
+      overflow: hidden;
+      box-shadow: 0 30px 80px rgba(104, 119, 141, 0.16);
+    }
+
+    svg.flow {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+
+    .flow path,
+    .flow line {
+      fill: none;
+      stroke: var(--line);
+      stroke-width: 2.2;
+      stroke-dasharray: 7 7;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      filter: drop-shadow(0 2px 4px var(--line-soft));
+    }
+
+    .label-text {
+      font-size: 12px;
+      fill: #2d3642;
+      font-family: "Avenir Next", "PingFang SC", sans-serif;
+      letter-spacing: 0.02em;
+    }
+
+    .dot {
+      position: absolute;
+      width: 7px;
+      height: 7px;
+      margin-left: -3.5px;
+      margin-top: -3.5px;
+      border-radius: 50%;
+      background: var(--line);
+      box-shadow: 0 0 0 5px rgba(239, 106, 31, 0.1);
+    }
+
+    .node {
+      position: absolute;
+      width: 256px;
+      min-height: 108px;
+      padding: 16px 16px 15px 18px;
+      background: var(--node-bg);
+      border: 1.5px solid var(--node-border);
+      border-radius: 4px;
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.78),
+        var(--node-shadow);
+      backdrop-filter: blur(6px);
+      transition: transform 180ms ease, box-shadow 180ms ease;
+    }
+
+    .node.input { border-color: var(--input-border); }
+    .node.decision { border-color: var(--decision-border); }
+    .node.output { border-color: var(--output-border); }
+
+    .node:hover {
+      transform: translateY(-3px);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,0.82),
+        var(--node-shadow-hover);
+    }
+
+    .node::before {
+      content: "";
+      position: absolute;
+      top: -10px;
+      left: 50%;
+      width: 14px;
+      height: 6px;
+      transform: translateX(-50%);
+      background: #c8ced8;
+      border-radius: 1px;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.65);
+    }
+
+    .icon-title {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+    }
+
+    .icon {
+      width: 24px;
+      height: 24px;
+      display: grid;
+      place-items: center;
+      font-size: 15px;
+      line-height: 1;
+      color: #111827;
+      margin-top: 1px;
+      text-align: center;
+      flex: 0 0 24px;
+      border-radius: 6px;
+      background: rgba(255,255,255,0.55);
+      border: 1px solid rgba(143, 153, 171, 0.18);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,0.72);
+    }
+
+    .title {
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-top: 3px;
+      font-weight: 700;
+    }
+
+    .name {
+      font-size: 16px;
+      line-height: 1.15;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      font-weight: 800;
+      color: var(--ink);
+      max-width: 190px;
+    }
+
+    .desc {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(135, 145, 163, 0.14);
+      font-size: 12px;
+      line-height: 1.7;
+      color: #5d6878;
+    }
+
+    .caption {
+      position: absolute;
+      top: 18px;
+      left: 22px;
+      font-size: 12px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      color: #7d8795;
+      font-weight: 800;
+      padding: 8px 12px;
+      background: rgba(255,255,255,0.45);
+      border: 1px solid rgba(143, 153, 171, 0.16);
+      border-radius: 999px;
+      backdrop-filter: blur(6px);
+    }
+
+    @media (max-width: 1120px) {
+      body {
+        overflow-x: auto;
+      }
+      .page {
+        width: 1080px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="board">
+      <div class="caption">last_7_days_news README</div>
+
+      <svg class="flow" viewBox="0 0 1080 2350" aria-hidden="true">
+        <defs>
+          <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+            <path d="M0,0 L10,5 L0,10" fill="none" stroke="#f06d1f" stroke-width="2"></path>
+          </marker>
+        </defs>
+
+        <line x1="540" y1="92" x2="540" y2="180" marker-end="url(#arrow)"></line>
+        <text class="label-text" x="488" y="146">Lock topic / time window</text>
+
+        <path d="M540 292 L540 330 L198 330 L198 374" marker-end="url(#arrow)"></path>
+        <text class="label-text" x="276" y="323">Public-source exploration</text>
+
+        <path d="M540 292 L540 330 L882 330 L882 374" marker-end="url(#arrow)"></path>
+        <text class="label-text" x="648" y="323">X exploration in parallel</text>
+
+        <line x1="198" y1="486" x2="198" y2="620" marker-end="url(#arrow)"></line>
+        <text class="label-text" x="112" y="536">Stable public sources</text>
+
+        <line x1="882" y1="486" x2="882" y2="620" marker-end="url(#arrow)"></line>
+        <text class="label-text" x="814" y="536">Reuse / validate cookie</text>
+
+        <line x1="198" y1="768" x2="198" y2="920" marker-end="url(#arrow)"></line>
+        <text class="label-text" x="124" y="840">High-signal public info</text>
+
+        <line x1="882" y1="768" x2="882" y2="920" marker-end="url(#arrow)"></line>
+        <text class="label-text" x="815" y="840">Timeline-first order</text>
+
+        <path d="M882 1068 L882 1108 L882 1108 L882 1160" marker-end="url(#arrow)"></path>
+        <text class="label-text" x="838" y="1118">X cookie rules</text>
+
+        <path d="M754 1204 L628 1204 L628 1340 L540 1340" marker-end="url(#arrow)"></path>
+        <text class="label-text" x="548" y="1310">Sample high-signal timelines</text>
+
+        <path d="M1010 1204 L1030 1204 L1030 874 L1010 874" marker-end="url(#arrow)"></path>
+        <text class="label-text" x="930" y="1020">Refresh if invalid</text>
+
+        <line x1="540" y1="1482" x2="540" y2="1600" marker-end="url(#arrow)"></line>
+        <text class="label-text" x="444" y="1546">Merge, cross-check, and rank</text>
+
+        <path d="M540 1716 L540 1758 L264 1758 L264 1838" marker-end="url(#arrow)"></path>
+        <text class="label-text" x="298" y="1750">Merged evidence set</text>
+
+        <path d="M540 1716 L540 1758 L816 1758 L816 1838" marker-end="url(#arrow)"></path>
+        <text class="label-text" x="610" y="1750">Need supplement</text>
+
+        <path d="M264 1964 L264 2006 L540 2006 L540 2070" marker-end="url(#arrow)"></path>
+        <text class="label-text" x="292" y="1998">Rank merged results</text>
+
+        <path d="M816 1964 L816 2006 L540 2006 L540 2070" marker-end="url(#arrow)"></path>
+        <text class="label-text" x="636" y="1998">Home feed / search fallback</text>
+      </svg>
+
+      <div class="dot" style="left:540px; top:92px;"></div>
+      <div class="dot" style="left:540px; top:292px;"></div>
+      <div class="dot" style="left:198px; top:486px;"></div>
+      <div class="dot" style="left:882px; top:486px;"></div>
+      <div class="dot" style="left:198px; top:768px;"></div>
+      <div class="dot" style="left:882px; top:768px;"></div>
+      <div class="dot" style="left:882px; top:1068px;"></div>
+      <div class="dot" style="left:540px; top:1482px;"></div>
+      <div class="dot" style="left:540px; top:1716px;"></div>
+      <div class="dot" style="left:264px; top:1964px;"></div>
+      <div class="dot" style="left:816px; top:1964px;"></div>
+
+      <section class="node input" style="left:412px; top:12px;">
+        <div class="icon-title">
+          <div class="icon">⌁</div>
+          <div>
+            <div class="name">LOCK TOPIC AND SOURCE SCOPE</div>
+            <div class="title">Input Node</div>
+          </div>
+        </div>
+        <div class="desc">Lock the last 7 days as the default time window and cover official blogs, developer communities, and X discussion signals within the same run.</div>
+      </section>
+
+      <section class="node decision" style="left:412px; top:192px;">
+        <div class="icon-title">
+          <div class="icon">⤴</div>
+          <div>
+            <div class="name">PARALLEL EVIDENCE TRACKS</div>
+            <div class="title">Decision Node</div>
+          </div>
+        </div>
+        <div class="desc">Make the default workflow explicit as two parallel evidence tracks rather than a single linear path: one for public sources and one for X signals.</div>
+      </section>
+
+      <section class="node" style="left:70px; top:374px;">
+        <div class="icon-title">
+          <div class="icon">⚙</div>
+          <div>
+            <div class="name">EXPAND PUBLIC-SOURCE EXPLORATION</div>
+            <div class="title">Processing Node</div>
+          </div>
+        </div>
+        <div class="desc">In one evidence track, explore Hacker News, GitHub, RSS feeds, official blogs, web search, and official documentation.</div>
+      </section>
+
+      <section class="node" style="left:754px; top:374px;">
+        <div class="icon-title">
+          <div class="icon">⚙</div>
+          <div>
+            <div class="name">EXPAND X EXPLORATION</div>
+            <div class="title">Processing Node</div>
+          </div>
+        </div>
+        <div class="desc">In the second evidence track, expand X sampling: reuse and validate the `/tmp` cookie first, then follow the timeline-first collection order.</div>
+      </section>
+
+      <section class="node" style="left:70px; top:620px;">
+        <div class="icon-title">
+          <div class="icon">⚙</div>
+          <div>
+            <div class="name">COLLECT STABLE PUBLIC SOURCES</div>
+            <div class="title">Processing Node</div>
+          </div>
+        </div>
+        <div class="desc">Prioritize stable sources that do not require extra accounts, and treat official announcements, clearly dated product updates, and highly discussed implementation notes as high-signal samples.</div>
+      </section>
+
+      <section class="node" style="left:754px; top:620px;">
+        <div class="icon-title">
+          <div class="icon">⚙</div>
+          <div>
+            <div class="name">RUN X IN THIS ORDER</div>
+            <div class="title">Processing Node</div>
+          </div>
+        </div>
+        <div class="desc">Run the X track in the documented order: reuse and validate the cookie, sample high-signal timelines, add Home feed only when insufficient, and use narrow search only as the final fallback.</div>
+      </section>
+
+      <section class="node" style="left:70px; top:920px;">
+        <div class="icon-title">
+          <div class="icon">⚙</div>
+          <div>
+            <div class="name">PRIORITIZE HIGH-SIGNAL PUBLIC INFO</div>
+            <div class="title">Config Node</div>
+          </div>
+        </div>
+        <div class="desc">Prioritize official announcements, product updates with clear dates, highly discussed community posts, and implementation notes or developer writeups.</div>
+      </section>
+
+      <section class="node" style="left:754px; top:920px;">
+        <div class="icon-title">
+          <div class="icon">⚙</div>
+          <div>
+            <div class="name">APPLY X COOKIE RULES</div>
+            <div class="title">Processing Node</div>
+          </div>
+        </div>
+        <div class="desc">Use only `/tmp/last_7_days_news_x_cookie.txt`, verify that `auth_token` and `ct0` are present, and do not trust the file just because it exists.</div>
+      </section>
+
+      <section class="node decision" style="left:754px; top:1160px;">
+        <div class="icon-title">
+          <div class="icon">⤴</div>
+          <div>
+            <div class="name">REFRESH LOGIN IF NEEDED</div>
+            <div class="title">Decision Node</div>
+          </div>
+        </div>
+        <div class="desc">If the current cookie is invalid, run `scripts/ensure_x_cookies.sh`, complete login in the opened browser, then export and validate the refreshed cookie again.</div>
+      </section>
+
+      <section class="node" style="left:412px; top:1340px;">
+        <div class="icon-title">
+          <div class="icon">⚙</div>
+          <div>
+            <div class="name">SAMPLE HIGH-SIGNAL TIMELINES</div>
+            <div class="title">Processing Node</div>
+          </div>
+        </div>
+        <div class="desc">Sample model companies and official accounts first, then researchers, then the AI coding and agent-tool ecosystem; do not start from the search page.</div>
+      </section>
+
+      <section class="node decision" style="left:412px; top:1600px;">
+        <div class="icon-title">
+          <div class="icon">⤴</div>
+          <div>
+            <div class="name">MERGE, CROSS-CHECK, AND RANK</div>
+            <div class="title">Decision Node</div>
+          </div>
+        </div>
+        <div class="desc">After both the public-source track and the X track finish exploration, merge the results, deduplicate them, cross-check claims, and rank by source quality, freshness, engagement, and relevance.</div>
+      </section>
+
+      <section class="node" style="left:136px; top:1838px;">
+        <div class="icon-title">
+          <div class="icon">⚙</div>
+          <div>
+            <div class="name">BUILD MERGED CANDIDATE SET</div>
+            <div class="title">Processing Node</div>
+          </div>
+        </div>
+        <div class="desc">Combine the normalized public-source results and X findings into one merged candidate set before the final summary layer.</div>
+      </section>
+
+      <section class="node" style="left:688px; top:1838px;">
+        <div class="icon-title">
+          <div class="icon">⚙</div>
+          <div>
+            <div class="name">USE HOME / SEARCH ONLY AS FALLBACK</div>
+            <div class="title">Processing Node</div>
+          </div>
+        </div>
+        <div class="desc">Use Home feed only when timeline samples are insufficient; try narrow search only when both timeline and Home feed are insufficient, and return to timelines immediately if search fails.</div>
+      </section>
+
+      <section class="node output" style="left:412px; top:2070px;">
+        <div class="icon-title">
+          <div class="icon">⟲</div>
+          <div>
+            <div class="name">PRESENT HOT TOPICS / VIEWPOINTS / OPPORTUNITIES</div>
+            <div class="title">Output Node</div>
+          </div>
+        </div>
+        <div class="desc">Present `Hot Topics / Viewpoints / Opportunities` on top of the merged result layer, and generate a one-page summary or HTML report when a shareable artifact is needed.</div>
+      </section>
+    </div>
+  </div>
+</body>
+</html>

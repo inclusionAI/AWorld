@@ -1,4 +1,4 @@
-from aworld_cli.inner_plugins.smllc.agents.aworld_agent import load_aworld_system_prompt
+from aworld_cli.builtin_agents.smllc.agents.aworld_agent import load_aworld_system_prompt
 
 
 def test_aworld_prompt_routes_reminders_to_cron():
@@ -37,3 +37,17 @@ def test_aworld_prompt_prefers_single_bounded_cron_for_finite_repetition():
     assert "If the user wants a repeating reminder with a fixed total count" in prompt
     assert "single cron task with a run limit" in prompt
     assert "do not create a second stop task" in prompt
+
+
+def test_aworld_prompt_forbids_inventing_absolute_reminder_timestamps():
+    prompt = load_aworld_system_prompt()
+
+    assert "do not generate or guess an absolute `schedule_value` yourself" in prompt
+    assert "Do not call `bash`, write Python, or manually compute the current time" in prompt
+
+
+def test_aworld_prompt_requires_using_cron_result_as_source_of_truth():
+    prompt = load_aworld_system_prompt()
+
+    assert "only trust the tool's returned fields such as `success`, `job_id`, `next_run`, and `error`" in prompt
+    assert "use the returned `next_run` as the confirmed reminder time" in prompt

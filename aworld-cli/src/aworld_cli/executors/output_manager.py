@@ -7,7 +7,6 @@ Provides Claude Code style output formatting with:
 - Automatic file redirection suggestions
 """
 import os
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Tuple, List, Optional

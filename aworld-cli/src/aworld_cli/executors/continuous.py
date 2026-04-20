@@ -2,7 +2,6 @@
 Continuous execution executor for running agents in a loop.
 """
 import asyncio
-import time
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, Union, List
 from rich.console import Console
@@ -413,4 +412,3 @@ class ContinuousExecutor:
         }
 
 __all__ = ["ContinuousExecutor"]
-
