@@ -23,6 +23,7 @@ from aworld_gateway.channels.dingding.types import (
     PendingFileMessage,
 )
 from aworld_gateway.config import DingdingChannelConfig
+from aworld_gateway.http.artifact_service import ArtifactService
 
 DINGTALK_API = "https://api.dingtalk.com"
 OAPI_API = "https://oapi.dingtalk.com"
@@ -33,7 +34,7 @@ MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
 LOCAL_PATH_RE = re.compile(r"^(?:/|~|[A-Za-z]:[\\/])")
 PLAIN_LOCAL_REF_RE = re.compile(
-    r"(artifact://[^\s<>)]+|attachment://[^\s<>)]+|file://[^\s<>)]+|MEDIA:[^\s<>)]+|(?:/|~)[^\s<>)]+)"
+    r"(artifact://[^\s<>)]+|attachment://[^\s<>)]+|file://[^\s<>)]+|MEDIA:[^\s<>)]+|(?:/|~)[^\s<>)]+|[A-Za-z]:[\\/][^\s<>)]+)"
 )
 
 
@@ -364,6 +365,7 @@ class DingTalkConnector:
             and "file://" not in content
             and "MEDIA:" not in content
             and "/" not in content
+            and "\\" not in content
             and "~" not in content
         ):
             return content, []
@@ -374,9 +376,11 @@ class DingTalkConnector:
 
         result = content
         pending_files: list[PendingFileMessage] = []
+        processed_references: set[str] = set()
 
         for match in list(MARKDOWN_IMAGE_RE.finditer(result)):
             full_match, alt_text, raw_url = match.group(0), match.group(1), match.group(2)
+            processed_references.add(raw_url)
             local_path = self._extract_local_file_path(raw_url)
             if not local_path:
                 continue
@@ -395,6 +399,7 @@ class DingTalkConnector:
 
         for match in list(MARKDOWN_LINK_RE.finditer(result)):
             full_match, _link_text, raw_url = match.group(0), match.group(1), match.group(2)
+            processed_references.add(raw_url)
             local_path = self._extract_local_file_path(raw_url)
             if not local_path:
                 continue
@@ -420,8 +425,18 @@ class DingTalkConnector:
 
         def _replace_plain_reference(match: re.Match[str]) -> str:
             raw_reference = match.group(0)
-            published_url = self._publish_local_reference(raw_reference)
-            return published_url or raw_reference
+            candidate_reference, trailing_punctuation = self._split_trailing_plain_reference(
+                raw_reference
+            )
+            if (
+                raw_reference in processed_references
+                or candidate_reference in processed_references
+            ):
+                return raw_reference
+            published_url = self._publish_local_reference(candidate_reference)
+            if not published_url:
+                return raw_reference
+            return f"{published_url}{trailing_punctuation}"
 
         result = PLAIN_LOCAL_REF_RE.sub(_replace_plain_reference, result)
 
@@ -724,6 +739,8 @@ class DingTalkConnector:
     def _publish_local_reference(self, raw_reference: str) -> str | None:
         if self._artifact_service is None:
             return None
+        if not self._artifact_service_can_build_external_url():
+            return None
         local_path = self._extract_local_file_path(raw_reference)
         if local_path is None:
             return None
@@ -732,6 +749,20 @@ class DingTalkConnector:
             return self._artifact_service.build_external_url(token)
         except Exception:
             return None
+
+    def _artifact_service_can_build_external_url(self) -> bool:
+        if isinstance(self._artifact_service, ArtifactService):
+            return getattr(self._artifact_service, "_public_base_url", None) is not None
+        return True
+
+    @staticmethod
+    def _split_trailing_plain_reference(raw_reference: str) -> tuple[str, str]:
+        candidate = raw_reference
+        trailing = ""
+        while candidate and candidate[-1] in {".", ","}:
+            trailing = candidate[-1] + trailing
+            candidate = candidate[:-1]
+        return candidate, trailing
 
     @staticmethod
     def _is_image_path(local_path: Path) -> bool:
