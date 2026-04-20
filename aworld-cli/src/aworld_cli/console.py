@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import os
 import shutil
 import subprocess
@@ -1669,6 +1670,16 @@ class AWorldCLI:
         runtime = self._get_plugin_runtime(executor_instance)
         if runtime is None or not hasattr(runtime, 'get_plugin_hooks'):
             return []
+
+        if hasattr(runtime, "run_plugin_hooks"):
+            result = runtime.run_plugin_hooks(
+                hook_point,
+                event=dict(event),
+                executor_instance=executor_instance,
+            )
+            if inspect.isawaitable(result):
+                return await result
+            return result or []
 
         results = []
         for hook in runtime.get_plugin_hooks(hook_point):

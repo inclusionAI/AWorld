@@ -1,5 +1,9 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
@@ -246,3 +250,33 @@ def test_task_finish_sets_task_status():
         git_branch="main",
     )
     assert context["task"]["status"] == "error"
+
+
+def test_runtime_build_plugin_hook_state_includes_state_handle():
+    runtime = DummyRuntime()
+    runtime._plugin_state_store = runtime._plugin_state_store or None
+    runtime._plugin_state_store = __import__("aworld_cli.plugin_runtime.state", fromlist=["PluginStateStore"]).PluginStateStore(Path.cwd() / ".tmp-plugin-state-test")
+
+    executor_instance = SimpleNamespace(
+        session_id="session-1",
+        context=SimpleNamespace(workspace_path="/tmp/workspace", task_id="task-1"),
+    )
+
+    state = runtime.build_plugin_hook_state("plugin-a", "session", executor_instance=executor_instance)
+
+    assert "__plugin_state__" in state
+
+
+@pytest.mark.asyncio
+async def test_local_executor_task_hook_delegates_to_runtime():
+    runtime = SimpleNamespace(run_plugin_hooks=AsyncMock(return_value=[]))
+    executor = object.__new__(LocalAgentExecutor)
+    executor._base_runtime = runtime
+    executor.session_id = "session-1"
+
+    await executor._run_plugin_task_hook(
+        "task_started",
+        {"task_id": "task-1", "session_id": "session-1"},
+    )
+
+    runtime.run_plugin_hooks.assert_awaited_once()
