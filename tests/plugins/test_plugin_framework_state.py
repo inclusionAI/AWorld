@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 
 from aworld_cli.plugin_capabilities.state import PluginStateStore
@@ -62,3 +63,36 @@ def test_state_handle_clear_resets_payload(tmp_path):
 
     assert cleared == {}
     assert path.read_text(encoding="utf-8") == "{}"
+
+
+def test_state_handle_update_is_atomic_across_threads(tmp_path, monkeypatch):
+    store = PluginStateStore(base_dir=tmp_path)
+    path = store.session_state("plugin-a", "session-1")
+    path.write_text("{}", encoding="utf-8")
+
+    first = store.handle(path)
+    second = store.handle(path)
+
+    original_read = type(first).read
+    barrier = threading.Barrier(2)
+
+    def synchronized_read(self):
+        payload = original_read(self)
+        try:
+            barrier.wait(timeout=0.1)
+        except threading.BrokenBarrierError:
+            pass
+        return payload
+
+    monkeypatch.setattr(type(first), "read", synchronized_read)
+
+    threads = [
+        threading.Thread(target=lambda: first.update({"alpha": 1})),
+        threading.Thread(target=lambda: second.update({"beta": 2})),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert store.handle(path).read() == {"alpha": 1, "beta": 2}

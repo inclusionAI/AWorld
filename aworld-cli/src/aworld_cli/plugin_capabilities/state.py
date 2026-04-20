@@ -1,13 +1,27 @@
 import hashlib
 import json
+import os
+import threading
 from pathlib import Path
 
 
 class PluginStateHandle:
+    _locks: dict[str, threading.RLock] = {}
+    _locks_guard = threading.Lock()
+
     def __init__(self, path: Path):
         self.path = path
 
-    def read(self) -> dict:
+    def _lock(self) -> threading.RLock:
+        key = str(self.path)
+        with self._locks_guard:
+            lock = self._locks.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                self._locks[key] = lock
+            return lock
+
+    def _read_unlocked(self) -> dict:
         if not self.path.exists():
             return {}
         try:
@@ -16,22 +30,34 @@ class PluginStateHandle:
             return {}
         return payload if isinstance(payload, dict) else {}
 
+    def _write_unlocked(self, payload: dict) -> dict:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = self.path.with_name(f"{self.path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        temp_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(self.path)
+        return dict(payload)
+
+    def read(self) -> dict:
+        with self._lock():
+            return self._read_unlocked()
+
     def write(self, payload: dict) -> dict:
         if not isinstance(payload, dict):
             raise ValueError("plugin state payload must be a mapping")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        return dict(payload)
+        with self._lock():
+            return self._write_unlocked(payload)
 
     def update(self, payload: dict) -> dict:
         if not isinstance(payload, dict):
             raise ValueError("plugin state payload must be a mapping")
-        current = self.read()
-        current.update(payload)
-        return self.write(current)
+        with self._lock():
+            current = self._read_unlocked()
+            current.update(payload)
+            return self._write_unlocked(current)
 
     def clear(self) -> dict:
-        return self.write({})
+        with self._lock():
+            return self._write_unlocked({})
 
 
 class PluginStateStore:
