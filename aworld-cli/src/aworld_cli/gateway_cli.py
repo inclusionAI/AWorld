@@ -99,6 +99,9 @@ def _load_gateway_config_read_only(base_dir: Path | str | None = None) -> Gatewa
 
 def _resolve_dingding_workspace_dir(*, base_dir: Path, config: GatewayConfig) -> Path:
     configured_workspace_dir = config.channels.dingding.workspace_dir
+    configured_workspace_dir = (
+        configured_workspace_dir.strip() if configured_workspace_dir is not None else None
+    )
     if configured_workspace_dir:
         workspace_dir = Path(configured_workspace_dir).expanduser()
         if not workspace_dir.is_absolute():
@@ -112,8 +115,17 @@ def _resolve_dingding_workspace_dir(*, base_dir: Path, config: GatewayConfig) ->
     return resolved_workspace_dir
 
 
-def _build_artifact_service(*, base_dir: Path, config: GatewayConfig) -> ArtifactService:
-    workspace_dir = _resolve_dingding_workspace_dir(base_dir=base_dir, config=config)
+def _build_artifact_service(
+    *,
+    base_dir: Path,
+    config: GatewayConfig,
+) -> ArtifactService | None:
+    if not config.channels.dingding.enabled:
+        return None
+    try:
+        workspace_dir = _resolve_dingding_workspace_dir(base_dir=base_dir, config=config)
+    except OSError:
+        return None
     return ArtifactService(
         public_base_url=config.gateway.public_base_url,
         allowed_roots=[workspace_dir],

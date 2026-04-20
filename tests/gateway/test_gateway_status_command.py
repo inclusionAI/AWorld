@@ -49,6 +49,7 @@ def test_serve_gateway_bootstraps_runtime_http_app_and_uvicorn(
     cfg.gateway.port = 18999
     cfg.gateway.public_base_url = "https://gateway.example.com"
     cfg.channels.telegram.enabled = True
+    cfg.channels.dingding.enabled = True
     cfg.channels.telegram.default_agent_id = "telegram-agent"
     cfg.channels.telegram.webhook_path = "/hooks/telegram"
     cfg.channels.dingding.workspace_dir = None
@@ -202,3 +203,109 @@ def test_serve_gateway_bootstraps_runtime_http_app_and_uvicorn(
     assert calls["uvicorn_config"]["port"] == 18999
     assert calls["uvicorn_serve_called"] is True
     assert calls["runtime_stopped"] is True
+
+
+def test_serve_gateway_skips_artifact_service_when_dingding_disabled_and_workspace_is_invalid(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = GatewayConfig()
+    cfg.channels.dingding.enabled = False
+    bad_workspace = tmp_path / "bad-workspace"
+    bad_workspace.write_text("not-a-dir", encoding="utf-8")
+    cfg.channels.dingding.workspace_dir = str(bad_workspace)
+
+    calls: dict[str, object] = {}
+
+    async def fake_load_all_agents(*, remote_backends, local_dirs, agent_files):
+        return []
+
+    class FakeLoader:
+        def __init__(self, *, base_dir):
+            calls["loader_base_dir"] = base_dir
+
+        def load_or_init(self):
+            return cfg
+
+    class FakeRuntime:
+        def __init__(self, *, config, registry, router, artifact_service):
+            calls["runtime_artifact_service"] = artifact_service
+
+        async def start(self) -> None:
+            calls["runtime_started"] = True
+
+        async def stop(self) -> None:
+            calls["runtime_stopped"] = True
+
+        def status(self) -> dict[str, object]:
+            return {"state": "running", "channels": {}}
+
+        def get_started_channel(self, channel_name: str):
+            return None
+
+    class FakeUvicornConfig:
+        def __init__(self, *, app, host, port):
+            calls["uvicorn_app"] = app
+
+    class FakeUvicornServer:
+        def __init__(self, config):
+            return None
+
+        async def serve(self) -> None:
+            raise RuntimeError("stop after serve")
+
+    def fake_create_gateway_app(
+        *,
+        runtime_status,
+        telegram_adapter,
+        telegram_webhook_path,
+        artifact_service,
+    ):
+        calls["app_artifact_service"] = artifact_service
+        return "fake-app"
+
+    monkeypatch.setattr("aworld_cli.main.load_all_agents", fake_load_all_agents)
+    monkeypatch.setattr(gateway_cli, "GatewayConfigLoader", FakeLoader)
+    monkeypatch.setattr(gateway_cli, "GatewayRuntime", FakeRuntime)
+    monkeypatch.setattr(gateway_cli, "create_gateway_app", fake_create_gateway_app)
+    monkeypatch.setattr(gateway_cli.uvicorn, "Config", FakeUvicornConfig)
+    monkeypatch.setattr(gateway_cli.uvicorn, "Server", FakeUvicornServer)
+
+    with pytest.raises(RuntimeError, match="stop after serve"):
+        asyncio.run(
+            gateway_cli.serve_gateway(
+                base_dir=tmp_path,
+                remote_backends=[],
+                local_dirs=[],
+                agent_files=[],
+            )
+        )
+
+    assert calls["runtime_started"] is True
+    assert calls["runtime_artifact_service"] is None
+    assert calls["app_artifact_service"] is None
+
+
+def test_resolve_dingding_workspace_dir_uses_default_for_whitespace(tmp_path: Path) -> None:
+    cfg = GatewayConfig()
+    cfg.channels.dingding.workspace_dir = "   "
+
+    resolved = gateway_cli._resolve_dingding_workspace_dir(base_dir=tmp_path, config=cfg)
+    expected = (tmp_path / ".aworld" / "gateway" / "dingding").resolve()
+
+    assert resolved == expected
+    assert cfg.channels.dingding.workspace_dir == str(expected)
+
+
+def test_build_artifact_service_returns_none_for_enabled_unusable_workspace(
+    tmp_path: Path,
+) -> None:
+    cfg = GatewayConfig()
+    cfg.channels.dingding.enabled = True
+    bad_workspace = tmp_path / "bad-workspace"
+    bad_workspace.write_text("not-a-dir", encoding="utf-8")
+    cfg.channels.dingding.workspace_dir = str(bad_workspace)
+
+    artifact_service = gateway_cli._build_artifact_service(base_dir=tmp_path, config=cfg)
+
+    assert artifact_service is None
