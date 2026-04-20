@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import mimetypes
 from pathlib import Path
+import shutil
+import tempfile
 from uuid import uuid4
 
 
@@ -11,6 +13,7 @@ from uuid import uuid4
 class PublishedArtifact:
     token: str
     path: Path
+    source_path: Path
     content_type: str
     published_at: datetime
 
@@ -20,6 +23,7 @@ class ArtifactService:
         self._public_base_url = public_base_url.rstrip("/") if public_base_url else None
         self._allowed_roots = [root.resolve() for root in allowed_roots]
         self._artifacts: dict[str, PublishedArtifact] = {}
+        self._snapshot_root = Path(tempfile.mkdtemp(prefix="aworld-gateway-artifacts-")).resolve()
 
     def _normalize_and_validate_path(
         self,
@@ -50,18 +54,24 @@ class ArtifactService:
         return resolved_path
 
     def publish(self, path: str | Path) -> str:
-        resolved_path = self._normalize_and_validate_path(
+        resolved_source_path = self._normalize_and_validate_path(
             path,
             raise_on_missing=True,
             raise_on_outside_roots=True,
         )
-        assert resolved_path is not None
+        assert resolved_source_path is not None
 
         token = uuid4().hex
-        content_type = mimetypes.guess_type(str(resolved_path))[0] or "application/octet-stream"
+        snapshot_dir = self._snapshot_root / token
+        snapshot_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_path = (snapshot_dir / resolved_source_path.name).resolve()
+        shutil.copy2(resolved_source_path, snapshot_path)
+
+        content_type = mimetypes.guess_type(str(resolved_source_path))[0] or "application/octet-stream"
         self._artifacts[token] = PublishedArtifact(
             token=token,
-            path=resolved_path,
+            path=snapshot_path,
+            source_path=resolved_source_path,
             content_type=content_type,
             published_at=datetime.now(timezone.utc),
         )
@@ -71,15 +81,20 @@ class ArtifactService:
         artifact = self._artifacts.get(token)
         if artifact is None:
             return None
-        resolved_path = self._normalize_and_validate_path(
-            artifact.path,
+        resolved_source_path = self._normalize_and_validate_path(
+            artifact.source_path,
             raise_on_missing=False,
             raise_on_outside_roots=False,
         )
-        if resolved_path is None:
+        if resolved_source_path is None:
             self._artifacts.pop(token, None)
             return None
-        artifact.path = resolved_path
+
+        if not artifact.path.exists() or not artifact.path.is_file():
+            self._artifacts.pop(token, None)
+            return None
+
+        artifact.source_path = resolved_source_path
         return artifact
 
     def build_external_url(self, token: str) -> str:
