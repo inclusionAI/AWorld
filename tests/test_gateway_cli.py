@@ -25,12 +25,19 @@ def test_gateway_parser_accepts_status_and_channels_list() -> None:
 
     status_args = parser.parse_args(["status"])
     list_args = parser.parse_args(["channels", "list"])
-    serve_args = parser.parse_args(["serve"])
+    server_args = parser.parse_args(["server"])
 
     assert status_args.gateway_action == "status"
     assert list_args.gateway_action == "channels"
     assert list_args.channels_action == "list"
-    assert serve_args.gateway_action == "serve"
+    assert server_args.gateway_action == "server"
+
+
+def test_gateway_parser_rejects_legacy_serve_action() -> None:
+    parser = build_gateway_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["serve"])
 
 
 def test_extract_gateway_argv_ignores_global_flags_before_gateway() -> None:
@@ -74,7 +81,7 @@ def test_gateway_channels_list_is_read_only(tmp_path: Path) -> None:
             {"status": 0, "channels": 1, "serve": []},
         ),
         (
-            ["aworld-cli", "--zh", "gateway", "serve"],
+            ["aworld-cli", "--zh", "gateway", "server"],
             "",
             {
                 "status": 0,
@@ -152,7 +159,7 @@ def test_main_dispatches_gateway_actions(
     assert calls == expected_calls
 
 
-def test_main_bootstraps_gateway_serve_like_normal_cli(
+def test_main_bootstraps_gateway_server_like_normal_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: dict[str, object] = {
@@ -228,7 +235,7 @@ def test_main_bootstraps_gateway_serve_like_normal_cli(
             "--remote-backend",
             "http://backend",
             "gateway",
-            "serve",
+            "server",
         ],
     )
 
