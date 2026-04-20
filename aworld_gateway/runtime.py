@@ -14,10 +14,12 @@ class GatewayRuntime:
         config: GatewayConfig,
         registry: ChannelRegistry | None = None,
         router: object | None = None,
+        artifact_service: object | None = None,
     ) -> None:
         self._config = config
         self._registry = registry or ChannelRegistry()
         self._router = router
+        self._artifact_service = artifact_service
         self._channel_states = self._build_base_channel_states()
         self._state = self._derive_runtime_state(self._channel_states)
         self._started_channels: dict[str, ChannelAdapter] = {}
@@ -40,6 +42,7 @@ class GatewayRuntime:
                 channel_name,
                 channel_config,
                 router=self._router,
+                artifact_service=self._artifact_service,
             )
             if adapter is None:
                 channel_state["state"] = "degraded"

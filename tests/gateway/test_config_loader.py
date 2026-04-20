@@ -29,8 +29,23 @@ def test_load_or_init_creates_default_config_when_missing(tmp_path):
 
     assert raw["default_agent_id"] == "aworld"
     assert raw["gateway"]["port"] == 18888
+    assert raw["gateway"]["public_base_url"] is None
     assert raw["channels"]["telegram"]["enabled"] is False
     assert raw["channels"]["web"]["enabled"] is False
+
+
+def test_load_or_init_persists_public_base_url_default(tmp_path):
+    base_dir = tmp_path / "project"
+    base_dir.mkdir()
+
+    config = GatewayConfigLoader(base_dir=base_dir).load_or_init()
+
+    assert config.gateway.public_base_url is None
+
+    config_path = base_dir / ".aworld" / "gateway" / "config.yaml"
+    with config_path.open("r", encoding="utf-8") as fh:
+        raw = yaml.safe_load(fh)
+    assert raw["gateway"]["public_base_url"] is None
 
 
 def test_load_or_init_preserves_existing_config(tmp_path):

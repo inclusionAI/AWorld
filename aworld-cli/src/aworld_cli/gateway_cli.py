@@ -10,6 +10,7 @@ import uvicorn
 from aworld_gateway.agent_resolver import AgentResolver
 from aworld_gateway.config import GatewayConfigLoader
 from aworld_gateway.config import GatewayConfig
+from aworld_gateway.http.artifact_service import ArtifactService
 from aworld_gateway.http.server import create_gateway_app
 from aworld_gateway.registry import ChannelRegistry
 from aworld_gateway.router import GatewayRouter, LocalCliAgentBackend
@@ -96,6 +97,29 @@ def _load_gateway_config_read_only(base_dir: Path | str | None = None) -> Gatewa
     return GatewayConfig()
 
 
+def _resolve_dingding_workspace_dir(*, base_dir: Path, config: GatewayConfig) -> Path:
+    configured_workspace_dir = config.channels.dingding.workspace_dir
+    if configured_workspace_dir:
+        workspace_dir = Path(configured_workspace_dir).expanduser()
+        if not workspace_dir.is_absolute():
+            workspace_dir = base_dir / workspace_dir
+    else:
+        workspace_dir = base_dir / ".aworld" / "gateway" / "dingding"
+
+    resolved_workspace_dir = workspace_dir.resolve()
+    resolved_workspace_dir.mkdir(parents=True, exist_ok=True)
+    config.channels.dingding.workspace_dir = str(resolved_workspace_dir)
+    return resolved_workspace_dir
+
+
+def _build_artifact_service(*, base_dir: Path, config: GatewayConfig) -> ArtifactService:
+    workspace_dir = _resolve_dingding_workspace_dir(base_dir=base_dir, config=config)
+    return ArtifactService(
+        public_base_url=config.gateway.public_base_url,
+        allowed_roots=[workspace_dir],
+    )
+
+
 def handle_gateway_status(base_dir: Path | str | None = None) -> dict[str, object]:
     config = _load_gateway_config_read_only(base_dir)
     runtime = GatewayRuntime(
@@ -143,6 +167,7 @@ async def serve_gateway(
 
     resolved_base_dir = Path.cwd() if base_dir is None else Path(base_dir)
     config = GatewayConfigLoader(base_dir=resolved_base_dir).load_or_init()
+    artifact_service = _build_artifact_service(base_dir=resolved_base_dir, config=config)
     router = GatewayRouter(
         session_binding=SessionBinding(),
         agent_resolver=AgentResolver(default_agent_id=config.default_agent_id),
@@ -152,12 +177,14 @@ async def serve_gateway(
         config=config,
         registry=ChannelRegistry(),
         router=router,
+        artifact_service=artifact_service,
     )
 
     await runtime.start()
     telegram_adapter = runtime.get_started_channel("telegram")
     app = create_gateway_app(
         runtime_status=runtime.status(),
+        artifact_service=artifact_service,
         telegram_adapter=telegram_adapter,
         telegram_webhook_path=config.channels.telegram.webhook_path,
     )
