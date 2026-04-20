@@ -499,7 +499,7 @@ Batch Jobs:
             print(handle_gateway_channels_list())
             return
 
-        if gateway_args.gateway_action == "serve":
+        if gateway_args.gateway_action == "server":
             from .core.config import load_config_with_env, has_model_config
 
             config_dict, source_type, source_path = load_config_with_env(

@@ -52,7 +52,7 @@ def build_gateway_parser() -> argparse.ArgumentParser:
         required=True,
     )
 
-    subparsers.add_parser("serve", help="Start the gateway service")
+    subparsers.add_parser("server", help="Start the gateway service")
     subparsers.add_parser("status", help="Show gateway status")
 
     channels_parser = subparsers.add_parser("channels", help="Channel operations")
