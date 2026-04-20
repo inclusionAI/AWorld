@@ -41,18 +41,22 @@ class FakeExecutor:
 def test_bridge_streams_chunks_and_returns_aggregated_text(monkeypatch) -> None:
     seen_chunks: list[str] = []
 
-    async def fake_stream_text(self, *, executor, text, session_id):
+    class FakeOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    async def fake_stream_outputs(self, *, executor, text, session_id):
         assert executor is FakeExecutor.instances[0]
         assert text == "hi"
         assert session_id == "dingding_conv"
         for chunk in ["hello", " ", "world"]:
-            yield chunk
+            yield FakeOutput(chunk)
 
     async def on_text_chunk(chunk: str) -> None:
         seen_chunks.append(chunk)
 
     FakeExecutor.instances = []
-    monkeypatch.setattr(AworldDingdingBridge, "_stream_text", fake_stream_text)
+    monkeypatch.setattr(AworldDingdingBridge, "_stream_outputs", fake_stream_outputs)
     bridge = AworldDingdingBridge(registry_cls=FakeRegistry, executor_cls=FakeExecutor)
 
     result = asyncio.run(
@@ -84,15 +88,19 @@ def test_bridge_raises_value_error_for_missing_agent() -> None:
 def test_bridge_supports_sync_chunk_callback(monkeypatch) -> None:
     seen_chunks: list[str] = []
 
-    async def fake_stream_text(self, *, executor, text, session_id):
-        yield "left"
-        yield " right"
+    class FakeOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    async def fake_stream_outputs(self, *, executor, text, session_id):
+        yield FakeOutput("left")
+        yield FakeOutput(" right")
 
     def on_text_chunk(chunk: str) -> None:
         seen_chunks.append(chunk)
 
     FakeExecutor.instances = []
-    monkeypatch.setattr(AworldDingdingBridge, "_stream_text", fake_stream_text)
+    monkeypatch.setattr(AworldDingdingBridge, "_stream_outputs", fake_stream_outputs)
     bridge = AworldDingdingBridge(registry_cls=FakeRegistry, executor_cls=FakeExecutor)
 
     result = asyncio.run(
@@ -110,14 +118,18 @@ def test_bridge_supports_sync_chunk_callback(monkeypatch) -> None:
 
 
 def test_bridge_cleans_up_executor_when_chunk_callback_raises(monkeypatch) -> None:
-    async def fake_stream_text(self, *, executor, text, session_id):
-        yield "hello"
+    class FakeOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    async def fake_stream_outputs(self, *, executor, text, session_id):
+        yield FakeOutput("hello")
 
     def exploding_callback(_chunk: str) -> None:
         raise RuntimeError("callback failed")
 
     FakeExecutor.instances = []
-    monkeypatch.setattr(AworldDingdingBridge, "_stream_text", fake_stream_text)
+    monkeypatch.setattr(AworldDingdingBridge, "_stream_outputs", fake_stream_outputs)
     bridge = AworldDingdingBridge(registry_cls=FakeRegistry, executor_cls=FakeExecutor)
 
     with pytest.raises(RuntimeError, match="callback failed"):
@@ -175,6 +187,37 @@ def test_stream_text_uses_runners_streaming_outputs(monkeypatch) -> None:
     assert chunks == ["hello", " ", "world"]
 
 
+def test_bridge_forwards_raw_outputs_to_callback(monkeypatch) -> None:
+    class FakeOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    seen_outputs: list[str] = []
+
+    async def fake_stream_outputs(self, *, executor, text, session_id):
+        yield FakeOutput("first")
+        yield FakeOutput("second")
+
+    async def on_output(output) -> None:
+        seen_outputs.append(output.content)
+
+    FakeExecutor.instances = []
+    monkeypatch.setattr(AworldDingdingBridge, "_stream_outputs", fake_stream_outputs)
+    bridge = AworldDingdingBridge(registry_cls=FakeRegistry, executor_cls=FakeExecutor)
+
+    result = asyncio.run(
+        bridge.run(
+            agent_id="aworld",
+            session_id="dingding_conv",
+            text="hi",
+            on_output=on_output,
+        )
+    )
+
+    assert result == DingdingBridgeResult(text="firstsecond")
+    assert seen_outputs == ["first", "second"]
+
+
 def test_bridge_falls_back_to_temp_context_when_agent_requires_it(monkeypatch) -> None:
     class NeedsContextAgent:
         def __init__(self) -> None:
@@ -207,12 +250,16 @@ def test_bridge_falls_back_to_temp_context_when_agent_requires_it(monkeypatch) -
             cls.calls.append((task_input, context_config))
             return "TEMP_CONTEXT"
 
-    async def fake_stream_text(self, *, executor, text, session_id):
-        yield "ok"
+    class FakeOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+    async def fake_stream_outputs(self, *, executor, text, session_id):
+        yield FakeOutput("ok")
 
     monkeypatch.setattr(bridge_module, "TaskInput", FakeTaskInput)
     monkeypatch.setattr(bridge_module, "ApplicationContext", FakeApplicationContext)
-    monkeypatch.setattr(AworldDingdingBridge, "_stream_text", fake_stream_text)
+    monkeypatch.setattr(AworldDingdingBridge, "_stream_outputs", fake_stream_outputs)
 
     FakeExecutor.instances = []
     bridge = AworldDingdingBridge(

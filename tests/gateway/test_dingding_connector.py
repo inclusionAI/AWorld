@@ -18,6 +18,7 @@ from aworld_gateway.channels.dingding.types import (
 )
 from aworld_gateway.config import DingdingChannelConfig
 from aworld_gateway.http.artifact_service import ArtifactService
+from aworld.output.base import ToolResultOutput
 
 
 class _FakeBridge:
@@ -31,6 +32,7 @@ class _FakeBridge:
         session_id: str,
         text: str,
         on_text_chunk=None,
+        on_output=None,
     ) -> DingdingBridgeResult:
         self.calls.append(
             {
@@ -215,6 +217,7 @@ def test_connector_reset_command_rotates_session_and_sends_confirmation() -> Non
     asyncio.run(
         connector.handle_callback(
             {
+                "msgId": "msg-new-1",
                 "sessionWebhook": "https://callback",
                 "conversationId": "conv-1",
                 "senderId": "user-1",
@@ -227,6 +230,7 @@ def test_connector_reset_command_rotates_session_and_sends_confirmation() -> Non
     asyncio.run(
         connector.handle_callback(
             {
+                "msgId": "msg-new-2",
                 "sessionWebhook": "https://callback",
                 "conversationId": "conv-1",
                 "senderId": "user-1",
@@ -289,6 +293,34 @@ def test_connector_normal_callback_runs_bridge_and_sends_text() -> None:
     assert sent == ["echo:hello", "echo:again"]
 
 
+def test_connector_reports_error_when_no_agent_id_is_configured() -> None:
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id=None),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        assert session_webhook == "https://callback"
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "hello"},
+            }
+        )
+    )
+
+    assert sent == ["抱歉，调用 Agent 失败：No agent id configured for DingTalk channel."]
+
+
 def test_connector_uses_sender_id_when_conversation_id_missing() -> None:
     bridge = _FakeBridge()
     connector = DingTalkConnector(
@@ -314,6 +346,35 @@ def test_connector_uses_sender_id_when_conversation_id_missing() -> None:
     )
 
     assert bridge.calls[0]["session_id"].startswith("dingtalk_staff-1_")
+    assert sent == ["echo:hello"]
+
+
+def test_connector_suppresses_duplicate_callbacks() -> None:
+    bridge = _FakeBridge()
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=bridge,
+        stream_module=object(),
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    payload = {
+        "msgId": "msg-hello-1",
+        "sessionWebhook": "https://callback",
+        "conversationId": "conv-1",
+        "senderId": "user-1",
+        "text": {"content": "hello"},
+    }
+
+    asyncio.run(connector.handle_callback(payload))
+    asyncio.run(connector.handle_callback(payload))
+
+    assert len(bridge.calls) == 1
     assert sent == ["echo:hello"]
 
 
@@ -357,6 +418,7 @@ def test_connector_supports_string_payload_and_empty_bridge_result() -> None:
             session_id: str,
             text: str,
             on_text_chunk=None,
+            on_output=None,
         ) -> DingdingBridgeResult:
             self.calls.append(
                 {
@@ -382,6 +444,7 @@ def test_connector_supports_string_payload_and_empty_bridge_result() -> None:
 
     payload = json.dumps(
         {
+            "msgId": "msg-raw-1",
             "sessionWebhook": "https://callback",
             "conversationId": "conv-1",
             "senderId": "user-1",
@@ -545,6 +608,112 @@ def test_connector_streams_ai_card_and_sends_pending_files() -> None:
         ("stream", "final:echo:hi"),
         ("file", "report.txt"),
     ]
+
+
+def test_connector_binds_dingding_cron_jobs_and_fanouts_notifications(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class _CronBridge(_FakeBridge):
+        async def run(
+            self,
+            *,
+            agent_id: str,
+            session_id: str,
+            text: str,
+            on_text_chunk=None,
+            on_output=None,
+        ) -> DingdingBridgeResult:
+            self.calls.append(
+                {
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "text": text,
+                }
+            )
+            if on_output is not None:
+                await on_output(
+                    ToolResultOutput(
+                        tool_name="cron",
+                        action_name="cron_tool",
+                        data={
+                            "success": True,
+                            "job_id": "job-main",
+                            "advance_reminder": {"job_id": "job-advance"},
+                        },
+                    )
+                )
+            return DingdingBridgeResult(text="已创建提醒")
+
+    class _FakeScheduler:
+        def __init__(self) -> None:
+            self.notification_sink = None
+
+    scheduler = _FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: scheduler)
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(
+            default_agent_id="agent-1",
+            workspace_dir=str(tmp_path / "workspace"),
+        ),
+        bridge=_CronBridge(),
+        stream_module=object(),
+    )
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        sent.append((session_webhook, text))
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "一分钟后提醒我喝水"},
+            }
+        )
+    )
+
+    assert scheduler.notification_sink is not None
+    assert connector._cron_binding_store.get("job-main") == {
+        "job_id": "job-main",
+        "session_webhook": "https://callback",
+        "conversation_id": "conv-1",
+        "sender_id": "user-1",
+    }
+    assert connector._cron_binding_store.get("job-advance") == {
+        "job_id": "job-advance",
+        "session_webhook": "https://callback",
+        "conversation_id": "conv-1",
+        "sender_id": "user-1",
+    }
+
+    asyncio.run(
+        scheduler.notification_sink(
+            {
+                "job_id": "job-main",
+                "summary": 'Cron task "喝水提醒" completed',
+                "detail": "提醒我喝水",
+                "next_run_at": None,
+            }
+        )
+    )
+
+    assert sent == [
+        ("https://callback", "已创建提醒"),
+        ("https://callback", 'Cron task "喝水提醒" completed\n提醒我喝水'),
+    ]
+    assert connector._cron_binding_store.get("job-main") is None
+    assert connector._cron_binding_store.get("job-advance") == {
+        "job_id": "job-advance",
+        "session_webhook": "https://callback",
+        "conversation_id": "conv-1",
+        "sender_id": "user-1",
+    }
 
 
 def test_connector_falls_back_to_text_when_ai_card_finalize_fails() -> None:

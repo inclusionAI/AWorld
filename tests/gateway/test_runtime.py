@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from aworld_gateway.config import GatewayConfig
+from aworld_gateway.channels.dingding.adapter import DingdingChannelAdapter
 from aworld_gateway.registry import ChannelRegistry
 from aworld_gateway.runtime import GatewayRuntime
 
@@ -137,6 +138,13 @@ def test_runtime_start_degrades_when_enabled_and_configured_dingding_missing_dep
 ):
     monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-client")
     monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+    monkeypatch.setattr(
+        DingdingChannelAdapter,
+        "_import_stream_module",
+        lambda self: (_ for _ in ()).throw(
+            RuntimeError("Missing optional dependency 'dingtalk_stream' for DingTalk channel.")
+        ),
+    )
 
     config = GatewayConfig()
     config.channels.dingding.enabled = True
@@ -419,3 +427,56 @@ def test_runtime_passes_artifact_service_to_registry_builder():
     asyncio.run(runtime.start())
 
     assert registry.captured_artifact_service is shared_artifact_service
+
+
+def test_runtime_inherits_gateway_default_agent_for_dingding_channel():
+    class FakeAdapter:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    class FakeRegistry(ChannelRegistry):
+        def __init__(self) -> None:
+            super().__init__()
+            self.built_config = None
+
+        def list_channels(self):
+            return {"dingding": {"label": "DingTalk", "implemented": True}}
+
+        def get_meta(self, channel_id: str):
+            if channel_id == "dingding":
+                return {"label": "DingTalk", "implemented": True}
+            return None
+
+        def is_configured(self, channel_id: str, config):
+            return channel_id == "dingding"
+
+        def build_adapter(
+            self,
+            channel_id: str,
+            config,
+            *,
+            router=None,
+            artifact_service=None,
+        ):
+            if channel_id != "dingding":
+                return None
+            self.built_config = config
+            return FakeAdapter(config)
+
+    config = GatewayConfig()
+    config.default_agent_id = "Aworld"
+    config.channels.dingding.enabled = True
+    config.channels.dingding.default_agent_id = None
+    registry = FakeRegistry()
+    runtime = GatewayRuntime(config=config, registry=registry, router=None)
+
+    asyncio.run(runtime.start())
+
+    assert registry.built_config is config.channels.dingding
+    assert registry.built_config.default_agent_id == "Aworld"
