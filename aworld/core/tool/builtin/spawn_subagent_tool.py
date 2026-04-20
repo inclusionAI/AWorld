@@ -18,11 +18,12 @@ Supports multiple execution modes:
 import asyncio
 import json
 import time
+import traceback
 import uuid
 from typing import List, Dict, Any, Tuple, Optional
 from aworld.core.tool.base import AsyncTool, ToolFactory
 from aworld.core.tool.action import ToolAction
-from aworld.core.common import Observation, ActionModel, ToolActionInfo, ParamInfo
+from aworld.core.common import Observation, ActionModel, ToolActionInfo, ParamInfo, ActionResult
 from aworld.logs.util import logger
 
 
@@ -321,13 +322,17 @@ class SpawnSubagentTool(AsyncTool):
         else:
             logger.debug("SpawnSubagentTool initialized (global registration, no agent context)")
 
-    def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
+    async def reset(self, *, seed: int | None = None, options: Dict[str, str] | None = None) -> Tuple[
             Any, dict[str, Any]]:
         """
         Reset tool state (required by AsyncTool interface).
 
         For spawn_subagent, there's no persistent state to reset.
         """
+        if self.subagent_manager is None:
+            bound_manager = self._get_subagent_manager(context=getattr(self, 'context', None))
+            if bound_manager is not None:
+                self.subagent_manager = bound_manager
         return (Observation(content="SpawnSubagentTool ready"), {})
 
     async def do_step(
@@ -431,10 +436,14 @@ class SpawnSubagentTool(AsyncTool):
             f"spawn_subagent: Delegating to subagent '{name}' "
             f"with directive: {directive[:100]}..."
         )
+        parent_context = self._resolve_context(kwargs)
 
         try:
             # Get SubagentManager
-            subagent_manager = self._get_subagent_manager()
+            subagent_manager = self._get_subagent_manager(
+                action_model=action_model,
+                context=parent_context
+            )
             if not subagent_manager:
                 error_msg = "spawn_subagent: No SubagentManager available"
                 logger.error(error_msg)
@@ -444,6 +453,7 @@ class SpawnSubagentTool(AsyncTool):
             result = await subagent_manager.spawn(
                 name=name,
                 directive=directive,
+                context=parent_context,
                 **spawn_kwargs
             )
 
@@ -468,7 +478,7 @@ class SpawnSubagentTool(AsyncTool):
 
         except Exception as e:
             error_msg = f"spawn_subagent: Failed to spawn '{name}': {str(e)}"
-            logger.error(error_msg, exc_info=True)
+            logger.error(f"{error_msg}\n{traceback.format_exc()}")
             return self._error_response(error_msg, {'error': str(e), 'subagent': name})
 
     async def _spawn_parallel(
@@ -490,6 +500,7 @@ class SpawnSubagentTool(AsyncTool):
         start_time = time.time()
 
         params = action_model.params if hasattr(action_model, 'params') else {}
+        parent_context = self._resolve_context(kwargs)
 
         tasks = params.get('tasks', [])
         max_concurrent = params.get('max_concurrent', 10)
@@ -514,7 +525,10 @@ class SpawnSubagentTool(AsyncTool):
 
         try:
             # Get SubagentManager
-            subagent_manager = self._get_subagent_manager()
+            subagent_manager = self._get_subagent_manager(
+                action_model=action_model,
+                context=parent_context
+            )
             if not subagent_manager:
                 error_msg = "spawn_parallel: No SubagentManager available"
                 logger.error(error_msg)
@@ -524,6 +538,7 @@ class SpawnSubagentTool(AsyncTool):
             results = await self._execute_tasks_parallel(
                 subagent_manager,
                 tasks,
+                parent_context,
                 max_concurrent,
                 fail_fast
             )
@@ -566,13 +581,14 @@ class SpawnSubagentTool(AsyncTool):
         except Exception as e:
             elapsed = time.time() - start_time
             error_msg = f"spawn_parallel: Exception during execution after {elapsed:.2f}s: {str(e)}"
-            logger.error(error_msg, exc_info=True)
+            logger.error(f"{error_msg}\n{traceback.format_exc()}")
             return self._error_response(error_msg, {'error': str(e), 'elapsed_seconds': round(elapsed, 2)})
 
     async def _execute_tasks_parallel(
         self,
         subagent_manager,
         tasks: List[Dict[str, Any]],
+        parent_context,
         max_concurrent: int,
         fail_fast: bool
     ) -> List[Dict[str, Any]]:
@@ -644,6 +660,7 @@ class SpawnSubagentTool(AsyncTool):
                     result = await subagent_manager.spawn(
                         name=name,
                         directive=directive,
+                        context=parent_context,
                         **spawn_kwargs
                     )
 
@@ -803,7 +820,22 @@ class SpawnSubagentTool(AsyncTool):
 
         return json.dumps(output, indent=2, ensure_ascii=False)
 
-    def _get_subagent_manager(self):
+    def _resolve_context(self, kwargs: Dict[str, Any]) -> Any:
+        message = kwargs.get('message')
+        if message is not None and getattr(message, 'context', None) is not None:
+            return message.context
+        return getattr(self, 'context', None)
+
+    @staticmethod
+    def _get_agent_info_value(agent_info: Any, key: str) -> Any:
+        """Read an agent_info value from either a mapping or an object."""
+        if agent_info is None:
+            return None
+        if isinstance(agent_info, dict):
+            return agent_info.get(key)
+        return getattr(agent_info, key, None)
+
+    def _get_subagent_manager(self, action_model: Optional[ActionModel] = None, context=None):
         """
         Get SubagentManager from current agent context.
 
@@ -817,14 +849,40 @@ class SpawnSubagentTool(AsyncTool):
             from aworld.core.agent.base import BaseAgent
             current_agent = BaseAgent._get_current_agent()
 
-            if current_agent and hasattr(current_agent, 'subagent_manager'):
+            if current_agent and hasattr(current_agent, 'subagent_manager') and current_agent.subagent_manager:
                 subagent_manager = current_agent.subagent_manager
-            else:
-                logger.error(
-                    "spawn_subagent: No SubagentManager available "
-                    "(agent not found or subagent not enabled)"
-                )
-                return None
+
+        if subagent_manager is None and context is not None:
+            try:
+                swarm = context.swarm
+            except Exception:
+                swarm = None
+
+            if swarm and getattr(swarm, 'agents', None):
+                candidate_agent_ids = []
+                if action_model and getattr(action_model, 'agent_name', None):
+                    candidate_agent_ids.append(action_model.agent_name)
+                agent_info = getattr(context, 'agent_info', None)
+                current_agent_id = self._get_agent_info_value(agent_info, 'current_agent_id')
+                if current_agent_id:
+                    candidate_agent_ids.append(current_agent_id)
+
+                seen = set()
+                for agent_id in candidate_agent_ids:
+                    if not agent_id or agent_id in seen:
+                        continue
+                    seen.add(agent_id)
+                    agent = swarm.agents.get(agent_id)
+                    if agent and getattr(agent, 'subagent_manager', None):
+                        subagent_manager = agent.subagent_manager
+                        break
+
+        if subagent_manager is None:
+            logger.error(
+                "spawn_subagent: No SubagentManager available "
+                "(agent context missing, current agent not set, or subagent not enabled)"
+            )
+            return None
 
         return subagent_manager
 
@@ -843,8 +901,19 @@ class SpawnSubagentTool(AsyncTool):
         Returns:
             Error response tuple
         """
+        observation = Observation(
+            content=error_msg,
+            action_result=[
+                ActionResult(
+                    is_done=True,
+                    success=False,
+                    content=error_msg,
+                    error=info.get('error', error_msg)
+                )
+            ]
+        )
         return (
-            Observation(content=error_msg),
+            observation,
             0.0,  # Failed reward
             False,  # Not terminated
             False,  # Not truncated
@@ -914,13 +983,19 @@ class SpawnSubagentTool(AsyncTool):
             spawn_kwargs['model'] = model
         if disallowed_tools:
             spawn_kwargs['disallowedTools'] = disallowed_tools
+        parent_context = self._resolve_context(kwargs)
+        if parent_context is not None:
+            spawn_kwargs['context'] = parent_context
 
         # ✅ Pass task_id as sub_task_id to ensure ID consistency between
         # Tool layer (_background_tasks) and Context layer (sub_task_list)
         spawn_kwargs['sub_task_id'] = task_id
 
         # Get SubagentManager
-        subagent_manager = self._get_subagent_manager()
+        subagent_manager = self._get_subagent_manager(
+            action_model=action_model,
+            context=parent_context
+        )
         if not subagent_manager:
             error_msg = "spawn_background: No SubagentManager available"
             logger.error(error_msg)
@@ -1263,7 +1338,7 @@ class SpawnSubagentTool(AsyncTool):
         except Exception as e:
             elapsed = time.time() - start_time
             error_msg = f"wait_task: Exception after {elapsed:.1f}s: {str(e)}"
-            logger.error(error_msg, exc_info=True)
+            logger.error(f"{error_msg}\n{traceback.format_exc()}")
             return self._error_response(error_msg, {'error': str(e), 'elapsed': round(elapsed, 2)})
 
     async def _cancel_task(
@@ -1451,7 +1526,6 @@ class SpawnSubagentTool(AsyncTool):
 
         except Exception as e:
             logger.error(
-                f"_sync_status_to_context: Failed to sync status for task '{task_id}': {e}",
-                exc_info=True
+                f"_sync_status_to_context: Failed to sync status for task '{task_id}': {e}\n"
+                f"{traceback.format_exc()}"
             )
-

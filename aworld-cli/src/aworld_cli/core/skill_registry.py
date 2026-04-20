@@ -63,14 +63,14 @@ def collect_plugin_and_user_skills(
     Collect skills from plugin skills dir and user skills dirs, with dedup, skill_path fix, and aworld_metadata filter.
 
     Resolution order:
-    1. Plugin skills dir: plugin_base_dir/skills (e.g. inner_plugins/smllc/skills)
+    1. Plugin skills dir: plugin_base_dir/skills (e.g. builtin_agents/smllc/skills)
     2. User skills dirs: user_dir (if set, semicolon-separated) + SKILLS_PATH / SKILLS_DIR (user path overrides plugin on conflict)
     3. Installed skill entries: global for all agents, agent:<name> only for matching agent
     4. Each skill gets skill_path ensured for context_skill_tool
     5. Only skills with aworld_metadata.eligible=True (or no aworld_metadata) are included
 
     Args:
-        plugin_base_dir: Plugin root path (e.g. Path(__file__).resolve().parents[1] for smllc).
+        plugin_base_dir: Plugin or built-in agent bundle root path.
         user_dir: Optional user skills dir(s); semicolon-separated for multiple paths. Loaded first (highest priority). Default None.
         agent_name: Optional current agent name used to include matching installed agent-scoped skills.
 

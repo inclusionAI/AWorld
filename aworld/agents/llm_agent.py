@@ -957,9 +957,43 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         """
         content = ""
         for res in tool_results:
-            content += f"{res.content}\n"
+            content += f"{self._format_tool_result_for_followup(res)}\n"
         params = {"is_tool_result": True}
         return [ActionModel(agent_name=self.id(), policy_info=content, params=params)]
+
+    def _format_tool_result_for_followup(self, result: ActionResult) -> str:
+        """Format tool results for the next LLM turn.
+
+        Most tools can be forwarded as-is. For cron scheduling, add an explicit
+        source-of-truth note so the model uses the runtime-confirmed schedule
+        instead of reusing an earlier guessed timestamp.
+        """
+        content = result.content
+        if result.tool_name != "cron" or not isinstance(content, dict):
+            return str(content)
+
+        serialized = json.dumps(content, ensure_ascii=False)
+        if not content.get("success"):
+            return (
+                f"{serialized}\n"
+                "Cron returned an error. Do not claim the reminder or scheduled task was created."
+            )
+
+        next_run = content.get("next_run")
+        job_id = content.get("job_id")
+        next_run_display = content.get("next_run_display")
+        if next_run:
+            return (
+                f"{serialized}\n"
+                f"Confirmed cron schedule: next_run={next_run}; job_id={job_id}. "
+                f"{'Use next_run_display=' + next_run_display + ' for any user-facing date or weekday wording. ' if next_run_display else ''}"
+                "Use this cron result as the source of truth and do not reuse any earlier guessed schedule_value or infer the weekday yourself."
+            )
+
+        return (
+            f"{serialized}\n"
+            "Cron did not return a confirmed next_run. Do not say the reminder time is confirmed."
+        )
 
     async def build_llm_input(self,
                               observation: Observation,

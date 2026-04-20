@@ -11,11 +11,11 @@ from aworld_cli.core.skill_registry import (
     get_skill_registry,
     reset_skill_registry,
 )
-from aworld_cli.inner_plugins.smllc.agents.audio import audio as audio_module
-from aworld_cli.inner_plugins.smllc.agents.developer import developer as developer_module
-from aworld_cli.inner_plugins.smllc.agents.diffusion import diffusion as diffusion_module
-from aworld_cli.inner_plugins.smllc.agents.evaluator import evaluator as evaluator_module
-from aworld_cli.inner_plugins.smllc.agents.image import image as image_module
+from aworld_cli.builtin_agents.smllc.agents.audio import audio as audio_module
+from aworld_cli.builtin_agents.smllc.agents.developer import developer as developer_module
+from aworld_cli.builtin_agents.smllc.agents.diffusion import diffusion as diffusion_module
+from aworld_cli.builtin_agents.smllc.agents.evaluator import evaluator as evaluator_module
+from aworld_cli.builtin_agents.smllc.agents.image import image as image_module
 
 
 def _write_skill(root: Path, skill_name: str, description: str) -> None:

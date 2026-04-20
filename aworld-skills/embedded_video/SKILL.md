@@ -67,11 +67,3 @@ Export again; embedded playback should track smoothly with the main timeline.
 
 This applies broadly in **programmatic video**: PiP, reverse playback, scrubber-driven playback, etc. If embedded video looks choppy, **check keyframe spacing first** and re-encode if needed.
 
----
-
-## Document metadata
-
-| Field | Value |
-|-------|-------|
-| Source | `embeded_video_skill.md` (Chinese) |
-| Last updated | 2026-03-30 |
