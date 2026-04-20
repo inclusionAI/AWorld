@@ -4,12 +4,58 @@ from dataclasses import dataclass, field
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, TypeAlias, TypedDict
 
 from aworld.plugins.resources import PluginResourceResolver
 
 DEFAULT_PLUGIN_HOOK_TIMEOUT_SECONDS = 5.0
 _HOOK_HANDLER_CACHE: dict[str, Any] = {}
+
+
+class BaseHookEvent(TypedDict, total=False):
+    task_id: str
+    session_id: str
+    workspace_path: str
+
+
+class StopHookEvent(BaseHookEvent, total=False):
+    transcript_path: str
+
+
+class TaskStartedHookEvent(BaseHookEvent, total=False):
+    message: str
+
+
+class TaskProgressHookEvent(BaseHookEvent, total=False):
+    current_tool: str | None
+    elapsed_seconds: float
+    usage: dict[str, Any]
+
+
+class TaskCompletedHookEvent(BaseHookEvent, total=False):
+    task_status: str
+    final_answer: str
+
+
+class TaskErrorHookEvent(BaseHookEvent, total=False):
+    task_status: str
+    error: str
+    error_type: str
+
+
+class TaskInterruptedHookEvent(BaseHookEvent, total=False):
+    task_status: str
+    partial_answer: str
+
+
+HookEventPayload: TypeAlias = (
+    StopHookEvent
+    | TaskStartedHookEvent
+    | TaskProgressHookEvent
+    | TaskCompletedHookEvent
+    | TaskErrorHookEvent
+    | TaskInterruptedHookEvent
+)
 
 
 def _normalize_hook_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -227,3 +273,18 @@ def load_plugin_hooks(plugins: Iterable[Any]) -> dict[str, tuple[PluginHookAdapt
             )
         )
     return ordered
+
+
+__all__ = [
+    "BaseHookEvent",
+    "HookEventPayload",
+    "PluginHookAdapter",
+    "PluginHookResult",
+    "StopHookEvent",
+    "TaskCompletedHookEvent",
+    "TaskErrorHookEvent",
+    "TaskInterruptedHookEvent",
+    "TaskProgressHookEvent",
+    "TaskStartedHookEvent",
+    "load_plugin_hooks",
+]

@@ -61,6 +61,16 @@ Current plugin-safe HUD helper API:
 - `aworld_cli.plugin_capabilities.hud_helpers.format_hud_elapsed`
 - `aworld_cli.plugin_capabilities.hud_helpers.format_hud_context_bar`
 
+Current plugin-safe hook typing API:
+
+- `aworld_cli.plugin_capabilities.hooks.StopHookEvent`
+- `aworld_cli.plugin_capabilities.hooks.TaskStartedHookEvent`
+- `aworld_cli.plugin_capabilities.hooks.TaskProgressHookEvent`
+- `aworld_cli.plugin_capabilities.hooks.TaskCompletedHookEvent`
+- `aworld_cli.plugin_capabilities.hooks.TaskErrorHookEvent`
+- `aworld_cli.plugin_capabilities.hooks.TaskInterruptedHookEvent`
+- `aworld_cli.plugin_capabilities.hooks.HookEventPayload`
+
 ## Hook State Contract
 
 Hook handlers receive:
@@ -83,6 +93,45 @@ Current task lifecycle hook points available to plugins:
 - `task_error`
 - `task_interrupted`
 - `stop`
+
+Event payload fields currently emitted by the host:
+
+- `stop`
+  - `transcript_path`
+  - `workspace_path`
+  - `session_id`
+  - `task_id`
+- `task_started`
+  - `task_id`
+  - `session_id`
+  - `workspace_path`
+  - `message`
+- `task_progress`
+  - `task_id`
+  - `session_id`
+  - `workspace_path`
+  - `current_tool`
+  - `elapsed_seconds`
+  - `usage`
+- `task_completed`
+  - `task_id`
+  - `session_id`
+  - `workspace_path`
+  - `task_status`
+  - `final_answer`
+- `task_error`
+  - `task_id`
+  - `session_id`
+  - `workspace_path`
+  - `task_status`
+  - `error`
+  - `error_type`
+- `task_interrupted`
+  - `task_id`
+  - `session_id`
+  - `workspace_path`
+  - `task_status`
+  - `partial_answer`
 
 ## HUD Contract
 
