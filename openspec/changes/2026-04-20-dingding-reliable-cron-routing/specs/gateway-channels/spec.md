@@ -23,3 +23,13 @@ The gateway SHALL preserve DingTalk session routing metadata for cron jobs creat
 - **WHEN** the DingTalk conversation creates one or more cron jobs
 - **THEN** the gateway records a binding between each created cron job id and the DingTalk session routing metadata
 - **AND** later cron completion notifications can be pushed back to the originating DingTalk conversation through the existing scheduler notification sink extension point
+
+### Requirement: DingTalk gateway startup prepares the cron runtime used by routed notifications
+The gateway SHALL ensure the local cron scheduler runtime used for DingTalk-originated jobs is configured and running before those jobs are expected to execute.
+
+#### Scenario: DingTalk channel starts with cron-capable reminders enabled
+- **WHEN** the DingTalk connector starts
+- **THEN** it configures the scheduler executor so cron jobs can resolve the configured agent swarm
+- **AND** it binds the configured default agent for later cron execution
+- **AND** it registers the DingTalk cron notification fanout sink before any new notifications are published
+- **AND** it starts the local scheduler if it is not already running

@@ -199,6 +199,70 @@ def test_connector_stop_closes_http_client(monkeypatch) -> None:
     assert connector._client.stop_calls == 1
 
 
+def test_connector_start_bootstraps_cron_scheduler(monkeypatch) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+
+    class _FakeCronExecutor:
+        def __init__(self) -> None:
+            self.swarm_resolver = None
+            self.default_agent_name = None
+
+        def set_swarm_resolver(self, resolver) -> None:
+            self.swarm_resolver = resolver
+
+        def set_default_agent_name(self, agent_name: str | None) -> None:
+            self.default_agent_name = agent_name
+
+    class _FakeScheduler:
+        def __init__(self) -> None:
+            self.executor = _FakeCronExecutor()
+            self.notification_sink = None
+            self.running = False
+            self.start_calls = 0
+            self.stop_calls = 0
+
+        async def start(self) -> None:
+            self.start_calls += 1
+            self.running = True
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+            self.running = False
+
+    class _FakeAgent:
+        async def get_swarm(self, _context):
+            return "fake-swarm"
+
+    scheduler = _FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: scheduler)
+    monkeypatch.setattr(
+        "aworld_cli.core.agent_registry.LocalAgentRegistry.get_agent",
+        lambda agent_id: _FakeAgent() if agent_id == "agent-1" else None,
+    )
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=_FakeBridge(),
+        stream_module=_FakeStreamModule,
+        http_client=_FakeHttpClient(),
+        thread_cls=_FakeThread,
+    )
+
+    asyncio.run(connector.start())
+
+    assert scheduler.start_calls == 1
+    assert scheduler.running is True
+    assert scheduler.notification_sink is not None
+    assert scheduler.executor.default_agent_name == "agent-1"
+    assert scheduler.executor.swarm_resolver is not None
+    assert asyncio.run(scheduler.executor.swarm_resolver("agent-1")) == "fake-swarm"
+
+    asyncio.run(connector.stop())
+
+    assert scheduler.stop_calls == 1
+
+
 def test_connector_reset_command_rotates_session_and_sends_confirmation() -> None:
     bridge = _FakeBridge()
     connector = DingTalkConnector(
@@ -373,6 +437,35 @@ def test_connector_suppresses_duplicate_callbacks() -> None:
 
     asyncio.run(connector.handle_callback(payload))
     asyncio.run(connector.handle_callback(payload))
+
+    assert len(bridge.calls) == 1
+    assert sent == ["echo:hello"]
+
+
+def test_connector_suppresses_duplicate_callbacks_without_provider_ids() -> None:
+    bridge = _FakeBridge()
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=bridge,
+        stream_module=object(),
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    payload = {
+        "sessionWebhook": "https://callback",
+        "conversationId": "conv-1",
+        "senderId": "user-1",
+        "msgtype": "text",
+        "text": {"content": "hello"},
+    }
+
+    asyncio.run(connector.handle_callback(payload))
+    asyncio.run(connector.handle_callback(dict(payload)))
 
     assert len(bridge.calls) == 1
     assert sent == ["echo:hello"]
