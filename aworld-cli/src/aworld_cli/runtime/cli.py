@@ -133,9 +133,6 @@ class CliRuntime(BaseCliRuntime):
             for plugin_dir in runtime_plugin_roots:
                 if plugin_dir not in plugin_dirs:
                     plugin_dirs.append(plugin_dir)
-            
-            if runtime_plugin_roots and hasattr(self, 'cli') and hasattr(self.cli, 'console'):
-                self.cli.console.print(f"📦 Found {len(runtime_plugin_roots)} active plugin(s)")
         except Exception as e:
             # Fail silently if plugin manager is not available
             pass
@@ -150,6 +147,9 @@ class CliRuntime(BaseCliRuntime):
             if plugin_root not in seen:
                 resolved.append(plugin_root)
                 seen.add(plugin_root)
+
+        if resolved and hasattr(self, 'cli') and hasattr(self.cli, 'console'):
+            self.cli.console.print(f"📦 Found {len(resolved)} active plugin(s)")
 
         return resolved
     
