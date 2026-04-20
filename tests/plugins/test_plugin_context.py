@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from aworld.plugins.discovery import discover_plugins
-from aworld_cli.plugin_runtime.context import (
+from aworld_cli.plugin_capabilities.context import (
     CONTEXT_PHASES,
     load_plugin_contexts,
     run_context_phase,

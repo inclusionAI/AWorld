@@ -3,8 +3,10 @@
 The current HUD stack has three layers:
 
 - the built-in HUD plugin in `aworld-cli/src/aworld_cli/builtin_plugins/aworld_hud/`
-- host-side HUD capability loading in `aworld-cli/src/aworld_cli/plugin_runtime/hud.py`
+- host-side HUD capability loading in `aworld-cli/src/aworld_cli/plugin_capabilities/hud.py`
 - CLI rendering in `aworld-cli/src/aworld_cli/console.py`
+
+At implementation time, `plugin_runtime/*.py` remains as a compatibility re-export layer while callers migrate to `plugin_capabilities/*`.
 
 That layering is directionally correct, but the current boundary is too loose. Several recent HUD changes required touching host code for behavior that users perceive as plugin behavior, such as which fields matter, how runtime state should be summarized, and how a built-in HUD should evolve over time.
 
@@ -211,6 +213,11 @@ Alternative considered:
 - or a similar host-owned capability path
 
 The exact target path is an implementation detail, but the design requirement is that the name must make ownership obvious.
+
+Implementation note:
+
+- the real implementation now lives under `aworld_cli/plugin_capabilities/*`
+- `plugin_runtime/*` remains as a compatibility alias during the migration window
 
 Why:
 

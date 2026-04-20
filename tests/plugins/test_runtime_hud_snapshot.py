@@ -255,7 +255,7 @@ def test_task_finish_sets_task_status():
 def test_runtime_build_plugin_hook_state_includes_state_handle():
     runtime = DummyRuntime()
     runtime._plugin_state_store = runtime._plugin_state_store or None
-    runtime._plugin_state_store = __import__("aworld_cli.plugin_runtime.state", fromlist=["PluginStateStore"]).PluginStateStore(Path.cwd() / ".tmp-plugin-state-test")
+    runtime._plugin_state_store = __import__("aworld_cli.plugin_capabilities.state", fromlist=["PluginStateStore"]).PluginStateStore(Path.cwd() / ".tmp-plugin-state-test")
 
     executor_instance = SimpleNamespace(
         session_id="session-1",

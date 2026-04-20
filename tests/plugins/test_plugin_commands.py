@@ -4,8 +4,8 @@ from pathlib import Path
 
 from aworld_cli.core.command_system import CommandContext, CommandRegistry
 from aworld.plugins.discovery import discover_plugins
-from aworld_cli.plugin_runtime.commands import PluginPromptCommand, register_plugin_commands, sync_plugin_commands
-from aworld_cli.plugin_runtime.state import PluginStateStore
+from aworld_cli.plugin_capabilities.commands import PluginPromptCommand, register_plugin_commands, sync_plugin_commands
+from aworld_cli.plugin_capabilities.state import PluginStateStore
 from aworld_cli.runtime.base import BaseCliRuntime
 
 

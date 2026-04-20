@@ -1,4 +1,4 @@
-"""Plugin framework primitives."""
+"""Plugin framework primitives plus compatibility re-exports."""
 
 from aworld.plugins import (
     DiscoveredPlugin,

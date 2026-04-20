@@ -1,4 +1,8 @@
-from aworld_cli.executors.stats import format_context_bar_hud, format_elapsed, format_tokens
+from aworld_cli.plugin_capabilities.hud_helpers import (
+    format_hud_context_bar,
+    format_hud_elapsed,
+    format_hud_tokens,
+)
 
 def _identity_segments(context):
     session = context.get("session", {})
@@ -43,18 +47,18 @@ def _activity_segments(context):
     if usage.get("input_tokens") is not None or usage.get("output_tokens") is not None:
         input_tokens = usage.get("input_tokens") or 0
         output_tokens = usage.get("output_tokens") or 0
-        segments.append(f"Tokens: in {format_tokens(input_tokens)} out {format_tokens(output_tokens)}")
+        segments.append(f"Tokens: in {format_hud_tokens(input_tokens)} out {format_hud_tokens(output_tokens)}")
 
     context_used = usage.get("context_used")
     context_max = usage.get("context_max")
     if context_used is not None and context_max:
-        segments.append(format_context_bar_hud(context_used, context_max, bar_width=10))
+        segments.append(format_hud_context_bar(context_used, context_max, bar_width=10))
     elif usage.get("context_percent") is not None:
         segments.append(f"Ctx: {usage['context_percent']}%")
 
     elapsed = session.get("elapsed_seconds")
     if elapsed is not None:
-        segments.append(f"Elapsed: {format_elapsed(elapsed)}")
+        segments.append(f"Elapsed: {format_hud_elapsed(elapsed)}")
 
     return segments or ["Status: idle"]
 

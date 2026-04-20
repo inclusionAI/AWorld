@@ -6,6 +6,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from aworld.plugins.discovery import discover_plugins
 from aworld.plugins.manifest import load_plugin_manifest
 from aworld.plugins.registry import PluginCapabilityRegistry
+from aworld_cli.plugin_capabilities.commands import sync_plugin_commands as capability_sync_plugin_commands
+from aworld_cli.plugin_capabilities.context import load_plugin_contexts as capability_load_plugin_contexts
+from aworld_cli.plugin_capabilities.hooks import load_plugin_hooks as capability_load_plugin_hooks
+from aworld_cli.plugin_capabilities.hud import collect_hud_lines as capability_collect_hud_lines
+from aworld_cli.plugin_capabilities.state import PluginStateStore as CapabilityPluginStateStore
 from aworld_cli.plugin_framework.commands import sync_plugin_commands as legacy_sync_plugin_commands
 from aworld_cli.plugin_framework.context import load_plugin_contexts as legacy_load_plugin_contexts
 from aworld_cli.plugin_framework.hooks import load_plugin_hooks as legacy_load_plugin_hooks
@@ -37,9 +42,25 @@ def test_plugin_runtime_exports_cli_runtime_primitives():
     assert PluginStateStore is not None
 
 
+def test_plugin_capabilities_exports_cli_runtime_primitives():
+    assert callable(capability_sync_plugin_commands)
+    assert callable(capability_load_plugin_contexts)
+    assert callable(capability_load_plugin_hooks)
+    assert callable(capability_collect_hud_lines)
+    assert CapabilityPluginStateStore is not None
+
+
+def test_plugin_runtime_modules_are_compatibility_aliases_to_plugin_capabilities():
+    assert sync_plugin_commands is capability_sync_plugin_commands
+    assert load_plugin_contexts is capability_load_plugin_contexts
+    assert load_plugin_hooks is capability_load_plugin_hooks
+    assert collect_hud_lines is capability_collect_hud_lines
+    assert PluginStateStore is CapabilityPluginStateStore
+
+
 def test_cli_plugin_framework_runtime_modules_reexport_plugin_runtime_symbols():
-    assert legacy_sync_plugin_commands is sync_plugin_commands
-    assert legacy_load_plugin_contexts is load_plugin_contexts
-    assert legacy_load_plugin_hooks is load_plugin_hooks
-    assert legacy_collect_hud_lines is collect_hud_lines
-    assert LegacyPluginStateStore is PluginStateStore
+    assert legacy_sync_plugin_commands is capability_sync_plugin_commands
+    assert legacy_load_plugin_contexts is capability_load_plugin_contexts
+    assert legacy_load_plugin_hooks is capability_load_plugin_hooks
+    assert legacy_collect_hud_lines is capability_collect_hud_lines
+    assert LegacyPluginStateStore is CapabilityPluginStateStore
