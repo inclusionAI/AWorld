@@ -1,5 +1,8 @@
 import sys
+from importlib import import_module
 from pathlib import Path
+
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
@@ -25,17 +28,6 @@ from aworld_cli.plugin_capabilities.hooks import (
 )
 from aworld_cli.plugin_capabilities.hud import collect_hud_lines as capability_collect_hud_lines
 from aworld_cli.plugin_capabilities.state import PluginStateStore as CapabilityPluginStateStore
-from aworld_cli.plugin_framework.commands import sync_plugin_commands as legacy_sync_plugin_commands
-from aworld_cli.plugin_framework.context import load_plugin_contexts as legacy_load_plugin_contexts
-from aworld_cli.plugin_framework.hooks import load_plugin_hooks as legacy_load_plugin_hooks
-from aworld_cli.plugin_framework.hud import collect_hud_lines as legacy_collect_hud_lines
-from aworld_cli.plugin_framework.state import PluginStateStore as LegacyPluginStateStore
-from aworld_cli.plugin_runtime.commands import sync_plugin_commands
-from aworld_cli.plugin_runtime.context import load_plugin_contexts
-from aworld_cli.plugin_runtime.hooks import load_plugin_hooks
-from aworld_cli.plugin_runtime.hud import collect_hud_lines
-from aworld_cli.plugin_runtime.state import PluginStateStore
-from aworld_cli.plugin_framework.discovery import discover_plugins as cli_discover_plugins
 
 
 def test_shared_plugin_framework_exports_core_primitives():
@@ -46,40 +38,12 @@ def test_shared_plugin_framework_exports_core_primitives():
     assert callable(resolve_plugin_activation)
 
 
-def test_cli_plugin_framework_discovery_reexports_shared_symbol():
-    assert cli_discover_plugins is discover_plugins
-
-
-def test_plugin_runtime_exports_cli_runtime_primitives():
-    assert callable(sync_plugin_commands)
-    assert callable(load_plugin_contexts)
-    assert callable(load_plugin_hooks)
-    assert callable(collect_hud_lines)
-    assert PluginStateStore is not None
-
-
 def test_plugin_capabilities_exports_cli_runtime_primitives():
     assert callable(capability_sync_plugin_commands)
     assert callable(capability_load_plugin_contexts)
     assert callable(capability_load_plugin_hooks)
     assert callable(capability_collect_hud_lines)
     assert CapabilityPluginStateStore is not None
-
-
-def test_plugin_runtime_modules_are_compatibility_aliases_to_plugin_capabilities():
-    assert sync_plugin_commands is capability_sync_plugin_commands
-    assert load_plugin_contexts is capability_load_plugin_contexts
-    assert load_plugin_hooks is capability_load_plugin_hooks
-    assert collect_hud_lines is capability_collect_hud_lines
-    assert PluginStateStore is CapabilityPluginStateStore
-
-
-def test_cli_plugin_framework_runtime_modules_reexport_plugin_runtime_symbols():
-    assert legacy_sync_plugin_commands is capability_sync_plugin_commands
-    assert legacy_load_plugin_contexts is capability_load_plugin_contexts
-    assert legacy_load_plugin_hooks is capability_load_plugin_hooks
-    assert legacy_collect_hud_lines is capability_collect_hud_lines
-    assert LegacyPluginStateStore is CapabilityPluginStateStore
 
 
 def test_shared_plugin_public_exports_include_validation_and_resolution():
@@ -115,3 +79,30 @@ def test_hook_payload_typed_dicts_expose_expected_fields():
         TaskErrorHookEvent,
         TaskInterruptedHookEvent,
     )
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "aworld_cli.plugin_runtime",
+        "aworld_cli.plugin_runtime.commands",
+        "aworld_cli.plugin_runtime.context",
+        "aworld_cli.plugin_runtime.hooks",
+        "aworld_cli.plugin_runtime.hud",
+        "aworld_cli.plugin_runtime.state",
+        "aworld_cli.plugin_framework",
+        "aworld_cli.plugin_framework.commands",
+        "aworld_cli.plugin_framework.context",
+        "aworld_cli.plugin_framework.discovery",
+        "aworld_cli.plugin_framework.hooks",
+        "aworld_cli.plugin_framework.hud",
+        "aworld_cli.plugin_framework.manifest",
+        "aworld_cli.plugin_framework.models",
+        "aworld_cli.plugin_framework.registry",
+        "aworld_cli.plugin_framework.resources",
+        "aworld_cli.plugin_framework.state",
+    ],
+)
+def test_legacy_plugin_alias_modules_are_removed(module_name):
+    with pytest.raises(ModuleNotFoundError):
+        import_module(module_name)

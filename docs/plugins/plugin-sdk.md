@@ -54,6 +54,7 @@ Resolution is deterministic and follows plugin discovery order.
 ## Public Capability Surface
 
 Host-owned plugin capability helpers live under `aworld_cli.plugin_capabilities`.
+Legacy alias namespaces `aworld_cli.plugin_runtime.*` and `aworld_cli.plugin_framework.*` have been removed.
 
 Current plugin-safe HUD helper API:
 

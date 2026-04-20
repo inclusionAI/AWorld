@@ -73,10 +73,11 @@ Still pending.
 
 ### Compatibility alias removal
 
-Still pending by design.
+Addressed.
 
-- OpenSpec task `5.7` remains open because repository tests still intentionally verify compatibility exports
-- Compatibility aliases should only be removed in a follow-up after the deprecation decision is explicit
+- `aworld_cli.plugin_runtime.*` compatibility re-exports were removed
+- `aworld_cli.plugin_framework.*` compatibility re-exports were removed
+- in-repo imports and tests now target canonical plugin paths only
 
 ## Outcome
 
@@ -91,4 +92,3 @@ What changed:
 What remains:
 
 - manual CLI validation against the accepted HUD screenshots
-- a later decision on removing compatibility aliases

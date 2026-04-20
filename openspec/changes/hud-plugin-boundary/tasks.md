@@ -32,7 +32,7 @@
 - [x] 5.4 Add compatibility re-export shims from existing `plugin_runtime` HUD support imports to the new host-owned namespace.
 - [x] 5.5 Move host callers and tests from `plugin_runtime/*` HUD support imports to `plugin_capabilities/*`.
 - [x] 5.6 Update documentation and OpenSpec references to use the host-owned namespace language.
-- [ ] 5.7 Remove compatibility aliases only after callers and tests no longer depend on the old paths.
+- [x] 5.7 Remove compatibility aliases only after callers and tests no longer depend on the old paths.
 
 ## 6. Final Validation
 
