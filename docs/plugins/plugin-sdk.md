@@ -42,6 +42,15 @@ Validation currently checks:
 - entrypoint targets resolve inside the plugin root
 - legacy plugin roots still expose `agents/` or `skills/`
 
+## Activation Resolution
+
+At runtime, manifest-declared activation metadata is now consumed:
+
+- `dependencies`: a plugin is skipped unless all declared plugin IDs are already active
+- `conflicts`: a plugin is skipped if it conflicts with any already active plugin ID
+
+Resolution is deterministic and follows plugin discovery order.
+
 ## Public Capability Surface
 
 Host-owned plugin capability helpers live under `aworld_cli.plugin_capabilities`.
@@ -65,6 +74,15 @@ Writable plugin state is exposed through:
 - `state["__plugin_state__"].write(payload)`
 - `state["__plugin_state__"].update(payload)`
 - `state["__plugin_state__"].clear()`
+
+Current task lifecycle hook points available to plugins:
+
+- `task_started`
+- `task_progress`
+- `task_completed`
+- `task_error`
+- `task_interrupted`
+- `stop`
 
 ## HUD Contract
 

@@ -272,6 +272,67 @@ def test_runtime_initialization_skips_duplicate_plugin_ids(tmp_path):
     assert runtime.active_plugin_capabilities() == ("commands",)
 
 
+def test_runtime_initialization_skips_plugins_with_missing_dependencies_and_conflicts(tmp_path):
+    def write_plugin(root: Path, plugin_id: str, *, dependencies=(), conflicts=()):
+        (root / ".aworld-plugin").mkdir(parents=True)
+        dependencies_json = "[" + ", ".join(f'"{item}"' for item in dependencies) + "]"
+        conflicts_json = "[" + ", ".join(f'"{item}"' for item in conflicts) + "]"
+        (root / ".aworld-plugin" / "plugin.json").write_text(
+            (
+                "{"
+                f"\"id\": \"{plugin_id}\", "
+                f"\"name\": \"{plugin_id}\", "
+                "\"version\": \"1.0.0\", "
+                f"\"dependencies\": {dependencies_json}, "
+                f"\"conflicts\": {conflicts_json}, "
+                "\"entrypoints\": {"
+                "\"commands\": ["
+                "{"
+                "\"id\": \"hello\", "
+                "\"target\": \"commands/hello.md\""
+                "}"
+                "]"
+                "}"
+                "}"
+            ),
+            encoding="utf-8",
+        )
+
+    base_root = tmp_path / "base"
+    dependent_root = tmp_path / "dependent"
+    missing_dep_root = tmp_path / "missing-dep"
+    conflicting_root = tmp_path / "conflicting"
+
+    write_plugin(base_root, "base-tools")
+    write_plugin(dependent_root, "dependent-tools", dependencies=("base-tools",))
+    write_plugin(missing_dep_root, "missing-dependent", dependencies=("not-installed",))
+    write_plugin(conflicting_root, "conflicting-tools", conflicts=("base-tools",))
+
+    class DummyRuntime(BaseCliRuntime):
+        def __init__(self, plugin_dirs):
+            super().__init__()
+            self.plugin_dirs = plugin_dirs
+
+        async def _load_agents(self):
+            return []
+
+        async def _create_executor(self, agent):
+            return None
+
+        def _get_source_type(self):
+            return "TEST"
+
+        def _get_source_location(self):
+            return "test://plugins"
+
+    runtime = DummyRuntime([base_root, dependent_root, missing_dep_root, conflicting_root])
+    runtime._initialize_plugin_framework()
+
+    assert runtime._plugin_registry is not None
+    assert [plugin.manifest.plugin_id for plugin in runtime._plugins] == ["base-tools", "dependent-tools"]
+    assert runtime.active_plugin_capabilities() == ("commands",)
+
+
 async def test_runtime_renders_third_party_hud_plugin_from_hook_driven_state(tmp_path):
     plugin_root = Path("tests/fixtures/plugins/hud_stateful_like").resolve()
 

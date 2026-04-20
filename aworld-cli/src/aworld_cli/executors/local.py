@@ -267,6 +267,19 @@ class LocalAgentExecutor(BaseAgentExecutor):
             logger.warning(f"Plugin task hook '{hook_point}' failed: {exc}")
             return []
 
+    async def _handle_task_interrupted(self, task: Task, answer: str = "") -> str:
+        await self._run_plugin_task_hook(
+            "task_interrupted",
+            {
+                "task_id": task.id,
+                "session_id": self.session_id,
+                "task_status": "interrupted",
+                "partial_answer": answer or "",
+            },
+        )
+        self._publish_hud_task_finished(task.id, task_status="idle")
+        return answer or ""
+
     async def cleanup_resources(self) -> None:
         """
         Close MCP and other resources in the same event loop to avoid
@@ -1110,8 +1123,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     if self.console:
                         self.console.print("\n[yellow]⏹ Interrupted.[/yellow]")
-                    self._publish_hud_task_finished(task.id, task_status="idle")
-                    return answer or ""
+                    return await self._handle_task_interrupted(task, answer=answer)
 
                 def _coerce_final_answer(value: Any) -> str:
                     if value is None:
