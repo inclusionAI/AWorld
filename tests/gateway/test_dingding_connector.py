@@ -585,3 +585,142 @@ def test_connector_falls_back_to_text_when_ai_card_finalize_fails() -> None:
     )
 
     assert calls[-1] == ("text", "echo:hi")
+
+
+def test_connector_rewrites_artifact_scheme_to_gateway_url(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    report_path = workspace_dir / "reports" / "summary.html"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("summary", encoding="utf-8")
+
+    class _FakeArtifactService:
+        def publish(self, path: Path | str) -> str:
+            assert Path(path) == report_path
+            return "artifact-token"
+
+        def build_external_url(self, token: str) -> str:
+            assert token == "artifact-token"
+            return "https://gateway.example.com/artifacts/artifact-token"
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(enable_attachments=True, workspace_dir=str(workspace_dir)),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+        artifact_service=_FakeArtifactService(),
+    )
+    connector._get_oapi_access_token = lambda: asyncio.sleep(0, result=None)  # type: ignore[method-assign]
+
+    cleaned, pending_files = asyncio.run(
+        connector._process_local_media_links("查看 [HTML 报告](artifact://reports/summary.html)")
+    )
+
+    assert cleaned == "查看 [HTML 报告](https://gateway.example.com/artifacts/artifact-token)"
+    assert pending_files == []
+
+
+def test_connector_rewrites_legacy_attachment_url_when_native_upload_unavailable(
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "report.txt"
+    report_path.write_text("report", encoding="utf-8")
+
+    class _FakeArtifactService:
+        def publish(self, path: Path | str) -> str:
+            assert Path(path) == report_path
+            return "legacy-token"
+
+        def build_external_url(self, token: str) -> str:
+            assert token == "legacy-token"
+            return "https://gateway.example.com/artifacts/legacy-token"
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(enable_attachments=True),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+        artifact_service=_FakeArtifactService(),
+    )
+    connector._get_oapi_access_token = lambda: asyncio.sleep(0, result=None)  # type: ignore[method-assign]
+
+    cleaned, pending_files = asyncio.run(
+        connector._process_local_media_links(
+            f"下载 [报告](attachment://{report_path})"
+        )
+    )
+
+    assert cleaned == "下载 [报告](https://gateway.example.com/artifacts/legacy-token)"
+    assert pending_files == []
+
+
+def test_connector_keeps_native_file_upload_when_oapi_token_available(tmp_path: Path) -> None:
+    report_path = tmp_path / "report.txt"
+    report_path.write_text("report", encoding="utf-8")
+
+    class _FakeArtifactService:
+        def publish(self, path: Path | str) -> str:
+            return "should-not-be-used"
+
+        def build_external_url(self, token: str) -> str:
+            return f"https://gateway.example.com/artifacts/{token}"
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(enable_attachments=True),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+        artifact_service=_FakeArtifactService(),
+    )
+    connector._get_oapi_access_token = lambda: asyncio.sleep(0, result="oapi-token")  # type: ignore[method-assign]
+    connector._upload_local_file_to_dingtalk = (  # type: ignore[method-assign]
+        lambda local_path, media_type, oapi_token: asyncio.sleep(0, result="media-file-1")
+    )
+
+    cleaned, pending_files = asyncio.run(
+        connector._process_local_media_links(
+            f"请查看 [报告](attachment://{report_path})"
+        )
+    )
+
+    assert cleaned == "请查看"
+    assert pending_files == [
+        PendingFileMessage(
+            media_id="media-file-1",
+            file_name="report.txt",
+            file_type="txt",
+        )
+    ]
+
+
+def test_connector_skips_artifact_publish_when_build_external_url_fails(tmp_path: Path) -> None:
+    workspace_dir = tmp_path / "workspace"
+    report_path = workspace_dir / "reports" / "summary.html"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("summary", encoding="utf-8")
+
+    calls = {"publish": 0}
+
+    class _FailingArtifactService:
+        def publish(self, path: Path | str) -> str:
+            calls["publish"] += 1
+            assert Path(path) == report_path
+            return "artifact-token"
+
+        def build_external_url(self, token: str) -> str:
+            raise ValueError("missing base url")
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(enable_attachments=True, workspace_dir=str(workspace_dir)),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+        artifact_service=_FailingArtifactService(),
+    )
+    connector._get_oapi_access_token = lambda: asyncio.sleep(0, result=None)  # type: ignore[method-assign]
+
+    original = "查看 [HTML 报告](artifact://reports/summary.html)"
+    cleaned, pending_files = asyncio.run(connector._process_local_media_links(original))
+
+    assert calls["publish"] >= 1
+    assert cleaned == original
+    assert pending_files == []

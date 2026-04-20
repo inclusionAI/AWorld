@@ -32,6 +32,9 @@ AI_CARD_RETRY_DELAY_SECONDS = 0.3
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
 LOCAL_PATH_RE = re.compile(r"^(?:/|~|[A-Za-z]:[\\/])")
+PLAIN_LOCAL_REF_RE = re.compile(
+    r"(artifact://[^\s<>)]+|attachment://[^\s<>)]+|file://[^\s<>)]+|MEDIA:[^\s<>)]+|(?:/|~)[^\s<>)]+)"
+)
 
 
 class DingTalkConnector:
@@ -43,12 +46,14 @@ class DingTalkConnector:
         stream_module,
         http_client: httpx.AsyncClient | None = None,
         thread_cls: type[threading.Thread] = threading.Thread,
+        artifact_service: object | None = None,
     ) -> None:
         self._config = config
         self._bridge = bridge
         self._stream_module = stream_module
         self._http = http_client or httpx.AsyncClient(timeout=60.0)
         self._thread_cls = thread_cls
+        self._artifact_service = artifact_service
         self._session_ids: dict[str, str] = {}
         self._client = None
         self._stream_thread: threading.Thread | None = None
@@ -350,18 +355,22 @@ class DingTalkConnector:
         self,
         content: str,
     ) -> tuple[str, list[PendingFileMessage]]:
-        if not self._config.enable_attachments or not content:
+        if not content:
             return content, []
         if (
+            "artifact://" not in content
+            and
             "attachment://" not in content
             and "file://" not in content
             and "MEDIA:" not in content
+            and "/" not in content
+            and "~" not in content
         ):
             return content, []
 
-        oapi_token = await self._get_oapi_access_token()
-        if not oapi_token:
-            return content, []
+        oapi_token: str | None = None
+        if self._config.enable_attachments:
+            oapi_token = await self._get_oapi_access_token()
 
         result = content
         pending_files: list[PendingFileMessage] = []
@@ -369,37 +378,52 @@ class DingTalkConnector:
         for match in list(MARKDOWN_IMAGE_RE.finditer(result)):
             full_match, alt_text, raw_url = match.group(0), match.group(1), match.group(2)
             local_path = self._extract_local_file_path(raw_url)
-            if not local_path or not self._is_image_path(local_path):
+            if not local_path:
                 continue
-            media_id = await self._upload_local_file_to_dingtalk(
-                local_path,
-                "image",
-                oapi_token,
-            )
-            if not media_id:
-                continue
-            result = result.replace(full_match, f"![{alt_text}]({media_id})", 1)
+            if oapi_token and self._is_image_path(local_path):
+                media_id = await self._upload_local_file_to_dingtalk(
+                    local_path,
+                    "image",
+                    oapi_token,
+                )
+                if media_id:
+                    result = result.replace(full_match, f"![{alt_text}]({media_id})", 1)
+                    continue
+            published_url = self._publish_local_reference(raw_url)
+            if published_url:
+                result = result.replace(full_match, f"![{alt_text}]({published_url})", 1)
 
         for match in list(MARKDOWN_LINK_RE.finditer(result)):
             full_match, _link_text, raw_url = match.group(0), match.group(1), match.group(2)
             local_path = self._extract_local_file_path(raw_url)
             if not local_path:
                 continue
-            media_id = await self._upload_local_file_to_dingtalk(
-                local_path,
-                "file",
-                oapi_token,
-            )
-            if not media_id:
-                continue
-            pending_files.append(
-                PendingFileMessage(
-                    media_id=media_id,
-                    file_name=local_path.name,
-                    file_type=local_path.suffix.lstrip(".").lower() or "bin",
+            if oapi_token:
+                media_id = await self._upload_local_file_to_dingtalk(
+                    local_path,
+                    "file",
+                    oapi_token,
                 )
-            )
-            result = result.replace(full_match, "", 1)
+                if media_id:
+                    pending_files.append(
+                        PendingFileMessage(
+                            media_id=media_id,
+                            file_name=local_path.name,
+                            file_type=local_path.suffix.lstrip(".").lower() or "bin",
+                        )
+                    )
+                    result = result.replace(full_match, "", 1)
+                    continue
+            published_url = self._publish_local_reference(raw_url)
+            if published_url:
+                result = result.replace(full_match, f"[{match.group(1)}]({published_url})", 1)
+
+        def _replace_plain_reference(match: re.Match[str]) -> str:
+            raw_reference = match.group(0)
+            published_url = self._publish_local_reference(raw_reference)
+            return published_url or raw_reference
+
+        result = PLAIN_LOCAL_REF_RE.sub(_replace_plain_reference, result)
 
         return self._cleanup_processed_text(result), pending_files
 
@@ -660,12 +684,29 @@ class DingTalkConnector:
             return None
         return IncomingAttachment(download_code=download_code, file_name=file_name)
 
-    @staticmethod
-    def _extract_local_file_path(raw_url: str) -> Path | None:
+    def _extract_local_file_path(self, raw_url: str) -> Path | None:
         candidate = raw_url.strip().strip("<>").strip("'").strip('"')
         if not candidate:
             return None
         candidate = candidate.replace("\\ ", " ")
+        if candidate.startswith("artifact://"):
+            relative_path = unquote(candidate[len("artifact://") :]).strip().lstrip("/\\")
+            workspace_dir = str(self._config.workspace_dir or "").strip()
+            if not relative_path or not workspace_dir:
+                return None
+            workspace_path = Path(workspace_dir).expanduser()
+            if not workspace_path.is_absolute():
+                return None
+            try:
+                resolved_path = (workspace_path / relative_path).resolve()
+                resolved_workspace = workspace_path.resolve()
+            except OSError:
+                return None
+            if not resolved_path.is_relative_to(resolved_workspace):
+                return None
+            if not resolved_path.exists() or not resolved_path.is_file():
+                return None
+            return resolved_path
         if candidate.startswith("file://"):
             candidate = candidate[len("file://") :]
         elif candidate.startswith("MEDIA:"):
@@ -679,6 +720,18 @@ class DingTalkConnector:
         if not path.is_absolute() or not path.exists() or not path.is_file():
             return None
         return path
+
+    def _publish_local_reference(self, raw_reference: str) -> str | None:
+        if self._artifact_service is None:
+            return None
+        local_path = self._extract_local_file_path(raw_reference)
+        if local_path is None:
+            return None
+        try:
+            token = self._artifact_service.publish(local_path)
+            return self._artifact_service.build_external_url(token)
+        except Exception:
+            return None
 
     @staticmethod
     def _is_image_path(local_path: Path) -> bool:

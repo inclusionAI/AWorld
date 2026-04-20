@@ -165,3 +165,31 @@ def test_dingding_adapter_stop_delegates_to_connector(monkeypatch) -> None:
 
     assert adapter._connector is not None
     assert adapter._connector.stopped is True
+
+
+def test_dingding_adapter_passes_artifact_service_to_connector(monkeypatch) -> None:
+    stream_module = object()
+    captured: dict[str, object] = {}
+
+    class _ConnectorWithArtifactService(_FakeConnector):
+        def __init__(self, *, config, bridge, stream_module, artifact_service) -> None:
+            super().__init__(config=config, bridge=bridge, stream_module=stream_module)
+            captured["artifact_service"] = artifact_service
+
+    monkeypatch.setattr(
+        DingdingChannelAdapter,
+        "_import_stream_module",
+        lambda self: stream_module,
+    )
+
+    shared_artifact_service = object()
+    adapter = DingdingChannelAdapter(
+        DingdingChannelConfig(),
+        bridge=_FakeBridge(),
+        connector_cls=_ConnectorWithArtifactService,
+        artifact_service=shared_artifact_service,
+    )
+
+    asyncio.run(adapter.start())
+
+    assert captured["artifact_service"] is shared_artifact_service
