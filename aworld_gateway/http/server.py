@@ -5,11 +5,14 @@ from collections.abc import Callable
 from fastapi import FastAPI
 
 from aworld_gateway.channels.telegram.webhook import register_telegram_webhook
+from aworld_gateway.http.artifact_router import register_artifact_routes
+from aworld_gateway.http.artifact_service import ArtifactService
 
 
 def create_gateway_app(
     *,
     runtime_status: dict[str, object] | Callable[[], dict[str, object]],
+    artifact_service: ArtifactService | None = None,
     telegram_adapter: object | None = None,
     telegram_webhook_path: str = "/webhooks/telegram",
 ) -> FastAPI:
@@ -26,6 +29,8 @@ def create_gateway_app(
         if isinstance(channels_payload, dict):
             return channels_payload
         return {}
+
+    register_artifact_routes(app, artifact_service=artifact_service)
 
     register_telegram_webhook(
         app,

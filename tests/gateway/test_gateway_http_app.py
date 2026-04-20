@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
+from aworld_gateway.http.artifact_service import ArtifactService
 from aworld_gateway.http.server import create_gateway_app
 
 
@@ -131,3 +132,38 @@ def test_gateway_http_app_reads_live_channel_status_from_provider() -> None:
     state["channels"]["telegram"]["state"] = "running"
 
     assert client.get("/channels").json()["telegram"]["running"] is True
+
+
+def test_gateway_http_app_serves_registered_artifact(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    artifact_file = artifact_root / "report.html"
+    artifact_file.write_text("<html><body>report</body></html>", encoding="utf-8")
+
+    service = ArtifactService(
+        public_base_url="http://127.0.0.1:18888",
+        allowed_roots=[artifact_root],
+    )
+    token = service.publish(artifact_file)
+    app = create_gateway_app(runtime_status={"channels": {}}, artifact_service=service)
+
+    client = TestClient(app)
+    response = client.get(f"/artifacts/{token}")
+
+    assert response.status_code == 200
+    assert "report" in response.text
+    assert response.headers["content-type"].startswith("text/html")
+
+
+def test_gateway_http_app_rejects_unknown_artifact_token(tmp_path: Path) -> None:
+    service = ArtifactService(
+        public_base_url="http://127.0.0.1:18888",
+        allowed_roots=[tmp_path],
+    )
+    app = create_gateway_app(runtime_status={"channels": {}}, artifact_service=service)
+
+    client = TestClient(app)
+    response = client.get("/artifacts/missing-token")
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Artifact not found."
