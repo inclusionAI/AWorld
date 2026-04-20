@@ -73,8 +73,10 @@ def test_runtime_initialization_registers_enabled_plugin_commands(tmp_path):
 
 def test_builtin_agent_bundle_namespace_moves_to_builtin_agents_package():
     from aworld_cli.builtin_agents.smllc.agents.aworld_agent import load_aworld_system_prompt
+    from aworld_cli.builtin_agents.smllc.agents.avatar.avatar import build_avatar_swarm
 
     assert "cron" in load_aworld_system_prompt()
+    assert callable(build_avatar_swarm)
 
 
 def test_get_builtin_plugin_roots_prefers_builtin_plugins_for_aworld_hud():
