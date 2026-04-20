@@ -143,7 +143,7 @@ class BaseCliRuntime:
             self._plugin_contexts = {}
             self._plugin_state_store = None
             try:
-                from ..plugin_runtime.commands import sync_plugin_commands
+                from ..plugin_capabilities.commands import sync_plugin_commands
 
                 sync_plugin_commands([])
             except Exception:
@@ -153,10 +153,10 @@ class BaseCliRuntime:
         try:
             from aworld.plugins.discovery import discover_plugins
             from aworld.plugins.registry import PluginCapabilityRegistry
-            from ..plugin_runtime.commands import sync_plugin_commands
-            from ..plugin_runtime.context import CONTEXT_PHASES, load_plugin_contexts
-            from ..plugin_runtime.hooks import load_plugin_hooks
-            from ..plugin_runtime.state import PluginStateStore
+            from ..plugin_capabilities.commands import sync_plugin_commands
+            from ..plugin_capabilities.context import CONTEXT_PHASES, load_plugin_contexts
+            from ..plugin_capabilities.hooks import load_plugin_hooks
+            from ..plugin_capabilities.state import PluginStateStore
 
             plugin_roots = [Path(path) for path in plugin_dirs]
             self._plugins = discover_plugins(plugin_roots)
@@ -175,7 +175,7 @@ class BaseCliRuntime:
             self._plugin_contexts = {}
             self._plugin_state_store = None
             try:
-                from ..plugin_runtime.commands import sync_plugin_commands
+                from ..plugin_capabilities.commands import sync_plugin_commands
 
                 sync_plugin_commands([])
             except Exception:
@@ -263,7 +263,7 @@ class BaseCliRuntime:
         return self._hud_snapshot_store.snapshot()
 
     def get_hud_lines(self, context: dict[str, Any]) -> list[Any]:
-        from ..plugin_runtime.hud import collect_hud_lines
+        from ..plugin_capabilities.hud import collect_hud_lines
 
         return collect_hud_lines(
             self._plugins,

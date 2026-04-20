@@ -9,7 +9,7 @@ from aworld_cli.console import AWorldCLI
 from aworld_cli.core.plugin_manager import get_builtin_plugin_roots
 from aworld_cli.executors.stats import format_context_bar
 from aworld.plugins.discovery import discover_plugins
-from aworld_cli.plugin_runtime.hud import collect_hud_lines
+from aworld_cli.plugin_capabilities.hud import collect_hud_lines
 
 
 def _get_builtin_aworld_hud_root() -> Path:
@@ -490,6 +490,28 @@ def test_collect_hud_lines_passes_plugin_state_to_provider(tmp_path):
     )
 
     assert lines[0].segments == ("test-plugin:workspace",)
+
+
+def test_plugin_facing_hud_helpers_match_host_conventions():
+    from aworld_cli.plugin_capabilities.hud_helpers import (
+        format_hud_context_bar,
+        format_hud_elapsed,
+        format_hud_tokens,
+    )
+
+    assert format_hud_tokens(6500) == "6.5k"
+    assert format_hud_elapsed(12.5) == "12.5s"
+    assert "Ctx" in format_hud_context_bar(60000, 200000, bar_width=10)
+
+
+def test_builtin_aworld_hud_plugin_uses_explicit_helper_boundary():
+    plugin_root = _get_builtin_aworld_hud_root()
+    status_module = plugin_root / "hud" / "status.py"
+
+    source = status_module.read_text(encoding="utf-8")
+
+    assert "from aworld_cli.plugin_capabilities.hud_helpers import" in source
+    assert "aworld_cli.executors.stats" not in source
 
 
 def test_status_bar_renders_multiline_html(monkeypatch):

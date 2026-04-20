@@ -1,1 +1,1 @@
-from aworld_cli.plugin_runtime.hud import *  # noqa: F403
+from aworld_cli.plugin_capabilities.hud import *  # noqa: F403

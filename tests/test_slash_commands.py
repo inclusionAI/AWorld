@@ -17,7 +17,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "aworld-cli" / "src"))
 
 from aworld_cli.core.command_system import CommandRegistry, CommandContext
 from aworld.plugins.discovery import discover_plugins
-from aworld_cli.plugin_runtime.commands import register_plugin_commands
+from aworld_cli.plugin_capabilities.commands import register_plugin_commands
 from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd, plugins_cmd
 from aworld_cli.console import AWorldCLI
 

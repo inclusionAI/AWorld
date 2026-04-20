@@ -7,8 +7,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld.plugins.discovery import discover_plugins
-from aworld_cli.plugin_runtime.hooks import PluginHookResult, load_plugin_hooks
-from aworld_cli.plugin_runtime.state import PluginStateStore
+from aworld_cli.plugin_capabilities.hooks import PluginHookResult, load_plugin_hooks
+from aworld_cli.plugin_capabilities.state import PluginStateStore
 from aworld_cli.runtime.base import BaseCliRuntime
 
 

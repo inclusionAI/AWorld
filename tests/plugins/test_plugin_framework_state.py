@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from aworld_cli.plugin_runtime.state import PluginStateStore
+from aworld_cli.plugin_capabilities.state import PluginStateStore
 
 
 def test_session_state_is_shared_within_same_plugin_scope(tmp_path):

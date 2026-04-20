@@ -1,1 +1,1 @@
-from aworld_cli.plugin_runtime.hooks import *  # noqa: F403
+from aworld_cli.plugin_capabilities.hooks import *  # noqa: F403

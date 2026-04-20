@@ -3,7 +3,8 @@ from pathlib import Path
 from aworld_cli.core.command_system import CommandRegistry
 from aworld_cli.core.plugin_manager import PluginManager, get_builtin_plugin_roots
 from aworld.plugins.discovery import discover_plugins
-from aworld_cli.plugin_runtime.commands import register_plugin_commands
+from aworld_cli.console import AWorldCLI
+from aworld_cli.plugin_capabilities.commands import register_plugin_commands
 from aworld_cli.runtime.base import BaseCliRuntime
 from aworld_cli.runtime.cli import CliRuntime
 
@@ -181,3 +182,56 @@ def test_runtime_tracks_active_plugins_by_capability(tmp_path):
     assert runtime.active_plugin_capabilities() == ("hud", "runners", "tools")
     assert [plugin.manifest.plugin_id for plugin in runtime.get_active_plugins("tools")] == ["runtime-capability"]
     assert [entry.entrypoint.entrypoint_id for entry in runtime.get_active_entrypoints("runners")] == ["runner"]
+
+
+async def test_runtime_renders_third_party_hud_plugin_from_hook_driven_state(tmp_path):
+    plugin_root = Path("tests/fixtures/plugins/hud_stateful_like").resolve()
+
+    class DummyRuntime(BaseCliRuntime):
+        def __init__(self, plugin_dirs):
+            super().__init__(agent_name="Aworld")
+            self.plugin_dirs = plugin_dirs
+
+        async def _load_agents(self):
+            return []
+
+        async def _create_executor(self, agent):
+            return None
+
+        def _get_source_type(self):
+            return "TEST"
+
+        def _get_source_location(self):
+            return "test://hud-stateful-like"
+
+    runtime = DummyRuntime([plugin_root])
+    runtime._initialize_plugin_framework()
+    runtime._plugin_state_store = type(runtime._plugin_state_store)(tmp_path / "plugin-state")
+
+    executor_instance = type(
+        "Executor",
+        (),
+        {
+            "session_id": "session-1",
+            "context": type("Context", (), {"workspace_path": str(tmp_path), "task_id": "task-1"})(),
+        },
+    )()
+
+    await runtime.run_plugin_hooks(
+        "task_started",
+        event={"task_id": "task-1", "session_id": "session-1"},
+        executor_instance=executor_instance,
+    )
+    runtime.update_hud_snapshot(
+        session={"session_id": "session-1", "elapsed_seconds": 12.5},
+        task={"current_task_id": "task-1", "status": "running"},
+        usage={"input_tokens": 1200, "output_tokens": 300},
+    )
+
+    cli = AWorldCLI()
+    text = cli._build_status_bar_text(runtime, agent_name="Aworld", mode="Chat", max_width=160)
+
+    assert "PluginStatus: started" in text
+    assert "Observed Task: task-1" in text
+    assert "Usage: in 1.2k out 300" in text
+    assert "Elapsed: 12.5s" in text
