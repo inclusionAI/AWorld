@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from inspect import isawaitable
 import json
 import mimetypes
@@ -74,6 +75,8 @@ class DingTalkConnector:
         self._cron_binding_store = DingdingCronBindingStore(self._binding_store_path())
         self._cron_notifier = DingdingCronNotifier(self, self._cron_binding_store)
         self._cron_notification_sink_registered = False
+        self._cron_scheduler = None
+        self._cron_scheduler_started_by_connector = False
 
     async def start(self) -> None:
         credential = self._stream_module.Credential(
@@ -98,6 +101,7 @@ class DingTalkConnector:
             self._stream_module.ChatbotMessage.TOPIC,
             _MessageHandler(),
         )
+        await self._prepare_cron_runtime()
 
         start_forever = getattr(self._client, "start_forever", None)
         if callable(start_forever):
@@ -121,6 +125,14 @@ class DingTalkConnector:
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
         self._background_tasks.clear()
+        if self._cron_scheduler_started_by_connector and self._cron_scheduler is not None:
+            stop = getattr(self._cron_scheduler, "stop", None)
+            if callable(stop):
+                stop_result = stop()
+                if isawaitable(stop_result):
+                    await stop_result
+        self._cron_scheduler_started_by_connector = False
+        self._cron_scheduler = None
         if self._client is not None:
             for method_name in ("stop", "close", "shutdown"):
                 stop_method = getattr(self._client, method_name, None)
@@ -280,6 +292,48 @@ class DingTalkConnector:
                 return base_dir.parent / "cron-bindings.json"
         return Path(".aworld/gateway/dingding/cron-bindings.json").resolve()
 
+    async def _prepare_cron_runtime(self) -> None:
+        try:
+            from aworld.core.scheduler import get_scheduler
+            from aworld_cli.core.agent_registry import LocalAgentRegistry
+        except Exception as exc:
+            logger.warning(f"Failed to import cron runtime dependencies for DingTalk: {exc}")
+            return
+
+        scheduler = get_scheduler()
+        self._cron_scheduler = scheduler
+
+        executor = getattr(scheduler, "executor", None)
+        if executor is not None:
+            if hasattr(executor, "set_swarm_resolver"):
+                async def resolve_swarm(agent_name: str):
+                    agent = LocalAgentRegistry.get_agent(agent_name)
+                    if agent is None:
+                        return None
+                    return await AworldDingdingBridge._get_swarm_with_context_fallback(agent)
+
+                executor.set_swarm_resolver(resolve_swarm)
+
+            if hasattr(executor, "set_default_agent_name"):
+                try:
+                    executor.set_default_agent_name(self._resolve_agent_id())
+                except ValueError:
+                    pass
+
+        self._ensure_cron_notification_sink_registered(scheduler=scheduler)
+
+        if getattr(scheduler, "running", False):
+            return
+
+        start = getattr(scheduler, "start", None)
+        if not callable(start):
+            return
+
+        start_result = start()
+        if isawaitable(start_result):
+            await start_result
+        self._cron_scheduler_started_by_connector = True
+
     def _should_skip_duplicate_callback(self, data: dict) -> bool:
         callback_key = self._build_callback_key(data)
         if not callback_key:
@@ -313,7 +367,21 @@ class DingTalkConnector:
             value = str(data.get(field_name) or "").strip()
             if value:
                 return f"id:{value}"
-        return None
+
+        try:
+            payload_fingerprint = json.dumps(
+                data,
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                default=str,
+            )
+        except (TypeError, ValueError):
+            return None
+
+        if not payload_fingerprint:
+            return None
+        return f"payload:{hashlib.sha256(payload_fingerprint.encode('utf-8')).hexdigest()}"
 
     def _finalize_background_task(self, task: asyncio.Task[None]) -> None:
         self._background_tasks.discard(task)
@@ -323,17 +391,17 @@ class DingTalkConnector:
         if exc is not None:
             logger.warning(f"DingTalk callback task failed: {exc}")
 
-    def _ensure_cron_notification_sink_registered(self) -> None:
+    def _ensure_cron_notification_sink_registered(self, scheduler=None) -> None:
         if self._cron_notification_sink_registered:
             return
 
-        try:
-            from aworld.core.scheduler import get_scheduler
-        except Exception as exc:
-            logger.warning(f"Failed to import cron scheduler for DingTalk notification fanout: {exc}")
-            return
-
-        scheduler = get_scheduler()
+        if scheduler is None:
+            try:
+                from aworld.core.scheduler import get_scheduler
+            except Exception as exc:
+                logger.warning(f"Failed to import cron scheduler for DingTalk notification fanout: {exc}")
+                return
+            scheduler = get_scheduler()
         previous_sink = getattr(scheduler, "notification_sink", None)
 
         async def _fanout(notification) -> None:
