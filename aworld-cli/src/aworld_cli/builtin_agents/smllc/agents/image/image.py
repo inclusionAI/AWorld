@@ -97,10 +97,10 @@ Expected tool result fields:
 - `image_format`, `image_size_bytes`, `usage`
 
 Current behavior:
-- Text-to-image uses JSON `POST /v1/images/generations`
-- Image edits use multipart/form-data `POST /v1/images/edits`
+- Default backend (`llm_provider=image`, env `TEXT_TO_IMAGE_PROVIDER=image`): text-to-image uses JSON `POST /v1/images/generations`; single-image edits use multipart `POST /v1/images/edits`.
+- Kling backend (`llm_provider=kling_image`, env `TEXT_TO_IMAGE_PROVIDER=kling_image`): async task API — `POST /v1/images/generations` (text or one reference image) or `POST /v1/images/multi-image2image` (two or more reference images), then poll until images are ready.
 - The agent prefers `response_format=url` by default so upstream callers such as `Aworld` can receive the remote image link.
-- For edits, remote images use the `url` parameter; local images and `data:image/...` inputs use the `image` parameter with base64 content
+- For the default Qwen-style backend, edits use `url`/`image` as above; Kling accepts URLs or raw base64 for reference images.
 """
 )
 def build_image_swarm():

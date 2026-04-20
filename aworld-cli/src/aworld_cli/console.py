@@ -685,6 +685,72 @@ class AWorldCLI:
         if not diff_cfg:
             current_config['models'].pop('diffusion', None)
 
+        # Avatar (models.avatar -> AVATAR_* for avatar agent)
+        self.console.print("\n[bold]Avatar configuration[/bold] [dim](optional, for avatar agent)[/dim]")
+        self.console.print("  [dim]Leave empty to inherit from Diffusion/Media/default config above[/dim]\n")
+        if 'avatar' not in current_config['models']:
+            current_config['models']['avatar'] = {}
+        avatar_cfg = current_config['models']['avatar']
+
+        current_avatar_api_key = avatar_cfg.get('api_key', '')
+        if current_avatar_api_key:
+            masked = current_avatar_api_key[:8] + "..." if len(current_avatar_api_key) > 8 else "***"
+            self.console.print(f"  [dim]Current AVATAR_API_KEY: {masked}[/dim]")
+        avatar_api_key = Prompt.ask("  AVATAR_API_KEY", default=current_avatar_api_key, password=True)
+        if avatar_api_key:
+            avatar_cfg['api_key'] = avatar_api_key
+        else:
+            avatar_cfg.pop('api_key', None)
+
+        current_avatar_model = avatar_cfg.get('model', '')
+        self.console.print("  [dim]e.g. kling-avatar-v1 · Enter to inherit from Diffusion/default[/dim]")
+        avatar_model = Prompt.ask("  AVATAR_MODEL_NAME", default=current_avatar_model)
+        if avatar_model:
+            avatar_cfg['model'] = avatar_model
+        else:
+            avatar_cfg.pop('model', None)
+
+        current_avatar_base_url = avatar_cfg.get('base_url', '')
+        avatar_base_url = Prompt.ask("  AVATAR_BASE_URL", default=current_avatar_base_url)
+        if avatar_base_url:
+            avatar_cfg['base_url'] = avatar_base_url
+        else:
+            avatar_cfg.pop('base_url', None)
+
+        current_avatar_provider = avatar_cfg.get('provider', 'kling_avatar')
+        avatar_provider = Prompt.ask("  AVATAR_PROVIDER", default=current_avatar_provider)
+        if avatar_provider:
+            avatar_cfg['provider'] = avatar_provider
+        else:
+            avatar_cfg.pop('provider', None)
+
+        current_avatar_submit_ep = avatar_cfg.get('submit_endpoint', '')
+        avatar_submit_ep = Prompt.ask("  AVATAR_SUBMIT_ENDPOINT", default=current_avatar_submit_ep)
+        if avatar_submit_ep:
+            avatar_cfg['submit_endpoint'] = avatar_submit_ep
+        else:
+            avatar_cfg.pop('submit_endpoint', None)
+
+        current_avatar_status_ep = avatar_cfg.get('status_endpoint', '')
+        avatar_status_ep = Prompt.ask("  AVATAR_STATUS_ENDPOINT", default=current_avatar_status_ep)
+        if avatar_status_ep:
+            avatar_cfg['status_endpoint'] = avatar_status_ep
+        else:
+            avatar_cfg.pop('status_endpoint', None)
+
+        current_avatar_temp = avatar_cfg.get('temperature', 0.1)
+        avatar_temp = Prompt.ask("  AVATAR_TEMPERATURE", default=str(current_avatar_temp))
+        if avatar_temp:
+            try:
+                avatar_cfg['temperature'] = float(avatar_temp)
+            except ValueError:
+                avatar_cfg.pop('temperature', None)
+        else:
+            avatar_cfg.pop('temperature', None)
+
+        if not avatar_cfg:
+            current_config['models'].pop('avatar', None)
+
         # Audio (models.audio -> AUDIO_* for audio agent)
         self.console.print("\n[bold]Audio configuration[/bold] [dim](optional, for audio agent)[/dim]")
         self.console.print("  [dim]Leave empty to use Media LLM or default LLM config above[/dim]\n")

@@ -21,7 +21,10 @@ from aworld.models.openai_provider import OpenAIProvider, AzureOpenAIProvider
 from aworld.models.anthropic_provider import AnthropicProvider
 from aworld.models.ant_provider import AntProvider
 from aworld.models.together_video_provider import TogetherVideoProvider
-from aworld.models.ant_video_provider import AntVideoProvider, VideoProvider
+from aworld.models.ant_video_provider import AntVideoProvider
+from aworld.models.kling_provider import KlingProvider
+from aworld.models.kling_avatar_provider import KlingAvatarProvider
+from aworld.models.volcano_seedance_provider import VolcanoSeedanceProvider
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
 from aworld.core.model_output_parser import ModelOutputParser, BaseContentParser
@@ -43,6 +46,10 @@ ENDPOINT_PATTERNS = {
     "together_video": ["api.together.ai", "api.together.xyz"],
     "video": ["matrixcube.alipay.com", "matrixcube-pool.global.alipay.com"],
     "ant_video": ["matrixcube.alipay.com", "matrixcube-pool.global.alipay.com"],
+    # Kling official HTTP API (direct; distinct from MatrixCube gateway routing)
+    "kling_video": ["api-beijing.klingai.com"],
+    # Volcano Ark Seedance official API (direct)
+    "volcano_seedance": ["ark.cn-beijing.volces.com"],
 }
 
 # Provider class mapping (LLM providers)
@@ -54,7 +61,9 @@ PROVIDER_CLASSES = {
     "together_video": TogetherVideoProvider,
     "speech": None,  # Lazy loaded to avoid circular import
     "doubao_tts": None,  # Lazy loaded to avoid circular import
+    "volcano_openspeech_tts": None,  # Lazy loaded; direct ByteDance OpenSpeech HTTP TTS
     "image": None,  # Lazy loaded to avoid circular import
+    "kling_image": None,  # Lazy loaded to avoid circular import
 }
 
 # ---------------------------------------------------------------------------
@@ -71,22 +80,27 @@ PROVIDER_CLASSES = {
 # ---------------------------------------------------------------------------
 
 VIDEO_PROVIDER_CLASSES: Dict[str, type] = {
-    "video":          VideoProvider,
+    # MatrixCube: alias "video" matches endpoint detection; implementation is AntVideoProvider only
+    "video":          AntVideoProvider,
     "ant_video":      AntVideoProvider,
+    "kling_video":    KlingProvider,
+    "kling_avatar":   KlingAvatarProvider,
+    "volcano_seedance": VolcanoSeedanceProvider,
     "together_video": TogetherVideoProvider,
 }
 
 VIDEO_MODEL_REGISTRY: List[tuple] = [
-    # (pattern, provider_name)
-    # Ant gateway models (Kling, Doubao/Seedance, Veo via matrixcube)
-    (r".*kling-.*",        "video"),
-    (r".*doubao-video-.*", "video"),
-    (r".*seedance-.*",     "video"),
-    (r".*veo-.*",          "video"),
-    # Together.ai video models
+    # (pattern, provider_name) — first match wins.
+    # Direct Kling official API (kling_provider.KlingProvider), not MatrixCube
+    (r"^kling-",        "kling_video"),
+    # Ant gateway (Doubao/Seedance, Veo via matrixcube) — AntVideoProvider
+    (r"^doubao-video-", "ant_video"),
+    (r"^seedance-",     "ant_video"),
+    (r"^veo-",          "ant_video"),
+    # Together.ai video models (use regex; matched with re.match from model_name start)
     (r".*minimax/.*",           "together_video"),
     (r".*google/veo-.*",        "together_video"),
-    (r".*ByteDance/Seedance.*",  "together_video"),
+    (r".*ByteDance/Seedance.*", "together_video"),
     (r".*pixverse/.*",          "together_video"),
     (r".*kwaivgI/kling-.*",     "together_video"),
     (r".*Wan-AI/.*",            "together_video"),
@@ -365,9 +379,20 @@ class LLMModel:
                 from aworld.models.doubao_tts_provider import DoubaoTTSProvider
                 provider_class = DoubaoTTSProvider
                 PROVIDER_CLASSES[self.provider_name] = provider_class
+            elif provider_class is None and self.provider_name == "volcano_openspeech_tts":
+                from aworld.models.volcano_openspeech_tts_provider import (
+                    VolcanoOpenSpeechTTSProvider,
+                )
+
+                provider_class = VolcanoOpenSpeechTTSProvider
+                PROVIDER_CLASSES[self.provider_name] = provider_class
             elif provider_class is None and self.provider_name == "image":
                 from aworld.models.image_provider import ImageProvider
                 provider_class = ImageProvider
+                PROVIDER_CLASSES[self.provider_name] = provider_class
+            elif provider_class is None and self.provider_name == "kling_image":
+                from aworld.models.kling_image_provider import KlingImageProvider
+                provider_class = KlingImageProvider
                 PROVIDER_CLASSES[self.provider_name] = provider_class
             self.provider = provider_class(**kwargs)
         else:
@@ -848,9 +873,8 @@ def _match_video_registry(model_name: str) -> Optional[str]:
     """Return the video provider name for *model_name* using VIDEO_MODEL_REGISTRY.
 
     Each entry in VIDEO_MODEL_REGISTRY is a ``(pattern, provider_name)`` tuple.
-    Patterns starting with ``^`` are treated as regular expressions; all others
-    are used as plain prefix strings.  Entries are evaluated in order and the
-    first match wins.
+    Patterns are matched with :func:`re.match` against *model_name* (regex).
+    Entries are evaluated in order and the first match wins.
 
     Args:
         model_name: The model identifier to look up.
