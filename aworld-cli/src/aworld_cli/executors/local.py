@@ -9,6 +9,7 @@ import shutil
 import traceback
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
 from typing import Optional, List, Dict, Any, Union
 
 from dotenv import load_dotenv
@@ -60,6 +61,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
     All other capabilities (session management, output rendering, logging) are inherited from BaseAgentExecutor.
     """
+    TASK_PROGRESS_HOOK_MIN_INTERVAL_SECONDS = 2.0
     
     def __init__(
         self, 
@@ -98,6 +100,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             session_id=self.session_id,
             console=self.console
         )
+        self._last_task_progress_hook_at: float | None = None
 
     def _load_hooks(self) -> Dict[str, List[ExecutorHook]]:
         """
@@ -202,6 +205,9 @@ class LocalAgentExecutor(BaseAgentExecutor):
         if current_tool:
             activity_payload["recent_tools"] = [current_tool]
         try:
+            # Transitional path: the generic runtime HUD snapshot stays live while
+            # hook-driven plugin_state remains the canonical source for the built-in
+            # HUD plugin's task/session/usage rendering.
             runtime.update_hud_snapshot(
                 session={
                     "session_id": self.session_id,
@@ -214,6 +220,20 @@ class LocalAgentExecutor(BaseAgentExecutor):
             )
         except Exception as exc:
             logger.warning(f"HUD publish stream update failed: {exc}")
+
+    async def _emit_task_progress_hook(self, event: dict[str, Any]) -> list[tuple[Any, Any]]:
+        min_interval = getattr(
+            self,
+            "_task_progress_hook_min_interval_seconds",
+            self.TASK_PROGRESS_HOOK_MIN_INTERVAL_SECONDS,
+        )
+        now = monotonic()
+        last_fired_at = getattr(self, "_last_task_progress_hook_at", None)
+        if last_fired_at is not None and now - last_fired_at < min_interval:
+            return []
+
+        self._last_task_progress_hook_at = now
+        return await self._run_plugin_task_hook("task_progress", event)
 
     def _publish_hud_task_finished(self, task_id: str, task_status: str = "idle") -> None:
         runtime = getattr(self, "_base_runtime", None)
@@ -835,8 +855,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                     current_tool=current_tool_name,
                                                     elapsed_seconds=elapsed_sec,
                                                 )
-                                                await self._run_plugin_task_hook(
-                                                    "task_progress",
+                                                await self._emit_task_progress_hook(
                                                     {
                                                         "task_id": task.id,
                                                         "session_id": self.session_id,
@@ -1049,8 +1068,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             current_tool=current_tool_name,
                                             elapsed_seconds=elapsed_sec,
                                         )
-                                        await self._run_plugin_task_hook(
-                                            "task_progress",
+                                        await self._emit_task_progress_hook(
                                             {
                                                 "task_id": task.id,
                                                 "session_id": self.session_id,

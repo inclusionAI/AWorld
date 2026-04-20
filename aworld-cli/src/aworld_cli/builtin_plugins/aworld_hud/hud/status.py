@@ -11,6 +11,8 @@ def _merge_bucket(context, plugin_state, bucket):
         merged.update(context_bucket)
     state_bucket = plugin_state.get(bucket, {})
     if isinstance(state_bucket, dict):
+        # Hook-driven plugin_state is allowed to override host snapshot fields so
+        # third-party HUD providers can own their dynamic task/session/usage view.
         merged.update(state_bucket)
     return merged
 
