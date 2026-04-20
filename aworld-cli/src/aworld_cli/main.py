@@ -7,6 +7,7 @@ import asyncio
 import logging
 import os
 import sys
+from pathlib import Path
 from typing import Optional
 
 from aworld.memory.main import _default_file_memory_store
@@ -492,6 +493,11 @@ Batch Jobs:
         reload_parser = plugin_subparsers.add_parser('reload', help='Reload plugin metadata from disk')
         reload_parser.add_argument('plugin_name', help='Name of the plugin to reload')
 
+        # validate subcommand
+        validate_parser = plugin_subparsers.add_parser('validate', help='Validate a plugin manifest or plugin root')
+        validate_parser.add_argument('plugin_name', nargs='?', help='Installed plugin name to validate')
+        validate_parser.add_argument('--path', type=str, help='Explicit plugin root path to validate')
+
         # list subcommand
         list_parser = plugin_subparsers.add_parser('list', help='List installed plugins')
 
@@ -508,6 +514,7 @@ Batch Jobs:
             PluginManager,
             list_available_plugins,
             render_plugins_table,
+            validate_plugin_path,
         )
 
         manager = PluginManager()
@@ -564,6 +571,31 @@ Batch Jobs:
                 print(f"📍 Location: {plugin_state['path']}")
             except KeyError:
                 print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
+                return
+
+        elif plugin_action == "validate":
+            try:
+                if plugin_args.path:
+                    plugin_state = validate_plugin_path(Path(plugin_args.path))
+                    label = plugin_state["plugin_id"]
+                elif plugin_args.plugin_name:
+                    plugin_state = manager.validate(plugin_args.plugin_name)
+                    label = plugin_args.plugin_name
+                else:
+                    print("❌ Error: specify either <plugin_name> or --path")
+                    validate_parser.print_help()
+                    return
+
+                print(f"✅ Plugin '{label}' is valid")
+                print(f"📍 Location: {plugin_state['path']}")
+                print(f"🆔 Plugin ID: {plugin_state['plugin_id']}")
+                print(f"🧩 Framework: {plugin_state['framework_source']}")
+                print(f"⚙️ Capabilities: {', '.join(plugin_state['capabilities']) or '-'}")
+            except KeyError:
+                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
+                return
+            except Exception as e:
+                print(f"❌ Plugin validation failed: {e}")
                 return
 
         elif plugin_action == "list":

@@ -1708,8 +1708,16 @@ class AWorldCLI:
         finally:
             self._is_agent_executing = False
 
-    async def _apply_stop_hooks(self, executor_instance: Any = None) -> tuple[bool, Optional[str]]:
+    async def _apply_stop_hooks(
+        self,
+        executor_instance: Any = None,
+        *,
+        force: bool = False,
+    ) -> tuple[bool, Optional[str]]:
         from .core.context import get_default_history_path
+
+        if force:
+            return True, None
 
         context = None
         if executor_instance and hasattr(executor_instance, 'context'):
@@ -1934,7 +1942,7 @@ class AWorldCLI:
         # Build help text with both built-in and registered commands
         help_lines = [
             f"Starting chat session with [bold]{agent_name}[/bold].{session_id_info}{config_info}{skill_info}\n",
-            "Type 'exit' to quit.",
+            "Type 'exit' to quit. Use 'exit!' to force quit without stop hooks.",
             "Type '/switch [agent_name]' to switch agent.",
             "Type '/new' to create a new session.",
             "Type '/restore' or '/latest' to restore to the latest session.",
@@ -2091,10 +2099,13 @@ class AWorldCLI:
                                 continue
 
                 # Handle explicit exit commands
-                if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
+                normalized_input = user_input.lower()
+                force_exit = normalized_input in ("exit!", "quit!", "/exit!", "/quit!")
+                if normalized_input in ("exit", "quit", "/exit", "/quit") or force_exit:
                     try:
                         should_exit, follow_up_prompt = await self._apply_stop_hooks(
-                            executor_instance=executor_instance
+                            executor_instance=executor_instance,
+                            force=force_exit,
                         )
                     except Exception as e:
                         logger.warning(f"STOP hook execution failed: {e}")

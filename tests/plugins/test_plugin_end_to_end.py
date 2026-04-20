@@ -184,6 +184,94 @@ def test_runtime_tracks_active_plugins_by_capability(tmp_path):
     assert [entry.entrypoint.entrypoint_id for entry in runtime.get_active_entrypoints("runners")] == ["runner"]
 
 
+def test_runtime_initialization_skips_invalid_manifest_plugin_and_keeps_valid_plugin(tmp_path):
+    invalid_root = tmp_path / "broken"
+    (invalid_root / ".aworld-plugin").mkdir(parents=True)
+    (invalid_root / ".aworld-plugin" / "plugin.json").write_text(
+        '{"name": "broken", "version": "1.0.0"}',
+        encoding="utf-8",
+    )
+
+    class DummyRuntime(BaseCliRuntime):
+        def __init__(self, plugin_dirs):
+            super().__init__()
+            self.plugin_dirs = plugin_dirs
+
+        async def _load_agents(self):
+            return []
+
+        async def _create_executor(self, agent):
+            return None
+
+        def _get_source_type(self):
+            return "TEST"
+
+        def _get_source_location(self):
+            return "test://plugins"
+
+    runtime = DummyRuntime(
+        [
+            invalid_root,
+            Path("tests/fixtures/plugins/context_like").resolve(),
+        ]
+    )
+    runtime._initialize_plugin_framework()
+
+    assert runtime._plugin_registry is not None
+    assert [plugin.manifest.plugin_id for plugin in runtime._plugins] == ["context-like"]
+    assert runtime.active_plugin_capabilities() == ("contexts",)
+
+
+def test_runtime_initialization_skips_duplicate_plugin_ids(tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+
+    for root, name in ((first, "first"), (second, "second")):
+        (root / ".aworld-plugin").mkdir(parents=True)
+        (root / ".aworld-plugin" / "plugin.json").write_text(
+            (
+                "{"
+                "\"id\": \"duplicate-plugin\", "
+                f"\"name\": \"{name}\", "
+                "\"version\": \"1.0.0\", "
+                "\"entrypoints\": {"
+                "\"commands\": ["
+                "{"
+                "\"id\": \"hello\", "
+                "\"target\": \"commands/hello.md\""
+                "}"
+                "]"
+                "}"
+                "}"
+            ),
+            encoding="utf-8",
+        )
+
+    class DummyRuntime(BaseCliRuntime):
+        def __init__(self, plugin_dirs):
+            super().__init__()
+            self.plugin_dirs = plugin_dirs
+
+        async def _load_agents(self):
+            return []
+
+        async def _create_executor(self, agent):
+            return None
+
+        def _get_source_type(self):
+            return "TEST"
+
+        def _get_source_location(self):
+            return "test://plugins"
+
+    runtime = DummyRuntime([first, second])
+    runtime._initialize_plugin_framework()
+
+    assert runtime._plugin_registry is not None
+    assert [plugin.manifest.name for plugin in runtime._plugins] == ["first"]
+    assert runtime.active_plugin_capabilities() == ("commands",)
+
+
 async def test_runtime_renders_third_party_hud_plugin_from_hook_driven_state(tmp_path):
     plugin_root = Path("tests/fixtures/plugins/hud_stateful_like").resolve()
 

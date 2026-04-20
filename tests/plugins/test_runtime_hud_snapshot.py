@@ -1,4 +1,5 @@
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -225,6 +226,36 @@ def test_stream_update_preserves_recent_tools_when_no_current_tool():
         git_branch="main",
     )
     assert context["activity"]["recent_tools"] == ["bash"]
+
+
+def test_snapshot_is_safe_during_concurrent_updates():
+    started = threading.Event()
+    result: dict[str, object] = {}
+
+    class SlowValue:
+        def __deepcopy__(self, memo):
+            started.set()
+            threading.Event().wait(0.05)
+            return "copied"
+
+    runtime = DummyRuntime()
+    runtime._hud_snapshot_store._snapshot = {"session": {"slow": SlowValue()}}
+
+    def reader():
+        try:
+            result["value"] = runtime._hud_snapshot_store.snapshot()
+        except Exception as exc:  # pragma: no cover - exercised in red phase
+            result["error"] = exc
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+
+    assert started.wait(1), "snapshot deepcopy did not start in time"
+    runtime._hud_snapshot_store.update(task={"status": "running"})
+    thread.join()
+
+    assert "error" not in result
+    assert result["value"] == {"session": {"slow": "copied"}}
 
 
 def test_task_finish_sets_task_status():

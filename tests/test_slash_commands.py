@@ -577,6 +577,7 @@ class TestSlashCommandCompletion:
         assert "/plugins enable" in words
         assert "/plugins disable" in words
         assert "/plugins reload" in words
+        assert "/plugins validate" in words
         assert meta["/plugins"] == "Manage CLI plugins"
 
     def test_console_completer_suggests_job_ids_for_cron_show(self):
@@ -761,6 +762,31 @@ class TestPluginsCommand:
 
         assert "disabled" in result
         assert runtime.refreshed is True
+
+    @pytest.mark.asyncio
+    async def test_plugins_command_validates_plugin(self, monkeypatch):
+        cmd = CommandRegistry.get("plugins")
+
+        class FakePluginManager:
+            def __init__(self):
+                self.plugin_dir = Path("/tmp/plugins")
+
+            def validate(self, plugin_name):
+                assert plugin_name == "aworld-hud"
+                return {
+                    "valid": True,
+                    "plugin_id": "aworld-hud",
+                    "framework_source": "manifest",
+                    "capabilities": ["hud"],
+                    "path": "/repo/aworld-cli/src/aworld_cli/builtin_plugins/aworld_hud",
+                }
+
+        monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args="validate aworld-hud"))
+
+        assert "valid" in result.lower()
+        assert "aworld-hud" in result
 
 
 class TestCommandContext:

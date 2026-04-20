@@ -1,3 +1,4 @@
+import asyncio
 import inspect
 from dataclasses import dataclass, field
 from importlib.util import module_from_spec, spec_from_file_location
@@ -6,6 +7,8 @@ from types import MappingProxyType
 from typing import Any, Iterable, Mapping
 
 from aworld.plugins.resources import PluginResourceResolver
+
+DEFAULT_PLUGIN_HOOK_TIMEOUT_SECONDS = 5.0
 
 
 def _normalize_hook_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
@@ -139,7 +142,16 @@ class PluginHookAdapter:
     def hook_point(self) -> str:
         return str(self._entrypoint.metadata["hook_point"]).strip().lower()
 
-    async def run(self, event: Mapping[str, Any], state: Mapping[str, Any]) -> PluginHookResult:
+    @property
+    def timeout_seconds(self) -> float:
+        raw_value = self._entrypoint.metadata.get("timeout_seconds", DEFAULT_PLUGIN_HOOK_TIMEOUT_SECONDS)
+        try:
+            timeout = float(raw_value)
+        except (TypeError, ValueError):
+            return DEFAULT_PLUGIN_HOOK_TIMEOUT_SECONDS
+        return timeout if timeout > 0 else DEFAULT_PLUGIN_HOOK_TIMEOUT_SECONDS
+
+    def _load_handler(self) -> Any:
         if not self._entrypoint.target:
             raise ValueError(f"plugin hook '{self.entrypoint_id}' is missing a target")
 
@@ -159,11 +171,32 @@ class PluginHookAdapter:
             raise AttributeError(
                 f"plugin hook '{self.entrypoint_id}' must define handle_event(event, state)"
             )
+        return handler
 
-        payload = handler(event=dict(event), state=dict(state))
+    async def _invoke_handler(self, event: Mapping[str, Any], state: Mapping[str, Any]) -> Any:
+        handler = self._load_handler()
+        if inspect.iscoroutinefunction(handler):
+            payload = handler(event=dict(event), state=dict(state))
+            if inspect.isawaitable(payload):
+                return await payload
+            return payload
+
+        payload = await asyncio.to_thread(handler, event=dict(event), state=dict(state))
         if inspect.isawaitable(payload):
-            payload = await payload
+            return await payload
+        return payload
 
+    async def run(self, event: Mapping[str, Any], state: Mapping[str, Any]) -> PluginHookResult:
+        try:
+            payload = await asyncio.wait_for(
+                self._invoke_handler(event, state),
+                timeout=self.timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            raise TimeoutError(
+                f"plugin hook '{self.plugin_id}:{self.entrypoint_id}' timed out "
+                f"after {self.timeout_seconds:.2f}s"
+            ) from exc
         return PluginHookResult.from_payload(payload)
 
 

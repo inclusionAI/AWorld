@@ -2,6 +2,7 @@
 Base runtime for CLI protocols.
 Provides common functionality for both local and remote runtimes.
 """
+from collections import defaultdict
 from pathlib import Path
 from typing import List, Optional, Any
 from aworld.logs.util import logger
@@ -159,10 +160,56 @@ class BaseCliRuntime:
             from ..plugin_capabilities.state import PluginStateStore
 
             plugin_roots = [Path(path) for path in plugin_dirs]
-            self._plugins = discover_plugins(plugin_roots)
-            self._plugin_registry = PluginCapabilityRegistry(self._plugins)
-            self._plugin_hooks = load_plugin_hooks(self._plugins)
-            self._plugin_contexts = load_plugin_contexts(self._plugins)
+            registry = PluginCapabilityRegistry()
+            loaded_plugins = []
+            loaded_hooks = defaultdict(list)
+            loaded_contexts = {phase: [] for phase in CONTEXT_PHASES}
+
+            for plugin_root in plugin_roots:
+                try:
+                    discovered = discover_plugins([plugin_root])
+                except Exception as exc:
+                    logger.warning(f"Skipping plugin root '{plugin_root}': {exc}")
+                    continue
+
+                for plugin in discovered:
+                    try:
+                        plugin_hooks = load_plugin_hooks([plugin])
+                        plugin_contexts = load_plugin_contexts([plugin])
+                        registry.register(plugin)
+                    except Exception as exc:
+                        logger.warning(
+                            f"Skipping plugin '{plugin_root}' "
+                            f"({getattr(plugin.manifest, 'plugin_id', plugin_root.name)}): {exc}"
+                        )
+                        continue
+
+                    loaded_plugins.append(plugin)
+                    for hook_point, hooks in plugin_hooks.items():
+                        loaded_hooks[hook_point].extend(hooks)
+                    for phase in CONTEXT_PHASES:
+                        loaded_contexts[phase].extend(plugin_contexts.get(phase, ()))
+
+            self._plugins = loaded_plugins
+            self._plugin_registry = registry
+            self._plugin_hooks = {
+                hook_point: tuple(
+                    sorted(
+                        hooks,
+                        key=lambda hook: (hook.priority, hook.plugin_id, hook.entrypoint_id),
+                    )
+                )
+                for hook_point, hooks in loaded_hooks.items()
+            }
+            self._plugin_contexts = {
+                phase: tuple(
+                    sorted(
+                        loaded_contexts.get(phase, ()),
+                        key=lambda item: (item.plugin_id, item.entrypoint_id),
+                    )
+                )
+                for phase in CONTEXT_PHASES
+            }
             for phase in CONTEXT_PHASES:
                 self._plugin_contexts.setdefault(phase, ())
             self._plugin_state_store = PluginStateStore(Path.cwd() / ".aworld" / "plugin_state")
