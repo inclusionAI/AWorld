@@ -32,6 +32,7 @@ from . import history
 from . import cron_cmd
 from . import dispatch
 from . import tasks
+from . import plugins_cmd
 
 __all__ = [
     "help_cmd",
@@ -42,4 +43,5 @@ __all__ = [
     "cron_cmd",
     "dispatch",
     "tasks",
+    "plugins_cmd",
 ]

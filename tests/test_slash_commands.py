@@ -7,14 +7,18 @@ import asyncio
 import os
 import sys
 import pytest
+from io import StringIO
 from pathlib import Path
 from prompt_toolkit.document import Document
+from rich.console import Console as RichConsole
 
 # Add aworld-cli to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "aworld-cli" / "src"))
 
 from aworld_cli.core.command_system import CommandRegistry, CommandContext
-from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd
+from aworld.plugins.discovery import discover_plugins
+from aworld_cli.plugin_capabilities.commands import register_plugin_commands
+from aworld_cli.commands import help_cmd, commit, review, diff, cron_cmd, plugins_cmd
 from aworld_cli.console import AWorldCLI
 
 
@@ -23,7 +27,7 @@ class TestCommandRegistration:
 
     def test_commands_registered(self):
         """Verify all commands are registered."""
-        expected_commands = ['help', 'commit', 'review', 'diff', 'cron']
+        expected_commands = ['help', 'commit', 'review', 'diff', 'cron', 'plugins']
         for cmd_name in expected_commands:
             cmd = CommandRegistry.get(cmd_name)
             assert cmd is not None, f"Command /{cmd_name} not registered"
@@ -40,8 +44,9 @@ class TestCommandRegistration:
             cmd = CommandRegistry.get(cmd_name)
             assert cmd.command_type == 'prompt', f"/{cmd_name} should be prompt command"
 
-        cron_cmd = CommandRegistry.get('cron')
-        assert cron_cmd.command_type == 'tool'
+        for cmd_name in ['cron', 'plugins']:
+            tool_cmd = CommandRegistry.get(cmd_name)
+            assert tool_cmd.command_type == 'tool'
 
     def test_list_commands(self):
         """Test listing all registered commands."""
@@ -53,6 +58,7 @@ class TestCommandRegistration:
         assert 'review' in command_names
         assert 'diff' in command_names
         assert 'cron' in command_names
+        assert 'plugins' in command_names
 
 
 class TestHelpCommand:
@@ -72,6 +78,7 @@ class TestHelpCommand:
         assert '/commit' in result
         assert '/review' in result
         assert '/diff' in result
+        assert '/plugins' in result
 
     @pytest.mark.asyncio
     async def test_help_command_with_args(self):
@@ -294,6 +301,98 @@ class TestCronCommand:
         assert "BTC 当前价格 68000 USDT" in result
 
     @pytest.mark.asyncio
+    async def test_cron_show_follows_live_logs_for_running_job(self, monkeypatch):
+        """Running jobs should switch `/cron show` into live follow mode."""
+        from aworld_cli.runtime.cron_notifications import CronNotificationCenter
+
+        cmd = CommandRegistry.get('cron')
+        call_count = 0
+
+        async def fake_cron_tool(**kwargs):
+            nonlocal call_count
+            call_count += 1
+            if call_count <= 2:
+                return {
+                    "success": True,
+                    "job": {
+                        "id": "job-live",
+                        "name": "爬取 X",
+                        "schedule": "at 2026-04-15T17:37:22+08:00",
+                        "enabled": True,
+                        "running": True,
+                        "next_run": None,
+                        "last_run": "2026-04-15T09:37:22.005051+00:00",
+                        "last_status": None,
+                        "last_error": None,
+                        "max_runs": None,
+                        "run_count": 0,
+                        "last_result_summary": None,
+                    },
+                }
+            return {
+                "success": True,
+                "job": {
+                    "id": "job-live",
+                    "name": "爬取 X",
+                    "schedule": "at 2026-04-15T17:37:22+08:00",
+                    "enabled": True,
+                    "running": False,
+                    "next_run": None,
+                    "last_run": "2026-04-15T09:37:22.005051+00:00",
+                    "last_status": "ok",
+                    "last_error": None,
+                    "max_runs": None,
+                    "run_count": 1,
+                    "last_result_summary": "已保存 10 条内容",
+                },
+            }
+
+        monkeypatch.setattr("aworld_cli.commands.cron_cmd.cron_tool", fake_cron_tool)
+
+        class FakeRuntime:
+            def __init__(self):
+                buffer = StringIO()
+                self._buffer = buffer
+                self.cli = type("FakeCli", (), {"console": RichConsole(file=buffer, force_terminal=False, color_system=None)})()
+                self._notification_center = CronNotificationCenter()
+
+            def _get_cron_progress_logs(self, job_id):
+                return self._notification_center.get_progress_logs(job_id)
+
+        runtime = FakeRuntime()
+        await runtime._notification_center.publish_progress({
+            "job_id": "job-live",
+            "job_name": "爬取 X",
+            "level": "info",
+            "message": "开始第 1/4 次执行",
+        })
+        await runtime._notification_center.publish_progress({
+            "job_id": "job-live",
+            "job_name": "爬取 X",
+            "level": "success",
+            "message": "最终回答：\n已保存 10 条内容\n输出文件：twitter_latest_10_posts.md",
+        })
+        await runtime._notification_center.publish_progress({
+            "job_id": "job-live",
+            "job_name": "爬取 X",
+            "level": "success",
+            "message": "任务执行完成：已保存 10 条内容",
+            "terminal": True,
+        })
+
+        context = CommandContext(cwd=os.getcwd(), user_args="show job-live", runtime=runtime)
+        result = await cmd.execute(context)
+
+        assert result == ""
+        output = runtime._buffer.getvalue()
+        assert "跟踪定时任务执行" in output
+        assert "开始第 1/4 次执行" in output
+        assert "最终回答：" in output
+        assert "输出文件：twitter_latest_10_posts.md" in output
+        assert "任务执行完成：已保存 10 条内容" in output
+        assert "定时任务执行结束" in output
+
+    @pytest.mark.asyncio
     async def test_cron_disable_all_executes_tool_directly(self, monkeypatch):
         """Test /cron disable all calls cron_tool(disable, job_id=all)."""
         cmd = CommandRegistry.get('cron')
@@ -379,6 +478,36 @@ class TestCronCommand:
         assert runtime._notification_center.get_unread_count() == 0
 
     @pytest.mark.asyncio
+    async def test_cron_inbox_formats_multiline_result_detail(self):
+        """Multiline result detail should remain readable in inbox output."""
+        from aworld_cli.runtime.cron_notifications import CronNotificationCenter
+
+        cmd = CommandRegistry.get('cron')
+
+        class FakeRuntime:
+            def __init__(self):
+                self._notification_center = CronNotificationCenter()
+
+            async def _drain_notifications(self):
+                return await self._notification_center.drain()
+
+        runtime = FakeRuntime()
+        await runtime._notification_center.publish({
+            "job_id": "job-1",
+            "job_name": "twitter_scraper_200_posts",
+            "status": "ok",
+            "summary": 'Cron task "twitter_scraper_200_posts" completed',
+            "detail": "最终回答：\n已保存 200 条内容\n输出文件：twitter_for_you_posts_200.md",
+        })
+
+        context = CommandContext(cwd=os.getcwd(), user_args='inbox', runtime=runtime)
+        result = await cmd.execute(context)
+
+        assert "content: 最终回答：" in result
+        assert "已保存 200 条内容" in result
+        assert "输出文件：twitter_for_you_posts_200.md" in result
+
+    @pytest.mark.asyncio
     async def test_cron_inbox_reads_only_notifications_for_requested_job(self):
         """Test /cron inbox <job_id> drains only matching unread notifications."""
         from aworld_cli.runtime.cron_notifications import CronNotificationCenter
@@ -438,6 +567,19 @@ class TestSlashCommandCompletion:
         assert meta["/cron show"] == "查看单个任务详情"
         assert meta["/cron inbox"] == "查看并清空未读提醒通知"
 
+    def test_console_completion_entries_include_plugins_command(self):
+        cli = AWorldCLI()
+
+        words, meta = cli._build_completion_entries(agent_names=[])
+
+        assert "/plugins" in words
+        assert "/plugins list" in words
+        assert "/plugins enable" in words
+        assert "/plugins disable" in words
+        assert "/plugins reload" in words
+        assert "/plugins validate" in words
+        assert meta["/plugins"] == "Manage CLI plugins"
+
     def test_console_completer_suggests_job_ids_for_cron_show(self):
         """Typing /cron show should suggest live cron job IDs."""
         cli = AWorldCLI()
@@ -485,6 +627,166 @@ class TestSlashCommandCompletion:
         assert completion_meta["job-123"] == "Name: 喝水提醒 | State: Enabled | Last: OK"
         assert completion_meta["job-999"] == "Name: 散步提醒 | State: Enabled | Last: Never"
         assert completion_meta["job-456"] == "Name: 运动提醒 | State: Disabled | Last: Error"
+
+    def test_console_completion_includes_plugin_commands(self):
+        """Registered plugin commands should appear in slash completion entries."""
+        plugin_root = Path("tests/fixtures/plugins/code_review_like").resolve()
+        plugin = discover_plugins([plugin_root])[0]
+        snapshot = CommandRegistry.snapshot()
+        try:
+            register_plugin_commands([plugin])
+
+            cli = AWorldCLI()
+            words, meta = cli._build_completion_entries(agent_names=[])
+
+            assert "/code-review" in words
+            assert meta["/code-review"] == "Review the current pull request"
+        finally:
+            CommandRegistry.restore(snapshot)
+
+
+class TestPluginsCommand:
+    @pytest.mark.asyncio
+    async def test_plugins_command_lists_builtin_plugins(self, monkeypatch):
+        cmd = CommandRegistry.get("plugins")
+
+        class FakePluginManager:
+            def __init__(self):
+                self.plugin_dir = Path("/tmp/plugins")
+
+        monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
+        monkeypatch.setattr(
+            "aworld_cli.commands.plugins_cmd.list_available_plugins",
+            lambda _manager: [
+                {
+                    "name": "aworld-hud",
+                    "plugin_id": "aworld-hud",
+                    "enabled": True,
+                    "lifecycle_phase": "activate",
+                    "framework_source": "manifest",
+                    "capabilities": ["hud"],
+                    "source": "built-in",
+                    "has_agents": False,
+                    "has_skills": False,
+                    "path": "/repo/aworld-cli/src/aworld_cli/builtin_plugins/aworld_hud",
+                }
+            ],
+        )
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args="list"))
+
+        assert "Available plugins (1)" in result
+
+    @pytest.mark.asyncio
+    async def test_plugins_command_enable_plugin(self, monkeypatch):
+        cmd = CommandRegistry.get("plugins")
+
+        class FakePluginManager:
+            def __init__(self):
+                self.plugin_dir = Path("/tmp/plugins")
+
+            def enable(self, plugin_name):
+                assert plugin_name == "aworld-hud"
+                return {"path": "/tmp/plugins/aworld-hud"}
+
+        monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args="enable aworld-hud"))
+
+        assert "enabled" in result
+        assert "/tmp/plugins/aworld-hud" in result
+
+    @pytest.mark.asyncio
+    async def test_plugins_command_reload_plugin(self, monkeypatch):
+        cmd = CommandRegistry.get("plugins")
+
+        class FakePluginManager:
+            def __init__(self):
+                self.plugin_dir = Path("/tmp/plugins")
+
+            def reload(self, plugin_name):
+                assert plugin_name == "aworld-hud"
+                return {"path": "/tmp/plugins/aworld-hud"}
+
+        monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args="reload aworld-hud"))
+
+        assert "reloaded" in result
+        assert "/tmp/plugins/aworld-hud" in result
+
+    @pytest.mark.asyncio
+    async def test_plugins_command_disables_builtin_plugin(self, monkeypatch):
+        cmd = CommandRegistry.get("plugins")
+
+        class FakePluginManager:
+            def __init__(self):
+                self.plugin_dir = Path("/tmp/plugins")
+
+            def disable(self, plugin_name):
+                assert plugin_name == "aworld-hud"
+                return {"path": "/repo/aworld-cli/src/aworld_cli/builtin_plugins/aworld_hud"}
+
+        monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args="disable aworld-hud"))
+
+        assert "disabled" in result
+        assert "aworld-hud" in result
+
+    @pytest.mark.asyncio
+    async def test_plugins_command_refreshes_runtime_after_disable(self, monkeypatch):
+        cmd = CommandRegistry.get("plugins")
+
+        class FakePluginManager:
+            def __init__(self):
+                self.plugin_dir = Path("/tmp/plugins")
+
+            def disable(self, plugin_name):
+                assert plugin_name == "aworld-hud"
+                return {"path": "/repo/aworld-cli/src/aworld_cli/builtin_plugins/aworld_hud"}
+
+        class FakeRuntime:
+            def __init__(self):
+                self.refreshed = False
+
+            def refresh_plugin_framework(self):
+                self.refreshed = True
+
+        monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
+
+        runtime = FakeRuntime()
+        result = await cmd.execute(
+            CommandContext(cwd=os.getcwd(), user_args="disable aworld-hud", runtime=runtime)
+        )
+
+        assert "disabled" in result
+        assert runtime.refreshed is True
+
+    @pytest.mark.asyncio
+    async def test_plugins_command_validates_plugin(self, monkeypatch):
+        cmd = CommandRegistry.get("plugins")
+
+        class FakePluginManager:
+            def __init__(self):
+                self.plugin_dir = Path("/tmp/plugins")
+
+            def validate(self, plugin_name):
+                assert plugin_name == "aworld-hud"
+                return {
+                    "valid": True,
+                    "plugin_id": "aworld-hud",
+                    "framework_source": "manifest",
+                    "capabilities": ["hud"],
+                    "path": "/repo/aworld-cli/src/aworld_cli/builtin_plugins/aworld_hud",
+                }
+
+        monkeypatch.setattr("aworld_cli.commands.plugins_cmd.PluginManager", FakePluginManager)
+
+        result = await cmd.execute(CommandContext(cwd=os.getcwd(), user_args="validate aworld-hud"))
+
+        assert "valid" in result.lower()
+        assert "aworld-hud" in result
 
 
 class TestCommandContext:

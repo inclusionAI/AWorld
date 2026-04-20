@@ -154,6 +154,8 @@ class Context:
             "prompt_tokens": 0,
             "total_tokens": 0,
         }
+        # Workspace path for CLI/hook system (set by CLI on initialization)
+        self._workspace_path: str = kwargs.get('workspace_path', None)
         self._merge_token_baseline = copy.deepcopy(self._token_usage)
         # TODO workspace
         self._event_manager = None
@@ -222,6 +224,16 @@ class Context:
             return self.session.session_id
         else:
             return None
+
+    @property
+    def workspace_path(self):
+        """Get workspace path set by CLI."""
+        return self._workspace_path
+
+    @workspace_path.setter
+    def workspace_path(self, path: str):
+        """Set workspace path (typically set by CLI on initialization)."""
+        self._workspace_path = path
 
     @property
     def session(self):

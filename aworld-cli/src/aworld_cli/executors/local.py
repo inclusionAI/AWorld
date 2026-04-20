@@ -9,6 +9,7 @@ import shutil
 import traceback
 from datetime import datetime
 from pathlib import Path
+from time import monotonic
 from typing import Optional, List, Dict, Any, Union
 
 from dotenv import load_dotenv
@@ -23,7 +24,7 @@ from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation
 from aworld.core.context.amni import TaskInput, ApplicationContext
 from aworld.core.context.amni.config import AmniConfigFactory, AmniConfigLevel
-from aworld.core.task import Task
+from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger
 from aworld.memory.main import _default_file_memory_store
 from aworld.runner import Runners
@@ -60,6 +61,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
     All other capabilities (session management, output rendering, logging) are inherited from BaseAgentExecutor.
     """
+    TASK_PROGRESS_HOOK_MIN_INTERVAL_SECONDS = 2.0
     
     def __init__(
         self, 
@@ -98,6 +100,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
             session_id=self.session_id,
             console=self.console
         )
+        self._last_task_progress_hook_at: float | None = None
 
     def _load_hooks(self) -> Dict[str, List[ExecutorHook]]:
         """
@@ -165,6 +168,137 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     self.console.print(f"[red]❌ [Executor] Failed to load hook '{hook_name}': {e}[/red]")
 
         return hooks
+
+    def _publish_hud_task_started(self, task: Task) -> None:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None:
+            return
+        try:
+            runtime.update_hud_snapshot(
+                session={"session_id": self.session_id},
+                task={
+                    "current_task_id": task.id,
+                    "status": "running",
+                    "started_at": datetime.now().isoformat(),
+                },
+                activity={"current_tool": None, "recent_tools": [], "tool_calls_count": 0},
+            )
+        except Exception as exc:
+            logger.warning(f"HUD publish task started failed: {exc}")
+
+    def _publish_hud_stream_update(
+        self,
+        task_id: str,
+        stream_token_stats: StreamTokenStats,
+        current_tool: Optional[str],
+        elapsed_seconds: Optional[float],
+    ) -> None:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None or stream_token_stats is None:
+            return
+
+        usage = stream_token_stats.to_hud_usage()
+        activity_payload = {
+            "current_tool": current_tool,
+            "tool_calls_count": usage.get("tool_calls_count", 0),
+        }
+        if current_tool:
+            activity_payload["recent_tools"] = [current_tool]
+        try:
+            # Transitional path: the generic runtime HUD snapshot stays live while
+            # hook-driven plugin_state remains the canonical source for the built-in
+            # HUD plugin's task/session/usage rendering.
+            runtime.update_hud_snapshot(
+                session={
+                    "session_id": self.session_id,
+                    "model": usage.get("model"),
+                    "elapsed_seconds": elapsed_seconds,
+                },
+                task={"current_task_id": task_id, "status": "running"},
+                activity=activity_payload,
+                usage=usage,
+            )
+        except Exception as exc:
+            logger.warning(f"HUD publish stream update failed: {exc}")
+
+    async def _emit_task_progress_hook(self, event: dict[str, Any]) -> list[tuple[Any, Any]]:
+        min_interval = getattr(
+            self,
+            "_task_progress_hook_min_interval_seconds",
+            self.TASK_PROGRESS_HOOK_MIN_INTERVAL_SECONDS,
+        )
+        now = monotonic()
+        last_fired_at = getattr(self, "_last_task_progress_hook_at", None)
+        if last_fired_at is not None and now - last_fired_at < min_interval:
+            return []
+
+        self._last_task_progress_hook_at = now
+        return await self._run_plugin_task_hook("task_progress", event)
+
+    def _publish_hud_task_finished(self, task_id: str, task_status: str = "idle") -> None:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None:
+            return
+        try:
+            runtime.update_hud_snapshot(task={"current_task_id": task_id})
+        except Exception as exc:
+            logger.warning(f"HUD publish task finish update failed: {exc}")
+        try:
+            runtime.settle_hud_snapshot(task_status=task_status)
+        except Exception as exc:
+            logger.warning(f"HUD settle task finish failed: {exc}")
+
+    def _hud_is_active(self) -> bool:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None or not hasattr(runtime, "active_plugin_capabilities"):
+            return False
+        try:
+            return "hud" in tuple(runtime.active_plugin_capabilities())
+        except Exception:
+            return False
+
+    async def _run_plugin_task_hook(
+        self,
+        hook_point: str,
+        event: dict[str, Any],
+    ) -> list[tuple[Any, Any]]:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None or not hasattr(runtime, "run_plugin_hooks"):
+            return []
+
+        payload = dict(event)
+        payload.setdefault("session_id", self.session_id)
+        context = getattr(self, "context", None)
+        if context is not None:
+            workspace_path = getattr(context, "workspace_path", None)
+            task_id = getattr(context, "task_id", None)
+            if workspace_path:
+                payload.setdefault("workspace_path", workspace_path)
+            if task_id:
+                payload.setdefault("task_id", task_id)
+
+        try:
+            return await runtime.run_plugin_hooks(
+                hook_point,
+                event=payload,
+                executor_instance=self,
+            )
+        except Exception as exc:
+            logger.warning(f"Plugin task hook '{hook_point}' failed: {exc}")
+            return []
+
+    async def _handle_task_interrupted(self, task: Task, answer: str = "") -> str:
+        await self._run_plugin_task_hook(
+            "task_interrupted",
+            {
+                "task_id": task.id,
+                "session_id": self.session_id,
+                "task_status": "interrupted",
+                "partial_answer": answer or "",
+            },
+        )
+        self._publish_hud_task_finished(task.id, task_status="idle")
+        return answer or ""
 
     async def cleanup_resources(self) -> None:
         """
@@ -351,9 +485,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
             _context.get_config().debug_mode=True
             await _context.init_swarm_state(_swarm)
             return _context
-        
+
         context = await build_context(task_input, self.swarm, workspace)
-        
+
+        # Set workspace_path for hook system (CLI working directory)
+        context.workspace_path = os.getcwd()
+
         # 🔥 Hook: POST_BUILD_CONTEXT
         hook_kwargs = {
             'context': context,
@@ -461,6 +598,15 @@ class LocalAgentExecutor(BaseAgentExecutor):
             # Update session last used time
             self._update_session_last_used(self.session_id)
             task = await self._build_task(task_content, session_id=self.session_id, image_urls=image_urls)
+            self._publish_hud_task_started(task)
+            await self._run_plugin_task_hook(
+                "task_started",
+                {
+                    "task_id": task.id,
+                    "session_id": self.session_id,
+                    "message": task_content,
+                },
+            )
             
             # 🔥 Hook: PRE_RUN_TASK
             hook_kwargs = {
@@ -498,6 +644,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     """Consume stream events and collect outputs with beautiful formatting."""
                     nonlocal answer, last_message_output, stream_token_stats, saved_any_round
                     stream_token_stats = StreamTokenStats()
+                    show_stream_stats = not self._hud_is_active()
                     logger.info(f"📊 Starting consume_stream - stream_token_stats initialized")
                     ctrl = StreamDisplayController(
                         console=self.console,
@@ -505,6 +652,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         format_tool_calls_fn=self._format_tool_calls_display_lines,
                         format_elapsed_fn=format_elapsed,
                         config=StreamDisplayConfig(render_interval=0.02, chars_per_render=1),
+                        show_stats_line=show_stream_stats,
                     )
 
                     try:
@@ -533,6 +681,13 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                 # Handle MessageOutput
                                 if isinstance(output, MessageOutput):
                                     elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
+                                    tool_calls = output.tool_calls if hasattr(output, "tool_calls") and output.tool_calls else []
+                                    current_tool_name = None
+                                    if tool_calls:
+                                        first_tool = tool_calls[0]
+                                        tool_data = getattr(first_tool, "data", first_tool)
+                                        function = getattr(tool_data, "function", None)
+                                        current_tool_name = getattr(function, "name", None)
                                     # 💾 Save to history at end of each streaming round (before clear)
                                     stats = stream_token_stats.get_current_stats()
                                     if stats and task_content:
@@ -694,6 +849,21 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                     model_name=model_name,
                                                 )
                                                 logger.info(f"📊 Token stats successfully updated - current stats: {stream_token_stats.get_current_stats()}")
+                                                self._publish_hud_stream_update(
+                                                    task_id=task.id,
+                                                    stream_token_stats=stream_token_stats,
+                                                    current_tool=current_tool_name,
+                                                    elapsed_seconds=elapsed_sec,
+                                                )
+                                                await self._emit_task_progress_hook(
+                                                    {
+                                                        "task_id": task.id,
+                                                        "session_id": self.session_id,
+                                                        "current_tool": current_tool_name,
+                                                        "elapsed_seconds": elapsed_sec,
+                                                        "usage": stream_token_stats.to_hud_usage(),
+                                                    },
+                                                )
                                             else:
                                                 logger.warning(f"📊 No token data available to update stats")
                                                 logger.warning(f"📊 Output structure: {output}")
@@ -738,7 +908,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                         
                                         # 🔧 FIX: Display token stats after rendering message output (STREAM=0 mode)
                                         # This ensures the stats line is shown even when not streaming
-                                        if stream_token_stats and stream_token_stats.get_current_stats():
+                                        if show_stream_stats and stream_token_stats and stream_token_stats.get_current_stats():
                                             elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
                                             if elapsed_sec is not None:
                                                 elapsed_str = format_elapsed(elapsed_sec)
@@ -757,7 +927,6 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     
                                     # Check if there are tool calls - if so, show "Thinking..." for agent-as-tool
                                     # Skip status for human tools as they require user interaction
-                                    tool_calls = output.tool_calls if hasattr(output, 'tool_calls') and output.tool_calls else []
                                     if tool_calls:
                                         from aworld.models.model_response import ToolCall
                                         from aworld.core.agent.base import is_agent_by_name
@@ -822,6 +991,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                     ctrl.streaming_mode = True
                                     stream_on = os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
                                     chunk = output.data if hasattr(output, "data") else getattr(output, "data", None)
+                                    elapsed_sec = (datetime.now() - ctrl.status_start_time).total_seconds() if ctrl.status_start_time else None
                                     if stream_on and chunk:
                                         if content := getattr(chunk, "content", None):
                                             ctrl.buffer.accumulated_content += content
@@ -885,6 +1055,28 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             model_name=model_name,
                                         )
                                         logger.debug(f"📊 Token stats updated successfully - current stats: {stream_token_stats.get_current_stats()}")
+                                        current_tool_name = None
+                                        current_tool_calls = ctrl.buffer.accumulated_tool_calls or getattr(chunk, "tool_calls", None) or []
+                                        if current_tool_calls:
+                                            first_tool = current_tool_calls[0]
+                                            tool_data = getattr(first_tool, "data", first_tool)
+                                            function = getattr(tool_data, "function", None)
+                                            current_tool_name = getattr(function, "name", None)
+                                        self._publish_hud_stream_update(
+                                            task_id=task.id,
+                                            stream_token_stats=stream_token_stats,
+                                            current_tool=current_tool_name,
+                                            elapsed_seconds=elapsed_sec,
+                                        )
+                                        await self._emit_task_progress_hook(
+                                            {
+                                                "task_id": task.id,
+                                                "session_id": self.session_id,
+                                                "current_tool": current_tool_name,
+                                                "elapsed_seconds": elapsed_sec,
+                                                "usage": stream_token_stats.to_hud_usage(),
+                                            },
+                                        )
                                     else:
                                         logger.debug(f"📊 No token data to update - out_tok: {out_tok}, inp_tok: {inp_tok}, tc_count: {tc_count}")
                                     # When STREAM=1: buffer content; Live display is refreshed at fixed interval
@@ -949,7 +1141,51 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 except (asyncio.CancelledError, KeyboardInterrupt):
                     if self.console:
                         self.console.print("\n[yellow]⏹ Interrupted.[/yellow]")
-                    return answer or ""
+                    return await self._handle_task_interrupted(task, answer=answer)
+
+                def _coerce_final_answer(value: Any) -> str:
+                    if value is None:
+                        return ""
+                    if isinstance(value, str):
+                        return value.strip()
+                    if isinstance(value, Observation):
+                        return str(value.content or "").strip()
+                    content = getattr(value, "content", None)
+                    if isinstance(content, str):
+                        return content.strip()
+                    return str(value).strip()
+
+                hook_system_message = ""
+                visited_outputs = getattr(outputs, "_visited_outputs", None) or []
+                for visited_output in reversed(visited_outputs):
+                    metadata = getattr(visited_output, "metadata", None) or {}
+                    system_message = metadata.get("system_message")
+                    if system_message:
+                        hook_system_message = str(system_message).strip()
+                        break
+
+                final_task_response = outputs.response() if hasattr(outputs, "response") else None
+                if isinstance(final_task_response, TaskResponse):
+                    final_answer = _coerce_final_answer(final_task_response.answer)
+                    if hook_system_message and hook_system_message not in final_answer:
+                        final_answer = f"{hook_system_message}\n{final_answer}".strip()
+                    if final_answer:
+                        answer = final_answer
+                        if not last_message_output and self.console:
+                            root_agent = getattr(self.swarm, "communicate_agent", None)
+                            if isinstance(root_agent, list):
+                                root_agent = root_agent[0] if root_agent else None
+                            agent_name = None
+                            if root_agent:
+                                agent_name = getattr(root_agent, "name", None)
+                                if callable(agent_name):
+                                    agent_name = agent_name()
+                                if not agent_name:
+                                    agent_id = getattr(root_agent, "id", None)
+                                    agent_name = agent_id() if callable(agent_id) else agent_id
+                            self.console.print(f"🤖 [bold]{agent_name or 'Assistant'}[/bold]")
+                            self.console.print(answer)
+                            self.console.print()
                 
                 # 🔥 Hook: POST_RUN_TASK
                 hook_kwargs = {
@@ -1087,12 +1323,21 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         logger.info(f"💾 Successfully saved query to history with token_stats: {token_stats is not None}")
                     
                 except Exception as e:
-                    logger.error(f"💾 Failed to save to history: {e}")
-                    import traceback
-                    logger.error(f"💾 Traceback: {traceback.format_exc()}")
-                    # Don't fail the whole request if history save fails
+                        logger.error(f"💾 Failed to save to history: {e}")
+                        import traceback
+                        logger.error(f"💾 Traceback: {traceback.format_exc()}")
+                        # Don't fail the whole request if history save fails
 
-
+                await self._run_plugin_task_hook(
+                    "task_completed",
+                    {
+                        "task_id": task.id,
+                        "session_id": self.session_id,
+                        "task_status": "idle",
+                        "final_answer": answer,
+                    },
+                )
+                self._publish_hud_task_finished(task.id, task_status="idle")
                 return answer
                 
             except Exception as err:
@@ -1108,11 +1353,22 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     # Don't let hook errors mask the original error
                     if self.console:
                         self.console.print(f"[yellow]⚠️ Hook error: {hook_err}[/yellow]")
+                await self._run_plugin_task_hook(
+                    "task_error",
+                    {
+                        "task_id": getattr(task, 'id', None) if 'task' in locals() else None,
+                        "session_id": self.session_id,
+                        "task_status": "error",
+                        "error": str(err),
+                        "error_type": type(err).__name__,
+                    },
+                )
 
                 error_msg = f"Error: {err}, traceback: {traceback.format_exc()}"
                 if self.console:
                     self.console.print("[red]❌ [/red]", end=" ")
                     self.console.print(error_msg, markup=False)
+                self._publish_hud_task_finished(task.id, task_status="error")
                 raise
     
     # Note: _format_tool_call, _format_tool_calls, _render_message_output,

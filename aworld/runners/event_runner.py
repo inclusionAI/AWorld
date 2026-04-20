@@ -61,7 +61,104 @@ class TaskEventRunner(TaskRunner):
                 resp = self._response()
                 logger.info(f'{"sub" if self.task.is_sub_task else "main"} task {self.task.id} finished'
                             f', time cost: {time.time() - self.start_time}s, token cost: {self.context.token_usage}.')
+
+                # Hooks V2: 触发 TASK_COMPLETED hook（所有任务，包括子任务）
+                try:
+                    from aworld.runners.hook.hooks import HookPoint
+                    from aworld.runners.hook.utils import run_hooks
+
+                    task_completed_payload = {
+                        'event': 'task_completed',
+                        'task_id': self.task.id,
+                        'task_name': self.task.name,
+                        'session_id': self.context.session_id,
+                        'is_sub_task': self.task.is_sub_task,
+                        'time_cost': time.time() - self.start_time,
+                        'token_usage': self.context.token_usage,
+                        'status': 'success',
+                        'timestamp': time.time()
+                    }
+
+                    async for _ in run_hooks(
+                        context=self.context,
+                        hook_point=HookPoint.TASK_COMPLETED,
+                        hook_from='task_runner',
+                        payload=task_completed_payload,
+                        workspace_path=getattr(self.context, 'workspace_path', None)
+                    ):
+                        pass
+                except Exception as e:
+                    logger.warning(f"TASK_COMPLETED hook execution failed for task {self.task.id}: {e}")
+
+                # Hooks V2: 触发 session_finished hook（仅主任务）
+                if not self.task.is_sub_task:
+                    try:
+                        from aworld.runners.hook.hooks import HookPoint
+                        from aworld.runners.hook.utils import run_hooks
+
+                        session_finished_msg = Message(
+                            category='session_lifecycle',
+                            payload={
+                                'event': 'session_finished',
+                                'session_id': self.context.session_id,
+                                'task_id': self.task.id,
+                                'time_cost': time.time() - self.start_time,
+                                'token_usage': self.context.token_usage,
+                                'status': 'success'
+                            },
+                            session_id=self.context.session_id,
+                            sender='task_runner'
+                        )
+                        session_finished_msg.context = self.context
+
+                        async for _ in run_hooks(
+                            context=self.context,
+                            hook_point=HookPoint.SESSION_FINISHED,
+                            hook_from='task_runner',
+                            message=session_finished_msg,
+                            workspace_path=getattr(self.context, 'workspace_path', None)
+                        ):
+                            pass
+                    except Exception as e:
+                        logger.warning(f"SESSION_FINISHED hook execution failed: {e}")
+
                 return resp
+            except Exception as e:
+                # Hooks V2: 触发 session_failed hook（仅主任务）
+                if not self.task.is_sub_task:
+                    try:
+                        from aworld.runners.hook.hooks import HookPoint
+                        from aworld.runners.hook.utils import run_hooks
+
+                        session_failed_msg = Message(
+                            category='session_lifecycle',
+                            payload={
+                                'event': 'session_failed',
+                                'session_id': self.context.session_id,
+                                'task_id': self.task.id,
+                                'time_cost': time.time() - self.start_time,
+                                'error': str(e),
+                                'error_type': type(e).__name__,
+                                'status': 'failed'
+                            },
+                            session_id=self.context.session_id,
+                            sender='task_runner'
+                        )
+                        session_failed_msg.context = self.context
+
+                        async for _ in run_hooks(
+                            context=self.context,
+                            hook_point=HookPoint.SESSION_FAILED,
+                            hook_from='task_runner',
+                            message=session_failed_msg,
+                            workspace_path=getattr(self.context, 'workspace_path', None)
+                        ):
+                            pass
+                    except Exception as hook_e:
+                        logger.warning(f"SESSION_FAILED hook execution failed: {hook_e}")
+
+                # 重新抛出原始异常
+                raise
             finally:
                 # the last step mark output finished
                 if not self.task.is_sub_task:
@@ -105,6 +202,32 @@ class TaskEventRunner(TaskRunner):
     async def pre_run(self):
         logger.debug(f"task {self.task.id} pre run start...")
         await super().pre_run()
+
+        # Hooks V2: 触发 TASK_CREATED hook（所有任务，包括子任务）
+        try:
+            from aworld.runners.hook.hooks import HookPoint
+            from aworld.runners.hook.utils import run_hooks
+
+            task_created_payload = {
+                'event': 'task_created',
+                'task_id': self.task.id,
+                'task_name': self.task.name,
+                'session_id': self.context.session_id if hasattr(self, 'context') and self.context else None,
+                'is_sub_task': self.task.is_sub_task,
+                'input': str(self.task.input)[:500] if self.task.input else None,  # 限制长度
+                'timestamp': time.time()
+            }
+
+            async for _ in run_hooks(
+                context=self.context if hasattr(self, 'context') else None,
+                hook_point=HookPoint.TASK_CREATED,
+                hook_from='task_runner',
+                payload=task_created_payload,
+                workspace_path=getattr(self.context, 'workspace_path', None) if hasattr(self, 'context') else None
+            ):
+                pass
+        except Exception as e:
+            logger.warning(f"TASK_CREATED hook execution failed for task {self.task.id}: {e}")
         self.event_mng = EventManager(self.context, streaming_mode=self.task.streaming_mode)
         self.context.event_manager = self.event_mng
 
@@ -167,6 +290,39 @@ class TaskEventRunner(TaskRunner):
         self.task_flag = "sub" if self.task.is_sub_task else "main"
         self.inited = True
         logger.debug(f"{self.task_flag} task: {self.task.id} pre run finish, will start to run...")
+
+        # Hooks V2: 触发 session_started hook
+        # 仅对主任务（非子任务）触发，因为 Session 在主任务级别管理
+        if not self.task.is_sub_task:
+            try:
+                from aworld.runners.hook.hooks import HookPoint
+                from aworld.runners.hook.utils import run_hooks
+
+                # 创建 session_started message
+                session_started_msg = Message(
+                    category='session_lifecycle',
+                    payload={
+                        'event': 'session_started',
+                        'session_id': self.context.session_id,
+                        'task_id': self.task.id,
+                        'start_time': self.start_time
+                    },
+                    session_id=self.context.session_id,
+                    sender='task_runner'
+                )
+                session_started_msg.context = self.context
+
+                async for _ in run_hooks(
+                    context=self.context,
+                    hook_point=HookPoint.SESSION_STARTED,
+                    hook_from='task_runner',
+                    payload=session_started_msg.payload,
+                    message=session_started_msg,
+                    workspace_path=getattr(self.context, 'workspace_path', None)
+                ):
+                    pass
+            except Exception as e:
+                logger.warning(f"SESSION_STARTED hook execution failed: {e}")
 
     def _build_first_message(self):
         new_context = self.context.deep_copy()
@@ -554,4 +710,3 @@ class TaskEventRunner(TaskRunner):
         except Exception as e:
             logger.error(f"Error reading from streaming queue: {e}")
             raise
-

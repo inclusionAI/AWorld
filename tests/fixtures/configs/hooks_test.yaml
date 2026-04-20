@@ -1,0 +1,40 @@
+# 测试用 hooks 配置文件
+version: "1.0"
+
+hooks:
+  # 会话生命周期
+  session_started:
+    - name: "test-session-start"
+      type: command
+      command: "echo '{\"systemMessage\": \"Session started\"}'"
+      enabled: true
+      description: "Test session start hook"
+
+  # 工具调用前验证
+  before_tool_call:
+    - name: "test-path-validator"
+      type: command
+      command: "echo '{\"continue\": true, \"permissionDecision\": \"allow\"}'"
+      enabled: true
+      env:
+        ALLOWED_PATHS: "/tmp,/workspace"
+
+    - name: "test-callback"
+      type: callback
+      callback: "tests.fixtures.hooks.callback_example:process_input"
+      enabled: true
+
+  # 工具调用后审计
+  after_tool_call:
+    - name: "test-audit-log"
+      type: command
+      command: "echo '{\"additionalContext\": \"Tool executed\"}'"
+      enabled: true
+
+  # 禁用的 hook（不应该被加载）
+  user_input_received:
+    - name: "disabled-hook"
+      type: command
+      command: "echo 'This should not run'"
+      enabled: false
+      description: "This hook is disabled"
