@@ -15,6 +15,10 @@ from uuid import uuid4
 import httpx
 
 from aworld_gateway.channels.dingding.bridge import AworldDingdingBridge
+from aworld_gateway.channels.dingding.cron_bindings import (
+    DingdingCronBindingStore,
+    DingdingCronNotifier,
+)
 from aworld_gateway.channels.dingding.types import (
     AICardInstance,
     ExtractedMessage,
@@ -24,12 +28,14 @@ from aworld_gateway.channels.dingding.types import (
 )
 from aworld_gateway.config import DingdingChannelConfig
 from aworld_gateway.http.artifact_service import ArtifactService
+from aworld.logs.util import logger
 
 DINGTALK_API = "https://api.dingtalk.com"
 OAPI_API = "https://oapi.dingtalk.com"
 MEDIA_MAX_BYTES = 20 * 1024 * 1024
 AI_CARD_REQUEST_RETRIES = 2
 AI_CARD_RETRY_DELAY_SECONDS = 0.3
+CALLBACK_DEDUPE_WINDOW_SECONDS = 15.0
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
 LOCAL_PATH_RE = re.compile(r"^(?:/|~|[A-Za-z]:[\\/])")
@@ -62,6 +68,12 @@ class DingTalkConnector:
         self._access_token_expiry: float = 0.0
         self._oapi_access_token: str | None = None
         self._oapi_access_token_expiry: float = 0.0
+        self._callback_fingerprints: dict[str, float] = {}
+        self._callback_fingerprint_lock = threading.Lock()
+        self._background_tasks: set[asyncio.Task[None]] = set()
+        self._cron_binding_store = DingdingCronBindingStore(self._binding_store_path())
+        self._cron_notifier = DingdingCronNotifier(self, self._cron_binding_store)
+        self._cron_notification_sink_registered = False
 
     async def start(self) -> None:
         credential = self._stream_module.Credential(
@@ -74,7 +86,7 @@ class DingTalkConnector:
         class _MessageHandler(self._stream_module.ChatbotHandler):
             async def process(self, callback):
                 payload = getattr(callback, "data", callback)
-                await connector.handle_callback(payload)
+                connector._schedule_callback(payload)
                 status_ok = getattr(
                     connector._stream_module.AckMessage,
                     "STATUS_OK",
@@ -104,6 +116,11 @@ class DingTalkConnector:
                 await start_result
 
     async def stop(self) -> None:
+        for task in list(self._background_tasks):
+            task.cancel()
+        if self._background_tasks:
+            await asyncio.gather(*self._background_tasks, return_exceptions=True)
+        self._background_tasks.clear()
         if self._client is not None:
             for method_name in ("stop", "close", "shutdown"):
                 stop_method = getattr(self._client, method_name, None)
@@ -117,7 +134,13 @@ class DingTalkConnector:
 
     async def handle_callback(self, callback_payload) -> None:
         data = self._parse_data(callback_payload)
+        if not data:
+            return
+        if self._should_skip_duplicate_callback(data):
+            return
+        await self._handle_callback_data(data)
 
+    async def _handle_callback_data(self, data: dict) -> None:
         session_webhook = str(data.get("sessionWebhook") or "").strip()
         if not session_webhook:
             return
@@ -152,6 +175,17 @@ class DingTalkConnector:
             data=data,
         )
 
+    def _schedule_callback(self, callback_payload) -> None:
+        data = self._parse_data(callback_payload)
+        if not data:
+            return
+        if self._should_skip_duplicate_callback(data):
+            return
+
+        task = asyncio.create_task(self._handle_callback_data(data))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._finalize_background_task)
+
     async def send_text(self, *, session_webhook: str, text: str) -> None:
         token = await self._get_access_token()
         response = await self._http.post(
@@ -178,6 +212,7 @@ class DingTalkConnector:
             else None
         )
         streamed_parts: list[str] = []
+        observed_cron_job_ids: set[str] = set()
 
         async def on_text_chunk(chunk: str) -> None:
             if not chunk:
@@ -190,12 +225,28 @@ class DingTalkConnector:
                     finished=False,
                 )
 
+        async def on_output(output) -> None:
+            for job_id in self._extract_cron_job_ids(output):
+                if job_id in observed_cron_job_ids:
+                    continue
+                observed_cron_job_ids.add(job_id)
+                self._cron_binding_store.upsert(
+                    job_id,
+                    {
+                        "session_webhook": session_webhook,
+                        "conversation_id": str(data.get("conversationId") or "").strip(),
+                        "sender_id": str(data.get("senderStaffId") or data.get("senderId") or "").strip(),
+                    },
+                )
+                self._ensure_cron_notification_sink_registered()
+
         try:
             result = await self._bridge.run(
-                agent_id=self._config.default_agent_id or "aworld",
+                agent_id=self._resolve_agent_id(),
                 session_id=session_id,
                 text=text,
                 on_text_chunk=on_text_chunk,
+                on_output=on_output,
             )
         except Exception as exc:
             await self._send_error_to_client(
@@ -214,6 +265,133 @@ class DingTalkConnector:
 
         await self.send_text(session_webhook=session_webhook, text=display_text)
         await self._send_pending_files(session_webhook, pending_files)
+
+    def _resolve_agent_id(self) -> str:
+        agent_id = str(self._config.default_agent_id or "").strip()
+        if agent_id:
+            return agent_id
+        raise ValueError("No agent id configured for DingTalk channel.")
+
+    def _binding_store_path(self) -> Path:
+        workspace_dir = str(self._config.workspace_dir or "").strip()
+        if workspace_dir:
+            base_dir = Path(workspace_dir).expanduser()
+            if base_dir.is_absolute():
+                return base_dir.parent / "cron-bindings.json"
+        return Path(".aworld/gateway/dingding/cron-bindings.json").resolve()
+
+    def _should_skip_duplicate_callback(self, data: dict) -> bool:
+        callback_key = self._build_callback_key(data)
+        if not callback_key:
+            return False
+
+        now = time.monotonic()
+        with self._callback_fingerprint_lock:
+            expired_before = now - CALLBACK_DEDUPE_WINDOW_SECONDS
+            expired_keys = [
+                key
+                for key, seen_at in self._callback_fingerprints.items()
+                if seen_at < expired_before
+            ]
+            for key in expired_keys:
+                self._callback_fingerprints.pop(key, None)
+
+            previous_seen_at = self._callback_fingerprints.get(callback_key)
+            self._callback_fingerprints[callback_key] = now
+
+        return previous_seen_at is not None and now - previous_seen_at < CALLBACK_DEDUPE_WINDOW_SECONDS
+
+    def _build_callback_key(self, data: dict) -> str | None:
+        for field_name in (
+            "messageId",
+            "msgId",
+            "msg_id",
+            "message_id",
+            "eventId",
+            "event_id",
+        ):
+            value = str(data.get(field_name) or "").strip()
+            if value:
+                return f"id:{value}"
+        return None
+
+    def _finalize_background_task(self, task: asyncio.Task[None]) -> None:
+        self._background_tasks.discard(task)
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.warning(f"DingTalk callback task failed: {exc}")
+
+    def _ensure_cron_notification_sink_registered(self) -> None:
+        if self._cron_notification_sink_registered:
+            return
+
+        try:
+            from aworld.core.scheduler import get_scheduler
+        except Exception as exc:
+            logger.warning(f"Failed to import cron scheduler for DingTalk notification fanout: {exc}")
+            return
+
+        scheduler = get_scheduler()
+        previous_sink = getattr(scheduler, "notification_sink", None)
+
+        async def _fanout(notification) -> None:
+            if previous_sink is not None:
+                previous_result = previous_sink(notification)
+                if isawaitable(previous_result):
+                    await previous_result
+            await self._cron_notifier.publish(notification)
+
+        scheduler.notification_sink = _fanout
+        self._cron_notification_sink_registered = True
+
+    @staticmethod
+    def _extract_cron_job_ids(output) -> list[str]:
+        if getattr(output, "output_type", lambda: None)() != "tool_call_result":
+            return []
+
+        tool_name = str(getattr(output, "tool_name", "") or "").strip().lower()
+        if tool_name != "cron":
+            return []
+
+        payload = DingTalkConnector._coerce_output_payload(getattr(output, "data", None))
+        if not isinstance(payload, dict):
+            return []
+        if payload.get("success") is False:
+            return []
+
+        job_ids: list[str] = []
+        primary_job_id = str(payload.get("job_id") or "").strip()
+        if primary_job_id:
+            job_ids.append(primary_job_id)
+
+        advance_reminder = payload.get("advance_reminder")
+        if isinstance(advance_reminder, dict):
+            advance_job_id = str(advance_reminder.get("job_id") or "").strip()
+            if advance_job_id:
+                job_ids.append(advance_job_id)
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for job_id in job_ids:
+            if job_id in seen:
+                continue
+            seen.add(job_id)
+            deduped.append(job_id)
+        return deduped
+
+    @staticmethod
+    def _coerce_output_payload(value):
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError:
+                return value
+            return parsed
+        return value
 
     @staticmethod
     def _parse_data(raw) -> dict:

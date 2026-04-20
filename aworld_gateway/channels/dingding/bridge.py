@@ -36,6 +36,7 @@ class AworldDingdingBridge:
         session_id: str,
         text: str,
         on_text_chunk: Callable[[str], Any] | None = None,
+        on_output: Callable[[Any], Any] | None = None,
     ) -> DingdingBridgeResult:
         agent = self._registry_cls.get_agent(agent_id)
         if agent is None:
@@ -51,11 +52,18 @@ class AworldDingdingBridge:
 
         try:
             chunks: list[str] = []
-            async for chunk in self._stream_text(
+            async for output in self._stream_outputs(
                 executor=executor,
                 text=text,
                 session_id=session_id,
             ):
+                if on_output is not None:
+                    output_callback_result = on_output(output)
+                    if isawaitable(output_callback_result):
+                        await output_callback_result
+                chunk = self._extract_text(output)
+                if not chunk:
+                    continue
                 chunks.append(chunk)
                 if on_text_chunk is not None:
                     callback_result = on_text_chunk(chunk)
@@ -69,6 +77,19 @@ class AworldDingdingBridge:
                 if isawaitable(cleanup_result):
                     await cleanup_result
 
+    async def _stream_outputs(
+        self,
+        *,
+        executor: Any,
+        text: str,
+        session_id: str,
+    ) -> AsyncIterator[Any]:
+        task = await executor._build_task(text, session_id=session_id)
+        outputs = Runners.streamed_run_task(task=task)
+
+        async for output in outputs.stream_events():
+            yield output
+
     async def _stream_text(
         self,
         *,
@@ -76,10 +97,11 @@ class AworldDingdingBridge:
         text: str,
         session_id: str,
     ) -> AsyncIterator[str]:
-        task = await executor._build_task(text, session_id=session_id)
-        outputs = Runners.streamed_run_task(task=task)
-
-        async for output in outputs.stream_events():
+        async for output in self._stream_outputs(
+            executor=executor,
+            text=text,
+            session_id=session_id,
+        ):
             chunk = self._extract_text(output)
             if chunk:
                 yield chunk

@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 
 from aworld_gateway.channels.base import ChannelAdapter
+from aworld_gateway.config import DingdingChannelConfig
 from aworld_gateway.config import GatewayConfig
 from aworld_gateway.registry import ChannelRegistry
 
@@ -38,6 +39,12 @@ class GatewayRuntime:
                 continue
 
             channel_config = getattr(self._config.channels, channel_name, None)
+            if (
+                channel_name == "dingding"
+                and isinstance(channel_config, DingdingChannelConfig)
+                and not channel_config.default_agent_id
+            ):
+                channel_config.default_agent_id = self._config.default_agent_id
             adapter = self._registry.build_adapter(
                 channel_name,
                 channel_config,
