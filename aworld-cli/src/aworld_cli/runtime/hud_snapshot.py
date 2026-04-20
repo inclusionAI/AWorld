@@ -42,6 +42,18 @@ class HudSnapshotStore:
             activity_bucket["current_tool"] = None
             return deepcopy(self._snapshot)
 
+    def reset_for_session(self, session_id: str | None = None) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            snapshot: dict[str, dict[str, Any]] = {
+                "task": {"status": "idle"},
+                "activity": {"current_tool": None, "recent_tools": [], "tool_calls_count": 0},
+                "usage": {},
+            }
+            if session_id:
+                snapshot["session"] = {"session_id": session_id}
+            self._snapshot = snapshot
+            return deepcopy(self._snapshot)
+
     def snapshot(self) -> dict[str, dict[str, Any]]:
         with self._lock:
             return deepcopy(self._snapshot)

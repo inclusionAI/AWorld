@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 
 from aworld_cli.executors.local import LocalAgentExecutor
 from aworld_cli.executors.stats import StreamTokenStats
+from aworld_cli.executors.base_executor import BaseAgentExecutor
 from aworld_cli.runtime.base import BaseCliRuntime
 
 
@@ -281,6 +282,44 @@ def test_task_finish_sets_task_status():
         git_branch="main",
     )
     assert context["task"]["status"] == "error"
+
+
+def test_new_session_resets_hud_snapshot_and_switches_session_id(monkeypatch):
+    class DummyExecutor(BaseAgentExecutor):
+        async def chat(self, message):
+            return ""
+
+    runtime = DummyRuntime()
+    runtime.update_hud_snapshot(
+        session={"session_id": "session-old", "model": "gpt-5", "elapsed_seconds": 13.1},
+        task={"current_task_id": "task-old", "status": "idle"},
+        activity={"current_tool": None, "recent_tools": ["bash"], "tool_calls_count": 2},
+        usage={"input_tokens": 6500, "output_tokens": 125, "context_percent": 3},
+    )
+
+    monkeypatch.setattr(DummyExecutor, "_generate_session_id", lambda self: "session-new")
+    executor = DummyExecutor()
+    executor._base_runtime = runtime
+    executor.session_id = "session-old"
+
+    executor.new_session()
+
+    context = runtime.build_hud_context(
+        agent_name="Aworld",
+        mode="Chat",
+        workspace_name="aworld",
+        git_branch="main",
+    )
+
+    assert context["session"]["session_id"] == "session-new"
+    assert "model" not in context["session"]
+    assert "elapsed_seconds" not in context["session"]
+    assert context["task"]["status"] == "idle"
+    assert "current_task_id" not in context["task"]
+    assert context["activity"]["current_tool"] is None
+    assert context["activity"]["recent_tools"] == []
+    assert context["activity"]["tool_calls_count"] == 0
+    assert context["usage"] == {}
 
 
 def test_runtime_build_plugin_hook_state_includes_state_handle():
