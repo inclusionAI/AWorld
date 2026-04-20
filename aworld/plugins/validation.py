@@ -59,3 +59,10 @@ def validate_plugin_path(plugin_path: Path) -> dict[str, Any]:
 
 def load_plugin_manifest_schema() -> dict[str, Any]:
     return json.loads(get_plugin_manifest_schema_path().read_text(encoding="utf-8"))
+
+
+__all__ = [
+    "get_plugin_manifest_schema_path",
+    "load_plugin_manifest_schema",
+    "validate_plugin_path",
+]

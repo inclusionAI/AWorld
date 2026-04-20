@@ -38,3 +38,6 @@ def resolve_plugin_activation(plugins: Iterable[Any]) -> tuple[list[Any], dict[s
         accepted_conflicts[plugin_id] = conflicts
 
     return accepted, skipped
+
+
+__all__ = ["resolve_plugin_activation"]
