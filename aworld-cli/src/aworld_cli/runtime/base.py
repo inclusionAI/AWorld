@@ -321,6 +321,9 @@ class BaseCliRuntime:
     def get_hud_snapshot(self) -> dict[str, dict[str, Any]]:
         return self._hud_snapshot_store.snapshot()
 
+    def reset_hud_session(self, session_id: str | None = None) -> dict[str, dict[str, Any]]:
+        return self._hud_snapshot_store.reset_for_session(session_id=session_id)
+
     def get_hud_lines(self, context: dict[str, Any]) -> list[Any]:
         from ..plugin_capabilities.hud import collect_hud_lines
 
