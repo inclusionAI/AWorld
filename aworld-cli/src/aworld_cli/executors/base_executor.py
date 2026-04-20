@@ -300,6 +300,13 @@ class BaseAgentExecutor(ABC, AgentExecutor):
         self.session_id = self._generate_session_id()
         self._add_session_to_history(self.session_id)
 
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is not None and hasattr(runtime, "reset_hud_session"):
+            try:
+                runtime.reset_hud_session(session_id=self.session_id)
+            except Exception:
+                pass
+
         # Restart tool logging for new session
         self._start_tool_logging()
 

@@ -20,14 +20,6 @@ def format_tokens(n: int) -> str:
     return str(n)
 
 
-def format_chars(n: int) -> str:
-    """Format character count for display."""
-    if n >= 1000:
-        s = f"{n / 1000:.1f}k"
-        return s.replace(".0k", "k")
-    return str(n)
-
-
 def format_timestamp() -> str:
     """Return current time as HH:MM:SS for display."""
     return datetime.now().strftime("%H:%M:%S")
@@ -85,6 +77,16 @@ def format_context_bar(used_tokens: int, max_tokens: int, bar_width: int = 10) -
         color = "green"  # Normal
 
     return f"[{color}]Ctx {bar} {percentage}%[/{color}]"
+
+
+def format_context_bar_hud(used_tokens: int, max_tokens: int, bar_width: int = 10) -> str:
+    """Format context bar for HUD summary line without rich color markup."""
+    context_bar = format_context_bar(used_tokens, max_tokens, bar_width=bar_width)
+    for tag in ("[green]", "[/green]", "[yellow]", "[/yellow]", "[red]", "[/red]"):
+        context_bar = context_bar.replace(tag, "")
+    if context_bar.startswith("Ctx "):
+        return f"Ctx: {context_bar[4:]}"
+    return context_bar
 
 
 class StreamTokenStats:
@@ -181,6 +183,36 @@ class StreamTokenStats:
         if inp is not None and out_val is not None:
             return inp + out_val
         return None
+
+    def to_hud_usage(self) -> Dict[str, Any]:
+        """Export current stats as a HUD-friendly usage snapshot."""
+        stats = self.get_current_stats() or self._last_for_history
+        if not stats:
+            return {}
+
+        input_tokens = stats.get("input_tokens") or 0
+        output_tokens = stats.get("output_tokens") or 0
+        total_tokens = self._compute_total_tokens(stats) or (input_tokens + output_tokens)
+        model_name = stats.get("model_name")
+
+        context_max = 0
+        if model_name and ModelUtils:
+            try:
+                context_max = ModelUtils.get_context_window(model_name)
+            except Exception:
+                context_max = 0
+
+        context_percent = int((total_tokens / context_max) * 100) if context_max else None
+        return {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "context_used": total_tokens,
+            "context_max": context_max or None,
+            "context_percent": context_percent,
+            "model": model_name,
+            "tool_calls_count": stats.get("tool_calls_count", 0),
+        }
 
     def format_streaming_line(self, elapsed_str: str) -> Optional[str]:
         """Format the streaming status line for the current agent. Returns None if no stats."""

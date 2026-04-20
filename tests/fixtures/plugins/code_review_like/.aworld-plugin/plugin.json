@@ -1,0 +1,21 @@
+{
+  "id": "code-review-like",
+  "name": "Code Review Like",
+  "version": "1.0.0",
+  "entrypoints": {
+    "commands": [
+      {
+        "id": "code-review",
+        "name": "code-review",
+        "description": "Review the current pull request",
+        "target": "commands/code-review.md",
+        "permissions": {
+          "allowed_tools": [
+            "terminal__mcp_execute_command --command 'gh pr view'",
+            "git_diff"
+          ]
+        }
+      }
+    ]
+  }
+}

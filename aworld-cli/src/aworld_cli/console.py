@@ -1,14 +1,18 @@
 import asyncio
+import inspect
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 from typing import List, Callable, Any, Union, Optional
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.completion import Completer, Completion, WordCompleter
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.styles import Style as PromptToolkitStyle
 from rich import box
 from rich.color import Color
 from rich.panel import Panel
@@ -168,6 +172,7 @@ class AWorldCLI:
         self._notification_poll_task = None
         self._notification_stop_event = None
         self._notification_drain_lock = asyncio.Lock()
+        self._active_prompt_session = None
         self._toolbar_workspace_name = self._detect_workspace_name()
         self._toolbar_git_branch = self._detect_git_branch()
 
@@ -201,57 +206,188 @@ class AWorldCLI:
         runtime,
         agent_name: str = "Aworld",
         mode: str = "Chat",
+        max_width: int | None = 160,
     ) -> str:
         """
         Build plain-text status-bar content.
 
         The bar is intentionally always present to avoid layout jumps.
         """
-        notification_center = getattr(runtime, "_notification_center", None)
-        if not notification_center:
-            cron_status = "Cron: offline"
-        else:
-            unread_count = notification_center.get_unread_count()
-            cron_status = f"Cron: {unread_count} unread" if unread_count > 0 else "Cron: clear"
+        if not self._should_render_status_bar(runtime):
+            return ""
 
-        return " | ".join([
-            f"Agent: {agent_name}",
-            f"Mode: {mode}",
+        if runtime and hasattr(runtime, "build_hud_context"):
+            hud_context = runtime.build_hud_context(
+                agent_name=agent_name,
+                mode=mode,
+                workspace_name=self._toolbar_workspace_name,
+                git_branch=self._toolbar_git_branch,
+            )
+        else:
+            notification_center = getattr(runtime, "_notification_center", None)
+            if not notification_center:
+                unread_count = -1
+            else:
+                unread_count = notification_center.get_unread_count()
+            hud_context = {
+                "workspace": {"name": self._toolbar_workspace_name},
+                "session": {"agent": agent_name, "mode": mode},
+                "notifications": {"cron_unread": unread_count},
+                "vcs": {"branch": self._toolbar_git_branch},
+            }
+
+        try:
+            plugin_lines = runtime.get_hud_lines(hud_context) if runtime and hasattr(runtime, "get_hud_lines") else []
+        except Exception as exc:
+            logger.warning(f"Failed to render HUD plugin lines: {exc}")
+            plugin_lines = []
+
+        if not plugin_lines:
+            fallback_segments = self._fallback_status_segments(hud_context, agent_name, mode)
+            return self._render_status_line(fallback_segments, max_width)
+
+        rendered_lines = []
+        for line in plugin_lines[:2]:
+            segments = list(getattr(line, "segments", ()) or ())
+            if not segments:
+                text = getattr(line, "text", "")
+                if text:
+                    segments = [str(text)]
+            if not segments:
+                continue
+            section = getattr(line, "section", "")
+            rendered_lines.append(self._render_status_line(segments, max_width, section=section))
+
+        if not rendered_lines:
+            fallback_segments = self._fallback_status_segments(hud_context, agent_name, mode)
+            return self._render_status_line(fallback_segments, max_width)
+
+        return "\n".join(rendered_lines)
+
+    def _should_render_status_bar(self, runtime) -> bool:
+        if runtime is None:
+            return False
+
+        if hasattr(runtime, "active_plugin_capabilities"):
+            try:
+                return "hud" in tuple(runtime.active_plugin_capabilities())
+            except Exception:
+                return True
+
+        return True
+
+    def _fallback_status_segments(self, hud_context: dict[str, Any], agent_name: str, mode: str) -> list[str]:
+        unread_count = hud_context.get("notifications", {}).get("cron_unread", -1)
+        if unread_count < 0:
+            cron_status = "Cron: offline"
+        elif unread_count > 0:
+            cron_status = f"Cron: {unread_count} unread"
+        else:
+            cron_status = "Cron: clear"
+
+        return [
+            f"Agent: {hud_context.get('session', {}).get('agent', agent_name)}",
+            f"Mode: {hud_context.get('session', {}).get('mode', mode)}",
             cron_status,
-            f"Workspace: {self._toolbar_workspace_name}",
-            f"Branch: {self._toolbar_git_branch}",
-            "Hint: /cron inbox",
-        ])
+            f"Workspace: {hud_context.get('workspace', {}).get('name', self._toolbar_workspace_name)}",
+            f"Branch: {hud_context.get('vcs', {}).get('branch', self._toolbar_git_branch)}",
+        ]
+
+    def _reduce_segments(
+        self,
+        segments: list[str],
+        max_width: int | None,
+        priority_labels: set[str] | None = None,
+    ) -> list[str]:
+        if max_width is None:
+            return list(segments)
+        kept = list(segments)
+        priority_labels = priority_labels or set()
+        while len(kept) > 1 and len(" | ".join(kept)) > max_width:
+            if len(kept) <= 2:
+                kept.pop()
+                continue
+            removable_index = None
+            for index in range(len(kept) - 1, -1, -1):
+                segment = kept[index]
+                label = segment.split(":", 1)[0].strip().lower()
+                if label not in priority_labels:
+                    removable_index = index
+                    break
+            if removable_index is None:
+                removable_index = len(kept) - 1
+            kept.pop(removable_index)
+        return kept
+
+    def _render_status_line(self, segments: list[str], max_width: int | None, section: str | None = None) -> str:
+        priority_labels = None
+        if section == "activity":
+            priority_labels = {"task", "ctx"}
+        reduced = self._reduce_segments(segments, max_width, priority_labels=priority_labels)
+        text = " | ".join(reduced)
+        if max_width is not None and max_width > 3 and len(text) > max_width:
+            return text[: max_width - 3].rstrip() + "..."
+        return text
 
     def _build_status_bar(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> HTML:
         """Build a styled prompt-toolkit status bar inspired by segmented system prompts."""
-        text = self._build_status_bar_text(runtime, agent_name=agent_name, mode=mode)
-        segments = [segment.strip() for segment in text.split("|")]
+        columns = shutil.get_terminal_size(fallback=(160, 0)).columns
+        max_width = columns if columns > 0 else None
+        text = self._build_status_bar_text(runtime, agent_name=agent_name, mode=mode, max_width=max_width)
+        lines = text.splitlines() or [text]
+        divider_style = "#4f5877"
 
-        segment_styles = [
-            ("#181b2d", "#84c7c6"),
-            ("#181b2d", "#d8def5"),
-            ("#181b2d", "#f2c14e" if "unread" in segments[2] else "#8ed081"),
-            ("#181b2d", "#b8c0da"),
-            ("#181b2d", "#a88bd8"),
-            ("#181b2d", "#8ea0c4"),
-        ]
-        divider_style = ("#181b2d", "#4f5877")
+        def _render_line(line_text: str) -> str:
+            segments = [segment.strip() for segment in line_text.split("|")]
+            has_unread = any("unread" in segment for segment in segments)
+            segment_styles = [
+                "#84c7c6",
+                "#d8def5",
+                "#f2c14e" if has_unread else "#8ed081",
+                "#b8c0da",
+                "#a88bd8",
+                "#8ea0c4",
+            ]
 
-        parts = []
-        for index, segment in enumerate(segments):
-            bg, fg = segment_styles[index] if index < len(segment_styles) else ("#181b2d", "#d8def5")
-            escaped = (
-                segment.replace("&", "&amp;")
-                .replace("<", "&lt;")
-                .replace(">", "&gt;")
+            parts = []
+            for index, segment in enumerate(segments):
+                fg = segment_styles[index] if index < len(segment_styles) else "#d8def5"
+                escaped = (
+                    segment.replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                )
+                parts.append(f"<style fg='{fg}'> {escaped} </style>")
+                if index < len(segments) - 1:
+                    parts.append(f"<style fg='{divider_style}'> | </style>")
+            if max_width is not None:
+                rendered_width = sum(len(segment) + 2 for segment in segments) + max(0, len(segments) - 1) * 3
+                pad_width = max(0, max_width - rendered_width)
+                if pad_width:
+                    parts.append(" " * pad_width)
+            return "".join(parts)
+
+        rendered_lines = []
+        if max_width is not None:
+            rendered_lines.append(f"<style fg='{divider_style}'>{'─' * max_width}</style>")
+        rendered_lines.extend(_render_line(line) for line in lines if line)
+        return HTML("\n".join(rendered_lines))
+
+    def _build_prompt_kwargs(self, runtime, agent_name: str = "Aworld", mode: str = "Chat") -> dict[str, Any]:
+        prompt_kwargs: dict[str, Any] = {"bottom_toolbar": None}
+        if runtime and self._should_render_status_bar(runtime):
+            prompt_kwargs["bottom_toolbar"] = lambda: self._build_status_bar(
+                runtime,
+                agent_name=agent_name,
+                mode=mode,
             )
-            parts.append(f"<style bg='{bg}' fg='{fg}'> {escaped} </style>")
-            if index < len(segments) - 1:
-                div_bg, div_fg = divider_style
-                parts.append(f"<style bg='{div_bg}' fg='{div_fg}'> | </style>")
-
-        return HTML("".join(parts))
+            prompt_kwargs["style"] = PromptToolkitStyle.from_dict(
+                {
+                    "bottom-toolbar": "fg:#d8def5 bg:default noreverse",
+                }
+            )
+            prompt_kwargs["refresh_interval"] = 0.1
+        return prompt_kwargs
 
     def _build_completion_entries(self, agent_names: Optional[List[str]] = None) -> tuple[list[str], dict[str, str]]:
         """
@@ -321,6 +457,34 @@ class AWorldCLI:
             runtime=runtime,
             event_loop=event_loop,
         )
+
+    def _create_prompt_session(self, completer: Completer) -> PromptSession:
+        history_path = Path.home() / ".aworld" / "cli_history"
+        history_path.parent.mkdir(parents=True, exist_ok=True)
+        session = PromptSession(
+            completer=completer,
+            complete_while_typing=True,
+            history=FileHistory(str(history_path)),
+        )
+        self._active_prompt_session = session
+        return session
+
+    def _ensure_prompt_session(self, session: PromptSession | None, completer: Completer) -> PromptSession:
+        if session is not None and session is self._active_prompt_session:
+            return session
+        return self._create_prompt_session(completer)
+
+    def _handle_runtime_plugin_capability_refresh(self, previous_capabilities: tuple[str, ...], runtime) -> None:
+        had_hud = "hud" in tuple(previous_capabilities or ())
+        has_hud = False
+        if runtime is not None and hasattr(runtime, "active_plugin_capabilities"):
+            try:
+                has_hud = "hud" in tuple(runtime.active_plugin_capabilities())
+            except Exception:
+                has_hud = had_hud
+
+        if had_hud != has_hud:
+            self._active_prompt_session = None
 
     def _get_gradient_text(self, text: str, start_color: str, end_color: str) -> Text:
         """Create a Text object with a horizontal gradient."""
@@ -1350,6 +1514,67 @@ class AWorldCLI:
             except Exception:
                 return []
 
+    def _invalidate_active_prompt(self) -> None:
+        session = self._active_prompt_session
+        if session is None:
+            return
+        app = getattr(session, "app", None)
+        if app is None or not hasattr(app, "invalidate"):
+            return
+        try:
+            app.invalidate()
+        except Exception:
+            pass
+
+    async def _render_cron_notifications_safe(self, notifications: List[Any]) -> None:
+        if not notifications:
+            return
+
+        def _render() -> None:
+            self.console.print()
+            self.render_cron_notifications(notifications)
+
+        if self._active_prompt_session is not None:
+            await run_in_terminal(_render)
+            return
+
+        _render()
+
+    async def _ensure_notification_poller(self, runtime) -> None:
+        if runtime is None or getattr(runtime, "_notification_center", None) is None:
+            return
+        if self._notification_poll_task and not self._notification_poll_task.done():
+            return
+        self._notification_stop_event = asyncio.Event()
+        self._notification_poll_task = asyncio.create_task(
+            self._notification_poller(runtime, stop_event=self._notification_stop_event)
+        )
+
+    async def _stop_notification_poller(self) -> None:
+        if not self._notification_poll_task:
+            return
+        if self._notification_stop_event:
+            self._notification_stop_event.set()
+        try:
+            await asyncio.wait_for(self._notification_poll_task, timeout=1.0)
+        except asyncio.TimeoutError:
+            self._notification_poll_task.cancel()
+            try:
+                await self._notification_poll_task
+            except asyncio.CancelledError:
+                pass
+        finally:
+            self._notification_poll_task = None
+            self._notification_stop_event = None
+
+    def _hud_owns_notification_state(self, runtime) -> bool:
+        if runtime is None or not hasattr(runtime, "active_plugin_capabilities"):
+            return False
+        try:
+            return "hud" in tuple(runtime.active_plugin_capabilities())
+        except Exception:
+            return False
+
     async def _notification_poller(
         self,
         runtime,
@@ -1367,11 +1592,15 @@ class AWorldCLI:
             try:
                 # Only poll when idle (not executing agent)
                 if not self._is_agent_executing:
+                    # When HUD is active, keep notifications unread so the toolbar/HUD
+                    # can surface the live inbox count until the user explicitly opens it.
+                    if self._hud_owns_notification_state(runtime):
+                        self._invalidate_active_prompt()
+                        await asyncio.sleep(poll_interval)
+                        continue
                     notifications = await self._drain_notifications_safe(runtime)
                     if notifications:
-                        # Print above current prompt line
-                        self.console.print()  # Add newline before notifications
-                        self.render_cron_notifications(notifications)
+                        await self._render_cron_notifications_safe(notifications)
 
                 await asyncio.sleep(poll_interval)
 
@@ -1495,6 +1724,118 @@ class AWorldCLI:
             self.console.print(f"[red]Error during permission prompt: {e}[/red]")
             return 'deny'
 
+    def _resolve_hook_text(self, value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, dict):
+            content = value.get('content')
+            if isinstance(content, str):
+                return content
+        return str(value)
+
+    def _get_plugin_runtime(self, executor_instance: Any = None) -> Any:
+        if executor_instance and hasattr(executor_instance, '_base_runtime'):
+            return executor_instance._base_runtime
+        return None
+
+    async def _run_plugin_hooks(
+        self,
+        hook_point: str,
+        event: dict[str, Any],
+        executor_instance: Any = None,
+    ) -> list[tuple[Any, Any]]:
+        runtime = self._get_plugin_runtime(executor_instance)
+        if runtime is None or not hasattr(runtime, 'get_plugin_hooks'):
+            return []
+
+        if hasattr(runtime, "run_plugin_hooks"):
+            result = runtime.run_plugin_hooks(
+                hook_point,
+                event=dict(event),
+                executor_instance=executor_instance,
+            )
+            if inspect.isawaitable(result):
+                return await result
+            return result or []
+
+        results = []
+        for hook in runtime.get_plugin_hooks(hook_point):
+            try:
+                state = {}
+                if hasattr(runtime, 'build_plugin_hook_state'):
+                    state = runtime.build_plugin_hook_state(hook.plugin_id, hook.scope, executor_instance)
+                results.append((hook, await hook.run(event=dict(event), state=state)))
+            except Exception as e:
+                logger.warning(
+                    f"Plugin hook '{getattr(hook, 'entrypoint_id', 'unknown')}' failed "
+                    f"at '{hook_point}': {e}"
+                )
+        return results
+
+    async def _execute_follow_up_prompt(
+        self,
+        agent_name: str,
+        executor: Callable[[str], Any],
+        follow_up_prompt: str,
+    ) -> None:
+        self.console.print(f"[bold green]{agent_name}[/bold green]:")
+        self._is_agent_executing = True
+        try:
+            await executor(follow_up_prompt)
+        finally:
+            self._is_agent_executing = False
+
+    async def _apply_stop_hooks(
+        self,
+        executor_instance: Any = None,
+        *,
+        force: bool = False,
+    ) -> tuple[bool, Optional[str]]:
+        from .core.context import get_default_history_path
+
+        if force:
+            return True, None
+
+        context = None
+        if executor_instance and hasattr(executor_instance, 'context'):
+            context = executor_instance.context
+
+        workspace_path = getattr(context, 'workspace_path', None) or os.getcwd()
+        event = {
+            'transcript_path': str(get_default_history_path()),
+            'workspace_path': workspace_path,
+            'session_id': getattr(executor_instance, 'session_id', None),
+            'task_id': getattr(context, 'task_id', None) if context else None,
+        }
+
+        for _, result in await self._run_plugin_hooks(
+            hook_point='stop',
+            event=event,
+            executor_instance=executor_instance,
+        ):
+            if result.system_message:
+                self.console.print(f"[dim]{result.system_message}[/dim]")
+
+            if result.action == 'allow':
+                continue
+
+            if result.action == 'deny':
+                reason = result.reason or 'Session termination blocked by plugin hook'
+                self.console.print(f"[yellow]⚠️ {reason}[/yellow]")
+                return False, None
+
+            if result.action == 'block_and_continue':
+                follow_up_prompt = self._resolve_hook_text(result.follow_up_prompt or result.updated_input)
+                if not follow_up_prompt:
+                    reason = result.reason or 'Session termination blocked by plugin hook'
+                    self.console.print(f"[yellow]⚠️ {reason}[/yellow]")
+                    return False, None
+                return False, follow_up_prompt
+
+        return True, None
+
     async def _apply_user_input_hooks(self, user_input: str, executor_instance: Any = None) -> tuple[bool, str]:
         """Run CLI user_input hooks and return whether execution should continue."""
         from aworld.core.event.base import Message
@@ -1563,16 +1904,41 @@ class AWorldCLI:
 
             updated_input = hook_result.headers.get('updated_input')
             if updated_input:
-                if isinstance(updated_input, dict) and 'content' in updated_input:
-                    user_input = updated_input['content']
-                elif isinstance(updated_input, str):
-                    user_input = updated_input
+                resolved_input = self._resolve_hook_text(updated_input)
+                if resolved_input:
+                    user_input = resolved_input
 
             if hook_result.headers.get('prevent_continuation'):
                 stop_reason = hook_result.headers.get('stop_reason', 'Hook stopped execution')
                 self.console.print(f"[yellow]⚠️ {stop_reason}[/yellow]")
                 should_execute = False
                 break
+
+        if should_execute:
+            plugin_event = {
+                'user_input': user_input,
+                'workspace_path': workspace_path,
+                'session_id': getattr(user_input_msg, 'session_id', None),
+                'task_id': getattr(context, 'task_id', None) if context else None,
+            }
+            for _, result in await self._run_plugin_hooks(
+                hook_point='user_input_received',
+                event=plugin_event,
+                executor_instance=executor_instance,
+            ):
+                if result.system_message:
+                    self.console.print(f"[dim]{result.system_message}[/dim]")
+
+                resolved_input = self._resolve_hook_text(result.updated_input)
+                if resolved_input:
+                    user_input = resolved_input
+                    plugin_event['user_input'] = user_input
+
+                if result.action == 'deny':
+                    decision_reason = result.reason or 'User input blocked by plugin hook'
+                    self.console.print(f"[red]🚫 {decision_reason}[/red]")
+                    should_execute = False
+                    break
 
         return should_execute, user_input
 
@@ -1655,7 +2021,7 @@ class AWorldCLI:
         # Build help text with both built-in and registered commands
         help_lines = [
             f"Starting chat session with [bold]{agent_name}[/bold].{session_id_info}{config_info}{skill_info}\n",
-            "Type 'exit' to quit.",
+            "Type 'exit' to quit. Use 'exit!' to force quit without stop hooks.",
             "Type '/switch [agent_name]' to switch agent.",
             "Type '/new' to create a new session.",
             "Type '/restore' or '/latest' to restore to the latest session.",
@@ -1688,6 +2054,7 @@ class AWorldCLI:
         # Setup completer and session only if in terminal
         agent_names = [a.name for a in available_agents] if available_agents else []
         session = None
+        completer = None
 
         if is_terminal:
             completer = self._build_session_completer(
@@ -1695,31 +2062,25 @@ class AWorldCLI:
                 runtime=runtime,
                 event_loop=asyncio.get_running_loop(),
             )
-            # 历史记录文件：上/下方向键可浏览并加载已执行过的指令
-            from pathlib import Path
-            history_path = Path.home() / ".aworld" / "cli_history"
-            history_path.parent.mkdir(parents=True, exist_ok=True)
-            session = PromptSession(
-                completer=completer,
-                complete_while_typing=True,  # 输入时即显示补全列表（带描述）
-                history=FileHistory(str(history_path)),
-            )
+            session = self._create_prompt_session(completer)
+            await self._ensure_notification_poller(runtime)
+        else:
+            self._active_prompt_session = None
 
         while True:
             try:
                 # Use prompt_toolkit in terminal, plain input() in non-terminal (e.g., IDE debugger)
-                if is_terminal and session:
+                if is_terminal and completer:
+                    session = self._ensure_prompt_session(session, completer)
+                    await self._ensure_notification_poller(runtime)
                     # Use prompt_toolkit for input with completion
                     # We use HTML for basic coloring of the prompt
                     prompt_text = "<b><cyan>You</cyan></b>: "
-                    prompt_kwargs = {}
-                    if runtime:
-                        prompt_kwargs["bottom_toolbar"] = lambda: self._build_status_bar(
-                            runtime,
-                            agent_name=agent_name,
-                            mode="Chat",
-                        )
-                        prompt_kwargs["refresh_interval"] = 0.1
+                    prompt_kwargs = self._build_prompt_kwargs(
+                        runtime,
+                        agent_name=agent_name,
+                        mode="Chat",
+                    )
                     user_input = await asyncio.to_thread(session.prompt, HTML(prompt_text), **prompt_kwargs)
                 else:
                     # Fallback to plain input() for non-terminal environments
@@ -1817,8 +2178,28 @@ class AWorldCLI:
                                 continue
 
                 # Handle explicit exit commands
-                if user_input.lower() in ("exit", "quit", "/exit", "/quit"):
+                normalized_input = user_input.lower()
+                force_exit = normalized_input in ("exit!", "quit!", "/exit!", "/quit!")
+                if normalized_input in ("exit", "quit", "/exit", "/quit") or force_exit:
+                    try:
+                        should_exit, follow_up_prompt = await self._apply_stop_hooks(
+                            executor_instance=executor_instance,
+                            force=force_exit,
+                        )
+                    except Exception as e:
+                        logger.warning(f"STOP hook execution failed: {e}")
+                        should_exit, follow_up_prompt = True, None
+
+                    if not should_exit:
+                        if follow_up_prompt:
+                            await self._execute_follow_up_prompt(
+                                agent_name=agent_name,
+                                executor=executor,
+                                follow_up_prompt=follow_up_prompt,
+                            )
+                        continue
                     self.console.print("[dim]Bye[/dim]")
+                    await self._stop_notification_poller()
                     return False
 
                 # Handle help command - show system information
@@ -1854,11 +2235,13 @@ class AWorldCLI:
                          target_agent = parts[1]
                          # Validate agent existence
                          if target_agent in agent_names:
+                             await self._stop_notification_poller()
                              return target_agent
                          else:
                              self.console.print(f"[red]Agent '{target_agent}' not found.[/red]")
                              continue
                     else:
+                        await self._stop_notification_poller()
                         return True # Return True to switch agent (show list)
                 
                 # Handle skills command
@@ -2250,7 +2633,8 @@ Add any custom instructions for AI agents working on this project.
                         try:
                             # Get built-in plugin directories
                             runtime = CliRuntime()
-                            plugin_dirs = runtime.plugin_dirs
+                            plugin_dirs = list(runtime.plugin_dirs)
+                            plugin_dirs.extend(getattr(runtime, "builtin_agent_dirs", []))
 
                             # Load agents from each plugin using PluginLoader
                             for plugin_dir in plugin_dirs:
@@ -2382,8 +2766,25 @@ Add any custom instructions for AI agents working on this project.
                     logger.info(f"\n[yellow]Interrupted. Input buffer: {buf_content!r}[/yellow]")
                     continue  # Stay in chat loop, show prompt again
                 else:
+                    try:
+                        should_exit, follow_up_prompt = await self._apply_stop_hooks(
+                            executor_instance=executor_instance
+                        )
+                    except Exception as e:
+                        logger.warning(f"STOP hook execution failed: {e}")
+                        should_exit, follow_up_prompt = True, None
+
+                    if not should_exit:
+                        if follow_up_prompt:
+                            await self._execute_follow_up_prompt(
+                                agent_name=agent_name,
+                                executor=executor,
+                                follow_up_prompt=follow_up_prompt,
+                            )
+                        continue
                     logger.info("\n[yellow]Interrupted. Exiting...[/yellow]")
                     self.console.print("[dim]Bye[/dim]")
+                    await self._stop_notification_poller()
                     return False  # Exit CLI when buffer is empty
             except Exception as e:
                 import traceback
@@ -2391,19 +2792,5 @@ Add any custom instructions for AI agents working on this project.
                 self.console.print(f"[red]An unexpected error occurred: {e}[/red]")
                 continue  # Add continue to prevent fall-through
 
-        # Cleanup: Stop background notification poller
-        if self._notification_poll_task:
-            self._notification_stop_event.set()
-            try:
-                await asyncio.wait_for(self._notification_poll_task, timeout=1.0)
-            except asyncio.TimeoutError:
-                # Force cancel if graceful shutdown times out
-                self._notification_poll_task.cancel()
-                try:
-                    await self._notification_poll_task
-                except asyncio.CancelledError:
-                    pass
-            finally:
-                self._notification_poll_task = None
-                self._notification_stop_event = None
+        await self._stop_notification_poller()
         return False

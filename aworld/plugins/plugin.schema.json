@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aworld.dev/schemas/plugin.schema.json",
+  "title": "AWorld Plugin Manifest",
+  "type": "object",
+  "required": ["id", "version"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "name": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "activation_scope": {
+      "type": "string",
+      "enum": ["workspace", "session", "global"]
+    },
+    "source": {
+      "type": "object"
+    },
+    "policy": {
+      "type": "object"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "lifecycle": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "entrypoints": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["id"],
+          "properties": {
+            "id": {"type": "string", "minLength": 1},
+            "name": {"type": "string"},
+            "target": {"type": "string"},
+            "scope": {"type": "string"},
+            "visibility": {"type": "string"},
+            "description": {"type": "string"},
+            "metadata": {"type": "object"},
+            "permissions": {"type": "object"}
+          },
+          "additionalProperties": true
+        }
+      }
+    }
+  },
+  "additionalProperties": true
+}
