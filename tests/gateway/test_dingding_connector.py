@@ -822,3 +822,44 @@ def test_connector_rewrites_bare_windows_path_in_plain_text(tmp_path: Path) -> N
 
     assert cleaned == "请查看 https://gateway.example.com/artifacts/windows-token"
     assert pending_files == []
+
+
+def test_connector_rewrites_mixed_markdown_and_plain_artifact_references(
+    tmp_path: Path,
+) -> None:
+    workspace_dir = tmp_path / "workspace"
+    report_path = workspace_dir / "report.html"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("report", encoding="utf-8")
+
+    class _FakeArtifactService:
+        def __init__(self) -> None:
+            self._counter = 0
+
+        def publish(self, path: Path | str) -> str:
+            assert Path(path) == report_path
+            self._counter += 1
+            return f"token-{self._counter}"
+
+        def build_external_url(self, token: str) -> str:
+            return f"https://gateway.example.com/artifacts/{token}"
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(enable_attachments=True, workspace_dir=str(workspace_dir)),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+        artifact_service=_FakeArtifactService(),
+    )
+    connector._get_oapi_access_token = lambda: asyncio.sleep(0, result=None)  # type: ignore[method-assign]
+
+    cleaned, pending_files = asyncio.run(
+        connector._process_local_media_links(
+            "[报告](artifact://report.html) artifact://report.html"
+        )
+    )
+
+    assert "[报告](https://gateway.example.com/artifacts/" in cleaned
+    assert "https://gateway.example.com/artifacts/" in cleaned
+    assert "artifact://report.html" not in cleaned
+    assert pending_files == []
