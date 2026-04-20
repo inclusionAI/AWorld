@@ -384,7 +384,7 @@ def test_enhancement_verifier_helpers_are_not_collected():
 
         try:
             from aworld.sandbox import Sandbox
-            from aworld_cli.plugins.smllc.agents.developer.developer import build_developer_swarm
+            from aworld_cli.builtin_agents.smllc.agents.developer.developer import build_developer_swarm
 
             # Test 4.1: Create shared sandbox
             start = time.time()
@@ -467,7 +467,7 @@ def test_enhancement_verifier_helpers_are_not_collected():
         import time
 
         try:
-            from aworld_cli.plugins.smllc.agents.developer.developer import build_developer_swarm
+            from aworld_cli.builtin_agents.smllc.agents.developer.developer import build_developer_swarm
 
             # Test 5.1: Developer tools expanded
             start = time.time()

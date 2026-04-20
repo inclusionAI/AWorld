@@ -127,7 +127,7 @@ def test_plugins_list_hides_legacy_builtin_plugins(monkeypatch, capsys):
                 "source": "built-in",
                 "has_agents": True,
                 "has_skills": False,
-                "path": "/repo/aworld-cli/src/aworld_cli/plugins/smllc",
+                "path": "/repo/aworld-cli/src/aworld_cli/builtin_agents/smllc",
             },
             {
                 "name": "aworld-hud",

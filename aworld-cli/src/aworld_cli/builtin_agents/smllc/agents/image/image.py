@@ -106,7 +106,7 @@ Current behavior:
 def build_image_swarm():
     """Build and configure the image generation agent swarm."""
     # APP_EVALUATOR_SKILLS_DIR: override skill read directory (plugin root with skills/ subdir)
-    plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
+    plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc bundle root
     env_skills_dir = Path(os.path.expanduser(os.environ.get("SKILLS_PATH"))).resolve()
     skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
 
