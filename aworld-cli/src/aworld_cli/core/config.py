@@ -367,7 +367,7 @@ def _apply_diffusion_models_config(models_config: Dict[str, Any]) -> None:
     if not provider:
         provider = (os.environ.get('DIFFUSION_PROVIDER') or '').strip()
     if not provider:
-        provider = 'video'
+        provider = 'ant_video'
     if temperature is None:
         env_temp = (os.environ.get('DIFFUSION_TEMPERATURE') or '').strip()
         if env_temp:
@@ -388,14 +388,23 @@ def _apply_audio_models_config(models_config: Dict[str, Any]) -> None:
     """
     Apply models.audio config to AUDIO_* env vars for audio agent.
     Priority: models.audio config > existing AUDIO_* env vars > LLM_*.
+
+    Optional keys:
+    - appid: Volcengine app id for ``volcano_openspeech_tts`` (sets AUDIO_APPID / VOLCANO_TTS_APPID).
+    - params: Extra ModelConfig.params (merged into AUDIO_MODEL_PARAMS_JSON for the audio agent).
     """
     audio_cfg = models_config.get('audio')
     audio_cfg = audio_cfg if isinstance(audio_cfg, dict) else {}
+    # Avoid stale merged params from a previous process env when config omits ``params``.
+    os.environ.pop("AUDIO_MODEL_PARAMS_JSON", None)
+
     api_key = (audio_cfg.get('api_key') or '').strip()
     model_name = (audio_cfg.get('model') or '').strip()
     base_url = (audio_cfg.get('base_url') or '').strip()
     provider = (audio_cfg.get('provider') or '').strip()
     temperature = audio_cfg.get('temperature')
+    appid = (audio_cfg.get('appid') or '').strip()
+    extra_params = audio_cfg.get("params")
 
     if not api_key:
         api_key = (os.environ.get('AUDIO_API_KEY') or '').strip()
@@ -445,6 +454,14 @@ def _apply_audio_models_config(models_config: Dict[str, Any]) -> None:
     os.environ['AUDIO_PROVIDER'] = provider
     if temperature is not None:
         os.environ['AUDIO_TEMPERATURE'] = str(float(temperature))
+
+    if appid:
+        os.environ['AUDIO_APPID'] = appid
+        os.environ['VOLCANO_TTS_APPID'] = appid
+    if isinstance(extra_params, dict) and extra_params:
+        os.environ['AUDIO_MODEL_PARAMS_JSON'] = json.dumps(
+            extra_params, ensure_ascii=False
+        )
 
 
 def _apply_avatar_models_config(models_config: Dict[str, Any]) -> None:
@@ -789,7 +806,7 @@ def has_model_config(config_dict: Dict[str, Any]) -> bool:
     for p in ('openai', 'anthropic', 'gemini'):
         if isinstance(models.get(p), dict) and (models[p].get("api_key") or "").strip():
             return True
-    for p in ('text_to_image', 'image_to_image', 'image', 'avatar'):
+    for p in ('text_to_image', 'image_to_image', 'image'):
         if isinstance(models.get(p), dict) and (models[p].get("api_key") or "").strip():
             return True
     return False
