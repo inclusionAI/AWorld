@@ -373,3 +373,28 @@ async def test_local_executor_task_interrupted_hook_reports_interrupted_status()
         },
     )
     executor._publish_hud_task_finished.assert_called_once_with("task-1", task_status="idle")
+
+
+@pytest.mark.asyncio
+async def test_local_executor_task_progress_hook_is_throttled(monkeypatch):
+    executor = object.__new__(LocalAgentExecutor)
+    executor.session_id = "session-1"
+    executor._run_plugin_task_hook = AsyncMock(return_value=[])
+
+    timestamps = iter((100.0, 100.5, 102.2))
+    monkeypatch.setattr("aworld_cli.executors.local.monotonic", lambda: next(timestamps))
+
+    event = {
+        "task_id": "task-1",
+        "session_id": "session-1",
+        "current_tool": "bash",
+        "elapsed_seconds": 1.0,
+        "usage": {"input_tokens": 10, "output_tokens": 5},
+    }
+
+    await executor._emit_task_progress_hook(event)
+    await executor._emit_task_progress_hook(event)
+    await executor._emit_task_progress_hook(event)
+
+    assert executor._run_plugin_task_hook.await_count == 2
+    executor._run_plugin_task_hook.assert_any_await("task_progress", event)
