@@ -376,11 +376,9 @@ class DingTalkConnector:
 
         result = content
         pending_files: list[PendingFileMessage] = []
-        processed_references: set[str] = set()
 
         for match in list(MARKDOWN_IMAGE_RE.finditer(result)):
             full_match, alt_text, raw_url = match.group(0), match.group(1), match.group(2)
-            processed_references.add(raw_url)
             local_path = self._extract_local_file_path(raw_url)
             if not local_path:
                 continue
@@ -399,7 +397,6 @@ class DingTalkConnector:
 
         for match in list(MARKDOWN_LINK_RE.finditer(result)):
             full_match, _link_text, raw_url = match.group(0), match.group(1), match.group(2)
-            processed_references.add(raw_url)
             local_path = self._extract_local_file_path(raw_url)
             if not local_path:
                 continue
@@ -425,14 +422,11 @@ class DingTalkConnector:
 
         def _replace_plain_reference(match: re.Match[str]) -> str:
             raw_reference = match.group(0)
+            if self._is_match_inside_markdown_link_or_image(result, match.start(), match.end()):
+                return raw_reference
             candidate_reference, trailing_punctuation = self._split_trailing_plain_reference(
                 raw_reference
             )
-            if (
-                raw_reference in processed_references
-                or candidate_reference in processed_references
-            ):
-                return raw_reference
             published_url = self._publish_local_reference(candidate_reference)
             if not published_url:
                 return raw_reference
@@ -763,6 +757,19 @@ class DingTalkConnector:
             trailing = candidate[-1] + trailing
             candidate = candidate[:-1]
         return candidate, trailing
+
+    @staticmethod
+    def _is_match_inside_markdown_link_or_image(
+        content: str,
+        match_start: int,
+        match_end: int,
+    ) -> bool:
+        return (
+            match_start >= 2
+            and content[match_start - 2 : match_start] == "]("
+            and match_end < len(content)
+            and content[match_end : match_end + 1] == ")"
+        )
 
     @staticmethod
     def _is_image_path(local_path: Path) -> bool:
