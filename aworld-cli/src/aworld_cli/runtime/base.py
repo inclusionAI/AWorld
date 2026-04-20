@@ -2,7 +2,6 @@
 Base runtime for CLI protocols.
 Provides common functionality for both local and remote runtimes.
 """
-import json
 from pathlib import Path
 from typing import List, Optional, Any
 from aworld.logs.util import logger
@@ -266,7 +265,11 @@ class BaseCliRuntime:
     def get_hud_lines(self, context: dict[str, Any]) -> list[Any]:
         from ..plugin_runtime.hud import collect_hud_lines
 
-        return collect_hud_lines(self._plugins, context)
+        return collect_hud_lines(
+            self._plugins,
+            context,
+            plugin_state_provider=self.build_plugin_hud_state,
+        )
 
     def build_plugin_hook_state(
         self,
@@ -279,19 +282,58 @@ class BaseCliRuntime:
         session_id = getattr(executor_instance, "session_id", None)
         if not session_id and context is not None:
             session_id = getattr(context, "session_id", None)
+        task_id = getattr(context, "task_id", None) if context is not None else None
 
+        return self._build_plugin_state(
+            plugin_id=plugin_id,
+            scope=scope,
+            session_id=session_id,
+            workspace_path=workspace_path,
+            task_id=task_id,
+            include_handle=True,
+        )
+
+    def build_plugin_hud_state(
+        self,
+        plugin_id: str,
+        scope: str,
+        context: dict[str, Any],
+    ) -> dict[str, Any]:
+        workspace = context.get("workspace", {}) if isinstance(context, dict) else {}
+        session = context.get("session", {}) if isinstance(context, dict) else {}
+        task = context.get("task", {}) if isinstance(context, dict) else {}
+
+        return self._build_plugin_state(
+            plugin_id=plugin_id,
+            scope=scope,
+            session_id=session.get("session_id"),
+            workspace_path=workspace.get("path"),
+            task_id=task.get("current_task_id"),
+            include_handle=False,
+        )
+
+    def _build_plugin_state(
+        self,
+        plugin_id: str,
+        scope: str,
+        session_id: Optional[str],
+        workspace_path: Optional[str],
+        task_id: Optional[str],
+        *,
+        include_handle: bool,
+    ) -> dict[str, Any]:
         state: dict[str, Any] = {}
+        handle = None
         state_path = self._resolve_plugin_state_path(
             plugin_id=plugin_id,
             scope=scope,
             session_id=session_id,
             workspace_path=workspace_path,
         )
-        if state_path is not None and state_path.exists():
+        if state_path is not None and self._plugin_state_store is not None:
             try:
-                payload = json.loads(state_path.read_text(encoding="utf-8"))
-                if isinstance(payload, dict):
-                    state.update(payload)
+                handle = self._plugin_state_store.handle(state_path)
+                state.update(handle.read())
             except Exception as exc:
                 logger.warning(f"Failed to read plugin state for {plugin_id}: {exc}")
 
@@ -299,10 +341,31 @@ class BaseCliRuntime:
             state.setdefault("session_id", session_id)
         if workspace_path:
             state.setdefault("workspace_path", workspace_path)
-        if context is not None and getattr(context, "task_id", None):
-            state.setdefault("task_id", context.task_id)
+        if task_id:
+            state.setdefault("task_id", task_id)
+        if include_handle and handle is not None:
+            state["__plugin_state__"] = handle
 
         return state
+
+    async def run_plugin_hooks(
+        self,
+        hook_point: str,
+        event: dict[str, Any],
+        executor_instance: Any = None,
+    ) -> list[tuple[Any, Any]]:
+        normalized = (hook_point or "").strip().lower()
+        results = []
+        for hook in self.get_plugin_hooks(normalized):
+            try:
+                state = self.build_plugin_hook_state(hook.plugin_id, hook.scope, executor_instance)
+                results.append((hook, await hook.run(event=dict(event), state=state)))
+            except Exception as exc:
+                logger.warning(
+                    f"Plugin hook '{getattr(hook, 'entrypoint_id', 'unknown')}' failed "
+                    f"at '{normalized}': {exc}"
+                )
+        return results
 
     def _resolve_plugin_state_path(
         self,

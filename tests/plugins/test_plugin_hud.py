@@ -468,6 +468,30 @@ def test_collect_hud_lines_treats_string_segments_as_single_segment(tmp_path):
     assert lines[0].segments == ("Only segment",)
 
 
+def test_collect_hud_lines_passes_plugin_state_to_provider(tmp_path):
+    hud_module = tmp_path / "hud.py"
+    hud_module.write_text(
+        "def render_lines(context, plugin_state):\n"
+        "    return [{\"section\": \"custom\", \"segments\": [plugin_state.get(\"status\", \"missing\")]}]\n",
+        encoding="utf-8",
+    )
+    entrypoint = SimpleNamespace(entrypoint_id="status", target="hud.py", scope="workspace")
+    manifest = SimpleNamespace(
+        plugin_root=tmp_path,
+        plugin_id="test-plugin",
+        entrypoints={"hud": [entrypoint]},
+    )
+    plugin = SimpleNamespace(manifest=manifest)
+
+    lines = collect_hud_lines(
+        [plugin],
+        context={"workspace": {"path": str(tmp_path)}},
+        plugin_state_provider=lambda plugin_id, scope, context: {"status": f"{plugin_id}:{scope}"},
+    )
+
+    assert lines[0].segments == ("test-plugin:workspace",)
+
+
 def test_status_bar_renders_multiline_html(monkeypatch):
     plugin_root = _get_builtin_aworld_hud_root()
     plugin = discover_plugins([plugin_root])[0]

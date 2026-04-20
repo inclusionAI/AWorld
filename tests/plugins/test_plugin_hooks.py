@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -7,6 +8,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 
 from aworld.plugins.discovery import discover_plugins
 from aworld_cli.plugin_runtime.hooks import PluginHookResult, load_plugin_hooks
+from aworld_cli.plugin_runtime.state import PluginStateStore
+from aworld_cli.runtime.base import BaseCliRuntime
 
 
 def test_load_plugin_hook_entrypoints():
@@ -89,3 +92,71 @@ def test_plugin_hooks_are_sorted_by_priority_then_identity(tmp_path):
     hooks = load_plugin_hooks(plugins)
 
     assert [hook.plugin_id for hook in hooks["stop"]] == ["beta", "alpha"]
+
+
+class DummyRuntime(BaseCliRuntime):
+    async def _load_agents(self):
+        return []
+
+    async def _create_executor(self, agent):
+        return None
+
+    def _get_source_type(self):
+        return "TEST"
+
+    def _get_source_location(self):
+        return "test://runtime"
+
+
+@pytest.mark.asyncio
+async def test_runtime_plugin_hook_can_persist_plugin_state(tmp_path):
+    plugin_root = tmp_path / "stateful"
+    (plugin_root / ".aworld-plugin").mkdir(parents=True)
+    (plugin_root / "hooks").mkdir()
+    (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+        (
+            "{"
+            "\"id\": \"stateful\", "
+            "\"name\": \"stateful\", "
+            "\"version\": \"1.0.0\", "
+            "\"entrypoints\": {"
+            "\"hooks\": ["
+            "{"
+            "\"id\": \"task-started\", "
+            "\"target\": \"hooks/task_started.py\", "
+            "\"scope\": \"session\", "
+            "\"metadata\": {\"hook_point\": \"task_started\"}"
+            "}"
+            "]"
+            "}"
+            "}"
+        ),
+        encoding="utf-8",
+    )
+    (plugin_root / "hooks" / "task_started.py").write_text(
+        "def handle_event(event, state):\n"
+        "    state['__plugin_state__'].update({'iteration': state.get('iteration', 0) + 1, 'task_id': event['task_id']})\n"
+        "    return {'action': 'allow'}\n",
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([plugin_root])[0]
+    runtime = DummyRuntime(agent_name="Aworld")
+    runtime._plugin_hooks = load_plugin_hooks([plugin])
+    runtime._plugin_state_store = PluginStateStore(tmp_path / "plugin-state")
+
+    executor_instance = SimpleNamespace(
+        session_id="session-1",
+        context=SimpleNamespace(workspace_path=str(tmp_path), task_id="task-1"),
+    )
+
+    await runtime.run_plugin_hooks(
+        "task_started",
+        event={"task_id": "task-1"},
+        executor_instance=executor_instance,
+    )
+
+    state = runtime.build_plugin_hook_state("stateful", "session", executor_instance=executor_instance)
+
+    assert state["iteration"] == 1
+    assert state["task_id"] == "task-1"

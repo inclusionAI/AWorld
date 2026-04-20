@@ -237,6 +237,36 @@ class LocalAgentExecutor(BaseAgentExecutor):
         except Exception:
             return False
 
+    async def _run_plugin_task_hook(
+        self,
+        hook_point: str,
+        event: dict[str, Any],
+    ) -> list[tuple[Any, Any]]:
+        runtime = getattr(self, "_base_runtime", None)
+        if runtime is None or not hasattr(runtime, "run_plugin_hooks"):
+            return []
+
+        payload = dict(event)
+        payload.setdefault("session_id", self.session_id)
+        context = getattr(self, "context", None)
+        if context is not None:
+            workspace_path = getattr(context, "workspace_path", None)
+            task_id = getattr(context, "task_id", None)
+            if workspace_path:
+                payload.setdefault("workspace_path", workspace_path)
+            if task_id:
+                payload.setdefault("task_id", task_id)
+
+        try:
+            return await runtime.run_plugin_hooks(
+                hook_point,
+                event=payload,
+                executor_instance=self,
+            )
+        except Exception as exc:
+            logger.warning(f"Plugin task hook '{hook_point}' failed: {exc}")
+            return []
+
     async def cleanup_resources(self) -> None:
         """
         Close MCP and other resources in the same event loop to avoid
@@ -536,6 +566,14 @@ class LocalAgentExecutor(BaseAgentExecutor):
             self._update_session_last_used(self.session_id)
             task = await self._build_task(task_content, session_id=self.session_id, image_urls=image_urls)
             self._publish_hud_task_started(task)
+            await self._run_plugin_task_hook(
+                "task_started",
+                {
+                    "task_id": task.id,
+                    "session_id": self.session_id,
+                    "message": task_content,
+                },
+            )
             
             # 🔥 Hook: PRE_RUN_TASK
             hook_kwargs = {
@@ -784,6 +822,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                                     current_tool=current_tool_name,
                                                     elapsed_seconds=elapsed_sec,
                                                 )
+                                                await self._run_plugin_task_hook(
+                                                    "task_progress",
+                                                    {
+                                                        "task_id": task.id,
+                                                        "session_id": self.session_id,
+                                                        "current_tool": current_tool_name,
+                                                        "elapsed_seconds": elapsed_sec,
+                                                        "usage": stream_token_stats.to_hud_usage(),
+                                                    },
+                                                )
                                             else:
                                                 logger.warning(f"📊 No token data available to update stats")
                                                 logger.warning(f"📊 Output structure: {output}")
@@ -987,6 +1035,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
                                             stream_token_stats=stream_token_stats,
                                             current_tool=current_tool_name,
                                             elapsed_seconds=elapsed_sec,
+                                        )
+                                        await self._run_plugin_task_hook(
+                                            "task_progress",
+                                            {
+                                                "task_id": task.id,
+                                                "session_id": self.session_id,
+                                                "current_tool": current_tool_name,
+                                                "elapsed_seconds": elapsed_sec,
+                                                "usage": stream_token_stats.to_hud_usage(),
+                                            },
                                         )
                                     else:
                                         logger.debug(f"📊 No token data to update - out_tok: {out_tok}, inp_tok: {inp_tok}, tc_count: {tc_count}")
@@ -1235,12 +1293,20 @@ class LocalAgentExecutor(BaseAgentExecutor):
                         logger.info(f"💾 Successfully saved query to history with token_stats: {token_stats is not None}")
                     
                 except Exception as e:
-                    logger.error(f"💾 Failed to save to history: {e}")
-                    import traceback
-                    logger.error(f"💾 Traceback: {traceback.format_exc()}")
-                    # Don't fail the whole request if history save fails
+                        logger.error(f"💾 Failed to save to history: {e}")
+                        import traceback
+                        logger.error(f"💾 Traceback: {traceback.format_exc()}")
+                        # Don't fail the whole request if history save fails
 
-
+                await self._run_plugin_task_hook(
+                    "task_completed",
+                    {
+                        "task_id": task.id,
+                        "session_id": self.session_id,
+                        "task_status": "idle",
+                        "final_answer": answer,
+                    },
+                )
                 self._publish_hud_task_finished(task.id, task_status="idle")
                 return answer
                 
@@ -1257,6 +1323,16 @@ class LocalAgentExecutor(BaseAgentExecutor):
                     # Don't let hook errors mask the original error
                     if self.console:
                         self.console.print(f"[yellow]⚠️ Hook error: {hook_err}[/yellow]")
+                await self._run_plugin_task_hook(
+                    "task_error",
+                    {
+                        "task_id": getattr(task, 'id', None) if 'task' in locals() else None,
+                        "session_id": self.session_id,
+                        "task_status": "error",
+                        "error": str(err),
+                        "error_type": type(err).__name__,
+                    },
+                )
 
                 error_msg = f"Error: {err}, traceback: {traceback.format_exc()}"
                 if self.console:

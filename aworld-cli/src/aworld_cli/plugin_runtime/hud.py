@@ -28,7 +28,40 @@ class HudLine:
     segments: tuple[str, ...] = ()
 
 
-def collect_hud_lines(plugins: Iterable[Any], context: dict[str, Any]) -> list[HudLine]:
+def _call_render_lines(
+    render_lines,
+    context: dict[str, Any],
+    plugin_state: dict[str, Any],
+):
+    signature = inspect.signature(render_lines)
+    parameters = list(signature.parameters.values())
+    positional = [
+        parameter
+        for parameter in parameters
+        if parameter.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    ]
+    accepts_varargs = any(parameter.kind == inspect.Parameter.VAR_POSITIONAL for parameter in parameters)
+    plugin_state_parameter = signature.parameters.get("plugin_state")
+
+    context_payload = dict(context)
+    plugin_state_payload = dict(plugin_state)
+    if accepts_varargs or len(positional) >= 2:
+        return render_lines(context_payload, plugin_state_payload)
+    if plugin_state_parameter is not None:
+        if plugin_state_parameter.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        ):
+            return render_lines(context_payload, plugin_state_payload)
+        return render_lines(context_payload, plugin_state=plugin_state_payload)
+    return render_lines(context_payload)
+
+
+def collect_hud_lines(
+    plugins: Iterable[Any],
+    context: dict[str, Any],
+    plugin_state_provider=None,
+) -> list[HudLine]:
     lines: list[HudLine] = []
     for plugin in plugins:
         resolver = PluginResourceResolver(Path(plugin.manifest.plugin_root), plugin.manifest.plugin_id)
@@ -59,7 +92,15 @@ def collect_hud_lines(plugins: Iterable[Any], context: dict[str, Any]) -> list[H
                     )
                 _HUD_RENDER_CACHE[cache_key] = render_lines
 
-            payloads = render_lines(dict(context))
+            plugin_state = {}
+            if plugin_state_provider is not None:
+                plugin_state = plugin_state_provider(
+                    plugin.manifest.plugin_id,
+                    getattr(entrypoint, "scope", "workspace"),
+                    dict(context),
+                ) or {}
+
+            payloads = _call_render_lines(render_lines, context, plugin_state)
             if inspect.isawaitable(payloads):
                 raise ValueError("plugin hud render_lines must be synchronous")
 
