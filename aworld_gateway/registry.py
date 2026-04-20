@@ -83,14 +83,18 @@ class ChannelRegistry:
         config: BaseChannelConfig,
         *,
         router: object | None = None,
+        artifact_service: object | None = None,
     ) -> ChannelAdapter | None:
         adapter_class = self.get_adapter_class(channel_id)
         if adapter_class is None:
             return None
         init_params = inspect.signature(adapter_class.__init__).parameters
+        adapter_kwargs: dict[str, object] = {}
         if router is not None and "router" in init_params:
-            return adapter_class(config, router=router)
-        return adapter_class(config)
+            adapter_kwargs["router"] = router
+        if artifact_service is not None and "artifact_service" in init_params:
+            adapter_kwargs["artifact_service"] = artifact_service
+        return adapter_class(config, **adapter_kwargs)
 
     def is_configured(
         self,

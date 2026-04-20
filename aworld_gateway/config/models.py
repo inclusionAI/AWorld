@@ -12,6 +12,7 @@ class StrictConfigModel(BaseModel):
 class GatewayServerConfig(StrictConfigModel):
     host: str = "127.0.0.1"
     port: int = 18888
+    public_base_url: str | None = None
 
 
 class BaseChannelConfig(StrictConfigModel):

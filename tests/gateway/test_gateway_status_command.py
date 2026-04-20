@@ -47,9 +47,11 @@ def test_serve_gateway_bootstraps_runtime_http_app_and_uvicorn(
     cfg = GatewayConfig()
     cfg.gateway.host = "0.0.0.0"
     cfg.gateway.port = 18999
+    cfg.gateway.public_base_url = "https://gateway.example.com"
     cfg.channels.telegram.enabled = True
     cfg.channels.telegram.default_agent_id = "telegram-agent"
     cfg.channels.telegram.webhook_path = "/hooks/telegram"
+    cfg.channels.dingding.workspace_dir = None
 
     calls: dict[str, object] = {}
     telegram_adapter = object()
@@ -95,11 +97,12 @@ def test_serve_gateway_bootstraps_runtime_http_app_and_uvicorn(
             calls["registry_created"] = calls.get("registry_created", 0) + 1
 
     class FakeRuntime:
-        def __init__(self, *, config, registry, router):
+        def __init__(self, *, config, registry, router, artifact_service):
             calls["runtime_init"] = {
                 "config": config,
                 "registry": registry,
                 "router": router,
+                "artifact_service": artifact_service,
             }
 
         async def start(self) -> None:
@@ -137,11 +140,13 @@ def test_serve_gateway_bootstraps_runtime_http_app_and_uvicorn(
         runtime_status,
         telegram_adapter,
         telegram_webhook_path,
+        artifact_service,
     ):
         calls["create_gateway_app"] = {
             "runtime_status": runtime_status,
             "telegram_adapter": telegram_adapter,
             "telegram_webhook_path": telegram_webhook_path,
+            "artifact_service": artifact_service,
         }
         return "fake-app"
 
@@ -175,6 +180,14 @@ def test_serve_gateway_bootstraps_runtime_http_app_and_uvicorn(
     assert calls["loader_base_dir"] == tmp_path
     assert calls["agent_resolver_default_agent_id"] == "aworld"
     assert calls["runtime_started"] is True
+    expected_workspace_path = (
+        tmp_path / ".aworld" / "gateway" / "dingding"
+    ).resolve()
+    runtime_artifact_service = calls["runtime_init"]["artifact_service"]
+    app_artifact_service = calls["create_gateway_app"]["artifact_service"]
+    assert runtime_artifact_service is app_artifact_service
+    assert runtime_artifact_service._allowed_roots == [expected_workspace_path]
+    assert cfg.channels.dingding.workspace_dir == str(expected_workspace_path)
     assert calls["create_gateway_app"] == {
         "runtime_status": {
             "state": "running",
@@ -182,6 +195,7 @@ def test_serve_gateway_bootstraps_runtime_http_app_and_uvicorn(
         },
         "telegram_adapter": telegram_adapter,
         "telegram_webhook_path": "/hooks/telegram",
+        "artifact_service": app_artifact_service,
     }
     assert calls["uvicorn_config"]["app"] == "fake-app"
     assert calls["uvicorn_config"]["host"] == "0.0.0.0"

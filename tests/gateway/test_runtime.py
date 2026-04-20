@@ -266,7 +266,14 @@ def test_runtime_uses_registry_adapter_builder_and_stop_reconciles_state():
         def is_configured(self, channel_id: str, config):
             return channel_id == "web"
 
-        def build_adapter(self, channel_id: str, config, *, router=None):
+        def build_adapter(
+            self,
+            channel_id: str,
+            config,
+            *,
+            router=None,
+            artifact_service=None,
+        ):
             if channel_id == "web":
                 self.built_configs.append(config)
                 return FakeAdapter(config)
@@ -331,7 +338,14 @@ def test_runtime_degrades_failing_channel_without_blocking_other_channels():
         def is_configured(self, channel_id: str, config):
             return channel_id in {"web", "feishu"}
 
-        def build_adapter(self, channel_id: str, config, *, router=None):
+        def build_adapter(
+            self,
+            channel_id: str,
+            config,
+            *,
+            router=None,
+            artifact_service=None,
+        ):
             if channel_id == "web":
                 return FailingAdapter(config)
             if channel_id == "feishu":
@@ -352,3 +366,56 @@ def test_runtime_degrades_failing_channel_without_blocking_other_channels():
     assert status["channels"]["web"]["error"] == "boom"
     assert status["channels"]["feishu"]["running"] is True
     assert status["channels"]["feishu"]["state"] == "running"
+
+
+def test_runtime_passes_artifact_service_to_registry_builder():
+    class FakeAdapter:
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+    class FakeRegistry(ChannelRegistry):
+        def __init__(self) -> None:
+            super().__init__()
+            self.captured_artifact_service = None
+
+        def list_channels(self):
+            return {"web": {"label": "Web", "implemented": True}}
+
+        def get_meta(self, channel_id: str):
+            if channel_id == "web":
+                return {"label": "Web", "implemented": True}
+            return None
+
+        def is_configured(self, channel_id: str, config):
+            return channel_id == "web"
+
+        def build_adapter(
+            self,
+            channel_id: str,
+            config,
+            *,
+            router=None,
+            artifact_service=None,
+        ):
+            if channel_id != "web":
+                return None
+            self.captured_artifact_service = artifact_service
+            return FakeAdapter()
+
+    config = GatewayConfig()
+    config.channels.web.enabled = True
+    registry = FakeRegistry()
+    shared_artifact_service = object()
+    runtime = GatewayRuntime(
+        config=config,
+        registry=registry,
+        router=None,
+        artifact_service=shared_artifact_service,
+    )
+
+    asyncio.run(runtime.start())
+
+    assert registry.captured_artifact_service is shared_artifact_service
