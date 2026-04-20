@@ -14,7 +14,7 @@ Example usage:
     agent = AudioAgent(
         name="audio_gen",
         conf=AgentConfig(
-            llm_provider="speech",
+            llm_provider="doubao_tts",
             llm_api_key="YOUR_API_KEY",
             llm_base_url="https://your-api-endpoint.com"
         ),
@@ -50,7 +50,11 @@ from aworld.core.event.base import Message, Constants
 from aworld.events.util import send_message
 from aworld.logs.util import logger
 from aworld.models.doubao_tts_provider import DoubaoTTSProvider
+from aworld.models.volcano_openspeech_tts_provider import VolcanoOpenSpeechTTSProvider
 from aworld.models.model_response import ModelResponse
+
+# TTS backends supported by AudioAgent (company gateway or direct OpenSpeech HTTP).
+_AUDIO_TTS_PROVIDERS = frozenset({"doubao_tts", "volcano_openspeech_tts"})
 from aworld.output.base import Output
 
 
@@ -74,19 +78,22 @@ class AudioAgent(LLMAgent):
         auto_filename: Whether to auto-generate filenames
     """
     
-    @staticmethod
-    def _ensure_doubao_tts_config(conf):
-        """Ensure the config uses the speech provider.
+    DEFAULT_MALE_VOICE_TYPE = "zh_male_liufei_uranus_bigtts"
+    DEFAULT_FEMALE_VOICE_TYPE = "zh_male_sophie_uranus_bigtts"
 
-        This method forcibly sets the llm_provider to 'speech' because
-        AudioAgent only works with DoubaoTTSProvider. If the user provided
-        a different provider, it will be overridden with a warning.
+    @staticmethod
+    def _ensure_audio_tts_provider_config(conf):
+        """Normalize config to a supported TTS provider.
+        
+        Allowed ``llm_provider`` values: ``doubao_tts`` (company genericCall gateway),
+        ``volcano_openspeech_tts`` (direct OpenSpeech HTTP). If missing, defaults to
+        ``doubao_tts``. Any other value is replaced with ``doubao_tts`` and a warning.
         
         Args:
             conf: Input configuration (AgentConfig, dict, or ConfigDict)
             
         Returns:
-            A new config object with llm_provider set to 'speech'
+            Config with ``llm_provider`` set to a supported TTS provider
             
         Raises:
             ValueError: If conf is None
@@ -99,7 +106,6 @@ class AudioAgent(LLMAgent):
                 "llm_api_key, and llm_base_url."
             )
         
-        # Check if provider needs to be overridden
         original_provider = None
         if isinstance(conf, AgentConfig):
             original_provider = conf.llm_config.llm_provider
@@ -108,34 +114,28 @@ class AudioAgent(LLMAgent):
         elif isinstance(conf, dict):
             original_provider = conf.get('llm_provider')
         
-        # Log warning if overriding
-        if original_provider and original_provider not in ("speech", "doubao_tts"):
+        resolved = original_provider
+        if not resolved:
+            resolved = "doubao_tts"
+        elif resolved not in _AUDIO_TTS_PROVIDERS:
             logger.warning(
                 f"AudioAgent: Overriding llm_provider from '{original_provider}' "
-                f"to 'speech'. AudioAgent only works with DoubaoTTSProvider."
+                f"to 'doubao_tts'. Supported TTS providers: {sorted(_AUDIO_TTS_PROVIDERS)}."
             )
-
-        # Create a new AgentConfig with speech provider
+            resolved = "doubao_tts"
+        
         if isinstance(conf, AgentConfig):
-            # For AgentConfig, we need to modify llm_config
-            # Get the llm_config dict
             llm_config_dict = conf.llm_config.model_dump(exclude_none=True)
-            llm_config_dict['llm_provider'] = "speech"
-            
-            # Create new ModelConfig
+            llm_config_dict['llm_provider'] = resolved
             new_llm_config = ModelConfig(**llm_config_dict)
-            
-            # Create new AgentConfig with the modified llm_config
             conf_dict = conf.model_dump(exclude_none=True)
             conf_dict['llm_config'] = new_llm_config
-            
             return AgentConfig(**conf_dict)
         elif isinstance(conf, dict):
-            # Modify dict directly
-            conf['llm_provider'] = "speech"
+            conf = dict(conf)
+            conf['llm_provider'] = resolved
             return conf
         else:
-            # For other types (ConfigDict, etc.), try to handle gracefully
             logger.warning(
                 f"AudioAgent: Unexpected config type {type(conf).__name__}. "
                 f"Attempting to proceed anyway."
@@ -162,8 +162,8 @@ class AudioAgent(LLMAgent):
         Args:
             name: Agent name
             conf: AgentConfig specifying the TTS provider, API key, and base URL.
-                Must not be None. The llm_provider will be forcibly set to
-                'speech' regardless of the input value.
+                Must not be None. ``llm_provider`` must be ``doubao_tts`` or
+                ``volcano_openspeech_tts`` (or omitted, defaulting to ``doubao_tts``).
             desc: Agent description exposed as tool description
             agent_id: Explicit agent ID; auto-generated if None
             default_voice_type: Default voice type identifier
@@ -180,8 +180,7 @@ class AudioAgent(LLMAgent):
             ValueError: If conf is None or invalid
             TypeError: If the provider is not DoubaoTTSProvider after initialization
         """
-        # Validate and ensure speech config
-        conf = self._ensure_doubao_tts_config(conf)
+        conf = self._ensure_audio_tts_provider_config(conf)
         
         super().__init__(
             name=name,
@@ -191,16 +190,15 @@ class AudioAgent(LLMAgent):
             **kwargs,
         )
         
-        # Verify that the provider is DoubaoTTSProvider
         if self.llm and self.llm.provider:
-            if not isinstance(self.llm.provider, DoubaoTTSProvider):
+            if not isinstance(
+                self.llm.provider,
+                (DoubaoTTSProvider, VolcanoOpenSpeechTTSProvider),
+            ):
                 error_msg = (
-                    f"[AudioAgent:{self.id()}] Expected DoubaoTTSProvider, "
-                    f"but got {type(self.llm.provider).__name__}. "
-                    f"AudioAgent only works with DoubaoTTSProvider. "
-                    f"Config llm_provider was set to 'speech', but provider "
-                    f"initialization failed. Please check your provider registry and "
-                    f"ensure DoubaoTTSProvider is properly registered."
+                    f"[AudioAgent:{self.id()}] Expected DoubaoTTSProvider or "
+                    f"VolcanoOpenSpeechTTSProvider, but got {type(self.llm.provider).__name__}. "
+                    f"Check llm_provider and provider registration."
                 )
                 logger.error(error_msg)
                 raise TypeError(error_msg)
@@ -213,7 +211,18 @@ class AudioAgent(LLMAgent):
             logger.error(error_msg)
             raise RuntimeError(error_msg)
         
-        self.default_voice_type = default_voice_type or "zh_male_M392_conversation_wvae_bigtts"
+        llm_params = getattr(getattr(self.conf, "llm_config", None), "params", {}) or {}
+        self.default_voice_type = (
+            default_voice_type
+            or llm_params.get("voice_type")
+            or self.DEFAULT_MALE_VOICE_TYPE
+        )
+        self.default_male_voice_type = (
+            llm_params.get("default_male_voice_type") or self.DEFAULT_MALE_VOICE_TYPE
+        )
+        self.default_female_voice_type = (
+            llm_params.get("default_female_voice_type") or self.DEFAULT_FEMALE_VOICE_TYPE
+        )
         self.default_encoding = default_encoding
         self.default_speed_ratio = default_speed_ratio
         self.output_dir = output_dir or os.getcwd()
@@ -266,7 +275,13 @@ class AudioAgent(LLMAgent):
             return [ActionModel(agent_name=self.id(), policy_info=error_msg)]
         
         # Resolve audio parameters (observation.info overrides instance defaults)
-        voice_type: str = obs_info.pop("voice_type", self.default_voice_type)
+        voice_gender: str = str(obs_info.pop("voice_gender", "male")).strip().lower()
+        resolved_default_voice = self.default_voice_type
+        if voice_gender in ("female", "woman", "girl", "f"):
+            resolved_default_voice = self.default_female_voice_type
+        elif voice_gender in ("male", "man", "boy", "m"):
+            resolved_default_voice = self.default_male_voice_type
+        voice_type: str = obs_info.pop("voice_type", resolved_default_voice)
         encoding: str = obs_info.pop("encoding", self.default_encoding)
         speed_ratio: float = obs_info.pop("speed_ratio", self.default_speed_ratio)
         uid: Optional[str] = obs_info.pop("uid", None)
@@ -407,11 +422,11 @@ class AudioAgent(LLMAgent):
         provider = self.llm.provider
         
         # Verify provider type
-        if not isinstance(provider, DoubaoTTSProvider):
+        if not isinstance(provider, (DoubaoTTSProvider, VolcanoOpenSpeechTTSProvider)):
             raise TypeError(
-                f"AudioAgent requires DoubaoTTSProvider, "
+                f"AudioAgent requires DoubaoTTSProvider or VolcanoOpenSpeechTTSProvider, "
                 f"but got {type(provider).__name__}. "
-                f"Please ensure conf.llm_provider is set to 'speech'."
+                f"Set llm_provider to 'doubao_tts' or 'volcano_openspeech_tts'."
             )
         
         # Check if provider has the required methods
