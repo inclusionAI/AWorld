@@ -2,14 +2,26 @@
 # Copyright (c) inclusionAI.
 import dataclasses
 
-from aworld.evaluations.base import EvalResult, EvalTask, EvalDataset
+from aworld.evaluations.base import EvalResult, EvalTask, EvalDataset, EvalDataCase
 from aworld.evaluations.recoder.base import EvalRecorder
 
 
 class EvalDatasetRecorder(EvalRecorder[EvalDataset, EvalDataset]):
+    @staticmethod
+    def _coerce_eval_dataset(eval_dataset: EvalDataset) -> EvalDataset:
+        raw_cases = getattr(eval_dataset, 'eval_cases', [])
+        normalized_cases = [
+            case if isinstance(case, EvalDataCase) else EvalDataCase(**case)
+            for case in raw_cases
+        ]
+
+        dataset_data = dataclasses.asdict(eval_dataset)
+        dataset_data['eval_cases'] = normalized_cases
+        return EvalDataset(**dataset_data)
+
     # TODO: use Dataset ability
     async def record(self, eval_input: EvalDataset, **kwargs) -> EvalDataset:
-        eval_dataset = EvalDataset(**dataclasses.asdict(eval_input))
+        eval_dataset = self._coerce_eval_dataset(eval_input)
         await self.storage.create_data(eval_dataset.eval_dataset_id, eval_dataset)
         return eval_dataset
 
@@ -22,7 +34,10 @@ class EvalDatasetRecorder(EvalRecorder[EvalDataset, EvalDataset]):
         Returns:
             EvalDataset: the eval dataset.
         """
-        return await self.storage.get_data(key)
+        stored_dataset = await self.storage.get_data(key)
+        if stored_dataset is None:
+            return stored_dataset
+        return self._coerce_eval_dataset(stored_dataset)
 
 
 class EvalResultRecorder(EvalRecorder[EvalResult, EvalResult]):

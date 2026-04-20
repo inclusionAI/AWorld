@@ -163,6 +163,7 @@ def build_stream_renderable(
     format_tool_calls_fn: Callable[[List[Any]], List[str]],
     format_elapsed_fn: Callable[[float], str],
     config: StreamDisplayConfig,
+    show_stats_line: bool = True,
 ) -> Group:
     """
     Build the combined Rich renderable for Live display.
@@ -172,7 +173,7 @@ def build_stream_renderable(
     elapsed_str = format_elapsed_fn(
         (datetime.now() - status_start_time).total_seconds()
     ) if status_start_time else "0.0s"
-    msg = stream_token_stats.format_streaming_line(elapsed_str)
+    msg = stream_token_stats.format_streaming_line(elapsed_str) if show_stats_line else None
     if msg:
         parts.append(Text.from_markup(msg))
     stats = stream_token_stats.get_current_stats()
@@ -299,6 +300,7 @@ def print_buffer_to_console(
     format_tool_calls_fn: Callable[[List[Any]], List[str]],
     status_start_time: Optional[datetime] = None,
     format_elapsed_fn: Optional[Callable[[float], str]] = None,
+    show_stats_line: bool = True,
 ) -> None:
     """Print buffer content to console so it persists after Live stops."""
     if not (buffer.has_content() or buffer.has_tool_calls() or buffer.has_tool_results()):
@@ -307,7 +309,7 @@ def print_buffer_to_console(
     aname = (stats or {}).get("agent_name") or "Assistant"
     # Print stats line first (before clear) so it persists in re-output
     # Only show stats when we have content or tool_calls; skip when buffer has ONLY tool results
-    if status_start_time and format_elapsed_fn and stats and (buffer.has_content() or buffer.has_tool_calls()):
+    if show_stats_line and status_start_time and format_elapsed_fn and stats and (buffer.has_content() or buffer.has_tool_calls()):
         elapsed_str = format_elapsed_fn(
             (datetime.now() - status_start_time).total_seconds()
         )
@@ -346,12 +348,14 @@ class StreamDisplayController:
         format_tool_calls_fn: Callable[[List[Any]], List[str]],
         format_elapsed_fn: Callable[[float], str] = format_elapsed,
         config: Optional[StreamDisplayConfig] = None,
+        show_stats_line: bool = True,
     ):
         self.console = console
         self.stream_token_stats = stream_token_stats
         self.format_tool_calls_fn = format_tool_calls_fn
         self.format_elapsed_fn = format_elapsed_fn
         self.config = config or StreamDisplayConfig()
+        self.show_stats_line = show_stats_line
 
         self.buffer = StreamDisplayBuffer()
         self.loading_status: Optional[Status] = None
@@ -409,6 +413,7 @@ class StreamDisplayController:
                     self.format_tool_calls_fn,
                     status_start_time=self.status_start_time,
                     format_elapsed_fn=self.format_elapsed_fn,
+                    show_stats_line=self.show_stats_line,
                 )
                 self.buffer.clear()
             self.stream_live.stop()
@@ -452,6 +457,7 @@ class StreamDisplayController:
             self.format_tool_calls_fn,
             self.format_elapsed_fn,
             self.config,
+            show_stats_line=self.show_stats_line,
         )
         tool_lines = self.format_tool_calls_fn(self.buffer.accumulated_tool_calls) if self.buffer.accumulated_tool_calls else []
         if (
@@ -481,6 +487,7 @@ class StreamDisplayController:
                     self.format_tool_calls_fn,
                     status_start_time=self.status_start_time,
                     format_elapsed_fn=self.format_elapsed_fn,
+                    show_stats_line=self.show_stats_line,
                 )
             self.stream_token_stats.clear()
             self.buffer.clear()
@@ -540,7 +547,7 @@ class StreamDisplayController:
                 continue
             if self.loading_status:
                 if self.streaming_mode:
-                    msg = self.stream_token_stats.format_streaming_line(elapsed_str)
+                    msg = self.stream_token_stats.format_streaming_line(elapsed_str) if self.show_stats_line else None
                     status_msg = f"[dim]{msg}[/dim]" if msg else f"[dim]   {self.base_message} [{elapsed_str}][/dim]"
                 else:
                     status_msg = f"[dim]   {self.base_message} [{elapsed_str}][/dim]"

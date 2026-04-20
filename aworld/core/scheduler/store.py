@@ -14,6 +14,7 @@ from typing import List, Optional, Dict, Any, Iterator
 from datetime import UTC, datetime
 
 from aworld.logs.util import logger
+from .normalization import normalize_tool_names
 from .types import CronJob, CronSchedule, CronPayload, CronJobState
 
 
@@ -34,14 +35,7 @@ def _coerce_bool(value: Any) -> bool:
 
 
 def _coerce_tool_names(value: Any) -> List[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item) for item in value]
-    if isinstance(value, str):
-        stripped = value.strip()
-        return [stripped] if stripped else []
-    return [str(value)]
+    return normalize_tool_names(value)
 
 
 def _coerce_optional_int(value: Any) -> Optional[int]:
