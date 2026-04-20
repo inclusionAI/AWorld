@@ -312,3 +312,26 @@ EOF
 
         assert should_exit is False
         assert follow_up_prompt == 'keep going'
+
+    @pytest.mark.asyncio
+    async def test_apply_stop_hooks_force_exit_bypasses_plugin_hooks(self, tmp_path):
+        class FakeRuntime:
+            def get_plugin_hooks(self, hook_point):
+                raise AssertionError("force exit should bypass stop hooks")
+
+        cli = AWorldCLI()
+        context = Context(task_id='test-task-stop-hook', session=Session())
+        context.workspace_path = str(tmp_path)
+
+        executor_instance = MagicMock()
+        executor_instance.context = context
+        executor_instance._base_runtime = FakeRuntime()
+        executor_instance.session_id = 'test-session-stop-hook'
+
+        should_exit, follow_up_prompt = await cli._apply_stop_hooks(
+            executor_instance=executor_instance,
+            force=True,
+        )
+
+        assert should_exit is True
+        assert follow_up_prompt is None

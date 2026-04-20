@@ -3,6 +3,7 @@ from types import MappingProxyType
 
 from aworld.plugins.manifest import load_plugin_manifest
 from aworld.plugins.models import PluginEntrypoint
+from aworld.plugins.validation import get_plugin_manifest_schema_path, validate_plugin_path
 
 
 def test_load_plugin_manifest_exposes_typed_entrypoints():
@@ -21,6 +22,24 @@ def test_load_plugin_manifest_exposes_typed_entrypoints():
     assert isinstance(command_entrypoint.permissions, MappingProxyType)
     assert command_entrypoint.entrypoint_id == "echo"
     assert command_entrypoint.target == "commands/echo.md"
+
+
+def test_plugin_manifest_schema_file_exists():
+    schema_path = get_plugin_manifest_schema_path()
+
+    assert schema_path.exists()
+    assert schema_path.name == "plugin.schema.json"
+
+
+def test_validate_plugin_path_returns_manifest_plugin_details():
+    plugin_root = Path("tests/fixtures/plugins/framework_minimal").resolve()
+
+    result = validate_plugin_path(plugin_root)
+
+    assert result["valid"] is True
+    assert result["plugin_id"] == "framework-minimal"
+    assert result["framework_source"] == "manifest"
+    assert result["capabilities"] == ["commands", "hud"]
 
 
 def test_invalid_duplicate_entrypoint_ids_raise_value_error(tmp_path):

@@ -42,6 +42,7 @@ class PluginsCommand(Command):
             "/plugins enable": "Enable an installed framework plugin",
             "/plugins disable": "Disable an installed framework plugin",
             "/plugins reload": "Reload plugin metadata from disk",
+            "/plugins validate": "Validate an installed plugin",
         }
 
     async def execute(self, context: CommandContext) -> str:
@@ -54,7 +55,7 @@ class PluginsCommand(Command):
         action = parts[0].lower()
         plugin_name = parts[1].strip() if len(parts) > 1 else ""
 
-        if action in {"enable", "disable", "reload"}:
+        if action in {"enable", "disable", "reload", "validate"}:
             if not plugin_name:
                 return f"Usage: /plugins {action} <plugin_name>"
 
@@ -74,6 +75,15 @@ class PluginsCommand(Command):
                         f"Location: {plugin_state['path']}"
                         f"{self._refresh_runtime(context)}"
                     )
+                if action == "validate":
+                    plugin_state = manager.validate(plugin_name)
+                    return (
+                        f"Plugin '{plugin_name}' is valid\n"
+                        f"Plugin ID: {plugin_state['plugin_id']}\n"
+                        f"Framework: {plugin_state['framework_source']}\n"
+                        f"Capabilities: {', '.join(plugin_state['capabilities']) or '-'}\n"
+                        f"Location: {plugin_state['path']}"
+                    )
 
                 plugin_state = manager.reload(plugin_name)
                 return (
@@ -91,5 +101,6 @@ class PluginsCommand(Command):
             "- /plugins list"
             "- /plugins enable <plugin_name>\n"
             "- /plugins disable <plugin_name>\n"
-            "- /plugins reload <plugin_name>"
+            "- /plugins reload <plugin_name>\n"
+            "- /plugins validate <plugin_name>"
         )

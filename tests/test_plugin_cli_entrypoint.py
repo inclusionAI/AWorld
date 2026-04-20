@@ -149,3 +149,53 @@ def test_plugins_list_hides_legacy_builtin_plugins(monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert "Available plugins (1)" in captured.out
+
+
+def test_plugins_validate_subcommand_uses_installed_plugin_name(monkeypatch, capsys):
+    from aworld_cli.main import main
+
+    class FakePluginManager:
+        def __init__(self):
+            self.plugin_dir = Path("/tmp/plugins")
+
+        def validate(self, plugin_name):
+            assert plugin_name == "aworld-hud"
+            return {
+                "valid": True,
+                "plugin_id": "aworld-hud",
+                "framework_source": "manifest",
+                "capabilities": ["hud"],
+                "path": "/tmp/plugins/aworld-hud",
+            }
+
+    monkeypatch.setattr("aworld_cli.core.plugin_manager.PluginManager", FakePluginManager)
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "plugins", "validate", "aworld-hud"])
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "valid" in captured.out.lower()
+    assert "aworld-hud" in captured.out
+
+
+def test_plugins_validate_subcommand_accepts_explicit_path(monkeypatch, capsys):
+    from aworld_cli.main import main
+
+    def fake_validate_plugin_path(path):
+        assert path == Path("/tmp/demo-plugin")
+        return {
+            "valid": True,
+            "plugin_id": "demo-plugin",
+            "framework_source": "manifest",
+            "capabilities": ["commands"],
+            "path": "/tmp/demo-plugin",
+        }
+
+    monkeypatch.setattr("aworld_cli.core.plugin_manager.validate_plugin_path", fake_validate_plugin_path)
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "plugins", "validate", "--path", "/tmp/demo-plugin"])
+
+    main()
+
+    captured = capsys.readouterr()
+    assert "demo-plugin" in captured.out
+    assert "valid" in captured.out.lower()

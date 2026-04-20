@@ -160,3 +160,61 @@ async def test_runtime_plugin_hook_can_persist_plugin_state(tmp_path):
 
     assert state["iteration"] == 1
     assert state["task_id"] == "task-1"
+
+
+@pytest.mark.asyncio
+async def test_runtime_plugin_hooks_continue_after_timeout(tmp_path):
+    slow_root = tmp_path / "slow"
+    fast_root = tmp_path / "fast"
+
+    for plugin_root, plugin_id, priority, timeout, source in (
+        (
+            slow_root,
+            "slow",
+            10,
+            "0.01",
+            "import asyncio\nasync def handle_event(event, state):\n    await asyncio.sleep(0.05)\n    return {'action': 'allow'}\n",
+        ),
+        (
+            fast_root,
+            "fast",
+            20,
+            None,
+            "def handle_event(event, state):\n    return {'action': 'allow', 'reason': 'fast-path'}\n",
+        ),
+    ):
+        (plugin_root / ".aworld-plugin").mkdir(parents=True)
+        (plugin_root / "hooks").mkdir()
+        metadata = f'"hook_point": "stop", "priority": {priority}'
+        if timeout is not None:
+            metadata = f'{metadata}, "timeout_seconds": {timeout}'
+        (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+            (
+                "{"
+                f"\"id\": \"{plugin_id}\", "
+                f"\"name\": \"{plugin_id}\", "
+                "\"version\": \"1.0.0\", "
+                "\"entrypoints\": {"
+                "\"hooks\": ["
+                "{"
+                "\"id\": \"stop-hook\", "
+                "\"target\": \"hooks/stop.py\", "
+                "\"metadata\": {"
+                f"{metadata}"
+                "}"
+                "}"
+                "]"
+                "}"
+                "}"
+            ),
+            encoding="utf-8",
+        )
+        (plugin_root / "hooks" / "stop.py").write_text(source, encoding="utf-8")
+
+    runtime = DummyRuntime(agent_name="Aworld")
+    runtime._plugin_hooks = load_plugin_hooks(discover_plugins([slow_root, fast_root]))
+
+    results = await runtime.run_plugin_hooks("stop", event={"task_id": "task-1"})
+
+    assert [hook.plugin_id for hook, _ in results] == ["fast"]
+    assert results[0][1].reason == "fast-path"

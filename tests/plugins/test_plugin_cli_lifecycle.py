@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from aworld_cli.core.plugin_manager import PluginManager
 from aworld_cli.runtime.cli import CliRuntime
 
@@ -105,3 +107,29 @@ def test_cli_runtime_honors_disabled_builtin_framework_plugin(tmp_path, monkeypa
     runtime = CliRuntime(local_dirs=[], remote_backends=[])
 
     assert all(path.name != "aworld_hud" for path in runtime.plugin_dirs)
+
+
+def test_install_rejects_empty_plugin_directory(tmp_path):
+    manager = PluginManager(plugin_dir=tmp_path / "plugins")
+    empty_root = tmp_path / "empty-plugin"
+    empty_root.mkdir()
+
+    with pytest.raises(ValueError, match="manifest|legacy plugin"):
+        manager.install("empty-plugin", local_path=str(empty_root))
+
+    assert "empty-plugin" not in manager.list()
+
+
+def test_install_rejects_invalid_plugin_manifest(tmp_path):
+    manager = PluginManager(plugin_dir=tmp_path / "plugins")
+    plugin_root = tmp_path / "broken-plugin"
+    (plugin_root / ".aworld-plugin").mkdir(parents=True)
+    (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+        '{"name": "broken-plugin", "version": "1.0.0"}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="missing required field: id"):
+        manager.install("broken-plugin", local_path=str(plugin_root))
+
+    assert "broken-plugin" not in manager.list()

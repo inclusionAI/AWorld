@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 
 from aworld.logs.util import logger
 from aworld.plugins.discovery import discover_plugins
+from aworld.plugins.validation import validate_plugin_path
 from aworld.plugins.registry import PluginCapabilityRegistry
 
 # Default plugin installation directory
@@ -76,6 +77,11 @@ def get_plugin_skills_dir(plugin_path: Path) -> Path:
         PosixPath('/path/to/smllc/skills')
     """
     return Path(plugin_path) / "skills"
+
+
+def validate_plugin_install_root(plugin_path: Path) -> None:
+    """Validate that an installed plugin root exposes a supported plugin shape."""
+    validate_plugin_path(plugin_path)
 
 
 def list_builtin_plugins() -> List[Dict[str, object]]:
@@ -607,6 +613,8 @@ class PluginManager:
                 shutil.copytree(source_path, plugin_path)
                 logger.info(f"✅ Plugin '{plugin_name}' installed from local path: {local_path}")
             
+            validate_plugin_install_root(plugin_path)
+
             # Verify plugin structure (at least agents directory should exist)
             agents_dir = plugin_path / "agents"
             skills_dir = get_plugin_skills_dir(plugin_path)
@@ -776,6 +784,11 @@ class PluginManager:
         self._ensure_manifest_entry(plugin_name)
         self._manifest = self._load_manifest()
         return self.list()[plugin_name]
+
+    def validate(self, plugin_name: str) -> Dict[str, object]:
+        """Validate an installed or built-in plugin and return validation details."""
+        entry = self._ensure_manifest_entry(plugin_name)
+        return validate_plugin_path(Path(str(entry["path"])))
     
     def get_plugin_dirs(self) -> List[Path]:
         """
