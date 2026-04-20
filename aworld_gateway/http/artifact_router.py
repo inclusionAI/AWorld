@@ -10,14 +10,7 @@ from aworld_gateway.http.artifact_service import ArtifactService
 
 
 def _build_inline_content_disposition(filename: str) -> str:
-    quoted_filename = quote(filename)
-    try:
-        latin1_filename = filename.encode("latin-1").decode("latin-1")
-    except UnicodeEncodeError:
-        latin1_filename = ""
-
-    if latin1_filename:
-        return f'inline; filename="{latin1_filename}"; filename*=UTF-8\'\'{quoted_filename}'
+    quoted_filename = quote(filename, safe="")
     return f"inline; filename*=UTF-8''{quoted_filename}"
 
 

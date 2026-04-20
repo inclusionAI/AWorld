@@ -312,3 +312,45 @@ def test_gateway_http_app_serves_snapshot_after_source_delete(tmp_path: Path) ->
 
     assert response.status_code == 200
     assert "v1" in response.text
+
+
+def test_gateway_http_app_sanitizes_content_disposition_for_edge_case_filenames(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+
+    quoted_name = 'a"b.html'
+    quoted_file = artifact_root / quoted_name
+    quoted_file.write_text("<html><body>quoted</body></html>", encoding="utf-8")
+
+    newline_name = "line\nbreak.html"
+    newline_file = artifact_root / newline_name
+    newline_file.write_text("<html><body>newline</body></html>", encoding="utf-8")
+
+    service = ArtifactService(
+        public_base_url="http://127.0.0.1:18888",
+        allowed_roots=[artifact_root],
+    )
+    quoted_token = service.publish(quoted_file)
+    newline_token = service.publish(newline_file)
+
+    app = create_gateway_app(runtime_status={"channels": {}}, artifact_service=service)
+    client = TestClient(app)
+
+    quoted_response = client.get(f"/artifacts/{quoted_token}")
+    newline_response = client.get(f"/artifacts/{newline_token}")
+
+    assert quoted_response.status_code == 200
+    assert newline_response.status_code == 200
+
+    quoted_disposition = quoted_response.headers["content-disposition"]
+    newline_disposition = newline_response.headers["content-disposition"]
+
+    assert "filename*=" in quoted_disposition
+    assert "filename*=" in newline_disposition
+
+    assert "\n" not in quoted_disposition
+    assert "\r" not in quoted_disposition
+    assert "\n" not in newline_disposition
+    assert "\r" not in newline_disposition
+
+    assert 'filename="a"b.html"' not in quoted_disposition
