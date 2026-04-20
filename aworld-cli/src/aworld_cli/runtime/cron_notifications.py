@@ -11,7 +11,7 @@ import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Literal, Optional, List, Dict, Any
+from typing import Literal, Optional, List, Dict, Any, Callable
 import pytz
 
 from aworld.logs.util import logger
@@ -82,6 +82,7 @@ class CronNotificationCenter:
         self._unread_count = 0
         self._progress_logs: Dict[str, deque[CronProgressLog]] = {}
         self._progress_limit = 200
+        self._change_listeners: list[Callable[[], None]] = []
 
     async def publish(self, notification_data: dict) -> None:
         """
@@ -119,6 +120,7 @@ class CronNotificationCenter:
                     pass
 
             self._unread_count = self._queue.qsize()
+            self._notify_change_listeners()
 
         except Exception:
             # Graceful failure - notification system should never crash scheduler
@@ -162,6 +164,7 @@ class CronNotificationCenter:
             pass
 
         self._unread_count = self._queue.qsize()
+        self._notify_change_listeners()
 
         return notifications
 
@@ -197,3 +200,19 @@ class CronNotificationCenter:
     def get_unread_count(self) -> int:
         """Return current unread notification count without draining the queue."""
         return max(0, self._unread_count)
+
+    def add_change_listener(self, listener: Callable[[], None]) -> None:
+        """Register a callback invoked when notification queue state changes."""
+        if listener not in self._change_listeners:
+            self._change_listeners.append(listener)
+
+    def remove_change_listener(self, listener: Callable[[], None]) -> None:
+        """Unregister a previously registered queue-change callback."""
+        self._change_listeners = [item for item in self._change_listeners if item != listener]
+
+    def _notify_change_listeners(self) -> None:
+        for listener in list(self._change_listeners):
+            try:
+                listener()
+            except Exception:
+                continue

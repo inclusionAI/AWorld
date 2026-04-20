@@ -826,6 +826,49 @@ async def test_notification_poller_invalidates_active_prompt_when_hud_is_active(
     assert cli._active_prompt_session.app.invalidate_calls > 0
 
 
+@pytest.mark.asyncio
+async def test_notification_publish_immediately_invalidates_active_prompt_when_hud_is_active():
+    center = CronNotificationCenter()
+
+    class FakeRuntime:
+        def __init__(self):
+            self._notification_center = center
+
+        def active_plugin_capabilities(self):
+            return ("hud",)
+
+    class FakeApp:
+        def __init__(self):
+            self.invalidate_calls = 0
+
+        def invalidate(self):
+            self.invalidate_calls += 1
+
+    class FakeSession:
+        def __init__(self):
+            self.app = FakeApp()
+
+    cli = AWorldCLI()
+    cli._active_prompt_session = FakeSession()
+
+    await cli._ensure_notification_poller(FakeRuntime())
+    await asyncio.sleep(0)
+    baseline_calls = cli._active_prompt_session.app.invalidate_calls
+
+    await center.publish({
+        "job_id": "job-immediate-refresh",
+        "job_name": "Immediate Refresh Job",
+        "status": "ok",
+        "summary": "Immediate Refresh Job completed",
+        "created_at": datetime.now(pytz.UTC).isoformat(),
+    })
+    await asyncio.sleep(0.05)
+
+    await cli._stop_notification_poller()
+
+    assert cli._active_prompt_session.app.invalidate_calls > baseline_calls
+
+
 def test_console_formats_information_style_status_bar_when_cron_queue_is_clear():
     """The status bar should remain stable even when there are no unread reminders."""
     cli = AWorldCLI()
