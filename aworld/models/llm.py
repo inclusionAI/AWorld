@@ -24,6 +24,7 @@ from aworld.models.together_video_provider import TogetherVideoProvider
 from aworld.models.ant_video_provider import AntVideoProvider
 from aworld.models.kling_provider import KlingProvider
 from aworld.models.kling_avatar_provider import KlingAvatarProvider
+from aworld.models.volcano_seedance_provider import VolcanoSeedanceProvider
 from aworld.models.model_response import ModelResponse
 from aworld.core.context.base import Context
 from aworld.core.model_output_parser import ModelOutputParser, BaseContentParser
@@ -47,6 +48,8 @@ ENDPOINT_PATTERNS = {
     "ant_video": ["matrixcube.alipay.com", "matrixcube-pool.global.alipay.com"],
     # Kling official HTTP API (direct; distinct from MatrixCube gateway routing)
     "kling_video": ["api-beijing.klingai.com"],
+    # Volcano Ark Seedance official API (direct)
+    "volcano_seedance": ["ark.cn-beijing.volces.com"],
 }
 
 # Provider class mapping (LLM providers)
@@ -58,6 +61,7 @@ PROVIDER_CLASSES = {
     "together_video": TogetherVideoProvider,
     "speech": None,  # Lazy loaded to avoid circular import
     "doubao_tts": None,  # Lazy loaded to avoid circular import
+    "volcano_openspeech_tts": None,  # Lazy loaded; direct ByteDance OpenSpeech HTTP TTS
     "image": None,  # Lazy loaded to avoid circular import
     "kling_image": None,  # Lazy loaded to avoid circular import
 }
@@ -81,6 +85,7 @@ VIDEO_PROVIDER_CLASSES: Dict[str, type] = {
     "ant_video":      AntVideoProvider,
     "kling_video":    KlingProvider,
     "kling_avatar":   KlingAvatarProvider,
+    "volcano_seedance": VolcanoSeedanceProvider,
     "together_video": TogetherVideoProvider,
 }
 
@@ -373,6 +378,13 @@ class LLMModel:
             if provider_class is None and self.provider_name in ("speech", "doubao_tts"):
                 from aworld.models.doubao_tts_provider import DoubaoTTSProvider
                 provider_class = DoubaoTTSProvider
+                PROVIDER_CLASSES[self.provider_name] = provider_class
+            elif provider_class is None and self.provider_name == "volcano_openspeech_tts":
+                from aworld.models.volcano_openspeech_tts_provider import (
+                    VolcanoOpenSpeechTTSProvider,
+                )
+
+                provider_class = VolcanoOpenSpeechTTSProvider
                 PROVIDER_CLASSES[self.provider_name] = provider_class
             elif provider_class is None and self.provider_name == "image":
                 from aworld.models.image_provider import ImageProvider

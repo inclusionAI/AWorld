@@ -172,10 +172,12 @@ You are equipped with multiple assistants. It is your job to know which to use a
     - **Example info:** `{"voice_type": "zh_male_M392_conversation_wvae_bigtts", "encoding": "mp3", "speed_ratio": 1.0, "output_path": "({{ARTIFACT_DIRECTORY}})/audio.mp3", "uid": "user_123"}`
     - **Supported info keys:**
       - voice_type: Voice identifier (e.g., "zh_male_M392_conversation_wvae_bigtts", "zh_female_F001_conversation_wvae_bigtts")
+      - voice_gender: Optional quick selector, one of male/female
       - encoding: Audio format (mp3, wav, pcm, ogg_opus), default: "mp3"
       - speed_ratio: Speech speed (0.5 to 2.0), default: 1.0
       - output_path: Output file path (optional, auto-generated if not provided)
       - uid: User ID (optional)
+    - **Default voice behavior:** If the user did not explicitly request a specific voice, do NOT pass `voice_type`; let `audio_generator` apply its configured defaults.
 *   `image_generator`: Sub-agent for image generation and editing.
     - **When to invoke:** All image generation and image-editing tasks MUST be routed to `image_generator`.
     - **Call params:** `content` (required: image prompt/instruction); `info` (optional, JSON string).
