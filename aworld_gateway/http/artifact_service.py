@@ -81,24 +81,26 @@ class ArtifactService:
         artifact = self._artifacts.get(token)
         if artifact is None:
             return None
-        resolved_source_path = self._normalize_and_validate_path(
-            artifact.source_path,
-            raise_on_missing=False,
-            raise_on_outside_roots=False,
-        )
-        if resolved_source_path is None:
-            self._artifacts.pop(token, None)
-            return None
 
         if not artifact.path.exists() or not artifact.path.is_file():
             self._artifacts.pop(token, None)
             return None
 
-        artifact.source_path = resolved_source_path
+        if artifact.source_path.exists():
+            resolved_source_path = self._normalize_and_validate_path(
+                artifact.source_path,
+                raise_on_missing=False,
+                raise_on_outside_roots=False,
+            )
+            if resolved_source_path is None:
+                self._artifacts.pop(token, None)
+                return None
+            artifact.source_path = resolved_source_path
+
         return artifact
 
     def build_external_url(self, token: str) -> str:
-        suffix = f"/artifacts/{token}"
         if self._public_base_url is None:
-            return suffix
+            raise ValueError("Artifact public_base_url is not configured.")
+        suffix = f"/artifacts/{token}"
         return f"{self._public_base_url}{suffix}"

@@ -283,3 +283,32 @@ def test_gateway_http_app_returns_404_when_artifact_disappears_before_open(tmp_p
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Artifact not found."
+
+
+def test_artifact_service_build_external_url_requires_public_base_url(tmp_path: Path) -> None:
+    service = ArtifactService(public_base_url=None, allowed_roots=[tmp_path])
+
+    with pytest.raises(ValueError, match="Artifact public_base_url is not configured."):
+        service.build_external_url("abc")
+
+
+def test_gateway_http_app_serves_snapshot_after_source_delete(tmp_path: Path) -> None:
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    artifact_file = artifact_root / "report.html"
+    artifact_file.write_text("<html><body>v1</body></html>", encoding="utf-8")
+
+    service = ArtifactService(
+        public_base_url="http://127.0.0.1:18888",
+        allowed_roots=[artifact_root],
+    )
+    token = service.publish(artifact_file)
+
+    artifact_file.unlink()
+
+    app = create_gateway_app(runtime_status={"channels": {}}, artifact_service=service)
+    client = TestClient(app)
+    response = client.get(f"/artifacts/{token}")
+
+    assert response.status_code == 200
+    assert "v1" in response.text
