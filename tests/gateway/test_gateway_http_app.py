@@ -180,7 +180,7 @@ def test_gateway_http_app_rejects_requests_when_artifact_service_missing() -> No
     assert response.json()["detail"] == "Artifact service is not running."
 
 
-def test_gateway_http_app_rejects_artifact_when_published_file_is_replaced_with_out_of_root_symlink(
+def test_gateway_http_app_serves_snapshot_when_source_is_replaced_with_out_of_root_symlink(
     tmp_path: Path,
 ) -> None:
     escape_target = Path("/etc/hosts")
@@ -208,8 +208,8 @@ def test_gateway_http_app_rejects_artifact_when_published_file_is_replaced_with_
     client = TestClient(app)
     response = client.get(f"/artifacts/{token}")
 
-    assert response.status_code == 404
-    assert response.json()["detail"] == "Artifact not found."
+    assert response.status_code == 200
+    assert "report" in response.text
 
 
 def test_gateway_http_app_serves_unicode_named_artifact(tmp_path: Path) -> None:

@@ -13,7 +13,6 @@ from uuid import uuid4
 class PublishedArtifact:
     token: str
     path: Path
-    source_path: Path
     content_type: str
     published_at: datetime
 
@@ -71,7 +70,6 @@ class ArtifactService:
         self._artifacts[token] = PublishedArtifact(
             token=token,
             path=snapshot_path,
-            source_path=resolved_source_path,
             content_type=content_type,
             published_at=datetime.now(timezone.utc),
         )
@@ -85,17 +83,6 @@ class ArtifactService:
         if not artifact.path.exists() or not artifact.path.is_file():
             self._artifacts.pop(token, None)
             return None
-
-        if artifact.source_path.exists():
-            resolved_source_path = self._normalize_and_validate_path(
-                artifact.source_path,
-                raise_on_missing=False,
-                raise_on_outside_roots=False,
-            )
-            if resolved_source_path is None:
-                self._artifacts.pop(token, None)
-                return None
-            artifact.source_path = resolved_source_path
 
         return artifact
 
