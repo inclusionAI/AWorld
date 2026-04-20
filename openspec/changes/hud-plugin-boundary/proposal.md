@@ -9,8 +9,10 @@ This change formalizes a stricter boundary before more HUD work lands. The CLI s
 - Define the bottom HUD as a generic CLI host surface rather than an `aworld-hud`-specific behavior path.
 - Clarify that HUD content, grouping, and session-specific business logic belong in plugins, including built-in plugins.
 - Require built-in HUD plugins to follow the same capability contract as third-party HUD plugins, except for shipping location and default enablement.
+- Add the missing framework contracts required for third-party HUD plugins: plugin state write-back, task lifecycle hook points, and plugin-state-aware HUD provider rendering.
+- Define an explicit plugin SDK boundary for reusable HUD helpers so built-in plugins do not rely on private host internals.
 - Shift HUD state collection toward hook-driven plugin state and shared runtime context instead of host-side `aworld-hud` business branching.
-- Rename or relocate misleading host-side HUD support modules so they read as host capability support rather than plugin-owned runtime code.
+- Keep namespace cleanup in scope, but make it non-blocking relative to the functional plugin-contract gaps above.
 
 ## Capabilities
 
@@ -28,6 +30,8 @@ This change formalizes a stricter boundary before more HUD work lands. The CLI s
 - Affects HUD-related host code in `aworld-cli`, especially generic rendering, capability loading, and naming.
 - Affects the built-in `aworld-hud` plugin contract and future HUD plugin authoring expectations.
 - Affects hook, runtime-state, and plugin-state boundaries used to assemble HUD context.
+- Affects the hook contract by requiring task lifecycle hook points suitable for live HUD updates.
+- Affects the HUD provider contract by requiring plugin-state-aware rendering inputs.
 - Creates a reviewable path for future HUD refactors without reopening the current rendering regressions.
 - Establishes a review standard for future HUD changes: host code may improve extensibility, but HUD-specific behavior must land in plugin-facing contracts and plugin-owned code.
 - Establishes a delivery constraint for follow-up work: architecture must converge toward the plugin-boundary design without regressing the currently accepted HUD behavior already demonstrated in manual validation.

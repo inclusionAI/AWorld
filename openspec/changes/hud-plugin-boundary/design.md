@@ -14,6 +14,10 @@ The specific design pressure points are:
 - `console.py` has become the place where many HUD-visible behaviors are corrected, even when the desired change is really about HUD content policy.
 - hooks already exist as the main runtime extension mechanism, but HUD state still leans too heavily on host-curated runtime snapshots instead of hook-driven plugin state.
 - as a result, a future third-party HUD plugin would still be too dependent on host changes for ordinary feature evolution.
+- plugin-scoped state currently lacks a complete write-back path for hook-driven HUD coordination.
+- the current HUD provider contract only accepts `context`, which is insufficient for plugin-owned stateful HUD composition.
+- the currently available hook points are not enough to drive live task HUD state during task execution.
+- built-in HUD formatting still risks depending on private host helpers rather than on an explicit plugin-facing SDK boundary.
 
 This change does not attempt to turn HUD into a zero-host feature. The CLI still owns the toolbar surface and renderer. The goal is to minimize host responsibility so that HUD capability growth happens through plugins, with `aworld-hud` serving as a built-in plugin that obeys the same contract as any external HUD plugin.
 
@@ -97,6 +101,70 @@ Alternative considered:
 - keep growing runtime-owned HUD snapshots with plugin-specific semantics
   Rejected because it makes host code the default home for plugin behavior.
 
+### Decision: Plugin hooks require a generic plugin-state write-back path
+
+Hook-driven HUD state is not viable unless hooks can persist plugin-owned state through a generic framework contract. This change therefore requires an explicit plugin-state write-back path for active plugin entrypoints.
+
+The design intent is:
+
+- hook code can update plugin-scoped state through a framework-owned API
+- later hook executions from the same plugin can observe that state
+- HUD providers can render from the same plugin-owned state without host-side special handling
+
+Why:
+
+- read-only plugin state does not support cross-hook coordination
+- HUD summaries often need to aggregate task start, progress, tool activity, and completion information
+- a generic write-back path benefits more than HUD plugins
+
+Alternative considered:
+
+- encode state writes inside hook return payloads only
+  Rejected because hook results are primarily about flow control and input/output mutation, while plugin-state persistence is a separate framework concern.
+
+### Decision: HUD provider contract upgrades to `render_lines(context, plugin_state)`
+
+HUD provider rendering must accept both the shared host context and the plugin-owned state assembled through hooks. The contract for HUD entrypoints therefore upgrades from context-only rendering to plugin-state-aware rendering.
+
+The contract intent is:
+
+- `context` remains the shared host-owned snapshot for the refresh cycle
+- `plugin_state` carries plugin-scoped state assembled through hooks or other plugin-owned flows
+- HUD providers remain data-focused and still return plain-text lines rather than markup
+
+Why:
+
+- context-only rendering forces the host to assemble more plugin semantics than it should
+- plugin-owned state is the natural source of HUD summaries that span multiple hook points
+- this makes the built-in HUD contract usable by external plugins without host modification
+
+Alternative considered:
+
+- keep `render_lines(context)` and require plugins to re-read their state from ad hoc storage during render
+  Rejected because it obscures the contract, duplicates IO concerns, and makes provider behavior less deterministic.
+
+### Decision: HUD-capable plugins need task lifecycle hook points
+
+The existing interactive hook points are not enough for live HUD state. This change requires task lifecycle hook points suitable for runtime HUD updates, at minimum:
+
+- `task_started`
+- `task_progress`
+- `task_completed`
+- `task_error`
+
+These hook points are in addition to existing input/termination hooks and are required so a HUD-capable plugin can observe execution without host-specific HUD wiring.
+
+Why:
+
+- user-input and stop hooks do not cover live task execution
+- a HUD plugin must be able to observe task progress while the toolbar is refreshing
+- executor-driven runtime updates can coexist with hook-driven plugin state, but the plugin contract must expose equivalent lifecycle visibility
+
+Alternative considered:
+
+- continue relying on executor-owned runtime snapshots only
+  Rejected because it leaves third-party HUD plugins unable to participate in live state composition without host changes.
+
 ### Decision: Runtime context remains generic and shared
 
 The runtime still provides a shared HUD context because some values are inherently host-owned:
@@ -113,6 +181,27 @@ Alternative considered:
 
 - remove runtime HUD context and force all HUD state through plugin-owned persistence
   Rejected because basic session and execution context are legitimately host-owned.
+
+### Decision: Plugin-facing HUD helper APIs must be explicit
+
+Built-in HUD plugins must not set the de facto external contract by importing private helpers such as executor-internal formatting modules. Any reusable HUD helper shared between built-in and external plugins must be exposed through an explicit plugin-facing SDK boundary.
+
+The preferred contract is:
+
+- host context continues to expose raw semantic values
+- shared reusable formatting helpers, if needed, are exposed through an explicit plugin SDK module or equivalent stable contract
+- private host internals such as executor implementation helpers are not part of the plugin contract
+
+Why:
+
+- third-party plugins cannot safely depend on arbitrary `aworld_cli.*` internals
+- a built-in plugin should not rely on private imports that external plugins are expected to avoid
+- this keeps the plugin contract explicit and reviewable
+
+Alternative considered:
+
+- expose only preformatted strings in the HUD context
+  Rejected because it would over-constrain plugin presentation logic and shift too much content policy back into the host.
 
 ### Decision: Host-side HUD support modules should use host/capability naming
 
@@ -159,6 +248,22 @@ Alternative considered:
 
 - use `ui_extensions/*` for all HUD-related host code
   Rejected because that path implies a primarily visual responsibility, while the current module also handles capability loading and aggregation.
+
+### Decision: Functional plugin-contract gaps take priority over namespace migration
+
+Namespace cleanup is useful, but it must not block the functional work required to make HUD a viable plugin capability. The implementation priority order for this change is:
+
+1. plugin state write-back
+2. task lifecycle hook points
+3. HUD provider signature and plugin SDK boundary
+4. end-to-end validation with a mock third-party HUD plugin
+5. namespace cleanup and compatibility migration
+
+Why:
+
+- a better path name does not by itself unlock third-party HUD viability
+- the review feedback correctly identified the functional gaps as the real blockers
+- sequencing the work this way reduces the chance of cosmetic refactors obscuring contract gaps
 
 ### Decision: Migrate by compatibility alias first, then caller cleanup
 
@@ -259,6 +364,10 @@ Use this checklist when reviewing follow-up implementation work for this change:
 - Does a HUD content change require touching `console.py` for reasons other than presentation?
 - Is a new HUD field being added through plugin code, or is the host assembling plugin-specific semantics again?
 - Does a hook or plugin-state addition remain generic enough to support more than one HUD plugin?
+- Does the implementation provide an actual write-back path for plugin-scoped state rather than only read access?
+- Are task lifecycle hooks sufficient for a HUD plugin to observe start, progress, completion, and error states during execution?
+- Does the HUD provider contract explicitly include plugin-owned state instead of forcing more semantics into host context?
+- Are shared HUD helpers exposed only through an explicit plugin-facing boundary rather than through private host modules?
 - Does the new path or module name make host ownership obvious from the filesystem layout?
 - Can the built-in HUD plugin still be conceptually replaced by an external plugin using the same capability contract?
 - Does the refactor preserve the current accepted manual HUD behavior rather than trading UX regressions for architectural purity?
@@ -296,12 +405,14 @@ For review purposes, the baseline is defined by these user-approved outcomes:
 ## Migration Plan
 
 1. Freeze the desired boundary in OpenSpec before further HUD behavior changes.
-2. Rename or alias misleading host-side HUD capability modules to a host-owned namespace.
-3. Audit current HUD-related logic and classify each piece as host-rendering, generic capability support, or plugin-owned content policy.
-4. Add or extend generic plugin-state update paths so hooks can publish HUD-relevant state without special-casing `aworld-hud`.
-5. Migrate built-in `aworld-hud` field composition toward hook-driven state plus generic context.
-6. Add regression coverage proving that a synthetic third-party HUD plugin can use the same contract without requiring host business branches.
-7. Remove compatibility aliases only after imports, tests, and OpenSpec references all point at the host-owned namespace.
+2. Add or extend generic plugin-state update paths so hooks can publish HUD-relevant state without special-casing `aworld-hud`.
+3. Add task lifecycle hook points that a HUD-capable plugin can observe during execution.
+4. Upgrade the HUD provider contract to accept plugin-owned state alongside shared context.
+5. Define and expose the minimal plugin-facing HUD helper boundary needed by both built-in and external HUD plugins.
+6. Migrate built-in `aworld-hud` field composition toward hook-driven state plus generic context.
+7. Add regression coverage proving that a synthetic third-party HUD plugin can use the same contract without requiring host business branches.
+8. Rename or alias misleading host-side HUD capability modules to a host-owned namespace.
+9. Remove compatibility aliases only after imports, tests, and OpenSpec references all point at the host-owned namespace.
 
 Rollback strategy:
 
@@ -310,6 +421,4 @@ Rollback strategy:
 
 ## Open Questions
 
-- Should hook-driven plugin state be returned as explicit typed deltas, or should hooks write through a generic plugin-state helper?
 - Should the built-in `aworld-hud` plugin keep using shared runtime HUD snapshots for some fields, or should it exclusively consume plugin-scoped state plus minimal host context?
-- Should HUD provider rendering continue to accept only `context`, or should the contract explicitly include plugin-owned state as a first-class input?
