@@ -19,5 +19,6 @@ def register_artifact_routes(app: FastAPI, artifact_service: ArtifactService | N
         return FileResponse(
             path=artifact.path,
             media_type=artifact.content_type,
-            headers={"content-disposition": f'inline; filename="{artifact.path.name}"'},
+            filename=artifact.path.name,
+            content_disposition_type="inline",
         )
