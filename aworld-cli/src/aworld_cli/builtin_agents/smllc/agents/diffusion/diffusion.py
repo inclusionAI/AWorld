@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from typing import Dict, Any, List
 
-from aworld.agents.audio_agent import AudioAgent
+from aworld.agents.video_agent import VideoAgent
 from aworld.config import AgentConfig, ModelConfig
 from aworld.core.agent.swarm import Swarm
 from aworld.core.common import Observation, ActionModel
@@ -16,29 +16,29 @@ from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
 from .mcp_config import mcp_config
 
 
-@HookFactory.register(name="pre_audio_hook")
+@HookFactory.register(name="pre_diffusion_hook")
 class PreMultiTaskVideoCreatorHook(PreLLMCallHook):
     """Hook triggered before LLM execution. Used for monitoring, logging, etc. Should NOT modify input/output content."""
-
+    
     async def exec(self, message: Message, context: Context = None) -> Message:
-        if message.sender.startswith('audio'):
+        if message.sender.startswith('diffusion'):
             # Logging and monitoring only - do not modify content
             pass
         return message
 
 
-@HookFactory.register(name="post_audio_hook")
+@HookFactory.register(name="post_diffusion_hook")
 class PostMultiTaskVideoCreatorHook(PostLLMCallHook):
     """Hook triggered after LLM execution. Used for monitoring, logging, etc. Should NOT modify input/output content."""
-
+    
     async def exec(self, message: Message, context: Context = None) -> Message:
-        if message.sender.startswith('audio'):
+        if message.sender.startswith('diffusion'):
             # Logging and monitoring only - do not modify content
             pass
         return message
 
 
-class AudioCreatorAgent(AudioAgent):
+class MultiTaskVideoCreatorAgent(VideoAgent):
     """An agent specializing in creating, editing, and generating video content."""
 
     async def async_policy(self, observation: Observation, info: Dict[str, Any] = {}, message: Message = None,
@@ -56,43 +56,39 @@ class AudioCreatorAgent(AudioAgent):
 
 
 @agent(
-    name="audio_generator",
-    desc="""An intelligent assistant specially designed for text-to-speech audio generation. Use when:
-- Converting text to speech audio.
-- Generating audio with different voices and styles.
-- Creating audio files with customized speed and encoding.
+    name="video_diffusion",
+    desc="""An intelligent assistant specially designed for creating, editing, and generating video content. Use when:
+- Creating new videos from images, audio clips, or text.
+- Editing existing videos (e.g., trimming, concatenating, adding effects or overlays).
+- Adding or replacing audio tracks in videos.
+- Programmatically generating animations or visual effects.
 
-Cannot process (do NOT delegate to this agent): Video generation, document reading/analysis (.pdf, .docx), database queries, web scraping, or general code debugging not related to audio generation.
+Cannot process (do NOT delegate to this agent): Document reading/analysis (.pdf, .docx), database queries, web scraping, or general code debugging not related to video creation.
 
 **Invocation format (MUST follow when calling):**
-- `content`: Required. The text to convert to speech.
-- `info`: Optional JSON string. Use when passing audio params, e.g.:
-  {"voice_type": "zh_male_M392_conversation_wvae_bigtts", "encoding": "mp3", "speed_ratio": 1.0, "output_path": "./output/audio.mp3", "uid": "user_123"}
-  Supported keys:
-  - voice_type: Voice type identifier (e.g., "zh_male_M392_conversation_wvae_bigtts")
-  - encoding: Audio format (mp3, wav, pcm, ogg_opus), default: "mp3"
-  - speed_ratio: Speech speed (0.5 to 2.0), default: 1.0
-  - output_path: Output file path (optional, auto-generated if not provided)
-  - uid: User ID for the request (optional)
+- `content`: Required. The video generation prompt (text description of what to create).
+- `info`: Required JSON string. Use when passing image/video params, e.g.:
+  {"image_url": "<data_path_or_base64_string>", "reference_images": ["<path1>", "<path2>"], "resolution": "720p", "duration": 5, "fps": 24, "output_dir": "./output", "sound": "on"}
+  Supported keys: image_url, reference_images (list of paths/URLs/base64), resolution, duration (must be ≤ 10 seconds), fps, poll, poll_interval, poll_timeout, submitted_timeout, download_video, output_dir.
 """
 )
-def build_audio_swarm():
-    """Build and configure the multi-task audio agent swarm."""
+def build_diffusion_swarm():
+    """Build and configure the multi-task diffusion agent swarm."""
     # APP_EVALUATOR_SKILLS_DIR: override skill read directory (plugin root with skills/ subdir)
-    plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc plugin root
+    plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc bundle root
     # Get user skills directory from environment (optional)
     env_skills_path = os.environ.get("SKILLS_PATH")
     env_skills_dir = Path(os.path.expanduser(env_skills_path)).resolve() if env_skills_path else None
     skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
 
-    # Create Agent configuration (AUDIO_* from models.audio or fallback to MEDIA_LLM_*/LLM_*)
+    # Create Agent configuration (DIFFUSION_* from models.diffusion or fallback to MEDIA_LLM_*/LLM_*)
     agent_config = AgentConfig(
         llm_config=ModelConfig(
-            llm_model_name=os.environ.get("AUDIO_MODEL_NAME", os.environ.get("LLM_MODEL_NAME", "claude-3-5-sonnet-20241022")),
-            llm_provider=os.environ.get("AUDIO_PROVIDER", os.environ.get("LLM_PROVIDER", "openai")),
-            llm_api_key=os.environ.get("AUDIO_API_KEY", os.environ.get("LLM_API_KEY")),
-            llm_base_url=os.environ.get("AUDIO_BASE_URL", os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")),
-            llm_temperature=float(os.environ.get("AUDIO_TEMPERATURE", os.environ.get("LLM_TEMPERATURE", "0.1"))),
+            llm_model_name=os.environ.get("DIFFUSION_MODEL_NAME", os.environ.get("LLM_MODEL_NAME", "claude-3-5-sonnet-20241022")),
+            llm_provider=os.environ.get("DIFFUSION_PROVIDER", os.environ.get("LLM_PROVIDER", "openai")),
+            llm_api_key=os.environ.get("DIFFUSION_API_KEY", os.environ.get("LLM_API_KEY")),
+            llm_base_url=os.environ.get("DIFFUSION_BASE_URL", os.environ.get("LLM_BASE_URL", "https://api.openai.com/v1")),
+            llm_temperature=float(os.environ.get("DIFFUSION_TEMPERATURE", os.environ.get("LLM_TEMPERATURE", "0.1"))),
             params={"max_completion_tokens": 59000},
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
@@ -112,8 +108,8 @@ def build_audio_swarm():
     _system_prompt = _prompt_path.read_text(encoding="utf-8")
 
     # Create MultiTaskVideoCreatorAgent instance
-    audio = AudioCreatorAgent(
-        name="audio_generator",
+    diffusion = MultiTaskVideoCreatorAgent(
+        name="video_diffusion",
         desc="An intelligent assistant for creating, editing, and generating video content.",
         conf=agent_config,
         system_prompt=_system_prompt,
@@ -124,4 +120,4 @@ def build_audio_swarm():
     )
 
     # Return the Swarm containing this Agent
-    return Swarm(audio)
+    return Swarm(diffusion)

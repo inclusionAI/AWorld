@@ -28,12 +28,7 @@ def get_builtin_plugins_base_dir() -> Path:
 
 def get_builtin_agent_bundles_base_dir() -> Path:
     """Return the built-in agent bundle package directory."""
-    return Path(__file__).resolve().parent.parent / "plugins"
-
-
-def get_legacy_builtin_plugins_base_dir() -> Path:
-    """Return the legacy built-in agent bundle compatibility directory."""
-    return Path(__file__).resolve().parent.parent / "inner_plugins"
+    return Path(__file__).resolve().parent.parent / "builtin_agents"
 
 
 def get_builtin_plugin_roots() -> List[Path]:
@@ -62,10 +57,7 @@ def get_builtin_agent_bundle_roots() -> List[Path]:
     bundle_dirs: List[Path] = []
     seen: set[Path] = set()
 
-    for base_dir in (
-        get_builtin_agent_bundles_base_dir(),
-        get_legacy_builtin_plugins_base_dir(),
-    ):
+    for base_dir in (get_builtin_agent_bundles_base_dir(),):
         if not base_dir.exists() or not base_dir.is_dir():
             continue
         for bundle_dir in base_dir.iterdir():
@@ -91,7 +83,7 @@ def get_plugin_skills_dir(plugin_path: Path) -> Path:
     This is the directory where aworld built-in/plugin skills are stored.
 
     Args:
-        plugin_path: Root path of the plugin (e.g. plugins/smllc or ~/.aworld/plugins/foo).
+        plugin_path: Root path of the plugin or built-in agent bundle.
 
     Returns:
         Path to the plugin's skills subdirectory.

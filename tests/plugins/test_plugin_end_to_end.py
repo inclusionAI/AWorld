@@ -71,11 +71,10 @@ def test_runtime_initialization_registers_enabled_plugin_commands(tmp_path):
         CommandRegistry.restore(snapshot)
 
 
-def test_builtin_plugin_namespace_moves_to_plugins_package():
-    from aworld_cli.plugins.smllc.agents.aworld_agent import load_aworld_system_prompt as new_load
-    from aworld_cli.inner_plugins.smllc.agents.aworld_agent import load_aworld_system_prompt as legacy_load
+def test_builtin_agent_bundle_namespace_moves_to_builtin_agents_package():
+    from aworld_cli.builtin_agents.smllc.agents.aworld_agent import load_aworld_system_prompt
 
-    assert new_load() == legacy_load()
+    assert "cron" in load_aworld_system_prompt()
 
 
 def test_get_builtin_plugin_roots_prefers_builtin_plugins_for_aworld_hud():
@@ -88,7 +87,7 @@ def test_get_builtin_plugin_roots_prefers_builtin_plugins_for_aworld_hud():
 def test_get_builtin_agent_bundle_roots_includes_smllc_only_as_agent_bundle():
     roots = get_builtin_agent_bundle_roots()
 
-    assert any(root.parent.name == "plugins" and root.name == "smllc" for root in roots)
+    assert any(root.parent.name == "builtin_agents" and root.name == "smllc" for root in roots)
     assert not any(root.name == "aworld_hud" for root in roots)
 
 
@@ -97,7 +96,7 @@ def test_cli_runtime_separates_framework_plugins_from_builtin_agent_bundles(monk
     runtime = CliRuntime(local_dirs=[], remote_backends=[])
 
     assert any(path.parent.name == "builtin_plugins" and path.name == "aworld_hud" for path in runtime.plugin_dirs)
-    assert any(path.parent.name == "plugins" and path.name == "smllc" for path in runtime.builtin_agent_dirs)
+    assert any(path.parent.name == "builtin_agents" and path.name == "smllc" for path in runtime.builtin_agent_dirs)
 
 
 def test_cli_runtime_excludes_disabled_builtin_hud_plugin(monkeypatch, tmp_path):
