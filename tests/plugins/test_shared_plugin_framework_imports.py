@@ -103,6 +103,7 @@ def test_hook_payload_typed_dicts_expose_expected_fields():
         "aworld_cli.plugin_framework.state",
         "aworld_cli.plugins.smllc",
         "aworld_cli.plugins.smllc.agents.aworld_agent",
+        "aworld_cli.inner_plugins",
         "aworld_cli.inner_plugins.smllc",
         "aworld_cli.inner_plugins.smllc.agents.aworld_agent",
     ],

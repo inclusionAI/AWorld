@@ -20,14 +20,6 @@ def format_tokens(n: int) -> str:
     return str(n)
 
 
-def format_chars(n: int) -> str:
-    """Format character count for display."""
-    if n >= 1000:
-        s = f"{n / 1000:.1f}k"
-        return s.replace(".0k", "k")
-    return str(n)
-
-
 def format_timestamp() -> str:
     """Return current time as HH:MM:SS for display."""
     return datetime.now().strftime("%H:%M:%S")

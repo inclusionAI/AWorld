@@ -186,8 +186,7 @@ async def load_all_agents(
             except Exception as e:
                 print(f"⚠️ Failed to load agent file {agent_file}: {e}")
     
-    # Use CliRuntime to load agents (it handles all sources)
-    # Create a temporary runtime instance just for loading agents
+    # Use a short-lived CliRuntime to load agents from all supported sources.
     runtime = CliRuntime(remote_backends=remote_backends, local_dirs=local_dirs)
     return await runtime._load_agents()
 
