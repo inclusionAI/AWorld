@@ -172,6 +172,8 @@ class AWorldCLI:
         self._notification_poll_task = None
         self._notification_stop_event = None
         self._notification_drain_lock = asyncio.Lock()
+        self._notification_center_listener = self._handle_notification_center_change
+        self._subscribed_notification_center = None
         self._active_prompt_session = None
         self._toolbar_workspace_name = self._detect_workspace_name()
         self._toolbar_git_branch = self._detect_git_branch()
@@ -1526,6 +1528,32 @@ class AWorldCLI:
         except Exception:
             pass
 
+    def _handle_notification_center_change(self) -> None:
+        self._invalidate_active_prompt()
+
+    def _bind_notification_center_listener(self, notification_center) -> None:
+        if notification_center is self._subscribed_notification_center:
+            return
+        self._unbind_notification_center_listener()
+        if notification_center is None or not hasattr(notification_center, "add_change_listener"):
+            return
+        try:
+            notification_center.add_change_listener(self._notification_center_listener)
+            self._subscribed_notification_center = notification_center
+        except Exception:
+            self._subscribed_notification_center = None
+
+    def _unbind_notification_center_listener(self) -> None:
+        notification_center = self._subscribed_notification_center
+        if notification_center is None or not hasattr(notification_center, "remove_change_listener"):
+            self._subscribed_notification_center = None
+            return
+        try:
+            notification_center.remove_change_listener(self._notification_center_listener)
+        except Exception:
+            pass
+        finally:
+            self._subscribed_notification_center = None
     async def _render_cron_notifications_safe(self, notifications: List[Any]) -> None:
         if not notifications:
             return
@@ -1541,8 +1569,10 @@ class AWorldCLI:
         _render()
 
     async def _ensure_notification_poller(self, runtime) -> None:
-        if runtime is None or getattr(runtime, "_notification_center", None) is None:
+        notification_center = getattr(runtime, "_notification_center", None) if runtime is not None else None
+        if runtime is None or notification_center is None:
             return
+        self._bind_notification_center_listener(notification_center)
         if self._notification_poll_task and not self._notification_poll_task.done():
             return
         self._notification_stop_event = asyncio.Event()
@@ -1552,6 +1582,7 @@ class AWorldCLI:
 
     async def _stop_notification_poller(self) -> None:
         if not self._notification_poll_task:
+            self._unbind_notification_center_listener()
             return
         if self._notification_stop_event:
             self._notification_stop_event.set()
@@ -1566,6 +1597,7 @@ class AWorldCLI:
         finally:
             self._notification_poll_task = None
             self._notification_stop_event = None
+            self._unbind_notification_center_listener()
 
     def _hud_owns_notification_state(self, runtime) -> bool:
         if runtime is None or not hasattr(runtime, "active_plugin_capabilities"):
