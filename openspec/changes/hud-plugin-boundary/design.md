@@ -184,6 +184,54 @@ Alternative considered:
 - remove runtime HUD context and force all HUD state through plugin-owned persistence
   Rejected because basic session and execution context are legitimately host-owned.
 
+### Runtime Context Ownership Matrix
+
+The current boundary between host-owned HUD context and plugin-owned HUD semantics is:
+
+**Host-owned runtime context fields**
+
+- `workspace.name`
+- `workspace.path`
+- `session.agent`
+- `session.mode`
+- `session.session_id`
+- `session.model`
+- `session.elapsed_seconds`
+- `task.current_task_id`
+- `task.status`
+- `task.started_at`
+- `activity.current_tool`
+- `activity.recent_tools`
+- `activity.tool_calls_count`
+- `usage.input_tokens`
+- `usage.output_tokens`
+- `usage.total_tokens`
+- `usage.context_used`
+- `usage.context_max`
+- `usage.context_percent`
+- `notifications.cron_unread`
+- `vcs.branch`
+- `plugins.active_count`
+- `plugins.active_ids`
+
+These fields are host-owned because they describe the live CLI/runtime session, executor activity, notification state, or generic workspace metadata that any HUD provider may consume.
+
+**Plugin-owned HUD semantics**
+
+- which of the host-owned fields matter for a specific HUD
+- how host-owned fields are grouped into lines and segments
+- any derived summaries that combine multiple lifecycle events
+- any sticky or cross-refresh state such as plugin-observed progress, custom status labels, or plugin-defined health indicators
+- any additional plugin-private semantics persisted through scoped plugin state
+
+These semantics belong in plugin code because they are presentation and aggregation policy, not generic runtime truth.
+
+**Boundary rule**
+
+- runtime may publish raw or generic semantic values
+- plugins decide how to summarize or augment those values
+- if a summary requires plugin memory across hook points, it must live in plugin-scoped state rather than in a host-side plugin-specific branch
+
 ### Decision: Plugin-facing HUD helper APIs must be explicit
 
 Built-in HUD plugins must not set the de facto external contract by importing private helpers such as executor-internal formatting modules. Any reusable HUD helper shared between built-in and external plugins must be exposed through an explicit plugin-facing SDK boundary.
@@ -362,6 +410,76 @@ Must not become:
 
 - the permanent home of new HUD capability work
 - the place where new behavior is introduced first
+
+## Host HUD Audit
+
+The current host-side HUD code paths classify as follows.
+
+### Generic rendering
+
+- `aworld-cli/src/aworld_cli/console.py`
+
+Current responsibilities:
+
+- decide whether the bottom toolbar should mount based on generic `hud` capability presence
+- construct a fallback shared HUD context when no runtime builder is available
+- render provider lines as plain text / HTML
+- handle truncation, width reduction, ordering, and styling
+- provide a degraded fallback line when a HUD-capable runtime yields no provider lines
+
+Audit conclusion:
+
+- this file is presentation-focused
+- the remaining fallback segments are generic degraded behavior, not `aworld-hud` policy
+- there is no plugin-name branch for `aworld-hud`
+
+### Generic capability support
+
+- `aworld-cli/src/aworld_cli/plugin_capabilities/hud.py`
+- `aworld-cli/src/aworld_cli/plugin_capabilities/hooks.py`
+- `aworld-cli/src/aworld_cli/plugin_capabilities/state.py`
+- `aworld-cli/src/aworld_cli/plugin_capabilities/context.py`
+- `aworld-cli/src/aworld_cli/plugin_capabilities/commands.py`
+- `aworld-cli/src/aworld_cli/runtime/base.py`
+
+Current responsibilities:
+
+- load plugin entrypoints
+- normalize capability payloads
+- bridge runtime state into plugin-facing contracts
+- expose plugin-scoped state handles
+- execute generic plugin lifecycle hooks
+
+Audit conclusion:
+
+- these files now hold the host-owned plugin capability surface
+- no file in this layer contains `aworld-hud` field policy or plugin-name-specific behavior
+
+### Plugin-specific content logic
+
+- `aworld-cli/src/aworld_cli/builtin_plugins/aworld_hud/hud/status.py`
+
+Current responsibilities:
+
+- choose HUD fields
+- compose segment groups
+- render built-in HUD summaries from generic runtime context plus plugin-facing helpers
+
+Audit conclusion:
+
+- built-in HUD content policy is contained in plugin code
+- the host no longer needs `aworld-hud`-specific branches to evolve built-in HUD content
+
+### Audit Result For Task 5.2
+
+No remaining host-side `aworld-hud` business branch was found in the active CLI HUD pipeline.
+
+The only host fallback behavior left is:
+
+- capability gating via `runtime.active_plugin_capabilities()`
+- generic fallback line rendering when provider output is unavailable
+
+Those branches are justified as generic HUD surface behavior and should remain host-owned.
 
 ## Reviewer Checklist
 
