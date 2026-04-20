@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Iterable
 
 
 def prioritize_repo_aworld_path(sys_path: list[str], package_file: str) -> list[str]:

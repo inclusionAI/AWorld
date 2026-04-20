@@ -487,6 +487,12 @@ Our roadmap includes expanding our AI for Science & Business initiative, deepeni
 
 We warmly welcome developers, researchers, and domain experts to join us. Whether you're enhancing the framework or contributing a Skill from your field of expertise, your work is valuable.
 
+Repository behavior changes are now managed through OpenSpec:
+
+- Stable capability contracts live in `openspec/specs/`
+- Proposed or in-flight changes live in `openspec/changes/`
+- Historical `docs/superpowers/` files remain for reference only and are no longer the active change-management workflow
+
 For academic citations or wish to contact us, please use the following BibTeX entry:
 </p>
 

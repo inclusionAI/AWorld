@@ -1,4 +1,4 @@
-from aworld_cli.inner_plugins.smllc.agents.aworld_agent import load_aworld_system_prompt
+from aworld_cli.builtin_agents.smllc.agents.aworld_agent import load_aworld_system_prompt
 
 
 def test_aworld_prompt_routes_reminders_to_cron():

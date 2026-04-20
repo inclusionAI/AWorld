@@ -235,6 +235,11 @@ class CommandRegistry:
         return cls._commands.get(name)
 
     @classmethod
+    def unregister(cls, name: str) -> None:
+        """Remove a registered command if present."""
+        cls._commands.pop(name, None)
+
+    @classmethod
     def list_commands(cls) -> List[Command]:
         """
         Get all registered commands.
@@ -243,6 +248,16 @@ class CommandRegistry:
             List of all registered Command instances
         """
         return list(cls._commands.values())
+
+    @classmethod
+    def snapshot(cls) -> Dict[str, Command]:
+        """Return a shallow copy of the current registry (useful for tests)."""
+        return dict(cls._commands)
+
+    @classmethod
+    def restore(cls, snapshot: Dict[str, Command]) -> None:
+        """Replace registry contents with a previous snapshot."""
+        cls._commands = dict(snapshot)
 
     @classmethod
     def help_text(cls) -> str:
