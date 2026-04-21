@@ -17,8 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal, Optional
 
+from aworld.plugins.discovery import discover_plugins
 from aworld.utils.skill_loader import collect_skill_docs
-from aworld_cli.core.plugin_manager import PluginManager
+from aworld_cli.core.plugin_manager import PluginManager, list_builtin_plugins
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +101,7 @@ class InstalledSkillManager:
 
     def _upsert_manifest_record(self, record: dict[str, str]) -> dict[str, str]:
         self._ensure_no_unmanaged_plugin_dir_collision(record["install_id"])
+        self._ensure_no_reserved_plugin_id_collision(record)
         existing_record = self.plugin_manager._manifest.get(record["install_id"])
         if isinstance(existing_record, Mapping):
             existing_package_kind = str(existing_record.get("package_kind", "plugin"))
@@ -144,6 +146,59 @@ class InstalledSkillManager:
         if unmanaged_path.exists() or unmanaged_path.is_symlink():
             raise ValueError(
                 f"Skill install id '{install_id}' conflicts with an unmanaged plugin directory: {unmanaged_path}"
+                )
+
+    def _is_same_skill_package(self, record: dict[str, str], plugin: Mapping[str, object]) -> bool:
+        if str(plugin.get("name", "")) != record["install_id"]:
+            return False
+
+        if str(plugin.get("managed_by", "")) != "skill":
+            return False
+
+        recorded_path = record.get("installed_path")
+        plugin_path = plugin.get("path")
+        if not isinstance(recorded_path, str) or not isinstance(plugin_path, str):
+            return False
+
+        try:
+            return self._normalize_entry_path(Path(recorded_path)) == self._normalize_entry_path(
+                Path(plugin_path)
+            )
+        except ValueError:
+            return False
+
+    def _ensure_no_reserved_plugin_id_collision(self, record: dict[str, str]) -> None:
+        install_id = record["install_id"]
+        if any(
+            str(builtin_plugin.get("plugin_id", "")) == install_id
+            for builtin_plugin in list_builtin_plugins()
+        ):
+            raise ValueError(
+                f"Skill install id '{install_id}' conflicts with reserved framework plugin id '{install_id}'"
+            )
+
+        seen_paths: set[Path] = set()
+        for plugin in self.plugin_manager._iter_plugin_records():
+            plugin_path_value = plugin.get("path")
+            if not isinstance(plugin_path_value, str):
+                continue
+            plugin_path = Path(plugin_path_value)
+            if not plugin_path.exists() or not plugin_path.is_dir():
+                continue
+            resolved_plugin_path = plugin_path.resolve(strict=False)
+            if resolved_plugin_path in seen_paths:
+                continue
+            seen_paths.add(resolved_plugin_path)
+
+            discovered = discover_plugins([plugin_path])
+            if not discovered:
+                continue
+            if discovered[0].manifest.plugin_id != install_id:
+                continue
+            if self._is_same_skill_package(record, plugin):
+                continue
+            raise ValueError(
+                f"Skill install id '{install_id}' conflicts with existing framework plugin id '{install_id}'"
             )
 
     def _load_plugin_manifest_records(

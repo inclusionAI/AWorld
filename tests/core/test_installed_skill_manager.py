@@ -22,6 +22,34 @@ def _write_skill(root: Path, skill_name: str) -> None:
     )
 
 
+def _write_framework_plugin(root: Path, plugin_id: str, plugin_name: str) -> None:
+    plugin_manifest_dir = root / ".aworld-plugin"
+    plugin_manifest_dir.mkdir(parents=True, exist_ok=True)
+    commands_dir = root / "commands"
+    commands_dir.mkdir(parents=True, exist_ok=True)
+    (commands_dir / "echo.md").write_text("# Echo\n", encoding="utf-8")
+    (plugin_manifest_dir / "plugin.json").write_text(
+        json.dumps(
+            {
+                "id": plugin_id,
+                "name": plugin_name,
+                "version": "0.1.0",
+                "entrypoints": {
+                    "commands": [
+                        {
+                            "id": "echo",
+                            "name": "Echo",
+                            "target": "commands/echo.md",
+                        }
+                    ],
+                    "hud": [],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
@@ -982,6 +1010,68 @@ def test_install_rejects_unmanaged_plugin_directory_collision(
         else {}
     )
     assert persisted_plugins == original_plugins
+
+
+def test_install_rejects_conflict_with_existing_framework_plugin_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source = tmp_path / "source-skills"
+    _write_skill(source / "skills", "optimizer")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    plugin_root = tmp_path / ".aworld" / "plugins" / "custom-plugin-root"
+    _write_framework_plugin(
+        plugin_root,
+        plugin_id="framework-plugin-id",
+        plugin_name="custom-plugin-name",
+    )
+    manager.plugin_manager.upsert_manifest_record(
+        "custom-plugin-key",
+        plugin_path=plugin_root,
+        source="manual-plugin",
+        package_kind="plugin",
+        managed_by="plugin",
+        activation_scope="workspace",
+    )
+
+    with pytest.raises(ValueError, match="plugin id 'framework-plugin-id'"):
+        manager.install(
+            source=source,
+            mode="copy",
+            scope="global",
+            install_id="framework-plugin-id",
+        )
+
+    assert (installed_root / "framework-plugin-id").exists() is False
+
+
+def test_install_rejects_conflict_with_builtin_framework_plugin_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source = tmp_path / "source-skills"
+    _write_skill(source / "skills", "optimizer")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+
+    with pytest.raises(ValueError, match="plugin id 'aworld-hud'"):
+        manager.install(
+            source=source,
+            mode="copy",
+            scope="global",
+            install_id="aworld-hud",
+        )
+
+    assert (installed_root / "aworld-hud").exists() is False
 
 
 def test_legacy_migration_rolls_back_on_later_record_collision(
