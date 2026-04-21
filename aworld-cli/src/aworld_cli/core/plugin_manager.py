@@ -151,6 +151,7 @@ def list_available_plugins(manager: "PluginManager") -> List[Dict[str, object]]:
         plugin
         for plugin in manager.list_plugins()
         if plugin.get("framework_source") == "manifest"
+        and not manager._is_skill_managed_record(plugin)
     ]
     seen_plugin_ids = {plugin.get("plugin_id", plugin["name"]) for plugin in plugins}
 
@@ -918,15 +919,13 @@ class PluginManager:
             ...     print(dir)
         """
         agent_dirs = []
-        
-        plugins = self.list_plugins()
-        for plugin in plugins:
-            plugin_path = Path(plugin['path'])
+
+        for plugin_path in self.get_plugin_roots():
             agents_dir = plugin_path / "agents"
-            
+
             if agents_dir.exists() and agents_dir.is_dir():
                 agent_dirs.append(agents_dir)
-        
+
         return agent_dirs
 
     def get_plugin_roots(self) -> List[Path]:

@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 
 from aworld.plugins.discovery import discover_plugins
 from aworld.plugins.models import PluginEntrypoint
-from aworld_cli.core.plugin_manager import PluginManager
+from aworld_cli.core.plugin_manager import PluginManager, list_available_plugins
 from aworld_cli.runtime.loaders import PluginLoader
 
 
@@ -174,12 +174,16 @@ def test_skill_managed_packages_are_excluded_from_framework_runtime_roots_and_re
 
     runtime_roots = manager.get_runtime_plugin_roots()
     framework_roots = manager.get_plugin_roots()
+    plugin_agent_dirs = manager.get_plugin_dirs()
+    available_plugins = list_available_plugins(manager)
     framework_registry_plugins = {
         plugin.manifest.plugin_id for plugin in manager.get_framework_registry().plugins()
     }
 
     assert skill_managed_root.resolve() not in runtime_roots
     assert skill_managed_root not in framework_roots
+    assert plugin_agent_dirs == []
+    assert all(plugin["name"] != "skill-package" for plugin in available_plugins)
     assert "skill-managed-plugin" not in framework_registry_plugins
 
 
