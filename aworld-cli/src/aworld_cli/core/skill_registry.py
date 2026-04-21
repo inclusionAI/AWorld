@@ -357,6 +357,29 @@ def reset_skill_registry() -> None:
     _global_registry = None
 
 
+def resolve_explicit_skill_sources(
+    skill_paths: List[str],
+    *,
+    cache_dir: Optional[Path] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Resolve explicit skill sources without mutating the global SkillRegistry singleton.
+
+    Earlier runtime paths registered ad hoc sources into the process-global registry as a
+    side effect. The resolver-based flow needs a read-only view instead.
+    """
+    resolved_skills: Dict[str, Dict[str, Any]] = {}
+
+    for skill_path in skill_paths:
+        for skill_name, skill_data in collect_skill_docs(
+            skill_path,
+            cache_dir=cache_dir,
+        ).items():
+            resolved_skills.setdefault(skill_name, dict(skill_data))
+
+    return resolved_skills
+
+
 def register_skill_source(source: str, source_name: Optional[str] = None) -> int:
     """
     Register a skill source (local path or GitHub URL) in the global registry.
