@@ -399,6 +399,105 @@ Validation for the eventual implementation should cover:
 - markdown-agent compatibility behavior through the adapter path
 - context file browsing for resolved skills via `ContextSkillTool`
 
+### Experience-Level Verification Goal
+
+The implementation should be verified against the intended end-user experience, not only against the internal install command.
+
+The target experience is:
+
+1. a user can independently install a skill into AWorld
+2. AWorld can discover that skill without requiring ad hoc `--skill-path` registration for normal use
+3. the user can rely on either:
+   - automatic skill activation when the task clearly matches the installed skill
+   - explicit skill selection when the user wants to force the use of a specific skill
+
+This verification goal intentionally mirrors the operational model described by Codex-style skill systems such as Superpowers:
+
+- installed skills live in a standard user-controlled location
+- skill discovery is automatic
+- skill usage can be explicit or inferred from task matching
+
+### Acceptance Matrix
+
+The implementation should not be considered complete unless all of the following user-visible cases are verified.
+
+#### A. Installation And Discovery
+
+1. A standalone skill package can be installed through `aworld-cli skill install`.
+2. After installation, restarting or re-entering AWorld does not require `--skill-path` or `SKILLS_PATH` to discover the skill.
+3. A manually placed skill package under the standard managed location can also be discovered.
+4. Both of these source shapes are supported:
+   - manifest plugin exposing `entrypoints.skills`
+   - legacy skills-only package exposing `skills/`
+5. `skill list` and `plugins list` describe the same installed skills-capable package consistently, even if they present different views.
+
+#### B. Automatic Activation
+
+1. When a user task clearly matches an installed skill, AWorld can activate that skill automatically.
+2. Automatic activation respects plugin activation scope.
+3. Automatic activation respects skill entrypoint agent selectors.
+4. When multiple candidate skills match, the selection order is deterministic and testable.
+
+#### C. Explicit Skill Selection
+
+1. A user can explicitly request a specific installed skill and force its use.
+2. Explicit selection takes precedence over automatic matching.
+3. Attempting to explicitly use a missing, disabled, or non-visible skill produces a clear user-facing failure.
+4. Markdown-agent compatibility fields such as `skill_names` continue to work during the compatibility window, but resolve through the unified resolver path.
+
+#### D. Context And Runtime Execution
+
+1. Resolved skills are converted into agent-visible `skill_configs`.
+2. `BaseAgent` receives those `skill_configs` without source-specific branching.
+3. `AmniContext` initializes the skill list correctly from resolved skills.
+4. `ContextSkillTool` can browse files and load content for resolved skills.
+5. Skill-derived tool availability and MCP server derivation continue to work for:
+   - manifest plugin skills
+   - legacy skills-only plugin packages
+   - markdown compatibility adapter inputs
+
+### Test Layers
+
+To keep validation honest, the implementation should be verified at multiple layers.
+
+#### Automated Unit And Integration Tests
+
+Cover:
+
+- install-state normalization into the plugin model
+- resolver behavior
+- activation scope handling
+- agent selector handling
+- automatic matching selection order
+- explicit selection precedence
+- markdown compatibility adapter behavior
+- context and `ContextSkillTool` behavior
+
+#### CLI Acceptance Tests
+
+Cover:
+
+- `aworld-cli skill install`
+- `aworld-cli skill list`
+- `aworld-cli skill remove`
+- `aworld-cli skill update`
+- consistency with `aworld-cli plugins list`
+
+These tests should validate the user-facing behavior, not only the internal storage shape.
+
+#### Manual End-To-End Verification
+
+At least one manual workflow should be documented and exercised:
+
+1. install a standalone skill package
+2. start AWorld without custom skill-path flags
+3. verify the skill is discoverable
+4. submit a task that should auto-activate the skill
+5. submit a task that explicitly requests the skill
+6. confirm both flows succeed
+
+This manual flow is required because the feature goal is an end-user operational model, not only an internal refactor.
+
 ## Risks And Mitigations
 
 ### Risk: Hidden coupling in current skill assembly
