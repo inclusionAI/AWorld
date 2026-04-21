@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Union, Optional
 from aworld.logs.util import logger
 
+from .boot_logging import log_verbose_boot
+
 
 def _ensure_parent_packages_in_sys_modules(module_name: str, project_root: Union[str, Path]) -> None:
     """
@@ -32,16 +34,25 @@ def _ensure_parent_packages_in_sys_modules(module_name: str, project_root: Union
     top_level = parts[0]
     pkg_path = root / top_level
     if top_level in sys.modules:
-        logger.info(f"📦 _ensure_parent_packages: skip (already in sys.modules): {top_level}")
+        log_verbose_boot(
+            logger,
+            f"📦 _ensure_parent_packages: skip (already in sys.modules): {top_level}",
+        )
         return
     if not pkg_path.is_dir():
-        logger.info(f"📦 _ensure_parent_packages: skip (not a dir): {top_level} path={pkg_path}")
+        log_verbose_boot(
+            logger,
+            f"📦 _ensure_parent_packages: skip (not a dir): {top_level} path={pkg_path}",
+        )
         return
     pkg = type(sys)(top_level)
     pkg.__path__ = [str(pkg_path)]
     pkg.__package__ = top_level
     sys.modules[top_level] = pkg
-    logger.info(f"📦 _ensure_parent_packages: registered top-level {top_level} -> {pkg_path}")
+    log_verbose_boot(
+        logger,
+        f"📦 _ensure_parent_packages: registered top-level {top_level} -> {pkg_path}",
+    )
 
 
 def _has_agent_decorator(file_path: Path) -> bool:
@@ -100,7 +111,7 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
     cwd_resolved = Path.cwd().resolve()
 
     if not agents_dir.exists():
-        logger.warning(f"Agents directory not found: {agents_dir}")
+        log_verbose_boot(logger, f"Agents directory not found: {agents_dir}", level="warning")
         return []
 
     # Do not scan the current working directory (avoid loading from cwd by mistake)
@@ -143,11 +154,17 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
     python_files = [f for f in all_python_files if _has_agent_decorator(f)] if all_python_files else []
     
     if all_python_files:
-        logger.info(f"[dim]🔍 Found {len(all_python_files)} Python file(s), {len(python_files)} with @agent decorator[/dim]")
+        log_verbose_boot(
+            logger,
+            f"[dim]🔍 Found {len(all_python_files)} Python file(s), {len(python_files)} with @agent decorator[/dim]",
+        )
         if python_files:
-            logger.info(f"[dim]  Files with @agent decorator:[/dim]")
+            log_verbose_boot(logger, "[dim]  Files with @agent decorator:[/dim]")
             for py_file in python_files:
-                logger.info(f"[dim]    • {py_file.relative_to(agents_dir) if agents_dir.exists() else py_file}[/dim]")
+                log_verbose_boot(
+                    logger,
+                    f"[dim]    • {py_file.relative_to(agents_dir) if agents_dir.exists() else py_file}[/dim]",
+                )
     elif markdown_agents:
         console.print(f"[dim]🔍 Found {len(markdown_agents)} markdown agent file(s)[/dim]")
     
@@ -179,9 +196,12 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
         ):
             project_root = parent_of_project
             use_local_package_layout = True
-            logger.info(f"📂 init_agents: use_local_package_layout=True, project_root( parent_of_project)={parent_of_project}, project_folder={project_folder}")
+            log_verbose_boot(
+                logger,
+                f"📂 init_agents: use_local_package_layout=True, project_root( parent_of_project)={parent_of_project}, project_folder={project_folder}",
+            )
     except Exception as e:
-        logger.info(f"📂 init_agents: local layout check failed: {e}")
+        log_verbose_boot(logger, f"📂 init_agents: local layout check failed: {e}")
 
     # Fallback: find project root from sys.path or use agents_dir's parent
     if project_root is None:
@@ -190,23 +210,32 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
                 path_obj = Path(path).resolve()
                 if agents_dir_abs.is_relative_to(path_obj):
                     project_root = path_obj
-                    logger.info(f"📂 init_agents: project_root from sys.path: {project_root}, use_local_package_layout=False")
+                    log_verbose_boot(
+                        logger,
+                        f"📂 init_agents: project_root from sys.path: {project_root}, use_local_package_layout=False",
+                    )
                     break
             except Exception:
                 continue
     if project_root is None:
         project_root = agents_dir_abs.parent
         use_local_package_layout = False
-        logger.info(f"📂 init_agents: project_root=agents_dir.parent: {project_root}, use_local_package_layout=False")
+        log_verbose_boot(
+            logger,
+            f"📂 init_agents: project_root=agents_dir.parent: {project_root}, use_local_package_layout=False",
+        )
 
     if use_local_package_layout:
-        logger.info(f"📂 init_agents: use_local_package_layout=True, agents_dir_abs={agents_dir_abs}, project_folder={project_folder}, project_root={project_root}")
+        log_verbose_boot(
+            logger,
+            f"📂 init_agents: use_local_package_layout=True, agents_dir_abs={agents_dir_abs}, project_folder={project_folder}, project_root={project_root}",
+        )
 
     # Add project root to sys.path if not already there (default: local folder as base for imports)
     project_root_str = str(project_root)
     if project_root_str not in sys.path:
         sys.path.insert(0, project_root_str)
-    logger.info(f"📂 init_agents: sys.path[0]={sys.path[0]}")
+    log_verbose_boot(logger, f"📂 init_agents: sys.path[0]={sys.path[0]}")
 
     # Import modules with status indicator
     from rich.status import Status
@@ -234,13 +263,16 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
                     console.print(f"[dim]⚠️ Skipping invalid module name: {module_name}[/dim]")
                     continue
 
-                logger.info(f"📦 Loading module: py_file={py_file.name}, module_name={module_name}, use_local_package_layout={use_local_package_layout}")
+                log_verbose_boot(
+                    logger,
+                    f"📦 Loading module: py_file={py_file.name}, module_name={module_name}, use_local_package_layout={use_local_package_layout}",
+                )
 
                 # Use importlib to load the module
                 spec = importlib.util.spec_from_file_location(module_name, py_file)
                 if spec is None or spec.loader is None:
                     file_path = str(py_file.resolve())
-                    logger.info(f"[dim]⚠️ Could not create spec for {file_path}[/dim]")
+                    log_verbose_boot(logger, f"[dim]⚠️ Could not create spec for {file_path}[/dim]")
                     failed_count += 1
                     failed_files.append((str(py_file), "Could not create module spec"))
                     continue
@@ -249,9 +281,15 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
                 # So that "from ..mcp_tools" resolves to skill_agent.mcp_tools, register parent packages
                 if use_local_package_layout and "." in module_name:
                     _ensure_parent_packages_in_sys_modules(module_name, project_root)
-                    logger.info(f"📦 Before exec_module: sys.modules keys (skill_agent*): {[k for k in sys.modules if k.startswith('skill_agent')]}")
+                    log_verbose_boot(
+                        logger,
+                        f"📦 Before exec_module: sys.modules keys (skill_agent*): {[k for k in sys.modules if k.startswith('skill_agent')]}",
+                    )
                 else:
-                    logger.info(f"📦 Skip _ensure_parent_packages: use_local_package_layout={use_local_package_layout}, dots_in_name={'.' in module_name}")
+                    log_verbose_boot(
+                        logger,
+                        f"📦 Skip _ensure_parent_packages: use_local_package_layout={use_local_package_layout}, dots_in_name={'.' in module_name}",
+                    )
 
                 # Execute the module to trigger decorator registration
                 # Note: We don't use Status here because the module execution might create its own Status
@@ -270,11 +308,20 @@ def init_agents(agents_dir: Union[str, Path] = None, load_markdown_agents: bool 
                         all_agents = LocalAgentRegistry.list_agents()
                         new_agents = all_agents[-agents_registered:] if agents_registered > 0 else []
                         agent_names = [a.name for a in new_agents]
-                        logger.info(f"[dim]✅ Loaded {agents_registered} agent(s) from: {file_path}[/dim]")
+                        log_verbose_boot(
+                            logger,
+                            f"[dim]✅ Loaded {agents_registered} agent(s) from: {file_path}[/dim]",
+                        )
                         for agent_name in agent_names:
-                            logger.info(f"[dim]    • Registered agent: {agent_name}[/dim]")
+                            log_verbose_boot(
+                                logger,
+                                f"[dim]    • Registered agent: {agent_name}[/dim]",
+                            )
                     else:
-                        logger.info(f"[dim]✅ Loaded module (no new agents registered): {file_path}[/dim]")
+                        log_verbose_boot(
+                            logger,
+                            f"[dim]✅ Loaded module (no new agents registered): {file_path}[/dim]",
+                        )
                 except Exception as import_error:
                     failed_count += 1
                     error_msg = str(import_error)
@@ -413,4 +460,3 @@ def init_agent_file(agent_file: Union[str, Path]) -> Optional[str]:
 
 
 __all__ = ["init_agents", "init_agent_file", "_has_agent_decorator"]
-

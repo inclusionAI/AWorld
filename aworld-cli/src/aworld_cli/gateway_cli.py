@@ -9,6 +9,7 @@ from typing import Sequence
 
 import uvicorn
 
+from aworld_cli.core.boot_logging import enable_quiet_gateway_boot
 from aworld_gateway.agent_resolver import AgentResolver
 from aworld_gateway.config import GatewayConfigLoader
 from aworld_gateway.config import GatewayConfig
@@ -234,6 +235,7 @@ async def serve_gateway(
     agent_files: list[str] | None,
 ) -> None:
     _enable_aworld_console_logging_for_gateway()
+    enable_quiet_gateway_boot()
 
     from aworld_cli.main import load_all_agents
 
