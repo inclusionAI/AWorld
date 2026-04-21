@@ -822,3 +822,87 @@ def test_save_manifest_preserves_legacy_when_plugin_manifest_write_fails(
         assert manifest_path.read_text(encoding="utf-8") == original_legacy_manifest
     assert plugin_manifest_path.read_text(encoding="utf-8") == original_plugin_manifest
     assert sorted(manager.load_manifest(), key=lambda item: item["install_id"]) == original_records
+
+
+def test_install_rejects_manifest_key_collision_with_non_skill_plugin_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source = tmp_path / "source-skills"
+    _write_skill(source / "skills", "optimizer")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    existing_plugin_path = tmp_path / "existing-plugin"
+    existing_plugin_path.mkdir(parents=True, exist_ok=True)
+    manager.plugin_manager.upsert_manifest_record(
+        "source-skills",
+        plugin_path=existing_plugin_path,
+        source="manual-plugin",
+        package_kind="plugin",
+        managed_by="plugin",
+        activation_scope="workspace",
+    )
+    original_plugins = json.loads(
+        manager.plugin_manager.manifest_file.read_text(encoding="utf-8")
+    )
+
+    with pytest.raises(ValueError, match="conflicts with an existing non-skill plugin"):
+        manager.install(
+            source=source,
+            mode="copy",
+            scope="global",
+            install_id="source-skills",
+        )
+
+    assert (installed_root / "source-skills").exists() is False
+    assert json.loads(
+        manager.plugin_manager.manifest_file.read_text(encoding="utf-8")
+    ) == original_plugins
+
+
+def test_save_manifest_rolls_back_plugin_state_when_legacy_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    entry_a = installed_root / "pack-a"
+    entry_b = installed_root / "pack-b"
+    _write_skill(entry_a, "alpha")
+    _write_skill(entry_b, "beta")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.import_entry(entry_a, scope="global")
+    manager.import_entry(entry_b, scope="global")
+
+    original_records = sorted(
+        manager.load_manifest(), key=lambda item: item["install_id"]
+    )
+    updated_records = [
+        record for record in original_records if record["install_id"] == "pack-a"
+    ]
+    plugin_manifest_path = tmp_path / ".aworld" / "plugins" / ".manifest.json"
+    original_plugin_manifest = plugin_manifest_path.read_text(encoding="utf-8")
+    original_plugin_memory = dict(manager.plugin_manager._manifest)
+
+    original_write_atomic = manager._write_text_file_atomic
+
+    def _raise_on_legacy_write(path: Path, content: str, *, mode: int | None = None) -> None:
+        if path.resolve(strict=False) == manifest_path.resolve(strict=False):
+            raise OSError("legacy manifest write failed")
+        original_write_atomic(path, content, mode=mode)
+
+    monkeypatch.setattr(manager, "_write_text_file_atomic", _raise_on_legacy_write)
+
+    with pytest.raises(OSError, match="legacy manifest write failed"):
+        manager.save_manifest(updated_records)
+
+    assert plugin_manifest_path.read_text(encoding="utf-8") == original_plugin_manifest
+    assert manager.plugin_manager._manifest == original_plugin_memory
+    assert sorted(manager.load_manifest(), key=lambda item: item["install_id"]) == original_records
