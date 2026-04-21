@@ -490,7 +490,7 @@ def test_connector_sends_processing_ack_for_complex_request() -> None:
     )
 
     assert sent == [
-        "已收到，正在处理。我会尽量保留你消息里的文件、时间范围和输出格式要求。",
+        PROCESSING_ACK_TEXT,
         "echo:结合trajectory.log分析今天ai领域的新闻收集整理好生成html发给我",
     ]
 
