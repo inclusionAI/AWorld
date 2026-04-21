@@ -1,7 +1,10 @@
+import sys
 from pathlib import Path
 from types import MappingProxyType, SimpleNamespace
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld.plugins.discovery import discover_plugins
 from aworld.plugins.models import PluginEntrypoint
@@ -141,6 +144,43 @@ def test_discovery_and_listing_ignore_file_based_plugin_paths(tmp_path):
     )
     assert plugin["framework_source"] == "unknown"
     assert plugin["has_skills"] is False
+
+
+def test_skill_managed_packages_are_excluded_from_framework_runtime_roots_and_registry(
+    tmp_path,
+):
+    skill_managed_root = tmp_path / "skill-managed-root"
+    skill_managed_root.mkdir(parents=True)
+    manifest_dir = skill_managed_root / ".aworld-plugin"
+    manifest_dir.mkdir(parents=True)
+    (skill_managed_root / "agents").mkdir(parents=True)
+    (manifest_dir / "plugin.json").write_text(
+        (
+            '{"id":"skill-managed-plugin","name":"Skill Managed","version":"0.1.0",'
+            '"entrypoints":{"agents":[],"skills":[],"commands":[],"hud":[]}}'
+        ),
+        encoding="utf-8",
+    )
+
+    manager = PluginManager(plugin_dir=tmp_path / "plugin-manifest")
+    manager.upsert_manifest_record(
+        "skill-package",
+        plugin_path=skill_managed_root,
+        source="skill-install",
+        package_kind="skill",
+        managed_by="skill",
+        activation_scope="global",
+    )
+
+    runtime_roots = manager.get_runtime_plugin_roots()
+    framework_roots = manager.get_plugin_roots()
+    framework_registry_plugins = {
+        plugin.manifest.plugin_id for plugin in manager.get_framework_registry().plugins()
+    }
+
+    assert skill_managed_root.resolve() not in runtime_roots
+    assert skill_managed_root not in framework_roots
+    assert "skill-managed-plugin" not in framework_registry_plugins
 
 
 @pytest.mark.asyncio

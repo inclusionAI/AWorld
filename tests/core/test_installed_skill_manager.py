@@ -50,6 +50,13 @@ def _write_framework_plugin(root: Path, plugin_id: str, plugin_name: str) -> Non
     )
 
 
+def _write_skill_package_with_framework_manifest(
+    root: Path, skill_name: str, plugin_id: str, plugin_name: str
+) -> None:
+    _write_skill(root / "skills", skill_name)
+    _write_framework_plugin(root, plugin_id=plugin_id, plugin_name=plugin_name)
+
+
 def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args],
@@ -402,6 +409,44 @@ def test_update_git_install_pulls_existing_checkout(
     assert next(
         item for item in manager.list_installs() if item["install_id"] == "git-skill"
     )["skill_count"] == 2
+
+
+def test_update_install_allows_same_skill_package_with_embedded_framework_plugin_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source_repo = tmp_path / "git-source-with-manifest"
+    source_repo.mkdir()
+    _run_git(source_repo, "init")
+    _run_git(source_repo, "config", "user.name", "Test User")
+    _run_git(source_repo, "config", "user.email", "test@example.com")
+    _write_skill_package_with_framework_manifest(
+        source_repo,
+        skill_name="brainstorming",
+        plugin_id="embedded-framework-id",
+        plugin_name="embedded-framework-name",
+    )
+    _commit_all(source_repo, "initial commit")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.install(
+        source=source_repo,
+        mode="clone",
+        scope="global",
+        install_id="git-skill",
+    )
+
+    _write_skill(source_repo / "skills", "writing-plans")
+    _commit_all(source_repo, "add another skill")
+
+    updated = manager.update_install("git-skill")
+
+    assert updated["install_id"] == "git-skill"
+    assert (installed_root / "git-skill" / "skills" / "writing-plans" / "SKILL.md").exists() is True
 
 
 def test_update_install_rejects_symlink_backed_installed_path(
@@ -1072,6 +1117,78 @@ def test_install_rejects_conflict_with_builtin_framework_plugin_id(
         )
 
     assert (installed_root / "aworld-hud").exists() is False
+
+
+def test_install_rejects_embedded_manifest_plugin_id_collision_with_existing_framework_plugin_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source = tmp_path / "source-skills"
+    _write_skill_package_with_framework_manifest(
+        source,
+        skill_name="optimizer",
+        plugin_id="framework-plugin-id",
+        plugin_name="embedded-skill-plugin-name",
+    )
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    plugin_root = tmp_path / ".aworld" / "plugins" / "custom-plugin-root"
+    _write_framework_plugin(
+        plugin_root,
+        plugin_id="framework-plugin-id",
+        plugin_name="custom-plugin-name",
+    )
+    manager.plugin_manager.upsert_manifest_record(
+        "custom-plugin-key",
+        plugin_path=plugin_root,
+        source="manual-plugin",
+        package_kind="plugin",
+        managed_by="plugin",
+        activation_scope="workspace",
+    )
+
+    with pytest.raises(ValueError, match="embedded plugin id 'framework-plugin-id'"):
+        manager.install(
+            source=source,
+            mode="copy",
+            scope="global",
+            install_id="different-install-id",
+        )
+
+    assert (installed_root / "different-install-id").exists() is False
+
+
+def test_install_rejects_embedded_manifest_plugin_id_collision_with_builtin_framework_plugin_id(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source = tmp_path / "source-skills"
+    _write_skill_package_with_framework_manifest(
+        source,
+        skill_name="optimizer",
+        plugin_id="aworld-hud",
+        plugin_name="embedded-skill-plugin-name",
+    )
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+
+    with pytest.raises(ValueError, match="embedded plugin id 'aworld-hud'"):
+        manager.install(
+            source=source,
+            mode="copy",
+            scope="global",
+            install_id="not-aworld-hud",
+        )
+
+    assert (installed_root / "not-aworld-hud").exists() is False
 
 
 def test_legacy_migration_rolls_back_on_later_record_collision(

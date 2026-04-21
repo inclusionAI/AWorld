@@ -168,13 +168,55 @@ class InstalledSkillManager:
             return False
 
     def _ensure_no_reserved_plugin_id_collision(self, record: dict[str, str]) -> None:
-        install_id = record["install_id"]
+        candidate_ids: list[tuple[str, str]] = [("install id", record["install_id"])]
+        embedded_plugin_id = self._extract_embedded_manifest_plugin_id(record)
+        if embedded_plugin_id and embedded_plugin_id != record["install_id"]:
+            candidate_ids.append(("embedded plugin id", embedded_plugin_id))
+
+        for candidate_label, candidate_plugin_id in candidate_ids:
+            self._ensure_no_framework_plugin_id_collision(
+                record=record,
+                candidate_plugin_id=candidate_plugin_id,
+                candidate_label=candidate_label,
+            )
+
+    def _extract_embedded_manifest_plugin_id(self, record: Mapping[str, str]) -> str | None:
+        installed_path_value = record.get("installed_path")
+        if not installed_path_value:
+            return None
+
+        manifest_path = Path(installed_path_value) / ".aworld-plugin" / "plugin.json"
+        if not manifest_path.is_file():
+            return None
+
+        try:
+            manifest_data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+
+        if not isinstance(manifest_data, Mapping):
+            return None
+
+        raw_plugin_id = manifest_data.get("id", manifest_data.get("plugin_id"))
+        if not isinstance(raw_plugin_id, str):
+            return None
+
+        normalized_plugin_id = raw_plugin_id.strip()
+        return normalized_plugin_id or None
+
+    def _ensure_no_framework_plugin_id_collision(
+        self,
+        *,
+        record: dict[str, str],
+        candidate_plugin_id: str,
+        candidate_label: str,
+    ) -> None:
         if any(
-            str(builtin_plugin.get("plugin_id", "")) == install_id
+            str(builtin_plugin.get("plugin_id", "")) == candidate_plugin_id
             for builtin_plugin in list_builtin_plugins()
         ):
             raise ValueError(
-                f"Skill install id '{install_id}' conflicts with reserved framework plugin id '{install_id}'"
+                f"Skill {candidate_label} '{candidate_plugin_id}' conflicts with reserved framework plugin id '{candidate_plugin_id}'"
             )
 
         seen_paths: set[Path] = set()
@@ -193,12 +235,12 @@ class InstalledSkillManager:
             discovered = discover_plugins([plugin_path])
             if not discovered:
                 continue
-            if discovered[0].manifest.plugin_id != install_id:
+            if discovered[0].manifest.plugin_id != candidate_plugin_id:
                 continue
             if self._is_same_skill_package(record, plugin):
                 continue
             raise ValueError(
-                f"Skill install id '{install_id}' conflicts with existing framework plugin id '{install_id}'"
+                f"Skill {candidate_label} '{candidate_plugin_id}' conflicts with existing framework plugin id '{candidate_plugin_id}'"
             )
 
     def _load_plugin_manifest_records(
