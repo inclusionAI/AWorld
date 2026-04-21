@@ -846,6 +846,15 @@ class PluginManager:
             and (include_disabled or bool(plugin.get("enabled", True)))
         ]
 
+    def get_skill_package_roots(self, *, include_disabled: bool = False) -> List[Path]:
+        """Return installed skill-managed package roots for resolver-based skill discovery."""
+        roots: List[Path] = []
+        for plugin in self.list_skill_packages(include_disabled=include_disabled):
+            plugin_path = Path(str(plugin["path"]))
+            if plugin_path.exists() and plugin_path.is_dir():
+                roots.append(plugin_path)
+        return roots
+
     def get_runtime_plugin_roots(self) -> List[Path]:
         """Return runtime-visible framework plugin roots with built-in overrides applied."""
         plugin_roots: List[Path] = []
