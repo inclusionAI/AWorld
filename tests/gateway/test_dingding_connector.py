@@ -10,7 +10,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from aworld_gateway.channels.dingding.connector import DingTalkConnector
+from aworld_gateway.channels.dingding.connector import (
+    PROCESSING_ACK_TEXT,
+    DingTalkConnector,
+)
 from aworld_gateway.channels.dingding.types import (
     AICardInstance,
     DingdingBridgeResult,
@@ -373,7 +376,12 @@ def test_connector_normal_callback_runs_bridge_and_sends_text() -> None:
     assert str(bridge.calls[1]["text"]).startswith("again\n会话附加信息:")
     assert all(call["agent_id"] == "agent-1" for call in bridge.calls)
     assert session_id_1 == session_id_2
-    assert sent == ["echo:hello", "echo:again"]
+    assert sent == [
+        PROCESSING_ACK_TEXT,
+        "echo:hello",
+        PROCESSING_ACK_TEXT,
+        "echo:again",
+    ]
 
 
 def test_connector_sends_processing_ack_for_complex_request() -> None:
@@ -435,7 +443,10 @@ def test_connector_reports_error_when_no_agent_id_is_configured() -> None:
         )
     )
 
-    assert sent == ["抱歉，调用 Agent 失败：No agent id configured for DingTalk channel."]
+    assert sent == [
+        PROCESSING_ACK_TEXT,
+        "抱歉，调用 Agent 失败：No agent id configured for DingTalk channel.",
+    ]
 
 
 def test_connector_uses_sender_id_when_conversation_id_missing() -> None:
@@ -463,7 +474,7 @@ def test_connector_uses_sender_id_when_conversation_id_missing() -> None:
     )
 
     assert bridge.calls[0]["session_id"].startswith("dingtalk_staff-1_")
-    assert sent == ["echo:hello"]
+    assert sent == [PROCESSING_ACK_TEXT, "echo:hello"]
 
 
 def test_connector_suppresses_duplicate_callbacks() -> None:
@@ -492,7 +503,7 @@ def test_connector_suppresses_duplicate_callbacks() -> None:
     asyncio.run(connector.handle_callback(payload))
 
     assert len(bridge.calls) == 1
-    assert sent == ["echo:hello"]
+    assert sent == [PROCESSING_ACK_TEXT, "echo:hello"]
 
 
 def test_connector_suppresses_duplicate_callbacks_without_provider_ids() -> None:
@@ -521,7 +532,7 @@ def test_connector_suppresses_duplicate_callbacks_without_provider_ids() -> None
     asyncio.run(connector.handle_callback(dict(payload)))
 
     assert len(bridge.calls) == 1
-    assert sent == ["echo:hello"]
+    assert sent == [PROCESSING_ACK_TEXT, "echo:hello"]
 
 
 def test_connector_logs_inbound_runtime_outputs_and_final_reply(monkeypatch) -> None:
@@ -583,12 +594,14 @@ def test_connector_logs_inbound_runtime_outputs_and_final_reply(monkeypatch) -> 
         )
     )
 
-    assert sent == ["已创建提醒"]
+    assert sent == [PROCESSING_ACK_TEXT, "已创建提醒"]
     assert any("DingTalk inbound message" in entry for entry in info_logs)
     assert any("一分钟后提醒我喝水" in entry for entry in info_logs)
+    assert any("DingTalk AI Card unavailable" in entry for entry in info_logs)
     assert any("DingTalk runtime output" in entry for entry in info_logs)
     assert any("tool_call_result" in entry and "cron" in entry for entry in info_logs)
     assert any("DingTalk final reply" in entry and "已创建提醒" in entry for entry in info_logs)
+    assert any("DingTalk stream summary" in entry and "fallback_to_text=True" in entry for entry in info_logs)
 
 
 def test_connector_mirrors_business_logs_to_std_logging(monkeypatch) -> None:
@@ -732,7 +745,7 @@ def test_connector_supports_string_payload_and_empty_bridge_result() -> None:
 
     assert isinstance(bridge.calls[0]["text"], str)
     assert str(bridge.calls[0]["text"]).startswith("hello from raw content\n会话附加信息:")
-    assert sent == ["（空响应）"]
+    assert sent == [PROCESSING_ACK_TEXT, "（空响应）"]
 
 
 def test_connector_appends_user_context_before_bridge_call() -> None:
@@ -762,7 +775,7 @@ def test_connector_appends_user_context_before_bridge_call() -> None:
         )
     )
 
-    assert sent == ["echo:帮我总结一下"]
+    assert sent == [PROCESSING_ACK_TEXT, "echo:帮我总结一下"]
     assert bridge.calls
     assert bridge.calls[0]["agent_id"] == "agent-1"
     assert bridge.calls[0]["session_id"] == connector._session_ids["conv-1"]
@@ -896,6 +909,76 @@ def test_connector_throttles_ai_card_stream_updates(monkeypatch) -> None:
         ("finish", "ABC"),
         ("files", "0"),
     ]
+
+
+def test_connector_sends_processing_ack_when_ai_card_unavailable_for_short_request(
+    monkeypatch,
+) -> None:
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld", enable_ai_card=False),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+    )
+    sent: list[str] = []
+    info_logs: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        sent.append(text)
+
+    monkeypatch.setattr(
+        "aworld_gateway.channels.dingding.connector.logger.info",
+        lambda message, *args, **kwargs: info_logs.append(str(message)),
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "hi"},
+            }
+        )
+    )
+
+    assert sent == [PROCESSING_ACK_TEXT, "echo:hi"]
+    assert any("DingTalk AI Card unavailable" in entry and "reason=disabled" in entry for entry in info_logs)
+    assert any("DingTalk stream summary" in entry and "fallback_to_text=True" in entry for entry in info_logs)
+
+
+def test_connector_try_create_ai_card_logs_missing_template_configuration(
+    monkeypatch,
+) -> None:
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld", enable_ai_card=True),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+    )
+    info_logs: list[str] = []
+
+    monkeypatch.delenv("AWORLD_DINGTALK_CARD_TEMPLATE_ID", raising=False)
+    monkeypatch.setattr(
+        "aworld_gateway.channels.dingding.connector.logger.info",
+        lambda message, *args, **kwargs: info_logs.append(str(message)),
+    )
+
+    result = asyncio.run(
+        connector._try_create_ai_card(  # type: ignore[attr-defined]
+            {
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+            }
+        )
+    )
+
+    assert result is None
+    assert any(
+        "DingTalk AI Card unavailable" in entry and "reason=missing_card_template_id" in entry
+        for entry in info_logs
+    )
 
 
 def test_connector_send_text_posts_dingtalk_text_payload() -> None:
@@ -1144,6 +1227,7 @@ def test_connector_binds_dingding_cron_jobs_and_fanouts_notifications(
     )
 
     assert sent == [
+        ("https://callback", PROCESSING_ACK_TEXT),
         ("https://callback", "已创建提醒"),
         ("https://callback", 'Cron task "喝水提醒" completed\n提醒我喝水'),
     ]
@@ -1164,6 +1248,7 @@ def test_connector_falls_back_to_text_when_ai_card_finalize_fails() -> None:
         http_client=_FakeHttpClient(),
     )
     calls: list[tuple[str, str]] = []
+    info_logs: list[str] = []
 
     async def fake_create_ai_card(data):
         return AICardInstance(card_instance_id="card-1", access_token="token")
@@ -1182,19 +1267,28 @@ def test_connector_falls_back_to_text_when_ai_card_finalize_fails() -> None:
     connector._stream_ai_card = fake_stream_ai_card  # type: ignore[method-assign]
     connector.send_text = fake_send_text  # type: ignore[method-assign]
     connector._process_local_media_links = fake_process_local_media_links  # type: ignore[method-assign]
-
-    asyncio.run(
-        connector.handle_callback(
-            {
-                "sessionWebhook": "https://callback",
-                "conversationId": "conv-1",
-                "senderId": "user-1",
-                "text": {"content": "hi"},
-            }
-        )
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "aworld_gateway.channels.dingding.connector.logger.info",
+        lambda message, *args, **kwargs: info_logs.append(str(message)),
     )
 
+    try:
+        asyncio.run(
+            connector.handle_callback(
+                {
+                    "sessionWebhook": "https://callback",
+                    "conversationId": "conv-1",
+                    "senderId": "user-1",
+                    "text": {"content": "hi"},
+                }
+            )
+        )
+    finally:
+        monkeypatch.undo()
+
     assert calls[-1] == ("text", "echo:hi")
+    assert any("DingTalk AI Card finalize failed" in entry for entry in info_logs)
 
 
 def test_connector_rewrites_artifact_scheme_to_gateway_url(tmp_path: Path) -> None:
