@@ -679,3 +679,101 @@ def test_list_installs_migrates_legacy_manifest_once_and_preserves_scope(
 
     second = manager.list_installs()
     assert second == installs
+
+
+def test_load_manifest_merges_plugin_records_with_existing_legacy_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    legacy_manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+
+    legacy_entry = installed_root / "legacy-pack"
+    plugin_entry = installed_root / "plugin-pack"
+    _write_skill(legacy_entry, "legacy-skill")
+    _write_skill(plugin_entry, "plugin-skill")
+    installed_root.mkdir(parents=True, exist_ok=True)
+    legacy_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_manifest_path.write_text(
+        json.dumps(
+            [
+                {
+                    "install_id": "legacy-pack",
+                    "name": "legacy-pack",
+                    "source": str(legacy_entry),
+                    "installed_path": str(legacy_entry),
+                    "resolved_skill_source_path": str(legacy_entry),
+                    "install_mode": "manual",
+                    "scope": "global",
+                    "installed_at": "2026-04-15T00:00:00+00:00",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=legacy_manifest_path
+    )
+    manager.import_entry(plugin_entry, scope="agent:developer")
+
+    manifest = manager.load_manifest()
+
+    assert [item["install_id"] for item in manifest] == ["legacy-pack", "plugin-pack"]
+    plugin_record = next(item for item in manifest if item["install_id"] == "plugin-pack")
+    assert plugin_record["scope"] == "agent:developer"
+
+
+def test_save_manifest_updates_plugin_backed_state_after_legacy_migration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    legacy_manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    entry = installed_root / "developer-pack"
+    _write_skill(entry, "optimizer")
+    installed_root.mkdir(parents=True, exist_ok=True)
+    legacy_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_manifest_path.write_text(
+        json.dumps(
+            [
+                {
+                    "install_id": "developer-pack",
+                    "name": "developer-pack",
+                    "source": str(entry),
+                    "installed_path": str(entry),
+                    "resolved_skill_source_path": str(entry),
+                    "install_mode": "manual",
+                    "scope": "global",
+                    "installed_at": "2026-04-15T00:00:00+00:00",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=legacy_manifest_path
+    )
+    migrated = manager.list_installs()
+    assert migrated[0]["scope"] == "global"
+
+    updated_record = {
+        "install_id": "developer-pack",
+        "name": "developer-pack",
+        "source": str(entry),
+        "installed_path": str(entry),
+        "resolved_skill_source_path": str(entry),
+        "install_mode": "manual",
+        "scope": "agent:developer",
+        "installed_at": "2026-04-15T00:00:00+00:00",
+    }
+    manager.save_manifest([updated_record])
+
+    manifest = manager.load_manifest()
+    installs = manager.list_installs()
+
+    assert manifest == [updated_record]
+    assert len(installs) == 1
+    assert installs[0]["install_id"] == "developer-pack"
+    assert installs[0]["scope"] == "agent:developer"

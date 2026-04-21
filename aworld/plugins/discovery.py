@@ -26,18 +26,9 @@ def discover_plugins(roots: Iterable[Path]) -> List[DiscoveredPlugin]:
             )
             continue
 
-        capabilities = []
-        if (root / "agents").exists():
-            capabilities.append("agents")
-        if (root / "skills").exists():
-            capabilities.append("skills")
-        if not capabilities:
-            continue
-
-        legacy_skill_entrypoints: tuple[PluginEntrypoint, ...] = tuple()
+        legacy_skill_items: dict[str, PluginEntrypoint] = {}
         skills_dir = root / "skills"
         if skills_dir.exists():
-            skill_items: list[PluginEntrypoint] = []
             for skill_dir in sorted(
                 (item for item in skills_dir.iterdir() if item.is_dir()),
                 key=lambda item: item.name,
@@ -45,7 +36,33 @@ def discover_plugins(roots: Iterable[Path]) -> List[DiscoveredPlugin]:
                 skill_md = skill_dir / "SKILL.md"
                 if not skill_md.is_file():
                     continue
-                skill_items.append(
+                legacy_skill_items[skill_dir.name] = PluginEntrypoint(
+                    entrypoint_id=skill_dir.name,
+                    entrypoint_type="skills",
+                    name=skill_dir.name,
+                    target=str(skill_md.relative_to(root)),
+                    scope="workspace",
+                    visibility="public",
+                    metadata=MappingProxyType({"legacy": True}),
+                    permissions=MappingProxyType({}),
+                )
+
+        if root.exists():
+            for skill_dir in sorted(
+                (
+                    item
+                    for item in root.iterdir()
+                    if item.is_dir()
+                    and item.name not in {"agents", "skills", ".aworld-plugin"}
+                    and not item.name.startswith(".")
+                ),
+                key=lambda item: item.name,
+            ):
+                skill_md = skill_dir / "SKILL.md"
+                if not skill_md.is_file():
+                    continue
+                legacy_skill_items.setdefault(
+                    skill_dir.name,
                     PluginEntrypoint(
                         entrypoint_id=skill_dir.name,
                         entrypoint_type="skills",
@@ -55,9 +72,20 @@ def discover_plugins(roots: Iterable[Path]) -> List[DiscoveredPlugin]:
                         visibility="public",
                         metadata=MappingProxyType({"legacy": True}),
                         permissions=MappingProxyType({}),
-                    )
+                    ),
                 )
-            legacy_skill_entrypoints = tuple(skill_items)
+
+        legacy_skill_entrypoints = tuple(
+            legacy_skill_items[key] for key in sorted(legacy_skill_items)
+        )
+
+        capabilities = []
+        if (root / "agents").exists():
+            capabilities.append("agents")
+        if legacy_skill_entrypoints:
+            capabilities.append("skills")
+        if not capabilities:
+            continue
 
         entrypoints = {
             "agents": tuple(),

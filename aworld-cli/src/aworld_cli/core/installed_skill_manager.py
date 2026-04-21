@@ -261,12 +261,44 @@ class InstalledSkillManager:
         return sanitized_records
 
     def load_manifest(self) -> list[dict[str, str]]:
-        if self.manifest_path.exists():
-            return self._load_legacy_manifest()
-        return self._load_plugin_manifest_records()
+        plugin_records = self._load_plugin_manifest_records()
+        if not self.manifest_path.exists():
+            return plugin_records
+
+        legacy_records = self._load_legacy_manifest()
+        if not plugin_records:
+            return legacy_records
+
+        merged_records: dict[str, dict[str, str]] = {
+            item["install_id"]: item for item in plugin_records
+        }
+        plugin_names = {item["name"] for item in plugin_records}
+        for legacy_record in legacy_records:
+            legacy_install_id = legacy_record["install_id"]
+            if legacy_install_id in merged_records:
+                continue
+            if legacy_record["name"] in plugin_names:
+                continue
+            merged_records[legacy_install_id] = legacy_record
+
+        return sorted(
+            merged_records.values(), key=lambda item: (item["name"], item["install_id"])
+        )
 
     def save_manifest(self, records: list[dict[str, str]]) -> None:
-        serialized = json.dumps(records, indent=2, ensure_ascii=False)
+        sanitized_records: list[dict[str, str]] = []
+        for index, item in enumerate(records):
+            if not isinstance(item, Mapping):
+                logger.warning(
+                    "Skipping invalid installed skill manifest record %s in save_manifest: not a mapping",
+                    index,
+                )
+                continue
+            sanitized = self._sanitize_manifest_record(item, index)
+            if sanitized is not None:
+                sanitized_records.append(sanitized)
+
+        serialized = json.dumps(sanitized_records, indent=2, ensure_ascii=False)
         target_manifest_path = self.manifest_path.resolve(strict=False)
         target_manifest_path.parent.mkdir(parents=True, exist_ok=True)
         target_mode: int | None = None
@@ -297,6 +329,21 @@ class InstalledSkillManager:
             ):
                 temp_manifest_path.unlink()
             raise
+
+        managed_skill_records = [
+            item
+            for item in self.plugin_manager.list_skill_packages()
+            if str(item.get("managed_by")) == "skill"
+        ]
+        expected_install_ids = {item["install_id"] for item in sanitized_records}
+
+        for plugin_record in managed_skill_records:
+            plugin_name = str(plugin_record.get("name", ""))
+            if plugin_name and plugin_name not in expected_install_ids:
+                self.plugin_manager.remove_manifest_record(plugin_name)
+
+        for record in sanitized_records:
+            self._upsert_manifest_record(record)
 
     def resolve_entry_source(self, entry_path: Path) -> Path:
         entry_path = entry_path.expanduser()

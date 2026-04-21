@@ -119,7 +119,8 @@ def list_builtin_plugins() -> List[Dict[str, object]]:
                 "source": "built-in",
                 "enabled": True,
                 "has_agents": agents_dir.exists() and any(agents_dir.iterdir()),
-                "has_skills": skills_dir.exists() and any(skills_dir.iterdir()),
+                "has_skills": "skills" in plugin.manifest.capabilities
+                or (skills_dir.exists() and any(skills_dir.iterdir())),
                 "plugin_id": plugin.manifest.plugin_id,
                 "framework_source": plugin.source,
                 "capabilities": sorted(plugin.manifest.capabilities),
@@ -805,7 +806,10 @@ class PluginManager:
                 else {},
                 "installed_at": plugin_info.get("installed_at"),
                 "has_agents": agents_dir.exists() and any(agents_dir.iterdir()),
-                "has_skills": skills_dir.exists() and any(skills_dir.iterdir()),
+                "has_skills": (
+                    bool(framework_plugin and "skills" in framework_plugin.manifest.capabilities)
+                    or (skills_dir.exists() and any(skills_dir.iterdir()))
+                ),
                 "plugin_id": framework_plugin.manifest.plugin_id if framework_plugin else plugin_name,
                 "framework_source": framework_plugin.source if framework_plugin else "unknown",
                 "capabilities": sorted(framework_plugin.manifest.capabilities) if framework_plugin else [],

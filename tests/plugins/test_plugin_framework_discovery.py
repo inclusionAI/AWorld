@@ -56,6 +56,27 @@ def test_discover_legacy_skill_only_plugin_synthesizes_skill_entrypoints(tmp_pat
     assert all(isinstance(item, PluginEntrypoint) for item in skills)
 
 
+def test_discover_legacy_direct_root_skill_collection_synthesizes_entrypoints(tmp_path):
+    legacy_root = tmp_path / "legacy-direct-root"
+    (legacy_root / "zeta").mkdir(parents=True)
+    (legacy_root / "alpha").mkdir(parents=True)
+    (legacy_root / "zeta" / "SKILL.md").write_text(
+        "---\nname: zeta\ndescription: zeta\n---\n", encoding="utf-8"
+    )
+    (legacy_root / "alpha" / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: alpha\n---\n", encoding="utf-8"
+    )
+
+    discovered = discover_plugins([legacy_root])
+    assert len(discovered) == 1
+    assert discovered[0].source == "legacy"
+    assert discovered[0].manifest.capabilities == frozenset({"skills"})
+    assert tuple(item.entrypoint_id for item in discovered[0].manifest.entrypoints["skills"]) == (
+        "alpha",
+        "zeta",
+    )
+
+
 def test_get_plugin_roots_includes_skill_only_plugins(tmp_path):
     plugin_root = tmp_path / "skills_only"
     skill_dir = plugin_root / "skills" / "demo"
@@ -69,6 +90,34 @@ def test_get_plugin_roots_includes_skill_only_plugins(tmp_path):
     roots = manager.get_plugin_roots()
 
     assert plugin_root in roots
+
+
+def test_list_plugins_marks_direct_root_skill_packages_with_framework_metadata(tmp_path):
+    plugin_root = tmp_path / "direct-skill-pack"
+    skill_dir = plugin_root / "optimizer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: optimizer\ndescription: demo\n---\n",
+        encoding="utf-8",
+    )
+
+    manager = PluginManager(plugin_dir=tmp_path / "plugin-manifest")
+    manager.upsert_manifest_record(
+        "direct-skill-pack",
+        plugin_path=plugin_root,
+        source="manual",
+        package_kind="skill",
+        managed_by="skill",
+        activation_scope="global",
+    )
+
+    plugin = next(
+        item for item in manager.list_plugins() if item["name"] == "direct-skill-pack"
+    )
+
+    assert plugin["has_skills"] is True
+    assert plugin["framework_source"] != "unknown"
+    assert "skills" in plugin["capabilities"]
 
 
 @pytest.mark.asyncio
