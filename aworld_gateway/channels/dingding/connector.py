@@ -271,19 +271,33 @@ class DingTalkConnector:
             if self._config.enable_ai_card
             else None
         )
-        if active_card is None and self._should_send_processing_ack(
+        if not self._config.enable_ai_card:
+            self._log_ai_card_unavailable(reason="disabled", data=data)
+        if active_card is not None:
+            self._log_business_info(
+                "DingTalk AI Card active "
+                f"session={session_id} card={active_card.card_instance_id}"
+            )
+
+        ack_sent = False
+        if self._should_send_processing_ack(
             request_text,
             has_attachments=has_attachments,
+            ai_card_available=active_card is not None,
         ):
             await self.send_text(session_webhook=session_webhook, text=PROCESSING_ACK_TEXT)
+            ack_sent = True
         streamed_parts: list[str] = []
         observed_cron_job_ids: set[str] = set()
         last_card_push_at = -AI_CARD_STREAM_UPDATE_INTERVAL_SECONDS
+        streamed_chunk_count = 0
+        card_push_count = 0
 
         async def on_text_chunk(chunk: str) -> None:
-            nonlocal last_card_push_at
+            nonlocal last_card_push_at, streamed_chunk_count, card_push_count
             if not chunk:
                 return
+            streamed_chunk_count += 1
             streamed_parts.append(chunk)
             if active_card is not None:
                 now = self._now_for_ai_card_stream()
@@ -294,6 +308,7 @@ class DingTalkConnector:
                         finished=False,
                     ):
                         last_card_push_at = now
+                        card_push_count += 1
 
         async def on_output(output) -> None:
             summary = self._summarize_runtime_output_for_log(output)
@@ -351,11 +366,31 @@ class DingTalkConnector:
             f"session={session_id} text={self._truncate_log_text(display_text, limit=500)}"
         )
 
-        if active_card is not None and await self._finish_ai_card(active_card, display_text):
-            await self._send_pending_files(session_webhook, pending_files)
-            return
+        fallback_to_text = active_card is None
+        if active_card is not None:
+            if await self._finish_ai_card(active_card, display_text):
+                self._log_business_info(
+                    "DingTalk stream summary "
+                    f"session={session_id} chunks={streamed_chunk_count} "
+                    f"card_updates={card_push_count} ack_sent={ack_sent} "
+                    "fallback_to_text=False"
+                )
+                await self._send_pending_files(session_webhook, pending_files)
+                return
+            fallback_to_text = True
+            self._log_business_info(
+                "DingTalk AI Card finalize failed "
+                f"session={session_id} card={active_card.card_instance_id} "
+                "fallback=text"
+            )
 
         await self.send_text(session_webhook=session_webhook, text=display_text)
+        self._log_business_info(
+            "DingTalk stream summary "
+            f"session={session_id} chunks={streamed_chunk_count} "
+            f"card_updates={card_push_count} ack_sent={ack_sent} "
+            f"fallback_to_text={fallback_to_text}"
+        )
         await self._send_pending_files(session_webhook, pending_files)
 
     def _resolve_agent_id(self) -> str:
@@ -379,6 +414,10 @@ class DingTalkConnector:
     @staticmethod
     def _mirror_business_log_to_std_logging(message: str) -> None:
         logging.getLogger("aworld").info(message)
+
+    def _log_business_info(self, message: str) -> None:
+        logger.info(message)
+        self._mirror_business_log_to_std_logging(message)
 
     @staticmethod
     def _truncate_log_text(value, *, limit: int = 300) -> str:
@@ -750,7 +789,14 @@ class DingTalkConnector:
         return f"{text}\n{context}\n{EXECUTION_GUARDRAIL_TEXT}"
 
     @staticmethod
-    def _should_send_processing_ack(text: str, *, has_attachments: bool = False) -> bool:
+    def _should_send_processing_ack(
+        text: str,
+        *,
+        has_attachments: bool = False,
+        ai_card_available: bool = True,
+    ) -> bool:
+        if not ai_card_available:
+            return True
         if has_attachments:
             return True
 
@@ -1097,14 +1143,24 @@ class DingTalkConnector:
 
     async def _try_create_ai_card(self, data: dict) -> AICardInstance | None:
         if not self._config.enable_ai_card:
+            self._log_ai_card_unavailable(reason="disabled", data=data)
             return None
         card_template_env = str(self._config.card_template_id_env or "").strip()
         card_template_id = os.getenv(card_template_env, "").strip()
         if not card_template_id:
+            self._log_ai_card_unavailable(
+                reason="missing_card_template_id",
+                data=data,
+                extra=f"env={card_template_env or 'unset'}",
+            )
             return None
 
         target = self._build_card_target(data)
         if target is None:
+            self._log_ai_card_unavailable(
+                reason=self._describe_missing_card_target_reason(data),
+                data=data,
+            )
             return None
 
         try:
@@ -1128,6 +1184,10 @@ class DingTalkConnector:
                 },
             )
             create_resp.raise_for_status()
+            self._log_business_info(
+                "DingTalk AI Card created "
+                f"card={card_instance_id} target={self._extract_target_identifier(target)}"
+            )
             deliver_resp = await self._request_with_retry(
                 "POST",
                 f"{DINGTALK_API}/v1.0/card/instances/deliver",
@@ -1135,11 +1195,20 @@ class DingTalkConnector:
                 json={"outTrackId": card_instance_id, "userIdType": 1, **target},
             )
             deliver_resp.raise_for_status()
+            self._log_business_info(
+                "DingTalk AI Card delivered "
+                f"card={card_instance_id} target={self._extract_target_identifier(target)}"
+            )
             return AICardInstance(
                 card_instance_id=card_instance_id,
                 access_token=token,
             )
-        except Exception:
+        except Exception as exc:
+            self._log_ai_card_unavailable(
+                reason="create_or_deliver_failed",
+                data=data,
+                extra=f"error={type(exc).__name__}",
+            )
             return None
 
     async def _stream_ai_card(
@@ -1194,6 +1263,45 @@ class DingTalkConnector:
             return True
         except Exception:
             return False
+
+    @staticmethod
+    def _describe_missing_card_target_reason(data: dict) -> str:
+        if str(data.get("conversationType") or "") == "2":
+            conversation_id = str(data.get("conversationId") or "").strip()
+            if not conversation_id:
+                return "missing_group_conversation_id"
+            return "missing_group_robot_code"
+        if str(data.get("senderStaffId") or data.get("senderId") or "").strip():
+            return "unknown_target"
+        return "missing_sender_id"
+
+    def _log_ai_card_unavailable(
+        self,
+        *,
+        reason: str,
+        data: dict,
+        extra: str = "",
+    ) -> None:
+        conversation = str(
+            data.get("conversationId")
+            or data.get("senderStaffId")
+            or data.get("senderId")
+            or ""
+        ).strip()
+        details = (
+            "DingTalk AI Card unavailable "
+            f"reason={reason} conversation={conversation or 'unknown'}"
+        )
+        if extra:
+            details = f"{details} {extra}"
+        self._log_business_info(details)
+
+    @staticmethod
+    def _extract_target_identifier(target: dict) -> str:
+        open_space_id = str(target.get("openSpaceId") or "").strip()
+        if open_space_id:
+            return open_space_id
+        return "unknown"
 
     async def _finish_ai_card(self, card: AICardInstance, content: str) -> bool:
         headers = {
