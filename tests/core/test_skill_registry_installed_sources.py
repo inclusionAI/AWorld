@@ -176,36 +176,27 @@ def test_disabled_installed_skill_package_is_excluded_from_runtime_loading(
 
 
 @pytest.mark.parametrize(
-    ("module", "builder_name", "agent_name", "agent_class_name", "pass_sandbox"),
+    ("module", "builder_name", "env_name", "env_value", "agent_class_name", "pass_sandbox"),
     [
-        (developer_module, "build_developer_swarm", "developer", "DeveloperAgent", True),
-        (evaluator_module, "build_evaluator_swarm", "evaluator", "MultiTaskEvaluatorAgent", False),
-        (audio_module, "build_audio_swarm", "audio_generator", "AudioCreatorAgent", False),
-        (image_module, "build_image_swarm", "image_generator", "ImageCreatorAgent", False),
-        (diffusion_module, "build_diffusion_swarm", "video_diffusion", "MultiTaskVideoCreatorAgent", False),
+        (developer_module, "build_developer_swarm", "DEVELOPER_SKILLS_PATH", "/tmp/dev-skills", "DeveloperAgent", True),
+        (evaluator_module, "build_evaluator_swarm", "EVALUATOR_SKILLS_PATH", "/tmp/evaluator-skills", "MultiTaskEvaluatorAgent", False),
+        (audio_module, "build_audio_swarm", "SKILLS_PATH", "/tmp/audio-skills", "AudioCreatorAgent", False),
+        (image_module, "build_image_swarm", "SKILLS_PATH", "/tmp/image-skills", "ImageCreatorAgent", False),
+        (diffusion_module, "build_diffusion_swarm", "SKILLS_PATH", "/tmp/diffusion-skills", "MultiTaskVideoCreatorAgent", False),
     ],
 )
-def test_smllc_builders_pass_agent_name_to_skill_collection(
+def test_smllc_builders_publish_skill_resolver_inputs(
     monkeypatch: pytest.MonkeyPatch,
     module: object,
     builder_name: str,
-    agent_name: str,
+    env_name: str,
+    env_value: str,
     agent_class_name: str,
     pass_sandbox: bool,
 ) -> None:
-    captured: dict[str, str | None] = {}
-
-    def _fake_collect(
-        plugin_base_dir: Path,
-        user_dir: Path | str | None = None,
-        agent_name: str | None = None,
-    ) -> dict[str, object]:
-        captured["agent_name"] = agent_name
-        return {}
-
     class _DummyAgent:
         def __init__(self, *args: object, **kwargs: object) -> None:
-            pass
+            self.conf = kwargs["conf"]
 
     class _DummySandbox:
         def __init__(self, *args: object, **kwargs: object) -> None:
@@ -213,17 +204,21 @@ def test_smllc_builders_pass_agent_name_to_skill_collection(
 
     class _DummySwarm:
         def __init__(self, agent: object) -> None:
-            self.agent = agent
+            self.ordered_agents = [agent]
 
-    monkeypatch.setattr(module, "collect_plugin_and_user_skills", _fake_collect)
+    monkeypatch.setenv(env_name, env_value)
     monkeypatch.setattr(module, agent_class_name, _DummyAgent)
     monkeypatch.setattr(module, "Sandbox", _DummySandbox)
     monkeypatch.setattr(module, "Swarm", _DummySwarm)
 
     builder = getattr(module, builder_name)
     if pass_sandbox:
-        builder(sandbox=_DummySandbox())
+        swarm = builder(sandbox=_DummySandbox())
     else:
-        builder()
+        swarm = builder()
 
-    assert captured["agent_name"] == agent_name
+    agent = swarm.ordered_agents[0]
+    assert agent.conf.skill_configs == {}
+    resolver_inputs = agent.conf.ext["skill_resolver_inputs"]
+    assert resolver_inputs["plugin_roots"]
+    assert resolver_inputs["compatibility_sources"] == [str(Path(env_value).expanduser().resolve())]
