@@ -864,6 +864,117 @@ def test_install_rejects_manifest_key_collision_with_non_skill_plugin_record(
     ) == original_plugins
 
 
+def test_install_rejects_unmanaged_plugin_directory_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source = tmp_path / "source-skills"
+    _write_skill(source / "skills", "optimizer")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    unmanaged_plugin_path = tmp_path / ".aworld" / "plugins" / "source-skills"
+    unmanaged_plugin_path.mkdir(parents=True, exist_ok=True)
+    original_plugins = (
+        json.loads(manager.plugin_manager.manifest_file.read_text(encoding="utf-8"))
+        if manager.plugin_manager.manifest_file.exists()
+        else {}
+    )
+
+    with pytest.raises(ValueError, match="unmanaged plugin directory"):
+        manager.install(
+            source=source,
+            mode="copy",
+            scope="global",
+            install_id="source-skills",
+        )
+
+    assert (installed_root / "source-skills").exists() is False
+    persisted_plugins = (
+        json.loads(manager.plugin_manager.manifest_file.read_text(encoding="utf-8"))
+        if manager.plugin_manager.manifest_file.exists()
+        else {}
+    )
+    assert persisted_plugins == original_plugins
+
+
+def test_legacy_migration_rolls_back_on_later_record_collision(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    legacy_manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    installed_root.mkdir(parents=True, exist_ok=True)
+    legacy_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+
+    first_entry = installed_root / "first-pack"
+    colliding_entry = installed_root / "colliding-pack"
+    _write_skill(first_entry, "alpha")
+    _write_skill(colliding_entry, "beta")
+
+    legacy_manifest_path.write_text(
+        json.dumps(
+            [
+                {
+                    "install_id": "first-pack",
+                    "name": "first-pack",
+                    "source": str(first_entry),
+                    "installed_path": str(first_entry),
+                    "resolved_skill_source_path": str(first_entry),
+                    "install_mode": "manual",
+                    "scope": "global",
+                    "installed_at": "2026-04-15T00:00:00+00:00",
+                },
+                {
+                    "install_id": "colliding-pack",
+                    "name": "colliding-pack",
+                    "source": str(colliding_entry),
+                    "installed_path": str(colliding_entry),
+                    "resolved_skill_source_path": str(colliding_entry),
+                    "install_mode": "manual",
+                    "scope": "global",
+                    "installed_at": "2026-04-15T00:00:00+00:00",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=legacy_manifest_path
+    )
+    existing_plugin_path = tmp_path / "existing-plugin"
+    existing_plugin_path.mkdir(parents=True, exist_ok=True)
+    manager.plugin_manager.upsert_manifest_record(
+        "colliding-pack",
+        plugin_path=existing_plugin_path,
+        source="manual-plugin",
+        package_kind="plugin",
+        managed_by="plugin",
+        activation_scope="workspace",
+    )
+    original_plugin_manifest = manager.plugin_manager.manifest_file.read_text(
+        encoding="utf-8"
+    )
+    original_legacy_manifest = legacy_manifest_path.read_text(encoding="utf-8")
+
+    with pytest.raises(ValueError, match="conflicts with an existing non-skill plugin"):
+        manager.list_installs()
+
+    assert legacy_manifest_path.exists() is True
+    assert legacy_manifest_path.read_text(encoding="utf-8") == original_legacy_manifest
+    assert legacy_manifest_path.with_suffix(".json.migrated").exists() is False
+    assert (
+        manager.plugin_manager.manifest_file.read_text(encoding="utf-8")
+        == original_plugin_manifest
+    )
+    plugin_manifest = json.loads(original_plugin_manifest)
+    assert "first-pack" not in plugin_manifest
+
+
 def test_save_manifest_rolls_back_plugin_state_when_legacy_write_fails(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

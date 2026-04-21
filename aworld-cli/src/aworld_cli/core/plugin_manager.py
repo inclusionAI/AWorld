@@ -823,11 +823,14 @@ class PluginManager:
 
         return plugins
 
-    def list_skill_packages(self) -> List[Dict[str, object]]:
+    def list_skill_packages(
+        self, *, include_disabled: bool = False
+    ) -> List[Dict[str, object]]:
         return [
             plugin
             for plugin in self.list_plugins()
             if plugin.get("package_kind") == "skill"
+            and (include_disabled or bool(plugin.get("enabled", True)))
         ]
 
     def get_runtime_plugin_roots(self) -> List[Path]:

@@ -111,7 +111,7 @@ def collect_plugin_and_user_skills(
 
     installed_skill_manager = InstalledSkillManager()
     for install in sorted(
-        installed_skill_manager.list_installs(),
+        installed_skill_manager.list_installs(include_disabled=False),
         key=lambda item: str(item.get("install_id", "")),
     ):
         scope = install.get("scope")
@@ -328,7 +328,8 @@ def _register_installed_sources(registry: SkillRegistry) -> None:
     manager = InstalledSkillManager()
 
     for install in sorted(
-        manager.list_installs(), key=lambda item: str(item["install_id"])
+        manager.list_installs(include_disabled=False),
+        key=lambda item: str(item["install_id"]),
     ):
         if install.get("scope") != "global":
             continue

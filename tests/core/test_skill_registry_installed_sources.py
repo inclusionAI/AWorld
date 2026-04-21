@@ -144,6 +144,37 @@ def test_collect_plugin_and_user_skills_uses_install_id_order_for_duplicate_inst
     assert skills["shared-skill"]["description"] == "a version"
 
 
+def test_disabled_installed_skill_package_is_excluded_from_runtime_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_PATH", raising=False)
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    monkeypatch.delenv("SKILLS_CACHE_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    manager = InstalledSkillManager()
+    install_entry = manager.installed_root / "disabled-pack"
+    _write_skill(install_entry / "skills", "disabled-skill", "disabled installed version")
+    manager.import_entry(install_entry, scope="global")
+    manager.plugin_manager.disable("disabled-pack")
+
+    all_installs = manager.list_installs()
+    enabled_installs = manager.list_installs(include_disabled=False)
+    assert len(all_installs) == 1
+    assert all_installs[0]["install_id"] == "disabled-pack"
+    assert all_installs[0]["enabled"] is False
+    assert enabled_installs == []
+
+    plugin_root = tmp_path / "plugin"
+    (plugin_root / "skills").mkdir(parents=True, exist_ok=True)
+    collected = collect_plugin_and_user_skills(plugin_root)
+    assert "disabled-skill" not in collected
+
+    registry = get_skill_registry()
+    assert registry.get_skill("disabled-skill") is None
+
+
 @pytest.mark.parametrize(
     ("module", "builder_name", "agent_name", "agent_class_name", "pass_sandbox"),
     [
