@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import socket
 from pathlib import Path
 from typing import Sequence
 
@@ -116,6 +117,42 @@ def _resolve_dingding_workspace_dir(*, base_dir: Path, config: GatewayConfig) ->
     return resolved_workspace_dir
 
 
+def _detect_gateway_host_ip() -> str | None:
+    udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        udp_socket.connect(("8.8.8.8", 80))
+        detected_ip = udp_socket.getsockname()[0].strip()
+        if detected_ip and detected_ip != "0.0.0.0":
+            return detected_ip
+    except OSError:
+        pass
+    finally:
+        udp_socket.close()
+
+    try:
+        detected_ip = socket.gethostbyname(socket.gethostname()).strip()
+    except OSError:
+        return None
+    if not detected_ip or detected_ip in {"0.0.0.0", "127.0.0.1"}:
+        return None
+    return detected_ip
+
+
+def _resolve_gateway_public_base_url(config: GatewayConfig) -> str | None:
+    configured_public_base_url = (
+        str(config.gateway.public_base_url).strip()
+        if config.gateway.public_base_url is not None
+        else ""
+    )
+    if configured_public_base_url:
+        return configured_public_base_url
+
+    detected_ip = _detect_gateway_host_ip()
+    if not detected_ip:
+        return None
+    return f"http://{detected_ip}:{config.gateway.port}"
+
+
 def _build_artifact_service(
     *,
     base_dir: Path,
@@ -128,7 +165,7 @@ def _build_artifact_service(
     except OSError:
         return None
     return ArtifactService(
-        public_base_url=config.gateway.public_base_url,
+        public_base_url=_resolve_gateway_public_base_url(config),
         allowed_roots=[workspace_dir],
     )
 

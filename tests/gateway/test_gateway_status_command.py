@@ -114,6 +114,29 @@ def test_serve_gateway_enables_console_logging_before_loading_agents(
     assert observed["disable_console_env"] == "false"
 
 
+def test_build_artifact_service_defaults_public_base_url_from_host_ip(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = GatewayConfig()
+    cfg.gateway.port = 18080
+    cfg.gateway.public_base_url = None
+    cfg.channels.dingding.enabled = True
+    cfg.channels.dingding.workspace_dir = None
+
+    monkeypatch.setattr(gateway_cli, "_detect_gateway_host_ip", lambda: "10.20.30.40")
+
+    artifact_service = gateway_cli._build_artifact_service(base_dir=tmp_path, config=cfg)
+
+    assert artifact_service is not None
+    assert artifact_service._public_base_url == "http://10.20.30.40:18080"
+    expected_workspace_path = (
+        tmp_path / ".aworld" / "gateway" / "dingding"
+    ).resolve()
+    assert artifact_service._allowed_roots == [expected_workspace_path]
+    assert cfg.channels.dingding.workspace_dir == str(expected_workspace_path)
+
+
 def test_serve_gateway_bootstraps_runtime_http_app_and_uvicorn(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

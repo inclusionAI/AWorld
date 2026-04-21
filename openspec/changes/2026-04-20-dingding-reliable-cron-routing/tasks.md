@@ -17,6 +17,7 @@
 - [x] 3.2 Enrich DingTalk inbound text with sender/conversation context and transform downloadable attachments into multimodal bridge input.
 - [x] 3.3 Throttle intermediate AI Card streaming updates while preserving final response delivery semantics.
 - [x] 3.4 Publish assistant-produced local report paths as gateway artifact URLs, including inline-code references and staged workspace copies for out-of-root files.
+- [x] 3.5 Default gateway artifact publication base URL to the executing machine host IP when `gateway.public_base_url` is unset.
 
 ## 4. Validation
 
@@ -27,3 +28,4 @@
 - [x] 4.5 Add coverage for DingTalk runtime logging in the gateway process.
 - [x] 4.6 Add coverage for assistant-only visible streaming, inbound attachment input assembly, and AI Card throttling.
 - [x] 4.7 Add coverage for local report path publication through gateway artifact URLs.
+- [x] 4.8 Add coverage for defaulting artifact publication URLs from the gateway host IP.

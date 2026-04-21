@@ -79,3 +79,8 @@ The gateway SHALL publish assistant-produced local file references as externally
 - **THEN** the gateway rewrites that reference to the corresponding `/artifacts/{token}` URL when artifact publishing is configured
 - **AND** inline-code wrapped local paths are also rewritten
 - **AND** if the generated file lives outside the DingTalk workspace root but remains readable locally, the gateway stages a safe workspace copy before publishing
+
+#### Scenario: Gateway artifact publication runs without an explicit public_base_url
+- **WHEN** the gateway starts with DingTalk artifact publication enabled and `gateway.public_base_url` unset
+- **THEN** it derives the artifact service base URL from the current gateway host machine IP and configured HTTP port
+- **AND** assistant-produced local report links still resolve to reachable gateway artifact URLs without requiring manual configuration
