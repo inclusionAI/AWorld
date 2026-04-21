@@ -471,6 +471,73 @@ def test_connector_suppresses_duplicate_callbacks_without_provider_ids() -> None
     assert sent == ["echo:hello"]
 
 
+def test_connector_logs_inbound_runtime_outputs_and_final_reply(monkeypatch) -> None:
+    class _LoggingBridge(_FakeBridge):
+        async def run(
+            self,
+            *,
+            agent_id: str,
+            session_id: str,
+            text: str,
+            on_text_chunk=None,
+            on_output=None,
+        ) -> DingdingBridgeResult:
+            self.calls.append(
+                {
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "text": text,
+                }
+            )
+            if on_output is not None:
+                await on_output(
+                    ToolResultOutput(
+                        tool_name="cron",
+                        action_name="cron_tool",
+                        data={"success": True, "job_id": "job-log-1"},
+                    )
+                )
+            if on_text_chunk is not None:
+                await on_text_chunk("已")
+                await on_text_chunk("创建提醒")
+            return DingdingBridgeResult(text="已创建提醒")
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=_LoggingBridge(),
+        stream_module=object(),
+    )
+    sent: list[str] = []
+    info_logs: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        sent.append(text)
+
+    monkeypatch.setattr(
+        "aworld_gateway.channels.dingding.connector.logger.info",
+        lambda message, *args, **kwargs: info_logs.append(str(message)),
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "一分钟后提醒我喝水"},
+            }
+        )
+    )
+
+    assert sent == ["已创建提醒"]
+    assert any("DingTalk inbound message" in entry for entry in info_logs)
+    assert any("一分钟后提醒我喝水" in entry for entry in info_logs)
+    assert any("DingTalk runtime output" in entry for entry in info_logs)
+    assert any("tool_call_result" in entry and "cron" in entry for entry in info_logs)
+    assert any("DingTalk final reply" in entry and "已创建提醒" in entry for entry in info_logs)
+
+
 def test_connector_ignores_invalid_or_empty_callbacks() -> None:
     bridge = _FakeBridge()
     connector = DingTalkConnector(

@@ -33,3 +33,12 @@ The gateway SHALL ensure the local cron scheduler runtime used for DingTalk-orig
 - **AND** it binds the configured default agent for later cron execution
 - **AND** it registers the DingTalk cron notification fanout sink before any new notifications are published
 - **AND** it starts the local scheduler if it is not already running
+
+### Requirement: DingTalk gateway runtime emits operational logs for inbound and execution flow
+The gateway SHALL emit backend-observable logs for DingTalk message intake and downstream execution progress.
+
+#### Scenario: DingTalk user sends a message through the gateway
+- **WHEN** the gateway accepts a DingTalk callback and starts a message round
+- **THEN** the backend logs the inbound user query with conversation/session routing context
+- **AND** runtime-observed outputs emitted through the bridge are logged in compact form
+- **AND** the final reply sent back to DingTalk is logged
