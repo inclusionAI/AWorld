@@ -416,6 +416,13 @@ class PluginManager:
                     )
 
         return records
+
+    @staticmethod
+    def _is_skill_managed_record(plugin_record: Mapping[str, object]) -> bool:
+        return (
+            str(plugin_record.get("package_kind", "plugin")) == "skill"
+            and str(plugin_record.get("managed_by", "plugin")) == "skill"
+        )
     
     def _load_manifest(self) -> Dict[str, Dict]:
         """
@@ -780,7 +787,12 @@ class PluginManager:
             ...     print(plugin['name'], plugin['path'])
         """
         plugins = []
-        enabled_records = [record for record in self._iter_plugin_records() if record.get("enabled", True)]
+        enabled_records = [
+            record
+            for record in self._iter_plugin_records()
+            if record.get("enabled", True)
+            and not self._is_skill_managed_record(record)
+        ]
         enabled_registry = PluginCapabilityRegistry(discover_plugins(Path(record["path"]) for record in enabled_records))
 
         for plugin_info in self._iter_plugin_records():
@@ -928,6 +940,8 @@ class PluginManager:
 
         for plugin in self._iter_plugin_records():
             if not plugin.get("enabled", True):
+                continue
+            if self._is_skill_managed_record(plugin):
                 continue
             plugin_path = Path(str(plugin["path"]))
             if plugin_path.exists() and plugin_path.is_dir():
