@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 from pathlib import Path
 from typing import Sequence
 
@@ -132,6 +133,32 @@ def _build_artifact_service(
     )
 
 
+def _enable_aworld_console_logging_for_gateway() -> None:
+    os.environ["AWORLD_DISABLE_CONSOLE_LOG"] = "false"
+
+    try:
+        from aworld.logs import util as log_util
+    except Exception:
+        return
+
+    aworld_logger = getattr(log_util, "logger", None)
+    if aworld_logger is None or not getattr(aworld_logger, "disable_console", False):
+        return
+
+    file_log_config = getattr(aworld_logger, "file_log_config", None)
+    if isinstance(file_log_config, dict):
+        file_log_config = dict(file_log_config)
+
+    aworld_logger.__init__(
+        tag=getattr(aworld_logger, "tag", "aworld"),
+        name=getattr(aworld_logger, "name", "AWorld"),
+        console_level=getattr(aworld_logger, "console_level", "INFO"),
+        formatter=getattr(aworld_logger, "formater", None),
+        disable_console=False,
+        file_log_config=file_log_config,
+    )
+
+
 def handle_gateway_status(base_dir: Path | str | None = None) -> dict[str, object]:
     config = _load_gateway_config_read_only(base_dir)
     runtime = GatewayRuntime(
@@ -169,6 +196,8 @@ async def serve_gateway(
     local_dirs: list[str] | None,
     agent_files: list[str] | None,
 ) -> None:
+    _enable_aworld_console_logging_for_gateway()
+
     from aworld_cli.main import load_all_agents
 
     await load_all_agents(

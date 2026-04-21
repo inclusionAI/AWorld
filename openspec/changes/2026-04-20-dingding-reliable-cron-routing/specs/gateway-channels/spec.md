@@ -70,3 +70,12 @@ The gateway SHALL throttle intermediate AI Card content updates while still fina
 - **THEN** it coalesces rapid assistant text chunks into periodic intermediate updates instead of pushing every chunk immediately
 - **AND** it still sends the final full assistant reply when the run finishes
 - **AND** this throttling does not change the runtime output observation path used for cron job binding capture
+
+### Requirement: DingTalk local report references are converted into accessible gateway URLs
+The gateway SHALL publish assistant-produced local file references as externally accessible artifact URLs when possible.
+
+#### Scenario: Assistant reply contains a generated local HTML report path
+- **WHEN** the DingTalk assistant reply contains a local filesystem path that points to a generated report
+- **THEN** the gateway rewrites that reference to the corresponding `/artifacts/{token}` URL when artifact publishing is configured
+- **AND** inline-code wrapped local paths are also rewritten
+- **AND** if the generated file lives outside the DingTalk workspace root but remains readable locally, the gateway stages a safe workspace copy before publishing

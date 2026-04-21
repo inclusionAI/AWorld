@@ -136,9 +136,9 @@ def _suppress_keyboard_interrupt_traceback(exc_type, exc_value, exc_tb):
 
 sys.excepthook = _suppress_keyboard_interrupt_traceback
 
-# Set environment variable to disable console logging before importing aworld modules
-# This ensures all AWorldLogger instances will disable console output
-os.environ['AWORLD_DISABLE_CONSOLE_LOG'] = 'true'
+# Set default environment variable to disable console logging before importing aworld modules.
+# Gateway mode may explicitly override this before importing this module.
+os.environ.setdefault('AWORLD_DISABLE_CONSOLE_LOG', 'true')
 
 # Import aworld modules (they will respect the environment variable)
 from aworld.logs.util import logger

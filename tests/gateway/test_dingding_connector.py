@@ -1329,6 +1329,74 @@ def test_connector_rewrites_plain_artifact_reference_with_trailing_period(
     assert pending_files == []
 
 
+def test_connector_rewrites_inline_code_local_path_to_gateway_url(
+    tmp_path: Path,
+) -> None:
+    workspace_dir = tmp_path / "workspace"
+    report_path = workspace_dir / "reports" / "summary.html"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("summary", encoding="utf-8")
+
+    class _FakeArtifactService:
+        def publish(self, path: Path | str) -> str:
+            assert Path(path) == report_path
+            return "inline-token"
+
+        def build_external_url(self, token: str) -> str:
+            assert token == "inline-token"
+            return "https://gateway.example.com/artifacts/inline-token"
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(enable_attachments=True, workspace_dir=str(workspace_dir)),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+        artifact_service=_FakeArtifactService(),
+    )
+    connector._get_oapi_access_token = lambda: asyncio.sleep(0, result=None)  # type: ignore[method-assign]
+
+    cleaned, pending_files = asyncio.run(
+        connector._process_local_media_links(f"路径: `{report_path}`")
+    )
+
+    assert cleaned == "路径: https://gateway.example.com/artifacts/inline-token"
+    assert pending_files == []
+
+
+def test_connector_stages_external_local_path_into_workspace_before_publish(
+    tmp_path: Path,
+) -> None:
+    workspace_dir = tmp_path / "workspace"
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    external_dir = tmp_path / "survey"
+    external_dir.mkdir(parents=True, exist_ok=True)
+    report_path = external_dir / "ai_news_report.html"
+    report_path.write_text("summary", encoding="utf-8")
+    service = ArtifactService(
+        public_base_url="https://gateway.example.com",
+        allowed_roots=[workspace_dir.resolve()],
+    )
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(enable_attachments=True, workspace_dir=str(workspace_dir)),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+        artifact_service=service,
+    )
+    connector._get_oapi_access_token = lambda: asyncio.sleep(0, result=None)  # type: ignore[method-assign]
+
+    cleaned, pending_files = asyncio.run(
+        connector._process_local_media_links(f"路径: {report_path}")
+    )
+
+    assert cleaned.startswith("路径: https://gateway.example.com/artifacts/")
+    assert pending_files == []
+    staged_files = list((workspace_dir / "published").glob("*.html"))
+    assert len(staged_files) == 1
+    assert staged_files[0].read_text(encoding="utf-8") == "summary"
+
+
 def test_connector_rewrites_bare_windows_path_in_plain_text(tmp_path: Path) -> None:
     local_file = tmp_path / "report.txt"
     local_file.write_text("report", encoding="utf-8")

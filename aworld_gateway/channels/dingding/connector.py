@@ -8,6 +8,7 @@ import json
 import mimetypes
 import os
 import re
+import shutil
 import threading
 import time
 from pathlib import Path
@@ -62,6 +63,9 @@ EXECUTION_GUARDRAIL_TEXT = """\
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
 LOCAL_PATH_RE = re.compile(r"^(?:/|~|[A-Za-z]:[\\/])")
+INLINE_CODE_LOCAL_REF_RE = re.compile(
+    r"`(artifact://[^\s`]+|attachment://[^\s`]+|file://[^\s`]+|MEDIA:[^\s`]+|(?:/|~)[^\s`]+|[A-Za-z]:[\\/][^\s`]+)`"
+)
 PLAIN_LOCAL_REF_RE = re.compile(
     r"(artifact://[^\s<>)]+|attachment://[^\s<>)]+|file://[^\s<>)]+|MEDIA:[^\s<>)]+|(?:/|~)[^\s<>)]+|[A-Za-z]:[\\/][^\s<>)]+)"
 )
@@ -1003,6 +1007,17 @@ class DingTalkConnector:
                 return raw_reference
             return f"{published_url}{trailing_punctuation}"
 
+        def _replace_inline_code_reference(match: re.Match[str]) -> str:
+            raw_reference = match.group(1)
+            candidate_reference, trailing_punctuation = self._split_trailing_plain_reference(
+                raw_reference
+            )
+            published_url = self._publish_local_reference(candidate_reference)
+            if not published_url:
+                return match.group(0)
+            return f"{published_url}{trailing_punctuation}"
+
+        result = INLINE_CODE_LOCAL_REF_RE.sub(_replace_inline_code_reference, result)
         result = PLAIN_LOCAL_REF_RE.sub(_replace_plain_reference, result)
 
         return self._cleanup_processed_text(result), pending_files
@@ -1265,7 +1280,7 @@ class DingTalkConnector:
         return IncomingAttachment(download_code=download_code, file_name=file_name)
 
     def _extract_local_file_path(self, raw_url: str) -> Path | None:
-        candidate = raw_url.strip().strip("<>").strip("'").strip('"')
+        candidate = raw_url.strip().strip("<>").strip("'").strip('"').strip("`")
         if not candidate:
             return None
         candidate = candidate.replace("\\ ", " ")
@@ -1311,7 +1326,35 @@ class DingTalkConnector:
             return None
         try:
             token = self._artifact_service.publish(local_path)
+        except Exception:
+            staged_path = self._stage_local_reference_for_publication(local_path)
+            if staged_path is None:
+                return None
+            try:
+                token = self._artifact_service.publish(staged_path)
+            except Exception:
+                return None
+        try:
             return self._artifact_service.build_external_url(token)
+        except Exception:
+            return None
+
+    def _artifact_export_root_dir(self) -> Path:
+        workspace_dir = str(self._config.workspace_dir or "").strip()
+        if workspace_dir:
+            return Path(workspace_dir).expanduser().resolve() / "published"
+        return Path(".aworld/gateway/dingding/published").resolve()
+
+    def _stage_local_reference_for_publication(self, local_path: Path) -> Path | None:
+        try:
+            export_root = self._artifact_export_root_dir()
+            export_root.mkdir(parents=True, exist_ok=True)
+            staged_path = self._dedupe_path(
+                export_root,
+                self._sanitize_filename(local_path.name),
+            )
+            shutil.copy2(local_path, staged_path)
+            return staged_path
         except Exception:
             return None
 
