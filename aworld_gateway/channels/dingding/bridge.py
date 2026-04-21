@@ -34,7 +34,7 @@ class AworldDingdingBridge:
         self,
         agent_id: str,
         session_id: str,
-        text: str,
+        text: Any,
         on_text_chunk: Callable[[str], Any] | None = None,
         on_output: Callable[[Any], Any] | None = None,
     ) -> DingdingBridgeResult:
@@ -52,6 +52,7 @@ class AworldDingdingBridge:
 
         try:
             chunks: list[str] = []
+            saw_chunk_output = False
             async for output in self._stream_outputs(
                 executor=executor,
                 text=text,
@@ -61,9 +62,14 @@ class AworldDingdingBridge:
                     output_callback_result = on_output(output)
                     if isawaitable(output_callback_result):
                         await output_callback_result
-                chunk = self._extract_text(output)
+                output_type = self._output_type(output)
+                chunk = self._extract_visible_text(output)
+                if output_type == "message" and saw_chunk_output:
+                    chunk = ""
                 if not chunk:
                     continue
+                if output_type == "chunk":
+                    saw_chunk_output = True
                 chunks.append(chunk)
                 if on_text_chunk is not None:
                     callback_result = on_text_chunk(chunk)
@@ -81,7 +87,7 @@ class AworldDingdingBridge:
         self,
         *,
         executor: Any,
-        text: str,
+        text: Any,
         session_id: str,
     ) -> AsyncIterator[Any]:
         task = await executor._build_task(text, session_id=session_id)
@@ -94,17 +100,28 @@ class AworldDingdingBridge:
         self,
         *,
         executor: Any,
-        text: str,
+        text: Any,
         session_id: str,
     ) -> AsyncIterator[str]:
+        saw_chunk_output = False
         async for output in self._stream_outputs(
             executor=executor,
             text=text,
             session_id=session_id,
         ):
-            chunk = self._extract_text(output)
+            output_type = self._output_type(output)
+            chunk = self._extract_visible_text(output)
+            if output_type == "message" and saw_chunk_output:
+                chunk = ""
             if chunk:
+                if output_type == "chunk":
+                    saw_chunk_output = True
                 yield chunk
+
+    @staticmethod
+    def _output_type(output: Any) -> str:
+        output_type_getter = getattr(output, "output_type", None)
+        return output_type_getter() if callable(output_type_getter) else ""
 
     @staticmethod
     async def _get_swarm_with_context_fallback(agent: Any) -> Any:
@@ -128,7 +145,25 @@ class AworldDingdingBridge:
             return await agent.get_swarm(temp_context)
 
     @staticmethod
-    def _extract_text(output: Any) -> str:
+    def _extract_visible_text(output: Any) -> str:
+        output_type = AworldDingdingBridge._output_type(output)
+
+        if output_type in {"tool_call", "tool_call_result", "finished_signal", "step"}:
+            return ""
+
+        if output_type == "message":
+            response = getattr(output, "response", None)
+            if isinstance(response, str):
+                return response
+            return AworldDingdingBridge._extract_text_fields(output)
+
+        if output_type in {"chunk", "default", ""}:
+            return AworldDingdingBridge._extract_text_fields(output)
+
+        return ""
+
+    @staticmethod
+    def _extract_text_fields(output: Any) -> str:
         content = getattr(output, "content", None)
         if isinstance(content, str):
             return content

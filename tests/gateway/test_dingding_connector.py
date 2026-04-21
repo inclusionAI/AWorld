@@ -13,6 +13,7 @@ from aworld_gateway.channels.dingding.connector import DingTalkConnector
 from aworld_gateway.channels.dingding.types import (
     AICardInstance,
     DingdingBridgeResult,
+    ExtractedMessage,
     IncomingAttachment,
     PendingFileMessage,
 )
@@ -23,14 +24,27 @@ from aworld.output.base import ToolResultOutput
 
 class _FakeBridge:
     def __init__(self) -> None:
-        self.calls: list[dict[str, str]] = []
+        self.calls: list[dict[str, object]] = []
+
+    @staticmethod
+    def _display_input_text(text: object) -> str:
+        if isinstance(text, list):
+            for part in text:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text = str(part.get("text") or "")
+                    break
+            else:
+                return "[multimodal]"
+        if not isinstance(text, str):
+            return str(text)
+        return text.split("\n会话附加信息:\n", 1)[0]
 
     async def run(
         self,
         *,
         agent_id: str,
         session_id: str,
-        text: str,
+        text,
         on_text_chunk=None,
         on_output=None,
     ) -> DingdingBridgeResult:
@@ -41,10 +55,11 @@ class _FakeBridge:
                 "text": text,
             }
         )
+        display_text = self._display_input_text(text)
         if on_text_chunk is not None:
             await on_text_chunk("echo:")
-            await on_text_chunk(text)
-        return DingdingBridgeResult(text=f"echo:{text}")
+            await on_text_chunk(display_text)
+        return DingdingBridgeResult(text=f"echo:{display_text}")
 
 
 class _FakeCredential:
@@ -351,7 +366,10 @@ def test_connector_normal_callback_runs_bridge_and_sends_text() -> None:
     )
     session_id_2 = bridge.calls[1]["session_id"]
 
-    assert [call["text"] for call in bridge.calls] == ["hello", "again"]
+    assert isinstance(bridge.calls[0]["text"], str)
+    assert isinstance(bridge.calls[1]["text"], str)
+    assert str(bridge.calls[0]["text"]).startswith("hello\n会话附加信息:")
+    assert str(bridge.calls[1]["text"]).startswith("again\n会话附加信息:")
     assert all(call["agent_id"] == "agent-1" for call in bridge.calls)
     assert session_id_1 == session_id_2
     assert sent == ["echo:hello", "echo:again"]
@@ -613,8 +631,167 @@ def test_connector_supports_string_payload_and_empty_bridge_result() -> None:
     )
     asyncio.run(connector.handle_callback(payload))
 
-    assert bridge.calls[0]["text"] == "hello from raw content"
+    assert isinstance(bridge.calls[0]["text"], str)
+    assert str(bridge.calls[0]["text"]).startswith("hello from raw content\n会话附加信息:")
     assert sent == ["（空响应）"]
+
+
+def test_connector_appends_user_context_before_bridge_call() -> None:
+    bridge = _FakeBridge()
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=bridge,
+        stream_module=object(),
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "senderNick": "Alice",
+                "robotCode": "robot-1",
+                "text": {"content": "帮我总结一下"},
+            }
+        )
+    )
+
+    assert sent == ["echo:帮我总结一下"]
+    assert bridge.calls
+    assert bridge.calls[0]["agent_id"] == "agent-1"
+    assert bridge.calls[0]["session_id"] == connector._session_ids["conv-1"]
+    assert bridge.calls[0]["text"] == (
+        "帮我总结一下\n"
+        "会话附加信息:\n"
+        " - userId: user-1\n"
+        " - userName: Alice\n"
+        " - conversationId: conv-1\n"
+        " - robotCode: robot-1"
+    )
+
+
+def test_connector_builds_multimodal_bridge_input_from_downloaded_attachments(
+    tmp_path: Path,
+) -> None:
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(
+            default_agent_id="agent-1",
+            enable_attachments=True,
+            workspace_dir=str(tmp_path / "workspace"),
+        ),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+    )
+    image_path = tmp_path / "chart.png"
+    doc_path = tmp_path / "notes.txt"
+    image_path.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    doc_path.write_text("meeting notes", encoding="utf-8")
+
+    downloads = iter([str(image_path), str(doc_path)])
+    connector._download_attachment = (  # type: ignore[method-assign]
+        lambda attachment, session_key: asyncio.sleep(0, result=next(downloads))
+    )
+
+    result = asyncio.run(
+        connector._build_llm_user_input(
+            message=ExtractedMessage(
+                text="请分析附件",
+                attachments=[
+                    IncomingAttachment(download_code="img-code", file_name="chart.png"),
+                    IncomingAttachment(download_code="doc-code", file_name="notes.txt"),
+                ],
+            ),
+            session_key="conv-1",
+        )
+    )
+
+    assert isinstance(result, list)
+    assert result[0] == {
+        "type": "text",
+        "text": f"请分析附件\n\n附件列表:\n  - {doc_path}",
+    }
+    assert result[1]["type"] == "image_url"
+    assert str(result[1]["image_url"]["url"]).startswith("data:image/png;base64,")
+
+
+def test_connector_throttles_ai_card_stream_updates(monkeypatch) -> None:
+    class _ChunkyBridge(_FakeBridge):
+        async def run(
+            self,
+            *,
+            agent_id: str,
+            session_id: str,
+            text,
+            on_text_chunk=None,
+            on_output=None,
+        ) -> DingdingBridgeResult:
+            self.calls.append(
+                {
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "text": text,
+                }
+            )
+            if on_text_chunk is not None:
+                await on_text_chunk("A")
+                await on_text_chunk("B")
+                await on_text_chunk("C")
+            return DingdingBridgeResult(text="ABC")
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld", enable_ai_card=True),
+        bridge=_ChunkyBridge(),
+        stream_module=object(),
+        http_client=_FakeHttpClient(),
+    )
+    calls: list[tuple[str, str]] = []
+    ticks = iter([0.0, 0.1, 0.39])
+
+    async def fake_create_ai_card(data):
+        return AICardInstance(card_instance_id="card-1", access_token="token")
+
+    async def fake_stream_ai_card(card: AICardInstance, content: str, finished: bool) -> bool:
+        calls.append(("stream", f"final:{content}" if finished else content))
+        return True
+
+    async def fake_finish_ai_card(card: AICardInstance, content: str) -> bool:
+        calls.append(("finish", content))
+        return True
+
+    async def fake_send_pending_files(session_webhook: str, pending_files: list[PendingFileMessage]) -> None:
+        calls.append(("files", str(len(pending_files))))
+
+    connector._try_create_ai_card = fake_create_ai_card  # type: ignore[method-assign]
+    connector._stream_ai_card = fake_stream_ai_card  # type: ignore[method-assign]
+    connector._finish_ai_card = fake_finish_ai_card  # type: ignore[method-assign]
+    connector._send_pending_files = fake_send_pending_files  # type: ignore[method-assign]
+    connector._process_local_media_links = lambda content: asyncio.sleep(0, result=(content, []))  # type: ignore[method-assign]
+    connector._now_for_ai_card_stream = lambda: next(ticks)  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "hi"},
+            }
+        )
+    )
+
+    assert calls == [
+        ("stream", "A"),
+        ("stream", "ABC"),
+        ("finish", "ABC"),
+        ("files", "0"),
+    ]
 
 
 def test_connector_send_text_posts_dingtalk_text_payload() -> None:
@@ -764,7 +941,6 @@ def test_connector_streams_ai_card_and_sends_pending_files() -> None:
 
     assert calls == [
         ("stream", "echo:"),
-        ("stream", "echo:hi"),
         ("stream", "final:echo:hi"),
         ("file", "report.txt"),
     ]

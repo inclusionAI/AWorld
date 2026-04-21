@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from aworld_gateway.channels.dingding import bridge as bridge_module
 from aworld_gateway.channels.dingding.bridge import AworldDingdingBridge
 from aworld_gateway.channels.dingding.types import DingdingBridgeResult
+from aworld.output.base import ToolResultOutput
 
 
 class FakeRegistry:
@@ -216,6 +217,70 @@ def test_bridge_forwards_raw_outputs_to_callback(monkeypatch) -> None:
 
     assert result == DingdingBridgeResult(text="firstsecond")
     assert seen_outputs == ["first", "second"]
+
+
+def test_bridge_filters_visible_text_from_non_assistant_runtime_outputs(monkeypatch) -> None:
+    class FakeChunkOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+        def output_type(self) -> str:
+            return "chunk"
+
+    class FakeMessageOutput:
+        def __init__(self, response: str) -> None:
+            self.response = response
+
+        def output_type(self) -> str:
+            return "message"
+
+    class FakeStepOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+        def output_type(self) -> str:
+            return "step"
+
+    seen_chunks: list[str] = []
+    seen_output_types: list[str] = []
+
+    async def fake_stream_outputs(self, *, executor, text, session_id):
+        yield FakeChunkOutput("hello")
+        yield FakeChunkOutput(" world")
+        yield ToolResultOutput(
+            tool_name="cron",
+            action_name="cron_tool",
+            data={"job_id": "job-1"},
+        )
+        yield FakeMessageOutput("hello world")
+        yield FakeStepOutput("internal-state")
+
+    async def on_text_chunk(chunk: str) -> None:
+        seen_chunks.append(chunk)
+
+    async def on_output(output) -> None:
+        output_type_getter = getattr(output, "output_type", None)
+        seen_output_types.append(
+            output_type_getter() if callable(output_type_getter) else type(output).__name__
+        )
+
+    FakeExecutor.instances = []
+    monkeypatch.setattr(AworldDingdingBridge, "_stream_outputs", fake_stream_outputs)
+    bridge = AworldDingdingBridge(registry_cls=FakeRegistry, executor_cls=FakeExecutor)
+
+    result = asyncio.run(
+        bridge.run(
+            agent_id="aworld",
+            session_id="dingding_conv",
+            text="hi",
+            on_text_chunk=on_text_chunk,
+            on_output=on_output,
+        )
+    )
+
+    assert result == DingdingBridgeResult(text="hello world")
+    assert seen_chunks == ["hello", " world"]
+    assert seen_output_types == ["chunk", "chunk", "tool_call_result", "message", "step"]
 
 
 def test_bridge_falls_back_to_temp_context_when_agent_requires_it(monkeypatch) -> None:
