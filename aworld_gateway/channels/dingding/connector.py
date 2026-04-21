@@ -110,6 +110,8 @@ class DingTalkConnector:
         self._thread_cls = thread_cls
         self._artifact_service = artifact_service
         self._session_ids: dict[str, str] = {}
+        self._conversation_active_runs: dict[str, int] = {}
+        self._conversation_state_lock = threading.Lock()
         self._client = None
         self._stream_thread: threading.Thread | None = None
         self._access_token: str | None = None
@@ -222,36 +224,43 @@ class DingTalkConnector:
             )
             return
 
-        session_id = self._session_ids.get(conversation_key)
-        if not session_id:
-            session_id = self._new_session_id(conversation_key)
-            self._session_ids[conversation_key] = session_id
-
-        logger.info(
-            "DingTalk inbound message "
-            f"conversation={conversation_key} sender={sender_id} session={session_id} "
-            f"text={self._truncate_log_text(user_text, limit=300)}"
-        )
-        self._mirror_business_log_to_std_logging(
-            "DingTalk inbound message "
-            f"conversation={conversation_key} sender={sender_id} session={session_id} "
-            f"text={self._truncate_log_text(user_text, limit=300)}"
+        session_id, isolated_from_inflight = self._acquire_session_for_message(
+            conversation_key
         )
 
-        enriched_text = self._append_user_context_to_text(message.text, data)
-        user_input = await self._build_llm_user_input(
-            ExtractedMessage(text=enriched_text, attachments=message.attachments),
-            self._attachment_session_key(data, sender_id),
-        )
+        try:
+            logger.info(
+                "DingTalk inbound message "
+                f"conversation={conversation_key} sender={sender_id} session={session_id} "
+                f"text={self._truncate_log_text(user_text, limit=300)}"
+            )
+            self._mirror_business_log_to_std_logging(
+                "DingTalk inbound message "
+                f"conversation={conversation_key} sender={sender_id} session={session_id} "
+                f"text={self._truncate_log_text(user_text, limit=300)}"
+            )
+            if isolated_from_inflight:
+                self._log_business_info(
+                    "DingTalk concurrent turn isolated "
+                    f"conversation={conversation_key} session={session_id}"
+                )
 
-        await self._run_message_round(
-            session_webhook=session_webhook,
-            session_id=session_id,
-            text=user_input,
-            request_text=message.text,
-            has_attachments=bool(message.attachments),
-            data=data,
-        )
+            enriched_text = self._append_user_context_to_text(message.text, data)
+            user_input = await self._build_llm_user_input(
+                ExtractedMessage(text=enriched_text, attachments=message.attachments),
+                self._attachment_session_key(data, sender_id),
+            )
+
+            await self._run_message_round(
+                session_webhook=session_webhook,
+                session_id=session_id,
+                text=user_input,
+                request_text=message.text,
+                has_attachments=bool(message.attachments),
+                data=data,
+            )
+        finally:
+            self._release_session_for_message(conversation_key)
 
     def _schedule_callback(self, callback_payload) -> None:
         data = self._parse_data(callback_payload)
@@ -694,6 +703,30 @@ class DingTalkConnector:
     @staticmethod
     def _new_session_id(conversation_key: str) -> str:
         return f"dingtalk_{conversation_key}_{uuid4().hex[:8]}"
+
+    def _acquire_session_for_message(self, conversation_key: str) -> tuple[str, bool]:
+        with self._conversation_state_lock:
+            active_runs = self._conversation_active_runs.get(conversation_key, 0)
+            current_session_id = self._session_ids.get(conversation_key)
+
+            if not current_session_id or active_runs > 0:
+                session_id = self._new_session_id(conversation_key)
+                self._session_ids[conversation_key] = session_id
+                isolated_from_inflight = bool(current_session_id) and active_runs > 0
+            else:
+                session_id = current_session_id
+                isolated_from_inflight = False
+
+            self._conversation_active_runs[conversation_key] = active_runs + 1
+            return session_id, isolated_from_inflight
+
+    def _release_session_for_message(self, conversation_key: str) -> None:
+        with self._conversation_state_lock:
+            active_runs = self._conversation_active_runs.get(conversation_key, 0)
+            if active_runs <= 1:
+                self._conversation_active_runs.pop(conversation_key, None)
+                return
+            self._conversation_active_runs[conversation_key] = active_runs - 1
 
     @staticmethod
     def _extract_message(data: dict) -> ExtractedMessage:

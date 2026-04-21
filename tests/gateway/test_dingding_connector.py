@@ -379,6 +379,88 @@ def test_connector_normal_callback_runs_bridge_and_sends_text() -> None:
     assert sent == ["echo:hello", "echo:again"]
 
 
+def test_connector_isolates_overlapping_callbacks_with_new_session() -> None:
+    class _BlockingBridge(_FakeBridge):
+        def __init__(self) -> None:
+            super().__init__()
+            self.first_started = asyncio.Event()
+            self.release_first = asyncio.Event()
+
+        async def run(
+            self,
+            *,
+            agent_id: str,
+            session_id: str,
+            text,
+            on_text_chunk=None,
+            on_output=None,
+        ) -> DingdingBridgeResult:
+            self.calls.append(
+                {
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "text": text,
+                }
+            )
+            display_text = self._display_input_text(text)
+            if display_text == "alpha":
+                self.first_started.set()
+                await self.release_first.wait()
+            if on_text_chunk is not None:
+                await on_text_chunk("echo:")
+                await on_text_chunk(display_text)
+            return DingdingBridgeResult(text=f"echo:{display_text}")
+
+    bridge = _BlockingBridge()
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=bridge,
+        stream_module=object(),
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    async def run_scenario() -> None:
+        first_task = asyncio.create_task(
+            connector.handle_callback(
+                {
+                    "sessionWebhook": "https://callback",
+                    "conversationId": "conv-1",
+                    "senderId": "user-1",
+                    "text": {"content": "alpha"},
+                }
+            )
+        )
+        await bridge.first_started.wait()
+
+        second_task = asyncio.create_task(
+            connector.handle_callback(
+                {
+                    "sessionWebhook": "https://callback",
+                    "conversationId": "conv-1",
+                    "senderId": "user-1",
+                    "text": {"content": "beta"},
+                }
+            )
+        )
+        await second_task
+        assert sent == ["echo:beta"]
+
+        bridge.release_first.set()
+        await first_task
+
+    asyncio.run(run_scenario())
+
+    assert len(bridge.calls) == 2
+    assert bridge.calls[0]["session_id"] != bridge.calls[1]["session_id"]
+    assert connector._session_ids["conv-1"] == bridge.calls[1]["session_id"]
+    assert sent == ["echo:beta", "echo:alpha"]
+
+
 def test_connector_sends_processing_ack_for_complex_request() -> None:
     bridge = _FakeBridge()
     connector = DingTalkConnector(
