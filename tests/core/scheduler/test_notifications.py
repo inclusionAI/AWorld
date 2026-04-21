@@ -122,6 +122,26 @@ async def test_notification_center_tracks_unread_count_until_drain():
 
 
 @pytest.mark.asyncio
+async def test_notification_center_skips_non_user_visible_notifications():
+    """Silent internal notifications should not surface in the user-facing queue."""
+    center = CronNotificationCenter(max_size=10)
+
+    await center.publish({
+        'job_id': 'job1',
+        'job_name': 'sample monitor',
+        'status': 'ok',
+        'summary': 'silent cleanup',
+        'created_at': datetime.now(pytz.UTC).isoformat(),
+        'user_visible': False,
+    })
+
+    notifications = await center.drain()
+
+    assert notifications == []
+    assert center.get_unread_count() == 0
+
+
+@pytest.mark.asyncio
 async def test_scheduler_publishes_on_success():
     """Successful non-reminder jobs should publish and persist their result summary."""
     import tempfile
@@ -135,7 +155,7 @@ async def test_scheduler_publishes_on_success():
         # Mock executor
         executor = AsyncMock(spec=CronExecutor)
         executor.execute_with_retry = AsyncMock(
-            return_value=TaskResponse(success=True, msg="BTC 当前价格 68000 USDT")
+            return_value=TaskResponse(success=True, msg="当前结果 68000 units")
         )
 
         # Mock notification sink
@@ -169,11 +189,11 @@ async def test_scheduler_publishes_on_success():
         assert call_args['job_name'] == 'test-job'
         assert call_args['status'] == 'ok'
         assert 'completed' in call_args['summary']
-        assert call_args['detail'] == "BTC 当前价格 68000 USDT"
+        assert call_args['detail'] == "当前结果 68000 units"
 
         persisted_job = await store.get_job(job.id)
         assert persisted_job is not None
-        assert persisted_job.state.last_result_summary == "BTC 当前价格 68000 USDT"
+        assert persisted_job.state.last_result_summary == "当前结果 68000 units"
 
 
 @pytest.mark.asyncio
@@ -213,6 +233,101 @@ async def test_scheduler_publishes_reminder_detail_on_success():
         call_args = notification_sink.call_args[0][0]
         assert call_args['status'] == 'ok'
         assert call_args['detail'] == "提醒我喝水"
+
+
+@pytest.mark.asyncio
+async def test_scheduler_success_can_stay_silent_without_user_visible_notification():
+    """Recurring jobs may complete successfully without surfacing a user-visible notification."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_path = Path(tmpdir) / "cron.json"
+        store = FileBasedCronStore(str(store_path))
+
+        executor = AsyncMock(spec=CronExecutor)
+        executor.execute_with_retry = AsyncMock(
+            return_value=TaskResponse(
+                success=True,
+                msg="本次检查未产生命中事件",
+                user_visible=False,
+            )
+        )
+
+        notification_sink = AsyncMock()
+        scheduler = CronScheduler(store, executor, notification_sink=notification_sink)
+
+        now = datetime.now(pytz.UTC)
+        job = CronJob(
+            name="silent-recurring-job",
+            schedule=CronSchedule(kind="every", every_seconds=10),
+            payload=CronPayload(message="run periodic task"),
+            state=CronJobState(
+                running=True,
+                last_run_at=now.isoformat(),
+                next_run_at=(now + timedelta(seconds=10)).isoformat(),
+            ),
+        )
+
+        await store.add_job(job)
+        await scheduler._execute_claimed_job(job)
+
+        notification_sink.assert_not_called()
+        persisted_job = await store.get_job(job.id)
+        assert persisted_job is not None
+        assert persisted_job.enabled is True
+        assert persisted_job.state.next_run_at is not None
+
+
+@pytest.mark.asyncio
+async def test_scheduler_recurring_job_can_publish_event_notification_without_stopping():
+    """Recurring jobs may surface a user-visible event and continue scheduling later runs."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store_path = Path(tmpdir) / "cron.json"
+        store = FileBasedCronStore(str(store_path))
+
+        executor = AsyncMock(spec=CronExecutor)
+        executor.execute_with_retry = AsyncMock(
+            return_value=TaskResponse(
+                success=True,
+                msg="条件命中告警",
+                answer="条件命中告警\n明细：发生了用户可见事件",
+                user_visible=True,
+            )
+        )
+
+        notification_sink = AsyncMock()
+        scheduler = CronScheduler(store, executor, notification_sink=notification_sink)
+
+        now = datetime.now(pytz.UTC)
+        job = CronJob(
+            name="eventful-recurring-job",
+            schedule=CronSchedule(kind="every", every_seconds=10),
+            payload=CronPayload(message="run periodic task"),
+            state=CronJobState(
+                running=True,
+                last_run_at=now.isoformat(),
+                next_run_at=(now + timedelta(seconds=10)).isoformat(),
+            ),
+        )
+
+        await store.add_job(job)
+        await scheduler._execute_claimed_job(job)
+
+        notification_sink.assert_called_once()
+        call_args = notification_sink.call_args[0][0]
+        assert call_args["status"] == "ok"
+        assert call_args["user_visible"] is True
+        assert "completed" in call_args["summary"]
+        assert "用户可见事件" in call_args["detail"]
+
+        persisted_job = await store.get_job(job.id)
+        assert persisted_job is not None
+        assert persisted_job.enabled is True
+        assert persisted_job.state.next_run_at is not None
 
 
 @pytest.mark.asyncio

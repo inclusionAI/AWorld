@@ -197,6 +197,7 @@ class TestParseScheduleValidation:
         assert "Unsupported natural-language schedule request" in str(exc_info.value)
 
 
+
 @pytest.mark.asyncio
 async def test_cron_tool_add_accepts_raw_natural_language_request(monkeypatch):
     """Test cron_tool(add) can consume a raw reminder request without explicit schedule fields."""
@@ -234,6 +235,8 @@ async def test_cron_tool_add_accepts_raw_natural_language_request(monkeypatch):
     assert fake_scheduler.last_job.name == "提醒：喝水"
     assert fake_scheduler.last_job.payload.message == "提醒我喝水"
     assert fake_scheduler.last_job.schedule.kind == "at"
+
+
 
 
 @pytest.mark.asyncio
@@ -437,7 +440,7 @@ async def test_cron_tool_add_binds_job_to_runtime_default_agent(monkeypatch):
         name="爬取X最新10条内容",
         message="参考当前目录下twitter_scraper_skill.md skill爬取x上面的内容，存到当前目录。注意爬取最新的10条就行",
         schedule_type="at",
-        schedule_value="2026-04-16T18:32:00+08:00",
+        schedule_value="2026-04-26T18:32:00+08:00",
         agent_name="default",
         tools=["bash", "CAST_SEARCH"],
         delete_after_run=True,
@@ -472,7 +475,7 @@ async def test_cron_tool_add_splits_comma_delimited_tools_for_non_aworld_agent(m
         name="special-agent-task",
         message="run with specific tools",
         schedule_type="at",
-        schedule_value="2026-04-16T18:32:00+08:00",
+        schedule_value="2026-04-26T18:32:00+08:00",
         agent_name="SpecialAgent",
         tools="CAST_SEARCH,bash,SKILL",
         delete_after_run=True,
@@ -614,7 +617,7 @@ async def test_cron_tool_enable_all_skips_expired_one_time_history(monkeypatch):
     from aworld.core.scheduler.types import CronJob, CronJobState, CronPayload, CronSchedule
 
     updated_ids = []
-    future_at = "2026-04-20T10:00:00+00:00"
+    future_at = "2026-04-30T10:00:00+00:00"
     past_at = "2026-04-10T10:00:00+00:00"
 
     class FakeScheduler:
@@ -715,15 +718,15 @@ async def test_cron_tool_show_includes_last_result_summary(monkeypatch):
             assert job_id == "job-123"
             return CronJob(
                 id="job-123",
-                name="BTC价格监控",
+                name="状态检查任务",
                 enabled=True,
                 schedule=CronSchedule(kind="every", every_seconds=60),
-                payload=CronPayload(message="检查 BTC 当前价格"),
+                payload=CronPayload(message="检查当前状态"),
                 state=CronJobState(
                     next_run_at="2026-04-13T06:23:26.376502+00:00",
                     last_run_at="2026-04-13T06:22:26.376502+00:00",
                     last_status="ok",
-                    last_result_summary="BTC 当前价格 68000 USDT，较上一分钟上涨 0.2%",
+                    last_result_summary="当前状态 68000 units，较上一周期上涨 0.2%",
                     run_count=3,
                 ),
             )
@@ -734,7 +737,7 @@ async def test_cron_tool_show_includes_last_result_summary(monkeypatch):
 
     assert result["success"] is True
     assert result["job"]["id"] == "job-123"
-    assert result["job"]["last_result_summary"] == "BTC 当前价格 68000 USDT，较上一分钟上涨 0.2%"
+    assert result["job"]["last_result_summary"] == "当前状态 68000 units，较上一周期上涨 0.2%"
 
 
 @pytest.mark.asyncio

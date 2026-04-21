@@ -1,0 +1,566 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2026-04-21 AI领域新闻汇总</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+            line-height: 1.6;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 40px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+        }
+        
+        .header .meta {
+            font-size: 1.1em;
+            opacity: 0.9;
+        }
+        
+        .stats {
+            display: flex;
+            justify-content: space-around;
+            padding: 30px;
+            background: #f8f9fa;
+            border-bottom: 2px solid #e9ecef;
+        }
+        
+        .stat-item {
+            text-align: center;
+        }
+        
+        .stat-number {
+            font-size: 2.5em;
+            font-weight: bold;
+            color: #667eea;
+        }
+        
+        .stat-label {
+            color: #6c757d;
+            margin-top: 5px;
+        }
+        
+        .content {
+            padding: 40px;
+        }
+        
+        .section {
+            margin-bottom: 50px;
+        }
+        
+        .section-title {
+            font-size: 2em;
+            color: #2c3e50;
+            margin-bottom: 25px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+            display: flex;
+            align-items: center;
+        }
+        
+        .section-title::before {
+            content: "";
+            display: inline-block;
+            width: 8px;
+            height: 30px;
+            background: #667eea;
+            margin-right: 15px;
+            border-radius: 4px;
+        }
+        
+        .news-item {
+            background: #fff;
+            border: 1px solid #e9ecef;
+            border-radius: 12px;
+            padding: 25px;
+            margin-bottom: 20px;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.05);
+        }
+        
+        .news-item:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 8px 20px rgba(102, 126, 234, 0.2);
+            border-color: #667eea;
+        }
+        
+        .news-title {
+            font-size: 1.3em;
+            font-weight: 600;
+            color: #2c3e50;
+            margin-bottom: 12px;
+        }
+        
+        .news-title a {
+            color: #2c3e50;
+            text-decoration: none;
+            transition: color 0.3s;
+        }
+        
+        .news-title a:hover {
+            color: #667eea;
+        }
+        
+        .news-meta {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            margin-bottom: 12px;
+            font-size: 0.9em;
+            color: #6c757d;
+        }
+        
+        .meta-badge {
+            display: inline-flex;
+            align-items: center;
+            padding: 4px 12px;
+            background: #f8f9fa;
+            border-radius: 20px;
+            font-size: 0.85em;
+        }
+        
+        .meta-badge.source {
+            background: #667eea;
+            color: white;
+            font-weight: 600;
+        }
+        
+        .meta-badge.score {
+            background: #28a745;
+            color: white;
+        }
+        
+        .meta-badge.comments {
+            background: #17a2b8;
+            color: white;
+        }
+        
+        .news-text {
+            color: #495057;
+            line-height: 1.8;
+            margin-top: 10px;
+        }
+        
+        .footer {
+            background: #f8f9fa;
+            padding: 30px;
+            text-align: center;
+            color: #6c757d;
+            border-top: 2px solid #e9ecef;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #6c757d;
+        }
+        
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 1.8em;
+            }
+            
+            .stats {
+                flex-direction: column;
+                gap: 20px;
+            }
+            
+            .content {
+                padding: 20px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 2026-04-21 AI领域新闻汇总</h1>
+            <div class="meta">
+                生成时间: 2026年04月21日 09:56:22
+            </div>
+        </div>
+        
+        <div class="stats">
+            <div class="stat-item">
+                <div class="stat-number">22</div>
+                <div class="stat-label">总新闻数</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number">12</div>
+                <div class="stat-label">Hacker News</div>
+            </div>
+            <div class="stat-item">
+                <div class="stat-number">10</div>
+                <div class="stat-label">GitHub 项目</div>
+            </div>
+        </div>
+        
+        <div class="content">
+
+            <div class="section">
+                <h2 class="section-title">Hacker News AI 讨论</h2>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://news.ycombinator.com/item?id=47842784" target="_blank">Emails show Amazon colluded to raise prices, California authorities allege</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">Hacker News</span>
+                        <span class="meta-badge">👤 kmfrk</span>
+                        <span class="meta-badge">🕐 07:54</span>
+                        <span class="meta-badge score">⭐ 8 分</span>
+                        <span class="meta-badge comments">💬 1 评论</span>
+                    </div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://news.ycombinator.com/item?id=47842724" target="_blank">Spirit Airlines in Talks with Trump Administration on Government Investment</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">Hacker News</span>
+                        <span class="meta-badge">👤 petethomas</span>
+                        <span class="meta-badge">🕐 07:49</span>
+                        <span class="meta-badge score">⭐ 4 分</span>
+                        <span class="meta-badge comments">💬 0 评论</span>
+                    </div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://news.ycombinator.com/item?id=47842825" target="_blank">Taylor series in the Russian civil war era Ukraine</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">Hacker News</span>
+                        <span class="meta-badge">👤 ganitam</span>
+                        <span class="meta-badge">🕐 07:59</span>
+                        <span class="meta-badge score">⭐ 3 分</span>
+                        <span class="meta-badge comments">💬 1 评论</span>
+                    </div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://news.ycombinator.com/item?id=47843463" target="_blank">Quirky Electric Car Rides the Rails</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">Hacker News</span>
+                        <span class="meta-badge">👤 lxm</span>
+                        <span class="meta-badge">🕐 09:27</span>
+                        <span class="meta-badge score">⭐ 2 分</span>
+                        <span class="meta-badge comments">💬 0 评论</span>
+                    </div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://news.ycombinator.com/item?id=47843454" target="_blank">Ukraine, Short on Troops, Is Turning to Robots to Help Its War Efforts</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">Hacker News</span>
+                        <span class="meta-badge">👤 lxm</span>
+                        <span class="meta-badge">🕐 09:26</span>
+                        <span class="meta-badge score">⭐ 2 分</span>
+                        <span class="meta-badge comments">💬 1 评论</span>
+                    </div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://news.ycombinator.com/item?id=47842900" target="_blank">Why doesn't memory work across AI tools?</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">Hacker News</span>
+                        <span class="meta-badge">👤 hexaclawdevs</span>
+                        <span class="meta-badge">🕐 08:08</span>
+                        <span class="meta-badge score">⭐ 2 分</span>
+                        <span class="meta-badge comments">💬 1 评论</span>
+                    </div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://news.ycombinator.com/item?id=47843557" target="_blank">Computational Models of Interoception and Body Regulation(2021)</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">Hacker News</span>
+                        <span class="meta-badge">👤 rolph</span>
+                        <span class="meta-badge">🕐 09:43</span>
+                        <span class="meta-badge score">⭐ 1 分</span>
+                        <span class="meta-badge comments">💬 0 评论</span>
+                    </div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://news.ycombinator.com/item?id=47843490" target="_blank">Ask HN: Has AWS Support fallen off?</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">Hacker News</span>
+                        <span class="meta-badge">👤 frenchtoast8</span>
+                        <span class="meta-badge">🕐 09:31</span>
+                        <span class="meta-badge score">⭐ 1 分</span>
+                        <span class="meta-badge comments">💬 1 评论</span>
+                    </div>
+
+                    <div class="news-text">For years, I have always heard people say that of all the major US cloud providers AWS had pretty good support. I have also said this and believed it.<p>Now I have had cases open for more than 2 weeks</div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://news.ycombinator.com/item?id=47843306" target="_blank">OpenSecurityTraining2: Learning Paths</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">Hacker News</span>
+                        <span class="meta-badge">👤 2bluesc</span>
+                        <span class="meta-badge">🕐 09:01</span>
+                        <span class="meta-badge score">⭐ 1 分</span>
+                        <span class="meta-badge comments">💬 0 评论</span>
+                    </div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://news.ycombinator.com/item?id=47843178" target="_blank">Trolling with AI is too much fun(2024)</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">Hacker News</span>
+                        <span class="meta-badge">👤 rolph</span>
+                        <span class="meta-badge">🕐 08:45</span>
+                        <span class="meta-badge score">⭐ 1 分</span>
+                        <span class="meta-badge comments">💬 0 评论</span>
+                    </div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://news.ycombinator.com/item?id=47843173" target="_blank">Agentfill – a "polyfill" for complete AGENTS.md support in Claude, etc.</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">Hacker News</span>
+                        <span class="meta-badge">👤 nevir</span>
+                        <span class="meta-badge">🕐 08:44</span>
+                        <span class="meta-badge score">⭐ 1 分</span>
+                        <span class="meta-badge comments">💬 0 评论</span>
+                    </div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://news.ycombinator.com/item?id=47842959" target="_blank">LLM from scratch (32l) – Interventions: updated instruction fine-tuning results</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">Hacker News</span>
+                        <span class="meta-badge">👤 gpjt</span>
+                        <span class="meta-badge">🕐 08:14</span>
+                        <span class="meta-badge score">⭐ 1 分</span>
+                        <span class="meta-badge comments">💬 0 评论</span>
+                    </div>
+
+                </div>
+
+            </div>
+
+            <div class="section">
+                <h2 class="section-title">GitHub AI 项目</h2>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://github.com/KSubedi/llm-select" target="_blank">KSubedi/llm-select</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">GitHub</span>
+                        <span class="meta-badge">👤 KSubedi</span>
+                        <span class="meta-badge">🕐 00:41</span>
+                        <span class="meta-badge score">⭐ 2 Stars</span>
+                    </div>
+
+                    <div class="news-text">Chrome extension to quickly select something to give reference to LLM.</div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://github.com/cangjielanguage-sig/ACEHarness" target="_blank">cangjielanguage-sig/ACEHarness</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">GitHub</span>
+                        <span class="meta-badge">👤 cangjielanguage-sig</span>
+                        <span class="meta-badge">🕐 01:13</span>
+                        <span class="meta-badge score">⭐ 2 Stars</span>
+                    </div>
+
+                    <div class="news-text">企业级 AI Multi-Agent 智能协作系统 -- 状态机驱动 / Supervisor 智能路由 / 对抗式迭代 / 对话式创建 Your team of AIs, collaborating to get work done.</div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://github.com/LBoneLuv/wp-llms-txt" target="_blank">LBoneLuv/wp-llms-txt</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">GitHub</span>
+                        <span class="meta-badge">👤 LBoneLuv</span>
+                        <span class="meta-badge">🕐 00:45</span>
+                        <span class="meta-badge score">⭐ 1 Stars</span>
+                    </div>
+
+                    <div class="news-text">Generate /llms.txt from your sitemap so ChatGPT, Perplexity and Claude understand your site</div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://github.com/digeratimaximus/vigilant-giggle" target="_blank">digeratimaximus/vigilant-giggle</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">GitHub</span>
+                        <span class="meta-badge">👤 digeratimaximus</span>
+                        <span class="meta-badge">🕐 00:59</span>
+                        <span class="meta-badge score">⭐ 1 Stars</span>
+                    </div>
+
+                    <div class="news-text">karpathy CLAUDE.md observations</div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://github.com/AgentBrainHQ/agentbrain-benchmarks" target="_blank">AgentBrainHQ/agentbrain-benchmarks</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">GitHub</span>
+                        <span class="meta-badge">👤 AgentBrainHQ</span>
+                        <span class="meta-badge">🕐 00:19</span>
+                        <span class="meta-badge score">⭐ 1 Stars</span>
+                    </div>
+
+                    <div class="news-text">Public, reproducible benchmarks for Agent Brain on LongMemEval-M. 71.7% accuracy (Test 0). Companion code to https://doi.org/10.5281/zenodo.19673132 (Concept DOI → latest version, currently v3).</div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://github.com/vasyl-pavlyuchok/pixel-agents" target="_blank">vasyl-pavlyuchok/pixel-agents</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">GitHub</span>
+                        <span class="meta-badge">👤 vasyl-pavlyuchok</span>
+                        <span class="meta-badge">🕐 00:56</span>
+                        <span class="meta-badge score">⭐ 1 Stars</span>
+                    </div>
+
+                    <div class="news-text">Live pixel art visualization of Claude Code agents working in real time</div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://github.com/dmoraes20/CrosvexAI" target="_blank">dmoraes20/CrosvexAI</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">GitHub</span>
+                        <span class="meta-badge">👤 dmoraes20</span>
+                        <span class="meta-badge">🕐 00:50</span>
+                        <span class="meta-badge score">⭐ 1 Stars</span>
+                    </div>
+
+                    <div class="news-text">Projeto</div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://github.com/kongwen686/ai-trade" target="_blank">kongwen686/ai-trade</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">GitHub</span>
+                        <span class="meta-badge">👤 kongwen686</span>
+                        <span class="meta-badge">🕐 01:37</span>
+                        <span class="meta-badge score">⭐ 1 Stars</span>
+                    </div>
+
+                    <div class="news-text">A Binance-powered spot signal scanner and backtest app with technical indicators, X/Twitter intel, and runtime-configurable strategy settings.</div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://github.com/ufbjm3/memefi-okx-airdrop" target="_blank">ufbjm3/memefi-okx-airdrop</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">GitHub</span>
+                        <span class="meta-badge">👤 ufbjm3</span>
+                        <span class="meta-badge">🕐 01:43</span>
+                        <span class="meta-badge score">⭐ 1 Stars</span>
+                    </div>
+
+                    <div class="news-text">MemeFi OKX Airdrop: How to Claim Your MEMEFI Tokens and Never Miss a Single Drop</div>
+
+                </div>
+
+                <div class="news-item">
+                    <div class="news-title">
+                        <a href="https://github.com/fdhhhdjd/Class-Production-AI-App" target="_blank">fdhhhdjd/Class-Production-AI-App</a>
+                    </div>
+                    <div class="news-meta">
+                        <span class="meta-badge source">GitHub</span>
+                        <span class="meta-badge">👤 fdhhhdjd</span>
+                        <span class="meta-badge">🕐 01:32</span>
+                        <span class="meta-badge score">⭐ 1 Stars</span>
+                    </div>
+
+                    <div class="news-text">🏗️ Production-ready AI app structure — RAG pipeline, hybrid search, self-correcting agents, 3-layer security, evaluation, observability & CI/CD. A reference architecture for Vibe Coders & ML Engineers</div>
+
+                </div>
+
+            </div>
+
+        </div>
+        
+        <div class="footer">
+            <p>📊 数据来源: Hacker News API & GitHub API</p>
+            <p>🤖 由 AWorld AI 助手自动生成</p>
+        </div>
+    </div>
+</body>
+</html>

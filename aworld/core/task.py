@@ -110,6 +110,7 @@ class TaskResponse:
     success: bool = field(default=False)
     msg: str | None = field(default=None)
     trajectory: List[Dict[str, Any]]= field(default_factory=list)
+    user_visible: bool = field(default=True)
     # task final status, e.g. success/failed/cancelled
     status: TaskStatus | None = field(default=TaskStatusValue.SUCCESS)
 
@@ -123,6 +124,7 @@ class TaskResponse:
             "success": self.success,
             "msg": self.msg,
             "trajectory": self.trajectory,
+            "user_visible": self.user_visible,
             "status": self.status
         }
 
