@@ -99,6 +99,7 @@ class InstalledSkillManager:
             entry_path.unlink()
 
     def _upsert_manifest_record(self, record: dict[str, str]) -> dict[str, str]:
+        self._ensure_no_unmanaged_plugin_dir_collision(record["install_id"])
         existing_record = self.plugin_manager._manifest.get(record["install_id"])
         if isinstance(existing_record, Mapping):
             existing_package_kind = str(existing_record.get("package_kind", "plugin"))
@@ -134,11 +135,30 @@ class InstalledSkillManager:
         )
         return record
 
-    def _load_plugin_manifest_records(self) -> list[dict[str, str]]:
+    def _ensure_no_unmanaged_plugin_dir_collision(self, install_id: str) -> None:
+        existing_record = self.plugin_manager._manifest.get(install_id)
+        if isinstance(existing_record, Mapping):
+            return
+
+        unmanaged_path = self.plugin_manager.plugin_dir / install_id
+        if unmanaged_path.exists() or unmanaged_path.is_symlink():
+            raise ValueError(
+                f"Skill install id '{install_id}' conflicts with an unmanaged plugin directory: {unmanaged_path}"
+            )
+
+    def _load_plugin_manifest_records(
+        self,
+        *,
+        include_disabled: bool = True,
+        include_enabled_field: bool = False,
+    ) -> list[dict[str, str | bool]]:
         plugin_records = sorted(
-            self.plugin_manager.list_skill_packages(), key=lambda item: str(item["name"])
+            self.plugin_manager.list_skill_packages(
+                include_disabled=include_disabled
+            ),
+            key=lambda item: str(item["name"]),
         )
-        records: list[dict[str, str]] = []
+        records: list[dict[str, str | bool]] = []
         for plugin_record in plugin_records:
             metadata = plugin_record.get("metadata")
             if isinstance(metadata, Mapping):
@@ -158,29 +178,30 @@ class InstalledSkillManager:
             except ValueError:
                 pass
 
-            records.append(
-                {
-                    "install_id": install_id,
-                    "name": str(metadata_map.get("name") or install_id),
-                    "source": str(metadata_map.get("source") or plugin_record.get("source") or installed_path),
-                    "installed_path": installed_path,
-                    "resolved_skill_source_path": resolved_skill_source_path,
-                    "install_mode": str(metadata_map.get("install_mode") or "manual"),
-                    "scope": str(metadata_map.get("scope") or plugin_record.get("activation_scope") or "global"),
-                    "installed_at": str(
-                        metadata_map.get("installed_at")
-                        or plugin_record.get("installed_at")
-                        or datetime.now(timezone.utc).isoformat()
-                    ),
-                }
-            )
+            record: dict[str, str | bool] = {
+                "install_id": install_id,
+                "name": str(metadata_map.get("name") or install_id),
+                "source": str(metadata_map.get("source") or plugin_record.get("source") or installed_path),
+                "installed_path": installed_path,
+                "resolved_skill_source_path": resolved_skill_source_path,
+                "install_mode": str(metadata_map.get("install_mode") or "manual"),
+                "scope": str(metadata_map.get("scope") or plugin_record.get("activation_scope") or "global"),
+                "installed_at": str(
+                    metadata_map.get("installed_at")
+                    or plugin_record.get("installed_at")
+                    or datetime.now(timezone.utc).isoformat()
+                ),
+            }
+            if include_enabled_field:
+                record["enabled"] = bool(plugin_record.get("enabled", True))
+            records.append(record)
 
         return records
 
     def _find_manifest_record(
         self, install_id_or_name: str
     ) -> tuple[str, int, dict[str, str], list[dict[str, str]]]:
-        plugin_records = self._load_plugin_manifest_records()
+        plugin_records = self._load_plugin_manifest_records(include_disabled=True)
         for index, record in enumerate(plugin_records):
             if (
                 record.get("install_id") == install_id_or_name
@@ -274,7 +295,7 @@ class InstalledSkillManager:
         return sanitized_records
 
     def load_manifest(self) -> list[dict[str, str]]:
-        plugin_records = self._load_plugin_manifest_records()
+        plugin_records = self._load_plugin_manifest_records(include_disabled=True)
         if not self.manifest_path.exists():
             return plugin_records
 
@@ -319,7 +340,7 @@ class InstalledSkillManager:
         plugin_memory_state = deepcopy(self.plugin_manager._manifest)
         managed_skill_records = [
             item
-            for item in self.plugin_manager.list_skill_packages()
+            for item in self.plugin_manager.list_skill_packages(include_disabled=True)
             if str(item.get("managed_by")) == "skill"
         ]
         expected_install_ids = {item["install_id"] for item in sanitized_records}
@@ -485,9 +506,14 @@ class InstalledSkillManager:
             self._cleanup_installed_entry(target_path)
             raise
 
-    def list_installs(self) -> list[dict[str, str | int]]:
+    def list_installs(
+        self, *, include_disabled: bool = True
+    ) -> list[dict[str, str | int | bool]]:
         self._migrate_legacy_manifest_once()
-        records = self._load_plugin_manifest_records()
+        records = self._load_plugin_manifest_records(
+            include_disabled=include_disabled,
+            include_enabled_field=True,
+        )
         managed_ids = {item["install_id"] for item in records}
         managed_paths: set[Path] = set()
         for item in records:
@@ -519,11 +545,14 @@ class InstalledSkillManager:
             adopted = True
 
         if adopted:
-            records = self._load_plugin_manifest_records()
+            records = self._load_plugin_manifest_records(
+                include_disabled=include_disabled,
+                include_enabled_field=True,
+            )
 
-        installs: list[dict[str, str | int]] = []
+        installs: list[dict[str, str | int | bool]] = []
         for item in records:
-            record_with_count: dict[str, str | int] = dict(item)
+            record_with_count: dict[str, str | int | bool] = dict(item)
             record_with_count["skill_count"] = self._count_skills(
                 Path(item["resolved_skill_source_path"])
             )
@@ -535,13 +564,28 @@ class InstalledSkillManager:
             return
 
         legacy_records = self._load_legacy_manifest()
-        for record in legacy_records:
-            self._upsert_manifest_record(record)
+        if not legacy_records:
+            return
 
-        migrated_path = self.manifest_path.with_suffix(".json.migrated")
-        if migrated_path.exists():
-            migrated_path.unlink()
-        self.manifest_path.replace(migrated_path)
+        plugin_manifest_state = self._capture_text_file_state(
+            self.plugin_manager.manifest_file
+        )
+        plugin_memory_state = deepcopy(self.plugin_manager._manifest)
+
+        try:
+            for record in legacy_records:
+                self._upsert_manifest_record(record)
+
+            migrated_path = self.manifest_path.with_suffix(".json.migrated")
+            if migrated_path.exists():
+                migrated_path.unlink()
+            self.manifest_path.replace(migrated_path)
+        except Exception:
+            self.plugin_manager._manifest = plugin_memory_state
+            self._restore_text_file_state(
+                self.plugin_manager.manifest_file, plugin_manifest_state
+            )
+            raise
 
     def update_install(self, install_id_or_name: str) -> dict[str, str]:
         record_source, index, target, records = self._find_manifest_record(install_id_or_name)
