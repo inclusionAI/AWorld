@@ -18,6 +18,7 @@ from aworld_cli.gateway_cli import (
     handle_gateway_status,
 )
 from aworld_gateway.http.server import create_gateway_app
+from aworld_gateway import GATEWAY_DISPLAY_NAME, GATEWAY_IMPORT_NAME
 
 
 def test_gateway_parser_accepts_status_and_channels_list() -> None:
@@ -31,6 +32,17 @@ def test_gateway_parser_accepts_status_and_channels_list() -> None:
     assert list_args.gateway_action == "channels"
     assert list_args.channels_action == "list"
     assert server_args.gateway_action == "server"
+
+
+def test_gateway_parser_uses_hyphenated_display_name() -> None:
+    parser = build_gateway_parser()
+
+    assert parser.description == "aworld-gateway management commands"
+
+
+def test_gateway_package_exports_import_and_display_names() -> None:
+    assert GATEWAY_DISPLAY_NAME == "aworld-gateway"
+    assert GATEWAY_IMPORT_NAME == "aworld_gateway"
 
 
 def test_gateway_parser_rejects_legacy_serve_action() -> None:
