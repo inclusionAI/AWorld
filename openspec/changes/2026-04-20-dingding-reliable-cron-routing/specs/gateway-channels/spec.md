@@ -72,13 +72,17 @@ The gateway SHALL throttle intermediate AI Card content updates while still fina
 - **AND** this throttling does not change the runtime output observation path used for cron job binding capture
 
 ### Requirement: DingTalk local report references are converted into accessible gateway URLs
-The gateway SHALL publish assistant-produced local file references as externally accessible artifact URLs when possible.
+The gateway SHALL publish assistant-produced local file references as externally accessible artifact URLs only when those files already reside within authorized artifact roots.
 
-#### Scenario: Assistant reply contains a generated local HTML report path
-- **WHEN** the DingTalk assistant reply contains a local filesystem path that points to a generated report
+#### Scenario: Assistant reply contains a generated local HTML report path inside an authorized artifact root
+- **WHEN** the DingTalk assistant reply contains a local filesystem path that points to a generated report within an authorized artifact root
 - **THEN** the gateway rewrites that reference to the corresponding `/artifacts/{token}` URL when artifact publishing is configured
 - **AND** inline-code wrapped local paths are also rewritten
-- **AND** if the generated file lives outside the DingTalk workspace root but remains readable locally, the gateway stages a safe workspace copy before publishing
+
+#### Scenario: Assistant reply contains a local path outside authorized artifact roots
+- **WHEN** the DingTalk assistant reply contains a readable local filesystem path that is outside every authorized artifact root
+- **THEN** the gateway does not publish that file as an artifact URL
+- **AND** it does not stage or copy that file into an authorized root on the assistant's behalf
 
 #### Scenario: Gateway artifact publication runs without an explicit public_base_url
 - **WHEN** the gateway starts with DingTalk artifact publication enabled and `gateway.public_base_url` unset

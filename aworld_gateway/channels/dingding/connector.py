@@ -9,7 +9,6 @@ import logging
 import mimetypes
 import os
 import re
-import shutil
 import threading
 import time
 from pathlib import Path
@@ -1575,34 +1574,9 @@ class DingTalkConnector:
         try:
             token = self._artifact_service.publish(local_path)
         except Exception:
-            staged_path = self._stage_local_reference_for_publication(local_path)
-            if staged_path is None:
-                return None
-            try:
-                token = self._artifact_service.publish(staged_path)
-            except Exception:
-                return None
+            return None
         try:
             return self._artifact_service.build_external_url(token)
-        except Exception:
-            return None
-
-    def _artifact_export_root_dir(self) -> Path:
-        workspace_dir = str(self._config.workspace_dir or "").strip()
-        if workspace_dir:
-            return Path(workspace_dir).expanduser().resolve() / "published"
-        return Path(".aworld/gateway/dingding/published").resolve()
-
-    def _stage_local_reference_for_publication(self, local_path: Path) -> Path | None:
-        try:
-            export_root = self._artifact_export_root_dir()
-            export_root.mkdir(parents=True, exist_ok=True)
-            staged_path = self._dedupe_path(
-                export_root,
-                self._sanitize_filename(local_path.name),
-            )
-            shutil.copy2(local_path, staged_path)
-            return staged_path
         except Exception:
             return None
 

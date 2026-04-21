@@ -1725,7 +1725,7 @@ def test_connector_rewrites_inline_code_local_path_to_gateway_url(
     assert pending_files == []
 
 
-def test_connector_stages_external_local_path_into_workspace_before_publish(
+def test_connector_does_not_publish_external_local_path_outside_allowed_roots(
     tmp_path: Path,
 ) -> None:
     workspace_dir = tmp_path / "workspace"
@@ -1752,11 +1752,9 @@ def test_connector_stages_external_local_path_into_workspace_before_publish(
         connector._process_local_media_links(f"路径: {report_path}")
     )
 
-    assert cleaned.startswith("路径: https://gateway.example.com/artifacts/")
+    assert cleaned == f"路径: {report_path}"
     assert pending_files == []
-    staged_files = list((workspace_dir / "published").glob("*.html"))
-    assert len(staged_files) == 1
-    assert staged_files[0].read_text(encoding="utf-8") == "summary"
+    assert not (workspace_dir / "published").exists()
 
 
 def test_connector_rewrites_bare_windows_path_in_plain_text(tmp_path: Path) -> None:
