@@ -6,9 +6,10 @@ import json
 import re
 import shutil
 import subprocess
+from datetime import datetime, timezone
 from io import StringIO
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Tuple
 from urllib.parse import urlparse
 
 from aworld.logs.util import logger
@@ -246,6 +247,10 @@ class PluginManager:
         plugin_path: Path,
         source: str = "unknown",
         enabled: bool = True,
+        package_kind: str = "plugin",
+        managed_by: str = "plugin",
+        activation_scope: str = "workspace",
+        metadata: Optional[Mapping[str, object]] = None,
     ) -> Dict[str, object]:
         existing = self._manifest.get(plugin_name, {})
         entry = dict(existing)
@@ -253,9 +258,55 @@ class PluginManager:
         entry["path"] = str(plugin_path)
         entry["source"] = existing.get("source", source)
         entry["enabled"] = bool(existing.get("enabled", enabled))
+        entry["package_kind"] = str(existing.get("package_kind", package_kind))
+        entry["managed_by"] = str(existing.get("managed_by", managed_by))
+        entry["activation_scope"] = str(existing.get("activation_scope", activation_scope))
+        if metadata is None:
+            metadata = {}
+        merged_metadata: Dict[str, object] = dict(existing.get("metadata", {}))
+        merged_metadata.update(dict(metadata))
+        entry["metadata"] = merged_metadata
         if "installed_at" in existing:
             entry["installed_at"] = existing["installed_at"]
         return entry
+
+    def upsert_manifest_record(
+        self,
+        plugin_name: str,
+        *,
+        plugin_path: Path,
+        source: str = "unknown",
+        enabled: bool = True,
+        package_kind: str = "plugin",
+        managed_by: str = "plugin",
+        activation_scope: str = "workspace",
+        metadata: Optional[Mapping[str, object]] = None,
+        installed_at: Optional[str] = None,
+    ) -> Dict[str, object]:
+        entry = self._build_manifest_entry(
+            plugin_name=plugin_name,
+            plugin_path=plugin_path,
+            source=source,
+            enabled=enabled,
+            package_kind=package_kind,
+            managed_by=managed_by,
+            activation_scope=activation_scope,
+            metadata=metadata,
+        )
+        if installed_at:
+            entry["installed_at"] = installed_at
+        elif "installed_at" not in entry:
+            entry["installed_at"] = datetime.now(timezone.utc).isoformat()
+        self._manifest[plugin_name] = entry
+        self._save_manifest()
+        return dict(entry)
+
+    def remove_manifest_record(self, plugin_name: str) -> bool:
+        if plugin_name not in self._manifest:
+            return False
+        del self._manifest[plugin_name]
+        self._save_manifest()
+        return True
 
     def _refresh_builtin_manifest_entry(self, plugin_name: str) -> Dict[str, object] | None:
         builtin_plugin = get_builtin_framework_plugin(plugin_name)
@@ -320,7 +371,7 @@ class PluginManager:
 
         for plugin_name, plugin_info in self._manifest.items():
             plugin_path = Path(plugin_info.get('path', self.plugin_dir / plugin_name))
-            if not plugin_path.exists():
+            if not plugin_path.exists() and not plugin_path.is_symlink():
                 refreshed_builtin = self._refresh_builtin_manifest_entry(plugin_name)
                 if refreshed_builtin is not None:
                     self._manifest[plugin_name] = refreshed_builtin
@@ -336,6 +387,13 @@ class PluginManager:
                     "path": str(plugin_path),
                     "source": plugin_info.get("source", "unknown"),
                     "enabled": bool(plugin_info.get("enabled", True)),
+                    "package_kind": str(plugin_info.get("package_kind", "plugin")),
+                    "managed_by": str(plugin_info.get("managed_by", "plugin")),
+                    "activation_scope": str(plugin_info.get("activation_scope", "workspace")),
+                    "metadata": dict(plugin_info.get("metadata", {}))
+                    if isinstance(plugin_info.get("metadata"), Mapping)
+                    else {},
+                    "installed_at": plugin_info.get("installed_at"),
                 }
             )
 
@@ -348,6 +406,11 @@ class PluginManager:
                             "path": str(item),
                             "source": UNMANAGED_PLUGIN_SOURCE,
                             "enabled": True,
+                            "package_kind": "plugin",
+                            "managed_by": "plugin",
+                            "activation_scope": "workspace",
+                            "metadata": {},
+                            "installed_at": None,
                         }
                     )
 
@@ -640,14 +703,17 @@ class PluginManager:
                              f"This may be intentional, but agents won't be loaded from this plugin.")
             
             # Register plugin in manifest
-            from datetime import datetime
             plugin_url = url or local_path or "unknown"
             self._manifest[plugin_name] = {
                 "name": plugin_name,
                 "path": str(plugin_path),
                 "source": plugin_url,
-                "installed_at": datetime.now().isoformat(),
+                "installed_at": datetime.now(timezone.utc).isoformat(),
                 "enabled": True,
+                "package_kind": "plugin",
+                "managed_by": "plugin",
+                "activation_scope": "workspace",
+                "metadata": {},
             }
             self._save_manifest()
             
@@ -731,6 +797,13 @@ class PluginManager:
                 "path": str(plugin_path),
                 "source": plugin_info.get("source", "unknown"),
                 "enabled": bool(plugin_info.get("enabled", True)),
+                "package_kind": str(plugin_info.get("package_kind", "plugin")),
+                "managed_by": str(plugin_info.get("managed_by", "plugin")),
+                "activation_scope": str(plugin_info.get("activation_scope", "workspace")),
+                "metadata": dict(plugin_info.get("metadata", {}))
+                if isinstance(plugin_info.get("metadata"), Mapping)
+                else {},
+                "installed_at": plugin_info.get("installed_at"),
                 "has_agents": agents_dir.exists() and any(agents_dir.iterdir()),
                 "has_skills": skills_dir.exists() and any(skills_dir.iterdir()),
                 "plugin_id": framework_plugin.manifest.plugin_id if framework_plugin else plugin_name,
@@ -745,6 +818,13 @@ class PluginManager:
             plugins.append(plugin_data)
 
         return plugins
+
+    def list_skill_packages(self) -> List[Dict[str, object]]:
+        return [
+            plugin
+            for plugin in self.list_plugins()
+            if plugin.get("package_kind") == "skill"
+        ]
 
     def get_runtime_plugin_roots(self) -> List[Path]:
         """Return runtime-visible framework plugin roots with built-in overrides applied."""
