@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make DingTalk user-visible progress reliable by diagnosing AI Card lifecycle failures and sending a fallback acknowledgement when cards are unavailable, without changing cron runtime routing.
+**Goal:** Make DingTalk user-visible progress reliable by diagnosing AI Card lifecycle failures and using a nuanced fallback acknowledgement policy when cards are unavailable, without changing cron runtime routing.
 
-**Architecture:** Keep the current dual-path connector design intact: `on_text_chunk` continues to drive user-visible content, while `on_output` remains the sole raw runtime channel for cron binding and notification fanout. Tighten the DingTalk connector around AI Card lifecycle logging, fallback acknowledgement policy, and stream summary diagnostics.
+**Architecture:** Keep the current dual-path connector design intact: `on_text_chunk` continues to drive user-visible content, while `on_output` remains the sole raw runtime channel for cron binding and notification fanout. Tighten the DingTalk connector around AI Card lifecycle logging, fallback acknowledgement policy, and stream summary diagnostics, using immediate ack only for high-confidence complex requests and a delayed ack timer for ordinary short requests.
 
 **Tech Stack:** Python, pytest, DingTalk connector/channel layer, OpenSpec
 
@@ -19,30 +19,30 @@
 - [ ] **Step 1: Write the failing tests**
 
 ```python
-def test_connector_sends_processing_ack_when_ai_card_unavailable_for_short_request() -> None:
+def test_connector_does_not_send_processing_ack_for_fast_short_request() -> None:
     ...
 
-def test_connector_logs_ai_card_disable_reason_and_fallback_summary(caplog) -> None:
+def test_connector_sends_delayed_processing_ack_for_slow_short_request() -> None:
     ...
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `pytest tests/gateway/test_dingding_connector.py -k "ai_card_unavailable_for_short_request or ai_card_disable_reason" -q`
-Expected: FAIL because the connector only acknowledges complex requests and does not emit the new diagnostics yet.
+Run: `pytest tests/gateway/test_dingding_connector.py -k "fast_short_request or slow_short_request" -q`
+Expected: FAIL because the connector currently acknowledges every no-card request immediately.
 
 - [ ] **Step 3: Write minimal implementation**
 
 ```python
-if active_card is None:
-    await self.send_text(session_webhook=session_webhook, text=PROCESSING_ACK_TEXT)
-    ...
-logger.info("DingTalk AI Card unavailable ...")
+if active_card is None and self._should_send_processing_ack(...):
+    await self.send_text(...)
+else:
+    delayed_ack_task = asyncio.create_task(...)
 ```
 
 - [ ] **Step 4: Run test to verify it passes**
 
-Run: `pytest tests/gateway/test_dingding_connector.py -k "ai_card_unavailable_for_short_request or ai_card_disable_reason" -q`
+Run: `pytest tests/gateway/test_dingding_connector.py -k "fast_short_request or slow_short_request" -q`
 Expected: PASS
 
 ### Task 2: Add AI Card Lifecycle Diagnostics Without Touching Cron Routing
@@ -96,4 +96,3 @@ Expected: PASS
 - [x] 1.6 ...
 - [x] 2.2 ...
 ```
-
