@@ -10,6 +10,7 @@ The same gateway path also does not preserve enough DingTalk session routing met
 - Suppress duplicate DingTalk callback processing within a short retry window.
 - Capture cron job ids created during a DingTalk session and persist a local `job_id -> DingTalk session` binding in the gateway layer.
 - Start and configure the gateway-local cron scheduler runtime that executes DingTalk-originated jobs, including agent swarm resolution and notification fanout wiring.
+- Emit gateway-side operational logs for DingTalk inbound queries, runtime outputs, and final replies so `aworld-cli gateway server` can be inspected from the background process.
 - Reuse the existing cron `notification_sink` extension point to fan out cron completion notifications back to DingTalk without changing core scheduler semantics.
 
 ## Capabilities

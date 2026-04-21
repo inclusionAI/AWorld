@@ -180,6 +180,12 @@ class DingTalkConnector:
             session_id = self._new_session_id(conversation_key)
             self._session_ids[conversation_key] = session_id
 
+        logger.info(
+            "DingTalk inbound message "
+            f"conversation={conversation_key} sender={sender_id} session={session_id} "
+            f"text={self._truncate_log_text(user_text, limit=300)}"
+        )
+
         await self._run_message_round(
             session_webhook=session_webhook,
             session_id=session_id,
@@ -238,6 +244,14 @@ class DingTalkConnector:
                 )
 
         async def on_output(output) -> None:
+            summary = self._summarize_runtime_output_for_log(output)
+            if summary:
+                logger.info(
+                    "DingTalk runtime output "
+                    f"session={session_id} "
+                    f"conversation={str(data.get('conversationId') or data.get('senderStaffId') or data.get('senderId') or '').strip()} "
+                    f"{summary}"
+                )
             for job_id in self._extract_cron_job_ids(output):
                 if job_id in observed_cron_job_ids:
                     continue
@@ -270,6 +284,10 @@ class DingTalkConnector:
 
         final_text, pending_files = await self._process_local_media_links(result.text)
         display_text = final_text or ("✅ 媒体已发送" if pending_files else "（空响应）")
+        logger.info(
+            "DingTalk final reply "
+            f"session={session_id} text={self._truncate_log_text(display_text, limit=500)}"
+        )
 
         if active_card is not None and await self._finish_ai_card(active_card, display_text):
             await self._send_pending_files(session_webhook, pending_files)
@@ -291,6 +309,56 @@ class DingTalkConnector:
             if base_dir.is_absolute():
                 return base_dir.parent / "cron-bindings.json"
         return Path(".aworld/gateway/dingding/cron-bindings.json").resolve()
+
+    @staticmethod
+    def _truncate_log_text(value, *, limit: int = 300) -> str:
+        if value is None:
+            return ""
+        text = value if isinstance(value, str) else str(value)
+        text = " ".join(text.split())
+        if len(text) <= limit:
+            return text
+        return f"{text[: limit - 3]}..."
+
+    @classmethod
+    def _summarize_runtime_output_for_log(cls, output) -> str:
+        output_type_getter = getattr(output, "output_type", None)
+        output_type = output_type_getter() if callable(output_type_getter) else type(output).__name__
+        parts: list[str] = [f"type={output_type}"]
+
+        tool_name = str(getattr(output, "tool_name", "") or "").strip()
+        if tool_name:
+            parts.append(f"tool={tool_name}")
+
+        status = str(getattr(output, "status", "") or "").strip()
+        if status:
+            parts.append(f"status={status}")
+
+        name = str(getattr(output, "alias_name", "") or getattr(output, "name", "") or "").strip()
+        if name:
+            parts.append(f"name={cls._truncate_log_text(name, limit=120)}")
+
+        for candidate in (
+            getattr(output, "response", None),
+            getattr(output, "content", None),
+            getattr(output, "payload", None),
+            getattr(output, "data", None),
+        ):
+            if candidate in (None, ""):
+                continue
+            if isinstance(candidate, (dict, list)):
+                try:
+                    serialized = json.dumps(candidate, ensure_ascii=False, sort_keys=True)
+                except (TypeError, ValueError):
+                    serialized = str(candidate)
+                parts.append(f"data={cls._truncate_log_text(serialized, limit=300)}")
+                break
+            text = cls._truncate_log_text(candidate, limit=300)
+            if text:
+                parts.append(f"data={text}")
+                break
+
+        return " ".join(part for part in parts if part)
 
     async def _prepare_cron_runtime(self) -> None:
         try:
