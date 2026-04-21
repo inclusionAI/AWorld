@@ -777,3 +777,48 @@ def test_save_manifest_updates_plugin_backed_state_after_legacy_migration(
     assert len(installs) == 1
     assert installs[0]["install_id"] == "developer-pack"
     assert installs[0]["scope"] == "agent:developer"
+
+
+def test_save_manifest_preserves_legacy_when_plugin_manifest_write_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    entry_a = installed_root / "pack-a"
+    entry_b = installed_root / "pack-b"
+    _write_skill(entry_a, "alpha")
+    _write_skill(entry_b, "beta")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.import_entry(entry_a, scope="global")
+    manager.import_entry(entry_b, scope="global")
+
+    original_records = sorted(
+        manager.load_manifest(), key=lambda item: item["install_id"]
+    )
+    updated_records = [
+        record for record in original_records if record["install_id"] == "pack-a"
+    ]
+    plugin_manifest_path = tmp_path / ".aworld" / "plugins" / ".manifest.json"
+    original_legacy_exists = manifest_path.exists()
+    original_legacy_manifest = (
+        manifest_path.read_text(encoding="utf-8") if original_legacy_exists else None
+    )
+    original_plugin_manifest = plugin_manifest_path.read_text(encoding="utf-8")
+
+    def _raise_on_save_manifest() -> None:
+        raise RuntimeError("plugin manifest write failed")
+
+    monkeypatch.setattr(manager.plugin_manager, "_save_manifest", _raise_on_save_manifest)
+
+    with pytest.raises(RuntimeError, match="plugin manifest write failed"):
+        manager.save_manifest(updated_records)
+
+    assert manifest_path.exists() is original_legacy_exists
+    if original_legacy_exists:
+        assert manifest_path.read_text(encoding="utf-8") == original_legacy_manifest
+    assert plugin_manifest_path.read_text(encoding="utf-8") == original_plugin_manifest
+    assert sorted(manager.load_manifest(), key=lambda item: item["install_id"]) == original_records

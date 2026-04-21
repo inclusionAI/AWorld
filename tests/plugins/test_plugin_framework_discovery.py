@@ -120,6 +120,29 @@ def test_list_plugins_marks_direct_root_skill_packages_with_framework_metadata(t
     assert "skills" in plugin["capabilities"]
 
 
+def test_discovery_and_listing_ignore_file_based_plugin_paths(tmp_path):
+    stale_manifest_path = tmp_path / "stale-plugin-path.txt"
+    stale_manifest_path.write_text("stale entry", encoding="utf-8")
+
+    assert discover_plugins([stale_manifest_path]) == []
+
+    manager = PluginManager(plugin_dir=tmp_path / "plugin-manifest")
+    manager.upsert_manifest_record(
+        "stale-file-plugin",
+        plugin_path=stale_manifest_path,
+        source="manual",
+        package_kind="skill",
+        managed_by="skill",
+        activation_scope="global",
+    )
+
+    plugin = next(
+        item for item in manager.list_plugins() if item["name"] == "stale-file-plugin"
+    )
+    assert plugin["framework_source"] == "unknown"
+    assert plugin["has_skills"] is False
+
+
 @pytest.mark.asyncio
 async def test_plugin_loader_accepts_non_builtin_plugin_agents(tmp_path, monkeypatch):
     plugin_root = tmp_path / "custom_plugin"

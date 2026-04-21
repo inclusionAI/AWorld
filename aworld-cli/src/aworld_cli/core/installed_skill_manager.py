@@ -10,6 +10,7 @@ import os
 import subprocess
 import shutil
 import tempfile
+from copy import deepcopy
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -299,30 +300,65 @@ class InstalledSkillManager:
                 sanitized_records.append(sanitized)
 
         serialized = json.dumps(sanitized_records, indent=2, ensure_ascii=False)
-        target_manifest_path = self.manifest_path.resolve(strict=False)
-        target_manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        target_mode: int | None = None
-        if target_manifest_path.exists():
-            target_mode = target_manifest_path.stat().st_mode & 0o777
-        else:
-            current_umask = os.umask(0)
-            os.umask(current_umask)
-            target_mode = 0o666 & ~current_umask
+        legacy_state = self._capture_text_file_state(self.manifest_path)
+        plugin_manifest_state = self._capture_text_file_state(
+            self.plugin_manager.manifest_file
+        )
+        plugin_memory_state = deepcopy(self.plugin_manager._manifest)
+        managed_skill_records = [
+            item
+            for item in self.plugin_manager.list_skill_packages()
+            if str(item.get("managed_by")) == "skill"
+        ]
+        expected_install_ids = {item["install_id"] for item in sanitized_records}
+        try:
+            for plugin_record in managed_skill_records:
+                plugin_name = str(plugin_record.get("name", ""))
+                if plugin_name and plugin_name not in expected_install_ids:
+                    self.plugin_manager.remove_manifest_record(plugin_name)
+
+            for record in sanitized_records:
+                self._upsert_manifest_record(record)
+        except Exception:
+            self.plugin_manager._manifest = plugin_memory_state
+            self._restore_text_file_state(
+                self.plugin_manager.manifest_file, plugin_manifest_state
+            )
+            self._restore_text_file_state(self.manifest_path, legacy_state)
+            raise
+
+        self._write_text_file_atomic(self.manifest_path, serialized)
+
+    def _write_text_file_atomic(
+        self, path: Path, content: str, *, mode: int | None = None
+    ) -> None:
+        target_path = path.resolve(strict=False)
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        target_mode = mode
+        if target_mode is None:
+            if target_path.exists():
+                target_mode = target_path.stat().st_mode & 0o777
+            else:
+                current_umask = os.umask(0)
+                os.umask(current_umask)
+                target_mode = 0o666 & ~current_umask
+
         temp_manifest_path: Path | None = None
         try:
             with tempfile.NamedTemporaryFile(
                 mode="w",
                 encoding="utf-8",
-                dir=target_manifest_path.parent,
-                prefix=f"{target_manifest_path.name}.",
+                dir=target_path.parent,
+                prefix=f"{target_path.name}.",
                 suffix=".tmp",
                 delete=False,
             ) as temp_file:
-                temp_file.write(serialized)
+                temp_file.write(content)
                 temp_manifest_path = Path(temp_file.name)
             if target_mode is not None:
                 temp_manifest_path.chmod(target_mode)
-            temp_manifest_path.replace(target_manifest_path)
+            temp_manifest_path.replace(target_path)
         except Exception:
             if temp_manifest_path and (
                 temp_manifest_path.is_file() or temp_manifest_path.is_symlink()
@@ -330,20 +366,30 @@ class InstalledSkillManager:
                 temp_manifest_path.unlink()
             raise
 
-        managed_skill_records = [
-            item
-            for item in self.plugin_manager.list_skill_packages()
-            if str(item.get("managed_by")) == "skill"
-        ]
-        expected_install_ids = {item["install_id"] for item in sanitized_records}
+    def _capture_text_file_state(
+        self, path: Path
+    ) -> tuple[bool, str | None, int | None]:
+        target_path = path.resolve(strict=False)
+        if not (target_path.is_file() or target_path.is_symlink()):
+            return (False, None, None)
+        return (
+            True,
+            target_path.read_text(encoding="utf-8"),
+            target_path.stat().st_mode & 0o777,
+        )
 
-        for plugin_record in managed_skill_records:
-            plugin_name = str(plugin_record.get("name", ""))
-            if plugin_name and plugin_name not in expected_install_ids:
-                self.plugin_manager.remove_manifest_record(plugin_name)
-
-        for record in sanitized_records:
-            self._upsert_manifest_record(record)
+    def _restore_text_file_state(
+        self,
+        path: Path,
+        state: tuple[bool, str | None, int | None],
+    ) -> None:
+        existed, content, mode = state
+        target_path = path.resolve(strict=False)
+        if not existed:
+            if target_path.is_file() or target_path.is_symlink():
+                target_path.unlink()
+            return
+        self._write_text_file_atomic(target_path, content or "", mode=mode)
 
     def resolve_entry_source(self, entry_path: Path) -> Path:
         entry_path = entry_path.expanduser()

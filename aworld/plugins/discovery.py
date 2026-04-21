@@ -28,7 +28,7 @@ def discover_plugins(roots: Iterable[Path]) -> List[DiscoveredPlugin]:
 
         legacy_skill_items: dict[str, PluginEntrypoint] = {}
         skills_dir = root / "skills"
-        if skills_dir.exists():
+        if skills_dir.is_dir():
             for skill_dir in sorted(
                 (item for item in skills_dir.iterdir() if item.is_dir()),
                 key=lambda item: item.name,
@@ -47,7 +47,7 @@ def discover_plugins(roots: Iterable[Path]) -> List[DiscoveredPlugin]:
                     permissions=MappingProxyType({}),
                 )
 
-        if root.exists():
+        if root.is_dir():
             for skill_dir in sorted(
                 (
                     item
