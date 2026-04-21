@@ -40,6 +40,7 @@ MEDIA_MAX_BYTES = 20 * 1024 * 1024
 AI_CARD_REQUEST_RETRIES = 2
 AI_CARD_RETRY_DELAY_SECONDS = 0.3
 AI_CARD_STREAM_UPDATE_INTERVAL_SECONDS = 0.3
+PROCESSING_ACK_DELAY_SECONDS = 0.8
 CALLBACK_DEDUPE_WINDOW_SECONDS = 15.0
 PROCESSING_ACK_TEXT = "已收到，正在处理。我会尽量保留你消息里的文件、时间范围和输出格式要求。"
 COMPLEX_REQUEST_KEYWORDS = (
@@ -54,6 +55,9 @@ COMPLEX_REQUEST_KEYWORDS = (
     "html",
     "trajectory.log",
     ".html",
+    "提醒",
+    "定时",
+    "cron",
 )
 EXECUTION_GUARDRAIL_TEXT = """\
 执行要求:
@@ -280,13 +284,24 @@ class DingTalkConnector:
             )
 
         ack_sent = False
-        if self._should_send_processing_ack(
+        def mark_ack_sent() -> None:
+            nonlocal ack_sent
+            ack_sent = True
+
+        delayed_ack_task: asyncio.Task[None] | None = None
+        if active_card is None and self._should_send_processing_ack(
             request_text,
             has_attachments=has_attachments,
-            ai_card_available=active_card is not None,
         ):
             await self.send_text(session_webhook=session_webhook, text=PROCESSING_ACK_TEXT)
             ack_sent = True
+        elif active_card is None:
+            delayed_ack_task = asyncio.create_task(
+                self._send_processing_ack_after_delay(
+                    session_webhook=session_webhook,
+                    on_sent=mark_ack_sent,
+                )
+            )
         streamed_parts: list[str] = []
         observed_cron_job_ids: set[str] = set()
         last_card_push_at = -AI_CARD_STREAM_UPDATE_INTERVAL_SECONDS
@@ -348,6 +363,7 @@ class DingTalkConnector:
                 on_output=on_output,
             )
         except Exception as exc:
+            await self._finalize_processing_ack_task(delayed_ack_task)
             await self._send_error_to_client(
                 session_webhook=session_webhook,
                 card=active_card,
@@ -355,6 +371,7 @@ class DingTalkConnector:
             )
             return
 
+        await self._finalize_processing_ack_task(delayed_ack_task)
         final_text, pending_files = await self._process_local_media_links(result.text)
         display_text = final_text or ("✅ 媒体已发送" if pending_files else "（空响应）")
         logger.info(
@@ -402,6 +419,10 @@ class DingTalkConnector:
     @staticmethod
     def _now_for_ai_card_stream() -> float:
         return time.monotonic()
+
+    @staticmethod
+    def _processing_ack_delay_seconds() -> float:
+        return PROCESSING_ACK_DELAY_SECONDS
 
     def _binding_store_path(self) -> Path:
         workspace_dir = str(self._config.workspace_dir or "").strip()
@@ -793,10 +814,7 @@ class DingTalkConnector:
         text: str,
         *,
         has_attachments: bool = False,
-        ai_card_available: bool = True,
     ) -> bool:
-        if not ai_card_available:
-            return True
         if has_attachments:
             return True
 
@@ -805,6 +823,35 @@ class DingTalkConnector:
             return True
 
         return any(keyword in normalized for keyword in COMPLEX_REQUEST_KEYWORDS)
+
+    async def _send_processing_ack_after_delay(
+        self,
+        *,
+        session_webhook: str,
+        on_sent,
+    ) -> None:
+        try:
+            await asyncio.sleep(self._processing_ack_delay_seconds())
+            await self.send_text(session_webhook=session_webhook, text=PROCESSING_ACK_TEXT)
+            on_sent()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive logging
+            self._log_business_info(
+                "DingTalk delayed processing ack failed "
+                f"error={type(exc).__name__}"
+            )
+
+    @staticmethod
+    async def _finalize_processing_ack_task(task: asyncio.Task[None] | None) -> None:
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
     async def _build_multimodal_part(self, local_path: str) -> dict[str, Any] | None:
         mime_type, _ = mimetypes.guess_type(local_path)

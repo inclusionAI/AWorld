@@ -376,12 +376,7 @@ def test_connector_normal_callback_runs_bridge_and_sends_text() -> None:
     assert str(bridge.calls[1]["text"]).startswith("again\n会话附加信息:")
     assert all(call["agent_id"] == "agent-1" for call in bridge.calls)
     assert session_id_1 == session_id_2
-    assert sent == [
-        PROCESSING_ACK_TEXT,
-        "echo:hello",
-        PROCESSING_ACK_TEXT,
-        "echo:again",
-    ]
+    assert sent == ["echo:hello", "echo:again"]
 
 
 def test_connector_sends_processing_ack_for_complex_request() -> None:
@@ -418,6 +413,82 @@ def test_connector_sends_processing_ack_for_complex_request() -> None:
     ]
 
 
+def test_connector_does_not_send_processing_ack_for_fast_short_request() -> None:
+    bridge = _FakeBridge()
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=bridge,
+        stream_module=object(),
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "你是谁"},
+            }
+        )
+    )
+
+    assert sent == ["echo:你是谁"]
+
+
+def test_connector_sends_delayed_processing_ack_for_slow_short_request() -> None:
+    class _SlowBridge(_FakeBridge):
+        async def run(
+            self,
+            *,
+            agent_id: str,
+            session_id: str,
+            text,
+            on_text_chunk=None,
+            on_output=None,
+        ) -> DingdingBridgeResult:
+            self.calls.append(
+                {
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "text": text,
+                }
+            )
+            await asyncio.sleep(0.01)
+            return DingdingBridgeResult(text="echo:你是谁")
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=_SlowBridge(),
+        stream_module=object(),
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    connector._processing_ack_delay_seconds = lambda: 0.0  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "你是谁"},
+            }
+        )
+    )
+
+    assert sent == [PROCESSING_ACK_TEXT, "echo:你是谁"]
+
+
 def test_connector_reports_error_when_no_agent_id_is_configured() -> None:
     connector = DingTalkConnector(
         config=DingdingChannelConfig(default_agent_id=None),
@@ -443,10 +514,7 @@ def test_connector_reports_error_when_no_agent_id_is_configured() -> None:
         )
     )
 
-    assert sent == [
-        PROCESSING_ACK_TEXT,
-        "抱歉，调用 Agent 失败：No agent id configured for DingTalk channel.",
-    ]
+    assert sent == ["抱歉，调用 Agent 失败：No agent id configured for DingTalk channel."]
 
 
 def test_connector_uses_sender_id_when_conversation_id_missing() -> None:
@@ -474,7 +542,7 @@ def test_connector_uses_sender_id_when_conversation_id_missing() -> None:
     )
 
     assert bridge.calls[0]["session_id"].startswith("dingtalk_staff-1_")
-    assert sent == [PROCESSING_ACK_TEXT, "echo:hello"]
+    assert sent == ["echo:hello"]
 
 
 def test_connector_suppresses_duplicate_callbacks() -> None:
@@ -503,7 +571,7 @@ def test_connector_suppresses_duplicate_callbacks() -> None:
     asyncio.run(connector.handle_callback(payload))
 
     assert len(bridge.calls) == 1
-    assert sent == [PROCESSING_ACK_TEXT, "echo:hello"]
+    assert sent == ["echo:hello"]
 
 
 def test_connector_suppresses_duplicate_callbacks_without_provider_ids() -> None:
@@ -532,7 +600,7 @@ def test_connector_suppresses_duplicate_callbacks_without_provider_ids() -> None
     asyncio.run(connector.handle_callback(dict(payload)))
 
     assert len(bridge.calls) == 1
-    assert sent == [PROCESSING_ACK_TEXT, "echo:hello"]
+    assert sent == ["echo:hello"]
 
 
 def test_connector_logs_inbound_runtime_outputs_and_final_reply(monkeypatch) -> None:
@@ -745,7 +813,7 @@ def test_connector_supports_string_payload_and_empty_bridge_result() -> None:
 
     assert isinstance(bridge.calls[0]["text"], str)
     assert str(bridge.calls[0]["text"]).startswith("hello from raw content\n会话附加信息:")
-    assert sent == [PROCESSING_ACK_TEXT, "（空响应）"]
+    assert sent == ["（空响应）"]
 
 
 def test_connector_appends_user_context_before_bridge_call() -> None:
@@ -775,7 +843,7 @@ def test_connector_appends_user_context_before_bridge_call() -> None:
         )
     )
 
-    assert sent == [PROCESSING_ACK_TEXT, "echo:帮我总结一下"]
+    assert sent == ["echo:帮我总结一下"]
     assert bridge.calls
     assert bridge.calls[0]["agent_id"] == "agent-1"
     assert bridge.calls[0]["session_id"] == connector._session_ids["conv-1"]
@@ -911,7 +979,7 @@ def test_connector_throttles_ai_card_stream_updates(monkeypatch) -> None:
     ]
 
 
-def test_connector_sends_processing_ack_when_ai_card_unavailable_for_short_request(
+def test_connector_does_not_send_processing_ack_when_ai_card_unavailable_for_fast_short_request(
     monkeypatch,
 ) -> None:
     connector = DingTalkConnector(
@@ -943,9 +1011,14 @@ def test_connector_sends_processing_ack_when_ai_card_unavailable_for_short_reque
         )
     )
 
-    assert sent == [PROCESSING_ACK_TEXT, "echo:hi"]
+    assert sent == ["echo:hi"]
     assert any("DingTalk AI Card unavailable" in entry and "reason=disabled" in entry for entry in info_logs)
-    assert any("DingTalk stream summary" in entry and "fallback_to_text=True" in entry for entry in info_logs)
+    assert any(
+        "DingTalk stream summary" in entry
+        and "fallback_to_text=True" in entry
+        and "ack_sent=False" in entry
+        for entry in info_logs
+    )
 
 
 def test_connector_try_create_ai_card_logs_missing_template_configuration(
