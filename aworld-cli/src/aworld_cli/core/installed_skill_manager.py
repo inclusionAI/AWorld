@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from aworld.utils.skill_loader import collect_skill_docs
+from aworld_cli.core.plugin_manager import PluginManager
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,8 @@ class InstalledSkillManager:
     ) -> None:
         self.installed_root = (installed_root or default_installed_skill_root()).expanduser()
         self.manifest_path = (manifest_path or default_skill_manifest_path()).expanduser()
+        self.plugin_dir = self.manifest_path.parent.parent / "plugins"
+        self.plugin_manager = PluginManager(plugin_dir=self.plugin_dir)
         self.installed_root.mkdir(parents=True, exist_ok=True)
         self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -95,23 +98,91 @@ class InstalledSkillManager:
             entry_path.unlink()
 
     def _upsert_manifest_record(self, record: dict[str, str]) -> dict[str, str]:
-        records = [
-            item for item in self.load_manifest() if item.get("install_id") != record["install_id"]
-        ]
-        records.append(record)
-        self.save_manifest(records)
+        metadata = {
+            "install_id": record["install_id"],
+            "name": record["name"],
+            "installed_path": record["installed_path"],
+            "resolved_skill_source_path": record["resolved_skill_source_path"],
+            "install_mode": record["install_mode"],
+            "scope": record["scope"],
+            "source": record["source"],
+            "installed_at": record["installed_at"],
+        }
+        self.plugin_manager.upsert_manifest_record(
+            record["install_id"],
+            plugin_path=Path(record["installed_path"]),
+            source=record["source"],
+            enabled=True,
+            package_kind="skill",
+            managed_by="skill",
+            activation_scope="global",
+            metadata=metadata,
+            installed_at=record["installed_at"],
+        )
         return record
+
+    def _load_plugin_manifest_records(self) -> list[dict[str, str]]:
+        plugin_records = sorted(
+            self.plugin_manager.list_skill_packages(), key=lambda item: str(item["name"])
+        )
+        records: list[dict[str, str]] = []
+        for plugin_record in plugin_records:
+            metadata = plugin_record.get("metadata")
+            if isinstance(metadata, Mapping):
+                metadata_map = metadata
+            else:
+                metadata_map = {}
+
+            install_id = str(metadata_map.get("install_id") or plugin_record["name"])
+            installed_path = str(metadata_map.get("installed_path") or plugin_record["path"])
+            resolved_skill_source_path = str(
+                metadata_map.get("resolved_skill_source_path") or installed_path
+            )
+            try:
+                resolved_skill_source_path = str(
+                    self.resolve_entry_source(Path(installed_path))
+                )
+            except ValueError:
+                pass
+
+            records.append(
+                {
+                    "install_id": install_id,
+                    "name": str(metadata_map.get("name") or install_id),
+                    "source": str(metadata_map.get("source") or plugin_record.get("source") or installed_path),
+                    "installed_path": installed_path,
+                    "resolved_skill_source_path": resolved_skill_source_path,
+                    "install_mode": str(metadata_map.get("install_mode") or "manual"),
+                    "scope": str(metadata_map.get("scope") or plugin_record.get("activation_scope") or "global"),
+                    "installed_at": str(
+                        metadata_map.get("installed_at")
+                        or plugin_record.get("installed_at")
+                        or datetime.now(timezone.utc).isoformat()
+                    ),
+                }
+            )
+
+        return records
 
     def _find_manifest_record(
         self, install_id_or_name: str
-    ) -> tuple[int, dict[str, str], list[dict[str, str]]]:
-        records = self.load_manifest()
-        for index, record in enumerate(records):
+    ) -> tuple[str, int, dict[str, str], list[dict[str, str]]]:
+        plugin_records = self._load_plugin_manifest_records()
+        for index, record in enumerate(plugin_records):
             if (
                 record.get("install_id") == install_id_or_name
                 or record.get("name") == install_id_or_name
             ):
-                return index, record, records
+                return "plugin", index, record, plugin_records
+
+        legacy_records = self._load_legacy_manifest()
+        for index, record in enumerate(legacy_records):
+            if (
+                record.get("install_id") == install_id_or_name
+                or record.get("name") == install_id_or_name
+            ):
+                return "legacy", index, record, legacy_records
+
         raise ValueError(f"Unknown installed skill entry: {install_id_or_name}")
 
     def _count_skills(self, source_path: Path) -> int:
@@ -163,7 +234,7 @@ class InstalledSkillManager:
         normalized_path = self._normalize_entry_path(path)
         return normalized_path != canonical_root and canonical_root in normalized_path.parents
 
-    def load_manifest(self) -> list[dict[str, str]]:
+    def _load_legacy_manifest(self) -> list[dict[str, str]]:
         if not self.manifest_path.exists():
             return []
 
@@ -188,6 +259,11 @@ class InstalledSkillManager:
                 sanitized_records.append(sanitized_record)
 
         return sanitized_records
+
+    def load_manifest(self) -> list[dict[str, str]]:
+        if self.manifest_path.exists():
+            return self._load_legacy_manifest()
+        return self._load_plugin_manifest_records()
 
     def save_manifest(self, records: list[dict[str, str]]) -> None:
         serialized = json.dumps(records, indent=2, ensure_ascii=False)
@@ -305,7 +381,8 @@ class InstalledSkillManager:
             raise
 
     def list_installs(self) -> list[dict[str, str | int]]:
-        records = self.load_manifest()
+        self._migrate_legacy_manifest_once()
+        records = self._load_plugin_manifest_records()
         managed_ids = {item["install_id"] for item in records}
         managed_paths: set[Path] = set()
         for item in records:
@@ -337,7 +414,7 @@ class InstalledSkillManager:
             adopted = True
 
         if adopted:
-            records = self.load_manifest()
+            records = self._load_plugin_manifest_records()
 
         installs: list[dict[str, str | int]] = []
         for item in records:
@@ -348,8 +425,21 @@ class InstalledSkillManager:
             installs.append(record_with_count)
         return installs
 
+    def _migrate_legacy_manifest_once(self) -> None:
+        if not self.manifest_path.exists():
+            return
+
+        legacy_records = self._load_legacy_manifest()
+        for record in legacy_records:
+            self._upsert_manifest_record(record)
+
+        migrated_path = self.manifest_path.with_suffix(".json.migrated")
+        if migrated_path.exists():
+            migrated_path.unlink()
+        self.manifest_path.replace(migrated_path)
+
     def update_install(self, install_id_or_name: str) -> dict[str, str]:
-        index, target, records = self._find_manifest_record(install_id_or_name)
+        record_source, index, target, records = self._find_manifest_record(install_id_or_name)
         if target.get("install_mode") != "clone":
             raise ValueError(
                 f"Only git-backed installed skill entries can be updated: {install_id_or_name}"
@@ -383,12 +473,15 @@ class InstalledSkillManager:
         updated_record["resolved_skill_source_path"] = str(
             self.resolve_entry_source(installed_path)
         )
-        records[index] = updated_record
-        self.save_manifest(records)
+        if record_source == "plugin":
+            self._upsert_manifest_record(updated_record)
+        else:
+            records[index] = updated_record
+            self.save_manifest(records)
         return updated_record
 
     def remove_install(self, install_id_or_name: str) -> None:
-        _, target, records = self._find_manifest_record(install_id_or_name)
+        record_source, _, target, records = self._find_manifest_record(install_id_or_name)
 
         installed_path_value = target.get("installed_path")
         if not installed_path_value:
@@ -401,6 +494,10 @@ class InstalledSkillManager:
             )
 
         self._cleanup_installed_entry(installed_path)
+
+        if record_source == "plugin":
+            self.plugin_manager.remove_manifest_record(str(target["install_id"]))
+            return
 
         self.save_manifest(
             [

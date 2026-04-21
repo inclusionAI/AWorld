@@ -4,6 +4,7 @@ from types import MappingProxyType, SimpleNamespace
 import pytest
 
 from aworld.plugins.discovery import discover_plugins
+from aworld.plugins.models import PluginEntrypoint
 from aworld_cli.core.plugin_manager import PluginManager
 from aworld_cli.runtime.loaders import PluginLoader
 
@@ -29,7 +30,30 @@ def test_discover_manifest_and_legacy_plugins():
     assert isinstance(legacy_manifest.entrypoints, MappingProxyType)
     assert set(legacy_manifest.entrypoints.keys()) == {"agents", "skills"}
     assert legacy_manifest.entrypoints["agents"] == ()
-    assert legacy_manifest.entrypoints["skills"] == ()
+    assert isinstance(legacy_manifest.entrypoints["skills"][0], PluginEntrypoint)
+    assert tuple(item.entrypoint_id for item in legacy_manifest.entrypoints["skills"]) == (
+        "demo",
+    )
+    assert tuple(item.name for item in legacy_manifest.entrypoints["skills"]) == ("demo",)
+
+
+def test_discover_legacy_skill_only_plugin_synthesizes_skill_entrypoints(tmp_path):
+    legacy_root = tmp_path / "legacy-skill-only"
+    (legacy_root / "skills" / "zeta").mkdir(parents=True)
+    (legacy_root / "skills" / "alpha").mkdir(parents=True)
+    (legacy_root / "skills" / "zeta" / "SKILL.md").write_text(
+        "---\nname: zeta\ndescription: zeta\n---\n", encoding="utf-8"
+    )
+    (legacy_root / "skills" / "alpha" / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: alpha\n---\n", encoding="utf-8"
+    )
+
+    discovered = discover_plugins([legacy_root])
+    assert len(discovered) == 1
+
+    skills = discovered[0].manifest.entrypoints["skills"]
+    assert tuple(item.entrypoint_id for item in skills) == ("alpha", "zeta")
+    assert all(isinstance(item, PluginEntrypoint) for item in skills)
 
 
 def test_get_plugin_roots_includes_skill_only_plugins(tmp_path):

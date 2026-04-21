@@ -7,6 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 
 from aworld_cli import main as main_module
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
+from aworld_cli.core.plugin_manager import PluginManager
 
 
 def _write_skill(root: Path, skill_name: str) -> None:
@@ -101,3 +102,21 @@ def test_skill_install_accepts_agent_scope(
     output = capsys.readouterr().out
 
     assert "agent:developer" in output
+
+
+def test_skill_install_creates_plugin_managed_skill_record(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source = tmp_path / "source-skills"
+    _write_skill(source, "optimizer")
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "install", str(source)])
+    main_module.main()
+
+    plugins = PluginManager(plugin_dir=tmp_path / ".aworld" / "plugins").list_plugins()
+    skill_plugin = next(plugin for plugin in plugins if plugin["name"] == "source-skills")
+
+    assert skill_plugin["package_kind"] == "skill"
+    assert skill_plugin["managed_by"] == "skill"
+    assert skill_plugin["activation_scope"] == "global"

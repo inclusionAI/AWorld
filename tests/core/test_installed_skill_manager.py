@@ -9,6 +9,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
+from aworld_cli.core.plugin_manager import PluginManager
 
 
 def _write_skill(root: Path, skill_name: str) -> None:
@@ -153,16 +154,13 @@ def test_install_rolls_back_filesystem_and_manifest_when_manifest_replace_fails(
         installed_root=installed_root, manifest_path=manifest_path
     )
     existing_record = manager.import_entry(existing_entry, scope="global")
-    original_manifest = manifest_path.read_text(encoding="utf-8")
+    plugin_manifest_path = tmp_path / ".aworld" / "plugins" / ".manifest.json"
+    original_manifest = plugin_manifest_path.read_text(encoding="utf-8")
 
-    original_replace = Path.replace
+    def _raise_on_save_manifest() -> None:
+        raise OSError("manifest replace failed")
 
-    def _raise_on_replace(self: Path, target: Path) -> Path:
-        if target == manifest_path:
-            raise OSError("manifest replace failed")
-        return original_replace(self, target)
-
-    monkeypatch.setattr(Path, "replace", _raise_on_replace)
+    monkeypatch.setattr(manager.plugin_manager, "_save_manifest", _raise_on_save_manifest)
 
     with pytest.raises(OSError, match="manifest replace failed"):
         manager.install(
@@ -175,7 +173,7 @@ def test_install_rolls_back_filesystem_and_manifest_when_manifest_replace_fails(
     installed_entry = installed_root / "copied-skill"
     assert installed_entry.exists() is False
     assert installed_entry.is_symlink() is False
-    assert manifest_path.read_text(encoding="utf-8") == original_manifest
+    assert plugin_manifest_path.read_text(encoding="utf-8") == original_manifest
     assert manager.load_manifest() == [existing_record]
 
 
@@ -616,3 +614,68 @@ def test_load_manifest_skips_malformed_records_with_bad_field_types(
     assert [item["install_id"] for item in manifest] == ["demo"]
     with pytest.raises(ValueError, match="Unknown installed skill entry"):
         manager.remove_install("bad")
+
+
+def test_install_registers_skill_as_plugin_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source = tmp_path / "source-skills"
+    _write_skill(source / "skills", "optimizer")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.install(source=source, mode="copy", scope="global")
+
+    plugins = PluginManager(plugin_dir=tmp_path / ".aworld" / "plugins").list_plugins()
+    skill_plugin = next(plugin for plugin in plugins if plugin["name"] == "source-skills")
+
+    assert skill_plugin["package_kind"] == "skill"
+    assert skill_plugin["managed_by"] == "skill"
+    assert skill_plugin["activation_scope"] == "global"
+
+
+def test_list_installs_migrates_legacy_manifest_once_and_preserves_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    legacy_manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    entry = installed_root / "developer-skills"
+    _write_skill(entry, "optimizer")
+    installed_root.mkdir(parents=True, exist_ok=True)
+    legacy_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_manifest_path.write_text(
+        json.dumps(
+            [
+                {
+                    "install_id": "developer-skills",
+                    "name": "developer-skills",
+                    "source": str(entry),
+                    "installed_path": str(entry),
+                    "resolved_skill_source_path": str(entry),
+                    "install_mode": "manual",
+                    "scope": "agent:developer",
+                    "installed_at": "2026-04-15T00:00:00+00:00",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=legacy_manifest_path
+    )
+    installs = manager.list_installs()
+
+    assert len(installs) == 1
+    assert installs[0]["install_id"] == "developer-skills"
+    assert installs[0]["scope"] == "agent:developer"
+    assert legacy_manifest_path.exists() is False
+    assert legacy_manifest_path.with_suffix(".json.migrated").exists() is True
+
+    second = manager.list_installs()
+    assert second == installs
