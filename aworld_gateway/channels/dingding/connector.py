@@ -39,6 +39,26 @@ AI_CARD_REQUEST_RETRIES = 2
 AI_CARD_RETRY_DELAY_SECONDS = 0.3
 AI_CARD_STREAM_UPDATE_INTERVAL_SECONDS = 0.3
 CALLBACK_DEDUPE_WINDOW_SECONDS = 15.0
+PROCESSING_ACK_TEXT = "已收到，正在处理。我会尽量保留你消息里的文件、时间范围和输出格式要求。"
+COMPLEX_REQUEST_KEYWORDS = (
+    "分析",
+    "收集",
+    "整理",
+    "生成",
+    "报告",
+    "调研",
+    "搜索",
+    "新闻",
+    "html",
+    "trajectory.log",
+    ".html",
+)
+EXECUTION_GUARDRAIL_TEXT = """\
+执行要求:
+ - 严格保留用户原始请求中的文件或日志名、时间范围、输出格式与交付动作。
+ - 如需拆分或改写任务，不得遗漏这些明确约束。
+ - 如果用户要求生成 HTML 或其他文件产物，必须生成对应产物，或在最终答复中明确说明阻塞原因。
+"""
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
 LOCAL_PATH_RE = re.compile(r"^(?:/|~|[A-Za-z]:[\\/])")
@@ -198,6 +218,8 @@ class DingTalkConnector:
             session_webhook=session_webhook,
             session_id=session_id,
             text=user_input,
+            request_text=message.text,
+            has_attachments=bool(message.attachments),
             data=data,
         )
 
@@ -230,6 +252,8 @@ class DingTalkConnector:
         session_webhook: str,
         session_id: str,
         text: str | list[dict[str, Any]],
+        request_text: str,
+        has_attachments: bool,
         data: dict,
     ) -> None:
         active_card = (
@@ -237,6 +261,11 @@ class DingTalkConnector:
             if self._config.enable_ai_card
             else None
         )
+        if active_card is None and self._should_send_processing_ack(
+            request_text,
+            has_attachments=has_attachments,
+        ):
+            await self.send_text(session_webhook=session_webhook, text=PROCESSING_ACK_TEXT)
         streamed_parts: list[str] = []
         observed_cron_job_ids: set[str] = set()
         last_card_push_at = -AI_CARD_STREAM_UPDATE_INTERVAL_SECONDS
@@ -694,7 +723,18 @@ class DingTalkConnector:
  - conversationId: {conversation_id or 'unknown'}
  - robotCode: {robot_code or 'unknown'}
 """
-        return f"{text}\n{context}"
+        return f"{text}\n{context}\n{EXECUTION_GUARDRAIL_TEXT}"
+
+    @staticmethod
+    def _should_send_processing_ack(text: str, *, has_attachments: bool = False) -> bool:
+        if has_attachments:
+            return True
+
+        normalized = str(text or "").strip().lower()
+        if len(normalized) >= 40:
+            return True
+
+        return any(keyword in normalized for keyword in COMPLEX_REQUEST_KEYWORDS)
 
     async def _build_multimodal_part(self, local_path: str) -> dict[str, Any] | None:
         mime_type, _ = mimetypes.guess_type(local_path)

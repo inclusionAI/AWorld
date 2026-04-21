@@ -1,0 +1,241 @@
+{
+  "metadata": {
+    "collection_date": "2026-04-21",
+    "collected_at": "2026-04-21T11:00:00Z",
+    "total_accounts_sampled": 12,
+    "total_tweets_collected": 15,
+    "keywords": [
+      "ChatGPT", "Claude", "Gemini", "OpenAI", "Anthropic",
+      "MCP", "AI agent", "AI coding", "GPT-4", "GPT-5",
+      "o1", "o3", "Sonnet", "Opus", "Haiku"
+    ],
+    "accounts": [
+      {"handle": "OpenAI", "category": "official", "priority": 1},
+      {"handle": "AnthropicAI", "category": "official", "priority": 1},
+      {"handle": "GoogleDeepMind", "category": "official", "priority": 1},
+      {"handle": "huggingface", "category": "official", "priority": 1},
+      {"handle": "sama", "category": "researcher", "priority": 2},
+      {"handle": "karpathy", "category": "researcher", "priority": 2},
+      {"handle": "llama_index", "category": "ecosystem", "priority": 3},
+      {"handle": "LangChainAI", "category": "ecosystem", "priority": 3},
+      {"handle": "SimonWillison", "category": "ecosystem", "priority": 3},
+      {"handle": "jerryjliu0", "category": "ecosystem", "priority": 3},
+      {"handle": "hwchase17", "category": "ecosystem", "priority": 3},
+      {"handle": "ClementDelangue", "category": "ecosystem", "priority": 3}
+    ],
+    "collection_status": "SAMPLE_DATA",
+    "note": "This is sample data demonstrating the expected format. To collect real data, ensure X cookies are valid and run the collection script."
+  },
+  "tweets": [
+    {
+      "author": "@OpenAI",
+      "text": "Excited to announce improvements to GPT-4 Turbo with enhanced reasoning capabilities and reduced latency. Now available in the API with 128K context window.",
+      "url": "https://x.com/OpenAI/status/1782345678901234567",
+      "timestamp": "2026-04-21T09:15:00Z",
+      "engagement": {
+        "views": 245000,
+        "likes": 12500,
+        "retweets": 3200,
+        "replies": 890
+      },
+      "keywords_matched": ["OpenAI", "GPT-4"],
+      "category": "official"
+    },
+    {
+      "author": "@AnthropicAI",
+      "text": "Claude 3.5 Sonnet now supports extended context up to 200K tokens with improved accuracy on long-document tasks. Perfect for code analysis and research papers.",
+      "url": "https://x.com/AnthropicAI/status/1782356789012345678",
+      "timestamp": "2026-04-21T10:30:00Z",
+      "engagement": {
+        "views": 189000,
+        "likes": 9800,
+        "retweets": 2100,
+        "replies": 567
+      },
+      "keywords_matched": ["Claude", "Sonnet", "Anthropic"],
+      "category": "official"
+    },
+    {
+      "author": "@sama",
+      "text": "The pace of AI progress continues to accelerate. What seemed impossible 6 months ago is now routine. The next 12 months will be even more transformative.",
+      "url": "https://x.com/sama/status/1782367890123456789",
+      "timestamp": "2026-04-21T11:45:00Z",
+      "engagement": {
+        "views": 567000,
+        "likes": 28900,
+        "retweets": 7800,
+        "replies": 2340
+      },
+      "keywords_matched": ["AI"],
+      "category": "researcher"
+    },
+    {
+      "author": "@GoogleDeepMind",
+      "text": "New research: Gemini 2.0 achieves state-of-the-art performance on multimodal reasoning tasks, combining vision, language, and code understanding in a single model.",
+      "url": "https://x.com/GoogleDeepMind/status/1782378901234567890",
+      "timestamp": "2026-04-21T08:20:00Z",
+      "engagement": {
+        "views": 312000,
+        "likes": 15600,
+        "retweets": 4200,
+        "replies": 1120
+      },
+      "keywords_matched": ["Gemini"],
+      "category": "official"
+    },
+    {
+      "author": "@karpathy",
+      "text": "Fascinating to see how AI coding assistants are evolving. The best ones now understand project context, suggest architectural improvements, and even refactor code intelligently.",
+      "url": "https://x.com/karpathy/status/1782389012345678901",
+      "timestamp": "2026-04-21T13:10:00Z",
+      "engagement": {
+        "views": 423000,
+        "likes": 21500,
+        "retweets": 5600,
+        "replies": 1890
+      },
+      "keywords_matched": ["AI coding"],
+      "category": "researcher"
+    },
+    {
+      "author": "@SimonWillison",
+      "text": "Just tried the new MCP (Model Context Protocol) implementation in Claude Desktop. Game changer for connecting LLMs to local tools and databases. Thread with examples 🧵",
+      "url": "https://x.com/SimonWillison/status/1782390123456789012",
+      "timestamp": "2026-04-21T14:25:00Z",
+      "engagement": {
+        "views": 156000,
+        "likes": 8900,
+        "retweets": 2300,
+        "replies": 678
+      },
+      "keywords_matched": ["MCP", "Claude", "LLM"],
+      "category": "ecosystem"
+    },
+    {
+      "author": "@LangChainAI",
+      "text": "LangChain 0.2.0 released! 🎉 New features: native MCP support, improved agent memory, and 40% faster execution. Full changelog: [link]",
+      "url": "https://x.com/LangChainAI/status/1782401234567890123",
+      "timestamp": "2026-04-21T15:40:00Z",
+      "engagement": {
+        "views": 98000,
+        "likes": 5600,
+        "retweets": 1400,
+        "replies": 345
+      },
+      "keywords_matched": ["LangChain", "MCP", "AI agent"],
+      "category": "ecosystem"
+    },
+    {
+      "author": "@llama_index",
+      "text": "New tutorial: Building production-ready RAG systems with LlamaIndex and GPT-4. Covers chunking strategies, embedding optimization, and retrieval evaluation.",
+      "url": "https://x.com/llama_index/status/1782412345678901234",
+      "timestamp": "2026-04-21T16:15:00Z",
+      "engagement": {
+        "views": 87000,
+        "likes": 4800,
+        "retweets": 1200,
+        "replies": 289
+      },
+      "keywords_matched": ["GPT-4", "LLM"],
+      "category": "ecosystem"
+    },
+    {
+      "author": "@huggingface",
+      "text": "🤗 New on the Hub: 50+ open-source models fine-tuned for code generation. Including specialized models for Python, JavaScript, Rust, and SQL. All Apache 2.0 licensed!",
+      "url": "https://x.com/huggingface/status/1782423456789012345",
+      "timestamp": "2026-04-21T12:30:00Z",
+      "engagement": {
+        "views": 134000,
+        "likes": 7200,
+        "retweets": 1900,
+        "replies": 456
+      },
+      "keywords_matched": ["AI coding", "code generation"],
+      "category": "official"
+    },
+    {
+      "author": "@jerryjliu0",
+      "text": "Excited about the convergence of RAG and agents. The future is systems that can both retrieve knowledge AND take actions based on that knowledge. Building this into LlamaIndex.",
+      "url": "https://x.com/jerryjliu0/status/1782434567890123456",
+      "timestamp": "2026-04-21T17:05:00Z",
+      "engagement": {
+        "views": 76000,
+        "likes": 4100,
+        "retweets": 980,
+        "replies": 234
+      },
+      "keywords_matched": ["AI agent"],
+      "category": "ecosystem"
+    },
+    {
+      "author": "@hwchase17",
+      "text": "The shift from 'prompt engineering' to 'agent engineering' is real. It's no longer about crafting the perfect prompt, but designing robust agent workflows with proper error handling and feedback loops.",
+      "url": "https://x.com/hwchase17/status/1782445678901234567",
+      "timestamp": "2026-04-21T18:20:00Z",
+      "engagement": {
+        "views": 112000,
+        "likes": 6700,
+        "retweets": 1600,
+        "replies": 445
+      },
+      "keywords_matched": ["AI agent"],
+      "category": "ecosystem"
+    },
+    {
+      "author": "@ClementDelangue",
+      "text": "Hugging Face now hosts over 500K models! The open-source AI ecosystem is thriving. Special shoutout to the community for making this possible. 🚀",
+      "url": "https://x.com/ClementDelangue/status/1782456789012345678",
+      "timestamp": "2026-04-21T19:10:00Z",
+      "engagement": {
+        "views": 145000,
+        "likes": 8300,
+        "retweets": 2100,
+        "replies": 567
+      },
+      "keywords_matched": ["AI"],
+      "category": "ecosystem"
+    },
+    {
+      "author": "@OpenAI",
+      "text": "ChatGPT Enterprise now includes advanced data analysis with code interpreter, custom GPTs for your organization, and enhanced security features. Learn more: [link]",
+      "url": "https://x.com/OpenAI/status/1782467890123456789",
+      "timestamp": "2026-04-21T14:50:00Z",
+      "engagement": {
+        "views": 198000,
+        "likes": 10200,
+        "retweets": 2800,
+        "replies": 734
+      },
+      "keywords_matched": ["ChatGPT", "OpenAI"],
+      "category": "official"
+    },
+    {
+      "author": "@AnthropicAI",
+      "text": "Reminder: Claude's constitutional AI approach means it's designed to be helpful, harmless, and honest. We're constantly improving these safety measures while maintaining capability.",
+      "url": "https://x.com/AnthropicAI/status/1782478901234567890",
+      "timestamp": "2026-04-21T16:45:00Z",
+      "engagement": {
+        "views": 167000,
+        "likes": 9100,
+        "retweets": 2300,
+        "replies": 612
+      },
+      "keywords_matched": ["Claude", "Anthropic", "AI"],
+      "category": "official"
+    },
+    {
+      "author": "@SimonWillison",
+      "text": "Pro tip: When building with LLMs, always implement streaming responses. The perceived latency improvement is massive, even if the total time is the same. Users love seeing progress.",
+      "url": "https://x.com/SimonWillison/status/1782489012345678901",
+      "timestamp": "2026-04-21T20:15:00Z",
+      "engagement": {
+        "views": 89000,
+        "likes": 5400,
+        "retweets": 1300,
+        "replies": 298
+      },
+      "keywords_matched": ["LLM"],
+      "category": "ecosystem"
+    }
+  ]
+}
