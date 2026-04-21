@@ -5,6 +5,7 @@ import base64
 import hashlib
 from inspect import isawaitable
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -211,6 +212,11 @@ class DingTalkConnector:
             f"conversation={conversation_key} sender={sender_id} session={session_id} "
             f"text={self._truncate_log_text(user_text, limit=300)}"
         )
+        self._mirror_business_log_to_std_logging(
+            "DingTalk inbound message "
+            f"conversation={conversation_key} sender={sender_id} session={session_id} "
+            f"text={self._truncate_log_text(user_text, limit=300)}"
+        )
 
         enriched_text = self._append_user_context_to_text(message.text, data)
         user_input = await self._build_llm_user_input(
@@ -298,6 +304,12 @@ class DingTalkConnector:
                     f"conversation={str(data.get('conversationId') or data.get('senderStaffId') or data.get('senderId') or '').strip()} "
                     f"{summary}"
                 )
+                self._mirror_business_log_to_std_logging(
+                    "DingTalk runtime output "
+                    f"session={session_id} "
+                    f"conversation={str(data.get('conversationId') or data.get('senderStaffId') or data.get('senderId') or '').strip()} "
+                    f"{summary}"
+                )
             for job_id in self._extract_cron_job_ids(output):
                 if job_id in observed_cron_job_ids:
                     continue
@@ -334,6 +346,10 @@ class DingTalkConnector:
             "DingTalk final reply "
             f"session={session_id} text={self._truncate_log_text(display_text, limit=500)}"
         )
+        self._mirror_business_log_to_std_logging(
+            "DingTalk final reply "
+            f"session={session_id} text={self._truncate_log_text(display_text, limit=500)}"
+        )
 
         if active_card is not None and await self._finish_ai_card(active_card, display_text):
             await self._send_pending_files(session_webhook, pending_files)
@@ -359,6 +375,10 @@ class DingTalkConnector:
             if base_dir.is_absolute():
                 return base_dir.parent / "cron-bindings.json"
         return Path(".aworld/gateway/dingding/cron-bindings.json").resolve()
+
+    @staticmethod
+    def _mirror_business_log_to_std_logging(message: str) -> None:
+        logging.getLogger("aworld").info(message)
 
     @staticmethod
     def _truncate_log_text(value, *, limit: int = 300) -> str:

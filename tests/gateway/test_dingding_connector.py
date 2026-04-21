@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -588,6 +589,70 @@ def test_connector_logs_inbound_runtime_outputs_and_final_reply(monkeypatch) -> 
     assert any("DingTalk runtime output" in entry for entry in info_logs)
     assert any("tool_call_result" in entry and "cron" in entry for entry in info_logs)
     assert any("DingTalk final reply" in entry and "已创建提醒" in entry for entry in info_logs)
+
+
+def test_connector_mirrors_business_logs_to_std_logging(monkeypatch) -> None:
+    class _LoggingBridge(_FakeBridge):
+        async def run(
+            self,
+            *,
+            agent_id: str,
+            session_id: str,
+            text,
+            on_text_chunk=None,
+            on_output=None,
+        ) -> DingdingBridgeResult:
+            if on_output is not None:
+                await on_output(
+                    ToolResultOutput(
+                        tool_name="cron",
+                        action_name="cron_tool",
+                        data={"success": True, "job_id": "job-log-1"},
+                    )
+                )
+            if on_text_chunk is not None:
+                await on_text_chunk("已创建提醒")
+            return DingdingBridgeResult(text="已创建提醒")
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=_LoggingBridge(),
+        stream_module=object(),
+    )
+    standard_logs: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        return None
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            standard_logs.append(record.getMessage())
+
+    capture_logger = logging.getLogger("aworld")
+    capture_handler = _CaptureHandler()
+    old_level = capture_logger.level
+    capture_logger.setLevel(logging.INFO)
+    capture_logger.addHandler(capture_handler)
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    try:
+        asyncio.run(
+            connector.handle_callback(
+                {
+                    "sessionWebhook": "https://callback",
+                    "conversationId": "conv-1",
+                    "senderId": "user-1",
+                    "text": {"content": "一分钟后提醒我喝水"},
+                }
+            )
+        )
+    finally:
+        capture_logger.removeHandler(capture_handler)
+        capture_logger.setLevel(old_level)
+
+    assert any("DingTalk inbound message" in entry for entry in standard_logs)
+    assert any("DingTalk runtime output" in entry for entry in standard_logs)
+    assert any("DingTalk final reply" in entry for entry in standard_logs)
 
 
 def test_connector_ignores_invalid_or_empty_callbacks() -> None:
