@@ -99,6 +99,18 @@ class InstalledSkillManager:
             entry_path.unlink()
 
     def _upsert_manifest_record(self, record: dict[str, str]) -> dict[str, str]:
+        existing_record = self.plugin_manager._manifest.get(record["install_id"])
+        if isinstance(existing_record, Mapping):
+            existing_package_kind = str(existing_record.get("package_kind", "plugin"))
+            existing_managed_by = str(existing_record.get("managed_by", "plugin"))
+            is_skill_managed = (
+                existing_package_kind == "skill" and existing_managed_by == "skill"
+            )
+            if not is_skill_managed:
+                raise ValueError(
+                    f"Skill install id '{record['install_id']}' conflicts with an existing non-skill plugin manifest record"
+                )
+
         metadata = {
             "install_id": record["install_id"],
             "name": record["name"],
@@ -319,6 +331,8 @@ class InstalledSkillManager:
 
             for record in sanitized_records:
                 self._upsert_manifest_record(record)
+
+            self._write_text_file_atomic(self.manifest_path, serialized)
         except Exception:
             self.plugin_manager._manifest = plugin_memory_state
             self._restore_text_file_state(
@@ -326,8 +340,6 @@ class InstalledSkillManager:
             )
             self._restore_text_file_state(self.manifest_path, legacy_state)
             raise
-
-        self._write_text_file_atomic(self.manifest_path, serialized)
 
     def _write_text_file_atomic(
         self, path: Path, content: str, *, mode: int | None = None
