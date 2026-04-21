@@ -7,7 +7,6 @@ import asyncio
 import inspect
 import traceback
 from typing import Dict, Any, Callable, Optional, Awaitable
-from typing import Dict, Any, Callable, Optional, Awaitable
 
 from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger

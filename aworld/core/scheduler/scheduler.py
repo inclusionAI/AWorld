@@ -520,6 +520,7 @@ class CronScheduler:
         job: CronJob,
         status: Literal["ok", "error", "timeout"],
         result: Optional[Any] = None,
+        user_visible: bool = True,
     ):
         """
         Publish notification if sink is configured.
@@ -560,7 +561,8 @@ class CronScheduler:
                 'summary': summary,
                 'detail': detail,
                 'created_at': datetime.now(pytz.UTC).isoformat(),
-                'next_run_at': job.state.next_run_at
+                'next_run_at': job.state.next_run_at,
+                'user_visible': user_visible,
             }
 
             await self.notification_sink(notification_data)
@@ -623,17 +625,39 @@ class CronScheduler:
 
                 persisted_job, removed = await self._persist_job_result(job, result)
                 notification_job = persisted_job or job
+                user_visible = bool(getattr(result, "user_visible", True))
 
                 # Publish notification (after state persistence and deletion)
                 if result.success:
                     success_summary = self._get_result_summary(result)
-                    success_message = (
-                        f"任务执行完成：{success_summary}"
-                        if success_summary else
-                        "任务执行完成"
-                    )
-                    await self._publish_progress(notification_job, "success", success_message, terminal=True)
-                    await self._publish_notification(notification_job, "ok", result=result)
+                    if user_visible:
+                        success_message = (
+                            f"任务执行完成：{success_summary}"
+                            if success_summary else
+                            "任务执行完成"
+                        )
+                        await self._publish_progress(notification_job, "success", success_message, terminal=True)
+                        await self._publish_notification(
+                            notification_job,
+                            "ok",
+                            result=result,
+                            user_visible=True,
+                        )
+                    else:
+                        quiet_message = success_summary or getattr(result, "msg", None) or "本次检查未触发通知"
+                        await self._publish_progress(
+                            notification_job,
+                            "info",
+                            quiet_message,
+                            terminal=bool(notification_job.state.next_run_at is None),
+                        )
+                        if notification_job.state.next_run_at is None:
+                            await self._publish_notification(
+                                notification_job,
+                                "ok",
+                                result=result,
+                                user_visible=False,
+                            )
                     if removed:
                         logger.info(f"Deleted one-time job: {job.id}")
                 else:
@@ -643,7 +667,7 @@ class CronScheduler:
                         f"任务执行失败：{result.msg}",
                         terminal=True,
                     )
-                    await self._publish_notification(notification_job, "error")
+                    await self._publish_notification(notification_job, "error", result=result)
 
             except asyncio.TimeoutError:
                 logger.error(f"Job {job.id} execution timeout")
