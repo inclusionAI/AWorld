@@ -2,6 +2,7 @@ import os
 import json
 import sys
 import subprocess
+import shutil
 from pathlib import Path
 
 import pytest
@@ -580,6 +581,32 @@ def test_remove_install_handles_malformed_manifest_entries_as_unknown_install(
         manager.remove_install("missing")
 
 
+def test_list_installs_excluding_disabled_does_not_mutate_disabled_scope_or_enablement(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    entry = installed_root / "disabled-pack"
+    _write_skill(entry / "skills", "optimizer")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.import_entry(entry, scope="agent:developer")
+    manager.plugin_manager.disable("disabled-pack")
+
+    before = dict(manager.plugin_manager._manifest["disabled-pack"])
+    before_metadata = dict(before.get("metadata", {}))
+
+    assert manager.list_installs(include_disabled=False) == []
+
+    after = manager.plugin_manager._manifest["disabled-pack"]
+    assert after.get("enabled") is False
+    assert after.get("metadata", {}).get("scope") == "agent:developer"
+    assert after.get("metadata") == before_metadata
+
+
 def test_load_manifest_skips_malformed_records_with_bad_field_types(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -614,6 +641,62 @@ def test_load_manifest_skips_malformed_records_with_bad_field_types(
     assert [item["install_id"] for item in manifest] == ["demo"]
     with pytest.raises(ValueError, match="Unknown installed skill entry"):
         manager.remove_install("bad")
+
+
+def test_remove_install_can_remove_stale_plugin_managed_record_after_path_deleted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source = tmp_path / "source-skills"
+    _write_skill(source / "skills", "optimizer")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.install(source=source, mode="copy", scope="global", install_id="stale-pack")
+
+    stale_entry = installed_root / "stale-pack"
+    assert stale_entry.exists() is True
+    shutil.rmtree(stale_entry)
+    assert stale_entry.exists() is False
+
+    manager.remove_install("stale-pack")
+
+    assert "stale-pack" not in manager.plugin_manager._manifest
+
+
+def test_update_install_reports_missing_path_for_stale_plugin_managed_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source_repo = tmp_path / "git-source"
+    source_repo.mkdir()
+    _run_git(source_repo, "init")
+    _run_git(source_repo, "config", "user.name", "Test User")
+    _run_git(source_repo, "config", "user.email", "test@example.com")
+    _write_skill(source_repo / "skills", "brainstorming")
+    _commit_all(source_repo, "initial commit")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.install(
+        source=source_repo,
+        mode="clone",
+        scope="global",
+        install_id="stale-clone",
+    )
+
+    stale_clone = installed_root / "stale-clone"
+    shutil.rmtree(stale_clone)
+    assert stale_clone.exists() is False
+
+    with pytest.raises(ValueError, match="Installed path does not exist"):
+        manager.update_install("stale-clone")
 
 
 def test_install_registers_skill_as_plugin_record(

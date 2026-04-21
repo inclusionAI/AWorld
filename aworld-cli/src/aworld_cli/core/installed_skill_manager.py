@@ -152,22 +152,37 @@ class InstalledSkillManager:
         include_disabled: bool = True,
         include_enabled_field: bool = False,
     ) -> list[dict[str, str | bool]]:
-        plugin_records = sorted(
-            self.plugin_manager.list_skill_packages(
-                include_disabled=include_disabled
-            ),
-            key=lambda item: str(item["name"]),
-        )
         records: list[dict[str, str | bool]] = []
-        for plugin_record in plugin_records:
-            metadata = plugin_record.get("metadata")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        manifest_items = sorted(
+            self.plugin_manager._manifest.items(), key=lambda item: str(item[0])
+        )
+        for plugin_name, plugin_info in manifest_items:
+            if not isinstance(plugin_info, Mapping):
+                continue
+
+            package_kind = str(plugin_info.get("package_kind", "plugin"))
+            managed_by = str(plugin_info.get("managed_by", "plugin"))
+            metadata = plugin_info.get("metadata")
             if isinstance(metadata, Mapping):
                 metadata_map = metadata
             else:
                 metadata_map = {}
 
-            install_id = str(metadata_map.get("install_id") or plugin_record["name"])
-            installed_path = str(metadata_map.get("installed_path") or plugin_record["path"])
+            has_skill_metadata = "install_id" in metadata_map and "installed_path" in metadata_map
+            if not ((package_kind == "skill" and managed_by == "skill") or has_skill_metadata):
+                continue
+
+            enabled = bool(plugin_info.get("enabled", True))
+            if not include_disabled and not enabled:
+                continue
+
+            installed_path = str(
+                metadata_map.get("installed_path")
+                or plugin_info.get("path")
+                or (self.plugin_manager.plugin_dir / plugin_name)
+            )
+            install_id = str(metadata_map.get("install_id") or plugin_name)
             resolved_skill_source_path = str(
                 metadata_map.get("resolved_skill_source_path") or installed_path
             )
@@ -181,19 +196,27 @@ class InstalledSkillManager:
             record: dict[str, str | bool] = {
                 "install_id": install_id,
                 "name": str(metadata_map.get("name") or install_id),
-                "source": str(metadata_map.get("source") or plugin_record.get("source") or installed_path),
+                "source": str(
+                    metadata_map.get("source")
+                    or plugin_info.get("source")
+                    or installed_path
+                ),
                 "installed_path": installed_path,
                 "resolved_skill_source_path": resolved_skill_source_path,
                 "install_mode": str(metadata_map.get("install_mode") or "manual"),
-                "scope": str(metadata_map.get("scope") or plugin_record.get("activation_scope") or "global"),
+                "scope": str(
+                    metadata_map.get("scope")
+                    or plugin_info.get("activation_scope")
+                    or "global"
+                ),
                 "installed_at": str(
                     metadata_map.get("installed_at")
-                    or plugin_record.get("installed_at")
-                    or datetime.now(timezone.utc).isoformat()
+                    or plugin_info.get("installed_at")
+                    or now_iso
                 ),
             }
             if include_enabled_field:
-                record["enabled"] = bool(plugin_record.get("enabled", True))
+                record["enabled"] = enabled
             records.append(record)
 
         return records
@@ -500,9 +523,17 @@ class InstalledSkillManager:
             scope=scope,
             installed_at=datetime.now(timezone.utc).isoformat(),
         )
+        plugin_manifest_state = self._capture_text_file_state(
+            self.plugin_manager.manifest_file
+        )
+        plugin_memory_state = deepcopy(self.plugin_manager._manifest)
         try:
             return self._upsert_manifest_record(asdict(record))
         except Exception:
+            self.plugin_manager._manifest = plugin_memory_state
+            self._restore_text_file_state(
+                self.plugin_manager.manifest_file, plugin_manifest_state
+            )
             self._cleanup_installed_entry(target_path)
             raise
 
@@ -510,13 +541,22 @@ class InstalledSkillManager:
         self, *, include_disabled: bool = True
     ) -> list[dict[str, str | int | bool]]:
         self._migrate_legacy_manifest_once()
-        records = self._load_plugin_manifest_records(
-            include_disabled=include_disabled,
+        all_records = self._load_plugin_manifest_records(
+            include_disabled=True,
             include_enabled_field=True,
         )
-        managed_ids = {item["install_id"] for item in records}
+        records = (
+            all_records
+            if include_disabled
+            else [
+                item
+                for item in all_records
+                if bool(item.get("enabled", True))
+            ]
+        )
+        managed_ids = {item["install_id"] for item in all_records}
         managed_paths: set[Path] = set()
-        for item in records:
+        for item in all_records:
             installed_path_value = item.get("installed_path")
             if not installed_path_value:
                 continue
