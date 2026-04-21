@@ -375,6 +375,40 @@ def test_connector_normal_callback_runs_bridge_and_sends_text() -> None:
     assert sent == ["echo:hello", "echo:again"]
 
 
+def test_connector_sends_processing_ack_for_complex_request() -> None:
+    bridge = _FakeBridge()
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=bridge,
+        stream_module=object(),
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        assert session_webhook == "https://callback"
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {
+                    "content": "结合trajectory.log分析今天ai领域的新闻收集整理好生成html发给我",
+                },
+            }
+        )
+    )
+
+    assert sent == [
+        "已收到，正在处理。我会尽量保留你消息里的文件、时间范围和输出格式要求。",
+        "echo:结合trajectory.log分析今天ai领域的新闻收集整理好生成html发给我",
+    ]
+
+
 def test_connector_reports_error_when_no_agent_id_is_configured() -> None:
     connector = DingTalkConnector(
         config=DingdingChannelConfig(default_agent_id=None),
@@ -673,7 +707,12 @@ def test_connector_appends_user_context_before_bridge_call() -> None:
         " - userId: user-1\n"
         " - userName: Alice\n"
         " - conversationId: conv-1\n"
-        " - robotCode: robot-1"
+        " - robotCode: robot-1\n"
+        "\n"
+        "执行要求:\n"
+        " - 严格保留用户原始请求中的文件或日志名、时间范围、输出格式与交付动作。\n"
+        " - 如需拆分或改写任务，不得遗漏这些明确约束。\n"
+        " - 如果用户要求生成 HTML 或其他文件产物，必须生成对应产物，或在最终答复中明确说明阻塞原因。"
     )
 
 

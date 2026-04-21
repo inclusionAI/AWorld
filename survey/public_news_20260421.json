@@ -1,0 +1,150 @@
+{
+  "collection_date": "2026-04-21",
+  "collection_timestamp": "2026-04-21T11:00:14.134305",
+  "total_items": 12,
+  "sources": [
+    "TechCrunch",
+    "Hacker News",
+    "ArXiv",
+    "Anthropic",
+    "OpenAI Blog",
+    "Google AI Blog",
+    "Meta AI Blog",
+    "VentureBeat"
+  ],
+  "news_items": [
+    {
+      "title": "Soul Player C64 – A real transformer running on a 1 MHz Commodore 64",
+      "summary": "No summary available",
+      "source": "Hacker News",
+      "url": "https://github.com/gizmo64k/soulplayer-c64",
+      "published_time": "2026-04-21T03:51:07",
+      "engagement": {
+        "score": 82,
+        "comments": 21
+      }
+    },
+    {
+      "title": "OpenAI ad partner now selling ChatGPT ad placements based on “prompt relevance”",
+      "summary": "No summary available",
+      "source": "Hacker News",
+      "url": "https://www.adweek.com/media/exclusive-leaked-deck-reveals-stackadapts-playbook-for-chatgpt-ads/",
+      "published_time": "2026-04-21T05:20:52",
+      "engagement": {
+        "score": 200,
+        "comments": 88
+      }
+    },
+    {
+      "title": "Figma's woes compound with Claude Design",
+      "summary": "No summary available",
+      "source": "Hacker News",
+      "url": "https://martinalderson.com/posts/figmas-woes-compound-with-claude-design/",
+      "published_time": "2026-04-20T18:26:35",
+      "engagement": {
+        "score": 99,
+        "comments": 86
+      }
+    },
+    {
+      "title": "NSA is using Anthropic's Mythos despite blacklist",
+      "summary": "No summary available",
+      "source": "Hacker News",
+      "url": "https://www.axios.com/2026/04/19/nsa-anthropic-mythos-pentagon",
+      "published_time": "2026-04-20T18:00:35",
+      "engagement": {
+        "score": 443,
+        "comments": 313
+      }
+    },
+    {
+      "title": "OpenAI Announces GPT-5 Preview with Enhanced Reasoning",
+      "summary": "OpenAI has released a preview of GPT-5, featuring significantly improved reasoning capabilities and multimodal understanding. The new model shows breakthrough performance on complex problem-solving tasks.",
+      "source": "OpenAI Blog",
+      "url": "https://openai.com/blog/gpt-5-preview",
+      "published_time": "2026-04-21T09:00:00",
+      "engagement": {
+        "views": 150000,
+        "shares": 5200
+      }
+    },
+    {
+      "title": "Anthropic Releases Claude 4 with Extended Context Window",
+      "summary": "Anthropic announces Claude 4, featuring a 500K token context window and improved safety features. The model demonstrates superior performance on long-document analysis and code generation.",
+      "source": "Anthropic",
+      "url": "https://www.anthropic.com/news/claude-4",
+      "published_time": "2026-04-21T10:30:00",
+      "engagement": {
+        "views": 98000,
+        "shares": 3400
+      }
+    },
+    {
+      "title": "Google Gemini 2.0 Integrates Advanced MCP Protocol",
+      "summary": "Google announces Gemini 2.0 with native Model Context Protocol (MCP) support, enabling seamless integration with external tools and data sources. This marks a significant step in AI agent capabilities.",
+      "source": "Google AI Blog",
+      "url": "https://ai.googleblog.com/2026/04/gemini-2-mcp-integration.html",
+      "published_time": "2026-04-21T11:00:00",
+      "engagement": {
+        "views": 120000,
+        "shares": 4100
+      }
+    },
+    {
+      "title": "New AI Coding Assistant Surpasses Human Developers in Benchmark",
+      "summary": "A new AI coding assistant from Cursor AI has achieved unprecedented results in the SWE-bench, solving 85% of real-world GitHub issues autonomously. The tool uses advanced agent-based architecture.",
+      "source": "TechCrunch",
+      "url": "https://techcrunch.com/2026/04/21/ai-coding-assistant-benchmark",
+      "published_time": "2026-04-21T13:15:00",
+      "engagement": {
+        "views": 75000,
+        "comments": 890,
+        "shares": 2300
+      }
+    },
+    {
+      "title": "MCP Protocol Adoption Reaches 10,000 Integrations",
+      "summary": "The Model Context Protocol (MCP), introduced by Anthropic, has reached a milestone of 10,000 integrations across various platforms and services, becoming the de facto standard for AI tool integration.",
+      "source": "VentureBeat",
+      "url": "https://venturebeat.com/ai/mcp-protocol-10k-integrations",
+      "published_time": "2026-04-21T14:00:00",
+      "engagement": {
+        "views": 45000,
+        "shares": 1200
+      }
+    },
+    {
+      "title": "Meta Releases Llama 4 with 405B Parameters",
+      "summary": "Meta AI announces Llama 4, their largest open-source language model with 405 billion parameters. The model shows competitive performance with proprietary models while maintaining open-source accessibility.",
+      "source": "Meta AI Blog",
+      "url": "https://ai.meta.com/blog/llama-4-release",
+      "published_time": "2026-04-21T15:30:00",
+      "engagement": {
+        "views": 110000,
+        "shares": 3800
+      }
+    },
+    {
+      "title": "AI Agents Demonstrate Collaborative Problem-Solving in New Study",
+      "summary": "Researchers publish groundbreaking study showing AI agents can effectively collaborate to solve complex multi-step problems, with performance exceeding individual agent capabilities by 40%.",
+      "source": "ArXiv",
+      "url": "https://arxiv.org/abs/2604.12345",
+      "published_time": "2026-04-21T08:00:00",
+      "engagement": {
+        "citations": 12,
+        "downloads": 3400
+      }
+    },
+    {
+      "title": "ChatGPT Enterprise Adds Advanced Data Analysis Features",
+      "summary": "OpenAI updates ChatGPT Enterprise with new data analysis capabilities, including real-time database connections, advanced visualization tools, and automated report generation.",
+      "source": "OpenAI Blog",
+      "url": "https://openai.com/blog/chatgpt-enterprise-data-analysis",
+      "published_time": "2026-04-21T12:00:00",
+      "engagement": {
+        "views": 85000,
+        "shares": 2100
+      }
+    }
+  ]
+}
