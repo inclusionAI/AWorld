@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import os
 import sys
 from types import ModuleType
@@ -94,6 +95,7 @@ def test_serve_gateway_enables_console_logging_before_loading_agents(
 
     async def fake_load_all_agents(*, remote_backends, local_dirs, agent_files):
         observed["disable_console_env"] = os.environ.get("AWORLD_DISABLE_CONSOLE_LOG", "")
+        observed["quiet_boot_env"] = os.environ.get("AWORLD_GATEWAY_QUIET_BOOT", "")
         raise RuntimeError("stop after env check")
 
     fake_main.load_all_agents = fake_load_all_agents  # type: ignore[attr-defined]
@@ -112,6 +114,47 @@ def test_serve_gateway_enables_console_logging_before_loading_agents(
         )
 
     assert observed["disable_console_env"] == "false"
+    assert observed["quiet_boot_env"] == "true"
+
+
+def test_boot_logging_downgrades_verbose_info_to_debug_in_quiet_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boot_logging = importlib.import_module("aworld_cli.core.boot_logging")
+    calls: list[tuple[str, str]] = []
+
+    class FakeLogger:
+        def info(self, message: str) -> None:
+            calls.append(("info", message))
+
+        def debug(self, message: str) -> None:
+            calls.append(("debug", message))
+
+    monkeypatch.setenv("AWORLD_GATEWAY_QUIET_BOOT", "true")
+
+    boot_logging.log_verbose_boot(FakeLogger(), "loading module", level="info")
+
+    assert calls == [("debug", "loading module")]
+
+
+def test_boot_logging_downgrades_verbose_warning_to_debug_in_quiet_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    boot_logging = importlib.import_module("aworld_cli.core.boot_logging")
+    calls: list[tuple[str, str]] = []
+
+    class FakeLogger:
+        def warning(self, message: str) -> None:
+            calls.append(("warning", message))
+
+        def debug(self, message: str) -> None:
+            calls.append(("debug", message))
+
+    monkeypatch.setenv("AWORLD_GATEWAY_QUIET_BOOT", "true")
+
+    boot_logging.log_verbose_boot(FakeLogger(), "duplicate agent", level="warning")
+
+    assert calls == [("debug", "duplicate agent")]
 
 
 def test_build_artifact_service_defaults_public_base_url_from_host_ip(
