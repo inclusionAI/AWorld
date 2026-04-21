@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 from inspect import isawaitable
 import json
@@ -10,7 +11,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 import httpx
@@ -36,6 +37,7 @@ OAPI_API = "https://oapi.dingtalk.com"
 MEDIA_MAX_BYTES = 20 * 1024 * 1024
 AI_CARD_REQUEST_RETRIES = 2
 AI_CARD_RETRY_DELAY_SECONDS = 0.3
+AI_CARD_STREAM_UPDATE_INTERVAL_SECONDS = 0.3
 CALLBACK_DEDUPE_WINDOW_SECONDS = 15.0
 MARKDOWN_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[([^\]]+)\]\(([^)]+)\)")
@@ -186,10 +188,16 @@ class DingTalkConnector:
             f"text={self._truncate_log_text(user_text, limit=300)}"
         )
 
+        enriched_text = self._append_user_context_to_text(message.text, data)
+        user_input = await self._build_llm_user_input(
+            ExtractedMessage(text=enriched_text, attachments=message.attachments),
+            self._attachment_session_key(data, sender_id),
+        )
+
         await self._run_message_round(
             session_webhook=session_webhook,
             session_id=session_id,
-            text=message.text,
+            text=user_input,
             data=data,
         )
 
@@ -221,7 +229,7 @@ class DingTalkConnector:
         *,
         session_webhook: str,
         session_id: str,
-        text: str,
+        text: str | list[dict[str, Any]],
         data: dict,
     ) -> None:
         active_card = (
@@ -231,17 +239,22 @@ class DingTalkConnector:
         )
         streamed_parts: list[str] = []
         observed_cron_job_ids: set[str] = set()
+        last_card_push_at = -AI_CARD_STREAM_UPDATE_INTERVAL_SECONDS
 
         async def on_text_chunk(chunk: str) -> None:
+            nonlocal last_card_push_at
             if not chunk:
                 return
             streamed_parts.append(chunk)
             if active_card is not None:
-                await self._stream_ai_card(
-                    active_card,
-                    "".join(streamed_parts),
-                    finished=False,
-                )
+                now = self._now_for_ai_card_stream()
+                if now - last_card_push_at >= AI_CARD_STREAM_UPDATE_INTERVAL_SECONDS:
+                    if await self._stream_ai_card(
+                        active_card,
+                        "".join(streamed_parts),
+                        finished=False,
+                    ):
+                        last_card_push_at = now
 
         async def on_output(output) -> None:
             summary = self._summarize_runtime_output_for_log(output)
@@ -301,6 +314,10 @@ class DingTalkConnector:
         if agent_id:
             return agent_id
         raise ValueError("No agent id configured for DingTalk channel.")
+
+    @staticmethod
+    def _now_for_ai_card_stream() -> float:
+        return time.monotonic()
 
     def _binding_store_path(self) -> Path:
         workspace_dir = str(self._config.workspace_dir or "").strip()
@@ -612,6 +629,206 @@ class DingTalkConnector:
         if text:
             return ExtractedMessage(text=text, attachments=[])
         return ExtractedMessage(text=f"[{msg_type}消息]", attachments=[])
+
+    async def _build_llm_user_input(
+        self,
+        message: ExtractedMessage,
+        session_key: str,
+    ) -> str | list[dict[str, Any]]:
+        text = message.text.strip()
+        if not message.attachments:
+            return text
+
+        local_paths: list[str] = []
+        for attachment in message.attachments:
+            local_path = await self._download_attachment(attachment, session_key)
+            if local_path:
+                local_paths.append(local_path)
+
+        if not local_paths:
+            return text
+
+        multimodal_parts: list[dict[str, Any]] = []
+        fallback_paths: list[str] = []
+        for path in local_paths:
+            multimodal_part = await self._build_multimodal_part(path)
+            if multimodal_part is None:
+                fallback_paths.append(path)
+                continue
+            multimodal_parts.append(multimodal_part)
+
+        attachment_prompt = self._build_attachment_prompt(fallback_paths)
+        text_payload = self._merge_text_with_attachment_prompt(text, attachment_prompt)
+        if not multimodal_parts:
+            return text_payload
+
+        parts: list[dict[str, Any]] = []
+        if text_payload:
+            parts.append({"type": "text", "text": text_payload})
+        parts.extend(multimodal_parts)
+        return parts
+
+    @staticmethod
+    def _build_attachment_prompt(paths: list[str]) -> str:
+        if not paths:
+            return ""
+        lines = ["附件列表:", *[f"  - {path}" for path in paths]]
+        return "\n".join(lines)
+
+    @staticmethod
+    def _merge_text_with_attachment_prompt(text: str, attachment_prompt: str) -> str:
+        if text and attachment_prompt:
+            return f"{text}\n\n{attachment_prompt}"
+        return text or attachment_prompt
+
+    @staticmethod
+    def _append_user_context_to_text(text: str, data: dict[str, Any]) -> str:
+        user_id = str(data.get("senderId") or data.get("senderStaffId") or "").strip()
+        user_name = str(data.get("senderNick") or "").strip()
+        conversation_id = str(data.get("conversationId") or "").strip()
+        robot_code = str(data.get("robotCode") or "").strip()
+        context = f"""\
+会话附加信息:
+ - userId: {user_id or 'unknown'}
+ - userName: {user_name or 'unknown'}
+ - conversationId: {conversation_id or 'unknown'}
+ - robotCode: {robot_code or 'unknown'}
+"""
+        return f"{text}\n{context}"
+
+    async def _build_multimodal_part(self, local_path: str) -> dict[str, Any] | None:
+        mime_type, _ = mimetypes.guess_type(local_path)
+        if not mime_type or not mime_type.startswith("image/"):
+            return None
+        image_data = await self._build_image_data(local_path, mime_type)
+        if not image_data:
+            return None
+        return {"type": "image_url", "image_url": {"url": image_data}}
+
+    @staticmethod
+    async def _build_image_data(local_path: str, mime_type: str) -> str | None:
+        try:
+            image_bytes = await asyncio.to_thread(Path(local_path).read_bytes)
+        except Exception:
+            return None
+        if not image_bytes:
+            return None
+        encoded = base64.b64encode(image_bytes).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
+
+    async def _download_attachment(
+        self,
+        attachment: IncomingAttachment,
+        session_key: str,
+    ) -> str | None:
+        download_url = await self._get_attachment_download_url(attachment.download_code)
+        if not download_url:
+            return None
+
+        target_dir = self._attachment_root_dir() / session_key
+        await asyncio.to_thread(target_dir.mkdir, parents=True, exist_ok=True)
+
+        try:
+            response = await self._http.get(download_url)
+            response.raise_for_status()
+            target_path = self._build_attachment_target_path(
+                target_dir=target_dir,
+                original_name=attachment.file_name,
+                download_url=download_url,
+                content_type=response.headers.get("content-type", ""),
+            )
+            await asyncio.to_thread(target_path.write_bytes, response.content)
+            return str(target_path.resolve())
+        except Exception:
+            return None
+
+    async def _get_attachment_download_url(self, download_code: str) -> str | None:
+        token = await self._get_access_token()
+        headers = {
+            "x-acs-dingtalk-access-token": token,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "downloadCode": download_code,
+            "robotCode": self._required_env(self._config.client_id_env),
+        }
+        try:
+            response = await self._http.post(
+                f"{DINGTALK_API}/v1.0/robot/messageFiles/download",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            download_url = str(response.json().get("downloadUrl") or "").strip()
+            return download_url or None
+        except Exception:
+            return None
+
+    def _attachment_root_dir(self) -> Path:
+        workspace_dir = str(self._config.workspace_dir or "").strip()
+        if workspace_dir:
+            return Path(workspace_dir).expanduser().resolve() / "dingtalk"
+        return Path(".aworld/gateway/dingding/attachments").resolve()
+
+    @staticmethod
+    def _sanitize_filename(file_name: str) -> str:
+        name = os.path.basename(file_name or "").strip() or "attachment"
+        safe = "".join(
+            ch if (ch.isalnum() or ch in {"-", "_", "."}) else "_" for ch in name
+        )
+        return safe or "attachment"
+
+    @staticmethod
+    def _attachment_session_key(data: dict[str, Any], sender_id: str) -> str:
+        conversation_id = str(data.get("conversationId") or "").strip()
+        raw = conversation_id or sender_id or "unknown"
+        safe = "".join(ch if (ch.isalnum() or ch in {"-", "_"}) else "_" for ch in raw)
+        return safe or "unknown"
+
+    def _build_attachment_target_path(
+        self,
+        target_dir: Path,
+        original_name: str,
+        download_url: str,
+        content_type: str,
+    ) -> Path:
+        safe_original_name = self._sanitize_filename(original_name).strip()
+        if original_name.strip():
+            candidate_name = safe_original_name
+        else:
+            from_url_name = self._extract_filename_from_url(download_url)
+            if from_url_name:
+                candidate_name = from_url_name
+            else:
+                ext = self._guess_extension(content_type)
+                candidate_name = f"attachment_{int(time.time() * 1000)}_{uuid4().hex[:8]}{ext}"
+        return self._dedupe_path(target_dir, candidate_name)
+
+    def _extract_filename_from_url(self, download_url: str) -> str:
+        path = unquote(urlparse(download_url).path or "")
+        file_name = os.path.basename(path).strip()
+        if not file_name:
+            return ""
+        return self._sanitize_filename(file_name)
+
+    @staticmethod
+    def _guess_extension(content_type: str) -> str:
+        mime_type = (content_type or "").split(";", 1)[0].strip().lower()
+        if not mime_type:
+            return ".bin"
+        ext = mimetypes.guess_extension(mime_type) or ""
+        return ext if ext.startswith(".") and len(ext) > 1 else ".bin"
+
+    @staticmethod
+    def _dedupe_path(target_dir: Path, file_name: str) -> Path:
+        base_name = Path(file_name).stem
+        suffix = Path(file_name).suffix
+        candidate = target_dir / file_name
+        index = 1
+        while candidate.exists():
+            candidate = target_dir / f"{base_name}_{index}{suffix}"
+            index += 1
+        return candidate
 
     @staticmethod
     def _required_env(name: str | None) -> str:
