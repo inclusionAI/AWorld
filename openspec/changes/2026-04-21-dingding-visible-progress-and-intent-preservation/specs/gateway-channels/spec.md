@@ -25,14 +25,14 @@ The gateway SHALL avoid silent user experience regressions when DingTalk AI Card
 - **AND** the gateway still sends the final text reply when downstream execution finishes
 - **AND** cron job binding and notification fanout continue to use raw runtime outputs unchanged
 
-#### Scenario: AI Card cannot be created for a short fast DingTalk request
-- **WHEN** the DingTalk channel cannot create or deliver an AI Card for a short request without strong complexity signals
-- **AND** downstream execution finishes within the fallback acknowledgement delay window
+#### Scenario: AI Card cannot be created for a trivial short DingTalk request
+- **WHEN** the DingTalk channel cannot create or deliver an AI Card for a short conversational request without strong complexity signals or clear task intent
 - **THEN** the gateway sends only the final text reply
-- **AND** the user does not receive an extra immediate “processing” acknowledgement
+- **AND** the user does not receive an extra fallback “processing” acknowledgement even if downstream execution is slightly slow
 
-#### Scenario: AI Card cannot be created for a short slow DingTalk request
-- **WHEN** the DingTalk channel cannot create or deliver an AI Card for a short request without strong complexity signals
+#### Scenario: AI Card cannot be created for a non-trivial slow DingTalk request
+- **WHEN** the DingTalk channel cannot create or deliver an AI Card for a request without strong complexity signals
+- **AND** the request still carries visible task intent such as asking for investigation, explanation, troubleshooting, or content generation
 - **AND** downstream execution exceeds the fallback acknowledgement delay window
 - **THEN** the gateway sends a delayed lightweight visible acknowledgement while execution continues
 - **AND** the gateway still sends the final text reply when downstream execution finishes

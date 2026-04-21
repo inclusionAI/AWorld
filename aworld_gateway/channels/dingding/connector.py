@@ -43,6 +43,7 @@ AI_CARD_STREAM_UPDATE_INTERVAL_SECONDS = 0.3
 PROCESSING_ACK_DELAY_SECONDS = 0.8
 CALLBACK_DEDUPE_WINDOW_SECONDS = 15.0
 PROCESSING_ACK_TEXT = "已收到，正在处理。我会尽量保留你消息里的文件、时间范围和输出格式要求。"
+TRIVIAL_SHORT_REQUEST_MAX_CHARS = 12
 COMPLEX_REQUEST_KEYWORDS = (
     "分析",
     "收集",
@@ -58,6 +59,21 @@ COMPLEX_REQUEST_KEYWORDS = (
     "提醒",
     "定时",
     "cron",
+)
+TASK_REQUEST_KEYWORDS = (
+    "帮",
+    "看",
+    "查",
+    "排查",
+    "解释",
+    "总结",
+    "写",
+    "改",
+    "修",
+    "处理",
+    "解决",
+    "翻译",
+    "报错",
 )
 EXECUTION_GUARDRAIL_TEXT = """\
 执行要求:
@@ -289,19 +305,23 @@ class DingTalkConnector:
             ack_sent = True
 
         delayed_ack_task: asyncio.Task[None] | None = None
-        if active_card is None and self._should_send_processing_ack(
-            request_text,
-            has_attachments=has_attachments,
-        ):
-            await self.send_text(session_webhook=session_webhook, text=PROCESSING_ACK_TEXT)
-            ack_sent = True
-        elif active_card is None:
-            delayed_ack_task = asyncio.create_task(
-                self._send_processing_ack_after_delay(
-                    session_webhook=session_webhook,
-                    on_sent=mark_ack_sent,
+        if active_card is None:
+            if self._should_send_processing_ack(
+                request_text,
+                has_attachments=has_attachments,
+            ):
+                await self.send_text(session_webhook=session_webhook, text=PROCESSING_ACK_TEXT)
+                ack_sent = True
+            elif self._should_delay_processing_ack(
+                request_text,
+                has_attachments=has_attachments,
+            ):
+                delayed_ack_task = asyncio.create_task(
+                    self._send_processing_ack_after_delay(
+                        session_webhook=session_webhook,
+                        on_sent=mark_ack_sent,
+                    )
                 )
-            )
         streamed_parts: list[str] = []
         observed_cron_job_ids: set[str] = set()
         last_card_push_at = -AI_CARD_STREAM_UPDATE_INTERVAL_SECONDS
@@ -823,6 +843,26 @@ class DingTalkConnector:
             return True
 
         return any(keyword in normalized for keyword in COMPLEX_REQUEST_KEYWORDS)
+
+    @classmethod
+    def _should_delay_processing_ack(
+        cls,
+        text: str,
+        *,
+        has_attachments: bool = False,
+    ) -> bool:
+        if has_attachments:
+            return False
+
+        normalized = str(text or "").strip().lower()
+        if not normalized:
+            return False
+        if cls._should_send_processing_ack(normalized, has_attachments=has_attachments):
+            return False
+        if len(normalized) > TRIVIAL_SHORT_REQUEST_MAX_CHARS:
+            return True
+
+        return any(keyword in normalized for keyword in TASK_REQUEST_KEYWORDS)
 
     async def _send_processing_ack_after_delay(
         self,
