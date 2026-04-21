@@ -87,11 +87,10 @@ class DingdingCronNotifier:
         if not session_webhook:
             return
 
+        user_visible = notification.get("user_visible") is not False
         text = self._format_notification_text(notification)
-        if not text:
-            return
-
-        await self._connector.send_text(session_webhook=session_webhook, text=text)
+        if user_visible and text:
+            await self._connector.send_text(session_webhook=session_webhook, text=text)
 
         if not notification.get("next_run_at"):
             self._binding_store.remove(job_id)

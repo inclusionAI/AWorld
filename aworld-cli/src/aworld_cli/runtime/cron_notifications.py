@@ -95,6 +95,10 @@ class CronNotificationCenter:
             This prevents unbounded growth during long-running sessions.
         """
         try:
+            if notification_data.get("user_visible") is False:
+                self._unread_count = self._queue.qsize()
+                return
+
             # Convert dict to CronNotification
             notification = CronNotification(
                 job_id=notification_data.get('job_id', ''),
