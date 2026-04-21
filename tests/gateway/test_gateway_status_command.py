@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
+from types import ModuleType
 from pathlib import Path
 
 import pytest
@@ -38,6 +40,78 @@ def test_gateway_channels_list_contains_placeholder_channels(
     assert rows["dingding"]["enabled"] is False
     assert rows["dingding"]["implemented"] is True
     assert rows["web"]["implemented"] is False
+
+
+def test_enable_aworld_console_logging_for_gateway_reconfigures_disabled_logger(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeLogger:
+        def __init__(
+            self,
+            *,
+            tag: str = "aworld",
+            name: str = "AWorld",
+            console_level: str = "INFO",
+            formatter=None,
+            disable_console: bool = True,
+            file_log_config=None,
+        ) -> None:
+            self.tag = tag
+            self.name = name
+            self.console_level = console_level
+            self.formater = formatter
+            self.file_log_config = file_log_config or {"rotation": "32 MB"}
+            self.disable_console = disable_console
+            self.calls = getattr(self, "calls", [])
+            self.calls.append(
+                {
+                    "tag": tag,
+                    "name": name,
+                    "console_level": console_level,
+                    "disable_console": disable_console,
+                }
+            )
+
+    import aworld.logs.util as log_util
+
+    fake_logger = FakeLogger(disable_console=True)
+    monkeypatch.setattr(log_util, "logger", fake_logger)
+    monkeypatch.setenv("AWORLD_DISABLE_CONSOLE_LOG", "true")
+
+    gateway_cli._enable_aworld_console_logging_for_gateway()
+
+    assert os.environ["AWORLD_DISABLE_CONSOLE_LOG"] == "false"
+    assert fake_logger.disable_console is False
+    assert fake_logger.calls[-1]["disable_console"] is False
+
+
+def test_serve_gateway_enables_console_logging_before_loading_agents(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    observed: dict[str, str] = {}
+    fake_main = ModuleType("aworld_cli.main")
+
+    async def fake_load_all_agents(*, remote_backends, local_dirs, agent_files):
+        observed["disable_console_env"] = os.environ.get("AWORLD_DISABLE_CONSOLE_LOG", "")
+        raise RuntimeError("stop after env check")
+
+    fake_main.load_all_agents = fake_load_all_agents  # type: ignore[attr-defined]
+
+    monkeypatch.setenv("AWORLD_DISABLE_CONSOLE_LOG", "true")
+    monkeypatch.setitem(sys.modules, "aworld_cli.main", fake_main)
+
+    with pytest.raises(RuntimeError, match="stop after env check"):
+        asyncio.run(
+            gateway_cli.serve_gateway(
+                base_dir=tmp_path,
+                remote_backends=[],
+                local_dirs=[],
+                agent_files=[],
+            )
+        )
+
+    assert observed["disable_console_env"] == "false"
 
 
 def test_serve_gateway_bootstraps_runtime_http_app_and_uvicorn(

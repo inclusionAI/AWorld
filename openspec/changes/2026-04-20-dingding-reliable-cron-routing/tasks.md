@@ -16,6 +16,7 @@
 - [x] 3.1 Filter DingTalk visible streaming down to assistant-facing text while preserving raw runtime observation callbacks for cron routing and logging.
 - [x] 3.2 Enrich DingTalk inbound text with sender/conversation context and transform downloadable attachments into multimodal bridge input.
 - [x] 3.3 Throttle intermediate AI Card streaming updates while preserving final response delivery semantics.
+- [x] 3.4 Publish assistant-produced local report paths as gateway artifact URLs, including inline-code references and staged workspace copies for out-of-root files.
 
 ## 4. Validation
 
@@ -25,3 +26,4 @@
 - [x] 4.4 Add coverage for scheduler bootstrap on DingTalk startup and duplicate suppression without provider ids.
 - [x] 4.5 Add coverage for DingTalk runtime logging in the gateway process.
 - [x] 4.6 Add coverage for assistant-only visible streaming, inbound attachment input assembly, and AI Card throttling.
+- [x] 4.7 Add coverage for local report path publication through gateway artifact URLs.
