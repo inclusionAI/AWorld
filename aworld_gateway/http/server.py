@@ -4,6 +4,7 @@ from collections.abc import Callable
 
 from fastapi import FastAPI
 
+from aworld_gateway import GATEWAY_DISPLAY_NAME
 from aworld_gateway.channels.telegram.webhook import register_telegram_webhook
 from aworld_gateway.http.artifact_router import register_artifact_routes
 from aworld_gateway.http.artifact_service import ArtifactService
@@ -16,7 +17,7 @@ def create_gateway_app(
     telegram_adapter: object | None = None,
     telegram_webhook_path: str = "/webhooks/telegram",
 ) -> FastAPI:
-    app = FastAPI(title="Aworld Gateway", version="0.1.0")
+    app = FastAPI(title=GATEWAY_DISPLAY_NAME, version="0.1.0")
 
     @app.get("/healthz")
     async def healthz() -> dict[str, object]:

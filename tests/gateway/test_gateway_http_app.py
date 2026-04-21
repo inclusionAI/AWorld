@@ -35,6 +35,8 @@ def test_gateway_http_app_exposes_channel_map_and_telegram_webhook() -> None:
         telegram_adapter=FakeAdapter(),
     )
 
+    assert app.title == "aworld-gateway"
+
     client = TestClient(app)
 
     assert client.get("/channels").json() == {

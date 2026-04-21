@@ -10,6 +10,7 @@ from typing import Sequence
 import uvicorn
 
 from aworld_cli.core.boot_logging import enable_quiet_gateway_boot
+from aworld_gateway import GATEWAY_DISPLAY_NAME
 from aworld_gateway.agent_resolver import AgentResolver
 from aworld_gateway.config import GatewayConfigLoader
 from aworld_gateway.config import GatewayConfig
@@ -46,7 +47,7 @@ GLOBAL_OPTIONS_WITH_VALUES = {
 
 def build_gateway_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Gateway management commands",
+        description=f"{GATEWAY_DISPLAY_NAME} management commands",
         prog="aworld-cli gateway",
     )
     subparsers = parser.add_subparsers(
