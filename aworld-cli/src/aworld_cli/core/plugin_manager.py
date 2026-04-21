@@ -963,11 +963,10 @@ class PluginManager:
 
     async def _load_skills(self, plugin_dirs: List[Path], console=None) -> Dict[str, int]:
         """
-        Load skills from all plugin directories.
+        Inspect skills from all plugin directories without registering them globally.
         
         Searches for skills in plugin_dir/skills directory for each plugin.
         Only directories containing SKILL.md file are considered as skills.
-        Skills are registered into the global skill registry.
         
         Args:
             plugin_dirs: List of plugin directory paths
@@ -976,9 +975,6 @@ class PluginManager:
         Returns:
             Dictionary mapping plugin names to number of skills loaded
         """
-        from ..core.skill_registry import get_skill_registry
-        
-        registry = get_skill_registry()
         loaded_skills: Dict[str, int] = {}
         
         discovered = discover_plugins(plugin_dirs)
@@ -1004,12 +1000,13 @@ class PluginManager:
                 
                 # Only register if there are valid skill directories (with SKILL.md)
                 if skill_count > 0:
-                    count = registry.register_source(str(skills_dir), source_name=str(skills_dir))
                     plugin_name = plugin.manifest.plugin_id
-                    loaded_skills[plugin_name] = count
+                    loaded_skills[plugin_name] = skill_count
                     
-                    if console and count > 0:
-                        console.print(f"[dim]📚 Loaded {count} skill(s) from plugin: {plugin_name}[/dim]")
+                    if console:
+                        console.print(
+                            f"[dim]📚 Discovered {skill_count} skill(s) from plugin: {plugin_name}[/dim]"
+                        )
                 else:
                     # No valid skill directories found (no SKILL.md files)
                     plugin_name = plugin.manifest.plugin_id

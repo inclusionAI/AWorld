@@ -92,20 +92,21 @@ class PluginLoader(AgentLoader):
     
     async def _load_skills(self) -> None:
         """
-        Load skills from plugin.
-        
-        Skills are loaded into the global skill registry.
+        Inspect plugin skills without mutating the global skill registry.
         """
         if not self.skills_dir.exists():
             return
         
         try:
-            from ..core.skill_registry import get_skill_registry
-            registry = get_skill_registry()
-            # Register skills from this plugin
-            registry.register_source(str(self.skills_dir))
+            skill_count = sum(
+                1
+                for subdir in self.skills_dir.iterdir()
+                if subdir.is_dir() and (subdir / "SKILL.md").is_file()
+            )
             if self.console:
-                self.console.print(f"[dim]📚 Loaded skills from plugin: {self.plugin_id}[/dim]")
+                self.console.print(
+                    f"[dim]📚 Discovered {skill_count} skill(s) from plugin: {self.plugin_id}[/dim]"
+                )
         except Exception as e:
             if self.console:
                 self.console.print(f"[yellow]⚠️ Failed to load skills from {self.plugin_path}: {e}[/yellow]")

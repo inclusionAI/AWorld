@@ -188,6 +188,71 @@ def collect_plugin_and_user_skills(
     return all_skills
 
 
+def build_skill_resolver_inputs(
+    plugin_base_dir: Optional[Union[str, Path]] = None,
+    user_dir: Optional[Union[str, Path]] = None,
+    skill_names: Optional[Union[str, List[str], tuple[str, ...]]] = None,
+) -> Dict[str, List[str]]:
+    """
+    Build resolver hint payloads for task-time skill resolution.
+
+    This is the compatibility bridge for agent definitions that previously assembled
+    eager `skill_configs`. It intentionally carries only source hints and selection
+    patterns, leaving final skill materialization to SkillActivationResolver.
+    """
+
+    def _dedupe(values: List[str]) -> List[str]:
+        ordered: List[str] = []
+        seen: set[str] = set()
+        for value in values:
+            normalized = value.strip()
+            if not normalized or normalized in seen:
+                continue
+            ordered.append(normalized)
+            seen.add(normalized)
+        return ordered
+
+    plugin_roots: List[str] = []
+    compatibility_sources: List[str] = []
+    compatibility_skill_patterns: List[str] = []
+
+    if plugin_base_dir:
+        plugin_root = Path(plugin_base_dir).expanduser().resolve()
+        plugin_roots.append(str(plugin_root))
+
+    if user_dir:
+        for raw_source in str(user_dir).split(";"):
+            source = raw_source.strip()
+            if not source:
+                continue
+            if "github.com" in source or source.startswith("git@"):
+                compatibility_sources.append(source)
+                continue
+            compatibility_sources.append(
+                str(Path(os.path.expanduser(source)).resolve())
+            )
+
+    if skill_names:
+        if isinstance(skill_names, str):
+            compatibility_skill_patterns.extend(
+                part.strip()
+                for part in skill_names.split(";")
+                if part.strip()
+            )
+        else:
+            compatibility_skill_patterns.extend(
+                str(part).strip()
+                for part in skill_names
+                if str(part).strip()
+            )
+
+    return {
+        "plugin_roots": _dedupe(plugin_roots),
+        "compatibility_sources": _dedupe(compatibility_sources),
+        "compatibility_skill_patterns": _dedupe(compatibility_skill_patterns),
+    }
+
+
 def get_skill_registry(
     skills_dir: Optional[Path] = None,
     cache_dir: Optional[Path] = None,

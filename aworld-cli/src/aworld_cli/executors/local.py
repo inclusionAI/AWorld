@@ -28,6 +28,11 @@ from aworld.core.task import Task, TaskResponse
 from aworld.logs.util import logger
 from aworld.memory.main import _default_file_memory_store
 from aworld.runner import Runners
+from aworld_cli.core.plugin_manager import PluginManager
+from aworld_cli.core.skill_activation_resolver import (
+    SkillActivationResolver,
+    SkillResolverRequest,
+)
 from .base_executor import BaseAgentExecutor
 from .hooks import ExecutorHookPoint, ExecutorHook
 from .stats import StreamTokenStats, format_elapsed
@@ -397,12 +402,128 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
         return result
 
+    def _extract_requested_skill_names(self, task_input: TaskInput) -> tuple[str, ...]:
+        metadata = getattr(task_input, "metadata", None)
+        if not isinstance(metadata, dict):
+            return tuple()
+        requested = metadata.get("requested_skill_names")
+        if not isinstance(requested, list):
+            return tuple()
+        return tuple(str(item).strip() for item in requested if str(item).strip())
+
+    def _agent_name_for_resolution(self, agent: Any) -> str | None:
+        name_attr = getattr(agent, "name", None)
+        if callable(name_attr):
+            try:
+                resolved = name_attr()
+                return str(resolved) if resolved else None
+            except Exception:
+                return None
+        if isinstance(name_attr, str) and name_attr:
+            return name_attr
+        return None
+
+    def _skill_package_roots_for_agent(
+        self,
+        plugin_manager: PluginManager,
+        agent_name: str | None,
+    ) -> tuple[Path, ...]:
+        roots: list[Path] = []
+        normalized_agent = (agent_name or "").strip().lower()
+
+        for package in plugin_manager.list_skill_packages(include_disabled=False):
+            metadata = package.get("metadata", {})
+            scope = str(
+                metadata.get("scope")
+                if isinstance(metadata, dict) and metadata.get("scope") is not None
+                else package.get("activation_scope", "global")
+            )
+            if scope == "global":
+                pass
+            elif (
+                scope.startswith("agent:")
+                and normalized_agent
+                and scope.lower() == f"agent:{normalized_agent}"
+            ):
+                pass
+            else:
+                continue
+
+            plugin_path = Path(str(package["path"])).resolve()
+            if plugin_path.exists() and plugin_path.is_dir():
+                roots.append(plugin_path)
+
+        return tuple(roots)
+
+    def _iter_swarm_agents(self) -> list[Any]:
+        ordered_agents = getattr(self.swarm, "ordered_agents", None)
+        if isinstance(ordered_agents, list) and ordered_agents:
+            return list(ordered_agents)
+        if isinstance(ordered_agents, tuple) and ordered_agents:
+            return list(ordered_agents)
+        agents = getattr(self.swarm, "agents", None)
+        if isinstance(agents, dict) and agents:
+            return list(agents.values())
+        if isinstance(agents, (list, tuple)) and agents:
+            return list(agents)
+        communicate_agent = getattr(self.swarm, "communicate_agent", None)
+        if isinstance(communicate_agent, list):
+            return list(communicate_agent)
+        if communicate_agent is not None:
+            return [communicate_agent]
+        return []
+
+    def _resolve_swarm_skills(self, task_input: TaskInput) -> None:
+        resolver = SkillActivationResolver()
+        plugin_manager = PluginManager()
+        runtime_plugin_roots = tuple(
+            Path(item).resolve()
+            for item in plugin_manager.get_runtime_plugin_roots()
+        )
+        requested = self._extract_requested_skill_names(task_input)
+        task_text = str(getattr(task_input, "task_content", "") or "")
+
+        for agent in self._iter_swarm_agents():
+            agent_name = self._agent_name_for_resolution(agent)
+            resolver_inputs = {}
+            agent_conf = getattr(agent, "conf", None)
+            if agent_conf is not None and isinstance(getattr(agent_conf, "ext", None), dict):
+                resolver_inputs = dict(agent_conf.ext.get("skill_resolver_inputs", {}))
+
+            plugin_roots = tuple(
+                Path(item).resolve()
+                for item in resolver_inputs.get("plugin_roots", [])
+            )
+            skill_package_roots = self._skill_package_roots_for_agent(
+                plugin_manager,
+                agent_name,
+            )
+            request = SkillResolverRequest(
+                plugin_roots=runtime_plugin_roots + skill_package_roots + plugin_roots,
+                runtime_scope="session",
+                agent_name=agent_name,
+                task_text=task_text,
+                requested_skill_names=requested,
+                compatibility_sources=tuple(
+                    str(item)
+                    for item in resolver_inputs.get("compatibility_sources", [])
+                ),
+                compatibility_skill_patterns=tuple(
+                    str(item)
+                    for item in resolver_inputs.get("compatibility_skill_patterns", [])
+                ),
+            )
+            result = resolver.resolve(request)
+            if agent_conf is not None:
+                agent_conf.skill_configs = result.skill_configs
+
     async def _build_task(
         self, 
         task_content: str, 
         session_id: str = None, 
         task_id: str = None,
-        image_urls: Optional[List[str]] = None
+        image_urls: Optional[List[str]] = None,
+        requested_skill_names: Optional[List[str]] = None,
     ) -> Task:
         """
         Build task from task content.
@@ -450,7 +571,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
             session_id=session_id,
             task_id=task_id,
             task_content=task_content,
-            origin_user_input=original_task_content
+            origin_user_input=original_task_content,
+            metadata={
+                "requested_skill_names": list(requested_skill_names or []),
+            },
         )
 
         # 🔥 Hook: PRE_BUILD_CONTEXT
@@ -473,7 +597,10 @@ class LocalAgentExecutor(BaseAgentExecutor):
         
         # 3. Build workspace
         workspace = await self._create_workspace(session_id)
-        
+
+        # Resolve runtime-visible skills immediately before context initialization.
+        self._resolve_swarm_skills(task_input)
+
         # 4. Build context
         async def build_context(_task_input: TaskInput, _swarm: Swarm, _workspace) -> ApplicationContext:
             """Build application context from task input and swarm."""
@@ -565,7 +692,11 @@ class LocalAgentExecutor(BaseAgentExecutor):
 
         return task
 
-    async def chat(self, message: Union[str, tuple[str, List[str]]]) -> str:
+    async def chat(
+        self,
+        message: Union[str, tuple[str, List[str]]],
+        requested_skill_names: Optional[List[str]] = None,
+    ) -> str:
             """
             Execute chat with local agent using Task/Runners pattern.
             
@@ -597,7 +728,12 @@ class LocalAgentExecutor(BaseAgentExecutor):
             # 3. Build task (will use current session_id)
             # Update session last used time
             self._update_session_last_used(self.session_id)
-            task = await self._build_task(task_content, session_id=self.session_id, image_urls=image_urls)
+            task = await self._build_task(
+                task_content,
+                session_id=self.session_id,
+                image_urls=image_urls,
+                requested_skill_names=requested_skill_names,
+            )
             self._publish_hud_task_started(task)
             await self._run_plugin_task_hook(
                 "task_started",
