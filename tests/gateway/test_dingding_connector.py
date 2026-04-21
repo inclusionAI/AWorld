@@ -441,7 +441,7 @@ def test_connector_does_not_send_processing_ack_for_fast_short_request() -> None
     assert sent == ["echo:你是谁"]
 
 
-def test_connector_sends_delayed_processing_ack_for_slow_short_request() -> None:
+def test_connector_does_not_send_processing_ack_for_slow_trivial_short_request() -> None:
     class _SlowBridge(_FakeBridge):
         async def run(
             self,
@@ -486,7 +486,55 @@ def test_connector_sends_delayed_processing_ack_for_slow_short_request() -> None
         )
     )
 
-    assert sent == [PROCESSING_ACK_TEXT, "echo:你是谁"]
+    assert sent == ["echo:你是谁"]
+
+
+def test_connector_sends_delayed_processing_ack_for_slow_non_trivial_request() -> None:
+    class _SlowBridge(_FakeBridge):
+        async def run(
+            self,
+            *,
+            agent_id: str,
+            session_id: str,
+            text,
+            on_text_chunk=None,
+            on_output=None,
+        ) -> DingdingBridgeResult:
+            self.calls.append(
+                {
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "text": text,
+                }
+            )
+            await asyncio.sleep(0.01)
+            return DingdingBridgeResult(text="echo:帮我看下这个报错怎么处理")
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=_SlowBridge(),
+        stream_module=object(),
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    connector._processing_ack_delay_seconds = lambda: 0.0  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "帮我看下这个报错怎么处理"},
+            }
+        )
+    )
+
+    assert sent == [PROCESSING_ACK_TEXT, "echo:帮我看下这个报错怎么处理"]
 
 
 def test_connector_reports_error_when_no_agent_id_is_configured() -> None:
