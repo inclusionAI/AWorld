@@ -537,8 +537,6 @@ def _build_top_level_command_registry() -> TopLevelCommandRegistry:
             "interactive",
             "list",
             "serve",
-            "batch",
-            "batch-job",
             "gateway",
         }
     )
@@ -576,13 +574,60 @@ def _build_parser_command_choices() -> list[str]:
     return command_names
 
 
+_GLOBAL_OPTIONS_WITH_VALUES = {
+    "--task",
+    "--agent",
+    "--skill",
+    "--max-runs",
+    "--max-cost",
+    "--max-duration",
+    "--completion-signal",
+    "--completion-threshold",
+    "--session_id",
+    "--session-id",
+    "--env-file",
+    "--remote-backend",
+    "--agent-dir",
+    "--agent-file",
+    "--skill-path",
+    "--http-host",
+    "--http-port",
+    "--mcp-name",
+    "--mcp-transport",
+    "--mcp-host",
+    "--mcp-port",
+}
+
+
+def _find_top_level_command_index(argv: list[str], registry: TopLevelCommandRegistry) -> int | None:
+    index = 1 if argv else 0
+
+    while index < len(argv):
+        token = argv[index]
+        if token in _GLOBAL_OPTIONS_WITH_VALUES:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        if registry.canonical_name(token) is not None:
+            return index
+        return None
+
+    return None
+
+
 def _maybe_dispatch_top_level_command(argv: list[str]) -> bool:
-    if len(argv) < 2 or argv[1].startswith("-"):
+    if len(argv) < 2:
         return False
 
     registry = _build_top_level_command_registry()
-    canonical_name = registry.canonical_name(argv[1])
-    command = registry.get(argv[1])
+    command_index = _find_top_level_command_index(argv, registry)
+    if command_index is None:
+        return False
+
+    canonical_name = registry.canonical_name(argv[command_index])
+    command = registry.get(argv[command_index])
     if command is None:
         return False
 
@@ -591,7 +636,7 @@ def _maybe_dispatch_top_level_command(argv: list[str]) -> bool:
     for item in registry.list_commands():
         item.register_parser(subparsers)
 
-    parse_argv = list(argv[1:])
+    parse_argv = list(argv[command_index:])
     if canonical_name is not None:
         parse_argv[0] = canonical_name
 
@@ -811,18 +856,6 @@ def main():
             local_dirs=args.agent_dir,
             agent_files=args.agent_file
         ))
-        return
-
-    # Handle inner plugin commands (e.g. 'batch-job', 'batch')
-    from .plugins.batch import get_commands as get_batch_commands
-    batch_commands = get_batch_commands()
-    if args.command in batch_commands:
-        handler = batch_commands[args.command]
-        # remaining_argv already contains arguments that were not parsed by the main parser
-        exit_code = handler(remaining_argv)
-        # Ensure consistent process exit code behavior
-        if exit_code != 0:
-            sys.exit(exit_code)
         return
 
     # Handle direct run mode (参考 continuous-claude)

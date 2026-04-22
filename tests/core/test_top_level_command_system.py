@@ -207,3 +207,23 @@ def test_build_top_level_command_registry_omits_disabled_builtin_cli_plugin(
     registry = main_module._build_top_level_command_registry()
 
     assert registry.get("skill") is None
+
+
+def test_maybe_dispatch_top_level_command_accepts_command_after_global_options(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = tmp_path / ".aworld" / "plugins"
+    plugin_root = plugin_dir / "demo-plugin"
+    _write_cli_command_plugin(plugin_root)
+    monkeypatch.setattr("aworld_cli.core.plugin_manager.DEFAULT_PLUGIN_DIR", plugin_dir)
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        ["aworld-cli", "--env-file", ".env", "demo", "--value", "late-works"]
+    )
+
+    output = capsys.readouterr().out
+
+    assert handled is True
+    assert "PLUGIN:late-works:" in output
