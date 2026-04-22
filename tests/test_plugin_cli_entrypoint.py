@@ -12,6 +12,16 @@ def test_plugins_command_is_registered_via_plugin_registry():
     assert registry.get("plugin") is command
 
 
+def test_batch_command_is_registered_via_plugin_registry():
+    from aworld_cli import main as main_module
+
+    registry = main_module._build_top_level_command_registry()
+    command = registry.get("batch-job")
+
+    assert command is not None
+    assert registry.get("batch") is command
+
+
 def test_plugins_without_subcommand_defaults_to_list(monkeypatch, capsys):
     from aworld_cli.main import main
 
@@ -209,3 +219,31 @@ def test_plugins_validate_subcommand_accepts_explicit_path(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert "demo-plugin" in captured.out
     assert "valid" in captured.out.lower()
+
+
+def test_batch_alias_dispatches_via_top_level_plugin_command(
+    monkeypatch,
+    capsys,
+):
+    from aworld_cli import main as main_module
+
+    called = {}
+
+    async def fake_run_batch_job(config_path, remote_backend):
+        called["config_path"] = config_path
+        called["remote_backend"] = remote_backend
+
+    monkeypatch.setattr("aworld_cli.plugins.batch.cli.run_batch_job", fake_run_batch_job)
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        ["aworld-cli", "batch", "batch.yaml", "--remote-backend", "http://demo"]
+    )
+
+    captured = capsys.readouterr()
+
+    assert handled is True
+    assert captured.out == ""
+    assert called == {
+        "config_path": "batch.yaml",
+        "remote_backend": "http://demo",
+    }
