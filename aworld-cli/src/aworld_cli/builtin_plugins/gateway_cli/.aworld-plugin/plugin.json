@@ -1,0 +1,18 @@
+{
+  "id": "aworld-gateway-cli",
+  "name": "aworld-gateway-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "gateway",
+        "name": "gateway",
+        "target": "cli_commands/gateway.py",
+        "scope": "workspace",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}

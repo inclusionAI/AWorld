@@ -37,15 +37,27 @@ class PluginTopLevelCommandAdapter:
         return self._command.run(args, context)
 
 
-def sync_plugin_cli_commands(registry: TopLevelCommandRegistry, plugins) -> None:
+def sync_plugin_cli_commands(
+    registry: TopLevelCommandRegistry,
+    plugins,
+    *,
+    builtin_plugin_roots: tuple[Path, ...] = (),
+) -> None:
+    builtin_roots = {Path(root).resolve() for root in builtin_plugin_roots}
     for plugin in plugins:
+        registration_source = "plugin"
+        if Path(plugin.manifest.plugin_root).resolve() in builtin_roots:
+            registration_source = "builtin"
         for entrypoint in plugin.manifest.entrypoints.get("cli_commands", ()):
             if entrypoint.visibility == "hidden":
                 continue
             command_name = entrypoint.name or entrypoint.entrypoint_id
             if registry.get(command_name) is not None:
                 continue
-            registry.register(_load_plugin_cli_command(plugin, entrypoint), source="plugin")
+            registry.register(
+                _load_plugin_cli_command(plugin, entrypoint),
+                source=registration_source,
+            )
 
 
 def _load_plugin_cli_command(plugin, entrypoint):

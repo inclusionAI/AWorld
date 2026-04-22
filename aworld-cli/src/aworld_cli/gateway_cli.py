@@ -50,6 +50,11 @@ def build_gateway_parser() -> argparse.ArgumentParser:
         description=f"{GATEWAY_DISPLAY_NAME} management commands",
         prog="aworld-cli gateway",
     )
+    register_gateway_subcommands(parser)
+    return parser
+
+
+def register_gateway_subcommands(parser: argparse.ArgumentParser) -> None:
     subparsers = parser.add_subparsers(
         dest="gateway_action",
         help="Gateway action to perform",
@@ -65,7 +70,25 @@ def build_gateway_parser() -> argparse.ArgumentParser:
         required=True,
     )
     channel_subparsers.add_parser("list", help="List registered channels")
+
+
+def build_gateway_global_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--env-file", default=".env")
+    parser.add_argument("--remote-backend", action="append")
+    parser.add_argument("--agent-dir", action="append")
+    parser.add_argument("--agent-file", action="append")
+    parser.add_argument("--skill-path", action="append")
     return parser
+
+
+def parse_gateway_global_args(argv: Sequence[str]) -> argparse.Namespace:
+    gateway_index = find_gateway_command_index(argv)
+    if gateway_index is None:
+        return build_gateway_global_parser().parse_args([])
+
+    args, _ = build_gateway_global_parser().parse_known_args(argv[1:gateway_index])
+    return args
 
 
 def find_gateway_command_index(argv: Sequence[str]) -> int | None:
