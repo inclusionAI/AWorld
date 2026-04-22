@@ -824,10 +824,22 @@ mcp_config:
     
     def _load_skills_info(self, skills_path: Path) -> Dict[str, Any]:
         """Load skills information from directory."""
-        from aworld.utils.skill_loader import collect_skill_docs
+        from aworld.skills.compat_provider import build_compat_provider
+        from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
         
         try:
-            skills_info = collect_skill_docs(skills_path)
+            provider = build_compat_provider(skills_path)
+            registry = FrameworkSkillRegistry([provider])
+            skills_info = {}
+            for descriptor in registry.list_descriptors():
+                skills_info[descriptor.skill_name] = {
+                    "name": descriptor.display_name or descriptor.skill_name,
+                    "description": descriptor.description,
+                    "type": str(descriptor.metadata.get("type", "")),
+                    "tool_list": dict(descriptor.metadata.get("tool_list", {}) or {}),
+                    "skill_path": descriptor.skill_file,
+                    "asset_root": descriptor.asset_root,
+                }
             logger.debug(f"Loaded {len(skills_info)} skills from {skills_path}")
             return skills_info
         except Exception as e:
