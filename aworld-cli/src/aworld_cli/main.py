@@ -2,6 +2,8 @@
 Command-line entry point for aworld-cli.
 Provides CLI interface without requiring aworldappinfra.
 """
+from __future__ import annotations
+
 import argparse
 import asyncio
 import logging
@@ -9,6 +11,30 @@ import os
 import sys
 from pathlib import Path
 from typing import Optional
+
+from .acp.cli import build_acp_parser, find_acp_command_index
+
+
+def _dispatch_acp_early_if_needed() -> None:
+    acp_index = find_acp_command_index(sys.argv)
+    if acp_index is None:
+        return
+
+    acp_parser = build_acp_parser()
+    acp_args = acp_parser.parse_args(sys.argv[acp_index + 1 :])
+
+    if acp_args.acp_action == "self-test":
+        from .acp.self_test import run_self_test
+
+        raise SystemExit(asyncio.run(run_self_test()))
+
+    from .acp.server import run_stdio_server
+
+    raise SystemExit(asyncio.run(run_stdio_server()))
+
+
+if __name__ == "__main__":
+    _dispatch_acp_early_if_needed()
 
 from aworld.memory.main import _default_file_memory_store
 
@@ -142,7 +168,6 @@ os.environ.setdefault('AWORLD_DISABLE_CONSOLE_LOG', 'true')
 
 # Import aworld modules (they will respect the environment variable)
 from aworld.logs.util import logger
-from .acp.cli import build_acp_parser, find_acp_command_index
 from .runtime.cli import CliRuntime
 from .console import AWorldCLI
 from .models import AgentInfo
