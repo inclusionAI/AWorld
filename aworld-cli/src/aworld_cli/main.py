@@ -573,6 +573,7 @@ def _maybe_dispatch_top_level_command(argv: list[str]) -> bool:
         return False
 
     registry = _build_top_level_command_registry()
+    canonical_name = registry.canonical_name(argv[1])
     command = registry.get(argv[1])
     if command is None:
         return False
@@ -582,8 +583,12 @@ def _maybe_dispatch_top_level_command(argv: list[str]) -> bool:
     for item in registry.list_commands():
         item.register_parser(subparsers)
 
+    parse_argv = list(argv[1:])
+    if canonical_name is not None:
+        parse_argv[0] = canonical_name
+
     try:
-        args = parser.parse_args(argv[1:])
+        args = parser.parse_args(parse_argv)
     except SystemExit:
         return True
 
