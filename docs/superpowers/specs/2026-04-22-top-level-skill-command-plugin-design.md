@@ -2,7 +2,7 @@
 
 ## Goal
 
-Remove the hardcoded `skill` top-level CLI branch from `aworld-cli/src/aworld_cli/main.py` and replace it with a plugin-style top-level command architecture, while preserving the user-facing `aworld-cli skill ...` workflow and extending `/skills` to surface slash commands contributed by the same skill-capable provider.
+Remove the hardcoded `skill` top-level CLI branch from `aworld-cli/src/aworld_cli/main.py` and replace it with a plugin-style top-level command architecture, while preserving the user-facing `aworld-cli skill ...` workflow and extending interactive skill discovery so installed skills can be manually invoked by skill-name slash aliases such as `/brainstorming`.
 
 ## Scope
 
@@ -12,6 +12,7 @@ This design covers:
 - migrating `skill` to a builtin top-level command provider
 - keeping existing `aworld-cli skill install/list/enable/disable/remove/update/import` behavior stable
 - extending `/skills` to show slash commands contributed by the same provider as visible skills
+- generating standalone manual slash aliases from visible skill names
 - establishing provider capability rules so future command additions do not require new `main.py` dispatch branches
 
 This design does not cover:
@@ -43,7 +44,7 @@ The target architecture should make these statements true:
 - `skill` remains a stable user-facing product command
 - `main.py` becomes bootstrap and dispatch infrastructure, not a growing list of feature branches
 - future top-level commands can be added through a command SPI instead of one-off parser branches
-- `/skills` remains the discovery and explicit-selection surface for skills, while also exposing related plugin commands without taking over their execution path
+- `/skills` remains the discovery and explicit-selection surface for skills, while also exposing related plugin commands and generated skill-name aliases without taking over their execution path
 
 ## Design Principles
 
@@ -79,11 +80,13 @@ The architecture has three layers:
    - A provider may contribute `skills`, `slash_commands`, and `cli_commands`
    - The same provider may expose one, two, or all three capability types
    - `/skills` uses provider ownership to display related slash commands next to visible skills
+   - visible skill names also generate manual slash aliases for explicit invocation
 
 3. Execution surfaces
    - `aworld-cli <command>` uses the new top-level command SPI
    - `/command` continues to use the existing interactive `CommandRegistry`
    - `/skills` stays a discovery and explicit-selection UI, not a command router
+   - generated `/skill-name` aliases act as shortcuts for explicit skill selection
 
 ## Top-Level Command SPI
 
@@ -184,12 +187,13 @@ Provider ownership is the source of truth for relating capabilities.
 - a skill package with only `skills`
   - appears in `aworld-cli skill list`
   - appears in `/skills`
-  - contributes no slash commands
+  - contributes a generated manual slash alias for each visible skill name
 
 - a plugin with `skills` and `slash_commands`
   - appears in `aworld-cli skill list`
   - appears in `/skills`
   - exposes its slash commands globally through `CommandRegistry`
+  - also contributes generated manual slash aliases for each visible skill name
   - shows those commands as related commands in `/skills`
 
 - a plugin with only `slash_commands`
@@ -213,6 +217,7 @@ The supported interactive actions remain:
 - `/skills`
 - `/skills use <name>`
 - `/skills clear`
+- generated `/skill-name` aliases for visible skills
 
 ### Extended Listing Behavior
 
@@ -220,10 +225,11 @@ When rendering `/skills`, the CLI should:
 
 1. resolve the visible skills for the current runtime and agent
 2. identify the provider that owns each visible skill
-3. gather visible slash commands contributed by that same provider
-4. render skill rows plus related slash command metadata
+3. derive the generated manual slash alias for each visible skill name
+4. gather visible slash commands contributed by that same provider
+5. render skill rows plus related slash command metadata
 
-The command association should be additive discovery metadata. It must not change how those slash commands are executed.
+The command association should be additive discovery metadata. It must not change how provider-contributed slash commands are executed.
 
 ### Execution Rules
 
@@ -235,7 +241,14 @@ They must continue to:
 - appear in prompt completions as standalone slash commands
 - execute directly from their existing entrypoint
 
-`/skills` only helps users discover that those commands exist and which skill-capable provider they came from.
+Generated skill-name aliases such as `/brainstorming` are different:
+
+- they are derived from visible skill names, not from plugin `commands` entrypoints
+- they remain standalone slash commands in completion
+- they act as manual explicit-selection shortcuts, equivalent to `/skills use <skill-name>`
+- they do not require the provider to declare a separate command entrypoint for that skill
+
+`/skills` helps users discover both provider-contributed commands and generated skill-name aliases.
 
 ## Association Rules Between Skills And Slash Commands
 
@@ -243,11 +256,12 @@ Association must be explicit and provider-based.
 
 The recommended rules are:
 
-1. If a provider contributes visible skills and visible slash commands, `/skills` may display those commands alongside those skills.
-2. The association is by shared provider identity, not by matching names, descriptions, or folders.
-3. Hidden slash commands remain hidden in `/skills`.
-4. Providers that contribute slash commands but no skills do not appear in `/skills` just because they have commands.
-5. A visible skill with no associated visible slash commands is rendered normally with no extra command badges or list.
+1. Every visible skill gets one generated alias in the form `/<skill-name>`.
+2. If a provider contributes visible skills and visible slash commands, `/skills` may display those commands alongside those skills.
+3. Provider-contributed command association is by shared provider identity, not by matching names, descriptions, or folders.
+4. Hidden slash commands remain hidden in `/skills`.
+5. Providers that contribute slash commands but no skills do not appear in `/skills` just because they have commands.
+6. A visible skill with no provider-contributed slash commands still renders with its generated `/<skill-name>` alias.
 
 This keeps `/skills` stable and avoids confusing cross-provider command attribution.
 
@@ -263,6 +277,7 @@ Interactive completion continues to enumerate:
 
 - builtin interactive commands such as `/skills`
 - registered slash commands from `CommandRegistry`
+- generated `/<skill-name>` aliases for visible skills
 
 No new `/skills <command>` completion namespace is added in this phase.
 
@@ -289,8 +304,8 @@ Rules:
 
 ### Phase 2: Interactive Discovery Enhancement
 
-- extend `/skills` rendering to include provider-related slash commands
-- ensure interactive completion still comes from standalone slash command registration
+- extend `/skills` rendering to include generated `/<skill-name>` aliases and provider-related slash commands
+- ensure interactive completion still comes from standalone slash command registration plus generated skill aliases
 - add tests for visibility and association behavior
 
 ### Phase 3: Optional Follow-On Migrations
@@ -317,16 +332,19 @@ Automated coverage should include:
 
 4. `/skills` rendering
    - shows visible skills
+   - shows generated `/<skill-name>` aliases
    - includes related visible slash commands from the same provider
    - excludes commands from providers with no visible skills
 
 5. interactive completion
    - related slash commands remain independently completable
+   - generated `/<skill-name>` aliases are completable
    - `/skills` completions remain limited to discovery and selection actions
 
 6. regression coverage
    - existing skill install/list/enable/disable tests remain green
    - existing plugin command registration tests remain green
+   - installing `https://github.com/obra/superpowers` yields visible skills and generated aliases such as `/brainstorming`
 
 ## Risks And Mitigations
 
@@ -341,12 +359,12 @@ Mitigation:
 
 ### Risk: Confusing The User With Two Command Systems
 
-Users may misread `/skills` related commands as commands that must be invoked through `/skills`.
+Users may misread provider-contributed commands and generated skill aliases as the same kind of command.
 
 Mitigation:
 
-- render related commands clearly as standalone slash commands
-- keep help text explicit that they are directly executable
+- render provider-contributed commands separately from generated `/<skill-name>` aliases
+- keep help text explicit that generated aliases are manual skill-selection shortcuts
 
 ### Risk: Provider Attribution Is Incomplete For Legacy Skill Sources
 
@@ -374,7 +392,10 @@ The design is considered implemented when all of the following are true:
 2. `aworld-cli skill ...` is dispatched through a builtin top-level command provider.
 3. Existing `skill` lifecycle subcommands remain behaviorally compatible.
 4. `aworld-cli --help` shows `skill` via the new top-level command registry.
-5. `/skills` lists visible skills and shows related visible slash commands from the same provider when available.
-6. Those related slash commands remain executable as standalone global slash commands.
-7. Plugins that contribute commands but no skills do not appear in `/skills` solely because they expose commands.
-8. Reserved-name conflict rules prevent external providers from overriding builtin `skill`.
+5. `aworld-cli skill install https://github.com/obra/superpowers` installs the repository as a usable skill package when the source shape is otherwise valid.
+6. A subsequent interactive session discovers the installed visible skills automatically and shows them in `/skills`.
+7. Each visible skill gets a generated standalone slash alias such as `/brainstorming`.
+8. Generated skill aliases remain executable as manual selection shortcuts without requiring a plugin-declared command entrypoint.
+9. Provider-contributed slash commands remain executable as standalone global slash commands.
+10. Plugins that contribute commands but no skills do not appear in `/skills` solely because they expose commands.
+11. Reserved-name conflict rules prevent external providers from overriding builtin `skill`.
