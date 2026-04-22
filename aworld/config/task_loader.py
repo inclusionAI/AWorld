@@ -271,7 +271,8 @@ async def _load_skill_agent(
     Raises:
         ValueError: If skill not found, not Agentic Skill, or skills_path missing
     """
-    from aworld.utils.skill_loader import collect_skill_docs
+    from aworld.skills.compat_provider import build_compat_provider
+    from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
     
     skill_name = agent_def.get("skill_name")
     if not skill_name:
@@ -284,26 +285,41 @@ async def _load_skill_agent(
     if not skills_path.exists():
         raise ValueError(f"missing agent {agent_id}: skills_path does not exist: {skills_path}")
     
-    # Load skills
+    # Discover descriptors first, then lazily load content for the selected skill only.
     try:
-        skills_info = collect_skill_docs(skills_path)
+        provider = build_compat_provider(skills_path)
+        registry = FrameworkSkillRegistry([provider])
     except Exception as e:
         raise ValueError(f"missing agent {agent_id}: failed to load skills from {skills_path}: {e}")
-    
-    if skill_name not in skills_info:
-        available_skills = ', '.join(skills_info.keys()) if skills_info else 'none'
+
+    descriptors = {
+        descriptor.skill_name: descriptor
+        for descriptor in registry.list_descriptors()
+    }
+
+    if skill_name not in descriptors:
+        available_skills = ', '.join(descriptors.keys()) if descriptors else 'none'
         raise ValueError(
             f"missing agent {agent_id}: Skill '{skill_name}' not found in {skills_path}. "
             f"Available skills: {available_skills}"
         )
-    
-    skill = skills_info[skill_name]
-    
+
+    descriptor = descriptors[skill_name]
+
     # Verify it's an Agentic Skill
-    if skill.get("type") != "agent":
+    skill_type = str(descriptor.metadata.get("type", ""))
+    if skill_type != "agent":
         raise ValueError(
             f"missing agent {agent_id}: Skill '{skill_name}' is not an Agentic Skill "
-            f"(type='{skill.get('type')}', expected type='agent')"
+            f"(type='{skill_type}', expected type='agent')"
+        )
+
+    try:
+        content = registry.load_content(descriptor.skill_id)
+    except Exception as e:
+        raise ValueError(
+            f"missing agent {agent_id}: failed to load skill content for '{skill_name}' "
+            f"from {skills_path}: {e}"
         )
     
     # Build Agent from skill (consistent with skill_service logic)
@@ -322,10 +338,10 @@ async def _load_skill_agent(
     
     agent = Agent(
         name=agent_id,
-        desc=skill.get("description", ""),
+        desc=descriptor.description,
         conf=agent_config,
-        system_prompt=skill.get("usage", ""),
-        mcp_servers=list(skill.get("tool_list", {}).keys()),
+        system_prompt=content.usage,
+        mcp_servers=list(dict(content.tool_list).keys()),
         mcp_config=_merge_mcp_configs(
             global_mcp_config, 
             agent_def.get("mcp_config")
