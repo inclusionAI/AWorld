@@ -233,12 +233,16 @@ def test_main_accepts_repeated_skill_flag() -> None:
     assert parsed.skill == ["browser-use", "code-review"]
 
 
-def test_skill_command_is_registered_as_builtin() -> None:
-    registry = TopLevelCommandRegistry(reserved_names={"skill"})
+def test_skill_command_is_registered_via_plugin_registry() -> None:
+    registry = TopLevelCommandRegistry()
 
     register_builtin_top_level_commands(registry)
 
-    command = registry.get("skill")
+    assert registry.get("skill") is None
+
+    plugin_registry = main_module._build_top_level_command_registry()
+
+    command = plugin_registry.get("skill")
     assert command is not None
     assert command.name == "skill"
 

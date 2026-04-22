@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 
 from aworld.memory.main import _default_file_memory_store
+from aworld.plugins.discovery import discover_plugins
 
 # Suppress DEBUG/INFO logs from third-party libraries (asyncio, mcp, etc.)
 # Only show WARNING and above for non-aworld modules
@@ -531,14 +532,27 @@ def build_parser(zh: bool = False) -> argparse.ArgumentParser:
 
 
 def _build_top_level_command_registry() -> TopLevelCommandRegistry:
-    registry = TopLevelCommandRegistry(reserved_names={"skill"})
+    registry = TopLevelCommandRegistry(
+        reserved_names={
+            "interactive",
+            "list",
+            "serve",
+            "batch",
+            "batch-job",
+            "plugins",
+            "gateway",
+        }
+    )
     register_builtin_top_level_commands(registry)
 
     try:
         from .core.plugin_manager import PluginManager
 
         plugin_manager = PluginManager()
-        sync_plugin_cli_commands(registry, plugin_manager.get_framework_registry().plugins())
+        sync_plugin_cli_commands(
+            registry,
+            discover_plugins(plugin_manager.get_runtime_plugin_roots()),
+        )
     except Exception:
         pass
 
