@@ -545,20 +545,30 @@ def _build_top_level_command_registry() -> TopLevelCommandRegistry:
     try:
         from .core.plugin_manager import PluginManager, get_builtin_plugin_roots
 
+        builtin_plugin_roots = tuple(
+            Path(root).resolve() for root in get_builtin_plugin_roots()
+        )
         plugin_manager = PluginManager()
         if hasattr(plugin_manager, "get_runtime_plugin_roots"):
             plugin_roots = [
                 Path(root).resolve() for root in plugin_manager.get_runtime_plugin_roots()
             ]
         else:
-            plugin_roots = [Path(root).resolve() for root in get_builtin_plugin_roots()]
+            plugin_roots = list(builtin_plugin_roots)
     except Exception:
         from .core.plugin_manager import get_builtin_plugin_roots
 
-        plugin_roots = [Path(root).resolve() for root in get_builtin_plugin_roots()]
+        builtin_plugin_roots = tuple(
+            Path(root).resolve() for root in get_builtin_plugin_roots()
+        )
+        plugin_roots = list(builtin_plugin_roots)
 
     try:
-        sync_plugin_cli_commands(registry, discover_plugins(plugin_roots))
+        sync_plugin_cli_commands(
+            registry,
+            discover_plugins(plugin_roots),
+            builtin_plugin_roots=builtin_plugin_roots,
+        )
     except Exception:
         pass
 
@@ -566,7 +576,7 @@ def _build_top_level_command_registry() -> TopLevelCommandRegistry:
 
 
 def _build_parser_command_choices() -> list[str]:
-    command_names = ["interactive", "list", "serve", "batch", "batch-job", "plugins", "gateway"]
+    command_names = ["interactive", "list", "serve", "batch", "batch-job", "plugins"]
     registry = _build_top_level_command_registry()
     for command in registry.list_commands():
         if command.name not in command_names:
@@ -667,90 +677,6 @@ def main():
     show_banner_flag = "--no-banner" not in sys.argv
     
     english_epilog, chinese_epilog, _, _ = _help_texts()
-
-    # Handle gateway command specially
-    from .gateway_cli import find_gateway_command_index
-
-    gateway_index = find_gateway_command_index(sys.argv)
-    if gateway_index is not None:
-        from .gateway_cli import (
-            build_gateway_parser,
-            extract_gateway_argv,
-            handle_gateway_channels_list,
-            handle_gateway_status,
-            serve_gateway,
-        )
-
-        gateway_global_parser = argparse.ArgumentParser(add_help=False)
-        gateway_global_parser.add_argument("--env-file", default=".env")
-        gateway_global_parser.add_argument("--remote-backend", action="append")
-        gateway_global_parser.add_argument("--agent-dir", action="append")
-        gateway_global_parser.add_argument("--agent-file", action="append")
-        gateway_global_parser.add_argument("--skill-path", action="append")
-        gateway_global_args, _ = gateway_global_parser.parse_known_args(
-            sys.argv[1:gateway_index]
-        )
-
-        gateway_parser = build_gateway_parser()
-        try:
-            gateway_args = gateway_parser.parse_args(extract_gateway_argv(sys.argv))
-        except SystemExit:
-            return
-
-        if gateway_args.gateway_action == "status":
-            print(handle_gateway_status())
-            return
-
-        if (
-            gateway_args.gateway_action == "channels"
-            and gateway_args.channels_action == "list"
-        ):
-            print(handle_gateway_channels_list())
-            return
-
-        if gateway_args.gateway_action == "server":
-            from .core.config import load_config_with_env, has_model_config
-
-            config_dict, source_type, source_path = load_config_with_env(
-                gateway_global_args.env_file
-            )
-            init_middlewares(
-                init_memory=True,
-                init_retriever=False,
-                custom_memory_store=_default_file_memory_store(),
-            )
-            if show_banner_flag:
-                _show_banner()
-
-            from ._globals import console
-
-            if not has_model_config(config_dict):
-                console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
-                console.print("[dim]Run: aworld-cli --config[/dim]")
-                console.print("[dim]Or create .env in the current directory. See: [link=https://github.com/inclusionAI/AWorld/blob/main/README.md]README[/link][/dim]")
-                sys.exit(1)
-
-            from .core.skill_registry import get_skill_registry
-
-            if gateway_global_args.skill_path:
-                registry = get_skill_registry(skill_paths=gateway_global_args.skill_path)
-            else:
-                registry = get_skill_registry()
-
-            all_skills = registry.get_all_skills()
-            if all_skills:
-                skill_names = list(all_skills.keys())
-                logger.info("Loaded %d global skill(s): %s", len(skill_names), ", ".join(skill_names))
-
-            asyncio.run(
-                serve_gateway(
-                    base_dir=Path.cwd(),
-                    remote_backends=gateway_global_args.remote_backend,
-                    local_dirs=_resolve_agent_dirs(gateway_global_args.agent_dir),
-                    agent_files=gateway_global_args.agent_file,
-                )
-            )
-            return
 
     if _maybe_dispatch_top_level_command(sys.argv):
         return

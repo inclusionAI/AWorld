@@ -22,6 +22,15 @@ def test_batch_command_is_registered_via_plugin_registry():
     assert registry.get("batch") is command
 
 
+def test_gateway_command_is_registered_via_plugin_registry():
+    from aworld_cli import main as main_module
+
+    registry = main_module._build_top_level_command_registry()
+    command = registry.get("gateway")
+
+    assert command is not None
+
+
 def test_plugins_without_subcommand_defaults_to_list(monkeypatch, capsys):
     from aworld_cli.main import main
 
