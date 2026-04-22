@@ -2,6 +2,16 @@ import sys
 from pathlib import Path
 
 
+def test_plugins_command_is_registered_via_plugin_registry():
+    from aworld_cli import main as main_module
+
+    registry = main_module._build_top_level_command_registry()
+    command = registry.get("plugins")
+
+    assert command is not None
+    assert registry.get("plugin") is command
+
+
 def test_plugins_without_subcommand_defaults_to_list(monkeypatch, capsys):
     from aworld_cli.main import main
 
