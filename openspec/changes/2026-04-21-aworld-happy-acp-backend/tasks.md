@@ -80,3 +80,14 @@
 - [ ] 5.7 Freeze the Layer-1 self-test pass/fail contract so automation can assert required-case outcomes without parsing free-form diagnostics.
 - [ ] 5.8 Freeze the Layer-2 turn-failure assertions so Happy-integrated validation distinguishes turn-level failure from backend-level host failure.
 - [ ] 5.9 Define startup validation for `initialize` / `newSession` timeout and retry safety so Happy host retry behavior is exercised before implementation is considered stable.
+
+## Phase-1 Validation Execution
+
+- [x] ACP slice regression executed on 2026-04-22
+  Command: `python -m pytest tests/acp -q`
+- [x] stdio stderr safety regression executed on 2026-04-22
+  Command: `python -m pytest tests/test_mcp_stdio_stderr.py -q`
+- [x] OpenSpec change validation executed on 2026-04-22
+  Command: `openspec validate 2026-04-21-aworld-happy-acp-backend`
+- [x] repo-local ACP self-test executed on 2026-04-22
+  Command: `PYTHONPATH="$(pwd)/aworld-cli/src:$(pwd)" python -m aworld_cli.main --no-banner acp self-test`
