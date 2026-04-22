@@ -468,76 +468,48 @@ def collect_skill_docs(
         >>> collect_skill_docs("https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering")
         {'context-fundamentals': {...}, 'context-degradation': {...}, ...}
     """
+    from aworld.skills.compat_provider import build_compat_provider
+    from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
+
     results: Dict[str, Dict[str, Any]] = {}
     logger.info(f"🔍 Starting to collect skills from: {root_path}")
-    
+
     try:
-        # Resolve path (handles GitHub URLs by cloning/caching)
-        root_dir = resolve_skill_path(root_path, cache_dir)
+        provider = build_compat_provider(root_path, cache_dir=cache_dir)
     except Exception as e:
         logger.error(f"❌ Failed to resolve skill path {root_path}: {e}")
         return results
-    
-    if not root_dir.exists():
-        logger.warning(f"⚠️ Skill directory does not exist: {root_dir}")
-        return results
-    
-    # Search for both skill.md and SKILL.md (GitHub repository format)
-    skill_patterns = ["**/skill.md", "**/SKILL.md"]
-    
-    for pattern in skill_patterns:
-        for skill_file in root_dir.glob(pattern):
-            try:
-                logger.debug(f"📄 Processing skill file: {skill_file}")
-                content = skill_file.read_text(encoding="utf-8").splitlines()
-                front_matter, body_start = extract_front_matter(content)
-                body_lines = content[body_start:]
 
-                usage = "\n".join(body_lines).strip()
-                desc = front_matter.get("desc", front_matter.get("description", ""))
-                tool_list = front_matter.get("tool_list", {})
-                
-                # Ensure tool_list is a dict
-                if isinstance(tool_list, str):
-                    logger.warning(f"⚠️ tool_list for skill '{front_matter.get('name', '')}' is still a string, converting to empty dict")
-                    tool_list = {}
+    registry = FrameworkSkillRegistry([provider])
+    for descriptor in registry.list_descriptors():
+        skill_name = descriptor.skill_name
+        if skill_name in results:
+            logger.warning(
+                f"⚠️ Duplicate skill name '{skill_name}' found at {descriptor.skill_file}, skipping"
+            )
+            continue
 
-                skill_name = skill_file.parent.name
-                
-                # If skill name already exists, log a warning but keep the first one found
-                if skill_name in results:
-                    logger.warning(f"⚠️ Duplicate skill name '{skill_name}' found at {skill_file}, skipping")
-                    continue
+        try:
+            content = registry.load_content(descriptor.skill_id)
+        except Exception as e:
+            logger.error(
+                f"❌ Failed to process skill file {descriptor.skill_file}: {e}"
+            )
+            continue
 
-                skill_data = {
-                    "name": skill_name,
-                    "description": desc,
-                    "tool_list": tool_list,
-                    "usage": usage,
-                    "type": front_matter.get("type", ""),
-                    "active": str(front_matter.get("active", "False")).lower() == "true",
-                    "skill_path": skill_file.as_posix(),
-                }
-                aworld_meta = resolve_aworld_metadata(front_matter)
-                if aworld_meta:
-                    eligible, missing = evaluate_skill_requirements(aworld_meta)
-                    skill_data["aworld_metadata"] = {
-                        "always": aworld_meta["always"],
-                        "requires": aworld_meta["requires"],
-                        "install": aworld_meta["install"],
-                        "eligible": eligible,
-                        "missing": missing,
-                        "install_options": aworld_meta["install"],
-                    }
-                    if not eligible and missing:
-                        logger.debug(
-                            f"Skill '{skill_name}' requirements not satisfied: missing={missing}"
-                        )
-                results[skill_name] = skill_data
-                logger.debug(f"✅ Collected skill: {skill_name}")
-            except Exception as e:
-                logger.error(f"❌ Failed to process skill file {skill_file}: {e}")
-                continue
+        skill_data = {
+            "name": skill_name,
+            "description": descriptor.description,
+            "tool_list": dict(content.tool_list),
+            "usage": content.usage,
+            "type": str(descriptor.metadata.get("type", "")),
+            "active": bool(descriptor.metadata.get("active", False)),
+            "skill_path": descriptor.skill_file,
+        }
+        if descriptor.requirements:
+            skill_data["aworld_metadata"] = dict(descriptor.requirements)
+        results[skill_name] = skill_data
+        logger.debug(f"✅ Collected skill: {skill_name}")
 
     logger.info(f"✅ Total skill count: {len(results)} -> {list(results.keys())}")
     return results
@@ -972,5 +944,4 @@ class SkillRegistry:
         self._skills.clear()
         self._source_to_skills.clear()
         logger.info("🧹 Registry cleared")
-
 

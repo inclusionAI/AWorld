@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from aworld.plugins.discovery import discover_plugins
-from aworld.plugins.models import PluginEntrypoint
-from aworld.utils.skill_loader import collect_skill_docs
+from aworld.skills.compat_provider import build_compat_provider
+from aworld.skills.plugin_provider import PluginSkillProvider
+from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
 
 
 _SCOPE_ORDER = {
@@ -51,98 +52,70 @@ class SkillActivationResolver:
         selected = self._select_active_skills(filtered, request)
         return self._build_skill_configs(filtered, selected)
 
+    def _build_registry(
+        self, request: SkillResolverRequest
+    ) -> tuple[FrameworkSkillRegistry, set[str]]:
+        providers = []
+        compatibility_provider_ids: set[str] = set()
+
+        for plugin in discover_plugins(request.plugin_roots):
+            providers.append(PluginSkillProvider(plugin))
+
+        for source in request.compatibility_sources:
+            provider = build_compat_provider(source)
+            providers.append(provider)
+            compatibility_provider_ids.add(provider.provider_id())
+
+        return FrameworkSkillRegistry(providers), compatibility_provider_ids
+
     def _load_candidates(
         self, request: SkillResolverRequest
     ) -> list[ResolvedSkillCandidate]:
         candidates: list[ResolvedSkillCandidate] = []
         seen: set[str] = set()
-
-        for plugin in discover_plugins(request.plugin_roots):
-            plugin_root = Path(plugin.manifest.plugin_root)
-            for entrypoint in plugin.manifest.entrypoints.get("skills", ()):
-                candidate = self._candidate_from_entrypoint(plugin_root, entrypoint)
-                if candidate is None or candidate.skill_name in seen:
-                    continue
-                candidates.append(candidate)
-                seen.add(candidate.skill_name)
-
+        registry, compatibility_provider_ids = self._build_registry(request)
         compatibility_patterns = tuple(request.compatibility_skill_patterns)
-        for source in request.compatibility_sources:
-            for candidate in self._load_compatibility_candidates(
-                source, compatibility_patterns
+
+        for descriptor in registry.list_descriptors():
+            if (
+                descriptor.provider_id in compatibility_provider_ids
+                and compatibility_patterns
+                and not self._matches_patterns(descriptor.skill_name, compatibility_patterns)
             ):
-                if candidate.skill_name in seen:
-                    continue
-                candidates.append(candidate)
-                seen.add(candidate.skill_name)
+                continue
+
+            if descriptor.skill_name in seen:
+                continue
+
+            content = registry.load_content(descriptor.skill_id)
+            skill_data = {
+                "name": descriptor.skill_name,
+                "description": descriptor.description,
+                "tool_list": dict(content.tool_list),
+                "usage": content.usage,
+                "skill_path": descriptor.skill_file,
+                "asset_root": descriptor.asset_root,
+            }
+            if descriptor.requirements:
+                skill_data["aworld_metadata"] = dict(descriptor.requirements)
+            if "type" in descriptor.metadata:
+                skill_data["type"] = descriptor.metadata["type"]
+            if "active" in descriptor.metadata:
+                skill_data["active"] = bool(descriptor.metadata["active"])
+
+            candidates.append(
+                ResolvedSkillCandidate(
+                    skill_name=descriptor.skill_name,
+                    skill_path=descriptor.skill_file,
+                    scope=str(descriptor.scope or "workspace").strip().lower() or "workspace",
+                    visibility=str(descriptor.visibility or "public").strip().lower() or "public",
+                    metadata=dict(descriptor.metadata or {}),
+                    skill_data=skill_data,
+                )
+            )
+            seen.add(descriptor.skill_name)
 
         return candidates
-
-    def _candidate_from_entrypoint(
-        self, plugin_root: Path, entrypoint: PluginEntrypoint
-    ) -> ResolvedSkillCandidate | None:
-        skill_path = self._resolve_entrypoint_skill_path(plugin_root, entrypoint)
-        if skill_path is None:
-            return None
-
-        skill_data = self._load_skill_data(skill_path)
-        if skill_data is None:
-            return None
-
-        return ResolvedSkillCandidate(
-            skill_name=entrypoint.entrypoint_id,
-            skill_path=str(skill_path),
-            scope=str(entrypoint.scope or "workspace").strip().lower() or "workspace",
-            visibility=str(entrypoint.visibility or "public").strip().lower() or "public",
-            metadata=dict(entrypoint.metadata or {}),
-            skill_data=skill_data,
-        )
-
-    def _load_compatibility_candidates(
-        self, source: str, patterns: tuple[str, ...]
-    ) -> Iterable[ResolvedSkillCandidate]:
-        for skill_name, skill_data in collect_skill_docs(source).items():
-            if patterns and not self._matches_patterns(skill_name, patterns):
-                continue
-            skill_path = skill_data.get("skill_path")
-            if not isinstance(skill_path, str) or not skill_path:
-                continue
-            yield ResolvedSkillCandidate(
-                skill_name=skill_name,
-                skill_path=skill_path,
-                scope="global",
-                visibility="public",
-                metadata={},
-                skill_data=dict(skill_data),
-            )
-
-    def _resolve_entrypoint_skill_path(
-        self, plugin_root: Path, entrypoint: PluginEntrypoint
-    ) -> Path | None:
-        target = (entrypoint.target or "").strip()
-        if target:
-            candidate = (plugin_root / target).resolve()
-            if candidate.is_file():
-                return candidate
-
-        fallback_paths = (
-            plugin_root / "skills" / entrypoint.entrypoint_id / "SKILL.md",
-            plugin_root / entrypoint.entrypoint_id / "SKILL.md",
-        )
-        for candidate in fallback_paths:
-            if candidate.is_file():
-                return candidate.resolve()
-
-        return None
-
-    def _load_skill_data(self, skill_path: Path) -> dict[str, Any] | None:
-        loaded = collect_skill_docs(skill_path.parent)
-        if not loaded:
-            return None
-        if skill_path.parent.name in loaded:
-            return dict(loaded[skill_path.parent.name])
-        first_name = next(iter(loaded))
-        return dict(loaded[first_name])
 
     def _filter_candidates(
         self,

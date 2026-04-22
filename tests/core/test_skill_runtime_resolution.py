@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src
 from aworld.agents.llm_agent import Agent
 from aworld.config import AgentConfig
 from aworld.core.agent.swarm import Swarm
+from aworld_cli.core.skill_activation_resolver import SkillActivationResolver, SkillResolverRequest
 from aworld_cli.core.skill_activation_resolver import ResolvedSkillSet
 from aworld_cli.executors.local import LocalAgentExecutor
 
@@ -117,3 +118,25 @@ async def test_local_executor_resolves_skills_from_task_input(
             "skill_path": "/tmp/browser/SKILL.md",
         }
     }
+
+
+def test_resolver_builds_skill_configs_from_framework_registry(tmp_path: Path) -> None:
+    skill_dir = tmp_path / "skills" / "browser-use"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\ndescription: Browser automation\n---\n\n# Usage\nUse browser tools.\n",
+        encoding="utf-8",
+    )
+
+    request = SkillResolverRequest(
+        plugin_roots=(),
+        runtime_scope="session",
+        agent_name="Aworld",
+        compatibility_sources=(str(tmp_path / "skills"),),
+    )
+
+    resolved = SkillActivationResolver().resolve(request)
+
+    assert "browser-use" in resolved.skill_configs
+    assert resolved.skill_configs["browser-use"]["description"] == "Browser automation"
+    assert resolved.skill_configs["browser-use"]["asset_root"] == str(skill_dir.resolve())
