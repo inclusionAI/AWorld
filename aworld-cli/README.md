@@ -181,6 +181,8 @@ Installed skill packages are stored as plugin-managed packages internally, but y
 aworld-cli skill install https://github.com/example/skills.git
 aworld-cli skill install ./local-skills
 aworld-cli skill list
+aworld-cli skill disable <install-id>
+aworld-cli skill enable <install-id>
 aworld-cli skill remove <install-id>
 aworld-cli skill update <install-id>
 ```

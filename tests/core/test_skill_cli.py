@@ -106,6 +106,56 @@ def test_skill_install_accepts_agent_scope(
     assert "agent:developer" in output
 
 
+def test_skill_disable_and_enable_cli(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source = tmp_path / "toggle-skills"
+    _write_skill(source, "optimizer")
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "install", str(source)])
+    main_module.main()
+    capsys.readouterr()
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "disable", "toggle-skills"])
+    main_module.main()
+    disable_output = capsys.readouterr().out
+    assert "disabled successfully" in disable_output
+
+    installs = InstalledSkillManager().list_installs()
+    assert installs[0]["enabled"] is False
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "enable", "toggle-skills"])
+    main_module.main()
+    enable_output = capsys.readouterr().out
+    assert "enabled successfully" in enable_output
+
+    installs = InstalledSkillManager().list_installs()
+    assert installs[0]["enabled"] is True
+
+
+def test_skill_list_cli_shows_enabled_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source = tmp_path / "stateful-skills"
+    _write_skill(source, "optimizer")
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "install", str(source)])
+    main_module.main()
+    capsys.readouterr()
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "disable", "stateful-skills"])
+    main_module.main()
+    capsys.readouterr()
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "list"])
+    main_module.main()
+    list_output = capsys.readouterr().out
+
+    assert "enabled=False" in list_output
+
+
 def test_skill_install_creates_plugin_managed_skill_record(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
