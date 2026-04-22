@@ -146,6 +146,12 @@ from .runtime.cli import CliRuntime
 from .console import AWorldCLI
 from .models import AgentInfo
 from .executors.continuous import ContinuousExecutor
+from .core.top_level_command_system import (
+    TopLevelCommandContext,
+    TopLevelCommandRegistry,
+)
+from .plugin_capabilities.cli_commands import sync_plugin_cli_commands
+from .top_level_commands import register_builtin_top_level_commands
 
 # Import commands to trigger registration
 from . import commands
@@ -489,7 +495,7 @@ def build_parser(zh: bool = False) -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="interactive",
-        choices=["interactive", "list", "serve", "batch", "batch-job", "plugins", "skill", "gateway"],
+        choices=_build_parser_command_choices(),
         help=(
             '要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugins" 管理插件，使用 "skill" 管理已安装技能包，使用 "gateway" 管理网关。'
             if zh
@@ -522,6 +528,62 @@ def build_parser(zh: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--mcp-port", type=int, default=8001, help="MCP 服务器端口（用于 SSE/streamable-http 传输，默认：8001）" if zh else "MCP server port for SSE/streamable-http transport (default: 8001)")
     parser.add_argument("--config", action="store_true", help="启动交互式全局配置编辑器（模型提供商、API 密钥等）并退出。" if zh else "Launch interactive global configuration editor (model provider, API key, etc.) and exit.")
     return parser
+
+
+def _build_top_level_command_registry() -> TopLevelCommandRegistry:
+    registry = TopLevelCommandRegistry(reserved_names={"skill"})
+    register_builtin_top_level_commands(registry)
+
+    try:
+        from .core.plugin_manager import PluginManager
+
+        plugin_manager = PluginManager()
+        sync_plugin_cli_commands(registry, plugin_manager.get_framework_registry().plugins())
+    except Exception:
+        pass
+
+    return registry
+
+
+def _build_parser_command_choices() -> list[str]:
+    command_names = ["interactive", "list", "serve", "batch", "batch-job", "plugins", "gateway"]
+    registry = _build_top_level_command_registry()
+    for command in registry.list_commands():
+        if command.name not in command_names:
+            command_names.append(command.name)
+    return command_names
+
+
+def _maybe_dispatch_top_level_command(argv: list[str]) -> bool:
+    if len(argv) < 2 or argv[1].startswith("-"):
+        return False
+
+    registry = _build_top_level_command_registry()
+    command = registry.get(argv[1])
+    if command is None:
+        return False
+
+    parser = argparse.ArgumentParser(prog="aworld-cli")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for item in registry.list_commands():
+        item.register_parser(subparsers)
+
+    try:
+        args = parser.parse_args(argv[1:])
+    except SystemExit:
+        return True
+
+    selected_command = registry.get(getattr(args, "command", ""))
+    if selected_command is None:
+        return False
+
+    exit_code = selected_command.run(
+        args,
+        TopLevelCommandContext(cwd=str(Path.cwd()), argv=tuple(argv)),
+    )
+    if exit_code not in (None, 0):
+        sys.exit(exit_code)
+    return True
 
 
 def main():
@@ -761,113 +823,7 @@ def main():
 
         return
 
-    if minimal_args.command == "skill":
-        skill_parser = argparse.ArgumentParser(
-            description="Installed skill management commands",
-            prog="aworld-cli skill",
-        )
-        skill_subparsers = skill_parser.add_subparsers(
-            dest="skill_action",
-            help="Skill action to perform",
-            required=True,
-        )
-
-        install_parser = skill_subparsers.add_parser(
-            "install", help="Install a skill package"
-        )
-        install_parser.add_argument("source", help="Git URL or local skill directory")
-        install_parser.add_argument(
-            "--scope",
-            default="global",
-            help="Install scope: global or agent:<name>",
-        )
-        install_parser.add_argument(
-            "--mode",
-            choices=["clone", "copy", "symlink"],
-            default=None,
-            help="Install mode override",
-        )
-
-        skill_subparsers.add_parser("list", help="List installed skill packages")
-
-        enable_parser = skill_subparsers.add_parser(
-            "enable", help="Enable an installed skill package"
-        )
-        enable_parser.add_argument("install_id", help="Install id or name")
-
-        disable_parser = skill_subparsers.add_parser(
-            "disable", help="Disable an installed skill package"
-        )
-        disable_parser.add_argument("install_id", help="Install id or name")
-
-        remove_parser = skill_subparsers.add_parser(
-            "remove", help="Remove an installed skill package"
-        )
-        remove_parser.add_argument("install_id", help="Install id or name")
-
-        update_parser = skill_subparsers.add_parser(
-            "update", help="Update a git-backed skill package"
-        )
-        update_parser.add_argument("install_id", help="Install id or name")
-
-        import_parser = skill_subparsers.add_parser(
-            "import", help="Import a manually placed installed skill entry"
-        )
-        import_parser.add_argument("path", help="Path under ~/.aworld/skills/installed")
-        import_parser.add_argument(
-            "--scope",
-            default="global",
-            help="Install scope: global or agent:<name>",
-        )
-
-        try:
-            skill_args = skill_parser.parse_args(sys.argv[2:])
-        except SystemExit:
-            return
-
-        from .core.installed_skill_manager import InstalledSkillManager
-
-        manager = InstalledSkillManager()
-
-        if skill_args.skill_action == "install":
-            source_path = Path(skill_args.source).expanduser()
-            mode = skill_args.mode or ("copy" if source_path.exists() else "clone")
-            record = manager.install(
-                source=skill_args.source,
-                mode=mode,
-                scope=skill_args.scope,
-            )
-            print(f"✅ Skill package '{record['install_id']}' installed successfully")
-            print(f"📍 Location: {record['installed_path']}")
-        elif skill_args.skill_action == "list":
-            installs = sorted(
-                manager.list_installs(), key=lambda item: str(item["install_id"])
-            )
-            if not installs:
-                print("📦 No installed skill packages")
-                print(f"📍 Installed root: {manager.installed_root}")
-                return
-            for install in installs:
-                print(
-                    f"{install['install_id']} | enabled={install.get('enabled', True)} | scope={install['scope']} | "
-                    f"skill_count={install['skill_count']} | source={install['source']}"
-                )
-        elif skill_args.skill_action == "enable":
-            record = manager.enable_install(skill_args.install_id)
-            print(f"✅ Skill package '{record['install_id']}' enabled successfully")
-        elif skill_args.skill_action == "disable":
-            record = manager.disable_install(skill_args.install_id)
-            print(f"✅ Skill package '{record['install_id']}' disabled successfully")
-        elif skill_args.skill_action == "remove":
-            manager.remove_install(skill_args.install_id)
-            print(f"✅ Skill package '{skill_args.install_id}' removed successfully")
-        elif skill_args.skill_action == "update":
-            record = manager.update_install(skill_args.install_id)
-            print(f"✅ Skill package '{record['install_id']}' updated successfully")
-        elif skill_args.skill_action == "import":
-            record = manager.import_entry(Path(skill_args.path), scope=skill_args.scope)
-            print(f"✅ Skill package '{record['install_id']}' imported successfully")
-
+    if _maybe_dispatch_top_level_command(sys.argv):
         return
 
     parser = build_parser()

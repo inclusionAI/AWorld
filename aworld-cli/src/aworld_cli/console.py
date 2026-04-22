@@ -392,7 +392,13 @@ class AWorldCLI:
             prompt_kwargs["refresh_interval"] = 0.1
         return prompt_kwargs
 
-    def _build_completion_entries(self, agent_names: Optional[List[str]] = None) -> tuple[list[str], dict[str, str]]:
+    def _build_completion_entries(
+        self,
+        agent_names: Optional[List[str]] = None,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> tuple[list[str], dict[str, str]]:
         """
         Build slash-command completion phrases and descriptions for prompt_toolkit.
 
@@ -439,6 +445,13 @@ class AWorldCLI:
                 words.add(phrase)
                 meta_dict[phrase] = description
 
+        for phrase, skill_name in self._generated_skill_alias_map(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        ).items():
+            words.add(phrase)
+            meta_dict[phrase] = f"Force skill on next task: {skill_name}"
+
         for agent_name in agent_names:
             phrase = f"/switch {agent_name}"
             words.add(phrase)
@@ -451,11 +464,17 @@ class AWorldCLI:
     def _build_session_completer(
         self,
         agent_names: Optional[List[str]] = None,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
         runtime: Any = None,
         event_loop: Optional[asyncio.AbstractEventLoop] = None,
     ) -> Completer:
         """Build the prompt completer with static slash entries plus dynamic cron job IDs."""
-        all_words, meta_dict = self._build_completion_entries(agent_names=agent_names)
+        all_words, meta_dict = self._build_completion_entries(
+            agent_names=agent_names,
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
         return CronAwareCompleter(
             all_words,
             meta_dict,
@@ -1871,15 +1890,13 @@ class AWorldCLI:
 
         return tuple(roots)
 
-    def _resolve_visible_skills(
+    def _skill_resolution_environment(
         self,
         *,
         agent_name: str | None = None,
         executor_instance: Any = None,
-        requested_skill_names: Optional[list[str] | tuple[str, ...]] = None,
-    ):
+    ) -> tuple[Any, tuple[Path, ...], dict[str, Any]]:
         from .core.plugin_manager import PluginManager
-        from .core.skill_activation_resolver import SkillActivationResolver, SkillResolverRequest
 
         plugin_manager = PluginManager()
         runtime_plugin_roots = tuple(
@@ -1897,13 +1914,97 @@ class AWorldCLI:
             if agent_conf is not None and isinstance(getattr(agent_conf, "ext", None), dict):
                 resolver_inputs = dict(agent_conf.ext.get("skill_resolver_inputs", {}))
 
+        plugin_roots = runtime_plugin_roots + skill_package_roots + tuple(
+            Path(item).resolve()
+            for item in resolver_inputs.get("plugin_roots", [])
+        )
+        return plugin_manager, plugin_roots, resolver_inputs
+
+    def _generated_skill_alias_map(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> dict[str, str]:
+        reserved = {
+            "exit",
+            "quit",
+            "help",
+            "new",
+            "restore",
+            "latest",
+            "switch",
+            "skills",
+            "agents",
+            "cost",
+            "compact",
+            "team",
+            "memory",
+            "sessions",
+            "visualize_trajectory",
+        }
+        reserved.update(command.name.lower() for command in CommandRegistry.list_commands())
+
+        try:
+            resolved = self._resolve_visible_skills(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+            )
+        except Exception:
+            return {}
+
+        aliases: dict[str, str] = {}
+        for skill_name in sorted(resolved.skill_configs):
+            normalized = str(skill_name).strip()
+            if not normalized:
+                continue
+            if normalized.lower() in reserved:
+                continue
+            aliases[f"/{normalized}"] = normalized
+        return aliases
+
+    def _provider_commands_by_skill(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> dict[str, list[str]]:
+        from aworld.plugins.discovery import discover_plugins
+        from .plugin_capabilities.commands import commands_for_plugin
+
+        _, plugin_roots, _ = self._skill_resolution_environment(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
+
+        commands_by_skill: dict[str, list[str]] = {}
+        for plugin in discover_plugins(plugin_roots):
+            visible_commands = commands_for_plugin(plugin)
+            if not visible_commands:
+                continue
+            for entrypoint in plugin.manifest.entrypoints.get("skills", ()):
+                commands_by_skill.setdefault(
+                    entrypoint.entrypoint_id,
+                    list(visible_commands),
+                )
+        return commands_by_skill
+
+    def _resolve_visible_skills(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+        requested_skill_names: Optional[list[str] | tuple[str, ...]] = None,
+    ):
+        from .core.skill_activation_resolver import SkillActivationResolver, SkillResolverRequest
+
+        _, plugin_roots, resolver_inputs = self._skill_resolution_environment(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
+
         request = SkillResolverRequest(
-            plugin_roots=runtime_plugin_roots
-            + skill_package_roots
-            + tuple(
-                Path(item).resolve()
-                for item in resolver_inputs.get("plugin_roots", [])
-            ),
+            plugin_roots=plugin_roots,
             runtime_scope="session",
             agent_name=agent_name,
             requested_skill_names=tuple(self._normalize_skill_names(requested_skill_names)),
@@ -1968,10 +2069,20 @@ class AWorldCLI:
 
         rows = sorted(resolved.skill_configs.items(), key=lambda item: item[0])
         pending = set(self._normalize_skill_names(self._pending_skill_overrides))
+        alias_map = self._generated_skill_alias_map(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
+        commands_by_skill = self._provider_commands_by_skill(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
         table = Table(title="Skills", box=box.ROUNDED)
         table.add_column("Name", style="magenta")
         table.add_column("Description", style="green")
         table.add_column("Status", style="cyan")
+        table.add_column("Alias", style="yellow")
+        table.add_column("Commands", style="yellow", no_wrap=False, max_width=28)
         table.add_column("Address", style="dim", no_wrap=False, max_width=48)
 
         for skill_name, skill_data in rows:
@@ -1991,7 +2102,9 @@ class AWorldCLI:
                 link_url = link_target.resolve().as_uri()
                 display = address if len(address) <= 48 else address[:45] + "..."
                 addr_cell = Text(display, style=Style(dim=True, link=link_url))
-            table.add_row(skill_name, str(desc), status, addr_cell)
+            generated_alias = alias_map.get(f"/{skill_name}", f"/{skill_name}")
+            commands = ", ".join(commands_by_skill.get(skill_name, ())) or "—"
+            table.add_row(skill_name, str(desc), status, generated_alias, commands, addr_cell)
 
         self.console.print(table)
         if pending:
@@ -2042,6 +2155,18 @@ class AWorldCLI:
         if normalized.startswith("/skills"):
             self.console.print("[yellow]Usage: /skills | /skills use <name> | /skills clear[/yellow]")
             return True
+
+        if " " not in normalized and normalized.startswith("/"):
+            alias_skill_name = self._generated_skill_alias_map(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+            ).get(normalized)
+            if alias_skill_name:
+                self._pending_skill_overrides = [alias_skill_name]
+                self.console.print(
+                    f"[green]Will force skill on next task:[/green] {alias_skill_name}"
+                )
+                return True
 
         return False
 
@@ -2332,6 +2457,8 @@ class AWorldCLI:
         if is_terminal:
             completer = self._build_session_completer(
                 agent_names=agent_names,
+                agent_name=agent_name,
+                executor_instance=executor_instance,
                 runtime=runtime,
                 event_loop=asyncio.get_running_loop(),
             )
@@ -2522,7 +2649,11 @@ class AWorldCLI:
                         return True # Return True to switch agent (show list)
                 
                 # Handle skills command
-                if user_input.lower().startswith("/skills") or user_input.lower() == "skills":
+                if (
+                    user_input.lower().startswith("/skills")
+                    or user_input.lower() == "skills"
+                    or (user_input.startswith("/") and " " not in user_input.strip())
+                ):
                     handled = await self._handle_skills_command(
                         user_input,
                         agent_name=agent_name,
