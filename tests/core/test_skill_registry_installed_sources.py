@@ -86,6 +86,28 @@ def test_explicit_skill_path_overrides_installed_entry(
     assert shared_skill["description"] == "explicit version"
 
 
+def test_get_skill_registry_registers_new_explicit_skill_paths_after_initialization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_PATH", raising=False)
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    monkeypatch.delenv("SKILLS_CACHE_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    first_source = tmp_path / "first-skills"
+    second_source = tmp_path / "second-skills"
+    _write_skill(first_source, "first-skill", "first version")
+    _write_skill(second_source, "second-skill", "second version")
+
+    first_registry = get_skill_registry(skill_paths=[str(first_source)])
+    second_registry = get_skill_registry(skill_paths=[str(second_source)])
+
+    assert first_registry is second_registry
+    assert second_registry.get_skill("first-skill") is not None
+    assert second_registry.get_skill("second-skill") is not None
+
+
 def test_collect_plugin_and_user_skills_merges_global_and_matching_agent_installs(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
