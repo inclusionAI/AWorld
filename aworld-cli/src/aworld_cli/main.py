@@ -136,9 +136,9 @@ def _suppress_keyboard_interrupt_traceback(exc_type, exc_value, exc_tb):
 
 sys.excepthook = _suppress_keyboard_interrupt_traceback
 
-# Set environment variable to disable console logging before importing aworld modules
-# This ensures all AWorldLogger instances will disable console output
-os.environ['AWORLD_DISABLE_CONSOLE_LOG'] = 'true'
+# Set default environment variable to disable console logging before importing aworld modules.
+# Gateway mode may explicitly override this before importing this module.
+os.environ.setdefault('AWORLD_DISABLE_CONSOLE_LOG', 'true')
 
 # Import aworld modules (they will respect the environment variable)
 from aworld.logs.util import logger
@@ -469,7 +469,6 @@ def build_parser(zh: bool = False) -> argparse.ArgumentParser:
         description=description_zh if zh else description_en,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-
     parser.add_argument(
         "-zh",
         "--zh",
@@ -490,12 +489,12 @@ def build_parser(zh: bool = False) -> argparse.ArgumentParser:
         "command",
         nargs="?",
         default="interactive",
-        choices=["interactive", "list", "serve", "batch", "batch-job", "plugins", "skill"],
+        choices=["interactive", "list", "serve", "batch", "batch-job", "plugins", "skill", "gateway"],
         help=(
-            '要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugins" 管理插件，使用 "skill" 管理已安装技能包。'
+            '要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugins" 管理插件，使用 "skill" 管理已安装技能包，使用 "gateway" 管理网关。'
             if zh
             else 'Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers, '
-            '"batch-job" to run batch jobs, "plugins" to manage plugins, and "skill" to manage installed skills.'
+            '"batch-job" to run batch jobs, "plugins" to manage plugins, "skill" to manage installed skills, and "gateway" to manage the gateway.'
         ),
     )
     parser.add_argument("--task", type=str, help="发送给 agent 的任务（非交互模式）" if zh else "Task to send to agent (non-interactive mode)")
@@ -534,6 +533,90 @@ def main():
     show_banner_flag = "--no-banner" not in sys.argv
     
     english_epilog, chinese_epilog, _, _ = _help_texts()
+
+    # Handle gateway command specially
+    from .gateway_cli import find_gateway_command_index
+
+    gateway_index = find_gateway_command_index(sys.argv)
+    if gateway_index is not None:
+        from .gateway_cli import (
+            build_gateway_parser,
+            extract_gateway_argv,
+            handle_gateway_channels_list,
+            handle_gateway_status,
+            serve_gateway,
+        )
+
+        gateway_global_parser = argparse.ArgumentParser(add_help=False)
+        gateway_global_parser.add_argument("--env-file", default=".env")
+        gateway_global_parser.add_argument("--remote-backend", action="append")
+        gateway_global_parser.add_argument("--agent-dir", action="append")
+        gateway_global_parser.add_argument("--agent-file", action="append")
+        gateway_global_parser.add_argument("--skill-path", action="append")
+        gateway_global_args, _ = gateway_global_parser.parse_known_args(
+            sys.argv[1:gateway_index]
+        )
+
+        gateway_parser = build_gateway_parser()
+        try:
+            gateway_args = gateway_parser.parse_args(extract_gateway_argv(sys.argv))
+        except SystemExit:
+            return
+
+        if gateway_args.gateway_action == "status":
+            print(handle_gateway_status())
+            return
+
+        if (
+            gateway_args.gateway_action == "channels"
+            and gateway_args.channels_action == "list"
+        ):
+            print(handle_gateway_channels_list())
+            return
+
+        if gateway_args.gateway_action == "server":
+            from .core.config import load_config_with_env, has_model_config
+
+            config_dict, source_type, source_path = load_config_with_env(
+                gateway_global_args.env_file
+            )
+            init_middlewares(
+                init_memory=True,
+                init_retriever=False,
+                custom_memory_store=_default_file_memory_store(),
+            )
+            if show_banner_flag:
+                _show_banner()
+
+            from ._globals import console
+
+            if not has_model_config(config_dict):
+                console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
+                console.print("[dim]Run: aworld-cli --config[/dim]")
+                console.print("[dim]Or create .env in the current directory. See: [link=https://github.com/inclusionAI/AWorld/blob/main/README.md]README[/link][/dim]")
+                sys.exit(1)
+
+            from .core.skill_registry import get_skill_registry
+
+            if gateway_global_args.skill_path:
+                registry = get_skill_registry(skill_paths=gateway_global_args.skill_path)
+            else:
+                registry = get_skill_registry()
+
+            all_skills = registry.get_all_skills()
+            if all_skills:
+                skill_names = list(all_skills.keys())
+                logger.info("Loaded %d global skill(s): %s", len(skill_names), ", ".join(skill_names))
+
+            asyncio.run(
+                serve_gateway(
+                    base_dir=Path.cwd(),
+                    remote_backends=gateway_global_args.remote_backend,
+                    local_dirs=_resolve_agent_dirs(gateway_global_args.agent_dir),
+                    agent_files=gateway_global_args.agent_file,
+                )
+            )
+            return
 
     # Create a minimal parser to check if command is a special-case command
     minimal_parser = argparse.ArgumentParser(add_help=False)
@@ -772,7 +855,6 @@ def main():
         return
 
     parser = build_parser()
-
     # Parse arguments normally, but keep unknown args for inner plugin commands
     args, remaining_argv = parser.parse_known_args()
 
