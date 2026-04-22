@@ -2424,6 +2424,7 @@ class AWorldCLI:
             "Type '/skills' to list available skills.",
             "Type '/skills use <name>' to force a skill on the next task.",
             "Type '/skills clear' to clear the pending forced skill.",
+            "Type '/<skill-name>' to force that visible skill on the next task.",
             "Type '/agents' to list all available agents.",
             "Type '/cost' for current session, '/cost -all' for global history.",
             "Type '/compact' to run context compression.",
