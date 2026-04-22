@@ -224,6 +224,13 @@ In interactive mode:
 - `/skills` lists resolver-visible skills for the current agent
 - `/skills use <name>` forces that skill on the next task
 - `/skills clear` clears the pending explicit selection
+- `/<skill-name>` is generated automatically for each visible skill and behaves like a one-shot `/skills use <skill-name>`
+
+Example:
+
+```text
+/brainstorming
+```
 
 `--skill-path`, `SKILLS_PATH`, and `SKILLS_DIR` remain supported as compatibility and development overrides, but installed skill packages are now the default workflow.
 
