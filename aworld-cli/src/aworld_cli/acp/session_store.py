@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
+from .errors import AWORLD_ACP_INVALID_CWD
+
 
 @dataclass(slots=True)
 class AcpSessionRecord:
@@ -22,10 +24,14 @@ class AcpSessionStore:
         cwd: str,
         requested_mcp_servers: list[dict],
     ) -> AcpSessionRecord:
+        resolved_cwd = Path(cwd).expanduser().resolve()
+        if not resolved_cwd.exists() or not resolved_cwd.is_dir():
+            raise ValueError(AWORLD_ACP_INVALID_CWD)
+
         record = AcpSessionRecord(
             acp_session_id=f"acp_{uuid4().hex}",
             aworld_session_id=f"aworld_{uuid4().hex}",
-            cwd=str(Path(cwd).expanduser()),
+            cwd=str(resolved_cwd),
             requested_mcp_servers=list(requested_mcp_servers),
         )
         self._records[record.acp_session_id] = record

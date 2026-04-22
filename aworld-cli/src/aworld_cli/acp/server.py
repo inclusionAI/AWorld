@@ -15,16 +15,22 @@ from aworld.output.base import MessageOutput
 from aworld.runner import Runners
 
 from .errors import (
+    AWORLD_ACP_APPROVAL_UNSUPPORTED,
+    AWORLD_ACP_INVALID_CWD,
     AWORLD_ACP_SESSION_BUSY,
     AWORLD_ACP_SESSION_NOT_FOUND,
     AWORLD_ACP_REQUIRES_HUMAN,
+    AWORLD_ACP_UNSUPPORTED_MCP_SERVERS,
     AWORLD_ACP_UNSUPPORTED_PROMPT_CONTENT,
+    AcpErrorDetail,
     AcpBusyError,
+    build_error_data,
 )
 from .event_mapper import map_runtime_event_to_session_update
 from .human_intercept import AcpRequiresHumanError
 from .protocol import decode_jsonrpc_line, encode_jsonrpc_message
 from .runtime_adapter import adapt_output_to_runtime_events
+from .session_runtime import apply_requested_mcp_servers
 from .session_store import AcpSessionRecord, AcpSessionStore
 from .turn_controller import TurnController
 
@@ -54,6 +60,7 @@ class AcpExecutorOutputBridge:
         self._executor_cls = executor_cls
         self._init_agents = init_agents_func
         self._loaded_agent_dirs: set[str] = set()
+        self._execution_lock = asyncio.Lock()
 
     async def stream_outputs(
         self,
@@ -61,32 +68,43 @@ class AcpExecutorOutputBridge:
         record: AcpSessionRecord,
         prompt_text: str,
     ):
-        agent = await self._resolve_agent()
-        if agent is None:
-            yield MessageOutput(
-                source=ModelResponse(
-                    id=f"acp-fallback-{record.acp_session_id}",
-                    model="aworld-cli/acp-fallback",
-                    content=prompt_text,
-                )
-            )
-            return
+        async with self._execution_lock:
+            previous_cwd = os.getcwd()
+            os.chdir(record.cwd)
+            executor = None
+            restore_sandbox_state = lambda: None
+            try:
+                agent = await self._resolve_agent()
+                if agent is None:
+                    yield MessageOutput(
+                        source=ModelResponse(
+                            id=f"acp-fallback-{record.acp_session_id}",
+                            model="aworld-cli/acp-fallback",
+                            content=prompt_text,
+                        )
+                    )
+                    return
 
-        executor = await self._create_executor(agent=agent, record=record)
-        try:
-            task = await executor._build_task(
-                prompt_text,
-                session_id=record.aworld_session_id,
-            )
-            outputs = Runners.streamed_run_task(task=task)
-            async for output in outputs.stream_events():
-                yield output
-        finally:
-            cleanup = getattr(executor, "cleanup_resources", None)
-            if callable(cleanup):
-                cleanup_result = cleanup()
-                if asyncio.iscoroutine(cleanup_result):
-                    await cleanup_result
+                executor, restore_sandbox_state = await self._create_executor(
+                    agent=agent,
+                    record=record,
+                )
+                task = await executor._build_task(
+                    prompt_text,
+                    session_id=record.aworld_session_id,
+                )
+                outputs = Runners.streamed_run_task(task=task)
+                async for output in outputs.stream_events():
+                    yield output
+            finally:
+                if executor is not None:
+                    cleanup = getattr(executor, "cleanup_resources", None)
+                    if callable(cleanup):
+                        cleanup_result = cleanup()
+                        if asyncio.iscoroutine(cleanup_result):
+                            await cleanup_result
+                restore_sandbox_state()
+                os.chdir(previous_cwd)
 
     async def _resolve_agent(self) -> Any | None:
         self._load_agents_from_env()
@@ -127,15 +145,25 @@ class AcpExecutorOutputBridge:
             with contextlib.redirect_stdout(io.StringIO()):
                 self._init_agents(agent_dir)
 
-    async def _create_executor(self, *, agent: Any, record: AcpSessionRecord) -> Any:
+    async def _create_executor(
+        self,
+        *,
+        agent: Any,
+        record: AcpSessionRecord,
+    ) -> tuple[Any, Any]:
         swarm = await self._get_swarm_with_context_fallback(agent)
-        return self._executor_cls(
+        restore_sandbox_state = apply_requested_mcp_servers(
+            swarm,
+            record.requested_mcp_servers,
+        )
+        executor = self._executor_cls(
             swarm=swarm,
             context_config=getattr(agent, "context_config", None),
             console=Console(file=sys.stderr, force_terminal=False, color_system=None),
             session_id=record.aworld_session_id,
             hooks=getattr(agent, "hooks", None),
         )
+        return executor, restore_sandbox_state
 
     @staticmethod
     async def _get_swarm_with_context_fallback(agent: Any) -> Any:
@@ -200,7 +228,13 @@ class AcpStdioServer:
                 else:
                     response = self._error(request_id, -32601, f"Unsupported method: {method}")
             except ValueError as exc:
-                response = self._error(request_id, -32602, str(exc))
+                detail = self._known_error_detail(str(exc))
+                response = self._error(
+                    request_id,
+                    -32602,
+                    str(exc),
+                    data=build_error_data(detail) if detail is not None else None,
+                )
 
             await self._write_message(response)
 
@@ -220,7 +254,17 @@ class AcpStdioServer:
         session_id = str(params.get("sessionId") or "")
         record = self._session_store.get(session_id)
         if record is None:
-            return self._error(request_id, -32001, AWORLD_ACP_SESSION_NOT_FOUND)
+            return self._error(
+                request_id,
+                -32001,
+                AWORLD_ACP_SESSION_NOT_FOUND,
+                data=build_error_data(
+                    AcpErrorDetail(
+                        code=AWORLD_ACP_SESSION_NOT_FOUND,
+                        message=AWORLD_ACP_SESSION_NOT_FOUND,
+                    )
+                ),
+            )
 
         prompt_text = self._normalize_prompt_text(params.get("prompt"))
         state = self._state_by_session.setdefault(session_id, {})
@@ -237,20 +281,51 @@ class AcpStdioServer:
         try:
             task = await self._turns.start_turn(session_id, _run_turn())
         except AcpBusyError:
-            return self._error(request_id, -32002, AWORLD_ACP_SESSION_BUSY)
+            return self._error(
+                request_id,
+                -32002,
+                AWORLD_ACP_SESSION_BUSY,
+                data=build_error_data(
+                    AcpErrorDetail(
+                        code=AWORLD_ACP_SESSION_BUSY,
+                        message=AWORLD_ACP_SESSION_BUSY,
+                    )
+                ),
+            )
 
         try:
             await task
         except asyncio.CancelledError:
             return self._response(request_id, {"status": "cancelled"})
         except AcpRequiresHumanError:
-            return self._error(request_id, -32010, AWORLD_ACP_REQUIRES_HUMAN)
+            return self._error(
+                request_id,
+                -32010,
+                AWORLD_ACP_REQUIRES_HUMAN,
+                data=build_error_data(
+                    AcpErrorDetail(
+                        code=AWORLD_ACP_REQUIRES_HUMAN,
+                        message=AWORLD_ACP_REQUIRES_HUMAN,
+                        retryable=True,
+                    )
+                ),
+            )
         return self._response(request_id, {"status": "completed"})
 
     async def _handle_cancel(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId") or "")
         if self._session_store.get(session_id) is None:
-            return self._error(request_id, -32001, AWORLD_ACP_SESSION_NOT_FOUND)
+            return self._error(
+                request_id,
+                -32001,
+                AWORLD_ACP_SESSION_NOT_FOUND,
+                data=build_error_data(
+                    AcpErrorDetail(
+                        code=AWORLD_ACP_SESSION_NOT_FOUND,
+                        message=AWORLD_ACP_SESSION_NOT_FOUND,
+                    )
+                ),
+            )
 
         result = await self._turns.cancel_turn(session_id)
         return self._response(request_id, {"ok": True, "status": result})
@@ -302,14 +377,24 @@ class AcpStdioServer:
         }
 
     @staticmethod
-    def _error(request_id: Any, code: int, message: str) -> dict[str, Any]:
+    def _error(
+        request_id: Any,
+        code: int,
+        message: str,
+        *,
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        error = {
+            "code": code,
+            "message": message,
+        }
+        if data is not None:
+            error["data"] = data
+
         return {
             "jsonrpc": "2.0",
             "id": request_id,
-            "error": {
-                "code": code,
-                "message": message,
-            },
+            "error": error,
         }
 
     @staticmethod
@@ -319,6 +404,24 @@ class AcpStdioServer:
             "method": method,
             "params": params,
         }
+
+    @staticmethod
+    def _known_error_detail(message: str) -> AcpErrorDetail | None:
+        if message == AWORLD_ACP_SESSION_NOT_FOUND:
+            return AcpErrorDetail(code=message, message=message)
+        if message == AWORLD_ACP_SESSION_BUSY:
+            return AcpErrorDetail(code=message, message=message)
+        if message == AWORLD_ACP_UNSUPPORTED_PROMPT_CONTENT:
+            return AcpErrorDetail(code=message, message=message)
+        if message == AWORLD_ACP_INVALID_CWD:
+            return AcpErrorDetail(code=message, message=message)
+        if message == AWORLD_ACP_UNSUPPORTED_MCP_SERVERS:
+            return AcpErrorDetail(code=message, message=message)
+        if message == AWORLD_ACP_REQUIRES_HUMAN:
+            return AcpErrorDetail(code=message, message=message, retryable=True)
+        if message == AWORLD_ACP_APPROVAL_UNSUPPORTED:
+            return AcpErrorDetail(code=message, message=message, retryable=True)
+        return None
 
 
 async def run_stdio_server() -> int:

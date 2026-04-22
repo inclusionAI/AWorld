@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -162,6 +163,203 @@ async def test_executor_output_bridge_streams_existing_executor_outputs(monkeypa
     assert FakeExecutor.instances[0].calls == [("hello", "aworld-1")]
     assert FakeExecutor.instances[0].kwargs["swarm"] == "fake-swarm"
     assert FakeExecutor.instances[0].cleaned is True
+
+
+@pytest.mark.asyncio
+async def test_executor_output_bridge_runs_task_in_session_cwd(monkeypatch, tmp_path: Path) -> None:
+    class FakeAgent:
+        context_config = None
+        hooks = None
+
+        async def get_swarm(self, _context):
+            return "fake-swarm"
+
+    class FakeRegistry:
+        @staticmethod
+        def get_agent(agent_id: str):
+            return FakeAgent() if agent_id == "Aworld" else None
+
+        @staticmethod
+        def list_agents():
+            return [FakeAgent()]
+
+    class FakeExecutor:
+        instances: list["FakeExecutor"] = []
+
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+            self.build_cwds: list[str] = []
+            self.cleaned = False
+            type(self).instances.append(self)
+
+        async def _build_task(self, prompt_text: str, *, session_id: str):
+            self.build_cwds.append(os.getcwd())
+            return "TASK"
+
+        async def cleanup_resources(self) -> None:
+            self.cleaned = True
+
+    stream_cwds: list[str] = []
+
+    class FakeStreamingOutputs:
+        async def stream_events(self):
+            stream_cwds.append(os.getcwd())
+            yield ChunkOutput(
+                data=ModelResponse(id="resp-1", model="demo", content="hi"),
+                metadata={},
+            )
+
+    from aworld_cli.acp import server as server_module
+
+    monkeypatch.setattr(
+        server_module.Runners,
+        "streamed_run_task",
+        lambda *, task: FakeStreamingOutputs(),
+    )
+
+    record = AcpSessionRecord(
+        acp_session_id="acp-1",
+        aworld_session_id="aworld-1",
+        cwd=str(tmp_path),
+        requested_mcp_servers=[],
+    )
+    original_cwd = os.getcwd()
+    bridge = AcpExecutorOutputBridge(
+        registry_cls=FakeRegistry,
+        executor_cls=FakeExecutor,
+        init_agents_func=lambda *_args, **_kwargs: None,
+    )
+
+    outputs = [
+        output
+        async for output in bridge.stream_outputs(
+            record=record,
+            prompt_text="hello",
+        )
+    ]
+
+    assert len(outputs) == 1
+    assert FakeExecutor.instances[0].build_cwds == [str(tmp_path)]
+    assert stream_cwds == [str(tmp_path)]
+    assert os.getcwd() == original_cwd
+    assert FakeExecutor.instances[0].cleaned is True
+
+
+@pytest.mark.asyncio
+async def test_executor_output_bridge_applies_and_restores_requested_mcp_servers(monkeypatch) -> None:
+    class FakeSandbox:
+        def __init__(self) -> None:
+            self._mcp_config = {"mcpServers": {"base": {"command": "base"}}}
+            self._mcp_servers = ["base"]
+
+        @property
+        def mcp_config(self):
+            return self._mcp_config
+
+        @mcp_config.setter
+        def mcp_config(self, value):
+            self._mcp_config = value
+
+        @property
+        def mcp_servers(self):
+            return self._mcp_servers
+
+        @mcp_servers.setter
+        def mcp_servers(self, value):
+            self._mcp_servers = value
+
+    class RuntimeAgent:
+        def __init__(self) -> None:
+            self.sandbox = FakeSandbox()
+
+        def id(self):
+            return "runtime-agent"
+
+    runtime_agent = RuntimeAgent()
+
+    class FakeSwarm:
+        def __init__(self, agent) -> None:
+            self.topology = [agent]
+
+    class FakeAgent:
+        context_config = None
+        hooks = None
+
+        async def get_swarm(self, _context):
+            return FakeSwarm(runtime_agent)
+
+    class FakeRegistry:
+        @staticmethod
+        def get_agent(agent_id: str):
+            return FakeAgent() if agent_id == "Aworld" else None
+
+        @staticmethod
+        def list_agents():
+            return [FakeAgent()]
+
+    class FakeExecutor:
+        seen_mcp_servers: list[list[str]] = []
+        seen_mcp_config: list[dict] = []
+
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        async def _build_task(self, prompt_text: str, *, session_id: str):
+            FakeExecutor.seen_mcp_servers.append(list(runtime_agent.sandbox.mcp_servers))
+            FakeExecutor.seen_mcp_config.append(runtime_agent.sandbox.mcp_config)
+            return "TASK"
+
+        async def cleanup_resources(self) -> None:
+            return None
+
+    class FakeStreamingOutputs:
+        async def stream_events(self):
+            yield ChunkOutput(
+                data=ModelResponse(id="resp-1", model="demo", content="hi"),
+                metadata={},
+            )
+
+    from aworld_cli.acp import server as server_module
+
+    monkeypatch.setattr(
+        server_module.Runners,
+        "streamed_run_task",
+        lambda *, task: FakeStreamingOutputs(),
+    )
+
+    record = AcpSessionRecord(
+        acp_session_id="acp-1",
+        aworld_session_id="aworld-1",
+        cwd=".",
+        requested_mcp_servers=[
+            {"name": "demo", "command": "demo-server", "args": ["--help"]},
+        ],
+    )
+    bridge = AcpExecutorOutputBridge(
+        registry_cls=FakeRegistry,
+        executor_cls=FakeExecutor,
+        init_agents_func=lambda *_args, **_kwargs: None,
+    )
+
+    _ = [
+        output
+        async for output in bridge.stream_outputs(
+            record=record,
+            prompt_text="hello",
+        )
+    ]
+
+    assert FakeExecutor.seen_mcp_servers == [["base", "demo"]]
+    assert FakeExecutor.seen_mcp_config == [
+        {
+            "mcpServers": {
+                "base": {"command": "base"},
+                "demo": {"command": "demo-server", "args": ["--help"]},
+            }
+        }
+    ]
+    assert runtime_agent.sandbox.mcp_servers == ["base"]
+    assert runtime_agent.sandbox.mcp_config == {"mcpServers": {"base": {"command": "base"}}}
 
 
 @pytest.mark.asyncio
