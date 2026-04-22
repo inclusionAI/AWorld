@@ -106,3 +106,32 @@ def test_acp_server_cancel_missing_session_returns_error() -> None:
     finally:
         proc.kill()
         proc.wait(timeout=5)
+
+
+def test_acp_server_invalid_cwd_returns_structured_error_data(tmp_path: Path) -> None:
+    proc = _spawn_acp_server()
+    try:
+        assert proc.stdin is not None
+        missing_dir = tmp_path / "missing"
+        proc.stdin.write(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "newSession",
+                    "params": {"cwd": str(missing_dir), "mcpServers": []},
+                }
+            )
+            + "\n"
+        )
+        proc.stdin.flush()
+
+        payload = _read_json_line(proc)
+
+        assert payload["id"] == 1
+        assert payload["error"]["message"] == "AWORLD_ACP_INVALID_CWD"
+        assert payload["error"]["data"]["code"] == "AWORLD_ACP_INVALID_CWD"
+        assert payload["error"]["data"]["message"] == "AWORLD_ACP_INVALID_CWD"
+    finally:
+        proc.kill()
+        proc.wait(timeout=5)
