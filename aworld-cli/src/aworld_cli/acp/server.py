@@ -1,29 +1,171 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import io
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
+from rich.console import Console
+
+from aworld.models.model_response import ModelResponse
+from aworld.output.base import MessageOutput
+from aworld.runner import Runners
+
 from .errors import (
     AWORLD_ACP_SESSION_BUSY,
     AWORLD_ACP_SESSION_NOT_FOUND,
+    AWORLD_ACP_REQUIRES_HUMAN,
     AWORLD_ACP_UNSUPPORTED_PROMPT_CONTENT,
     AcpBusyError,
 )
 from .event_mapper import map_runtime_event_to_session_update
+from .human_intercept import AcpRequiresHumanError
 from .protocol import decode_jsonrpc_line, encode_jsonrpc_message
-from .runtime_adapter import normalize_final_text
-from .session_store import AcpSessionStore
+from .runtime_adapter import adapt_output_to_runtime_events
+from .session_store import AcpSessionRecord, AcpSessionStore
 from .turn_controller import TurnController
 
 
+class AcpExecutorOutputBridge:
+    def __init__(
+        self,
+        *,
+        registry_cls: Any | None = None,
+        executor_cls: Any | None = None,
+        init_agents_func: Any | None = None,
+    ) -> None:
+        if registry_cls is None:
+            from aworld_cli.core.agent_registry import LocalAgentRegistry
+
+            registry_cls = LocalAgentRegistry
+        if executor_cls is None:
+            from aworld_cli.executors.local import LocalAgentExecutor
+
+            executor_cls = LocalAgentExecutor
+        if init_agents_func is None:
+            from aworld_cli.core.loader import init_agents
+
+            init_agents_func = init_agents
+
+        self._registry_cls = registry_cls
+        self._executor_cls = executor_cls
+        self._init_agents = init_agents_func
+        self._loaded_agent_dirs: set[str] = set()
+
+    async def stream_outputs(
+        self,
+        *,
+        record: AcpSessionRecord,
+        prompt_text: str,
+    ):
+        agent = await self._resolve_agent()
+        if agent is None:
+            yield MessageOutput(
+                source=ModelResponse(
+                    id=f"acp-fallback-{record.acp_session_id}",
+                    model="aworld-cli/acp-fallback",
+                    content=prompt_text,
+                )
+            )
+            return
+
+        executor = await self._create_executor(agent=agent, record=record)
+        try:
+            task = await executor._build_task(
+                prompt_text,
+                session_id=record.aworld_session_id,
+            )
+            outputs = Runners.streamed_run_task(task=task)
+            async for output in outputs.stream_events():
+                yield output
+        finally:
+            cleanup = getattr(executor, "cleanup_resources", None)
+            if callable(cleanup):
+                cleanup_result = cleanup()
+                if asyncio.iscoroutine(cleanup_result):
+                    await cleanup_result
+
+    async def _resolve_agent(self) -> Any | None:
+        self._load_agents_from_env()
+
+        requested_agent = (os.getenv("AWORLD_ACP_AGENT") or "").strip()
+        if requested_agent:
+            agent = self._registry_cls.get_agent(requested_agent)
+            if agent is None:
+                raise ValueError(f"ACP agent not found: {requested_agent}")
+            return agent
+
+        aworld_agent = self._registry_cls.get_agent("Aworld")
+        if aworld_agent is not None:
+            return aworld_agent
+
+        agents = list(self._registry_cls.list_agents())
+        if not agents:
+            return None
+        if len(agents) == 1:
+            return agents[0]
+
+        available = ", ".join(sorted(agent.name for agent in agents))
+        raise ValueError(
+            "Multiple ACP-capable agents are loaded. Set AWORLD_ACP_AGENT explicitly. "
+            f"Available agents: {available}"
+        )
+
+    def _load_agents_from_env(self) -> None:
+        raw_dirs = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or ""
+        if not raw_dirs:
+            return
+
+        for raw_dir in raw_dirs.split(";"):
+            agent_dir = raw_dir.strip()
+            if not agent_dir or agent_dir in self._loaded_agent_dirs:
+                continue
+            self._loaded_agent_dirs.add(agent_dir)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self._init_agents(agent_dir)
+
+    async def _create_executor(self, *, agent: Any, record: AcpSessionRecord) -> Any:
+        swarm = await self._get_swarm_with_context_fallback(agent)
+        return self._executor_cls(
+            swarm=swarm,
+            context_config=getattr(agent, "context_config", None),
+            console=Console(file=sys.stderr, force_terminal=False, color_system=None),
+            session_id=record.aworld_session_id,
+            hooks=getattr(agent, "hooks", None),
+        )
+
+    @staticmethod
+    async def _get_swarm_with_context_fallback(agent: Any) -> Any:
+        context_config = getattr(agent, "context_config", None)
+        try:
+            return await agent.get_swarm(None)
+        except (TypeError, AttributeError):
+            from aworld.core.context.amni import ApplicationContext, TaskInput
+
+            temp_task_input = TaskInput(
+                user_id="acp_user",
+                session_id="acp_bootstrap_session",
+                task_id="acp_bootstrap_task",
+                task_content="",
+                origin_user_input="",
+            )
+            temp_context = await ApplicationContext.from_input(
+                temp_task_input,
+                context_config=context_config,
+            )
+            return await agent.get_swarm(temp_context)
+
+
 class AcpStdioServer:
-    def __init__(self) -> None:
+    def __init__(self, *, output_bridge: Any | None = None) -> None:
         self._session_store = AcpSessionStore()
         self._turns = TurnController()
         self._state_by_session: dict[str, dict[str, Any]] = {}
         self._write_lock = asyncio.Lock()
+        self._output_bridge = output_bridge or AcpExecutorOutputBridge()
 
     async def run(self) -> int:
         while True:
@@ -76,23 +218,33 @@ class AcpStdioServer:
 
     async def _handle_prompt(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId") or "")
-        if self._session_store.get(session_id) is None:
+        record = self._session_store.get(session_id)
+        if record is None:
             return self._error(request_id, -32001, AWORLD_ACP_SESSION_NOT_FOUND)
 
         prompt_text = self._normalize_prompt_text(params.get("prompt"))
         state = self._state_by_session.setdefault(session_id, {})
 
         async def _run_turn() -> None:
-            event = normalize_final_text(state, prompt_text)
-            update = map_runtime_event_to_session_update(session_id, event)
-            await self._write_message(self._notification("sessionUpdate", update))
+            async for output in self._output_bridge.stream_outputs(
+                record=record,
+                prompt_text=prompt_text,
+            ):
+                for event in adapt_output_to_runtime_events(state, output):
+                    update = map_runtime_event_to_session_update(session_id, event)
+                    await self._write_message(self._notification("sessionUpdate", update))
 
         try:
             task = await self._turns.start_turn(session_id, _run_turn())
         except AcpBusyError:
             return self._error(request_id, -32002, AWORLD_ACP_SESSION_BUSY)
 
-        await task
+        try:
+            await task
+        except asyncio.CancelledError:
+            return self._response(request_id, {"status": "cancelled"})
+        except AcpRequiresHumanError:
+            return self._error(request_id, -32010, AWORLD_ACP_REQUIRES_HUMAN)
         return self._response(request_id, {"status": "completed"})
 
     async def _handle_cancel(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
