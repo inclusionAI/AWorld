@@ -1,5 +1,7 @@
+import inspect
 from pathlib import Path
 
+import aworld.utils.skill_loader as skill_loader_module
 from aworld.skills.compat_registry import CompatSkillRegistry
 from aworld.utils.skill_loader import SkillRegistry as LegacySkillRegistry
 
@@ -45,3 +47,8 @@ def test_legacy_skill_registry_uses_same_compat_behavior(tmp_path: Path) -> None
 
     assert count == 1
     assert registry.get_skill("browser-use")["description"] == "Browser automation"
+
+
+def test_skill_loader_re_exports_framework_compat_registry_without_legacy_class() -> None:
+    assert LegacySkillRegistry is CompatSkillRegistry
+    assert "class SkillRegistry" not in inspect.getsource(skill_loader_module)
