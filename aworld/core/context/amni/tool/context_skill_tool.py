@@ -95,13 +95,16 @@ class ContextSkillTool(AsyncTool):
         return build_observation(observer=self.name(),
                                  ability=ContextExecuteAction.ACTIVE_SKILL.value.name), {}
 
-    def _resolve_skill_file_path(self, skill_path: str, file_path: str) -> Path:
+    def _resolve_skill_file_path(
+        self, skill_path: str, file_path: str, asset_root: str | None = None
+    ) -> Path:
         """
         Resolve the absolute file path from skill path and relative file path.
         
         Args:
-            skill_path: The skill's root directory path (from skill_path field in skill config)
+            skill_path: The skill's SKILL.md path (legacy fallback)
             file_path: Relative file path within the skill directory
+            asset_root: Provider-owned asset root, preferred when present
             
         Returns:
             Resolved absolute Path object
@@ -113,10 +116,7 @@ class ContextSkillTool(AsyncTool):
             >>> resolved = tool._resolve_skill_file_path(skill_path, file_path)
             >>> # Result: Path("/path/to/skills/ppt_theme/forms/style_map.json")
         """
-        # Get the skill directory (parent of SKILL.md)
-        skill_dir = Path(skill_path).parent if skill_path else None
-        if not skill_dir:
-            raise ValueError(f"Invalid skill_path: {skill_path}")
+        skill_dir = self._get_skill_directory(skill_path, asset_root=asset_root)
         
         # Handle @ prefix in file_path (remove it if present)
         if file_path.startswith("@"):
@@ -137,12 +137,15 @@ class ContextSkillTool(AsyncTool):
         
         return full_path
 
-    def _get_skill_directory(self, skill_path: str) -> Path:
+    def _get_skill_directory(
+        self, skill_path: str, asset_root: str | None = None
+    ) -> Path:
         """
         Get the skill directory path from skill_path.
         
         Args:
             skill_path: The skill's SKILL.md file path
+            asset_root: Provider-owned asset root, preferred when present
             
         Returns:
             Path object pointing to the skill directory
@@ -152,6 +155,9 @@ class ContextSkillTool(AsyncTool):
             >>> skill_dir = tool._get_skill_directory(skill_path)
             >>> # Result: Path("/path/to/skills/ppt_theme")
         """
+        if asset_root:
+            return Path(asset_root).resolve()
+
         skill_dir = Path(skill_path).parent if skill_path else None
         if not skill_dir:
             raise ValueError(f"Invalid skill_path: {skill_path}")
@@ -246,7 +252,9 @@ class ContextSkillTool(AsyncTool):
             raise ValueError(f"Skill '{skill_name}' has no skill_path configured")
         
         # Get skill directory
-        skill_dir = self._get_skill_directory(skill_path)
+        skill_dir = self._get_skill_directory(
+            skill_path, asset_root=skill_config.get("asset_root")
+        )
         
         if not skill_dir.exists():
             raise FileNotFoundError(f"Skill directory not found: {skill_dir}")
@@ -284,7 +292,9 @@ class ContextSkillTool(AsyncTool):
             raise ValueError(f"Skill '{skill_name}' has no skill_path configured")
         
         # Get skill directory
-        skill_dir = self._get_skill_directory(skill_path)
+        skill_dir = self._get_skill_directory(
+            skill_path, asset_root=skill_config.get("asset_root")
+        )
         
         # Resolve target directory path
         if dir_path:
@@ -373,7 +383,11 @@ class ContextSkillTool(AsyncTool):
             raise ValueError(f"Skill '{skill_name}' has no skill_path configured")
         
         # Resolve file path
-        full_path = self._resolve_skill_file_path(skill_path, file_path)
+        full_path = self._resolve_skill_file_path(
+            skill_path,
+            file_path,
+            asset_root=skill_config.get("asset_root"),
+        )
         
         # Check if file exists
         if not full_path.exists():
