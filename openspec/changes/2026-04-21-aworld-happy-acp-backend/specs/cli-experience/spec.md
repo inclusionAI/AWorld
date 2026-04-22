@@ -21,6 +21,12 @@ The AWorld CLI SHALL expose the ACP backend as a worker-local host process over 
 - **AND** diagnostics are written to `stderr` instead of mixing with ACP frames
 - **AND** the design does not require Happy to call a custom AWorld HTTP channel API
 
+#### Scenario: Happy consumes ACP frames from stdout
+
+- **WHEN** Happy CLI / daemon reads the backend protocol stream from `stdout`
+- **THEN** `stdout` contains only ACP protocol frames in the expected NDJSON-style wire format
+- **AND** startup banners, debug prints, and human-readable logs are not emitted on `stdout`
+
 ### Requirement: AWorld integrates against Happy's generic ACP backend contract rather than private agent implementations
 
 The AWorld CLI SHALL integrate with Happy through the generic ACP backend contract exposed at the host boundary, without depending on Happy-private agent runner details.
@@ -125,6 +131,22 @@ The AWorld CLI SHALL define `prompt` and `cancel` semantics explicitly on a per-
 - **THEN** the backend returns an explicit session-not-found style error
 - **AND** it does not silently coerce the request into a successful no-op
 
+### Requirement: Phase-1 prompt streams runtime output through sessionUpdate notifications
+
+The AWorld CLI SHALL treat `prompt` as turn control-plane entry and SHALL deliver streamed runtime output through `sessionUpdate` notifications rather than through the `prompt` success payload.
+
+#### Scenario: Prompt is accepted and runtime starts streaming text or tool activity
+
+- **WHEN** the backend accepts a phase-1 `prompt` and the mapped runtime begins producing assistant-visible output
+- **THEN** the backend emits that output through `sessionUpdate` notifications for the target session
+- **AND** the streamed content does not depend on embedding assistant text or tool transcript inside the `prompt` success response
+
+#### Scenario: Notification payload is emitted for a session update
+
+- **WHEN** the backend emits a phase-1 streamed update during a turn
+- **THEN** the notification payload identifies the target session and carries an `update` object containing the session-update subtype
+- **AND** the design does not rely on controller-side inference from raw stdout text outside the ACP notification channel
+
 ### Requirement: Phase-1 ACP event contract prioritizes Happy-consumable text and tool lifecycle updates
 
 The AWorld CLI SHALL emit a constrained ACP event subset that is directly consumable by Happy's generic ACP backend path, without inventing additional host-specific status events in phase 1.
@@ -147,6 +169,13 @@ The AWorld CLI SHALL emit a constrained ACP event subset that is directly consum
 - **THEN** the backend emits a `tool_call` start event followed by a `tool_call_update` terminal event
 - **AND** both events reuse the same stable `toolCallId`
 - **AND** the backend does not emit duplicate tool-call starts for the same `toolCallId` within one turn
+
+#### Scenario: Tool-call updates are shaped for Happy's current session-update handlers
+
+- **WHEN** the backend emits phase-1 `tool_call` or `tool_call_update` session updates
+- **THEN** it uses `kind` as the primary tool-name field
+- **AND** it places tool input or output payload in `content`
+- **AND** it does not require Happy to recover tool identity primarily from optional display-only fields such as `title`
 
 #### Scenario: Runtime only yields a final assistant message
 
@@ -200,7 +229,8 @@ The AWorld CLI SHALL keep the phase-1 `initialize` and `newSession` payloads lim
 #### Scenario: Phase-1 initialize response is emitted
 
 - **WHEN** the phase-1 ACP host responds to `initialize`
-- **THEN** it advertises only the prompt/session capabilities that are already implemented and validated in the current phase
+- **THEN** it uses ACP SDK-aligned field naming such as `serverInfo`
+- **AND** it advertises only the prompt/session capabilities that are already implemented and validated in the current phase
 - **AND** it does not advertise `loadSession`, session listing, image/audio prompt support, or embedded-context support unless those capabilities are actually bridged
 
 #### Scenario: Phase-1 newSession response is emitted
@@ -208,6 +238,17 @@ The AWorld CLI SHALL keep the phase-1 `initialize` and `newSession` payloads lim
 - **WHEN** the phase-1 ACP host responds to `newSession`
 - **THEN** the response is allowed to contain only the session identifier needed for follow-up `prompt` calls
 - **AND** the design does not require config-options, mode catalogs, model catalogs, or richer session metadata to make the phase-1 Happy control path work
+
+### Requirement: Phase-1 newSession input handling is compatible with Happy host inputs
+
+The AWorld CLI SHALL define explicit phase-1 handling for `newSession` inputs such as `cwd` and `mcpServers` so Happy can launch sessions without parameter-shape mismatches.
+
+#### Scenario: Happy sends cwd and mcpServers in newSession
+
+- **WHEN** the phase-1 backend receives a `newSession` request containing `cwd` and `mcpServers`
+- **THEN** it accepts those fields at the host boundary
+- **AND** it uses `cwd` as the initial session working-directory input unless rejected by explicit host policy
+- **AND** it does not silently pretend unsupported `mcpServers` entries were fully bridged if they were not
 
 ### Requirement: Phase-1 human-in-loop failures are terminal at the turn level, not at the backend level
 
@@ -226,6 +267,17 @@ The AWorld CLI SHALL treat unbridged human-in-loop or approval flows as current-
 - **THEN** they do not model that case as a backend-wide `stopped` outcome
 - **AND** they do not silently coerce it into `cancelled`
 - **AND** they do not hide it inside normal assistant text as if the turn had succeeded
+
+### Requirement: ACP mode prevents hidden worker-terminal blocking on CLIHumanHandler paths
+
+The AWorld CLI SHALL prevent ACP-controlled turns from blocking on the default local-terminal `CLIHumanHandler` path.
+
+#### Scenario: Runtime reaches a human-interaction branch during ACP execution
+
+- **WHEN** an ACP-controlled turn reaches a branch that would otherwise invoke `CLIHumanHandler` or equivalent local-terminal input handling
+- **THEN** the host intercepts that path before hidden terminal input is awaited
+- **AND** it converts the turn into the designed phase-1 terminal requires-human or approval-unsupported failure surface
+- **AND** it does not require changes inside `aworld/core` to do so
 
 ### Requirement: Shared plugin and hook bootstrap helper remains a narrow host-owned surface
 
