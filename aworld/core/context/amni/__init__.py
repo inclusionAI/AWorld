@@ -368,10 +368,7 @@ class AmniContext(Context):
         """
         init skill list from agent
         """
-        self.put(SKILL_LIST_KEY, skill_list, namespace=namespace)
-        for skill_name, skill_config in skill_list.items():
-            if skill_config.get('active', False):
-                await self.active_skill(skill_name, namespace)
+        await self.skill_service.init_skill_list(skill_list, namespace)
 
     async def active_skill(self, skill_name: str, namespace: str) -> str:
         """
