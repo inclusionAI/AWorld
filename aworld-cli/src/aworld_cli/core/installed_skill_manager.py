@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from aworld.plugins.discovery import discover_plugins
-from aworld.utils.skill_loader import collect_skill_docs
+from aworld.skills.compat_provider import build_compat_provider
 from aworld_cli.core.plugin_manager import PluginManager, list_builtin_plugins
 
 logger = logging.getLogger(__name__)
@@ -342,7 +342,8 @@ class InstalledSkillManager:
     def _count_skills(self, source_path: Path) -> int:
         if not source_path.exists():
             return 0
-        return len(collect_skill_docs(source_path))
+        provider = build_compat_provider(source_path)
+        return len(list(provider.list_descriptors()))
 
     def _normalize_entry_path(self, path: Path) -> Path:
         expanded_path = path.expanduser()
@@ -547,9 +548,9 @@ class InstalledSkillManager:
     def resolve_entry_source(self, entry_path: Path) -> Path:
         entry_path = entry_path.expanduser()
         nested_skills_dir = entry_path / "skills"
-        if nested_skills_dir.is_dir() and collect_skill_docs(nested_skills_dir):
+        if nested_skills_dir.is_dir() and self._count_skills(nested_skills_dir):
             return nested_skills_dir.resolve()
-        if entry_path.is_dir() and collect_skill_docs(entry_path):
+        if entry_path.is_dir() and self._count_skills(entry_path):
             return entry_path.resolve()
         raise ValueError(f"No skill directories found under {entry_path}")
 

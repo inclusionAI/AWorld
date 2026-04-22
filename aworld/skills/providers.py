@@ -7,6 +7,18 @@ from typing import Iterable
 from aworld.skills.models import SkillContent, SkillDescriptor
 
 
+def read_front_matter_lines(skill_file: Path) -> list[str]:
+    """Read only the front matter block without decoding the whole file body."""
+    lines: list[str] = []
+    with skill_file.open("rb") as handle:
+        for raw_line in handle:
+            line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+            lines.append(line)
+            if len(lines) > 1 and line.strip() == "---":
+                break
+    return lines
+
+
 class SkillProvider(ABC):
     @abstractmethod
     def provider_id(self) -> str:

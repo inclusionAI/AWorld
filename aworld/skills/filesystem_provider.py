@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from aworld.skills.models import SkillContent, SkillDescriptor
-from aworld.skills.providers import SkillProvider
+from aworld.skills.providers import SkillProvider, read_front_matter_lines
 from aworld.utils.skill_loader import (
     evaluate_skill_requirements,
     extract_front_matter,
@@ -32,12 +32,7 @@ class FilesystemSkillProvider(SkillProvider):
                 yield resolved
 
     def _read_front_matter(self, skill_file: Path) -> dict[str, Any]:
-        content_lines: list[str] = []
-        with skill_file.open("r", encoding="utf-8") as handle:
-            for line in handle:
-                content_lines.append(line.rstrip("\n"))
-                if len(content_lines) > 1 and line.strip() == "---":
-                    break
+        content_lines = read_front_matter_lines(skill_file)
         front_matter, _ = extract_front_matter(content_lines)
         return front_matter
 

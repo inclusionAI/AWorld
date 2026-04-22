@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from aworld.skills.models import SkillContent, SkillDescriptor
-from aworld.skills.providers import SkillProvider
+from aworld.skills.providers import SkillProvider, read_front_matter_lines
 from aworld.utils.skill_loader import (
     evaluate_skill_requirements,
     extract_front_matter,
@@ -37,7 +37,7 @@ class PluginSkillProvider(SkillProvider):
         return None
 
     def _load_front_matter(self, skill_file: Path) -> dict[str, Any]:
-        content = skill_file.read_text(encoding="utf-8").splitlines()
+        content = read_front_matter_lines(skill_file)
         front_matter, _ = extract_front_matter(content)
         return front_matter
 
