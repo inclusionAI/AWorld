@@ -539,20 +539,28 @@ def _build_top_level_command_registry() -> TopLevelCommandRegistry:
             "serve",
             "batch",
             "batch-job",
-            "plugins",
             "gateway",
         }
     )
     register_builtin_top_level_commands(registry)
 
     try:
-        from .core.plugin_manager import PluginManager
+        from .core.plugin_manager import PluginManager, get_builtin_plugin_roots
 
         plugin_manager = PluginManager()
-        sync_plugin_cli_commands(
-            registry,
-            discover_plugins(plugin_manager.get_runtime_plugin_roots()),
-        )
+        if hasattr(plugin_manager, "get_runtime_plugin_roots"):
+            plugin_roots = [
+                Path(root).resolve() for root in plugin_manager.get_runtime_plugin_roots()
+            ]
+        else:
+            plugin_roots = [Path(root).resolve() for root in get_builtin_plugin_roots()]
+    except Exception:
+        from .core.plugin_manager import get_builtin_plugin_roots
+
+        plugin_roots = [Path(root).resolve() for root in get_builtin_plugin_roots()]
+
+    try:
+        sync_plugin_cli_commands(registry, discover_plugins(plugin_roots))
     except Exception:
         pass
 
@@ -698,149 +706,6 @@ def main():
                 )
             )
             return
-
-    # Create a minimal parser to check if command is a special-case command
-    minimal_parser = argparse.ArgumentParser(add_help=False)
-    minimal_parser.add_argument('command', nargs='?', default='interactive')
-    minimal_args, _ = minimal_parser.parse_known_args()
-
-    # Handle plugin command specially.
-    if minimal_args.command in {"plugin", "plugins"}:
-        plugin_parser = argparse.ArgumentParser(description="Plugin management commands", prog="aworld-cli plugins")
-        plugin_subparsers = plugin_parser.add_subparsers(dest='plugin_action', help='Plugin action to perform')
-
-        # install subcommand
-        install_parser = plugin_subparsers.add_parser('install', help='Install a plugin')
-        install_parser.add_argument('plugin_name', help='Name of the plugin to install')
-        install_parser.add_argument('--url', type=str, help='Plugin repository URL (GitHub or other git URL)')
-        install_parser.add_argument('--local-path', type=str, help='Local plugin path')
-        install_parser.add_argument('--force', action='store_true', help='Force reinstall/overwrite existing plugin')
-
-        # remove subcommand
-        remove_parser = plugin_subparsers.add_parser('remove', help='Remove a plugin')
-        remove_parser.add_argument('plugin_name', help='Name of the plugin to remove')
-
-        # enable subcommand
-        enable_parser = plugin_subparsers.add_parser('enable', help='Enable an installed plugin')
-        enable_parser.add_argument('plugin_name', help='Name of the plugin to enable')
-
-        # disable subcommand
-        disable_parser = plugin_subparsers.add_parser('disable', help='Disable an installed plugin')
-        disable_parser.add_argument('plugin_name', help='Name of the plugin to disable')
-
-        # reload subcommand
-        reload_parser = plugin_subparsers.add_parser('reload', help='Reload plugin metadata from disk')
-        reload_parser.add_argument('plugin_name', help='Name of the plugin to reload')
-
-        # validate subcommand
-        validate_parser = plugin_subparsers.add_parser('validate', help='Validate a plugin manifest or plugin root')
-        validate_parser.add_argument('plugin_name', nargs='?', help='Installed plugin name to validate')
-        validate_parser.add_argument('--path', type=str, help='Explicit plugin root path to validate')
-
-        # list subcommand
-        list_parser = plugin_subparsers.add_parser('list', help='List installed plugins')
-
-        # Parse plugin subcommand arguments
-        try:
-            plugin_args = plugin_parser.parse_args(sys.argv[2:])
-        except SystemExit:
-            return
-
-        plugin_action = plugin_args.plugin_action or "list"
-
-        # Handle plugin commands
-        from .core.plugin_manager import (
-            PluginManager,
-            list_available_plugins,
-            render_plugins_table,
-            validate_plugin_path,
-        )
-
-        manager = PluginManager()
-
-        if plugin_action == "install":
-            if not plugin_args.url and not plugin_args.local_path:
-                print("❌ Error: Either --url or --local-path must be provided")
-                install_parser.print_help()
-                return
-
-            try:
-                success = manager.install(
-                    plugin_name=plugin_args.plugin_name,
-                    url=plugin_args.url,
-                    local_path=plugin_args.local_path,
-                    force=plugin_args.force
-                )
-                if success:
-                    print(f"✅ Plugin '{plugin_args.plugin_name}' installed successfully")
-                    print(f"📍 Location: {manager.plugin_dir / plugin_args.plugin_name}")
-                else:
-                    print(f"❌ Failed to install plugin '{plugin_args.plugin_name}'")
-            except Exception as e:
-                print(f"❌ Error installing plugin: {e}")
-                return
-
-        elif plugin_action == "remove":
-            success = manager.remove(plugin_args.plugin_name)
-            if not success:
-                return
-
-        elif plugin_action == "enable":
-            try:
-                plugin_state = manager.enable(plugin_args.plugin_name)
-                print(f"✅ Plugin '{plugin_args.plugin_name}' enabled")
-                print(f"📍 Location: {plugin_state['path']}")
-            except KeyError:
-                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
-                return
-
-        elif plugin_action == "disable":
-            try:
-                plugin_state = manager.disable(plugin_args.plugin_name)
-                print(f"✅ Plugin '{plugin_args.plugin_name}' disabled")
-                print(f"📍 Location: {plugin_state['path']}")
-            except KeyError:
-                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
-                return
-
-        elif plugin_action == "reload":
-            try:
-                plugin_state = manager.reload(plugin_args.plugin_name)
-                print(f"✅ Plugin '{plugin_args.plugin_name}' reloaded")
-                print(f"📍 Location: {plugin_state['path']}")
-            except KeyError:
-                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
-                return
-
-        elif plugin_action == "validate":
-            try:
-                if plugin_args.path:
-                    plugin_state = validate_plugin_path(Path(plugin_args.path))
-                    label = plugin_state["plugin_id"]
-                elif plugin_args.plugin_name:
-                    plugin_state = manager.validate(plugin_args.plugin_name)
-                    label = plugin_args.plugin_name
-                else:
-                    print("❌ Error: specify either <plugin_name> or --path")
-                    validate_parser.print_help()
-                    return
-
-                print(f"✅ Plugin '{label}' is valid")
-                print(f"📍 Location: {plugin_state['path']}")
-                print(f"🆔 Plugin ID: {plugin_state['plugin_id']}")
-                print(f"🧩 Framework: {plugin_state['framework_source']}")
-                print(f"⚙️ Capabilities: {', '.join(plugin_state['capabilities']) or '-'}")
-            except KeyError:
-                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
-                return
-            except Exception as e:
-                print(f"❌ Plugin validation failed: {e}")
-                return
-
-        elif plugin_action == "list":
-            print(render_plugins_table(list_available_plugins(manager), manager.plugin_dir), end="")
-
-        return
 
     if _maybe_dispatch_top_level_command(sys.argv):
         return
