@@ -26,6 +26,8 @@
 - [ ] 2.13 Freeze the required non-interactive `self-test` contract for Layer-1 validation and keep any `debug_client` optional.
 - [ ] 2.14 Freeze the minimum automated `self-test` assertion matrix and separate it from optional manual debugging flows.
 - [ ] 2.15 Freeze the machine-checkable `self-test` result contract, including stable case identifiers, summary fields, and exit-code semantics.
+- [ ] 2.16 Freeze the required phase-1 handling of `newSession.cwd` and `newSession.mcpServers` so Happy host inputs do not become undocumented compatibility debt.
+- [ ] 2.17 Freeze ACP SDK terminology alignment in design artifacts, especially `serverInfo` naming and `sessionUpdate` notification terminology.
 
 ## 3. Capability Boundaries
 
@@ -47,6 +49,11 @@
 - [ ] 3.16 Freeze the exact normalized event field set and representative examples for `text_delta`, `thought_delta`, `tool_start`, `tool_end`, `final_text`, and `turn_error`.
 - [ ] 3.17 Freeze the `turn_error` translation rules so prompt failure, post-error event suppression, and known-tool lifecycle closure are deterministic.
 - [ ] 3.18 Freeze the rule that `available_commands_update` and similar command-catalog metadata stay out of the required phase-1 ACP contract.
+- [ ] 3.19 Freeze the explicit `prompt` control-plane vs `sessionUpdate` data-plane relationship so streaming delivery is not conflated with prompt response payloads.
+- [ ] 3.20 Freeze the host-owned interception strategy for `CLIHumanHandler` paths so ACP mode never blocks on hidden terminal input.
+- [ ] 3.21 Freeze the Happy-compatible `tool_call` / `tool_call_update` field contract, especially `kind`, `content`, and `toolCallId`.
+- [ ] 3.22 Freeze the stdout cleanliness and NDJSON framing rules so no non-protocol bytes can leak into ACP stdout.
+- [ ] 3.23 Freeze the Happy idle-detection compatibility contract so tool closure and final chunk ordering support downstream idle inference.
 
 ## 4. Implementation Planning
 
@@ -72,3 +79,4 @@
 - [ ] 5.6 Define Gate 3 exit criteria for capability preservation, especially Happy voice/session routing continuity rather than Happy voice-provider internals.
 - [ ] 5.7 Freeze the Layer-1 self-test pass/fail contract so automation can assert required-case outcomes without parsing free-form diagnostics.
 - [ ] 5.8 Freeze the Layer-2 turn-failure assertions so Happy-integrated validation distinguishes turn-level failure from backend-level host failure.
+- [ ] 5.9 Define startup validation for `initialize` / `newSession` timeout and retry safety so Happy host retry behavior is exercised before implementation is considered stable.
