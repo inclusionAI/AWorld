@@ -142,6 +142,7 @@ os.environ.setdefault('AWORLD_DISABLE_CONSOLE_LOG', 'true')
 
 # Import aworld modules (they will respect the environment variable)
 from aworld.logs.util import logger
+from .acp.cli import build_acp_parser, find_acp_command_index
 from .runtime.cli import CliRuntime
 from .console import AWorldCLI
 from .models import AgentInfo
@@ -458,6 +459,23 @@ Batch Jobs:
         action='store_true',
         help='Disable banner display on startup / 启动时不显示 banner'
     )
+
+    acp_index = find_acp_command_index(sys.argv)
+    if acp_index is not None:
+        acp_parser = build_acp_parser()
+        try:
+            acp_args = acp_parser.parse_args(sys.argv[acp_index + 1 :])
+        except SystemExit:
+            return
+
+        if acp_args.acp_action == "self-test":
+            from .acp.self_test import run_self_test
+
+            sys.exit(asyncio.run(run_self_test()))
+
+        from .acp.server import run_stdio_server
+
+        sys.exit(asyncio.run(run_stdio_server()))
 
     # Handle gateway command specially
     from .gateway_cli import find_gateway_command_index
