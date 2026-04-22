@@ -173,6 +173,7 @@ The recommended way to make skills persistently available is the installed-skill
 ```
 
 AWorld scans this directory automatically on startup.
+Installed skill packages are stored as plugin-managed packages internally, but you still use the `aworld-cli skill ...` surface.
 
 ### CLI-managed install
 
@@ -181,6 +182,7 @@ aworld-cli skill install https://github.com/example/skills.git
 aworld-cli skill install ./local-skills
 aworld-cli skill list
 aworld-cli skill remove <install-id>
+aworld-cli skill update <install-id>
 ```
 
 ### Manual install
@@ -204,6 +206,24 @@ repo/<skill-name>/SKILL.md
 ### Scope
 
 Installed skills default to `global`, and `aworld-cli skill install --scope agent:<name>` limits them to a single agent.
+
+### Explicit selection
+
+Installed skills are auto-discovered on the next startup without requiring `--skill-path`.
+
+```bash
+# Force one or more installed skills for a direct task
+aworld-cli --agent Aworld --skill demo --task "use the demo skill explicitly"
+aworld-cli --agent Aworld --skill browser-use --skill code-review --task "review this PR"
+```
+
+In interactive mode:
+
+- `/skills` lists resolver-visible skills for the current agent
+- `/skills use <name>` forces that skill on the next task
+- `/skills clear` clears the pending explicit selection
+
+`--skill-path`, `SKILLS_PATH`, and `SKILLS_DIR` remain supported as compatibility and development overrides, but installed skill packages are now the default workflow.
 
 
 ## More Help

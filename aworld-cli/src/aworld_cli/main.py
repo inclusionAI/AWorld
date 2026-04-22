@@ -218,15 +218,7 @@ def _resolve_agent_dirs(cli_agent_dirs: Optional[list[str]]) -> list[str]:
     return [default.strip()] if default.strip() else ["./agents"]
 
 
-def main():
-    """
-    Entry point for the AWorld CLI.
-    Supports both interactive and non-interactive (direct run) modes.
-    """
-    # Check for --no-banner flag early (before parsing)
-    show_banner_flag = "--no-banner" not in sys.argv
-    
-    # English help text
+def _help_texts() -> tuple[str, str, str, str]:
     english_epilog = """
 Examples:
 
@@ -249,6 +241,9 @@ Direct Run Mode:
   
   # Run with duration limit
   aworld-cli --task "add features" --agent MyAgent --max-duration 2h
+  
+  # Force an installed skill for this task
+  aworld-cli --task "review this PR" --agent MyAgent --skill code-review
 
 Remote Backends:
   # Use remote backend
@@ -337,8 +332,7 @@ Skill Management:
   aworld-cli skill remove my-skills
   aworld-cli skill update my-skills
 """
-    
-    # Chinese help text
+
     chinese_epilog = """
 示例：
 
@@ -364,6 +358,9 @@ Skill Management:
   
   # 使用远程图片 URL 运行
   aworld-cli --task "分析这张图片 @https://example.com/image.png" --agent MyAgent
+  
+  # 显式指定本次任务使用的 skill
+  aworld-cli --task "review this PR" --agent MyAgent --skill code-review
 
 远程后端：
   # 使用远程后端
@@ -460,32 +457,83 @@ Batch Jobs:
   aworld-cli skill remove my-skills
   aworld-cli skill update my-skills
 """
-    
+
     description_en = "AWorld Agent CLI - Interact with agents directly from the terminal"
     description_zh = "AWorld Agent CLI - 从终端直接与 agents 交互"
-    
+    return english_epilog, chinese_epilog, description_en, description_zh
+
+
+def build_parser(zh: bool = False) -> argparse.ArgumentParser:
+    _, _, description_en, description_zh = _help_texts()
     parser = argparse.ArgumentParser(
-        description=description_en,
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        description=description_zh if zh else description_en,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    
+
     parser.add_argument(
-        '-zh', '--zh',
-        action='store_true',
-        help='Show help in Chinese / 显示中文帮助'
+        "-zh",
+        "--zh",
+        action="store_true",
+        help="显示中文帮助" if zh else "Show help in Chinese / 显示中文帮助",
     )
-    
     parser.add_argument(
-        '--examples',
-        action='store_true',
-        help='Show usage examples / 显示使用示例'
+        "--examples",
+        action="store_true",
+        help="显示使用示例" if zh else "Show usage examples / 显示使用示例",
     )
-    
     parser.add_argument(
-        '--no-banner',
-        action='store_true',
-        help='Disable banner display on startup / 启动时不显示 banner'
+        "--no-banner",
+        action="store_true",
+        help="启动时不显示 banner" if zh else "Disable banner display on startup / 启动时不显示 banner",
     )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="interactive",
+        choices=["interactive", "list", "serve", "batch", "batch-job", "plugins", "skill"],
+        help=(
+            '要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugins" 管理插件，使用 "skill" 管理已安装技能包。'
+            if zh
+            else 'Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers, '
+            '"batch-job" to run batch jobs, "plugins" to manage plugins, and "skill" to manage installed skills.'
+        ),
+    )
+    parser.add_argument("--task", type=str, help="发送给 agent 的任务（非交互模式）" if zh else "Task to send to agent (non-interactive mode)")
+    parser.add_argument("--agent", type=str, help="要使用的 agent 名称（直接运行模式必需）" if zh else "Agent name (default: Aworld in interactive mode; required for direct run mode)")
+    parser.add_argument("--skill", dest="skill", action="append", help="显式请求一个已安装的 skill 名称。可重复传入。" if zh else "Explicitly request an installed skill by name. Can be passed multiple times.")
+    parser.add_argument("--max-runs", type=int, help="最大运行次数（直接运行模式）" if zh else "Maximum number of runs (for direct run mode)")
+    parser.add_argument("--max-cost", type=float, help="最大成本（美元）（直接运行模式）" if zh else "Maximum cost in USD (for direct run mode)")
+    parser.add_argument("--max-duration", type=str, help='最大时长（例如："1h", "30m", "2h30m"）（直接运行模式）' if zh else 'Maximum duration (e.g., "1h", "30m", "2h30m") (for direct run mode)')
+    parser.add_argument("--completion-signal", type=str, help="查找的完成信号字符串（直接运行模式）" if zh else "Completion signal string to look for (for direct run mode)")
+    parser.add_argument("--completion-threshold", type=int, default=3, help="需要的连续完成信号数量（默认：3）" if zh else "Number of consecutive completion signals needed (default: 3)")
+    parser.add_argument("--session_id", "--session-id", type=str, dest="session_id", help="要使用的会话 ID（直接运行模式）" if zh else "Session ID to use for this task (for direct run mode)")
+    parser.add_argument("--non-interactive", action="store_true", help="以非交互模式运行（无用户输入）" if zh else "Run in non-interactive mode (no user input)")
+    parser.add_argument("--env-file", type=str, default=".env", help=".env 文件路径（默认：.env）" if zh else "Path to .env file (default: .env)")
+    parser.add_argument("--remote-backend", type=str, action="append", help="远程后端 URL（可指定多次）。覆盖 REMOTE_AGENT_BACKEND 环境变量。" if zh else "Remote backend URL (can be specified multiple times). Overrides REMOTE_AGENT_BACKEND environment variable.")
+    parser.add_argument("--agent-dir", type=str, action="append", help="包含 agents 的目录（可指定多次）。未指定时默认使用 LOCAL_AGENTS_DIR 或 AWORLD_DEFAULT_AGENT_DIR（默认 ./agents）。" if zh else "Directory containing agents (can be specified multiple times). Default: LOCAL_AGENTS_DIR or AWORLD_DEFAULT_AGENT_DIR (./agents) when not set.")
+    parser.add_argument("--agent-file", type=str, action="append", help="单个 agent 文件路径（Python .py 或 Markdown .md，可指定多次）。" if zh else "Individual agent file path (Python .py or Markdown .md, can be specified multiple times).")
+    parser.add_argument("--skill-path", type=str, action="append", help="技能源路径（本地目录或 GitHub URL，可指定多次）。覆盖 SKILLS_PATH 环境变量。" if zh else "Skill source path (local directory or GitHub URL, can be specified multiple times). Overrides SKILLS_PATH environment variable.")
+    parser.add_argument("--http", action="store_true", help="启动 HTTP 服务器（用于 serve 命令）" if zh else "Start HTTP server (for serve command)")
+    parser.add_argument("--http-host", type=str, default="0.0.0.0", help="HTTP 服务器主机（默认：0.0.0.0）" if zh else "HTTP server host (default: 0.0.0.0)")
+    parser.add_argument("--http-port", type=int, default=8000, help="HTTP 服务器端口（默认：8000）" if zh else "HTTP server port (default: 8000)")
+    parser.add_argument("--mcp", action="store_true", help="启动 MCP 服务器（用于 serve 命令）" if zh else "Start MCP server (for serve command)")
+    parser.add_argument("--mcp-name", type=str, default="AWorldAgent", help="MCP 服务器名称（默认：AWorldAgent）" if zh else "MCP server name (default: AWorldAgent)")
+    parser.add_argument("--mcp-transport", type=str, choices=["stdio", "sse", "streamable-http"], default="stdio", help="MCP 传输类型：stdio、sse 或 streamable-http（默认：stdio）" if zh else "MCP transport type: stdio, sse, or streamable-http (default: stdio)")
+    parser.add_argument("--mcp-host", type=str, default="0.0.0.0", help="MCP 服务器主机（用于 SSE/streamable-http 传输，默认：0.0.0.0）" if zh else "MCP server host for SSE/streamable-http transport (default: 0.0.0.0)")
+    parser.add_argument("--mcp-port", type=int, default=8001, help="MCP 服务器端口（用于 SSE/streamable-http 传输，默认：8001）" if zh else "MCP server port for SSE/streamable-http transport (default: 8001)")
+    parser.add_argument("--config", action="store_true", help="启动交互式全局配置编辑器（模型提供商、API 密钥等）并退出。" if zh else "Launch interactive global configuration editor (model provider, API key, etc.) and exit.")
+    return parser
+
+
+def main():
+    """
+    Entry point for the AWorld CLI.
+    Supports both interactive and non-interactive (direct run) modes.
+    """
+    # Check for --no-banner flag early (before parsing)
+    show_banner_flag = "--no-banner" not in sys.argv
+    
+    english_epilog, chinese_epilog, _, _ = _help_texts()
 
     # Create a minimal parser to check if command is a special-case command
     minimal_parser = argparse.ArgumentParser(add_help=False)
@@ -723,170 +771,8 @@ Batch Jobs:
 
         return
 
-    # Continue with normal argument parsing for other commands
-    parser.add_argument(
-        'command',
-        nargs='?',
-        default='interactive',
-        choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugins', 'skill'],
-        help='Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers, '
-             '"batch-job" to run batch jobs, "plugins" to manage plugins, and "skill" to manage installed skills.'
-    )
-    
-    parser.add_argument(
-        '--task',
-        type=str,
-        help='Task to send to agent (non-interactive mode)'
-    )
-    
-    parser.add_argument(
-        '--agent',
-        type=str,
-        help='Agent name (default: Aworld in interactive mode; required for direct run mode)'
-    )
-    
-    parser.add_argument(
-        '--max-runs',
-        type=int,
-        help='Maximum number of runs (for direct run mode)'
-    )
-    
-    parser.add_argument(
-        '--max-cost',
-        type=float,
-        help='Maximum cost in USD (for direct run mode)'
-    )
-    
-    parser.add_argument(
-        '--max-duration',
-        type=str,
-        help='Maximum duration (e.g., "1h", "30m", "2h30m") (for direct run mode)'
-    )
-    
-    parser.add_argument(
-        '--completion-signal',
-        type=str,
-        help='Completion signal string to look for (for direct run mode)'
-    )
-    
-    parser.add_argument(
-        '--completion-threshold',
-        type=int,
-        default=3,
-        help='Number of consecutive completion signals needed (default: 3)'
-    )
-    
-    parser.add_argument(
-        '--session_id',
-        '--session-id',
-        type=str,
-        dest='session_id',
-        help='Session ID to use for this task (for direct run mode)'
-    )
-    
-    parser.add_argument(
-        '--non-interactive',
-        action='store_true',
-        help='Run in non-interactive mode (no user input)'
-    )
-    
-    parser.add_argument(
-        '--env-file',
-        type=str,
-        default='.env',
-        help='Path to .env file (default: .env)'
-    )
-    
-    parser.add_argument(
-        '--remote-backend',
-        type=str,
-        action='append',
-        help='Remote backend URL (can be specified multiple times). Overrides REMOTE_AGENT_BACKEND environment variable.'
-    )
-    
-    parser.add_argument(
-        '--agent-dir',
-        type=str,
-        action='append',
-        help='Directory containing agents (can be specified multiple times). Default: LOCAL_AGENTS_DIR or AWORLD_DEFAULT_AGENT_DIR (./agents) when not set.'
-    )
-    
-    parser.add_argument(
-        '--agent-file',
-        type=str,
-        action='append',
-        help='Individual agent file path (Python .py or Markdown .md, can be specified multiple times).'
-    )
-    
-    parser.add_argument(
-        '--skill-path',
-        type=str,
-        action='append',
-        help='Skill source path (local directory or GitHub URL, can be specified multiple times). Overrides SKILLS_PATH environment variable.'
-    )
-    
-    # Server options (for 'serve' command)
-    parser.add_argument(
-        '--http',
-        action='store_true',
-        help='Start HTTP server (for serve command)'
-    )
-    
-    parser.add_argument(
-        '--http-host',
-        type=str,
-        default='0.0.0.0',
-        help='HTTP server host (default: 0.0.0.0)'
-    )
-    
-    parser.add_argument(
-        '--http-port',
-        type=int,
-        default=8000,
-        help='HTTP server port (default: 8000)'
-    )
-    
-    parser.add_argument(
-        '--mcp',
-        action='store_true',
-        help='Start MCP server (for serve command)'
-    )
-    
-    parser.add_argument(
-        '--mcp-name',
-        type=str,
-        default='AWorldAgent',
-        help='MCP server name (default: AWorldAgent)'
-    )
-    
-    parser.add_argument(
-        '--mcp-transport',
-        type=str,
-        choices=['stdio', 'sse', 'streamable-http'],
-        default='stdio',
-        help='MCP transport type: stdio, sse, or streamable-http (default: stdio)'
-    )
-    
-    parser.add_argument(
-        '--mcp-host',
-        type=str,
-        default='0.0.0.0',
-        help='MCP server host for SSE/streamable-http transport (default: 0.0.0.0)'
-    )
-    
-    parser.add_argument(
-        '--mcp-port',
-        type=int,
-        default=8001,
-        help='MCP server port for SSE/streamable-http transport (default: 8001)'
-    )
-    
-    parser.add_argument(
-        '--config',
-        action='store_true',
-        help='Launch interactive global configuration editor (model provider, API key, etc.) and exit.'
-    )
-    
+    parser = build_parser()
+
     # Parse arguments normally, but keep unknown args for inner plugin commands
     args, remaining_argv = parser.parse_known_args()
 
@@ -909,37 +795,7 @@ Batch Jobs:
     
     # Handle -zh flag: if specified, show Chinese help and exit
     if args.zh:
-        parser_zh = argparse.ArgumentParser(
-            description=description_zh,
-            formatter_class=argparse.RawDescriptionHelpFormatter
-        )
-        parser_zh.add_argument('-zh', '--zh', action='store_true', help='显示中文帮助')
-        parser_zh.add_argument('--examples', action='store_true', help='显示使用示例')
-        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugins', 'skill'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugins" 管理插件，使用 "skill" 管理已安装技能包。')
-        parser_zh.add_argument('--task', type=str, help='发送给 agent 的任务（非交互模式）')
-        parser_zh.add_argument('--agent', type=str, help='要使用的 agent 名称（直接运行模式必需）')
-        parser_zh.add_argument('--max-runs', type=int, help='最大运行次数（直接运行模式）')
-        parser_zh.add_argument('--max-cost', type=float, help='最大成本（美元）（直接运行模式）')
-        parser_zh.add_argument('--max-duration', type=str, help='最大时长（例如："1h", "30m", "2h30m"）（直接运行模式）')
-        parser_zh.add_argument('--completion-signal', type=str, help='查找的完成信号字符串（直接运行模式）')
-        parser_zh.add_argument('--completion-threshold', type=int, default=3, help='需要的连续完成信号数量（默认：3）')
-        parser_zh.add_argument('--session_id', '--session-id', type=str, dest='session_id', help='要使用的会话 ID（直接运行模式）')
-        parser_zh.add_argument('--non-interactive', action='store_true', help='以非交互模式运行（无用户输入）')
-        parser_zh.add_argument('--env-file', type=str, default='.env', help='.env 文件路径（默认：.env）')
-        parser_zh.add_argument('--remote-backend', type=str, action='append', help='远程后端 URL（可指定多次）。覆盖 REMOTE_AGENT_BACKEND 环境变量。')
-        parser_zh.add_argument('--agent-dir', type=str, action='append', help='包含 agents 的目录（可指定多次）。未指定时默认使用 LOCAL_AGENTS_DIR 或 AWORLD_DEFAULT_AGENT_DIR（默认 ./agents）。')
-        parser_zh.add_argument('--agent-file', type=str, action='append', help='单个 agent 文件路径（Python .py 或 Markdown .md，可指定多次）。')
-        parser_zh.add_argument('--skill-path', type=str, action='append', help='技能源路径（本地目录或 GitHub URL，可指定多次）。覆盖 SKILLS_PATH 环境变量。')
-        parser_zh.add_argument('--http', action='store_true', help='启动 HTTP 服务器（用于 serve 命令）')
-        parser_zh.add_argument('--http-host', type=str, default='0.0.0.0', help='HTTP 服务器主机（默认：0.0.0.0）')
-        parser_zh.add_argument('--http-port', type=int, default=8000, help='HTTP 服务器端口（默认：8000）')
-        parser_zh.add_argument('--mcp', action='store_true', help='启动 MCP 服务器（用于 serve 命令）')
-        parser_zh.add_argument('--mcp-name', type=str, default='AWorldAgent', help='MCP 服务器名称（默认：AWorldAgent）')
-        parser_zh.add_argument('--mcp-transport', type=str, choices=['stdio', 'sse', 'streamable-http'], default='stdio', help='MCP 传输类型：stdio、sse 或 streamable-http（默认：stdio）')
-        parser_zh.add_argument('--mcp-host', type=str, default='0.0.0.0', help='MCP 服务器主机（用于 SSE/streamable-http 传输，默认：0.0.0.0）')
-        parser_zh.add_argument('--mcp-port', type=int, default=8001, help='MCP 服务器端口（用于 SSE/streamable-http 传输，默认：8001）')
-        parser_zh.add_argument('--config', action='store_true', help='启动交互式全局配置编辑器（模型提供商、API 密钥等）并退出。')
-        parser_zh.print_help()
+        build_parser(zh=True).print_help()
         return
     
     # Load configuration (priority: local .env > global config)
@@ -949,7 +805,8 @@ Batch Jobs:
     # Init middlewares (logging is already set up in base __init__)
     init_middlewares(init_memory=True, init_retriever=False, custom_memory_store=_default_file_memory_store())
 
-    _show_banner()
+    if show_banner_flag:
+        _show_banner()
 
     # Display configuration source
     from ._globals import console
@@ -1060,6 +917,7 @@ Batch Jobs:
         asyncio.run(_run_direct_mode(
             prompt=args.task,
             agent_name=agent_name,
+            requested_skill_names=args.skill,
             max_runs=args.max_runs,
             max_cost=args.max_cost,
             max_duration=args.max_duration,
@@ -1077,6 +935,7 @@ Batch Jobs:
     agent_name = args.agent or "Aworld"
     asyncio.run(_run_interactive_mode(
         agent_name=agent_name,
+        requested_skill_names=args.skill,
         remote_backends=args.remote_backend,
         local_dirs=args.agent_dir,
         agent_files=args.agent_file
@@ -1085,6 +944,7 @@ Batch Jobs:
 
 async def _run_interactive_mode(
     agent_name: Optional[str] = None,
+    requested_skill_names: Optional[list[str]] = None,
     remote_backends: Optional[list[str]] = None,
     local_dirs: Optional[list[str]] = None,
     agent_files: Optional[list[str]] = None
@@ -1108,6 +968,7 @@ async def _run_interactive_mode(
                 print(f"⚠️ Failed to load agent file {agent_file}: {e}")
     
     runtime = CliRuntime(agent_name=agent_name, remote_backends=remote_backends, local_dirs=local_dirs)
+    runtime.cli._pending_skill_overrides = list(requested_skill_names or [])
     try:
         await runtime.start()
     except KeyboardInterrupt:
@@ -1224,6 +1085,7 @@ async def _run_serve_mode(
 async def _run_direct_mode(
     prompt: str,
     agent_name: str,
+    requested_skill_names: Optional[list[str]] = None,
     max_runs: Optional[int] = None,
     max_cost: Optional[float] = None,
     max_duration: Optional[str] = None,
@@ -1324,6 +1186,7 @@ async def _run_direct_mode(
     await continuous_executor.run_continuous(
         prompt=multimodal_prompt,
         agent_name=agent_name,
+        requested_skill_names=requested_skill_names,
         max_runs=max_runs,
         max_cost=max_cost,
         max_duration=max_duration,
