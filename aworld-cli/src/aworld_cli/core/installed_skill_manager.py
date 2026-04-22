@@ -766,6 +766,28 @@ class InstalledSkillManager:
             self.save_manifest(records)
         return updated_record
 
+    def enable_install(self, install_id_or_name: str) -> dict[str, str | int | bool]:
+        self._migrate_legacy_manifest_once()
+        _, _, target, _ = self._find_manifest_record(install_id_or_name)
+        install_id = str(target["install_id"])
+        self.plugin_manager.enable(install_id)
+        installs = self.list_installs(include_disabled=True)
+        for item in installs:
+            if item.get("install_id") == install_id:
+                return item
+        raise ValueError(f"Unknown installed skill entry: {install_id_or_name}")
+
+    def disable_install(self, install_id_or_name: str) -> dict[str, str | int | bool]:
+        self._migrate_legacy_manifest_once()
+        _, _, target, _ = self._find_manifest_record(install_id_or_name)
+        install_id = str(target["install_id"])
+        self.plugin_manager.disable(install_id)
+        installs = self.list_installs(include_disabled=True)
+        for item in installs:
+            if item.get("install_id") == install_id:
+                return item
+        raise ValueError(f"Unknown installed skill entry: {install_id_or_name}")
+
     def remove_install(self, install_id_or_name: str) -> None:
         record_source, _, target, records = self._find_manifest_record(install_id_or_name)
 

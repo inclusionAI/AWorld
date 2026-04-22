@@ -790,6 +790,16 @@ def main():
 
         skill_subparsers.add_parser("list", help="List installed skill packages")
 
+        enable_parser = skill_subparsers.add_parser(
+            "enable", help="Enable an installed skill package"
+        )
+        enable_parser.add_argument("install_id", help="Install id or name")
+
+        disable_parser = skill_subparsers.add_parser(
+            "disable", help="Disable an installed skill package"
+        )
+        disable_parser.add_argument("install_id", help="Install id or name")
+
         remove_parser = skill_subparsers.add_parser(
             "remove", help="Remove an installed skill package"
         )
@@ -839,9 +849,15 @@ def main():
                 return
             for install in installs:
                 print(
-                    f"{install['install_id']} | scope={install['scope']} | "
+                    f"{install['install_id']} | enabled={install.get('enabled', True)} | scope={install['scope']} | "
                     f"skill_count={install['skill_count']} | source={install['source']}"
                 )
+        elif skill_args.skill_action == "enable":
+            record = manager.enable_install(skill_args.install_id)
+            print(f"✅ Skill package '{record['install_id']}' enabled successfully")
+        elif skill_args.skill_action == "disable":
+            record = manager.disable_install(skill_args.install_id)
+            print(f"✅ Skill package '{record['install_id']}' disabled successfully")
         elif skill_args.skill_action == "remove":
             manager.remove_install(skill_args.install_id)
             print(f"✅ Skill package '{skill_args.install_id}' removed successfully")
