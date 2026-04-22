@@ -12,6 +12,10 @@ from aworld_cli import main as main_module
 from aworld_cli.console import AWorldCLI
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
 from aworld_cli.core.plugin_manager import PluginManager
+from aworld_cli.core.skill_activation_resolver import (
+    SkillActivationResolver,
+    SkillResolverRequest,
+)
 from aworld_cli.core.top_level_command_system import TopLevelCommandRegistry
 from aworld_cli.top_level_commands import register_builtin_top_level_commands
 
@@ -176,6 +180,49 @@ def test_skill_install_creates_plugin_managed_skill_record(
     assert skill_plugin["package_kind"] == "skill"
     assert skill_plugin["managed_by"] == "skill"
     assert skill_plugin["activation_scope"] == "global"
+
+
+def test_installed_skill_package_is_visible_and_generates_alias(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source = tmp_path / "source-skills"
+    _write_skill(source / "skills", "brainstorming")
+
+    InstalledSkillManager().install(source=source, mode="copy", scope="global")
+
+    cli = AWorldCLI()
+    resolved = cli._resolve_visible_skills()
+    aliases = cli._generated_skill_alias_map()
+
+    assert "brainstorming" in resolved.available_skill_names
+    assert aliases["/brainstorming"] == "brainstorming"
+
+
+def test_resolver_auto_activates_installed_skill_package_from_task_text(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source = tmp_path / "source-skills"
+    _write_skill(source / "skills", "brainstorming")
+
+    InstalledSkillManager().install(source=source, mode="copy", scope="global")
+
+    plugin_manager = PluginManager(plugin_dir=tmp_path / ".aworld" / "plugins")
+    resolver = SkillActivationResolver()
+    resolved = resolver.resolve(
+        SkillResolverRequest(
+            plugin_roots=tuple(
+                plugin_manager.get_runtime_plugin_roots()
+                + plugin_manager.get_skill_package_roots()
+            ),
+            runtime_scope="session",
+            task_text="Please help me brainstorming the rollout plan.",
+        )
+    )
+
+    assert resolved.active_skill_names == ("brainstorming",)
+    assert resolved.skill_configs["brainstorming"]["active"] is True
 
 
 def test_main_accepts_repeated_skill_flag() -> None:

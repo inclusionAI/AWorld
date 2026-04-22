@@ -20,7 +20,19 @@ from aworld_cli.core.boot_logging import log_verbose_boot
 
 # Default plugin installation directory
 DEFAULT_PLUGIN_DIR = Path.home() / ".aworld" / "plugins"
+_INITIAL_DEFAULT_PLUGIN_DIR = DEFAULT_PLUGIN_DIR
 UNMANAGED_PLUGIN_SOURCE = "unmanaged plugin directory"
+
+
+def get_default_plugin_dir() -> Path:
+    """Resolve the default plugin directory at runtime.
+
+    Respect explicit test overrides of DEFAULT_PLUGIN_DIR, but otherwise follow
+    the current home directory instead of the import-time home.
+    """
+    if DEFAULT_PLUGIN_DIR != _INITIAL_DEFAULT_PLUGIN_DIR:
+        return Path(DEFAULT_PLUGIN_DIR)
+    return Path.home() / ".aworld" / "plugins"
 
 
 def get_builtin_plugins_base_dir() -> Path:
@@ -235,7 +247,7 @@ class PluginManager:
         Args:
             plugin_dir: Plugin installation directory, defaults to ~/.aworld/plugins
         """
-        self.plugin_dir = plugin_dir or DEFAULT_PLUGIN_DIR
+        self.plugin_dir = plugin_dir or get_default_plugin_dir()
         self.manifest_file = self.plugin_dir / ".manifest.json"
         
         # Ensure plugin directory exists
