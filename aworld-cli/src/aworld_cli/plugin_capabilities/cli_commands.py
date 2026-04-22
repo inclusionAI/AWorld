@@ -7,6 +7,36 @@ from aworld.plugins.resources import PluginResourceResolver
 from aworld_cli.core.top_level_command_system import TopLevelCommandRegistry
 
 
+class PluginTopLevelCommandAdapter:
+    def __init__(self, command, *, aliases: tuple[str, ...]) -> None:
+        self._command = command
+        self._aliases = aliases
+
+    @property
+    def name(self):
+        return self._command.name
+
+    @property
+    def description(self):
+        return self._command.description
+
+    @property
+    def aliases(self) -> tuple[str, ...]:
+        command_aliases = tuple(getattr(self._command, "aliases", tuple()) or tuple())
+        merged: list[str] = []
+        for alias in command_aliases + self._aliases:
+            normalized = str(alias).strip()
+            if normalized and normalized not in merged:
+                merged.append(normalized)
+        return tuple(merged)
+
+    def register_parser(self, subparsers) -> None:
+        return self._command.register_parser(subparsers)
+
+    def run(self, args, context):
+        return self._command.run(args, context)
+
+
 def sync_plugin_cli_commands(registry: TopLevelCommandRegistry, plugins) -> None:
     for plugin in plugins:
         for entrypoint in plugin.manifest.entrypoints.get("cli_commands", ()):
@@ -15,10 +45,7 @@ def sync_plugin_cli_commands(registry: TopLevelCommandRegistry, plugins) -> None
             command_name = entrypoint.name or entrypoint.entrypoint_id
             if registry.get(command_name) is not None:
                 continue
-            registry.register(
-                _load_plugin_cli_command(plugin, entrypoint),
-                source="plugin",
-            )
+            registry.register(_load_plugin_cli_command(plugin, entrypoint), source="plugin")
 
 
 def _load_plugin_cli_command(plugin, entrypoint):
@@ -62,4 +89,12 @@ def _load_plugin_cli_command(plugin, entrypoint):
             "did not return a TopLevelCommand-compatible object"
         )
 
-    return command
+    raw_aliases = entrypoint.metadata.get("aliases", ())
+    if isinstance(raw_aliases, str):
+        aliases = (raw_aliases,)
+    elif isinstance(raw_aliases, (list, tuple, set)):
+        aliases = tuple(str(alias).strip() for alias in raw_aliases if str(alias).strip())
+    else:
+        aliases = tuple()
+
+    return PluginTopLevelCommandAdapter(command, aliases=aliases)

@@ -62,7 +62,12 @@ def test_registry_rejects_reserved_plugin_override() -> None:
         registry.register(DummyCommand("skill"), source="plugin")
 
 
-def _write_cli_command_plugin(plugin_root: Path, command_name: str = "demo") -> None:
+def _write_cli_command_plugin(
+    plugin_root: Path,
+    command_name: str = "demo",
+    *,
+    aliases: tuple[str, ...] = (),
+) -> None:
     manifest_dir = plugin_root / ".aworld-plugin"
     handlers_dir = plugin_root / "cli_commands"
     manifest_dir.mkdir(parents=True)
@@ -79,6 +84,7 @@ def _write_cli_command_plugin(plugin_root: Path, command_name: str = "demo") -> 
                             "id": command_name,
                             "name": command_name,
                             "target": f"cli_commands/{command_name}.py",
+                            "metadata": {"aliases": list(aliases)},
                         }
                     ]
                 },
@@ -143,3 +149,61 @@ def test_maybe_dispatch_top_level_command_runs_manifest_declared_command(
 
     assert handled is True
     assert "PLUGIN:works:" in output
+
+
+def test_sync_plugin_cli_commands_registers_manifest_declared_aliases(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "demo-plugin"
+    _write_cli_command_plugin(
+        plugin_root,
+        aliases=("demo-alias", "demo-short"),
+    )
+    registry = TopLevelCommandRegistry()
+
+    sync_plugin_cli_commands(registry, discover_plugins([plugin_root]))
+
+    command = registry.get("demo")
+
+    assert command is not None
+    assert registry.get("demo-alias") is command
+    assert registry.get("demo-short") is command
+
+
+def test_maybe_dispatch_top_level_command_accepts_manifest_declared_alias(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    plugin_dir = tmp_path / ".aworld" / "plugins"
+    plugin_root = plugin_dir / "demo-plugin"
+    _write_cli_command_plugin(
+        plugin_root,
+        aliases=("demo-alias",),
+    )
+    monkeypatch.setattr("aworld_cli.core.plugin_manager.DEFAULT_PLUGIN_DIR", plugin_dir)
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        ["aworld-cli", "demo-alias", "--value", "alias-works"]
+    )
+
+    output = capsys.readouterr().out
+
+    assert handled is True
+    assert "PLUGIN:alias-works:" in output
+
+
+def test_build_top_level_command_registry_omits_disabled_builtin_cli_plugin(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    plugin_dir = tmp_path / ".aworld" / "plugins"
+    monkeypatch.setattr("aworld_cli.core.plugin_manager.DEFAULT_PLUGIN_DIR", plugin_dir)
+
+    from aworld_cli.core.plugin_manager import PluginManager
+
+    PluginManager(plugin_dir=plugin_dir).disable("aworld-skill-cli")
+
+    registry = main_module._build_top_level_command_registry()
+
+    assert registry.get("skill") is None
