@@ -488,25 +488,13 @@ def collect_skill_docs(
             continue
 
         try:
-            content = registry.load_content(descriptor.skill_id)
+            skill_data = registry.build_skill_config(descriptor.skill_id)
         except Exception as e:
             logger.error(
                 f"❌ Failed to process skill file {descriptor.skill_file}: {e}"
             )
             continue
 
-        skill_data = {
-            "name": skill_name,
-            "description": descriptor.description,
-            "tool_list": dict(content.tool_list),
-            "usage": content.usage,
-            "type": str(descriptor.metadata.get("type", "")),
-            "active": bool(descriptor.metadata.get("active", False)),
-            "skill_path": descriptor.skill_file,
-            "asset_root": descriptor.asset_root,
-        }
-        if descriptor.requirements:
-            skill_data["aworld_metadata"] = dict(descriptor.requirements)
         results[skill_name] = skill_data
         logger.debug(f"✅ Collected skill: {skill_name}")
 
