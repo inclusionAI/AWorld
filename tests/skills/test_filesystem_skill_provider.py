@@ -32,3 +32,4 @@ def test_collect_skill_docs_uses_framework_adapter(tmp_path: Path):
 
     assert docs["browser-use"]["description"] == "Browser automation"
     assert docs["browser-use"]["usage"] == "# Usage\nUse browser tools."
+    assert docs["browser-use"]["asset_root"] == str(skill_dir.resolve())

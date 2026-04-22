@@ -460,7 +460,7 @@ def collect_skill_docs(
 
     Returns:
         Dict[str, Dict[str, Any]]: Mapping from skill names to metadata containing
-        name, description, tool_list (as dict), usage content, and skill_path.
+        name, description, tool_list (as dict), usage content, skill_path, and asset_root.
 
     Example:
         >>> collect_skill_docs(Path("."))
@@ -505,6 +505,7 @@ def collect_skill_docs(
             "type": str(descriptor.metadata.get("type", "")),
             "active": bool(descriptor.metadata.get("active", False)),
             "skill_path": descriptor.skill_file,
+            "asset_root": descriptor.asset_root,
         }
         if descriptor.requirements:
             skill_data["aworld_metadata"] = dict(descriptor.requirements)
@@ -944,4 +945,3 @@ class SkillRegistry:
         self._skills.clear()
         self._source_to_skills.clear()
         logger.info("🧹 Registry cleared")
-
