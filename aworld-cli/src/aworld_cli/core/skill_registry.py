@@ -6,6 +6,7 @@ the default skills directory (./skills) and supports registering additional sour
 from environment variables or programmatic configuration.
 """
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -13,7 +14,173 @@ from aworld_cli.core.installed_skill_manager import InstalledSkillManager
 from aworld_cli.core.plugin_manager import get_plugin_skills_dir
 
 from aworld.logs.util import logger
-from aworld.utils.skill_loader import SkillRegistry, DEFAULT_CACHE_DIR, collect_skill_docs
+from aworld.utils.skill_loader import DEFAULT_CACHE_DIR, collect_skill_docs
+
+
+class SkillRegistry:
+    """CLI compatibility registry backed by framework-powered `collect_skill_docs()`."""
+
+    def __init__(
+        self, cache_dir: Optional[Path] = None, conflict_strategy: str = "keep_first"
+    ) -> None:
+        self._sources: Dict[str, Union[str, Path]] = {}
+        self._skills: Dict[str, Dict[str, Any]] = {}
+        self._source_to_skills: Dict[str, List[str]] = {}
+        self._cache_dir = cache_dir or DEFAULT_CACHE_DIR
+        self._conflict_strategy = conflict_strategy
+
+        if conflict_strategy not in {"keep_first", "keep_last", "raise"}:
+            raise ValueError(
+                f"Invalid conflict_strategy: {conflict_strategy}. "
+                "Must be one of: keep_first, keep_last, raise"
+            )
+
+    def register_source(
+        self,
+        source: Union[str, Path],
+        source_name: Optional[str] = None,
+        force_reload: bool = False,
+    ) -> int:
+        source_str = str(source)
+        source_key = source_name or source_str
+
+        if source_key in self._sources and not force_reload:
+            logger.debug(f"ℹ️ Source already registered: {source_key}")
+            return len(self._source_to_skills.get(source_key, []))
+
+        loaded_skills = collect_skill_docs(source, cache_dir=self._cache_dir)
+        previous_skills = list(self._source_to_skills.get(source_key, []))
+
+        if force_reload and previous_skills:
+            for skill_name in previous_skills:
+                if self._get_skill_source(skill_name) == source_key:
+                    self._skills.pop(skill_name, None)
+
+        source_skill_names: List[str] = []
+        for skill_name, skill_data in loaded_skills.items():
+            if skill_name in self._skills:
+                if self._conflict_strategy == "raise":
+                    raise ValueError(
+                        f"Skill name conflict: '{skill_name}' already exists. "
+                        f"Existing source: {self._get_skill_source(skill_name)}, "
+                        f"New source: {source_key}"
+                    )
+                if self._conflict_strategy == "keep_first":
+                    logger.warning(
+                        f"⚠️ Skill '{skill_name}' already exists, keeping first version. "
+                        f"New source: {source_key}"
+                    )
+                    continue
+                if self._conflict_strategy == "keep_last":
+                    logger.warning(
+                        f"⚠️ Skill '{skill_name}' already exists, replacing with new version. "
+                        f"Old source: {self._get_skill_source(skill_name)}, "
+                        f"New source: {source_key}"
+                    )
+                    old_source = self._get_skill_source(skill_name)
+                    if old_source and old_source in self._source_to_skills:
+                        self._source_to_skills[old_source] = [
+                            name
+                            for name in self._source_to_skills[old_source]
+                            if name != skill_name
+                        ]
+
+            self._skills[skill_name] = dict(skill_data)
+            source_skill_names.append(skill_name)
+
+        self._sources[source_key] = source
+        self._source_to_skills[source_key] = source_skill_names
+        return len(source_skill_names)
+
+    def reload_source(self, source_name: str) -> int:
+        if source_name not in self._sources:
+            raise ValueError(f"Source not registered: {source_name}")
+        return self.register_source(
+            self._sources[source_name],
+            source_name=source_name,
+            force_reload=True,
+        )
+
+    def get_all_skills(self) -> Dict[str, Dict[str, Any]]:
+        return {name: dict(data) for name, data in self._skills.items()}
+
+    def get_skill(self, skill_name: str) -> Optional[Dict[str, Any]]:
+        skill = self._skills.get(skill_name)
+        return dict(skill) if skill is not None else None
+
+    def get_skills_by_source(self, source_name: str) -> Dict[str, Dict[str, Any]]:
+        return {
+            name: dict(self._skills[name])
+            for name in self._source_to_skills.get(source_name, [])
+            if name in self._skills
+        }
+
+    def list_sources(self) -> List[str]:
+        return list(self._sources.keys())
+
+    def list_skills(self) -> List[str]:
+        return list(self._skills.keys())
+
+    def search_skills(
+        self, keyword: str, search_fields: Optional[List[str]] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        if search_fields is None:
+            search_fields = ["name", "description", "usage"]
+
+        keyword_lower = keyword.lower()
+        results: Dict[str, Dict[str, Any]] = {}
+        for skill_name, skill_data in self._skills.items():
+            for field in search_fields:
+                field_value = skill_name if field == "name" else skill_data.get(field, "")
+                if isinstance(field_value, str) and keyword_lower in field_value.lower():
+                    results[skill_name] = dict(skill_data)
+                    break
+        return results
+
+    def get_skills_by_regex(
+        self,
+        pattern: str,
+        match_field: str = "name",
+        flags: int = 0,
+    ) -> Dict[str, Dict[str, Any]]:
+        valid_fields = ["name", "description", "usage", "type"]
+        if match_field not in valid_fields:
+            raise ValueError(
+                f"Invalid match_field: {match_field}. Must be one of: {valid_fields}"
+            )
+
+        compiled_pattern = re.compile(pattern, flags)
+        results: Dict[str, Dict[str, Any]] = {}
+        for skill_name, skill_data in self._skills.items():
+            field_value = skill_name if match_field == "name" else skill_data.get(match_field, "")
+            if isinstance(field_value, str) and compiled_pattern.search(field_value):
+                results[skill_name] = dict(skill_data)
+        return results
+
+    def get_skill_configs(self) -> Dict[str, Dict[str, Any]]:
+        configs: Dict[str, Dict[str, Any]] = {}
+        for skill_name, skill_data in self._skills.items():
+            configs[skill_name] = {
+                "name": skill_data.get("name", skill_name),
+                "desc": skill_data.get("description", skill_data.get("desc", "")),
+                "usage": skill_data.get("usage", ""),
+                "tool_list": dict(skill_data.get("tool_list", {}) or {}),
+                "type": skill_data.get("type", ""),
+                "active": skill_data.get("active", False),
+            }
+        return configs
+
+    def clear(self) -> None:
+        self._sources.clear()
+        self._skills.clear()
+        self._source_to_skills.clear()
+
+    def _get_skill_source(self, skill_name: str) -> Optional[str]:
+        for source_name, skill_names in self._source_to_skills.items():
+            if skill_name in skill_names:
+                return source_name
+        return None
+
 
 # Global SkillRegistry instance
 _global_registry: Optional[SkillRegistry] = None
@@ -293,58 +460,66 @@ def get_skill_registry(
     global _global_registry
     
     if _global_registry is None:
-        # Determine cache directory
         if cache_dir is None:
             env_cache_dir = os.getenv(ENV_SKILLS_CACHE_DIR)
-            if env_cache_dir:
-                # Expand ~ in path if present
-                cache_dir = Path(os.path.expanduser(env_cache_dir))
-            else:
-                cache_dir = DEFAULT_CACHE_DIR
-        
+            cache_dir = (
+                Path(os.path.expanduser(env_cache_dir))
+                if env_cache_dir
+                else DEFAULT_CACHE_DIR
+            )
         _global_registry = SkillRegistry(cache_dir=cache_dir)
-        
-        if auto_init:
-            # Register skills from provided skill_paths parameter
-            if skill_paths:
-                for skill_path in skill_paths:
-                    try:
-                        count = _global_registry.register_source(skill_path, source_name=skill_path)
-                        if count > 0:
-                            logger.info(f"📚 Registered skill source: {skill_path} ({count} skills)")
-                        logger.info(f"📚 Registered skill source from parameter: {skill_path}")
-                    except Exception as e:
-                        logger.error(f"⚠️ Failed to register skill source '{skill_path}': {e}")
-                        logger.warning(f"⚠️ Failed to register skill source '{skill_path}': {e}")
 
-            # Register skills from environment variables
-            _register_from_env(_global_registry)
-            
-            # Register default skills directory if provided or exists
-            if skills_dir is None:
-                # Default to ./skills in current working directory
-                default_skills_dir = Path.cwd() / "skills"
-            else:
-                default_skills_dir = Path(skills_dir).resolve()
-            
-            # Register default skills directory if it exists
-            if default_skills_dir.exists() and default_skills_dir.is_dir():
+    if auto_init:
+        if skill_paths:
+            for skill_path in skill_paths:
                 try:
-                    from .._globals import console
-                    
                     count = _global_registry.register_source(
-                        str(default_skills_dir),
-                        source_name="default_skills"
+                        skill_path,
+                        source_name=skill_path,
                     )
                     if count > 0:
-                        console.print(f"[dim]📚 Registered default skills directory: {default_skills_dir} ({count} skills)[/dim]")
-                    logger.info(f"📚 Auto-registered default skills directory: {default_skills_dir} ({count} skills)")
+                        logger.info(f"📚 Registered skill source: {skill_path} ({count} skills)")
+                    logger.info(f"📚 Registered skill source from parameter: {skill_path}")
                 except Exception as e:
-                    logger.debug(f"ℹ️ Default skills directory already registered or failed: {default_skills_dir}: {e}")
-            else:
-                logger.debug(f"ℹ️ Default skills directory not found: {default_skills_dir}, skipping auto-registration")
+                    logger.error(f"⚠️ Failed to register skill source '{skill_path}': {e}")
+                    logger.warning(f"⚠️ Failed to register skill source '{skill_path}': {e}")
 
-            _register_installed_sources(_global_registry)
+        _register_from_env(_global_registry)
+
+        if skills_dir is None:
+            default_skills_dir = Path.cwd() / "skills"
+        else:
+            default_skills_dir = Path(skills_dir).resolve()
+
+        if default_skills_dir.exists() and default_skills_dir.is_dir():
+            try:
+                from .._globals import console
+
+                count = _global_registry.register_source(
+                    str(default_skills_dir),
+                    source_name="default_skills",
+                )
+                if count > 0:
+                    console.print(
+                        f"[dim]📚 Registered default skills directory: "
+                        f"{default_skills_dir} ({count} skills)[/dim]"
+                    )
+                logger.info(
+                    f"📚 Auto-registered default skills directory: "
+                    f"{default_skills_dir} ({count} skills)"
+                )
+            except Exception as e:
+                logger.debug(
+                    f"ℹ️ Default skills directory already registered or failed: "
+                    f"{default_skills_dir}: {e}"
+                )
+        else:
+            logger.debug(
+                f"ℹ️ Default skills directory not found: {default_skills_dir}, "
+                "skipping auto-registration"
+            )
+
+        _register_installed_sources(_global_registry)
     
     return _global_registry
 
