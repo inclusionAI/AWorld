@@ -177,6 +177,7 @@ class AWorldCLI:
         self._active_prompt_session = None
         self._toolbar_workspace_name = self._detect_workspace_name()
         self._toolbar_git_branch = self._detect_git_branch()
+        self._pending_skill_overrides: list[str] = []
 
     def _detect_workspace_name(self) -> str:
         """Detect the current workspace name for status-bar display."""
@@ -401,7 +402,7 @@ class AWorldCLI:
         agent_names = agent_names or []
 
         builtin_cmds = [
-            "/agents", "/skills", "/new", "/restore", "/latest",
+            "/agents", "/skills", "/skills use", "/skills clear", "/new", "/restore", "/latest",
             "/exit", "/switch", "/cost", "/cost -all", "/compact",
             "/team",
             "/memory", "/memory view", "/memory reload", "/memory status",
@@ -409,6 +410,8 @@ class AWorldCLI:
         builtin_meta = {
             "/agents": "List available agents",
             "/skills": "List available skills",
+            "/skills use": "Force a skill for the next task",
+            "/skills clear": "Clear the pending forced skill",
             "/new": "Create a new session",
             "/restore": "Restore to a previous session",
             "/latest": "Restore to the latest session",
@@ -1806,6 +1809,242 @@ class AWorldCLI:
                 )
         return results
 
+    def _normalize_skill_names(
+        self, skill_names: Optional[list[str] | tuple[str, ...]]
+    ) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for skill_name in skill_names or []:
+            value = str(skill_name).strip()
+            if not value or value in seen:
+                continue
+            normalized.append(value)
+            seen.add(value)
+        return normalized
+
+    def _agent_name_for_resolution(self, agent: Any) -> str | None:
+        name_attr = getattr(agent, "name", None)
+        if callable(name_attr):
+            try:
+                resolved = name_attr()
+                return str(resolved) if resolved else None
+            except Exception:
+                return None
+        if isinstance(name_attr, str) and name_attr:
+            return name_attr
+        return None
+
+    def _resolve_swarm_agent(self, executor_instance: Any, agent_name: str | None) -> Any | None:
+        iter_agents = getattr(executor_instance, "_iter_swarm_agents", None)
+        if callable(iter_agents):
+            for agent in iter_agents():
+                resolved_name = self._agent_name_for_resolution(agent)
+                if agent_name is None or resolved_name == agent_name:
+                    return agent
+        return None
+
+    def _skill_package_roots_for_agent(self, plugin_manager: Any, agent_name: str | None) -> tuple[Path, ...]:
+        roots: list[Path] = []
+        normalized_agent = (agent_name or "").strip().lower()
+
+        for package in plugin_manager.list_skill_packages(include_disabled=False):
+            metadata = package.get("metadata", {})
+            scope = str(
+                metadata.get("scope")
+                if isinstance(metadata, dict) and metadata.get("scope") is not None
+                else package.get("activation_scope", "global")
+            )
+            if scope == "global":
+                pass
+            elif (
+                scope.startswith("agent:")
+                and normalized_agent
+                and scope.lower() == f"agent:{normalized_agent}"
+            ):
+                pass
+            else:
+                continue
+
+            plugin_path = Path(str(package["path"])).resolve()
+            if plugin_path.exists() and plugin_path.is_dir():
+                roots.append(plugin_path)
+
+        return tuple(roots)
+
+    def _resolve_visible_skills(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+        requested_skill_names: Optional[list[str] | tuple[str, ...]] = None,
+    ):
+        from .core.plugin_manager import PluginManager
+        from .core.skill_activation_resolver import SkillActivationResolver, SkillResolverRequest
+
+        plugin_manager = PluginManager()
+        runtime_plugin_roots = tuple(
+            Path(item).resolve()
+            for item in plugin_manager.get_runtime_plugin_roots()
+        )
+        skill_package_roots = self._skill_package_roots_for_agent(plugin_manager, agent_name)
+
+        resolver_inputs: dict[str, Any] = {}
+        selected_agent = None
+        if executor_instance is not None:
+            selected_agent = self._resolve_swarm_agent(executor_instance, agent_name)
+        if selected_agent is not None:
+            agent_conf = getattr(selected_agent, "conf", None)
+            if agent_conf is not None and isinstance(getattr(agent_conf, "ext", None), dict):
+                resolver_inputs = dict(agent_conf.ext.get("skill_resolver_inputs", {}))
+
+        request = SkillResolverRequest(
+            plugin_roots=runtime_plugin_roots
+            + skill_package_roots
+            + tuple(
+                Path(item).resolve()
+                for item in resolver_inputs.get("plugin_roots", [])
+            ),
+            runtime_scope="session",
+            agent_name=agent_name,
+            requested_skill_names=tuple(self._normalize_skill_names(requested_skill_names)),
+            compatibility_sources=tuple(
+                str(item)
+                for item in resolver_inputs.get("compatibility_sources", [])
+            ),
+            compatibility_skill_patterns=tuple(
+                str(item)
+                for item in resolver_inputs.get("compatibility_skill_patterns", [])
+            ),
+        )
+        return SkillActivationResolver().resolve(request)
+
+    def _supports_requested_skill_names(self, executor_instance: Any, executor: Callable[[str], Any]) -> bool:
+        candidates = []
+        if executor_instance is not None and hasattr(executor_instance, "chat"):
+            candidates.append(executor_instance.chat)
+        candidates.append(executor)
+
+        for candidate in candidates:
+            try:
+                if "requested_skill_names" in inspect.signature(candidate).parameters:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+    async def _run_executor_prompt(
+        self,
+        prompt: str,
+        executor: Callable[[str], Any],
+        *,
+        executor_instance: Any = None,
+    ) -> Any:
+        requested_skill_names = self._normalize_skill_names(self._pending_skill_overrides)
+        if requested_skill_names and self._supports_requested_skill_names(executor_instance, executor):
+            self._pending_skill_overrides = []
+            chat_callable = executor_instance.chat if executor_instance is not None and hasattr(executor_instance, "chat") else executor
+            return await chat_callable(prompt, requested_skill_names=requested_skill_names)
+        return await executor(prompt)
+
+    async def _render_skills_table(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> None:
+        try:
+            resolved = self._resolve_visible_skills(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+                requested_skill_names=self._pending_skill_overrides,
+            )
+        except Exception as exc:
+            self.console.print(f"[red]Error loading skills: {exc}[/red]")
+            return
+
+        if not resolved.skill_configs:
+            self.console.print("[yellow]No skills available.[/yellow]")
+            return
+
+        rows = sorted(resolved.skill_configs.items(), key=lambda item: item[0])
+        pending = set(self._normalize_skill_names(self._pending_skill_overrides))
+        table = Table(title="Skills", box=box.ROUNDED)
+        table.add_column("Name", style="magenta")
+        table.add_column("Description", style="green")
+        table.add_column("Status", style="cyan")
+        table.add_column("Address", style="dim", no_wrap=False, max_width=48)
+
+        for skill_name, skill_data in rows:
+            desc = skill_data.get("description") or skill_data.get("desc") or "No description"
+            address = skill_data.get("skill_path", "") or "—"
+            if skill_name in pending:
+                status = "pending"
+            elif skill_data.get("active"):
+                status = "active"
+            else:
+                status = "available"
+            if address == "—":
+                addr_cell = Text("—", style="dim")
+            else:
+                path = Path(address)
+                link_target = path.parent if path.suffix else path
+                link_url = link_target.resolve().as_uri()
+                display = address if len(address) <= 48 else address[:45] + "..."
+                addr_cell = Text(display, style=Style(dim=True, link=link_url))
+            table.add_row(skill_name, str(desc), status, addr_cell)
+
+        self.console.print(table)
+        if pending:
+            self.console.print(f"[dim]Pending explicit selection: {', '.join(sorted(pending))}[/dim]")
+        self.console.print(f"[dim]Total: {len(rows)} skill(s)[/dim]")
+
+    async def _handle_skills_command(
+        self,
+        user_input: str,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> bool:
+        normalized = " ".join(user_input.strip().lower().split())
+        if normalized in ("/skills", "skills"):
+            await self._render_skills_table(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+            )
+            return True
+
+        if normalized.startswith("/skills use "):
+            skill_name = user_input.split(maxsplit=2)[2].strip()
+            if not skill_name:
+                self.console.print("[yellow]Usage: /skills use <name>[/yellow]")
+                return True
+            if executor_instance is not None:
+                try:
+                    self._resolve_visible_skills(
+                        agent_name=agent_name,
+                        executor_instance=executor_instance,
+                        requested_skill_names=[skill_name],
+                    )
+                except ValueError as exc:
+                    self.console.print(f"[red]{exc}[/red]")
+                    return True
+                except Exception:
+                    pass
+            self._pending_skill_overrides = [skill_name]
+            self.console.print(f"[green]Will force skill on next task:[/green] {skill_name}")
+            return True
+
+        if normalized == "/skills clear":
+            self._pending_skill_overrides = []
+            self.console.print("[dim]Cleared pending explicit skill selection.[/dim]")
+            return True
+
+        if normalized.startswith("/skills"):
+            self.console.print("[yellow]Usage: /skills | /skills use <name> | /skills clear[/yellow]")
+            return True
+
+        return False
+
     async def _execute_follow_up_prompt(
         self,
         agent_name: str,
@@ -2057,7 +2296,9 @@ class AWorldCLI:
             "Type '/switch [agent_name]' to switch agent.",
             "Type '/new' to create a new session.",
             "Type '/restore' or '/latest' to restore to the latest session.",
-            "Type '/skills' to list all available skills.",
+            "Type '/skills' to list available skills.",
+            "Type '/skills use <name>' to force a skill on the next task.",
+            "Type '/skills clear' to clear the pending forced skill.",
             "Type '/agents' to list all available agents.",
             "Type '/cost' for current session, '/cost -all' for global history.",
             "Type '/compact' to run context compression.",
@@ -2188,7 +2429,11 @@ class AWorldCLI:
 
                                             # Execute the prompt
                                             try:
-                                                response = await executor(prompt)
+                                                response = await self._run_executor_prompt(
+                                                    prompt,
+                                                    executor,
+                                                    executor_instance=executor_instance,
+                                                )
                                                 # Response is returned for potential future use
                                             except Exception as exec_error:
                                                 import traceback
@@ -2277,69 +2522,15 @@ class AWorldCLI:
                         return True # Return True to switch agent (show list)
                 
                 # Handle skills command
-                if user_input.lower() in ("/skills", "skills"):
-                    try:
-                        # First, load skills from plugin directories
-                        from .runtime.cli import CliRuntime
-                        from pathlib import Path
-
-                        runtime = CliRuntime()
-                        runtime.cli = self  # Set cli reference for console output
-                        loaded_skills = await runtime._load_skills()
-                        
-                        # Display loading results from plugins
-                        if loaded_skills:
-                            total_loaded = sum(loaded_skills.values())
-                            if total_loaded > 0:
-                                logger.info(f"[green]✅ Loaded {total_loaded} skill(s) from {len([k for k, v in loaded_skills.items() if v > 0])} plugin(s)[/green]")
-                            else:
-                                logger.info("[dim]No new skills loaded from plugins.[/dim]")
-                        
-                        # Get all skills from registry (including newly loaded ones)
-                        registry = get_skill_registry()
-                        all_skills = registry.get_all_skills()
-                        
-                        if not all_skills:
-                            logger.info("[yellow]No skills available.[/yellow]")
-                            continue
-                        
-                        # Build rows
-                        rows = [(skill_name, skill_data) for skill_name, skill_data in all_skills.items()]
-                        rows.sort(key=lambda x: x[0])  # sort by name
-                        
-                        # Single table with Name, Description, Address
-                        table = Table(title="Skills", box=box.ROUNDED)
-                        table.add_column("Name", style="magenta")
-                        table.add_column("Description", style="green")
-                        # Address column: truncate when long; full path shown on hover via link (OSC 8)
-                        _addr_max = 48
-                        table.add_column("Address", style="dim", no_wrap=False, max_width=_addr_max)
-                        
-                        for skill_name, skill_data in rows:
-                            desc = skill_data.get("description") or skill_data.get("desc") or "No description"
-                            # if len(desc) > 60:
-                            #     desc = desc[:57] + "..."
-                            address = skill_data.get("skill_path", "") or "—"
-                            if address == "—":
-                                addr_cell = Text("—", style="dim")
-                            else:
-                                # Link to parent folder so click opens file manager, not default app for file
-                                p = Path(address)
-                                link_target = p.parent if p.suffix else p
-                                link_url = link_target.resolve().as_uri()
-                                if len(address) > _addr_max:
-                                    addr_display = address[: _addr_max - 3] + "..."
-                                    addr_cell = Text(addr_display, style=Style(dim=True, link=link_url))
-                                else:
-                                    addr_cell = Text(address, style=Style(dim=True, link=link_url))
-                            table.add_row(skill_name, desc, addr_cell)
-                        
-                        self.console.print(table)
-                        self.console.print(f"[dim]Total: {len(all_skills)} skill(s)[/dim]")
-                    except Exception as e:
-                        self.console.print(f"[red]Error loading skills: {e}[/red]")
-                    continue
-
+                if user_input.lower().startswith("/skills") or user_input.lower() == "skills":
+                    handled = await self._handle_skills_command(
+                        user_input,
+                        agent_name=agent_name,
+                        executor_instance=executor_instance,
+                    )
+                    if handled:
+                        continue
+                
                 # Handle cost command (query history + token usage)
                 cost_input = user_input.strip().lower()
                 if cost_input in ("/cost", "cost") or cost_input in ("/cost -all", "cost -all"):
@@ -2775,7 +2966,11 @@ Add any custom instructions for AI agents working on this project.
                     # File parsing is now handled by FileParseHook automatically.
                     self._is_agent_executing = True
                     try:
-                        response = await executor(user_input)
+                        response = await self._run_executor_prompt(
+                            user_input,
+                            executor,
+                            executor_instance=executor_instance,
+                        )
                         # Response is returned for potential future use, but content is already printed by executor
                     finally:
                         self._is_agent_executing = False

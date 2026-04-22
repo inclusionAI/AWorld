@@ -1,11 +1,13 @@
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld_cli import main as main_module
+from aworld_cli.console import AWorldCLI
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
 from aworld_cli.core.plugin_manager import PluginManager
 
@@ -120,3 +122,65 @@ def test_skill_install_creates_plugin_managed_skill_record(
     assert skill_plugin["package_kind"] == "skill"
     assert skill_plugin["managed_by"] == "skill"
     assert skill_plugin["activation_scope"] == "global"
+
+
+def test_main_accepts_repeated_skill_flag() -> None:
+    parsed = main_module.build_parser().parse_args(
+        ["interactive", "--skill", "browser-use", "--skill", "code-review"]
+    )
+
+    assert parsed.skill == ["browser-use", "code-review"]
+
+
+@pytest.mark.asyncio
+async def test_run_direct_mode_passes_requested_skill_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class DummyRuntime:
+        def __init__(self, *args, **kwargs) -> None:
+            self._scheduler = None
+
+        async def _load_agents(self):
+            return [SimpleNamespace(name="Aworld")]
+
+        def _bind_scheduler_default_agent(self, agent_name: str) -> None:
+            captured["bound_agent"] = agent_name
+
+        async def _create_executor(self, _agent):
+            return SimpleNamespace(console=None)
+
+    class DummyContinuousExecutor:
+        def __init__(self, agent_executor, console=None) -> None:
+            self.agent_executor = agent_executor
+            self.console = console
+
+        async def run_continuous(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(main_module, "CliRuntime", DummyRuntime)
+    monkeypatch.setattr(main_module, "ContinuousExecutor", DummyContinuousExecutor)
+    monkeypatch.setattr(
+        "aworld.core.scheduler.get_scheduler",
+        lambda: SimpleNamespace(),
+    )
+
+    await main_module._run_direct_mode(
+        prompt="use browser",
+        agent_name="Aworld",
+        requested_skill_names=["browser-use", "code-review"],
+    )
+
+    assert captured["requested_skill_names"] == ["browser-use", "code-review"]
+
+
+@pytest.mark.asyncio
+async def test_console_skills_use_sets_pending_override() -> None:
+    cli = AWorldCLI()
+    cli._pending_skill_overrides = []
+
+    handled = await cli._handle_skills_command("/skills use browser-use")
+
+    assert handled is True
+    assert cli._pending_skill_overrides == ["browser-use"]
