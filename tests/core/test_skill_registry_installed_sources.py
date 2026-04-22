@@ -10,6 +10,7 @@ from aworld_cli.core.skill_registry import (
     collect_plugin_and_user_skills,
     get_skill_registry,
     reset_skill_registry,
+    resolve_explicit_skill_sources,
 )
 from aworld_cli.builtin_agents.smllc.agents.audio import audio as audio_module
 from aworld_cli.builtin_agents.smllc.agents.developer import developer as developer_module
@@ -201,6 +202,29 @@ def test_disabled_installed_skill_package_is_excluded_from_runtime_loading(
 
     registry = get_skill_registry()
     assert registry.get_skill("disabled-skill") is None
+
+
+def test_resolve_explicit_skill_sources_uses_isolated_first_wins_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_PATH", raising=False)
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    monkeypatch.delenv("SKILLS_CACHE_DIR", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    source_a = tmp_path / "skills-a"
+    source_b = tmp_path / "skills-b"
+    _write_skill(source_a, "shared-skill", "source a")
+    _write_skill(source_b, "shared-skill", "source b")
+    _write_skill(source_b, "unique-skill", "unique b")
+
+    resolved = resolve_explicit_skill_sources([str(source_a), str(source_b)])
+    global_registry = get_skill_registry()
+
+    assert resolved["shared-skill"]["description"] == "source a"
+    assert resolved["unique-skill"]["description"] == "unique b"
+    assert global_registry.get_skill("shared-skill") is None
 
 
 @pytest.mark.parametrize(

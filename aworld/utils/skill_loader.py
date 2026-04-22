@@ -931,3 +931,6 @@ class SkillRegistry:
         self._skills.clear()
         self._source_to_skills.clear()
         logger.info("🧹 Registry cleared")
+
+
+from aworld.skills.compat_registry import CompatSkillRegistry as SkillRegistry
