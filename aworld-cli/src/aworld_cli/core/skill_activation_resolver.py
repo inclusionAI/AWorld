@@ -87,21 +87,7 @@ class SkillActivationResolver:
             if descriptor.skill_name in seen:
                 continue
 
-            content = registry.load_content(descriptor.skill_id)
-            skill_data = {
-                "name": descriptor.skill_name,
-                "description": descriptor.description,
-                "tool_list": dict(content.tool_list),
-                "usage": content.usage,
-                "skill_path": descriptor.skill_file,
-                "asset_root": descriptor.asset_root,
-            }
-            if descriptor.requirements:
-                skill_data["aworld_metadata"] = dict(descriptor.requirements)
-            if "type" in descriptor.metadata:
-                skill_data["type"] = descriptor.metadata["type"]
-            if "active" in descriptor.metadata:
-                skill_data["active"] = bool(descriptor.metadata["active"])
+            skill_data = registry.build_skill_config(descriptor.skill_id)
 
             candidates.append(
                 ResolvedSkillCandidate(

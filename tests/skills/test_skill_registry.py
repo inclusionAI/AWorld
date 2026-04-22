@@ -26,8 +26,8 @@ class DummyProvider(SkillProvider):
                 visibility="public",
                 asset_root="/tmp/browser-use",
                 skill_file="/tmp/browser-use/SKILL.md",
-                metadata={},
-                requirements={},
+                metadata={"type": "agent", "active": True},
+                requirements={"eligible": True},
             )
         ]
 
@@ -61,3 +61,21 @@ def test_registry_loads_content_lazily():
 
     assert first.usage == "# Browser skill"
     assert second is first
+
+
+def test_registry_builds_compat_skill_config():
+    registry = SkillRegistry([DummyProvider()])
+
+    skill_config = registry.build_skill_config("dummy:browser-use")
+
+    assert skill_config == {
+        "name": "browser-use",
+        "description": "Browser automation",
+        "tool_list": {},
+        "usage": "# Browser skill",
+        "type": "agent",
+        "active": True,
+        "skill_path": "/tmp/browser-use/SKILL.md",
+        "asset_root": "/tmp/browser-use",
+        "aworld_metadata": {"eligible": True},
+    }
