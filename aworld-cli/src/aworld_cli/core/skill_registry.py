@@ -227,13 +227,15 @@ def collect_plugin_and_user_skills(
     agent_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Collect skills from plugin skills dir and user skills dirs, with dedup, skill_path fix, and aworld_metadata filter.
+    Collect skills from plugin skills dir and user skills dirs, with dedup,
+    compatibility field normalization, and aworld_metadata filter.
 
     Resolution order:
     1. Plugin skills dir: plugin_base_dir/skills (e.g. builtin_agents/smllc/skills)
-    2. User skills dirs: user_dir (if set, semicolon-separated) + SKILLS_PATH / SKILLS_DIR (user path overrides plugin on conflict)
+    2. User skills dirs: user_dir (if set, semicolon-separated) + SKILLS_PATH / SKILLS_DIR
+       are merged after plugin skills; duplicate names are skipped for compatibility
     3. Installed skill entries: global for all agents, agent:<name> only for matching agent
-    4. Each skill gets skill_path ensured for context_skill_tool
+    4. Each skill gets skill_path/asset_root preserved for runtime compatibility
     5. Only skills with aworld_metadata.eligible=True (or no aworld_metadata) are included
 
     Args:
@@ -247,13 +249,17 @@ def collect_plugin_and_user_skills(
     plugin_skills_dir = get_plugin_skills_dir(plugin_base_dir)
     logger.info(f"agent_config: {plugin_base_dir} user_dir: {user_dir}")
 
-    custom_skills: Dict[str, Any] = {}
+    registry = SkillRegistry()
     if plugin_skills_dir.exists() and plugin_skills_dir.is_dir():
-        custom_skills = collect_skill_docs(plugin_skills_dir)
+        try:
+            count = registry.register_source(plugin_skills_dir, source_name=str(plugin_skills_dir))
+            if count > 0:
+                logger.info(f"✅ Loaded {count} skill(s) from plugin path: {plugin_skills_dir}")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load skills from plugin path '{plugin_skills_dir}': {e}")
 
     user_paths: List[Path] = list(get_user_skills_paths())
     if user_dir:
-        # Parse semicolon-separated paths (same as SKILLS_PATH)
         parts = [s.strip() for s in str(user_dir).split(";") if s.strip()]
         for p in reversed(parts):
             user_paths.insert(0, Path(os.path.expanduser(p)).resolve())
@@ -262,17 +268,9 @@ def collect_plugin_and_user_skills(
         if not user_skills_path.exists() or not user_skills_path.is_dir():
             continue
         try:
-            logger.info(f"📚 Loading skills from user path: {user_skills_path}")
-            additional_skills = collect_skill_docs(str(user_skills_path))
-            if additional_skills:
-                for skill_name, skill_data in additional_skills.items():
-                    if skill_name in custom_skills:
-                        logger.warning(
-                            f"⚠️ Duplicate skill name '{skill_name}' in user path '{user_skills_path}', skipping"
-                        )
-                    else:
-                        custom_skills[skill_name] = skill_data
-                logger.info(f"✅ Loaded {len(additional_skills)} skill(s) from {user_skills_path}")
+            count = registry.register_source(user_skills_path, source_name=str(user_skills_path))
+            if count > 0:
+                logger.info(f"✅ Loaded {count} skill(s) from user path: {user_skills_path}")
         except Exception as e:
             logger.warning(f"⚠️ Failed to load skills from '{user_skills_path}': {e}")
 
@@ -282,59 +280,38 @@ def collect_plugin_and_user_skills(
         key=lambda item: str(item.get("install_id", "")),
     ):
         scope = install.get("scope")
-        if scope == "global":
-            pass
-        elif (
-            isinstance(scope, str)
-            and scope.startswith("agent:")
-            and agent_name is not None
-            and scope == f"agent:{agent_name}"
+        if not (
+            scope == "global"
+            or (
+                isinstance(scope, str)
+                and scope.startswith("agent:")
+                and agent_name is not None
+                and scope == f"agent:{agent_name}"
+            )
         ):
-            pass
-        else:
             continue
 
         source_path = install.get("resolved_skill_source_path")
         install_id = install.get("install_id", "<unknown>")
         if not isinstance(source_path, str) or not source_path:
-            logger.warning(f"⚠️ Installed skill entry '{install_id}' has no resolved source path, skipping")
+            logger.warning(
+                f"⚠️ Installed skill entry '{install_id}' has no resolved source path, skipping"
+            )
             continue
 
         try:
-            logger.info(f"📚 Loading skills from installed source: {source_path}")
-            additional_skills = collect_skill_docs(source_path)
-            if additional_skills:
-                for skill_name, skill_data in additional_skills.items():
-                    if skill_name in custom_skills:
-                        logger.warning(
-                            f"⚠️ Duplicate skill name '{skill_name}' in installed source '{install_id}', skipping"
-                        )
-                    else:
-                        custom_skills[skill_name] = skill_data
+            count = registry.register_source(source_path, source_name=source_path)
+            if count > 0:
                 logger.info(
-                    f"✅ Loaded {len(additional_skills)} skill(s) from installed source '{install_id}'"
+                    f"✅ Loaded {count} skill(s) from installed source '{install_id}'"
                 )
         except Exception as e:
-            logger.warning(f"⚠️ Failed to load skills from installed source '{install_id}': {e}")
-
-    for skill_name, skill_config in custom_skills.items():
-        if "skill_path" not in skill_config:
-            potential_skill_path = plugin_skills_dir / skill_name / "SKILL.md"
-            if not potential_skill_path.exists():
-                potential_skill_path = plugin_skills_dir / skill_name / "skill.md"
-            if potential_skill_path.exists():
-                skill_config["skill_path"] = str(potential_skill_path.resolve())
-                logger.debug(f"✅ Added skill_path for skill '{skill_name}': {skill_config['skill_path']}")
-            else:
-                logger.warning(
-                    f"⚠️ Skill '{skill_name}' has no skill_path and cannot be found in {plugin_skills_dir}, "
-                    "context_skill_tool may not work for this skill"
-                )
-        else:
-            logger.debug(f"✅ Skill '{skill_name}' has skill_path: {skill_config['skill_path']}")
+            logger.warning(
+                f"⚠️ Failed to load skills from installed source '{install_id}': {e}"
+            )
 
     all_skills: Dict[str, Any] = {}
-    for skill_name, skill_config in custom_skills.items():
+    for skill_name, skill_config in registry.get_all_skills().items():
         aworld_meta = skill_config.get("aworld_metadata")
         if aworld_meta is None:
             all_skills[skill_name] = skill_config

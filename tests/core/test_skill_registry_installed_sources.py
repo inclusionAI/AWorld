@@ -140,6 +140,12 @@ def test_collect_plugin_and_user_skills_merges_global_and_matching_agent_install
     assert skills["developer-only"]["description"] == "developer version"
     assert "evaluator-only" not in skills
     assert "project-only" not in skills
+    assert skills["plugin-only"]["asset_root"] == str(
+        (plugin_root / "skills" / "plugin-only").resolve()
+    )
+    assert skills["global-only"]["asset_root"] == str(
+        (global_entry / "skills" / "global-only").resolve()
+    )
 
 
 def test_collect_plugin_and_user_skills_uses_install_id_order_for_duplicate_installed_skills(
