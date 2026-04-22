@@ -50,6 +50,9 @@ class PluginSkillProvider(SkillProvider):
             skill_id = f"{self.provider_id()}:{entrypoint.entrypoint_id}"
             self._skill_files[skill_id] = skill_file
             front_matter = self._load_front_matter(skill_file)
+            tool_list = front_matter.get("tool_list", {})
+            if isinstance(tool_list, str):
+                tool_list = {}
             aworld_meta = resolve_aworld_metadata(front_matter)
             requirements = {}
             if aworld_meta:
@@ -62,6 +65,14 @@ class PluginSkillProvider(SkillProvider):
                     "missing": missing,
                     "install_options": aworld_meta["install"],
                 }
+
+            metadata = dict(entrypoint.metadata or {})
+            metadata.setdefault("type", str(front_matter.get("type", "")))
+            metadata.setdefault(
+                "active",
+                str(front_matter.get("active", "False")).lower() == "true",
+            )
+            metadata.setdefault("tool_list", dict(tool_list))
 
             descriptors.append(
                 SkillDescriptor(
@@ -78,7 +89,7 @@ class PluginSkillProvider(SkillProvider):
                     visibility=str(entrypoint.visibility or "public").strip().lower() or "public",
                     asset_root=str(skill_file.parent.resolve()),
                     skill_file=str(skill_file),
-                    metadata=dict(entrypoint.metadata or {}),
+                    metadata=metadata,
                     requirements=requirements,
                 )
             )

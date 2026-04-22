@@ -46,6 +46,9 @@ class FilesystemSkillProvider(SkillProvider):
         descriptors: list[SkillDescriptor] = []
         for skill_file in self._iter_skill_files():
             front_matter = self._read_front_matter(skill_file)
+            tool_list = front_matter.get("tool_list", {})
+            if isinstance(tool_list, str):
+                tool_list = {}
             skill_name = skill_file.parent.name
             skill_id = f"{self._provider_id}:{skill_name}"
             if skill_id in self._skill_files:
@@ -80,6 +83,7 @@ class FilesystemSkillProvider(SkillProvider):
                     metadata={
                         "type": str(front_matter.get("type", "")),
                         "active": str(front_matter.get("active", "False")).lower() == "true",
+                        "tool_list": dict(tool_list),
                     },
                     requirements=requirements,
                 )
