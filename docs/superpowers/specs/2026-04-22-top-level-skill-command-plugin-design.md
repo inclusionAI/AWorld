@@ -19,8 +19,11 @@ This design does not cover:
 - converting every existing top-level command to the new SPI in the same change
 - making `skill` an uninstallable external plugin in this phase
 - merging top-level CLI command execution with interactive slash command execution into one runtime abstraction
+- introducing the long-term framework-owned skill model under `aworld/skills/`
 - redesigning the skill runtime ABI, `skill_configs`, or `ContextSkillTool`
 - introducing marketplace, trust, or version-resolution policy
+
+This spec is intentionally limited to CLI extensibility. The framework-owned skill architecture is covered separately in [2026-04-22-framework-owned-skill-model-design.md](/Users/wuman/Documents/workspace/aworld-mas/aworld/docs/superpowers/specs/2026-04-22-framework-owned-skill-model-design.md).
 
 ## Problem Statement
 
