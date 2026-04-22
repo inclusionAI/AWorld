@@ -1,8 +1,10 @@
 import sys
+from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from rich.console import Console
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
@@ -10,6 +12,8 @@ from aworld_cli import main as main_module
 from aworld_cli.console import AWorldCLI
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
 from aworld_cli.core.plugin_manager import PluginManager
+from aworld_cli.core.top_level_command_system import TopLevelCommandRegistry
+from aworld_cli.top_level_commands import register_builtin_top_level_commands
 
 
 def _write_skill(root: Path, skill_name: str) -> None:
@@ -182,6 +186,16 @@ def test_main_accepts_repeated_skill_flag() -> None:
     assert parsed.skill == ["browser-use", "code-review"]
 
 
+def test_skill_command_is_registered_as_builtin() -> None:
+    registry = TopLevelCommandRegistry(reserved_names={"skill"})
+
+    register_builtin_top_level_commands(registry)
+
+    command = registry.get("skill")
+    assert command is not None
+    assert command.name == "skill"
+
+
 @pytest.mark.asyncio
 async def test_run_direct_mode_passes_requested_skill_names(
     monkeypatch: pytest.MonkeyPatch,
@@ -234,3 +248,75 @@ async def test_console_skills_use_sets_pending_override() -> None:
 
     assert handled is True
     assert cli._pending_skill_overrides == ["browser-use"]
+
+
+@pytest.mark.asyncio
+async def test_console_generated_skill_alias_sets_pending_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = AWorldCLI()
+    cli._pending_skill_overrides = []
+    monkeypatch.setattr(
+        cli,
+        "_generated_skill_alias_map",
+        lambda **kwargs: {"/brainstorming": "brainstorming"},
+    )
+
+    handled = await cli._handle_skills_command("/brainstorming")
+
+    assert handled is True
+    assert cli._pending_skill_overrides == ["brainstorming"]
+
+
+@pytest.mark.asyncio
+async def test_skills_table_shows_generated_skill_alias_and_provider_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = AWorldCLI()
+    output = StringIO()
+    cli.console = Console(file=output, force_terminal=False, color_system=None, width=160)
+    monkeypatch.setattr(
+        cli,
+        "_resolve_visible_skills",
+        lambda **kwargs: SimpleNamespace(
+            skill_configs={
+                "brainstorming": {
+                    "description": "Design before implementation",
+                    "skill_path": "/tmp/brainstorming/SKILL.md",
+                }
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_generated_skill_alias_map",
+        lambda **kwargs: {"/brainstorming": "brainstorming"},
+    )
+    monkeypatch.setattr(
+        cli,
+        "_provider_commands_by_skill",
+        lambda **kwargs: {"brainstorming": ["/review"]},
+    )
+
+    await cli._render_skills_table()
+
+    rendered = output.getvalue()
+
+    assert "/brainstorming" in rendered
+    assert "/review" in rendered
+
+
+def test_completion_entries_include_generated_skill_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = AWorldCLI()
+    monkeypatch.setattr(
+        cli,
+        "_generated_skill_alias_map",
+        lambda **kwargs: {"/brainstorming": "brainstorming"},
+    )
+
+    words, meta = cli._build_completion_entries(agent_names=["Aworld"])
+
+    assert "/brainstorming" in words
+    assert meta["/brainstorming"] == "Force skill on next task: brainstorming"
