@@ -39,6 +39,12 @@ This is the <b>AWorld Thesis</b>: A powerful harness is not enough. True AI scal
 AWorld is the platform designed for this singular purpose. We provide a complete, battle-tested Harness as the recipe for you, the expert, to forge your knowledge into a fleet of autonomous agents. Together, we move beyond AI's generic promise to create robust, precise applications that master <em>your</em> specific domain.
 </p>
 
+## Naming Convention
+
+The gateway subsystem uses **`aworld-gateway`** as its external display name in docs, service metadata, and operator-facing surfaces.
+
+Its Python import package remains **`aworld_gateway`**, because Python package imports cannot use hyphens.
+
 # From Expertise to Product
 
 See what happens when expert knowledge is encoded into reusable **Skills**. The creations below are orchestrated by the AWorld Agent, demonstrating our core scaling law: as the community contributes more expertise, the entire ecosystem becomes more powerful.
