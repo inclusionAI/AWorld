@@ -22,6 +22,14 @@ def _write_skill(root: Path, skill_name: str) -> None:
     )
 
 
+def _write_skill_with_invalid_body(root: Path, skill_name: str) -> None:
+    skill_dir = root / skill_name
+    skill_dir.mkdir(parents=True)
+    with (skill_dir / "SKILL.md").open("wb") as handle:
+        handle.write(b"---\nname: test-skill\ndescription: test\n---\n\n")
+        handle.write(b"\xff\xfe\xfa")
+
+
 def _write_framework_plugin(root: Path, plugin_id: str, plugin_name: str) -> None:
     plugin_manifest_dir = root / ".aworld-plugin"
     plugin_manifest_dir.mkdir(parents=True, exist_ok=True)
@@ -119,6 +127,38 @@ def test_resolve_source_rejects_invalid_layout(
 
     with pytest.raises(ValueError, match="No skill directories found"):
         manager.resolve_entry_source(entry)
+
+
+def test_resolve_source_accepts_skill_with_invalid_body_encoding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    entry = installed_root / "demo"
+    _write_skill_with_invalid_body(entry / "skills", "brainstorming")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+
+    assert manager.resolve_entry_source(entry) == entry / "skills"
+
+
+def test_count_skills_uses_descriptor_discovery_without_loading_full_body(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source = installed_root / "demo" / "skills"
+    _write_skill_with_invalid_body(source, "brainstorming")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+
+    assert manager._count_skills(source) == 1
 
 
 def test_manifest_round_trip(
