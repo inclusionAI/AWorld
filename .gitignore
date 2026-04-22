@@ -154,3 +154,14 @@ PR_*_*.md
 *_FINAL*.md
 *_COMPLETE*.md
 *_FIX*.md
+*_SUMMARY.md
+*_LOG.md
+EXEC_SUMMARY.md
+team_implementation_analysis.md
+
+# Temporary AI-generated artifacts
+ai_news_today.*
+survey/
+
+# OpenSpec design docs (not runtime)
+openspec/
