@@ -468,19 +468,17 @@ def collect_skill_docs(
         >>> collect_skill_docs("https://github.com/muratcankoylan/Agent-Skills-for-Context-Engineering")
         {'context-fundamentals': {...}, 'context-degradation': {...}, ...}
     """
-    from aworld.skills.compat_provider import build_compat_provider
-    from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
+    from aworld.skills.compat_provider import build_compat_registry
 
     results: Dict[str, Dict[str, Any]] = {}
     logger.info(f"🔍 Starting to collect skills from: {root_path}")
 
     try:
-        provider = build_compat_provider(root_path, cache_dir=cache_dir)
+        registry = build_compat_registry(root_path, cache_dir=cache_dir)
     except Exception as e:
         logger.error(f"❌ Failed to resolve skill path {root_path}: {e}")
         return results
 
-    registry = FrameworkSkillRegistry([provider])
     for descriptor in registry.list_descriptors():
         skill_name = descriptor.skill_name
         if skill_name in results:

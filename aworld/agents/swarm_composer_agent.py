@@ -824,12 +824,10 @@ mcp_config:
     
     def _load_skills_info(self, skills_path: Path) -> Dict[str, Any]:
         """Load skills information from directory."""
-        from aworld.skills.compat_provider import build_compat_provider
-        from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
+        from aworld.skills.compat_provider import build_compat_registry
         
         try:
-            provider = build_compat_provider(skills_path)
-            registry = FrameworkSkillRegistry([provider])
+            registry = build_compat_registry(skills_path)
             skills_info = {}
             for descriptor in registry.list_descriptors():
                 skills_info[descriptor.skill_name] = {

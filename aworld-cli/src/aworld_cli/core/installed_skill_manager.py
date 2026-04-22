@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Literal, Optional
 
 from aworld.plugins.discovery import discover_plugins
-from aworld.skills.compat_provider import build_compat_provider
+from aworld.skills.compat_provider import build_compat_registry
 from aworld_cli.core.plugin_manager import PluginManager, list_builtin_plugins
 
 logger = logging.getLogger(__name__)
@@ -342,8 +342,7 @@ class InstalledSkillManager:
     def _count_skills(self, source_path: Path) -> int:
         if not source_path.exists():
             return 0
-        provider = build_compat_provider(source_path)
-        return len(list(provider.list_descriptors()))
+        return len(build_compat_registry(source_path).list_descriptors())
 
     def _normalize_entry_path(self, path: Path) -> Path:
         expanded_path = path.expanduser()

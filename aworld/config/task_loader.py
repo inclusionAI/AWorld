@@ -271,8 +271,7 @@ async def _load_skill_agent(
     Raises:
         ValueError: If skill not found, not Agentic Skill, or skills_path missing
     """
-    from aworld.skills.compat_provider import build_compat_provider
-    from aworld.skills.registry import SkillRegistry as FrameworkSkillRegistry
+    from aworld.skills.compat_provider import build_compat_registry
     
     skill_name = agent_def.get("skill_name")
     if not skill_name:
@@ -287,8 +286,7 @@ async def _load_skill_agent(
     
     # Discover descriptors first, then lazily load content for the selected skill only.
     try:
-        provider = build_compat_provider(skills_path)
-        registry = FrameworkSkillRegistry([provider])
+        registry = build_compat_registry(skills_path)
     except Exception as e:
         raise ValueError(f"missing agent {agent_id}: failed to load skills from {skills_path}: {e}")
 
