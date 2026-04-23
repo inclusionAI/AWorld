@@ -576,7 +576,7 @@ def _build_top_level_command_registry() -> TopLevelCommandRegistry:
 
 
 def _build_parser_command_choices() -> list[str]:
-    command_names = ["interactive", "list", "serve", "batch", "batch-job", "plugins"]
+    command_names = ["interactive", "serve", "batch", "batch-job", "plugins"]
     registry = _build_top_level_command_registry()
     for command in registry.list_commands():
         if command.name not in command_names:
@@ -719,8 +719,9 @@ def main():
 
     # Display configuration source
     from ._globals import console
-    # Require model config for commands that use the agent (skip for 'list'; 'plugins' and 'skill' return earlier)
-    if args.command != "list" and not has_model_config(config_dict):
+    # Require model config for commands that use the agent. Top-level plugin
+    # commands such as `list`, `plugins`, and `skill` return earlier.
+    if not has_model_config(config_dict):
         console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
         console.print("[dim]Run: aworld-cli --config[/dim]")
         console.print("[dim]Or create .env in the current directory. See: [link=https://github.com/inclusionAI/AWorld/blob/main/README.md]README[/link][/dim]")
@@ -746,22 +747,6 @@ def main():
     # Resolve default agent_dir when --agent-dir not specified (env LOCAL_AGENTS_DIR / AWORLD_DEFAULT_AGENT_DIR)
     args.agent_dir = _resolve_agent_dirs(args.agent_dir)
 
-    # Handle 'list' command separately before setting up the full app loop if possible
-    if args.command == "list":
-        cli = AWorldCLI()
-        all_agents = asyncio.run(load_all_agents(
-            remote_backends=args.remote_backend,
-            local_dirs=args.agent_dir,
-            agent_files=args.agent_file
-        ))
-        
-        # Display agents
-        if all_agents:
-            cli.display_agents(all_agents)
-        else:
-            print("❌ No agents found from any source.")
-        return
-    
     # Handle 'serve' command: start HTTP and/or MCP servers
     if args.command == "serve":
         if not args.http and not args.mcp:
