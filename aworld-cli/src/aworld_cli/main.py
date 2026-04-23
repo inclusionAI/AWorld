@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -27,6 +28,49 @@ def _dispatch_acp_early_if_needed() -> None:
         from .acp.self_test import run_self_test
 
         raise SystemExit(asyncio.run(run_self_test()))
+
+    if acp_args.acp_action == "describe-validation":
+        from .acp.validate_host import build_validate_stdio_host_help
+
+        sys.stdout.write(json.dumps(build_validate_stdio_host_help(), ensure_ascii=False) + "\n")
+        sys.stdout.flush()
+        raise SystemExit(0)
+
+    if acp_args.acp_action == "render-validation-config":
+        from .acp.validate_host import render_validation_config, write_rendered_validation_config
+
+        payload = render_validation_config(
+            topology=acp_args.topology,
+            expand_placeholders_flag=acp_args.expand_placeholders,
+            env_assignments=acp_args.env,
+        )
+        write_rendered_validation_config(payload, output_file=acp_args.output_file)
+        sys.stdout.write(
+            json.dumps(payload, ensure_ascii=False, indent=2)
+            + "\n"
+        )
+        sys.stdout.flush()
+        raise SystemExit(0)
+
+    if acp_args.acp_action == "validate-stdio-host":
+        from .acp.validate_host import run_validate_stdio_host
+
+        raise SystemExit(
+            asyncio.run(
+                run_validate_stdio_host(
+                    command=acp_args.command,
+                    config_file=acp_args.config_file,
+                    topology=acp_args.topology,
+                    cwd=acp_args.cwd,
+                    env_assignments=acp_args.env,
+                    env_json=acp_args.env_json,
+                    profile_name=acp_args.profile,
+                    session_params_json=acp_args.session_params_json,
+                    startup_timeout_seconds=acp_args.startup_timeout_seconds,
+                    startup_retries=acp_args.startup_retries,
+                )
+            )
+        )
 
     from .acp.server import run_stdio_server
 
@@ -497,6 +541,49 @@ Batch Jobs:
             from .acp.self_test import run_self_test
 
             sys.exit(asyncio.run(run_self_test()))
+
+        if acp_args.acp_action == "describe-validation":
+            from .acp.validate_host import build_validate_stdio_host_help
+
+            sys.stdout.write(json.dumps(build_validate_stdio_host_help(), ensure_ascii=False) + "\n")
+            sys.stdout.flush()
+            sys.exit(0)
+
+        if acp_args.acp_action == "render-validation-config":
+            from .acp.validate_host import render_validation_config, write_rendered_validation_config
+
+            payload = render_validation_config(
+                topology=acp_args.topology,
+                expand_placeholders_flag=acp_args.expand_placeholders,
+                env_assignments=acp_args.env,
+            )
+            write_rendered_validation_config(payload, output_file=acp_args.output_file)
+            sys.stdout.write(
+                json.dumps(payload, ensure_ascii=False, indent=2)
+                + "\n"
+            )
+            sys.stdout.flush()
+            sys.exit(0)
+
+        if acp_args.acp_action == "validate-stdio-host":
+            from .acp.validate_host import run_validate_stdio_host
+
+            sys.exit(
+                asyncio.run(
+                    run_validate_stdio_host(
+                        command=acp_args.command,
+                        config_file=acp_args.config_file,
+                        topology=acp_args.topology,
+                        cwd=acp_args.cwd,
+                        env_assignments=acp_args.env,
+                        env_json=acp_args.env_json,
+                        profile_name=acp_args.profile,
+                        session_params_json=acp_args.session_params_json,
+                        startup_timeout_seconds=acp_args.startup_timeout_seconds,
+                        startup_retries=acp_args.startup_retries,
+                    )
+                )
+            )
 
         from .acp.server import run_stdio_server
 

@@ -37,3 +37,13 @@ def test_invalid_cwd_is_rejected(tmp_path: Path) -> None:
             cwd=str(tmp_path / "missing"),
             requested_mcp_servers=[],
         )
+
+
+def test_invalid_requested_mcp_servers_are_rejected(tmp_path: Path) -> None:
+    store = AcpSessionStore()
+
+    with pytest.raises(ValueError, match="AWORLD_ACP_UNSUPPORTED_MCP_SERVERS"):
+        store.create_session(
+            cwd=str(tmp_path),
+            requested_mcp_servers="bad-shape",
+        )

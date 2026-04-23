@@ -176,9 +176,11 @@ class FileParseHook(PostInputParseHook):
                     # Handle local file path
                     file_path = Path(file_ref)
                     
-                    # If not absolute, try relative to current working directory
+                    # If not absolute, resolve relative to the execution workspace when available.
                     if not file_path.is_absolute():
-                        file_path = Path.cwd() / file_path
+                        workspace_path = getattr(context, 'workspace_path', None)
+                        base_path = Path(workspace_path) if workspace_path else Path.cwd()
+                        file_path = base_path / file_path
                     
                     # Resolve the path to handle any symlinks or relative components
                     try:

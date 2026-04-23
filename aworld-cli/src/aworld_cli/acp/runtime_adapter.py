@@ -47,6 +47,9 @@ def normalize_tool_start(
 ) -> dict[str, Any]:
     tool_call_id = native_id or next_tool_id(state)
     state[f"tool::{tool_name}"] = tool_call_id
+    open_tool_calls = state.setdefault("open_tool_calls", [])
+    if isinstance(open_tool_calls, list):
+        open_tool_calls.append({"tool_name": tool_name, "tool_call_id": tool_call_id})
     return {
         "event_type": "tool_start",
         "seq": next_sequence(state),
@@ -65,6 +68,15 @@ def normalize_tool_end(
     payload: Any,
 ) -> dict[str, Any]:
     tool_call_id = native_id or state.setdefault(f"tool::{tool_name}", next_tool_id(state))
+    open_tool_calls = state.get("open_tool_calls")
+    if isinstance(open_tool_calls, list):
+        for index in range(len(open_tool_calls) - 1, -1, -1):
+            item = open_tool_calls[index]
+            if not isinstance(item, dict):
+                continue
+            if item.get("tool_call_id") == tool_call_id:
+                open_tool_calls.pop(index)
+                break
     return {
         "event_type": "tool_end",
         "seq": next_sequence(state),
