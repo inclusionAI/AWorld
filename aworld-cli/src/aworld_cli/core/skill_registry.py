@@ -331,6 +331,23 @@ def get_skill_registry(
 
         _register_from_env(_global_registry)
 
+        for user_skills_path in get_user_skills_paths():
+            if not user_skills_path.exists() or not user_skills_path.is_dir():
+                continue
+            try:
+                count = _global_registry.register_source(
+                    str(user_skills_path),
+                    source_name=str(user_skills_path),
+                )
+                if count > 0:
+                    logger.info(
+                        f"📚 Registered user skills directory: {user_skills_path} ({count} skills)"
+                    )
+            except Exception as e:
+                logger.debug(
+                    f"ℹ️ User skills directory already registered or failed: {user_skills_path}: {e}"
+                )
+
         if skills_dir is None:
             default_skills_dir = Path.cwd() / "skills"
         else:

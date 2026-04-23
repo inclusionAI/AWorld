@@ -6,6 +6,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
+from aworld_cli.core.runtime_skill_registry import build_runtime_skill_registry_view
 from aworld_cli.core.skill_registry import (
     collect_plugin_and_user_skills,
     get_skill_registry,
@@ -171,6 +172,32 @@ def test_collect_plugin_and_user_skills_uses_install_id_order_for_duplicate_inst
     skills = collect_plugin_and_user_skills(plugin_root, agent_name="developer")
 
     assert skills["shared-skill"]["description"] == "a version"
+
+
+def test_runtime_registry_view_discovers_publicly_exposed_global_installs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_PATH", raising=False)
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    monkeypatch.delenv("SKILLS_CACHE_DIR", raising=False)
+
+    source = tmp_path / "source-pack"
+    _write_skill(source / "skills", "public-exposed-skill", "public install")
+
+    manager = InstalledSkillManager()
+    manager.install(
+        source=source,
+        mode="copy",
+        scope="global",
+        install_id="public-pack",
+    )
+
+    runtime_view = build_runtime_skill_registry_view()
+    all_skills = runtime_view.get_all_skills()
+
+    assert "public-exposed-skill" in all_skills
+    assert all_skills["public-exposed-skill"]["description"] == "public install"
 
 
 def test_disabled_installed_skill_package_is_excluded_from_runtime_loading(

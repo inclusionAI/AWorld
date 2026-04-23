@@ -108,65 +108,70 @@ class SkillTopLevelCommand:
         toggle_manager = SkillToggleManager(installed_manager=manager)
         from aworld_cli.core.runtime_skill_registry import build_runtime_skill_registry_view
 
-        if args.skill_action == "install":
-            source_path = Path(args.source).expanduser()
-            mode = args.mode or ("copy" if source_path.exists() else "clone")
-            record = manager.install(
-                source=args.source,
-                mode=mode,
-                scope=args.scope,
-            )
-            print(f"✅ Skill package '{record['install_id']}' installed successfully")
-            print(f"📍 Location: {record['installed_path']}")
-            return 0
+        try:
+            if args.skill_action == "install":
+                source_path = Path(args.source).expanduser()
+                mode = args.mode or ("copy" if source_path.exists() else "clone")
+                record = manager.install(
+                    source=args.source,
+                    mode=mode,
+                    scope=args.scope,
+                )
+                print(f"✅ Skill package '{record['install_id']}' installed successfully")
+                print(f"📍 Location: {record['installed_path']}")
+                return 0
 
-        if args.skill_action == "list":
-            installs = sorted(
-                manager.list_installs(), key=lambda item: str(item["install_id"])
-            )
-            runtime_skills = build_runtime_skill_registry_view()
-            if not installs:
-                print("📦 No installed skill packages")
-                print(f"📍 Installed root: {manager.installed_root}")
+            if args.skill_action == "list":
+                installs = sorted(
+                    manager.list_installs(), key=lambda item: str(item["install_id"])
+                )
+                runtime_skills = build_runtime_skill_registry_view()
+                if not installs:
+                    print("📦 No installed skill packages")
+                    print(f"📍 Installed root: {manager.installed_root}")
+                    self._print_runtime_skills(runtime_skills)
+                    return 0
+                for install in installs:
+                    print(
+                        f"{install['install_id']} | enabled={install.get('enabled', True)} | scope={install['scope']} | "
+                        f"skill_count={install['skill_count']} | source={install['source']}"
+                    )
                 self._print_runtime_skills(runtime_skills)
                 return 0
-            for install in installs:
-                print(
-                    f"{install['install_id']} | enabled={install.get('enabled', True)} | scope={install['scope']} | "
-                    f"skill_count={install['skill_count']} | source={install['source']}"
-                )
-            self._print_runtime_skills(runtime_skills)
-            return 0
 
-        if args.skill_action == "enable":
-            result = toggle_manager.enable(args.install_id)
-            if result.target_kind == "package":
-                print(f"✅ Skill package '{result.identifier}' enabled successfully")
-            else:
-                print(f"✅ Skill '{result.identifier}' enabled successfully")
-            return 0
+            if args.skill_action == "enable":
+                result = toggle_manager.enable(args.install_id)
+                if result.target_kind == "package":
+                    print(f"✅ Skill package '{result.identifier}' enabled successfully")
+                else:
+                    print(f"✅ Skill '{result.identifier}' enabled successfully")
+                return 0
 
-        if args.skill_action == "disable":
-            result = toggle_manager.disable(args.install_id)
-            if result.target_kind == "package":
-                print(f"✅ Skill package '{result.identifier}' disabled successfully")
-            else:
-                print(f"✅ Skill '{result.identifier}' disabled successfully")
-            return 0
+            if args.skill_action == "disable":
+                result = toggle_manager.disable(args.install_id)
+                if result.target_kind == "package":
+                    print(f"✅ Skill package '{result.identifier}' disabled successfully")
+                else:
+                    print(f"✅ Skill '{result.identifier}' disabled successfully")
+                return 0
 
-        if args.skill_action == "remove":
-            manager.remove_install(args.install_id)
-            print(f"✅ Skill package '{args.install_id}' removed successfully")
-            return 0
+            if args.skill_action == "remove":
+                manager.remove_install(args.install_id)
+                print(f"✅ Skill package '{args.install_id}' removed successfully")
+                return 0
 
-        if args.skill_action == "update":
-            record = manager.update_install(args.install_id)
-            print(f"✅ Skill package '{record['install_id']}' updated successfully")
-            return 0
+            if args.skill_action == "update":
+                record = manager.update_install(args.install_id)
+                print(f"✅ Skill package '{record['install_id']}' updated successfully")
+                return 0
 
-        if args.skill_action == "import":
-            record = manager.import_entry(Path(args.path), scope=args.scope)
-            print(f"✅ Skill package '{record['install_id']}' imported successfully")
-            return 0
+            if args.skill_action == "import":
+                record = manager.import_entry(Path(args.path), scope=args.scope)
+                print(f"✅ Skill package '{record['install_id']}' imported successfully")
+                return 0
 
-        raise ValueError(f"Unsupported skill action: {args.skill_action}")
+            print(f"❌ Unsupported skill action: {args.skill_action}")
+            return 1
+        except Exception as exc:
+            print(f"❌ {exc}")
+            return 1

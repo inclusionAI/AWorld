@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Any
 
@@ -23,8 +24,14 @@ class FilesystemSkillProvider(SkillProvider):
 
     def _iter_skill_files(self):
         seen: set[Path] = set()
-        for pattern in ("**/skill.md", "**/SKILL.md"):
-            for skill_file in sorted(self._root.glob(pattern)):
+        if not self._root.exists():
+            return
+
+        for current_root, _, filenames in os.walk(self._root, followlinks=True):
+            for candidate_name in ("skill.md", "SKILL.md"):
+                if candidate_name not in filenames:
+                    continue
+                skill_file = Path(current_root) / candidate_name
                 resolved = skill_file.resolve()
                 if resolved in seen or not resolved.is_file():
                     continue

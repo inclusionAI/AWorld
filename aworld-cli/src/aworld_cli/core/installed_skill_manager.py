@@ -32,6 +32,10 @@ def default_skill_home() -> Path:
 
 
 def default_installed_skill_root() -> Path:
+    return Path.home() / ".aworld" / ".installed-skills"
+
+
+def default_legacy_installed_skill_root() -> Path:
     return default_skill_home() / "installed"
 
 
@@ -57,8 +61,12 @@ class InstalledSkillManager:
         installed_root: Optional[Path] = None,
         manifest_path: Optional[Path] = None,
     ) -> None:
+        self._migrated_legacy_layout = False
         self.installed_root = (installed_root or default_installed_skill_root()).expanduser()
         self.manifest_path = (manifest_path or default_skill_manifest_path()).expanduser()
+        self.public_skill_root = self.manifest_path.parent
+        self.legacy_installed_root = default_legacy_installed_skill_root().expanduser()
+        self._auto_migrate_legacy_root = installed_root is None
         self.plugin_dir = self.manifest_path.parent.parent / "plugins"
         self.plugin_manager = PluginManager(plugin_dir=self.plugin_dir)
         self.installed_root.mkdir(parents=True, exist_ok=True)
@@ -76,6 +84,29 @@ class InstalledSkillManager:
             return candidate.removesuffix(".git") or "installed-skill"
 
         return Path(source_value).expanduser().name
+
+    def _is_supported_clone_source(self, source: str | Path) -> bool:
+        if isinstance(source, Path):
+            return True
+
+        source_value = str(source).strip()
+        if not source_value:
+            return False
+
+        source_path = Path(source_value).expanduser()
+        if source_path.exists():
+            return True
+
+        return "://" in source_value or source_value.startswith("git@")
+
+    def _validate_clone_source(self, source: str | Path) -> None:
+        if self._is_supported_clone_source(source):
+            return
+
+        raise ValueError(
+            "Unsupported skill source: "
+            f"{source}. Use a Git URL or local skill directory."
+        )
 
     def _prepare_install_target(self, install_name: str) -> Path:
         target_path = self._normalize_entry_path(self.installed_root / install_name)
@@ -99,10 +130,16 @@ class InstalledSkillManager:
         elif entry_path.exists():
             entry_path.unlink()
 
-    def _upsert_manifest_record(self, record: dict[str, str]) -> dict[str, str]:
+    def _upsert_manifest_record(
+        self,
+        record: dict[str, str],
+        *,
+        enabled: bool | None = None,
+    ) -> dict[str, str]:
         self._ensure_no_unmanaged_plugin_dir_collision(record["install_id"])
         self._ensure_no_reserved_plugin_id_collision(record)
         existing_record = self.plugin_manager._manifest.get(record["install_id"])
+        existing_enabled: bool | None = None
         if isinstance(existing_record, Mapping):
             existing_package_kind = str(existing_record.get("package_kind", "plugin"))
             existing_managed_by = str(existing_record.get("managed_by", "plugin"))
@@ -113,6 +150,7 @@ class InstalledSkillManager:
                 raise ValueError(
                     f"Skill install id '{record['install_id']}' conflicts with an existing non-skill plugin manifest record"
                 )
+            existing_enabled = bool(existing_record.get("enabled", True))
 
         metadata = {
             "install_id": record["install_id"],
@@ -128,7 +166,7 @@ class InstalledSkillManager:
             record["install_id"],
             plugin_path=Path(record["installed_path"]),
             source=record["source"],
-            enabled=True,
+            enabled=enabled if enabled is not None else existing_enabled if existing_enabled is not None else True,
             package_kind="skill",
             managed_by="skill",
             activation_scope="global",
@@ -136,6 +174,140 @@ class InstalledSkillManager:
             installed_at=record["installed_at"],
         )
         return record
+
+    def _maybe_migrate_legacy_installed_root_once(self) -> None:
+        if self._migrated_legacy_layout:
+            return
+        self._migrated_legacy_layout = True
+
+        if not self._auto_migrate_legacy_root:
+            return
+        if self.legacy_installed_root == self.installed_root:
+            return
+        if not self.legacy_installed_root.exists() or not self.legacy_installed_root.is_dir():
+            return
+
+        moved = False
+        self.installed_root.mkdir(parents=True, exist_ok=True)
+        for entry in sorted(self.legacy_installed_root.iterdir(), key=lambda item: item.name):
+            target = self.installed_root / entry.name
+            if target.exists() or target.is_symlink():
+                continue
+            entry.replace(target)
+            moved = True
+
+        if moved:
+            self._rewrite_legacy_install_paths()
+            self._reconcile_public_skill_links()
+
+        if not any(self.legacy_installed_root.iterdir()):
+            self.legacy_installed_root.rmdir()
+
+    def _rewrite_legacy_install_paths(self) -> None:
+        plugin_records = self._load_plugin_manifest_records(
+            include_disabled=True,
+            include_enabled_field=True,
+        )
+        for record in plugin_records:
+            installed_path = Path(str(record["installed_path"])).expanduser()
+            if installed_path.parent != self.legacy_installed_root:
+                continue
+            new_installed_path = self.installed_root / installed_path.name
+            if not (new_installed_path.exists() or new_installed_path.is_symlink()):
+                continue
+            updated_record = dict(record)
+            updated_record["installed_path"] = str(new_installed_path)
+            updated_record["resolved_skill_source_path"] = str(
+                self.resolve_entry_source(new_installed_path)
+            )
+            updated_record.pop("enabled", None)
+            self._upsert_manifest_record(
+                updated_record,
+                enabled=bool(record.get("enabled", True)),
+            )
+
+        legacy_records = self._load_legacy_manifest()
+        updated_legacy: list[dict[str, str]] = []
+        changed = False
+        for record in legacy_records:
+            updated_record = dict(record)
+            installed_path = Path(record["installed_path"]).expanduser()
+            if installed_path.parent == self.legacy_installed_root:
+                new_installed_path = self.installed_root / installed_path.name
+                if new_installed_path.exists() or new_installed_path.is_symlink():
+                    updated_record["installed_path"] = str(new_installed_path)
+                    updated_record["resolved_skill_source_path"] = str(
+                        self.resolve_entry_source(new_installed_path)
+                    )
+                    changed = True
+            updated_legacy.append(updated_record)
+
+        if changed:
+            serialized = json.dumps(updated_legacy, indent=2, ensure_ascii=False)
+            self._write_text_file_atomic(self.manifest_path, serialized)
+
+    def _collect_public_skill_targets(
+        self, source_path: Path
+    ) -> list[tuple[str, Path]]:
+        descriptors = build_compat_registry(source_path).list_descriptors()
+        targets: dict[str, Path] = {}
+        for descriptor in descriptors:
+            skill_name = str(descriptor.skill_name).strip()
+            if not skill_name or skill_name in targets:
+                continue
+            targets[skill_name] = Path(descriptor.asset_root).resolve(strict=False)
+        return sorted(targets.items(), key=lambda item: item[0])
+
+    def _path_is_within(self, path: Path, root: Path) -> bool:
+        normalized_path = path.expanduser().resolve(strict=False)
+        normalized_root = root.expanduser().resolve(strict=False)
+        return normalized_path == normalized_root or normalized_root in normalized_path.parents
+
+    def _clear_managed_public_skill_links(self) -> None:
+        if not self.public_skill_root.exists():
+            return
+
+        managed_roots = {
+            self.installed_root.resolve(strict=False),
+            self.legacy_installed_root.resolve(strict=False),
+        }
+        for entry in self.public_skill_root.iterdir():
+            if not entry.is_symlink():
+                continue
+            target = entry.resolve(strict=False)
+            if any(
+                target == managed_root or managed_root in target.parents
+                for managed_root in managed_roots
+            ):
+                entry.unlink()
+
+    def _reconcile_public_skill_links(self) -> None:
+        self.public_skill_root.mkdir(parents=True, exist_ok=True)
+        self._clear_managed_public_skill_links()
+
+        records = self._load_plugin_manifest_records(
+            include_disabled=False,
+            include_enabled_field=False,
+        )
+        for record in records:
+            if str(record.get("scope", "")) != "global":
+                continue
+
+            installed_path = Path(str(record["installed_path"])).expanduser()
+            if not self._path_is_within(installed_path, self.installed_root):
+                continue
+
+            resolved_source = Path(str(record["resolved_skill_source_path"])).expanduser()
+            if not resolved_source.exists():
+                continue
+
+            for skill_name, target in self._collect_public_skill_targets(resolved_source):
+                public_link = self.public_skill_root / skill_name
+                if public_link.exists() or public_link.is_symlink():
+                    if public_link.is_symlink() and public_link.resolve(strict=False) == target:
+                        continue
+                    continue
+                public_link.symlink_to(target, target_is_directory=True)
 
     def _ensure_no_unmanaged_plugin_dir_collision(self, install_id: str) -> None:
         existing_record = self.plugin_manager._manifest.get(install_id)
@@ -457,6 +629,7 @@ class InstalledSkillManager:
         return sanitized_records
 
     def load_manifest(self) -> list[dict[str, str]]:
+        self._maybe_migrate_legacy_installed_root_once()
         plugin_records = self._load_plugin_manifest_records(include_disabled=True)
         if not self.manifest_path.exists():
             return plugin_records
@@ -482,6 +655,7 @@ class InstalledSkillManager:
         )
 
     def save_manifest(self, records: list[dict[str, str]]) -> None:
+        self._maybe_migrate_legacy_installed_root_once()
         sanitized_records: list[dict[str, str]] = []
         for index, item in enumerate(records):
             if not isinstance(item, Mapping):
@@ -516,6 +690,7 @@ class InstalledSkillManager:
                 self._upsert_manifest_record(record)
 
             self._write_text_file_atomic(self.manifest_path, serialized)
+            self._reconcile_public_skill_links()
         except Exception:
             self.plugin_manager._manifest = plugin_memory_state
             self._restore_text_file_state(
@@ -596,7 +771,20 @@ class InstalledSkillManager:
         raise ValueError(f"No skill directories found under {entry_path}")
 
     def import_entry(self, entry_path: Path, scope: SkillScope) -> dict[str, str]:
+        self._maybe_migrate_legacy_installed_root_once()
         entry_path = self._normalize_entry_path(entry_path)
+        if (
+            self._auto_migrate_legacy_root
+            and self._path_is_within(entry_path, self.legacy_installed_root)
+            and not self._is_managed_entry_path(entry_path)
+        ):
+            migrated_entry = self.installed_root / entry_path.name
+            if migrated_entry.exists() or migrated_entry.is_symlink():
+                entry_path = self._normalize_entry_path(migrated_entry)
+            else:
+                migrated_entry.parent.mkdir(parents=True, exist_ok=True)
+                entry_path.replace(migrated_entry)
+                entry_path = self._normalize_entry_path(migrated_entry)
         if not self._is_managed_entry_path(entry_path):
             raise ValueError(
                 "Manual import path must already live under the installed root and cannot be the installed root itself"
@@ -613,7 +801,9 @@ class InstalledSkillManager:
             scope=scope,
             installed_at=datetime.now(timezone.utc).isoformat(),
         )
-        return self._upsert_manifest_record(asdict(record))
+        persisted = self._upsert_manifest_record(asdict(record))
+        self._reconcile_public_skill_links()
+        return persisted
 
     def install(
         self,
@@ -622,6 +812,7 @@ class InstalledSkillManager:
         scope: SkillScope,
         install_id: Optional[str] = None,
     ) -> dict[str, str]:
+        self._maybe_migrate_legacy_installed_root_once()
         install_name = install_id or self._derive_install_id(source)
         target_path = self._prepare_install_target(install_name)
         source_value = str(source)
@@ -637,6 +828,7 @@ class InstalledSkillManager:
                     raise ValueError(f"Local skill source must be an existing directory: {source}")
                 target_path.symlink_to(source_path.resolve(strict=False), target_is_directory=True)
             elif mode == "clone":
+                self._validate_clone_source(source)
                 subprocess.run(
                     ["git", "clone", source_value, str(target_path)],
                     check=True,
@@ -667,7 +859,9 @@ class InstalledSkillManager:
         )
         plugin_memory_state = deepcopy(self.plugin_manager._manifest)
         try:
-            return self._upsert_manifest_record(asdict(record))
+            persisted = self._upsert_manifest_record(asdict(record))
+            self._reconcile_public_skill_links()
+            return persisted
         except Exception:
             self.plugin_manager._manifest = plugin_memory_state
             self._restore_text_file_state(
@@ -679,7 +873,9 @@ class InstalledSkillManager:
     def list_installs(
         self, *, include_disabled: bool = True
     ) -> list[dict[str, str | int | bool]]:
+        self._maybe_migrate_legacy_installed_root_once()
         self._migrate_legacy_manifest_once()
+        self._reconcile_public_skill_links()
         all_records = self._load_plugin_manifest_records(
             include_disabled=True,
             include_enabled_field=True,
@@ -739,6 +935,7 @@ class InstalledSkillManager:
         return installs
 
     def _migrate_legacy_manifest_once(self) -> None:
+        self._maybe_migrate_legacy_installed_root_once()
         if not self.manifest_path.exists():
             return
 
@@ -759,6 +956,7 @@ class InstalledSkillManager:
             if migrated_path.exists():
                 migrated_path.unlink()
             self.manifest_path.replace(migrated_path)
+            self._reconcile_public_skill_links()
         except Exception:
             self.plugin_manager._manifest = plugin_memory_state
             self._restore_text_file_state(
@@ -767,6 +965,7 @@ class InstalledSkillManager:
             raise
 
     def update_install(self, install_id_or_name: str) -> dict[str, str]:
+        self._maybe_migrate_legacy_installed_root_once()
         record_source, index, target, records = self._find_manifest_record(install_id_or_name)
         if target.get("install_mode") != "clone":
             raise ValueError(
@@ -806,13 +1005,16 @@ class InstalledSkillManager:
         else:
             records[index] = updated_record
             self.save_manifest(records)
+        self._reconcile_public_skill_links()
         return updated_record
 
     def enable_install(self, install_id_or_name: str) -> dict[str, str | int | bool]:
+        self._maybe_migrate_legacy_installed_root_once()
         self._migrate_legacy_manifest_once()
         _, _, target, _ = self._find_manifest_record(install_id_or_name)
         install_id = str(target["install_id"])
         self.plugin_manager.enable(install_id)
+        self._reconcile_public_skill_links()
         installs = self.list_installs(include_disabled=True)
         for item in installs:
             if item.get("install_id") == install_id:
@@ -820,10 +1022,12 @@ class InstalledSkillManager:
         raise ValueError(f"Unknown installed skill entry: {install_id_or_name}")
 
     def disable_install(self, install_id_or_name: str) -> dict[str, str | int | bool]:
+        self._maybe_migrate_legacy_installed_root_once()
         self._migrate_legacy_manifest_once()
         _, _, target, _ = self._find_manifest_record(install_id_or_name)
         install_id = str(target["install_id"])
         self.plugin_manager.disable(install_id)
+        self._reconcile_public_skill_links()
         installs = self.list_installs(include_disabled=True)
         for item in installs:
             if item.get("install_id") == install_id:
@@ -831,6 +1035,7 @@ class InstalledSkillManager:
         raise ValueError(f"Unknown installed skill entry: {install_id_or_name}")
 
     def remove_install(self, install_id_or_name: str) -> None:
+        self._maybe_migrate_legacy_installed_root_once()
         record_source, _, target, records = self._find_manifest_record(install_id_or_name)
 
         installed_path_value = target.get("installed_path")
@@ -847,6 +1052,7 @@ class InstalledSkillManager:
 
         if record_source == "plugin":
             self.plugin_manager.remove_manifest_record(str(target["install_id"]))
+            self._reconcile_public_skill_links()
             return
 
         self.save_manifest(
@@ -856,3 +1062,4 @@ class InstalledSkillManager:
                 if item.get("install_id") != target.get("install_id")
             ]
         )
+        self._reconcile_public_skill_links()

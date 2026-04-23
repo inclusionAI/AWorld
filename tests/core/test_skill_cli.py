@@ -77,7 +77,9 @@ def test_skill_import_and_remove_cli(
 
 
 def test_skill_update_cli_rejects_non_git_install(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     source = tmp_path / "source-skills"
@@ -89,10 +91,32 @@ def test_skill_update_cli_rejects_non_git_install(
     install_id = InstalledSkillManager().list_installs()[0]["install_id"]
 
     monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "update", install_id])
-    with pytest.raises(
-        ValueError, match="Only git-backed installed skill entries can be updated"
-    ):
+    with pytest.raises(SystemExit) as exc_info:
         main_module.main()
+    assert exc_info.value.code == 1
+    output = capsys.readouterr().out
+    assert "Only git-backed installed skill entries can be updated" in output
+
+
+def test_skill_install_cli_rejects_unsupported_at_source_spec_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["aworld-cli", "skill", "install", "obsidian@obsidian-skills"],
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        main_module.main()
+
+    assert exc_info.value.code == 1
+    output = capsys.readouterr().out
+    assert "Unsupported skill source" in output
+    assert "Git URL or local skill directory" in output
 
 
 def test_skill_install_accepts_agent_scope(
