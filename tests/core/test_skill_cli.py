@@ -371,3 +371,60 @@ def test_completion_entries_include_generated_skill_alias(
 
     assert "/brainstorming" in words
     assert meta["/brainstorming"] == "Force skill on next task: brainstorming"
+
+
+def test_completion_entries_include_dynamic_skill_subcommands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = AWorldCLI()
+
+    class FakeSkillCommand:
+        name = "pin"
+        description = "Pin a skill for the next task"
+        aliases = ("select",)
+
+        async def run(self, cli_instance, args_text: str, **kwargs):
+            return True
+
+    monkeypatch.setattr(
+        cli,
+        "_load_skill_commands",
+        lambda **kwargs: [FakeSkillCommand()],
+    )
+
+    words, meta = cli._build_completion_entries(agent_names=["Aworld"])
+
+    assert "/skills pin" in words
+    assert "/skills select" in words
+    assert meta["/skills pin"] == "Pin a skill for the next task"
+
+
+@pytest.mark.asyncio
+async def test_console_dispatches_dynamic_skill_subcommand(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = AWorldCLI()
+    captured: dict[str, object] = {}
+
+    class FakeSkillCommand:
+        name = "pin"
+        description = "Pin a skill for the next task"
+        aliases = ("select",)
+        usage = "/skills pin <name>"
+
+        async def run(self, cli_instance, args_text: str, **kwargs):
+            captured["args_text"] = args_text
+            cli_instance._pending_skill_overrides = [args_text]
+            return True
+
+    monkeypatch.setattr(
+        cli,
+        "_load_skill_commands",
+        lambda **kwargs: [FakeSkillCommand()],
+    )
+
+    handled = await cli._handle_skills_command("/skills pin brainstorming")
+
+    assert handled is True
+    assert captured["args_text"] == "brainstorming"
+    assert cli._pending_skill_overrides == ["brainstorming"]

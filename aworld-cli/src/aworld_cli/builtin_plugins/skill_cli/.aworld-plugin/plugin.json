@@ -3,6 +3,26 @@
   "name": "aworld-skill-cli",
   "version": "1.0.0",
   "entrypoints": {
+    "skill_commands": [
+      {
+        "id": "use",
+        "name": "use",
+        "target": "skill_commands/use.py",
+        "scope": "session",
+        "metadata": {
+          "factory": "build_command"
+        }
+      },
+      {
+        "id": "clear",
+        "name": "clear",
+        "target": "skill_commands/clear.py",
+        "scope": "session",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ],
     "cli_commands": [
       {
         "id": "skill",
