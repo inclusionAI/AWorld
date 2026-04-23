@@ -266,10 +266,10 @@ def _get_aworld_skills_path() -> str:
     env_val = (os.environ.get('AWORLD_SKILLS') or '').strip()
     if env_val:
         return env_val
-    # From aworld-cli/src/aworld_cli/core/config.py -> AWorld/aworld-skills
-    _aworld_skills = Path(__file__).resolve().parents[4] / "aworld-skills"
-    # print(f"_get_aworld_skills_path: {_aworld_skills}")
-    return str(_aworld_skills) if _aworld_skills.exists() else ""
+    from aworld_cli.core.skill_registry import resolve_repo_aworld_skills_path
+
+    aworld_skills = resolve_repo_aworld_skills_path()
+    return str(aworld_skills) if aworld_skills is not None else ""
 
 
 def _apply_skills_path_env(skills_cfg: Optional[Dict[str, Any]] = None) -> None:

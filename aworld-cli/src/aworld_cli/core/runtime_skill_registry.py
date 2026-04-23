@@ -42,8 +42,11 @@ def build_runtime_skill_registry_view(
 
     plugin_manager = PluginManager()
     for plugin in discover_plugins(plugin_manager.get_runtime_plugin_roots()):
-        providers.append(PluginSkillProvider(plugin))
-        source_paths.append(str(Path(plugin.manifest.plugin_root).resolve()))
+        provider = PluginSkillProvider(plugin)
+        descriptors = provider.list_descriptors()
+        if descriptors:
+            providers.append(provider)
+            source_paths.append(str(Path(plugin.manifest.plugin_root).resolve()))
 
     for source in _iter_runtime_compat_sources(skill_paths=skill_paths, cwd=cwd):
         providers.append(build_compat_provider(source))

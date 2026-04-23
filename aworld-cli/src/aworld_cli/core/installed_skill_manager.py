@@ -337,7 +337,49 @@ class InstalledSkillManager:
             ):
                 return "legacy", index, record, legacy_records
 
+        matched_plugin_records = self._find_records_by_skill_name(
+            plugin_records,
+            install_id_or_name,
+        )
+        if len(matched_plugin_records) == 1:
+            index, record = matched_plugin_records[0]
+            return "plugin", index, record, plugin_records
+        if len(matched_plugin_records) > 1:
+            raise ValueError(
+                f"Multiple installed skill entries provide skill '{install_id_or_name}'"
+            )
+
         raise ValueError(f"Unknown installed skill entry: {install_id_or_name}")
+
+    def _find_records_by_skill_name(
+        self,
+        records: list[dict[str, str]],
+        skill_name: str,
+    ) -> list[tuple[int, dict[str, str]]]:
+        normalized_skill_name = str(skill_name or "").strip().lower()
+        if not normalized_skill_name:
+            return []
+
+        matched: list[tuple[int, dict[str, str]]] = []
+        for index, record in enumerate(records):
+            source_path_value = record.get("resolved_skill_source_path")
+            if not isinstance(source_path_value, str) or not source_path_value:
+                continue
+            source_path = Path(source_path_value)
+            if not source_path.exists():
+                continue
+            try:
+                descriptors = build_compat_registry(source_path).list_descriptors()
+            except Exception:
+                continue
+            descriptor_names = {
+                str(descriptor.skill_name).strip().lower()
+                for descriptor in descriptors
+                if str(descriptor.skill_name).strip()
+            }
+            if normalized_skill_name in descriptor_names:
+                matched.append((index, record))
+        return matched
 
     def _count_skills(self, source_path: Path) -> int:
         if not source_path.exists():

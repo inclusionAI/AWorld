@@ -50,14 +50,20 @@ class SkillTopLevelCommand:
         skill_subparsers.add_parser("list", help="List installed skill packages")
 
         enable_parser = skill_subparsers.add_parser(
-            "enable", help="Enable an installed skill package"
+            "enable", help="Enable an installed skill package by install id, package name, or skill name"
         )
-        enable_parser.add_argument("install_id", help="Install id or name")
+        enable_parser.add_argument(
+            "install_id",
+            help="Install id, package name, or contained skill name",
+        )
 
         disable_parser = skill_subparsers.add_parser(
-            "disable", help="Disable an installed skill package"
+            "disable", help="Disable an installed skill package by install id, package name, or skill name"
         )
-        disable_parser.add_argument("install_id", help="Install id or name")
+        disable_parser.add_argument(
+            "install_id",
+            help="Install id, package name, or contained skill name",
+        )
 
         remove_parser = skill_subparsers.add_parser(
             "remove", help="Remove an installed skill package"
@@ -81,6 +87,7 @@ class SkillTopLevelCommand:
 
     def run(self, args, context) -> int | None:
         manager = InstalledSkillManager()
+        from aworld_cli.core.runtime_skill_registry import build_runtime_skill_registry_view
 
         if args.skill_action == "install":
             source_path = Path(args.source).expanduser()
@@ -98,15 +105,23 @@ class SkillTopLevelCommand:
             installs = sorted(
                 manager.list_installs(), key=lambda item: str(item["install_id"])
             )
+            runtime_skills = build_runtime_skill_registry_view()
             if not installs:
                 print("📦 No installed skill packages")
                 print(f"📍 Installed root: {manager.installed_root}")
+                print("📚 Runtime skill sources:")
+                for source_path in runtime_skills.source_paths:
+                    print(f"  - {source_path}")
                 return 0
             for install in installs:
                 print(
                     f"{install['install_id']} | enabled={install.get('enabled', True)} | scope={install['scope']} | "
                     f"skill_count={install['skill_count']} | source={install['source']}"
                 )
+            if runtime_skills.source_paths:
+                print("📚 Runtime skill sources:")
+                for source_path in runtime_skills.source_paths:
+                    print(f"  - {source_path}")
             return 0
 
         if args.skill_action == "enable":
