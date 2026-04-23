@@ -137,7 +137,7 @@ aworld-cli/
     ├── runtime/base.py             # modify: start/stop scheduler
     ├── runtime/cron_notifications.py  # add: TUI notification center
     ├── console.py                  # modify: render pending cron notifications
-    └── inner_plugins/smllc/agents/aworld_agent.py  # modify: expose cron tool
+    └── builtin_agents/smllc/agents/aworld_agent.py  # modify: expose cron tool
 ```
 
 ### 4.2 Placement Notes
@@ -848,7 +848,7 @@ Files:
 - `aworld-cli/src/aworld_cli/runtime/base.py`
 - `aworld-cli/src/aworld_cli/runtime/cron_notifications.py`
 - `aworld-cli/src/aworld_cli/console.py`
-- `aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/aworld_agent.py`
+- `aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/aworld_agent.py`
 
 Work:
 - expose `cron` tool to Aworld agent
