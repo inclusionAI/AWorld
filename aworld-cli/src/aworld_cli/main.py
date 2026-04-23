@@ -569,7 +569,7 @@ def _build_top_level_command_registry() -> TopLevelCommandRegistry:
 def _build_parser_command_choices() -> list[str]:
     command_names = ["interactive", "batch", "batch-job", "plugins"]
     registry = _build_top_level_command_registry()
-    for command in registry.list_commands():
+    for command in registry.list_commands(include_hidden=False):
         if command.name not in command_names:
             command_names.append(command.name)
     return command_names
@@ -717,6 +717,10 @@ def main():
     if not args.task and args.command == "interactive":
         if _dispatch_named_top_level_command("interactive", args, sys.argv):
             return
+
+    if args.task:
+        if _dispatch_named_top_level_command("run", args, sys.argv):
+            return
     
     try:
         bootstrap_runtime(
@@ -731,50 +735,6 @@ def main():
 
     # Resolve default agent_dir when --agent-dir not specified (env LOCAL_AGENTS_DIR / AWORLD_DEFAULT_AGENT_DIR)
     args.agent_dir = _resolve_agent_dirs(args.agent_dir)
-
-    # Handle direct run mode (参考 continuous-claude)
-    if args.task:
-        # Auto-detect agent name from agent_file if only one file is specified
-        agent_name = args.agent
-        if not agent_name and args.agent_file:
-            if len(args.agent_file) == 1:
-                # Load the single agent file to get its name
-                from .core.loader import init_agent_file
-                try:
-                    agent_name = init_agent_file(args.agent_file[0])
-                    if not agent_name:
-                        print(f"❌ Error: Could not extract agent name from {args.agent_file[0]}")
-                        parser.print_help()
-                        return
-                    print(f"ℹ️  Auto-detected agent name: {agent_name}")
-                except Exception as e:
-                    print(f"❌ Error: Failed to load agent file {args.agent_file[0]}: {e}")
-                    return
-            else:
-                print("❌ Error: --agent is required when using multiple --agent-file")
-                parser.print_help()
-                return
-        elif not agent_name:
-            # Default to "Aworld" agent if no agent is specified
-            agent_name = "Aworld"
-            print(f"ℹ️  Using default agent: {agent_name}")
-        
-        asyncio.run(_run_direct_mode(
-            prompt=args.task,
-            agent_name=agent_name,
-            requested_skill_names=args.skill,
-            max_runs=args.max_runs,
-            max_cost=args.max_cost,
-            max_duration=args.max_duration,
-            completion_signal=args.completion_signal,
-            completion_threshold=args.completion_threshold,
-            non_interactive=args.non_interactive,
-            session_id=args.session_id,
-            remote_backends=args.remote_backend,
-            local_dirs=args.agent_dir,
-            agent_files=args.agent_file
-        ))
-        return
 
     # Interactive mode (default) - use AgentRuntime directly without AWorldApp
     agent_name = args.agent or "Aworld"

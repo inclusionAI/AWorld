@@ -24,6 +24,10 @@ class TopLevelCommand:
     def aliases(self) -> tuple[str, ...]:
         return tuple()
 
+    @property
+    def visible_in_help(self) -> bool:
+        return True
+
     def register_parser(self, subparsers) -> None:
         raise NotImplementedError
 
@@ -78,8 +82,11 @@ class TopLevelCommandRegistry:
             return None
         return self._commands[canonical].command
 
-    def list_commands(self) -> list[TopLevelCommand]:
-        return [self._commands[key].command for key in sorted(self._commands)]
+    def list_commands(self, *, include_hidden: bool = True) -> list[TopLevelCommand]:
+        commands = [self._commands[key].command for key in sorted(self._commands)]
+        if include_hidden:
+            return commands
+        return [item for item in commands if getattr(item, "visible_in_help", True)]
 
     def snapshot(self) -> tuple[dict[str, RegisteredTopLevelCommand], dict[str, str]]:
         return dict(self._commands), dict(self._aliases)

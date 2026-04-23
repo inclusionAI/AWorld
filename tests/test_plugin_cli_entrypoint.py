@@ -337,6 +337,29 @@ def test_main_routes_default_interactive_through_registered_command(
     assert calls["run"] == 1
 
 
+def test_main_routes_task_mode_through_hidden_run_command(
+    monkeypatch,
+) -> None:
+    from aworld_cli import main as main_module
+
+    calls = {"run": 0}
+
+    def fake_run(self, args, context):
+        calls["run"] += 1
+        assert args.task == "write tests"
+        return 0
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.run_cmd.RunTopLevelCommand.run",
+        fake_run,
+    )
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "--task", "write tests"])
+
+    main_module.main()
+
+    assert calls["run"] == 1
+
+
 def test_plugins_without_subcommand_defaults_to_list(monkeypatch, capsys):
     from aworld_cli.main import main
 
