@@ -12,7 +12,7 @@ def test_bootstrap_runtime_initializes_middlewares_banner_and_skill_registry(
         "load_config_with_env": None,
         "init_middlewares": [],
         "show_banner": 0,
-        "get_skill_registry": [],
+        "build_runtime_skill_registry_view": [],
     }
 
     class FakeRegistry:
@@ -26,8 +26,8 @@ def test_bootstrap_runtime_initializes_middlewares_banner_and_skill_registry(
     )
     monkeypatch.setattr("aworld_cli.core.config.has_model_config", lambda config: True)
     monkeypatch.setattr(
-        "aworld_cli.core.skill_registry.get_skill_registry",
-        lambda skill_paths=None: calls["get_skill_registry"].append(skill_paths)
+        "aworld_cli.core.runtime_skill_registry.build_runtime_skill_registry_view",
+        lambda skill_paths=None, cwd=None: calls["build_runtime_skill_registry_view"].append(skill_paths)
         or FakeRegistry(),
     )
 
@@ -44,7 +44,7 @@ def test_bootstrap_runtime_initializes_middlewares_banner_and_skill_registry(
     assert calls["load_config_with_env"] == "custom.env"
     assert len(calls["init_middlewares"]) == 1
     assert calls["show_banner"] == 1
-    assert calls["get_skill_registry"] == [["./skills"]]
+    assert calls["build_runtime_skill_registry_view"] == [["./skills"]]
 
 
 def test_bootstrap_runtime_raises_when_model_config_missing(

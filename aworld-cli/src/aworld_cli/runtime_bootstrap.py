@@ -28,7 +28,9 @@ def bootstrap_runtime(
 ) -> RuntimeBootstrapResult:
     from aworld_cli._globals import console as global_console
     from aworld_cli.core.config import has_model_config, load_config_with_env
-    from aworld_cli.core.skill_registry import get_skill_registry
+    from aworld_cli.core.runtime_skill_registry import (
+        build_runtime_skill_registry_view,
+    )
 
     resolved_console = console or global_console
     config_dict, _, _ = load_config_with_env(env_file)
@@ -51,10 +53,7 @@ def bootstrap_runtime(
         )
         raise RuntimeBootstrapError("missing model configuration")
 
-    if skill_paths:
-        registry = get_skill_registry(skill_paths=skill_paths)
-    else:
-        registry = get_skill_registry()
+    registry = build_runtime_skill_registry_view(skill_paths=skill_paths)
 
     all_skills = registry.get_all_skills()
     if all_skills:

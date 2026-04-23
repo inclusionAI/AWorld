@@ -15,6 +15,7 @@ from .hooks import (
 )
 from .hud import HudLine, collect_hud_lines
 from .hud_helpers import format_hud_context_bar, format_hud_elapsed, format_hud_tokens
+from .skill_commands import load_plugin_skill_commands
 from .state import PluginStateHandle, PluginStateStore
 
 __all__ = [
@@ -37,6 +38,7 @@ __all__ = [
     "format_hud_elapsed",
     "format_hud_tokens",
     "load_plugin_contexts",
+    "load_plugin_skill_commands",
     "load_plugin_hooks",
     "register_plugin_commands",
     "run_context_phase",

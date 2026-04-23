@@ -23,7 +23,6 @@ from rich.text import Text
 
 from aworld.logs.util import logger
 from ._globals import console
-from .core.skill_registry import get_skill_registry, get_user_skills_paths
 from .core.command_system import CommandRegistry, CommandContext
 from .models import AgentInfo
 from .user_input import UserInputHandler
@@ -408,7 +407,7 @@ class AWorldCLI:
         agent_names = agent_names or []
 
         builtin_cmds = [
-            "/agents", "/skills", "/skills use", "/skills clear", "/new", "/restore", "/latest",
+            "/agents", "/skills", "/new", "/restore", "/latest",
             "/exit", "/switch", "/cost", "/cost -all", "/compact",
             "/team",
             "/memory", "/memory view", "/memory reload", "/memory status",
@@ -416,8 +415,6 @@ class AWorldCLI:
         builtin_meta = {
             "/agents": "List available agents",
             "/skills": "List available skills",
-            "/skills use": "Force a skill for the next task",
-            "/skills clear": "Clear the pending forced skill",
             "/new": "Create a new session",
             "/restore": "Restore to a previous session",
             "/latest": "Restore to the latest session",
@@ -436,6 +433,12 @@ class AWorldCLI:
 
         words = set(builtin_cmds)
         meta_dict = builtin_meta.copy()
+        for phrase, description in self._skill_command_completion_entries(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        ).items():
+            words.add(phrase)
+            meta_dict[phrase] = description
 
         for cmd in CommandRegistry.list_commands():
             base_phrase = f"/{cmd.name}"
@@ -1445,10 +1448,11 @@ class AWorldCLI:
 
         # 3. Skills
         try:
-            from .core.skill_registry import get_skill_registry
-            registry = get_skill_registry()
+            from .core.runtime_skill_registry import build_runtime_skill_registry_view
+
+            registry = build_runtime_skill_registry_view()
             skills_count = len(registry.get_all_skills())
-            skills_loc = f"[dim]{[str(p) for p in get_user_skills_paths()]}[/dim]"
+            skills_loc = f"[dim]{list(registry.source_paths)}[/dim]"
             skills_status = f"[bold bright_green]{skills_count} LOADED[/bold bright_green]"
         except Exception as e:
             skills_status = "[bold red]ERROR[/bold red]"
@@ -1963,6 +1967,72 @@ class AWorldCLI:
             aliases[f"/{normalized}"] = normalized
         return aliases
 
+    def _load_skill_commands(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> list[Any]:
+        from aworld.plugins.discovery import discover_plugins
+        from .plugin_capabilities.skill_commands import load_plugin_skill_commands
+
+        _, plugin_roots, _ = self._skill_resolution_environment(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
+        return load_plugin_skill_commands(discover_plugins(plugin_roots))
+
+    def _skill_command_completion_entries(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> dict[str, str]:
+        entries: dict[str, str] = {}
+        for command in self._load_skill_commands(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        ):
+            names = [command.name, *(getattr(command, "aliases", tuple()) or tuple())]
+            for name in names:
+                normalized = str(name).strip()
+                if normalized:
+                    entries[f"/skills {normalized}"] = command.description
+        return entries
+
+    def _skill_command_usage_text(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> str:
+        usages = ["/skills"]
+        for command in self._load_skill_commands(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        ):
+            usage = str(getattr(command, "usage", "") or "").strip()
+            usages.append(usage or f"/skills {command.name}")
+        return " | ".join(dict.fromkeys(usages))
+
+    def _build_skill_help_lines(
+        self,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> list[str]:
+        lines = ["Type '/skills' to list available skills."]
+        for command in self._load_skill_commands(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        ):
+            usage = str(getattr(command, "usage", "") or "").strip()
+            lines.append(
+                f"Type '{usage or f'/skills {command.name}'}' to {command.description}."
+            )
+        lines.append("Type '/<skill-name>' to force that visible skill on the next task.")
+        return lines
+
     def _provider_commands_by_skill(
         self,
         *,
@@ -2126,34 +2196,35 @@ class AWorldCLI:
             )
             return True
 
-        if normalized.startswith("/skills use "):
-            skill_name = user_input.split(maxsplit=2)[2].strip()
-            if not skill_name:
-                self.console.print("[yellow]Usage: /skills use <name>[/yellow]")
-                return True
-            if executor_instance is not None:
-                try:
-                    self._resolve_visible_skills(
+        if normalized.startswith("/skills"):
+            remainder = user_input.strip()[len("/skills"):].strip()
+            if remainder:
+                command_name, _, args_text = remainder.partition(" ")
+                lookup = command_name.strip().lower()
+                for command in self._load_skill_commands(
+                    agent_name=agent_name,
+                    executor_instance=executor_instance,
+                ):
+                    aliases = tuple(getattr(command, "aliases", tuple()) or tuple())
+                    names = [command.name, *aliases]
+                    if lookup not in {
+                        str(name).strip().lower()
+                        for name in names
+                        if str(name).strip()
+                    }:
+                        continue
+                    result = command.run(
+                        self,
+                        args_text.strip(),
                         agent_name=agent_name,
                         executor_instance=executor_instance,
-                        requested_skill_names=[skill_name],
                     )
-                except ValueError as exc:
-                    self.console.print(f"[red]{exc}[/red]")
-                    return True
-                except Exception:
-                    pass
-            self._pending_skill_overrides = [skill_name]
-            self.console.print(f"[green]Will force skill on next task:[/green] {skill_name}")
-            return True
-
-        if normalized == "/skills clear":
-            self._pending_skill_overrides = []
-            self.console.print("[dim]Cleared pending explicit skill selection.[/dim]")
-            return True
-
-        if normalized.startswith("/skills"):
-            self.console.print("[yellow]Usage: /skills | /skills use <name> | /skills clear[/yellow]")
+                    if inspect.isawaitable(result):
+                        result = await result
+                    return True if result is None else bool(result)
+            self.console.print(
+                f"[yellow]Usage: {self._skill_command_usage_text(agent_name=agent_name, executor_instance=executor_instance)}[/yellow]"
+            )
             return True
 
         if " " not in normalized and normalized.startswith("/"):
@@ -2421,16 +2492,18 @@ class AWorldCLI:
             "Type '/switch [agent_name]' to switch agent.",
             "Type '/new' to create a new session.",
             "Type '/restore' or '/latest' to restore to the latest session.",
-            "Type '/skills' to list available skills.",
-            "Type '/skills use <name>' to force a skill on the next task.",
-            "Type '/skills clear' to clear the pending forced skill.",
-            "Type '/<skill-name>' to force that visible skill on the next task.",
             "Type '/agents' to list all available agents.",
             "Type '/cost' for current session, '/cost -all' for global history.",
             "Type '/compact' to run context compression.",
             "Type '/team' for agent team management.",
             "Type '/memory' to edit project context, '/memory view' to view, '/memory status' for status.",
         ]
+        help_lines.extend(
+            self._build_skill_help_lines(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+            )
+        )
 
         # Add registered commands from CommandRegistry
         registered_commands = CommandRegistry.list_commands()

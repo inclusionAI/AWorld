@@ -137,7 +137,7 @@ def test_serve_command_dispatches_with_bootstrap_and_global_options(
         "load_config_with_env": None,
         "init_middlewares": [],
         "show_banner": 0,
-        "get_skill_registry": [],
+        "build_runtime_skill_registry_view": [],
         "resolve_agent_dirs": [],
         "run_serve_mode": [],
     }
@@ -169,8 +169,8 @@ def test_serve_command_dispatches_with_bootstrap_and_global_options(
     )
     monkeypatch.setattr("aworld_cli.core.config.has_model_config", lambda config: True)
     monkeypatch.setattr(
-        "aworld_cli.core.skill_registry.get_skill_registry",
-        lambda skill_paths=None: calls["get_skill_registry"].append(skill_paths)
+        "aworld_cli.core.runtime_skill_registry.build_runtime_skill_registry_view",
+        lambda skill_paths=None, cwd=None: calls["build_runtime_skill_registry_view"].append(skill_paths)
         or FakeRegistry(),
     )
     monkeypatch.setattr("aworld_cli.main._run_serve_mode", fake_run_serve_mode)
@@ -197,7 +197,7 @@ def test_serve_command_dispatches_with_bootstrap_and_global_options(
     assert calls["load_config_with_env"] == "custom.env"
     assert calls["show_banner"] == 1
     assert len(calls["init_middlewares"]) == 1
-    assert calls["get_skill_registry"] == [["./skills"]]
+    assert calls["build_runtime_skill_registry_view"] == [["./skills"]]
     assert calls["resolve_agent_dirs"] == [["./agents"]]
     assert calls["run_serve_mode"] == [
         {
@@ -226,7 +226,7 @@ def test_interactive_command_dispatches_with_bootstrap_and_global_options(
         "load_config_with_env": None,
         "init_middlewares": [],
         "show_banner": 0,
-        "get_skill_registry": [],
+        "build_runtime_skill_registry_view": [],
         "resolve_agent_dirs": [],
         "run_interactive_mode": [],
     }
@@ -258,8 +258,8 @@ def test_interactive_command_dispatches_with_bootstrap_and_global_options(
     )
     monkeypatch.setattr("aworld_cli.core.config.has_model_config", lambda config: True)
     monkeypatch.setattr(
-        "aworld_cli.core.skill_registry.get_skill_registry",
-        lambda skill_paths=None: calls["get_skill_registry"].append(skill_paths)
+        "aworld_cli.core.runtime_skill_registry.build_runtime_skill_registry_view",
+        lambda skill_paths=None, cwd=None: calls["build_runtime_skill_registry_view"].append(skill_paths)
         or FakeRegistry(),
     )
     monkeypatch.setattr(
@@ -292,7 +292,7 @@ def test_interactive_command_dispatches_with_bootstrap_and_global_options(
     assert calls["load_config_with_env"] == "custom.env"
     assert calls["show_banner"] == 1
     assert len(calls["init_middlewares"]) == 1
-    assert calls["get_skill_registry"] == [["./skills"]]
+    assert calls["build_runtime_skill_registry_view"] == [["./skills"]]
     assert calls["resolve_agent_dirs"] == [["./agents"]]
     assert calls["run_interactive_mode"] == [
         {
