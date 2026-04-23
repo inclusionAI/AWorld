@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aworld_cli.core.installed_skill_manager import InstalledSkillManager
+from aworld_cli.core.skill_toggle_manager import SkillToggleManager
 
 
 class DisableSkillCommand:
@@ -10,7 +10,7 @@ class DisableSkillCommand:
 
     @property
     def description(self) -> str:
-        return "Disable an installed skill package by install id or skill name"
+        return "Disable a skill or installed skill package"
 
     @property
     def aliases(self) -> tuple[str, ...]:
@@ -18,7 +18,7 @@ class DisableSkillCommand:
 
     @property
     def usage(self) -> str:
-        return "/skills disable <install-id-or-skill-name>"
+        return "/skills disable <skill-name-or-package-name>"
 
     async def run(
         self,
@@ -31,12 +31,17 @@ class DisableSkillCommand:
         identifier = str(args_text or "").strip()
         if not identifier:
             cli.console.print(
-                "[yellow]Usage: /skills disable <install-id-or-skill-name>[/yellow]"
+                "[yellow]Usage: /skills disable <skill-name-or-package-name>[/yellow]"
             )
             return True
 
-        record = InstalledSkillManager().disable_install(identifier)
-        cli.console.print(
-            f"[green]Disabled skill package:[/green] {record['install_id']}"
-        )
+        result = SkillToggleManager().disable(identifier)
+        if result.target_kind == "package":
+            cli.console.print(
+                f"[green]Disabled skill package:[/green] {result.identifier}"
+            )
+        else:
+            cli.console.print(
+                f"[green]Disabled skill:[/green] {result.identifier}"
+            )
         return True

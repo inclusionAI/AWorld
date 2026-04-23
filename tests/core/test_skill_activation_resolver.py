@@ -174,3 +174,22 @@ def test_resolver_auto_match_is_deterministic(tmp_path: Path) -> None:
     )
 
     assert result.active_skill_names == ("browser-debug",)
+
+
+def test_resolver_filters_disabled_skill_names(tmp_path: Path) -> None:
+    plugin_root = _write_manifest_skill_plugin(
+        tmp_path,
+        plugin_id="media-tools",
+        skill_id="youtube_search",
+    )
+
+    result = SkillActivationResolver().resolve(
+        SkillResolverRequest(
+            plugin_roots=(plugin_root,),
+            runtime_scope="workspace",
+            agent_name="developer",
+            disabled_skill_names=("youtube_search",),
+        )
+    )
+
+    assert "youtube_search" not in result.skill_configs

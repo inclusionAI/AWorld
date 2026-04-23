@@ -476,12 +476,15 @@ class LocalAgentExecutor(BaseAgentExecutor):
     def _resolve_swarm_skills(self, task_input: TaskInput) -> None:
         resolver = SkillActivationResolver()
         plugin_manager = PluginManager()
+        from aworld_cli.core.skill_state_manager import SkillStateManager
+
         runtime_plugin_roots = tuple(
             Path(item).resolve()
             for item in plugin_manager.get_runtime_plugin_roots()
         )
         requested = self._extract_requested_skill_names(task_input)
         task_text = str(getattr(task_input, "task_content", "") or "")
+        disabled_skill_names = SkillStateManager().disabled_skill_names()
 
         for agent in self._iter_swarm_agents():
             agent_name = self._agent_name_for_resolution(agent)
@@ -504,6 +507,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 agent_name=agent_name,
                 task_text=task_text,
                 requested_skill_names=requested,
+                disabled_skill_names=disabled_skill_names,
                 compatibility_sources=tuple(
                     str(item)
                     for item in resolver_inputs.get("compatibility_sources", [])
