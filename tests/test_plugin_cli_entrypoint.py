@@ -314,6 +314,29 @@ def test_global_parser_help_excludes_serve_specific_flags() -> None:
     assert "--mcp" not in help_text
 
 
+def test_main_routes_default_interactive_through_registered_command(
+    monkeypatch,
+) -> None:
+    from aworld_cli import main as main_module
+
+    calls = {"run": 0}
+
+    def fake_run(self, args, context):
+        calls["run"] += 1
+        assert tuple(context.argv) == ("aworld-cli",)
+        return 0
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.interactive_cmd.InteractiveTopLevelCommand.run",
+        fake_run,
+    )
+    monkeypatch.setattr(sys, "argv", ["aworld-cli"])
+
+    main_module.main()
+
+    assert calls["run"] == 1
+
+
 def test_plugins_without_subcommand_defaults_to_list(monkeypatch, capsys):
     from aworld_cli.main import main
 

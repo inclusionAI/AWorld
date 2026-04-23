@@ -650,13 +650,29 @@ def _maybe_dispatch_top_level_command(argv: list[str]) -> bool:
     if selected_command is None:
         return False
 
-    exit_code = selected_command.run(
+    return _run_top_level_command(selected_command, args, argv)
+
+
+def _run_top_level_command(command, args, argv: list[str]) -> bool:
+    exit_code = command.run(
         args,
         TopLevelCommandContext(cwd=str(Path.cwd()), argv=tuple(argv)),
     )
     if exit_code not in (None, 0):
         sys.exit(exit_code)
     return True
+
+
+def _dispatch_named_top_level_command(
+    command_name: str,
+    args,
+    argv: list[str],
+) -> bool:
+    registry = _build_top_level_command_registry()
+    command = registry.get(command_name)
+    if command is None:
+        return False
+    return _run_top_level_command(command, args, argv)
 
 
 def main():
@@ -697,6 +713,10 @@ def main():
     if args.zh:
         build_parser(zh=True).print_help()
         return
+
+    if not args.task and args.command == "interactive":
+        if _dispatch_named_top_level_command("interactive", args, sys.argv):
+            return
     
     try:
         bootstrap_runtime(
