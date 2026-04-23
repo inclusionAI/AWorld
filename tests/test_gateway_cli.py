@@ -79,6 +79,28 @@ def test_gateway_channels_list_is_read_only(tmp_path: Path) -> None:
     assert not (tmp_path / ".aworld" / "gateway" / "config.yaml").exists()
 
 
+def test_main_dispatches_gateway_via_top_level_plugin_registry(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        "aworld_cli.gateway_cli.find_gateway_command_index",
+        lambda argv: (_ for _ in ()).throw(
+            AssertionError("legacy gateway dispatch should not run")
+        ),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.gateway_cli.handle_gateway_status",
+        lambda base_dir=None: {"state": "registered"},
+    )
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "gateway", "status"])
+
+    cli_main.main()
+
+    captured = capsys.readouterr()
+    assert captured.out == "{'state': 'registered'}\n"
+
+
 @pytest.mark.parametrize(
     ("argv", "expected_stdout", "expected_calls"),
     [
@@ -159,8 +181,8 @@ def test_main_dispatches_gateway_actions(
     )
     monkeypatch.setattr("aworld_cli.core.config.has_model_config", lambda config: True)
     monkeypatch.setattr(
-        "aworld_cli.core.skill_registry.get_skill_registry",
-        lambda skill_paths=None: FakeRegistry(),
+        "aworld_cli.core.runtime_skill_registry.build_runtime_skill_registry_view",
+        lambda skill_paths=None, cwd=None: FakeRegistry(),
     )
     monkeypatch.setattr(sys, "argv", argv)
 
@@ -178,7 +200,7 @@ def test_main_bootstraps_gateway_server_like_normal_cli(
         "load_config_with_env": None,
         "init_middlewares": [],
         "show_banner": 0,
-        "get_skill_registry": [],
+        "build_runtime_skill_registry_view": [],
         "resolve_agent_dirs": [],
         "serve_gateway": [],
     }
@@ -229,8 +251,8 @@ def test_main_bootstraps_gateway_server_like_normal_cli(
         lambda config: True,
     )
     monkeypatch.setattr(
-        "aworld_cli.core.skill_registry.get_skill_registry",
-        lambda skill_paths=None: calls["get_skill_registry"].append(skill_paths)
+        "aworld_cli.core.runtime_skill_registry.build_runtime_skill_registry_view",
+        lambda skill_paths=None, cwd=None: calls["build_runtime_skill_registry_view"].append(skill_paths)
         or FakeRegistry(),
     )
     monkeypatch.setattr(
@@ -256,7 +278,7 @@ def test_main_bootstraps_gateway_server_like_normal_cli(
     assert calls["load_config_with_env"] == "custom.env"
     assert calls["show_banner"] == 1
     assert len(calls["init_middlewares"]) == 1
-    assert calls["get_skill_registry"] == [["./skills"]]
+    assert calls["build_runtime_skill_registry_view"] == [["./skills"]]
     assert calls["resolve_agent_dirs"] == [["./agents"]]
     assert calls["serve_gateway"] == [
         {

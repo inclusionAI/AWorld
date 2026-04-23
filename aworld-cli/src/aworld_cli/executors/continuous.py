@@ -102,7 +102,13 @@ class ContinuousExecutor:
             return False
         return self.total_cost >= max_cost
     
-    async def run_iteration(self, iteration: int, prompt: Union[str, tuple[str, List[str]]], completion_signal: Optional[str] = None) -> Dict[str, Any]:
+    async def run_iteration(
+        self,
+        iteration: int,
+        prompt: Union[str, tuple[str, List[str]]],
+        completion_signal: Optional[str] = None,
+        **chat_kwargs,
+    ) -> Dict[str, Any]:
         """
         Run a single iteration.
         
@@ -129,7 +135,7 @@ class ContinuousExecutor:
                 if self.agent_executor.console is not global_console:
                     self.console.print(f"[yellow]⚠️ Warning: Failed to set agent_executor.console[/yellow]")
             
-            response = await self.agent_executor.chat(prompt)
+            response = await self.agent_executor.chat(prompt, **chat_kwargs)
 
             # Check for completion signal (only check if response is string)
             is_complete = False
@@ -357,7 +363,7 @@ class ContinuousExecutor:
                     break
                 
                 # Run iteration
-                result = await self.run_iteration(iteration, prompt, completion_signal)
+                result = await self.run_iteration(iteration, prompt, completion_signal, **kwargs)
                 results.append(result)
 
                 self.total_cost += result["cost"]

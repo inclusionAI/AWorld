@@ -59,3 +59,12 @@ def sync_plugin_commands(plugins) -> None:
             CommandRegistry.unregister(command.name)
 
     register_plugin_commands(plugins)
+
+
+def commands_for_plugin(plugin) -> list[str]:
+    visible: list[str] = []
+    for entrypoint in plugin.manifest.entrypoints.get("commands", []):
+        if entrypoint.visibility == "hidden":
+            continue
+        visible.append(f"/{entrypoint.name or entrypoint.entrypoint_id}")
+    return visible
