@@ -14,6 +14,7 @@ from aworld.models.model_response import ModelResponse
 from aworld.output.base import MessageOutput
 from aworld.runner import Runners
 
+from .bootstrap import bootstrap_acp_plugins
 from .errors import (
     AWORLD_ACP_APPROVAL_UNSUPPORTED,
     AWORLD_ACP_INVALID_CWD,
@@ -26,6 +27,7 @@ from .errors import (
     AcpBusyError,
     build_error_data,
 )
+from .plugin_runtime import AcpPluginRuntime
 from .event_mapper import map_runtime_event_to_session_update
 from .human_intercept import AcpRequiresHumanError
 from .protocol import decode_jsonrpc_line, encode_jsonrpc_message
@@ -35,6 +37,12 @@ from .session_store import AcpSessionRecord, AcpSessionStore
 from .turn_controller import TurnController
 
 
+_ERROR_DETAIL_MESSAGES = {
+    AWORLD_ACP_REQUIRES_HUMAN: "Human approval/input flow is not bridged in phase 1.",
+    AWORLD_ACP_APPROVAL_UNSUPPORTED: "Approval flow is not bridged in phase 1.",
+}
+
+
 class AcpExecutorOutputBridge:
     def __init__(
         self,
@@ -42,25 +50,35 @@ class AcpExecutorOutputBridge:
         registry_cls: Any | None = None,
         executor_cls: Any | None = None,
         init_agents_func: Any | None = None,
+        bootstrap_func: Any | None = None,
+        plugin_runtime_cls: Any | None = None,
+        bootstrap_base_dir: Path | None = None,
     ) -> None:
         if registry_cls is None:
             from aworld_cli.core.agent_registry import LocalAgentRegistry
 
             registry_cls = LocalAgentRegistry
         if executor_cls is None:
-            from aworld_cli.executors.local import LocalAgentExecutor
+            from .executor import AcpLocalExecutor
 
-            executor_cls = LocalAgentExecutor
+            executor_cls = AcpLocalExecutor
         if init_agents_func is None:
             from aworld_cli.core.loader import init_agents
 
             init_agents_func = init_agents
+        if bootstrap_func is None:
+            bootstrap_func = bootstrap_acp_plugins
+        if plugin_runtime_cls is None:
+            plugin_runtime_cls = AcpPluginRuntime
 
         self._registry_cls = registry_cls
         self._executor_cls = executor_cls
         self._init_agents = init_agents_func
+        self._plugin_runtime_cls = plugin_runtime_cls
         self._loaded_agent_dirs: set[str] = set()
-        self._execution_lock = asyncio.Lock()
+        self._agent_load_lock = asyncio.Lock()
+        self._bootstrap = bootstrap_func(bootstrap_base_dir or Path.cwd())
+        self._emit_bootstrap_warnings()
 
     async def stream_outputs(
         self,
@@ -68,46 +86,43 @@ class AcpExecutorOutputBridge:
         record: AcpSessionRecord,
         prompt_text: str,
     ):
-        async with self._execution_lock:
-            previous_cwd = os.getcwd()
-            os.chdir(record.cwd)
-            executor = None
-            restore_sandbox_state = lambda: None
-            try:
-                agent = await self._resolve_agent()
-                if agent is None:
-                    yield MessageOutput(
-                        source=ModelResponse(
-                            id=f"acp-fallback-{record.acp_session_id}",
-                            model="aworld-cli/acp-fallback",
-                            content=prompt_text,
-                        )
+        executor = None
+        restore_sandbox_state = lambda: None
+        try:
+            agent = await self._resolve_agent()
+            if agent is None:
+                yield MessageOutput(
+                    source=ModelResponse(
+                        id=f"acp-fallback-{record.acp_session_id}",
+                        model="aworld-cli/acp-fallback",
+                        content=prompt_text,
                     )
-                    return
+                )
+                return
 
-                executor, restore_sandbox_state = await self._create_executor(
-                    agent=agent,
-                    record=record,
-                )
-                task = await executor._build_task(
-                    prompt_text,
-                    session_id=record.aworld_session_id,
-                )
-                outputs = Runners.streamed_run_task(task=task)
-                async for output in outputs.stream_events():
-                    yield output
-            finally:
-                if executor is not None:
-                    cleanup = getattr(executor, "cleanup_resources", None)
-                    if callable(cleanup):
-                        cleanup_result = cleanup()
-                        if asyncio.iscoroutine(cleanup_result):
-                            await cleanup_result
-                restore_sandbox_state()
-                os.chdir(previous_cwd)
+            executor, restore_sandbox_state = await self._create_executor(
+                agent=agent,
+                record=record,
+            )
+            task = await executor._build_task(
+                prompt_text,
+                session_id=record.aworld_session_id,
+            )
+            outputs = Runners.streamed_run_task(task=task)
+            async for output in outputs.stream_events():
+                yield output
+        finally:
+            if executor is not None:
+                cleanup = getattr(executor, "cleanup_resources", None)
+                if callable(cleanup):
+                    cleanup_result = cleanup()
+                    if asyncio.iscoroutine(cleanup_result):
+                        await cleanup_result
+            restore_sandbox_state()
 
     async def _resolve_agent(self) -> Any | None:
-        self._load_agents_from_env()
+        await self._load_agents_from_bootstrap()
+        await self._load_agents_from_env()
 
         requested_agent = (os.getenv("AWORLD_ACP_AGENT") or "").strip()
         if requested_agent:
@@ -132,18 +147,62 @@ class AcpExecutorOutputBridge:
             f"Available agents: {available}"
         )
 
-    def _load_agents_from_env(self) -> None:
+    async def _load_agents_from_env(self) -> None:
         raw_dirs = os.getenv("LOCAL_AGENTS_DIR") or os.getenv("AGENTS_DIR") or ""
         if not raw_dirs:
             return
 
-        for raw_dir in raw_dirs.split(";"):
-            agent_dir = raw_dir.strip()
-            if not agent_dir or agent_dir in self._loaded_agent_dirs:
+        requested_dirs = [raw_dir.strip() for raw_dir in raw_dirs.split(";") if raw_dir.strip()]
+        if not requested_dirs:
+            return
+
+        async with self._agent_load_lock:
+            for agent_dir in requested_dirs:
+                if agent_dir in self._loaded_agent_dirs:
+                    continue
+                self._loaded_agent_dirs.add(agent_dir)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self._init_agents(agent_dir)
+
+    async def _load_agents_from_bootstrap(self) -> None:
+        requested_dirs = self._bootstrap_agent_dirs()
+        if not requested_dirs:
+            return
+
+        async with self._agent_load_lock:
+            for agent_dir in requested_dirs:
+                if agent_dir in self._loaded_agent_dirs:
+                    continue
+                self._loaded_agent_dirs.add(agent_dir)
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self._init_agents(agent_dir)
+
+    def _bootstrap_agent_dirs(self) -> list[str]:
+        resolved_dirs: list[str] = []
+
+        explicit_agent_dirs = self._bootstrap.get("agent_dirs") or []
+        for agent_dir in explicit_agent_dirs:
+            resolved = Path(agent_dir).expanduser().resolve()
+            if resolved.exists() and resolved.is_dir():
+                resolved_dirs.append(str(resolved))
+
+        plugin_roots = self._bootstrap.get("plugin_roots") or []
+        for plugin_root in plugin_roots:
+            agent_dir = Path(plugin_root).expanduser().resolve() / "agents"
+            if agent_dir.exists() and agent_dir.is_dir():
+                resolved_dirs.append(str(agent_dir))
+
+        return list(dict.fromkeys(resolved_dirs))
+
+    def _emit_bootstrap_warnings(self) -> None:
+        warnings = self._bootstrap.get("warnings") or []
+        for warning in warnings:
+            text = str(warning).strip()
+            if not text:
                 continue
-            self._loaded_agent_dirs.add(agent_dir)
-            with contextlib.redirect_stdout(io.StringIO()):
-                self._init_agents(agent_dir)
+            sys.stderr.write(f"[aworld-cli acp] {text}\n")
+        if warnings:
+            sys.stderr.flush()
 
     async def _create_executor(
         self,
@@ -162,8 +221,25 @@ class AcpExecutorOutputBridge:
             console=Console(file=sys.stderr, force_terminal=False, color_system=None),
             session_id=record.aworld_session_id,
             hooks=getattr(agent, "hooks", None),
+            working_directory=record.cwd,
         )
+        plugin_runtime = self._build_plugin_runtime(record)
+        if plugin_runtime is not None:
+            executor._base_runtime = plugin_runtime
         return executor, restore_sandbox_state
+
+    def _build_plugin_runtime(self, record: AcpSessionRecord) -> Any | None:
+        plugin_roots = [
+            Path(plugin_root).expanduser().resolve()
+            for plugin_root in (self._bootstrap.get("plugin_roots") or [])
+        ]
+        if not plugin_roots or self._plugin_runtime_cls is None:
+            return None
+        return self._plugin_runtime_cls(
+            workspace_path=record.cwd,
+            plugin_roots=plugin_roots,
+            bootstrap=self._bootstrap,
+        )
 
     @staticmethod
     async def _get_swarm_with_context_fallback(agent: Any) -> Any:
@@ -196,47 +272,57 @@ class AcpStdioServer:
         self._output_bridge = output_bridge or AcpExecutorOutputBridge()
 
     async def run(self) -> int:
+        pending_requests: set[asyncio.Task[Any]] = set()
         while True:
             line = await asyncio.to_thread(sys.stdin.buffer.readline)
             if not line:
-                return 0
+                break
 
             request = decode_jsonrpc_line(line)
             if "method" not in request:
                 continue
 
-            method = request["method"]
-            request_id = request.get("id")
-            params = request.get("params") or {}
+            task = asyncio.create_task(self._dispatch_request(request))
+            pending_requests.add(task)
+            task.add_done_callback(pending_requests.discard)
 
-            try:
-                if method == "initialize":
-                    response = self._response(
-                        request_id,
-                        {
-                            "protocolVersion": "0.1",
-                            "serverInfo": {"name": "aworld-cli", "version": "0.1"},
-                            "agentCapabilities": {"loadSession": False},
-                        },
-                    )
-                elif method == "newSession":
-                    response = self._response(request_id, self._handle_new_session(params))
-                elif method == "prompt":
-                    response = await self._handle_prompt(request_id, params)
-                elif method == "cancel":
-                    response = await self._handle_cancel(request_id, params)
-                else:
-                    response = self._error(request_id, -32601, f"Unsupported method: {method}")
-            except ValueError as exc:
-                detail = self._known_error_detail(str(exc))
-                response = self._error(
+        if pending_requests:
+            await asyncio.gather(*pending_requests, return_exceptions=True)
+        return 0
+
+    async def _dispatch_request(self, request: dict[str, Any]) -> None:
+        method = request["method"]
+        request_id = request.get("id")
+        params = request.get("params") or {}
+
+        try:
+            if method == "initialize":
+                response = self._response(
                     request_id,
-                    -32602,
-                    str(exc),
-                    data=build_error_data(detail) if detail is not None else None,
+                    {
+                        "protocolVersion": "0.1",
+                        "serverInfo": {"name": "aworld-cli", "version": "0.1"},
+                        "agentCapabilities": {"loadSession": False},
+                    },
                 )
+            elif method == "newSession":
+                response = self._response(request_id, self._handle_new_session(params))
+            elif method == "prompt":
+                response = await self._handle_prompt(request_id, params)
+            elif method == "cancel":
+                response = await self._handle_cancel(request_id, params)
+            else:
+                response = self._error(request_id, -32601, f"Unsupported method: {method}")
+        except ValueError as exc:
+            detail = self._known_error_detail(str(exc))
+            response = self._error(
+                request_id,
+                -32602,
+                str(exc),
+                data=build_error_data(detail) if detail is not None else None,
+            )
 
-            await self._write_message(response)
+        await self._write_message(response)
 
     def _handle_new_session(self, params: dict[str, Any]) -> dict[str, Any]:
         cwd = params.get("cwd")
@@ -266,15 +352,42 @@ class AcpStdioServer:
                 ),
             )
 
-        prompt_text = self._normalize_prompt_text(params.get("prompt"))
-        state = self._state_by_session.setdefault(session_id, {})
+        try:
+            prompt_text = self._normalize_prompt_text(params.get("prompt"))
+        except ValueError as exc:
+            detail = self._known_error_detail(str(exc))
+            return self._error(
+                request_id,
+                -32602,
+                str(exc),
+                data=build_error_data(detail) if detail is not None else None,
+            )
+
+        state: dict[str, Any] = {}
+        terminal_error: dict[str, Any] | None = None
 
         async def _run_turn() -> None:
+            nonlocal terminal_error
             async for output in self._output_bridge.stream_outputs(
                 record=record,
                 prompt_text=prompt_text,
             ):
-                for event in adapt_output_to_runtime_events(state, output):
+                events = self._normalize_runtime_events(state, output)
+                for event in events:
+                    if event.get("event_type") == "turn_error":
+                        terminal_error = event
+                        await self._close_open_tool_lifecycles_with_error(
+                            session_id,
+                            state,
+                            code=str(event["code"]),
+                            message=str(event["message"]),
+                        )
+                        return
+                    if event.get("event_type") == "tool_end":
+                        tool_name = event.get("tool_name")
+                        tool_call_id = event.get("tool_call_id")
+                        if isinstance(tool_name, str) and isinstance(tool_call_id, str):
+                            state[f"tool_closed::{tool_name}"] = tool_call_id
                     update = map_runtime_event_to_session_update(session_id, event)
                     await self._write_message(self._notification("sessionUpdate", update))
 
@@ -298,6 +411,12 @@ class AcpStdioServer:
         except asyncio.CancelledError:
             return self._response(request_id, {"status": "cancelled"})
         except AcpRequiresHumanError:
+            await self._close_open_tool_lifecycles_with_error(
+                session_id,
+                state,
+                code=AWORLD_ACP_REQUIRES_HUMAN,
+                message=self._error_detail_message(AWORLD_ACP_REQUIRES_HUMAN),
+            )
             return self._error(
                 request_id,
                 -32010,
@@ -305,10 +424,41 @@ class AcpStdioServer:
                 data=build_error_data(
                     AcpErrorDetail(
                         code=AWORLD_ACP_REQUIRES_HUMAN,
-                        message=AWORLD_ACP_REQUIRES_HUMAN,
+                        message=self._error_detail_message(AWORLD_ACP_REQUIRES_HUMAN),
                         retryable=True,
                     )
                 ),
+            )
+        except ValueError as exc:
+            detail = self._known_error_detail(str(exc))
+            if detail is not None:
+                await self._close_open_tool_lifecycles_with_error(
+                    session_id,
+                    state,
+                    code=detail.code,
+                    message=detail.message,
+                )
+                return self._error(
+                    request_id,
+                    -32010,
+                    detail.code,
+                    data=build_error_data(detail),
+                )
+            raise
+        if terminal_error is not None:
+            detail = AcpErrorDetail(
+                code=str(terminal_error["code"]),
+                message=str(terminal_error.get("message"))
+                if terminal_error.get("message") is not None
+                else self._error_detail_message(str(terminal_error["code"])),
+                retryable=bool(terminal_error.get("retryable")) if terminal_error.get("retryable") is not None else None,
+                data={"origin": terminal_error.get("origin"), "detail": terminal_error.get("message")},
+            )
+            return self._error(
+                request_id,
+                -32010,
+                str(terminal_error["code"]),
+                data=build_error_data(detail),
             )
         return self._response(request_id, {"status": "completed"})
 
@@ -350,23 +500,146 @@ class AcpStdioServer:
                         text = block["text"].strip()
                         if text:
                             parts.append(text)
-                    elif (
-                        block.get("type") == "resource"
-                        and isinstance(block.get("text"), str)
-                        and block["text"].strip()
-                    ):
-                        parts.append(block["text"].strip())
+                        continue
+
+                    resource_text = self._extract_embedded_resource_text(block)
+                    if resource_text:
+                        parts.append(resource_text)
+                        continue
+
+                    resource_link_text = self._format_resource_link_reference(block)
+                    if resource_link_text:
+                        parts.append(resource_link_text)
 
                 if parts:
                     return "\n".join(parts)
 
         raise ValueError(AWORLD_ACP_UNSUPPORTED_PROMPT_CONTENT)
 
+    @staticmethod
+    def _extract_embedded_resource_text(block: dict[str, Any]) -> str | None:
+        if block.get("type") != "resource":
+            return None
+
+        if isinstance(block.get("text"), str) and block["text"].strip():
+            return block["text"].strip()
+
+        resource = block.get("resource")
+        if not isinstance(resource, dict):
+            return None
+
+        if isinstance(resource.get("text"), str) and resource["text"].strip():
+            return resource["text"].strip()
+
+        content = resource.get("content")
+        if isinstance(content, str) and content.strip():
+            return content.strip()
+
+        contents = resource.get("contents")
+        if isinstance(contents, list):
+            parts: list[str] = []
+            for item in contents:
+                if not isinstance(item, dict):
+                    continue
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    parts.append(text.strip())
+            if parts:
+                return "\n".join(parts)
+
+        return None
+
+    @staticmethod
+    def _format_resource_link_reference(block: dict[str, Any]) -> str | None:
+        if block.get("type") != "resource_link":
+            return None
+
+        link = block.get("resource") if isinstance(block.get("resource"), dict) else block
+        title = None
+        for key in ("title", "name", "label"):
+            value = link.get(key)
+            if isinstance(value, str) and value.strip():
+                title = value.strip()
+                break
+
+        uri = None
+        for key in ("uri", "url", "href", "path"):
+            value = link.get(key)
+            if isinstance(value, str) and value.strip():
+                uri = value.strip()
+                break
+
+        if title and uri:
+            return f"Resource link: {title} ({uri})"
+        if uri:
+            return f"Resource link: {uri}"
+        if title:
+            return f"Resource link: {title}"
+        return None
+
     async def _write_message(self, message: dict[str, Any]) -> None:
         payload = encode_jsonrpc_message(message)
         async with self._write_lock:
             sys.stdout.buffer.write(payload)
             sys.stdout.buffer.flush()
+
+    @staticmethod
+    def _normalize_runtime_events(state: dict[str, Any], output: Any) -> list[dict[str, Any]]:
+        if isinstance(output, dict) and isinstance(output.get("event_type"), str):
+            return [output]
+        return adapt_output_to_runtime_events(state, output)
+
+    async def _close_open_tool_lifecycles_with_error(
+        self,
+        session_id: str,
+        state: dict[str, Any],
+        *,
+        code: str,
+        message: str,
+    ) -> None:
+        open_tool_pairs: list[tuple[str, str]] = []
+        open_tool_calls = state.get("open_tool_calls")
+        if isinstance(open_tool_calls, list):
+            for item in open_tool_calls:
+                if not isinstance(item, dict):
+                    continue
+                tool_name = item.get("tool_name")
+                tool_call_id = item.get("tool_call_id")
+                if isinstance(tool_name, str) and isinstance(tool_call_id, str):
+                    open_tool_pairs.append((tool_name, tool_call_id))
+        if not open_tool_pairs:
+            open_tool_pairs = [
+                (key[len("tool::") :], value)
+                for key, value in state.items()
+                if key.startswith("tool::") and isinstance(value, str)
+            ]
+        if not open_tool_pairs:
+            return
+
+        closed_ids = {
+            value
+            for key, value in state.items()
+            if key.startswith("tool_closed::") and isinstance(value, str)
+        }
+
+        for tool_name, tool_call_id in open_tool_pairs:
+            if tool_call_id in closed_ids:
+                continue
+            update = map_runtime_event_to_session_update(
+                session_id,
+                {
+                    "event_type": "tool_end",
+                    "seq": -1,
+                    "tool_call_id": tool_call_id,
+                    "tool_name": tool_name,
+                    "status": "failed",
+                    "raw_output": {"code": code, "message": message},
+                },
+            )
+            await self._write_message(self._notification("sessionUpdate", update))
+            state[f"tool_closed::{tool_name}"] = tool_call_id
+        if isinstance(open_tool_calls, list):
+            open_tool_calls.clear()
 
     @staticmethod
     def _response(request_id: Any, result: dict[str, Any]) -> dict[str, Any]:
@@ -418,12 +691,30 @@ class AcpStdioServer:
         if message == AWORLD_ACP_UNSUPPORTED_MCP_SERVERS:
             return AcpErrorDetail(code=message, message=message)
         if message == AWORLD_ACP_REQUIRES_HUMAN:
-            return AcpErrorDetail(code=message, message=message, retryable=True)
+            return AcpErrorDetail(
+                code=message,
+                message=AcpStdioServer._error_detail_message(message),
+                retryable=True,
+            )
         if message == AWORLD_ACP_APPROVAL_UNSUPPORTED:
-            return AcpErrorDetail(code=message, message=message, retryable=True)
+            return AcpErrorDetail(
+                code=message,
+                message=AcpStdioServer._error_detail_message(message),
+                retryable=True,
+            )
         return None
+
+    @staticmethod
+    def _error_detail_message(code: str) -> str:
+        return _ERROR_DETAIL_MESSAGES.get(code, code)
 
 
 async def run_stdio_server() -> int:
-    server = AcpStdioServer()
+    output_bridge = None
+    if os.getenv("AWORLD_ACP_SELF_TEST_BRIDGE", "").strip().lower() in {"1", "true", "yes"}:
+        from .self_test_bridge import DeterministicSelfTestOutputBridge
+
+        output_bridge = DeterministicSelfTestOutputBridge()
+
+    server = AcpStdioServer(output_bridge=output_bridge)
     return await server.run()

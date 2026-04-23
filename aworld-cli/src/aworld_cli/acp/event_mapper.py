@@ -34,7 +34,7 @@ def map_runtime_event_to_session_update(
                 "sessionUpdate": "tool_call",
                 "toolCallId": event["tool_call_id"],
                 "kind": event["tool_name"],
-                "content": event.get("raw_input", {}),
+                "content": event.get("raw_input") if event.get("raw_input") is not None else {},
             },
         }
 
