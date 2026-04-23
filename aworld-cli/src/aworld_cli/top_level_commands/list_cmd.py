@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from typing import Sequence
+
+from aworld_cli.top_level_commands.invocation import parse_command_invocation_args
 
 
 def _build_list_global_parser() -> argparse.ArgumentParser:
@@ -13,31 +14,15 @@ def _build_list_global_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _find_list_command_index(argv: Sequence[str]) -> int | None:
+def _parse_list_global_args(argv) -> argparse.Namespace:
     from aworld_cli.main import _GLOBAL_OPTIONS_WITH_VALUES
 
-    index = 1 if argv else 0
-    while index < len(argv):
-        token = argv[index]
-        if token in _GLOBAL_OPTIONS_WITH_VALUES:
-            index += 2
-            continue
-        if token.startswith("-"):
-            index += 1
-            continue
-        if token == "list":
-            return index
-        return None
-    return None
-
-
-def _parse_list_global_args(argv: Sequence[str]) -> argparse.Namespace:
-    list_index = _find_list_command_index(argv)
-    if list_index is None:
-        return _build_list_global_parser().parse_args([])
-
-    args, _ = _build_list_global_parser().parse_known_args(argv[1:list_index])
-    return args
+    return parse_command_invocation_args(
+        argv,
+        command_name="list",
+        parser=_build_list_global_parser(),
+        options_with_values=_GLOBAL_OPTIONS_WITH_VALUES,
+    )
 
 
 class ListTopLevelCommand:
