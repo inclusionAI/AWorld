@@ -31,6 +31,82 @@ def test_gateway_command_is_registered_via_plugin_registry():
     assert command is not None
 
 
+def test_list_command_is_registered_via_plugin_registry():
+    from aworld_cli import main as main_module
+
+    registry = main_module._build_top_level_command_registry()
+    command = registry.get("list")
+
+    assert command is not None
+
+
+def test_list_command_dispatches_before_global_config_loading(monkeypatch, capsys):
+    from aworld_cli.main import main
+
+    calls = {"display_agents": None}
+
+    class FakeCLI:
+        def display_agents(self, agents):
+            calls["display_agents"] = agents
+
+    async def fake_load_all_agents(**kwargs):
+        return [{"name": "DemoAgent"}]
+
+    monkeypatch.setattr("aworld_cli.main.AWorldCLI", FakeCLI)
+    monkeypatch.setattr("aworld_cli.main.load_all_agents", fake_load_all_agents)
+    monkeypatch.setattr(
+        "aworld_cli.core.config.load_config_with_env",
+        lambda env_file: (_ for _ in ()).throw(
+            AssertionError("list should dispatch before config loading")
+        ),
+    )
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "list"])
+
+    main()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert calls["display_agents"] == [{"name": "DemoAgent"}]
+
+
+def test_list_command_preserves_global_agent_dir_before_command(monkeypatch, capsys):
+    from aworld_cli.main import main
+
+    calls = {"load_all_agents": None}
+
+    class FakeCLI:
+        def display_agents(self, agents):
+            return None
+
+    async def fake_load_all_agents(**kwargs):
+        calls["load_all_agents"] = kwargs
+        return [{"name": "DemoAgent"}]
+
+    monkeypatch.setattr("aworld_cli.main.AWorldCLI", FakeCLI)
+    monkeypatch.setattr("aworld_cli.main.load_all_agents", fake_load_all_agents)
+    monkeypatch.setattr(
+        "aworld_cli.core.config.load_config_with_env",
+        lambda env_file: (_ for _ in ()).throw(
+            AssertionError("list should dispatch before config loading")
+        ),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["aworld-cli", "--agent-dir", "./agents", "list"],
+    )
+
+    main()
+
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert calls["load_all_agents"] == {
+        "remote_backends": None,
+        "local_dirs": ["./agents"],
+        "agent_files": None,
+    }
+
+
 def test_plugins_without_subcommand_defaults_to_list(monkeypatch, capsys):
     from aworld_cli.main import main
 
