@@ -383,6 +383,54 @@ def test_main_routes_config_flag_through_hidden_config_command(
     assert calls["run"] == 1
 
 
+def test_main_routes_examples_flag_through_hidden_examples_command(
+    monkeypatch,
+) -> None:
+    from aworld_cli import main as main_module
+
+    calls = {"run": 0}
+
+    def fake_run(self, args, context):
+        calls["run"] += 1
+        assert args.examples is True
+        assert args.zh is False
+        return 0
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.examples_cmd.ExamplesTopLevelCommand.run",
+        fake_run,
+    )
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "--examples"])
+
+    main_module.main()
+
+    assert calls["run"] == 1
+
+
+def test_main_routes_zh_flag_through_hidden_help_zh_command(
+    monkeypatch,
+) -> None:
+    from aworld_cli import main as main_module
+
+    calls = {"run": 0}
+
+    def fake_run(self, args, context):
+        calls["run"] += 1
+        assert args.zh is True
+        assert args.examples is False
+        return 0
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.help_zh_cmd.HelpZhTopLevelCommand.run",
+        fake_run,
+    )
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "--zh"])
+
+    main_module.main()
+
+    assert calls["run"] == 1
+
+
 def test_plugins_without_subcommand_defaults_to_list(monkeypatch, capsys):
     from aworld_cli.main import main
 

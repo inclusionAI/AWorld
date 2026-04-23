@@ -469,6 +469,19 @@ Batch Jobs:
     return english_epilog, chinese_epilog, description_en, description_zh
 
 
+def print_usage_examples(*, zh: bool = False) -> None:
+    english_epilog, chinese_epilog, _, _ = _help_texts()
+    examples_text = chinese_epilog if zh else english_epilog
+    title = "AWorld CLI 使用示例" if zh else "AWorld CLI Usage Examples"
+    print(f"\n{title}")
+    print("=" * len(title))
+    print(examples_text)
+
+
+def print_help_text(*, zh: bool = False) -> None:
+    build_parser(zh=zh).print_help()
+
+
 def build_parser(zh: bool = False) -> argparse.ArgumentParser:
     _, _, description_en, description_zh = _help_texts()
     parser = argparse.ArgumentParser(
@@ -683,8 +696,6 @@ def main():
     # Check for --no-banner flag early (before parsing)
     show_banner_flag = "--no-banner" not in sys.argv
     
-    english_epilog, chinese_epilog, _, _ = _help_texts()
-
     if _maybe_dispatch_top_level_command(sys.argv):
         return
 
@@ -696,19 +707,13 @@ def main():
         if _dispatch_named_top_level_command("config", args, sys.argv):
             return
     
-    # Handle --examples flag: show examples and exit
     if args.examples:
-        examples_text = chinese_epilog if args.zh else english_epilog
-        title = "AWorld CLI 使用示例" if args.zh else "AWorld CLI Usage Examples"
-        print(f"\n{title}")
-        print("=" * len(title))
-        print(examples_text)
-        return
-    
-    # Handle -zh flag: if specified, show Chinese help and exit
+        if _dispatch_named_top_level_command("examples", args, sys.argv):
+            return
+
     if args.zh:
-        build_parser(zh=True).print_help()
-        return
+        if _dispatch_named_top_level_command("help-zh", args, sys.argv):
+            return
 
     if not args.task and args.command == "interactive":
         if _dispatch_named_top_level_command("interactive", args, sys.argv):
