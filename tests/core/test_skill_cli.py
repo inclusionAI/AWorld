@@ -481,6 +481,53 @@ async def test_skills_table_shows_generated_skill_alias_and_provider_commands(
     assert "/review" in rendered
 
 
+@pytest.mark.asyncio
+async def test_skills_table_shows_disabled_skill_without_loading_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = AWorldCLI()
+    output = StringIO()
+    cli.console = Console(file=output, force_terminal=False, color_system=None, width=160)
+
+    def fake_resolve_visible_skills(**kwargs):
+        apply_disabled_filter = kwargs.get("apply_disabled_filter", True)
+        if apply_disabled_filter:
+            return SimpleNamespace(skill_configs={}, active_skill_names=(), available_skill_names=())
+        return SimpleNamespace(
+            skill_configs={
+                "youtube_search": {
+                    "description": "Search YouTube",
+                    "skill_path": "/tmp/youtube_search/SKILL.md",
+                }
+            },
+            active_skill_names=(),
+            available_skill_names=("youtube_search",),
+        )
+
+    monkeypatch.setattr(cli, "_resolve_visible_skills", fake_resolve_visible_skills)
+    monkeypatch.setattr(
+        "aworld_cli.core.skill_state_manager.SkillStateManager.disabled_skill_names",
+        lambda self: ("youtube_search",),
+    )
+    monkeypatch.setattr(
+        cli,
+        "_generated_skill_alias_map",
+        lambda **kwargs: {},
+    )
+    monkeypatch.setattr(
+        cli,
+        "_provider_commands_by_skill",
+        lambda **kwargs: {},
+    )
+
+    await cli._render_skills_table()
+
+    rendered = output.getvalue()
+
+    assert "youtube_search" in rendered
+    assert "disabled" in rendered
+
+
 def test_completion_entries_include_generated_skill_alias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -615,3 +662,62 @@ async def test_run_chat_session_rewrites_generated_skill_alias_before_command_lo
     assert result is False
     assert captured["prompt"] == "draft rollout"
     assert captured["requested_skill_names"] == ["brainstorming"]
+
+
+@pytest.mark.asyncio
+async def test_run_chat_session_reports_disabled_skill_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = AWorldCLI()
+    output = StringIO()
+    cli.console = Console(file=output, force_terminal=False, color_system=None, width=160)
+    prompts = iter(["/youtube_search test", "/exit"])
+    executed: dict[str, object] = {"called": False}
+
+    async def fake_executor(prompt: str, requested_skill_names=None):
+        executed["called"] = True
+        return "ok"
+
+    async def fake_apply_user_input_hooks(user_input: str, executor_instance=None):
+        return True, user_input
+
+    async def fake_stop_notification_poller():
+        return None
+
+    def fake_resolve_visible_skills(**kwargs):
+        apply_disabled_filter = kwargs.get("apply_disabled_filter", True)
+        if apply_disabled_filter:
+            return SimpleNamespace(skill_configs={}, active_skill_names=(), available_skill_names=())
+        return SimpleNamespace(
+            skill_configs={
+                "youtube_search": {
+                    "description": "Search YouTube",
+                    "skill_path": "/tmp/youtube_search/SKILL.md",
+                }
+            },
+            active_skill_names=(),
+            available_skill_names=("youtube_search",),
+        )
+
+    monkeypatch.setattr(cli, "_resolve_visible_skills", fake_resolve_visible_skills)
+    monkeypatch.setattr(cli, "_apply_user_input_hooks", fake_apply_user_input_hooks)
+    monkeypatch.setattr(cli, "_stop_notification_poller", fake_stop_notification_poller)
+    monkeypatch.setattr(
+        "aworld_cli.core.skill_state_manager.SkillStateManager.disabled_skill_names",
+        lambda self: ("youtube_search",),
+    )
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda: next(prompts))
+
+    result = await cli.run_chat_session(
+        "Aworld",
+        fake_executor,
+        available_agents=[AgentInfo(name="Aworld")],
+    )
+
+    rendered = output.getvalue()
+
+    assert result is False
+    assert executed["called"] is False
+    assert "disabled" in rendered.lower()
+    assert "/skills enable youtube_search" in rendered
