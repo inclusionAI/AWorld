@@ -21,6 +21,24 @@
         "metadata": {
           "factory": "build_command"
         }
+      },
+      {
+        "id": "enable",
+        "name": "enable",
+        "target": "skill_commands/enable.py",
+        "scope": "session",
+        "metadata": {
+          "factory": "build_command"
+        }
+      },
+      {
+        "id": "disable",
+        "name": "disable",
+        "target": "skill_commands/disable.py",
+        "scope": "session",
+        "metadata": {
+          "factory": "build_command"
+        }
       }
     ],
     "cli_commands": [

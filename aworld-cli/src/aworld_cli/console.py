@@ -1967,6 +1967,50 @@ class AWorldCLI:
             aliases[f"/{normalized}"] = normalized
         return aliases
 
+    def _match_generated_skill_alias(
+        self,
+        user_input: str,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> str | None:
+        normalized_input = str(user_input or "").strip()
+        if not normalized_input.startswith("/"):
+            return None
+
+        alias_token = normalized_input.split(maxsplit=1)[0].lower()
+        for alias, skill_name in self._generated_skill_alias_map(
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        ).items():
+            if alias.lower() == alias_token:
+                return skill_name
+        return None
+
+    def _rewrite_generated_skill_alias_input(
+        self,
+        user_input: str,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> tuple[bool, str]:
+        skill_name = self._match_generated_skill_alias(
+            user_input,
+            agent_name=agent_name,
+            executor_instance=executor_instance,
+        )
+        if skill_name is None:
+            return False, user_input
+
+        parts = str(user_input or "").strip().split(maxsplit=1)
+        self._pending_skill_overrides = [skill_name]
+        if len(parts) == 1:
+            self.console.print(
+                f"[green]Will force skill on next task:[/green] {skill_name}"
+            )
+            return True, ""
+        return True, parts[1].strip()
+
     def _load_skill_commands(
         self,
         *,
@@ -2227,11 +2271,12 @@ class AWorldCLI:
             )
             return True
 
-        if " " not in normalized and normalized.startswith("/"):
-            alias_skill_name = self._generated_skill_alias_map(
+        if normalized.startswith("/"):
+            alias_skill_name = self._match_generated_skill_alias(
+                user_input,
                 agent_name=agent_name,
                 executor_instance=executor_instance,
-            ).get(normalized)
+            )
             if alias_skill_name:
                 self._pending_skill_overrides = [alias_skill_name]
                 self.console.print(
@@ -2569,91 +2614,104 @@ class AWorldCLI:
 
                 # Handle slash commands (custom command system)
                 if user_input.startswith("/"):
-                    parts = user_input[1:].split(maxsplit=1)
-                    cmd_name = parts[0]
-                    cmd_args = parts[1] if len(parts) > 1 else ""
-
-                    # Skip built-in commands (let them fall through)
-                    builtin_commands = {
-                        "exit", "quit", "help", "new", "restore", "latest",
-                        "switch", "skills", "agents", "cost", "compact",
-                        "team", "memory", "sessions", "visualize_trajectory"
-                    }
-                    if cmd_name.lower() not in builtin_commands:
-                        command = CommandRegistry.get(cmd_name)
-                        if command is None:
-                            # Command not found in registry
-                            self.console.print(f"[yellow]Unknown command: /{cmd_name}[/yellow]")
-                            self.console.print("[dim]Type /help to see available commands[/dim]")
+                    generated_alias_handled, rewritten_user_input = (
+                        self._rewrite_generated_skill_alias_input(
+                            user_input,
+                            agent_name=agent_name,
+                            executor_instance=executor_instance,
+                        )
+                    )
+                    if generated_alias_handled:
+                        user_input = rewritten_user_input.strip()
+                        if not user_input:
                             continue
-                        if command:
-                            # Create command context
-                            cmd_context = CommandContext(
-                                cwd=os.getcwd(),
-                                user_args=cmd_args,
-                                sandbox=None,  # TODO: Pass actual sandbox if available
-                                agent_config=None,  # TODO: Pass agent config if needed
-                                runtime=runtime,
-                            )
 
-                            try:
-                                # Pre-execute validation
-                                error = await command.pre_execute(cmd_context)
-                                if error:
-                                    self.console.print(f"[red]Error: {error}[/red]")
-                                    continue
+                    if user_input.startswith("/"):
+                        parts = user_input[1:].split(maxsplit=1)
+                        cmd_name = parts[0]
+                        cmd_args = parts[1] if len(parts) > 1 else ""
 
-                                # Route by command type
-                                if command.command_type == "tool":
-                                    # Tool command: Direct execution
-                                    result = await command.execute(cmd_context)
-                                    self.console.print(result)
-                                    continue
-                                else:
-                                    # Prompt command: Generate prompt for agent, then execute with tool filtering
-                                    prompt = await command.get_prompt(cmd_context)
+                        # Skip built-in commands (let them fall through)
+                        builtin_commands = {
+                            "exit", "quit", "help", "new", "restore", "latest",
+                            "switch", "skills", "agents", "cost", "compact",
+                            "team", "memory", "sessions", "visualize_trajectory"
+                        }
+                        if cmd_name.lower() not in builtin_commands:
+                            command = CommandRegistry.get(cmd_name)
+                            if command is None:
+                                # Command not found in registry
+                                self.console.print(f"[yellow]Unknown command: /{cmd_name}[/yellow]")
+                                self.console.print("[dim]Type /help to see available commands[/dim]")
+                                continue
+                            if command:
+                                # Create command context
+                                cmd_context = CommandContext(
+                                    cwd=os.getcwd(),
+                                    user_args=cmd_args,
+                                    sandbox=None,  # TODO: Pass actual sandbox if available
+                                    agent_config=None,  # TODO: Pass agent config if needed
+                                    runtime=runtime,
+                                )
 
-                                    # Apply tool filtering if executor_instance has a swarm
-                                    if executor_instance and hasattr(executor_instance, 'swarm'):
-                                        from .core.tool_filter import temporary_tool_filter
+                                try:
+                                    # Pre-execute validation
+                                    error = await command.pre_execute(cmd_context)
+                                    if error:
+                                        self.console.print(f"[red]Error: {error}[/red]")
+                                        continue
 
-                                        # Get allowed tools from command
-                                        allowed_tools = command.allowed_tools if command.allowed_tools else None
-
-                                        if allowed_tools:
-                                            logger.info(f"Command /{cmd_name} restricting tools to: {allowed_tools}")
-
-                                        # Execute with tool filtering
-                                        with temporary_tool_filter(executor_instance.swarm, allowed_tools):
-                                            # Print agent name before response
-                                            self.console.print(f"[bold green]{agent_name}[/bold green]:")
-
-                                            # Execute the prompt
-                                            try:
-                                                response = await self._run_executor_prompt(
-                                                    prompt,
-                                                    executor,
-                                                    executor_instance=executor_instance,
-                                                )
-                                                # Response is returned for potential future use
-                                            except Exception as exec_error:
-                                                import traceback
-                                                logger.error(f"Error executing command /{cmd_name}: {exec_error}\n{traceback.format_exc()}")
-                                                self.console.print(f"[bold red]Error executing command: {exec_error}[/bold red]")
-
-                                        # Command executed, continue to next input
+                                    # Route by command type
+                                    if command.command_type == "tool":
+                                        # Tool command: Direct execution
+                                        result = await command.execute(cmd_context)
+                                        self.console.print(result)
                                         continue
                                     else:
-                                        # No tool filtering available, execute normally
-                                        logger.warning(f"Tool filtering not available for command /{cmd_name} (no swarm found)")
-                                        user_input = prompt  # Replace input with generated prompt
-                                        # Fall through to normal execution
+                                        # Prompt command: Generate prompt for agent, then execute with tool filtering
+                                        prompt = await command.get_prompt(cmd_context)
 
-                            except Exception as e:
-                                import traceback
-                                logger.error(f"Error executing command /{cmd_name}: {e}\n{traceback.format_exc()}")
-                                self.console.print(f"[red]Error executing command: {e}[/red]")
-                                continue
+                                        # Apply tool filtering if executor_instance has a swarm
+                                        if executor_instance and hasattr(executor_instance, 'swarm'):
+                                            from .core.tool_filter import temporary_tool_filter
+
+                                            # Get allowed tools from command
+                                            allowed_tools = command.allowed_tools if command.allowed_tools else None
+
+                                            if allowed_tools:
+                                                logger.info(f"Command /{cmd_name} restricting tools to: {allowed_tools}")
+
+                                            # Execute with tool filtering
+                                            with temporary_tool_filter(executor_instance.swarm, allowed_tools):
+                                                # Print agent name before response
+                                                self.console.print(f"[bold green]{agent_name}[/bold green]:")
+
+                                                # Execute the prompt
+                                                try:
+                                                    response = await self._run_executor_prompt(
+                                                        prompt,
+                                                        executor,
+                                                        executor_instance=executor_instance,
+                                                    )
+                                                    # Response is returned for potential future use
+                                                except Exception as exec_error:
+                                                    import traceback
+                                                    logger.error(f"Error executing command /{cmd_name}: {exec_error}\n{traceback.format_exc()}")
+                                                    self.console.print(f"[bold red]Error executing command: {exec_error}[/bold red]")
+
+                                            # Command executed, continue to next input
+                                            continue
+                                        else:
+                                            # No tool filtering available, execute normally
+                                            logger.warning(f"Tool filtering not available for command /{cmd_name} (no swarm found)")
+                                            user_input = prompt  # Replace input with generated prompt
+                                            # Fall through to normal execution
+
+                                except Exception as e:
+                                    import traceback
+                                    logger.error(f"Error executing command /{cmd_name}: {e}\n{traceback.format_exc()}")
+                                    self.console.print(f"[red]Error executing command: {e}[/red]")
+                                    continue
 
                 # Handle explicit exit commands
                 normalized_input = user_input.lower()

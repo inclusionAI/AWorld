@@ -31,6 +31,23 @@ ENV_SKILLS_DIR = "SKILLS_DIR"    # Single skills directory (legacy, for backward
 ENV_SKILLS_CACHE_DIR = "SKILLS_CACHE_DIR"  # Custom cache directory for GitHub repos
 
 
+def resolve_repo_aworld_skills_path() -> Path | None:
+    """Resolve the repo-local `aworld-skills` directory when running from source."""
+    candidate = Path(__file__).resolve().parents[4] / "aworld-skills"
+    if candidate.exists() and candidate.is_dir():
+        return candidate.resolve()
+    return None
+
+
+def get_default_skill_source_paths() -> List[Path]:
+    """Return the default runtime-visible skill roots when no env override is set."""
+    paths: List[Path] = [(Path.home() / ".aworld" / "skills").resolve()]
+    repo_aworld_skills = resolve_repo_aworld_skills_path()
+    if repo_aworld_skills is not None:
+        paths.append(repo_aworld_skills)
+    return paths
+
+
 def get_user_skills_paths() -> List[Path]:
     """
     Return the list of directories where user skills are stored.
@@ -58,7 +75,18 @@ def get_user_skills_paths() -> List[Path]:
     skills_dir_env = os.getenv(ENV_SKILLS_DIR)
     if skills_dir_env:
         paths.append(Path(os.path.expanduser(skills_dir_env)).resolve())
-    return paths
+
+    if not paths:
+        paths = get_default_skill_source_paths()
+
+    deduped_paths: List[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        if path in seen:
+            continue
+        deduped_paths.append(path)
+        seen.add(path)
+    return deduped_paths
 
 
 def collect_plugin_and_user_skills(

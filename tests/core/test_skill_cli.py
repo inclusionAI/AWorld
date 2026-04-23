@@ -12,11 +12,13 @@ from aworld_cli import main as main_module
 from aworld_cli.console import AWorldCLI
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
 from aworld_cli.core.plugin_manager import PluginManager
+from aworld_cli.core.skill_registry import resolve_repo_aworld_skills_path
 from aworld_cli.core.skill_activation_resolver import (
     SkillActivationResolver,
     SkillResolverRequest,
 )
 from aworld_cli.core.top_level_command_system import TopLevelCommandRegistry
+from aworld_cli.models import AgentInfo
 from aworld_cli.top_level_commands import register_builtin_top_level_commands
 
 
@@ -162,6 +164,28 @@ def test_skill_list_cli_shows_enabled_state(
     list_output = capsys.readouterr().out
 
     assert "enabled=False" in list_output
+
+
+def test_skill_list_cli_shows_runtime_aworld_skills_source_without_installs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo_aworld_skills = resolve_repo_aworld_skills_path()
+    if repo_aworld_skills is None:
+        pytest.skip("repo aworld-skills source is not available in this checkout")
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_PATH", raising=False)
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "list"])
+    main_module.main()
+
+    list_output = capsys.readouterr().out
+
+    assert "No installed skill packages" in list_output
+    assert str(repo_aworld_skills) in list_output
 
 
 def test_skill_install_creates_plugin_managed_skill_record(
@@ -319,6 +343,39 @@ async def test_console_generated_skill_alias_sets_pending_override(
     assert cli._pending_skill_overrides == ["brainstorming"]
 
 
+def test_generated_skill_alias_match_is_case_insensitive(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = AWorldCLI()
+    monkeypatch.setattr(
+        cli,
+        "_generated_skill_alias_map",
+        lambda **kwargs: {"/OpenClaw": "OpenClaw"},
+    )
+
+    assert cli._match_generated_skill_alias("/openclaw") == "OpenClaw"
+    assert cli._match_generated_skill_alias("/OpenClaw") == "OpenClaw"
+
+
+def test_rewrite_generated_skill_alias_with_prompt_sets_override_and_rewrites_input(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = AWorldCLI()
+    monkeypatch.setattr(
+        cli,
+        "_generated_skill_alias_map",
+        lambda **kwargs: {"/ad_image_create_skill": "ad_image_create_skill"},
+    )
+
+    handled, rewritten = cli._rewrite_generated_skill_alias_input(
+        "/ad_image_create_skill 帮我创建一张萌娃的照片"
+    )
+
+    assert handled is True
+    assert rewritten == "帮我创建一张萌娃的照片"
+    assert cli._pending_skill_overrides == ["ad_image_create_skill"]
+
+
 @pytest.mark.asyncio
 async def test_skills_table_shows_generated_skill_alias_and_provider_commands(
     monkeypatch: pytest.MonkeyPatch,
@@ -428,3 +485,67 @@ async def test_console_dispatches_dynamic_skill_subcommand(
     assert handled is True
     assert captured["args_text"] == "brainstorming"
     assert cli._pending_skill_overrides == ["brainstorming"]
+
+
+@pytest.mark.asyncio
+async def test_console_skills_disable_and_enable_by_skill_name(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    source = tmp_path / "youtube-skills"
+    _write_skill(source / "skills", "youtube_search")
+    InstalledSkillManager().install(source=source, mode="copy", scope="global")
+
+    cli = AWorldCLI()
+    await cli._handle_skills_command("/skills disable youtube_search")
+
+    installs = InstalledSkillManager().list_installs(include_disabled=True)
+    assert installs[0]["enabled"] is False
+
+    await cli._handle_skills_command("/skills enable youtube_search")
+
+    installs = InstalledSkillManager().list_installs(include_disabled=True)
+    assert installs[0]["enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_run_chat_session_rewrites_generated_skill_alias_before_command_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = AWorldCLI()
+    output = StringIO()
+    cli.console = Console(file=output, force_terminal=False, color_system=None, width=160)
+    captured: dict[str, object] = {}
+    prompts = iter(["/brainstorming draft rollout", "/exit"])
+
+    async def fake_executor(prompt: str, requested_skill_names=None):
+        captured["prompt"] = prompt
+        captured["requested_skill_names"] = requested_skill_names
+        return "ok"
+
+    async def fake_apply_user_input_hooks(user_input: str, executor_instance=None):
+        return True, user_input
+
+    async def fake_stop_notification_poller():
+        return None
+
+    monkeypatch.setattr(
+        cli,
+        "_generated_skill_alias_map",
+        lambda **kwargs: {"/brainstorming": "brainstorming"},
+    )
+    monkeypatch.setattr(cli, "_apply_user_input_hooks", fake_apply_user_input_hooks)
+    monkeypatch.setattr(cli, "_stop_notification_poller", fake_stop_notification_poller)
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    monkeypatch.setattr("builtins.input", lambda: next(prompts))
+
+    result = await cli.run_chat_session(
+        "Aworld",
+        fake_executor,
+        available_agents=[AgentInfo(name="Aworld")],
+    )
+
+    assert result is False
+    assert captured["prompt"] == "draft rollout"
+    assert captured["requested_skill_names"] == ["brainstorming"]
