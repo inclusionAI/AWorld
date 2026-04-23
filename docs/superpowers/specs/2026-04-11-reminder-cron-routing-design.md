@@ -83,7 +83,7 @@ This keeps the model in control while preventing the most common incorrect execu
 
 Primary file:
 
-- [aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/aworld_agent.py](/Users/wuman/Documents/workspace/aworld-mas/aworld/aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/aworld_agent.py)
+- [aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/aworld_agent.py](/Users/wuman/Documents/workspace/aworld-mas/aworld/aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/aworld_agent.py)
 
 Change:
 

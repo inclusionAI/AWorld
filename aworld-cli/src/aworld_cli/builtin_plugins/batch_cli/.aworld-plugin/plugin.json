@@ -1,0 +1,19 @@
+{
+  "id": "aworld-batch-cli",
+  "name": "aworld-batch-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "batch-job",
+        "name": "batch-job",
+        "target": "cli_commands/batch.py",
+        "scope": "workspace",
+        "metadata": {
+          "factory": "build_command",
+          "aliases": ["batch"]
+        }
+      }
+    ]
+  }
+}

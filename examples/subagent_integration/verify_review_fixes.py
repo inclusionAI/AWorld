@@ -19,7 +19,7 @@ def verify_fix_1_tool_names():
     print("Fix 1: Tool Name Consistency")
     print("="*80)
 
-    prompt_path = "/Users/wuman/Documents/workspace/aworld-mas/aworld/aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/prompt.txt"
+    prompt_path = "/Users/wuman/Documents/workspace/aworld-mas/aworld/aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/prompt.txt"
 
     with open(prompt_path, 'r', encoding='utf-8') as f:
         content = f.read()
@@ -125,7 +125,7 @@ def verify_fix_4_mode_guidance():
     print("Fix 4: Mode Selection Guidance")
     print("="*80)
 
-    prompt_path = "/Users/wuman/Documents/workspace/aworld-mas/aworld/aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/prompt.txt"
+    prompt_path = "/Users/wuman/Documents/workspace/aworld-mas/aworld/aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/prompt.txt"
 
     with open(prompt_path, 'r', encoding='utf-8') as f:
         content = f.read()

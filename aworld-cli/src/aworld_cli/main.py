@@ -10,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from aworld.memory.main import _default_file_memory_store
+from aworld.plugins.discovery import discover_plugins
 
 # Suppress DEBUG/INFO logs from third-party libraries (asyncio, mcp, etc.)
 # Only show WARNING and above for non-aworld modules
@@ -141,11 +141,17 @@ sys.excepthook = _suppress_keyboard_interrupt_traceback
 os.environ.setdefault('AWORLD_DISABLE_CONSOLE_LOG', 'true')
 
 # Import aworld modules (they will respect the environment variable)
-from aworld.logs.util import logger
 from .runtime.cli import CliRuntime
 from .console import AWorldCLI
 from .models import AgentInfo
 from .executors.continuous import ContinuousExecutor
+from .runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
+from .core.top_level_command_system import (
+    TopLevelCommandContext,
+    TopLevelCommandRegistry,
+)
+from .plugin_capabilities.cli_commands import sync_plugin_cli_commands
+from .top_level_commands import register_builtin_top_level_commands
 
 # Import commands to trigger registration
 from . import commands
@@ -218,15 +224,7 @@ def _resolve_agent_dirs(cli_agent_dirs: Optional[list[str]]) -> list[str]:
     return [default.strip()] if default.strip() else ["./agents"]
 
 
-def main():
-    """
-    Entry point for the AWorld CLI.
-    Supports both interactive and non-interactive (direct run) modes.
-    """
-    # Check for --no-banner flag early (before parsing)
-    show_banner_flag = "--no-banner" not in sys.argv
-    
-    # English help text
+def _help_texts() -> tuple[str, str, str, str]:
     english_epilog = """
 Examples:
 
@@ -249,6 +247,9 @@ Direct Run Mode:
   
   # Run with duration limit
   aworld-cli --task "add features" --agent MyAgent --max-duration 2h
+  
+  # Force an installed skill for this task
+  aworld-cli --task "review this PR" --agent MyAgent --skill code-review
 
 Remote Backends:
   # Use remote backend
@@ -322,9 +323,22 @@ Plugin Management:
   
   # Remove a plugin
   aworld-cli plugins remove my-plugin
+
+Skill Management:
+  # Install skills from a local directory
+  aworld-cli skill install ./local-skills
+
+  # Install skills from git
+  aworld-cli skill install https://github.com/user/repo.git
+
+  # List installed skill packages
+  aworld-cli skill list
+
+  # Remove or update an installed skill package
+  aworld-cli skill remove my-skills
+  aworld-cli skill update my-skills
 """
-    
-    # Chinese help text
+
     chinese_epilog = """
 示例：
 
@@ -350,6 +364,9 @@ Plugin Management:
   
   # 使用远程图片 URL 运行
   aworld-cli --task "分析这张图片 @https://example.com/image.png" --agent MyAgent
+  
+  # 显式指定本次任务使用的 skill
+  aworld-cli --task "review this PR" --agent MyAgent --skill code-review
 
 远程后端：
   # 使用远程后端
@@ -431,614 +448,300 @@ Batch Jobs:
   
   # 移除插件
   aworld-cli plugins remove my-plugin
+
+技能包管理：
+  # 从本地目录安装技能包
+  aworld-cli skill install ./local-skills
+
+  # 从 git 安装技能包
+  aworld-cli skill install https://github.com/user/repo.git
+
+  # 列出已安装的技能包
+  aworld-cli skill list
+
+  # 移除或更新已安装的技能包
+  aworld-cli skill remove my-skills
+  aworld-cli skill update my-skills
 """
-    
+
     description_en = "AWorld Agent CLI - Interact with agents directly from the terminal"
     description_zh = "AWorld Agent CLI - 从终端直接与 agents 交互"
-    
+    return english_epilog, chinese_epilog, description_en, description_zh
+
+
+def print_usage_examples(*, zh: bool = False) -> None:
+    english_epilog, chinese_epilog, _, _ = _help_texts()
+    examples_text = chinese_epilog if zh else english_epilog
+    title = "AWorld CLI 使用示例" if zh else "AWorld CLI Usage Examples"
+    print(f"\n{title}")
+    print("=" * len(title))
+    print(examples_text)
+
+
+def print_help_text(*, zh: bool = False) -> None:
+    build_parser(zh=zh).print_help()
+
+
+def build_parser(zh: bool = False) -> argparse.ArgumentParser:
+    _, _, description_en, description_zh = _help_texts()
     parser = argparse.ArgumentParser(
-        description=description_en,
-        formatter_class=argparse.RawDescriptionHelpFormatter
+        description=description_zh if zh else description_en,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    
     parser.add_argument(
-        '-zh', '--zh',
-        action='store_true',
-        help='Show help in Chinese / 显示中文帮助'
+        "-zh",
+        "--zh",
+        action="store_true",
+        help="显示中文帮助" if zh else "Show help in Chinese / 显示中文帮助",
     )
-    
     parser.add_argument(
-        '--examples',
-        action='store_true',
-        help='Show usage examples / 显示使用示例'
+        "--examples",
+        action="store_true",
+        help="显示使用示例" if zh else "Show usage examples / 显示使用示例",
     )
-    
     parser.add_argument(
-        '--no-banner',
-        action='store_true',
-        help='Disable banner display on startup / 启动时不显示 banner'
+        "--no-banner",
+        action="store_true",
+        help="启动时不显示 banner" if zh else "Disable banner display on startup / 启动时不显示 banner",
     )
+    parser.add_argument(
+        "command",
+        nargs="?",
+        default="interactive",
+        choices=_build_parser_command_choices(),
+        help=(
+            '要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugins" 管理插件，使用 "skill" 管理已安装技能包，使用 "gateway" 管理网关。'
+            if zh
+            else 'Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers, '
+            '"batch-job" to run batch jobs, "plugins" to manage plugins, "skill" to manage installed skills, and "gateway" to manage the gateway.'
+        ),
+    )
+    parser.add_argument("--task", type=str, help="发送给 agent 的任务（非交互模式）" if zh else "Task to send to agent (non-interactive mode)")
+    parser.add_argument("--agent", type=str, help="要使用的 agent 名称（直接运行模式必需）" if zh else "Agent name (default: Aworld in interactive mode; required for direct run mode)")
+    parser.add_argument("--skill", dest="skill", action="append", help="显式请求一个已安装的 skill 名称。可重复传入。" if zh else "Explicitly request an installed skill by name. Can be passed multiple times.")
+    parser.add_argument("--max-runs", type=int, help="最大运行次数（直接运行模式）" if zh else "Maximum number of runs (for direct run mode)")
+    parser.add_argument("--max-cost", type=float, help="最大成本（美元）（直接运行模式）" if zh else "Maximum cost in USD (for direct run mode)")
+    parser.add_argument("--max-duration", type=str, help='最大时长（例如："1h", "30m", "2h30m"）（直接运行模式）' if zh else 'Maximum duration (e.g., "1h", "30m", "2h30m") (for direct run mode)')
+    parser.add_argument("--completion-signal", type=str, help="查找的完成信号字符串（直接运行模式）" if zh else "Completion signal string to look for (for direct run mode)")
+    parser.add_argument("--completion-threshold", type=int, default=3, help="需要的连续完成信号数量（默认：3）" if zh else "Number of consecutive completion signals needed (default: 3)")
+    parser.add_argument("--session_id", "--session-id", type=str, dest="session_id", help="要使用的会话 ID（直接运行模式）" if zh else "Session ID to use for this task (for direct run mode)")
+    parser.add_argument("--non-interactive", action="store_true", help="以非交互模式运行（无用户输入）" if zh else "Run in non-interactive mode (no user input)")
+    parser.add_argument("--env-file", type=str, default=".env", help=".env 文件路径（默认：.env）" if zh else "Path to .env file (default: .env)")
+    parser.add_argument("--remote-backend", type=str, action="append", help="远程后端 URL（可指定多次）。覆盖 REMOTE_AGENT_BACKEND 环境变量。" if zh else "Remote backend URL (can be specified multiple times). Overrides REMOTE_AGENT_BACKEND environment variable.")
+    parser.add_argument("--agent-dir", type=str, action="append", help="包含 agents 的目录（可指定多次）。未指定时默认使用 LOCAL_AGENTS_DIR 或 AWORLD_DEFAULT_AGENT_DIR（默认 ./agents）。" if zh else "Directory containing agents (can be specified multiple times). Default: LOCAL_AGENTS_DIR or AWORLD_DEFAULT_AGENT_DIR (./agents) when not set.")
+    parser.add_argument("--agent-file", type=str, action="append", help="单个 agent 文件路径（Python .py 或 Markdown .md，可指定多次）。" if zh else "Individual agent file path (Python .py or Markdown .md, can be specified multiple times).")
+    parser.add_argument("--skill-path", type=str, action="append", help="技能源路径（本地目录或 GitHub URL，可指定多次）。覆盖 SKILLS_PATH 环境变量。" if zh else "Skill source path (local directory or GitHub URL, can be specified multiple times). Overrides SKILLS_PATH environment variable.")
+    parser.add_argument("--config", action="store_true", help="启动交互式全局配置编辑器（模型提供商、API 密钥等）并退出。" if zh else "Launch interactive global configuration editor (model provider, API key, etc.) and exit.")
+    return parser
 
-    # Handle gateway command specially
-    from .gateway_cli import find_gateway_command_index
 
-    gateway_index = find_gateway_command_index(sys.argv)
-    if gateway_index is not None:
-        from .gateway_cli import (
-            build_gateway_parser,
-            extract_gateway_argv,
-            handle_gateway_channels_list,
-            handle_gateway_status,
-            serve_gateway,
+def _build_top_level_command_registry() -> TopLevelCommandRegistry:
+    registry = TopLevelCommandRegistry(
+        reserved_names={
+            "interactive",
+            "list",
+            "serve",
+            "gateway",
+        }
+    )
+    register_builtin_top_level_commands(registry)
+
+    try:
+        from .core.plugin_manager import PluginManager, get_builtin_plugin_roots
+
+        builtin_plugin_roots = tuple(
+            Path(root).resolve() for root in get_builtin_plugin_roots()
         )
+        plugin_manager = PluginManager()
+        if hasattr(plugin_manager, "get_runtime_plugin_roots"):
+            plugin_roots = [
+                Path(root).resolve() for root in plugin_manager.get_runtime_plugin_roots()
+            ]
+        else:
+            plugin_roots = list(builtin_plugin_roots)
+    except Exception:
+        from .core.plugin_manager import get_builtin_plugin_roots
 
-        gateway_global_parser = argparse.ArgumentParser(add_help=False)
-        gateway_global_parser.add_argument("--env-file", default=".env")
-        gateway_global_parser.add_argument("--remote-backend", action="append")
-        gateway_global_parser.add_argument("--agent-dir", action="append")
-        gateway_global_parser.add_argument("--agent-file", action="append")
-        gateway_global_parser.add_argument("--skill-path", action="append")
-        gateway_global_args, _ = gateway_global_parser.parse_known_args(
-            sys.argv[1:gateway_index]
+        builtin_plugin_roots = tuple(
+            Path(root).resolve() for root in get_builtin_plugin_roots()
         )
+        plugin_roots = list(builtin_plugin_roots)
 
-        gateway_parser = build_gateway_parser()
-        try:
-            gateway_args = gateway_parser.parse_args(extract_gateway_argv(sys.argv))
-        except SystemExit:
-            return
-
-        if gateway_args.gateway_action == "status":
-            print(handle_gateway_status())
-            return
-
-        if (
-            gateway_args.gateway_action == "channels"
-            and gateway_args.channels_action == "list"
-        ):
-            print(handle_gateway_channels_list())
-            return
-
-        if gateway_args.gateway_action == "server":
-            from .core.config import load_config_with_env, has_model_config
-
-            config_dict, source_type, source_path = load_config_with_env(
-                gateway_global_args.env_file
-            )
-            init_middlewares(
-                init_memory=True,
-                init_retriever=False,
-                custom_memory_store=_default_file_memory_store(),
-            )
-            _show_banner()
-
-            from ._globals import console
-
-            if not has_model_config(config_dict):
-                console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
-                console.print("[dim]Run: aworld-cli --config[/dim]")
-                console.print("[dim]Or create .env in the current directory. See: [link=https://github.com/inclusionAI/AWorld/blob/main/README.md]README[/link][/dim]")
-                sys.exit(1)
-
-            from .core.skill_registry import get_skill_registry
-
-            if gateway_global_args.skill_path:
-                registry = get_skill_registry(skill_paths=gateway_global_args.skill_path)
-            else:
-                registry = get_skill_registry()
-
-            all_skills = registry.get_all_skills()
-            if all_skills:
-                skill_names = list(all_skills.keys())
-                logger.info("Loaded %d global skill(s): %s", len(skill_names), ", ".join(skill_names))
-
-            asyncio.run(
-                serve_gateway(
-                    base_dir=Path.cwd(),
-                    remote_backends=gateway_global_args.remote_backend,
-                    local_dirs=_resolve_agent_dirs(gateway_global_args.agent_dir),
-                    agent_files=gateway_global_args.agent_file,
-                )
-            )
-            return
-
-    # Create a minimal parser to check if command is 'plugins'
-    minimal_parser = argparse.ArgumentParser(add_help=False)
-    minimal_parser.add_argument('command', nargs='?', default='interactive')
-    minimal_args, _ = minimal_parser.parse_known_args()
-
-    # Handle plugin command specially.
-    if minimal_args.command in {"plugin", "plugins"}:
-        plugin_parser = argparse.ArgumentParser(description="Plugin management commands", prog="aworld-cli plugins")
-        plugin_subparsers = plugin_parser.add_subparsers(dest='plugin_action', help='Plugin action to perform')
-
-        # install subcommand
-        install_parser = plugin_subparsers.add_parser('install', help='Install a plugin')
-        install_parser.add_argument('plugin_name', help='Name of the plugin to install')
-        install_parser.add_argument('--url', type=str, help='Plugin repository URL (GitHub or other git URL)')
-        install_parser.add_argument('--local-path', type=str, help='Local plugin path')
-        install_parser.add_argument('--force', action='store_true', help='Force reinstall/overwrite existing plugin')
-
-        # remove subcommand
-        remove_parser = plugin_subparsers.add_parser('remove', help='Remove a plugin')
-        remove_parser.add_argument('plugin_name', help='Name of the plugin to remove')
-
-        # enable subcommand
-        enable_parser = plugin_subparsers.add_parser('enable', help='Enable an installed plugin')
-        enable_parser.add_argument('plugin_name', help='Name of the plugin to enable')
-
-        # disable subcommand
-        disable_parser = plugin_subparsers.add_parser('disable', help='Disable an installed plugin')
-        disable_parser.add_argument('plugin_name', help='Name of the plugin to disable')
-
-        # reload subcommand
-        reload_parser = plugin_subparsers.add_parser('reload', help='Reload plugin metadata from disk')
-        reload_parser.add_argument('plugin_name', help='Name of the plugin to reload')
-
-        # validate subcommand
-        validate_parser = plugin_subparsers.add_parser('validate', help='Validate a plugin manifest or plugin root')
-        validate_parser.add_argument('plugin_name', nargs='?', help='Installed plugin name to validate')
-        validate_parser.add_argument('--path', type=str, help='Explicit plugin root path to validate')
-
-        # list subcommand
-        list_parser = plugin_subparsers.add_parser('list', help='List installed plugins')
-
-        # Parse plugin subcommand arguments
-        try:
-            plugin_args = plugin_parser.parse_args(sys.argv[2:])
-        except SystemExit:
-            return
-
-        plugin_action = plugin_args.plugin_action or "list"
-
-        # Handle plugin commands
-        from .core.plugin_manager import (
-            PluginManager,
-            list_available_plugins,
-            render_plugins_table,
-            validate_plugin_path,
+    try:
+        sync_plugin_cli_commands(
+            registry,
+            discover_plugins(plugin_roots),
+            builtin_plugin_roots=builtin_plugin_roots,
         )
+    except Exception:
+        pass
 
-        manager = PluginManager()
+    return registry
 
-        if plugin_action == "install":
-            if not plugin_args.url and not plugin_args.local_path:
-                print("❌ Error: Either --url or --local-path must be provided")
-                install_parser.print_help()
-                return
 
-            try:
-                success = manager.install(
-                    plugin_name=plugin_args.plugin_name,
-                    url=plugin_args.url,
-                    local_path=plugin_args.local_path,
-                    force=plugin_args.force
-                )
-                if success:
-                    print(f"✅ Plugin '{plugin_args.plugin_name}' installed successfully")
-                    print(f"📍 Location: {manager.plugin_dir / plugin_args.plugin_name}")
-                else:
-                    print(f"❌ Failed to install plugin '{plugin_args.plugin_name}'")
-            except Exception as e:
-                print(f"❌ Error installing plugin: {e}")
-                return
+def _build_parser_command_choices() -> list[str]:
+    command_names = ["interactive", "batch", "batch-job", "plugins"]
+    registry = _build_top_level_command_registry()
+    for command in registry.list_commands(include_hidden=False):
+        if command.name not in command_names:
+            command_names.append(command.name)
+    return command_names
 
-        elif plugin_action == "remove":
-            success = manager.remove(plugin_args.plugin_name)
-            if not success:
-                return
 
-        elif plugin_action == "enable":
-            try:
-                plugin_state = manager.enable(plugin_args.plugin_name)
-                print(f"✅ Plugin '{plugin_args.plugin_name}' enabled")
-                print(f"📍 Location: {plugin_state['path']}")
-            except KeyError:
-                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
-                return
+_GLOBAL_OPTIONS_WITH_VALUES = {
+    "--task",
+    "--agent",
+    "--skill",
+    "--max-runs",
+    "--max-cost",
+    "--max-duration",
+    "--completion-signal",
+    "--completion-threshold",
+    "--session_id",
+    "--session-id",
+    "--env-file",
+    "--remote-backend",
+    "--agent-dir",
+    "--agent-file",
+    "--skill-path",
+    "--http-host",
+    "--http-port",
+    "--mcp-name",
+    "--mcp-transport",
+    "--mcp-host",
+    "--mcp-port",
+}
 
-        elif plugin_action == "disable":
-            try:
-                plugin_state = manager.disable(plugin_args.plugin_name)
-                print(f"✅ Plugin '{plugin_args.plugin_name}' disabled")
-                print(f"📍 Location: {plugin_state['path']}")
-            except KeyError:
-                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
-                return
 
-        elif plugin_action == "reload":
-            try:
-                plugin_state = manager.reload(plugin_args.plugin_name)
-                print(f"✅ Plugin '{plugin_args.plugin_name}' reloaded")
-                print(f"📍 Location: {plugin_state['path']}")
-            except KeyError:
-                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
-                return
+def _find_top_level_command_index(argv: list[str], registry: TopLevelCommandRegistry) -> int | None:
+    index = 1 if argv else 0
 
-        elif plugin_action == "validate":
-            try:
-                if plugin_args.path:
-                    plugin_state = validate_plugin_path(Path(plugin_args.path))
-                    label = plugin_state["plugin_id"]
-                elif plugin_args.plugin_name:
-                    plugin_state = manager.validate(plugin_args.plugin_name)
-                    label = plugin_args.plugin_name
-                else:
-                    print("❌ Error: specify either <plugin_name> or --path")
-                    validate_parser.print_help()
-                    return
+    while index < len(argv):
+        token = argv[index]
+        if token in _GLOBAL_OPTIONS_WITH_VALUES:
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        if registry.canonical_name(token) is not None:
+            return index
+        return None
 
-                print(f"✅ Plugin '{label}' is valid")
-                print(f"📍 Location: {plugin_state['path']}")
-                print(f"🆔 Plugin ID: {plugin_state['plugin_id']}")
-                print(f"🧩 Framework: {plugin_state['framework_source']}")
-                print(f"⚙️ Capabilities: {', '.join(plugin_state['capabilities']) or '-'}")
-            except KeyError:
-                print(f"❌ Plugin '{plugin_args.plugin_name}' is not installed")
-                return
-            except Exception as e:
-                print(f"❌ Plugin validation failed: {e}")
-                return
+    return None
 
-        elif plugin_action == "list":
-            print(render_plugins_table(list_available_plugins(manager), manager.plugin_dir), end="")
 
+def _maybe_dispatch_top_level_command(argv: list[str]) -> bool:
+    if len(argv) < 2:
+        return False
+
+    registry = _build_top_level_command_registry()
+    command_index = _find_top_level_command_index(argv, registry)
+    if command_index is None:
+        return False
+
+    canonical_name = registry.canonical_name(argv[command_index])
+    command = registry.get(argv[command_index])
+    if command is None:
+        return False
+
+    parser = argparse.ArgumentParser(prog="aworld-cli")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+    for item in registry.list_commands():
+        item.register_parser(subparsers)
+
+    parse_argv = list(argv[command_index:])
+    if canonical_name is not None:
+        parse_argv[0] = canonical_name
+
+    try:
+        args = parser.parse_args(parse_argv)
+    except SystemExit:
+        return True
+
+    selected_command = registry.get(getattr(args, "command", ""))
+    if selected_command is None:
+        return False
+
+    return _run_top_level_command(selected_command, args, argv)
+
+
+def _run_top_level_command(command, args, argv: list[str]) -> bool:
+    exit_code = command.run(
+        args,
+        TopLevelCommandContext(cwd=str(Path.cwd()), argv=tuple(argv)),
+    )
+    if exit_code not in (None, 0):
+        sys.exit(exit_code)
+    return True
+
+
+def _dispatch_named_top_level_command(
+    command_name: str,
+    args,
+    argv: list[str],
+) -> bool:
+    registry = _build_top_level_command_registry()
+    command = registry.get(command_name)
+    if command is None:
+        return False
+    return _run_top_level_command(command, args, argv)
+
+
+def main():
+    """
+    Entry point for the AWorld CLI.
+    Supports both interactive and non-interactive (direct run) modes.
+    """
+    # Check for --no-banner flag early (before parsing)
+    show_banner_flag = "--no-banner" not in sys.argv
+    
+    if _maybe_dispatch_top_level_command(sys.argv):
         return
 
-    # Continue with normal argument parsing for other commands
-    parser.add_argument(
-        'command',
-        nargs='?',
-        default='interactive',
-        choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugins', 'gateway'],
-        help='Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers, '
-             '"batch-job" to run batch jobs, "plugins" to manage plugins, or "gateway" to manage the gateway.'
-    )
-    
-    parser.add_argument(
-        '--task',
-        type=str,
-        help='Task to send to agent (non-interactive mode)'
-    )
-    
-    parser.add_argument(
-        '--agent',
-        type=str,
-        help='Agent name (default: Aworld in interactive mode; required for direct run mode)'
-    )
-    
-    parser.add_argument(
-        '--max-runs',
-        type=int,
-        help='Maximum number of runs (for direct run mode)'
-    )
-    
-    parser.add_argument(
-        '--max-cost',
-        type=float,
-        help='Maximum cost in USD (for direct run mode)'
-    )
-    
-    parser.add_argument(
-        '--max-duration',
-        type=str,
-        help='Maximum duration (e.g., "1h", "30m", "2h30m") (for direct run mode)'
-    )
-    
-    parser.add_argument(
-        '--completion-signal',
-        type=str,
-        help='Completion signal string to look for (for direct run mode)'
-    )
-    
-    parser.add_argument(
-        '--completion-threshold',
-        type=int,
-        default=3,
-        help='Number of consecutive completion signals needed (default: 3)'
-    )
-    
-    parser.add_argument(
-        '--session_id',
-        '--session-id',
-        type=str,
-        dest='session_id',
-        help='Session ID to use for this task (for direct run mode)'
-    )
-    
-    parser.add_argument(
-        '--non-interactive',
-        action='store_true',
-        help='Run in non-interactive mode (no user input)'
-    )
-    
-    parser.add_argument(
-        '--env-file',
-        type=str,
-        default='.env',
-        help='Path to .env file (default: .env)'
-    )
-    
-    parser.add_argument(
-        '--remote-backend',
-        type=str,
-        action='append',
-        help='Remote backend URL (can be specified multiple times). Overrides REMOTE_AGENT_BACKEND environment variable.'
-    )
-    
-    parser.add_argument(
-        '--agent-dir',
-        type=str,
-        action='append',
-        help='Directory containing agents (can be specified multiple times). Default: LOCAL_AGENTS_DIR or AWORLD_DEFAULT_AGENT_DIR (./agents) when not set.'
-    )
-    
-    parser.add_argument(
-        '--agent-file',
-        type=str,
-        action='append',
-        help='Individual agent file path (Python .py or Markdown .md, can be specified multiple times).'
-    )
-    
-    parser.add_argument(
-        '--skill-path',
-        type=str,
-        action='append',
-        help='Skill source path (local directory or GitHub URL, can be specified multiple times). Overrides SKILLS_PATH environment variable.'
-    )
-    
-    # Server options (for 'serve' command)
-    parser.add_argument(
-        '--http',
-        action='store_true',
-        help='Start HTTP server (for serve command)'
-    )
-    
-    parser.add_argument(
-        '--http-host',
-        type=str,
-        default='0.0.0.0',
-        help='HTTP server host (default: 0.0.0.0)'
-    )
-    
-    parser.add_argument(
-        '--http-port',
-        type=int,
-        default=8000,
-        help='HTTP server port (default: 8000)'
-    )
-    
-    parser.add_argument(
-        '--mcp',
-        action='store_true',
-        help='Start MCP server (for serve command)'
-    )
-    
-    parser.add_argument(
-        '--mcp-name',
-        type=str,
-        default='AWorldAgent',
-        help='MCP server name (default: AWorldAgent)'
-    )
-    
-    parser.add_argument(
-        '--mcp-transport',
-        type=str,
-        choices=['stdio', 'sse', 'streamable-http'],
-        default='stdio',
-        help='MCP transport type: stdio, sse, or streamable-http (default: stdio)'
-    )
-    
-    parser.add_argument(
-        '--mcp-host',
-        type=str,
-        default='0.0.0.0',
-        help='MCP server host for SSE/streamable-http transport (default: 0.0.0.0)'
-    )
-    
-    parser.add_argument(
-        '--mcp-port',
-        type=int,
-        default=8001,
-        help='MCP server port for SSE/streamable-http transport (default: 8001)'
-    )
-    
-    parser.add_argument(
-        '--config',
-        action='store_true',
-        help='Launch interactive global configuration editor (model provider, API key, etc.) and exit.'
-    )
-    
+    parser = build_parser()
     # Parse arguments normally, but keep unknown args for inner plugin commands
     args, remaining_argv = parser.parse_known_args()
 
-    # Handle --config: run interactive config editor and exit
     if getattr(args, 'config', False):
-        async def _run_config():
-            cli = AWorldCLI()
-            await cli._interactive_config_editor()
-        asyncio.run(_run_config())
-        return
+        if _dispatch_named_top_level_command("config", args, sys.argv):
+            return
     
-    # Handle --examples flag: show examples and exit
     if args.examples:
-        examples_text = chinese_epilog if args.zh else english_epilog
-        title = "AWorld CLI 使用示例" if args.zh else "AWorld CLI Usage Examples"
-        print(f"\n{title}")
-        print("=" * len(title))
-        print(examples_text)
-        return
-    
-    # Handle -zh flag: if specified, show Chinese help and exit
+        if _dispatch_named_top_level_command("examples", args, sys.argv):
+            return
+
     if args.zh:
-        parser_zh = argparse.ArgumentParser(
-            description=description_zh,
-            formatter_class=argparse.RawDescriptionHelpFormatter
+        if _dispatch_named_top_level_command("help-zh", args, sys.argv):
+            return
+
+    if not args.task and args.command == "interactive":
+        if _dispatch_named_top_level_command("interactive", args, sys.argv):
+            return
+
+    if args.task:
+        if _dispatch_named_top_level_command("run", args, sys.argv):
+            return
+    
+    try:
+        bootstrap_runtime(
+            env_file=args.env_file,
+            skill_paths=args.skill_path,
+            show_banner=show_banner_flag,
+            init_middlewares_fn=init_middlewares,
+            show_banner_fn=_show_banner,
         )
-        parser_zh.add_argument('-zh', '--zh', action='store_true', help='显示中文帮助')
-        parser_zh.add_argument('--examples', action='store_true', help='显示使用示例')
-        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugins', 'gateway'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugins" 管理插件，使用 "gateway" 管理网关。')
-        parser_zh.add_argument('--task', type=str, help='发送给 agent 的任务（非交互模式）')
-        parser_zh.add_argument('--agent', type=str, help='要使用的 agent 名称（直接运行模式必需）')
-        parser_zh.add_argument('--max-runs', type=int, help='最大运行次数（直接运行模式）')
-        parser_zh.add_argument('--max-cost', type=float, help='最大成本（美元）（直接运行模式）')
-        parser_zh.add_argument('--max-duration', type=str, help='最大时长（例如："1h", "30m", "2h30m"）（直接运行模式）')
-        parser_zh.add_argument('--completion-signal', type=str, help='查找的完成信号字符串（直接运行模式）')
-        parser_zh.add_argument('--completion-threshold', type=int, default=3, help='需要的连续完成信号数量（默认：3）')
-        parser_zh.add_argument('--session_id', '--session-id', type=str, dest='session_id', help='要使用的会话 ID（直接运行模式）')
-        parser_zh.add_argument('--non-interactive', action='store_true', help='以非交互模式运行（无用户输入）')
-        parser_zh.add_argument('--env-file', type=str, default='.env', help='.env 文件路径（默认：.env）')
-        parser_zh.add_argument('--remote-backend', type=str, action='append', help='远程后端 URL（可指定多次）。覆盖 REMOTE_AGENT_BACKEND 环境变量。')
-        parser_zh.add_argument('--agent-dir', type=str, action='append', help='包含 agents 的目录（可指定多次）。未指定时默认使用 LOCAL_AGENTS_DIR 或 AWORLD_DEFAULT_AGENT_DIR（默认 ./agents）。')
-        parser_zh.add_argument('--agent-file', type=str, action='append', help='单个 agent 文件路径（Python .py 或 Markdown .md，可指定多次）。')
-        parser_zh.add_argument('--skill-path', type=str, action='append', help='技能源路径（本地目录或 GitHub URL，可指定多次）。覆盖 SKILLS_PATH 环境变量。')
-        parser_zh.add_argument('--http', action='store_true', help='启动 HTTP 服务器（用于 serve 命令）')
-        parser_zh.add_argument('--http-host', type=str, default='0.0.0.0', help='HTTP 服务器主机（默认：0.0.0.0）')
-        parser_zh.add_argument('--http-port', type=int, default=8000, help='HTTP 服务器端口（默认：8000）')
-        parser_zh.add_argument('--mcp', action='store_true', help='启动 MCP 服务器（用于 serve 命令）')
-        parser_zh.add_argument('--mcp-name', type=str, default='AWorldAgent', help='MCP 服务器名称（默认：AWorldAgent）')
-        parser_zh.add_argument('--mcp-transport', type=str, choices=['stdio', 'sse', 'streamable-http'], default='stdio', help='MCP 传输类型：stdio、sse 或 streamable-http（默认：stdio）')
-        parser_zh.add_argument('--mcp-host', type=str, default='0.0.0.0', help='MCP 服务器主机（用于 SSE/streamable-http 传输，默认：0.0.0.0）')
-        parser_zh.add_argument('--mcp-port', type=int, default=8001, help='MCP 服务器端口（用于 SSE/streamable-http 传输，默认：8001）')
-        parser_zh.add_argument('--config', action='store_true', help='启动交互式全局配置编辑器（模型提供商、API 密钥等）并退出。')
-        parser_zh.print_help()
-        return
-    
-    # Load configuration (priority: local .env > global config)
-    from .core.config import load_config_with_env, has_model_config
-    config_dict, source_type, source_path = load_config_with_env(args.env_file)
-
-    # Init middlewares (logging is already set up in base __init__)
-    init_middlewares(init_memory=True, init_retriever=False, custom_memory_store=_default_file_memory_store())
-
-    _show_banner()
-
-    # Display configuration source
-    from ._globals import console
-    # Require model config for commands that use the agent (skip for 'list' and 'plugins')
-    if args.command != "list" and not has_model_config(config_dict):
-        console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
-        console.print("[dim]Run: aworld-cli --config[/dim]")
-        console.print("[dim]Or create .env in the current directory. See: [link=https://github.com/inclusionAI/AWorld/blob/main/README.md]README[/link][/dim]")
+    except RuntimeBootstrapError:
         sys.exit(1)
-    
-    # Initialize skill registry early with command-line arguments (overrides env vars)
-    # This ensures skill registry is ready before agents are loaded
-    from .core.skill_registry import get_skill_registry
-
-    if args.skill_path:
-        # Initialize registry with command-line skill paths (these take precedence)
-        registry = get_skill_registry(skill_paths=args.skill_path)
-    else:
-        # Still initialize registry to load from env vars and defaults
-        registry = get_skill_registry()
-    
-    # Display global skills loading information
-    all_skills = registry.get_all_skills()
-    if all_skills:
-        skill_names = list(all_skills.keys())
-        logger.info("Loaded %d global skill(s): %s", len(skill_names), ", ".join(skill_names))
 
     # Resolve default agent_dir when --agent-dir not specified (env LOCAL_AGENTS_DIR / AWORLD_DEFAULT_AGENT_DIR)
     args.agent_dir = _resolve_agent_dirs(args.agent_dir)
-
-    # Handle 'list' command separately before setting up the full app loop if possible
-    if args.command == "list":
-        cli = AWorldCLI()
-        all_agents = asyncio.run(load_all_agents(
-            remote_backends=args.remote_backend,
-            local_dirs=args.agent_dir,
-            agent_files=args.agent_file
-        ))
-        
-        # Display agents
-        if all_agents:
-            cli.display_agents(all_agents)
-        else:
-            print("❌ No agents found from any source.")
-        return
-    
-    # Handle 'serve' command: start HTTP and/or MCP servers
-    if args.command == "serve":
-        if not args.http and not args.mcp:
-            print("❌ Error: At least one of --http or --mcp must be specified for serve command")
-            parser.print_help()
-            return
-        
-        asyncio.run(_run_serve_mode(
-            http=args.http,
-            http_host=args.http_host,
-            http_port=args.http_port,
-            mcp=args.mcp,
-            mcp_name=args.mcp_name,
-            mcp_transport=args.mcp_transport,
-            mcp_host=args.mcp_host,
-            mcp_port=args.mcp_port,
-            remote_backends=args.remote_backend,
-            local_dirs=args.agent_dir,
-            agent_files=args.agent_file
-        ))
-        return
-
-    # Handle inner plugin commands (e.g. 'batch-job', 'batch')
-    from .plugins.batch import get_commands as get_batch_commands
-    batch_commands = get_batch_commands()
-    if args.command in batch_commands:
-        handler = batch_commands[args.command]
-        # remaining_argv already contains arguments that were not parsed by the main parser
-        exit_code = handler(remaining_argv)
-        # Ensure consistent process exit code behavior
-        if exit_code != 0:
-            sys.exit(exit_code)
-        return
-
-    # Handle direct run mode (参考 continuous-claude)
-    if args.task:
-        # Auto-detect agent name from agent_file if only one file is specified
-        agent_name = args.agent
-        if not agent_name and args.agent_file:
-            if len(args.agent_file) == 1:
-                # Load the single agent file to get its name
-                from .core.loader import init_agent_file
-                try:
-                    agent_name = init_agent_file(args.agent_file[0])
-                    if not agent_name:
-                        print(f"❌ Error: Could not extract agent name from {args.agent_file[0]}")
-                        parser.print_help()
-                        return
-                    print(f"ℹ️  Auto-detected agent name: {agent_name}")
-                except Exception as e:
-                    print(f"❌ Error: Failed to load agent file {args.agent_file[0]}: {e}")
-                    return
-            else:
-                print("❌ Error: --agent is required when using multiple --agent-file")
-                parser.print_help()
-                return
-        elif not agent_name:
-            # Default to "Aworld" agent if no agent is specified
-            agent_name = "Aworld"
-            print(f"ℹ️  Using default agent: {agent_name}")
-        
-        asyncio.run(_run_direct_mode(
-            prompt=args.task,
-            agent_name=agent_name,
-            max_runs=args.max_runs,
-            max_cost=args.max_cost,
-            max_duration=args.max_duration,
-            completion_signal=args.completion_signal,
-            completion_threshold=args.completion_threshold,
-            non_interactive=args.non_interactive,
-            session_id=args.session_id,
-            remote_backends=args.remote_backend,
-            local_dirs=args.agent_dir,
-            agent_files=args.agent_file
-        ))
-        return
 
     # Interactive mode (default) - use AgentRuntime directly without AWorldApp
     agent_name = args.agent or "Aworld"
     asyncio.run(_run_interactive_mode(
         agent_name=agent_name,
+        requested_skill_names=args.skill,
         remote_backends=args.remote_backend,
         local_dirs=args.agent_dir,
         agent_files=args.agent_file
@@ -1047,6 +750,7 @@ Batch Jobs:
 
 async def _run_interactive_mode(
     agent_name: Optional[str] = None,
+    requested_skill_names: Optional[list[str]] = None,
     remote_backends: Optional[list[str]] = None,
     local_dirs: Optional[list[str]] = None,
     agent_files: Optional[list[str]] = None
@@ -1070,6 +774,7 @@ async def _run_interactive_mode(
                 print(f"⚠️ Failed to load agent file {agent_file}: {e}")
     
     runtime = CliRuntime(agent_name=agent_name, remote_backends=remote_backends, local_dirs=local_dirs)
+    runtime.cli._pending_skill_overrides = list(requested_skill_names or [])
     try:
         await runtime.start()
     except KeyboardInterrupt:
@@ -1186,6 +891,7 @@ async def _run_serve_mode(
 async def _run_direct_mode(
     prompt: str,
     agent_name: str,
+    requested_skill_names: Optional[list[str]] = None,
     max_runs: Optional[int] = None,
     max_cost: Optional[float] = None,
     max_duration: Optional[str] = None,
@@ -1286,6 +992,7 @@ async def _run_direct_mode(
     await continuous_executor.run_continuous(
         prompt=multimodal_prompt,
         agent_name=agent_name,
+        requested_skill_names=requested_skill_names,
         max_runs=max_runs,
         max_cost=max_cost,
         max_duration=max_duration,

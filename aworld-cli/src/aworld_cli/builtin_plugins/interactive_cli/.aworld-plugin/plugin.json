@@ -1,0 +1,18 @@
+{
+  "id": "aworld-interactive-cli",
+  "name": "aworld-interactive-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "interactive",
+        "name": "interactive",
+        "target": "cli_commands/interactive.py",
+        "scope": "workspace",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}

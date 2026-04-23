@@ -1,0 +1,18 @@
+{
+  "id": "aworld-serve-cli",
+  "name": "aworld-serve-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "serve",
+        "name": "serve",
+        "target": "cli_commands/serve.py",
+        "scope": "workspace",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}
