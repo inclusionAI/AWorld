@@ -1987,6 +1987,50 @@ class AWorldCLI:
                 return skill_name
         return None
 
+    def _match_disabled_skill_alias(
+        self,
+        user_input: str,
+        *,
+        agent_name: str | None = None,
+        executor_instance: Any = None,
+    ) -> str | None:
+        from .core.skill_state_manager import SkillStateManager
+        from .core.runtime_skill_registry import build_runtime_skill_registry_view
+
+        normalized_input = str(user_input or "").strip()
+        if not normalized_input.startswith("/"):
+            return None
+
+        alias_token = normalized_input.split(maxsplit=1)[0].lower()
+        disabled = set(SkillStateManager().disabled_skill_names())
+        if not disabled:
+            return None
+
+        try:
+            resolved = self._resolve_visible_skills(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+                apply_disabled_filter=False,
+            )
+            skill_names = list(getattr(resolved, "skill_configs", {}))
+        except Exception:
+            skill_names = []
+
+        if not skill_names:
+            try:
+                runtime_view = build_runtime_skill_registry_view()
+                skill_names = list(runtime_view.get_all_skills())
+            except Exception:
+                return None
+
+        for skill_name in skill_names:
+            normalized_skill = str(skill_name).strip()
+            if not normalized_skill or normalized_skill.lower() not in disabled:
+                continue
+            if f"/{normalized_skill}".lower() == alias_token:
+                return normalized_skill
+        return None
+
     def _rewrite_generated_skill_alias_input(
         self,
         user_input: str,
@@ -2109,6 +2153,7 @@ class AWorldCLI:
         agent_name: str | None = None,
         executor_instance: Any = None,
         requested_skill_names: Optional[list[str] | tuple[str, ...]] = None,
+        apply_disabled_filter: bool = True,
     ):
         from .core.skill_activation_resolver import SkillActivationResolver, SkillResolverRequest
         from .core.skill_state_manager import SkillStateManager
@@ -2123,7 +2168,11 @@ class AWorldCLI:
             runtime_scope="session",
             agent_name=agent_name,
             requested_skill_names=tuple(self._normalize_skill_names(requested_skill_names)),
-            disabled_skill_names=SkillStateManager().disabled_skill_names(),
+            disabled_skill_names=(
+                SkillStateManager().disabled_skill_names()
+                if apply_disabled_filter
+                else tuple()
+            ),
             compatibility_sources=tuple(
                 str(item)
                 for item in resolver_inputs.get("compatibility_sources", [])
@@ -2169,7 +2218,14 @@ class AWorldCLI:
         agent_name: str | None = None,
         executor_instance: Any = None,
     ) -> None:
+        from .core.skill_state_manager import SkillStateManager
+
         try:
+            manageable = self._resolve_visible_skills(
+                agent_name=agent_name,
+                executor_instance=executor_instance,
+                apply_disabled_filter=False,
+            )
             resolved = self._resolve_visible_skills(
                 agent_name=agent_name,
                 executor_instance=executor_instance,
@@ -2179,12 +2235,14 @@ class AWorldCLI:
             self.console.print(f"[red]Error loading skills: {exc}[/red]")
             return
 
-        if not resolved.skill_configs:
+        if not manageable.skill_configs:
             self.console.print("[yellow]No skills available.[/yellow]")
             return
 
-        rows = sorted(resolved.skill_configs.items(), key=lambda item: item[0])
+        rows = sorted(manageable.skill_configs.items(), key=lambda item: item[0])
         pending = set(self._normalize_skill_names(self._pending_skill_overrides))
+        disabled = set(SkillStateManager().disabled_skill_names())
+        active = set(getattr(resolved, "active_skill_names", ()) or ())
         alias_map = self._generated_skill_alias_map(
             agent_name=agent_name,
             executor_instance=executor_instance,
@@ -2206,7 +2264,9 @@ class AWorldCLI:
             address = skill_data.get("skill_path", "") or "—"
             if skill_name in pending:
                 status = "pending"
-            elif skill_data.get("active"):
+            elif skill_name.lower() in disabled:
+                status = "disabled"
+            elif skill_name in active:
                 status = "active"
             else:
                 status = "available"
@@ -2218,7 +2278,10 @@ class AWorldCLI:
                 link_url = link_target.resolve().as_uri()
                 display = address if len(address) <= 48 else address[:45] + "..."
                 addr_cell = Text(display, style=Style(dim=True, link=link_url))
-            generated_alias = alias_map.get(f"/{skill_name}", f"/{skill_name}")
+            if status == "disabled":
+                generated_alias = "—"
+            else:
+                generated_alias = alias_map.get(f"/{skill_name}", f"/{skill_name}")
             commands = ", ".join(commands_by_skill.get(skill_name, ())) or "—"
             table.add_row(skill_name, str(desc), status, generated_alias, commands, addr_cell)
 
@@ -2642,6 +2705,19 @@ class AWorldCLI:
                         if cmd_name.lower() not in builtin_commands:
                             command = CommandRegistry.get(cmd_name)
                             if command is None:
+                                disabled_skill_name = self._match_disabled_skill_alias(
+                                    user_input,
+                                    agent_name=agent_name,
+                                    executor_instance=executor_instance,
+                                )
+                                if disabled_skill_name is not None:
+                                    self.console.print(
+                                        f"[yellow]Skill '{disabled_skill_name}' is disabled.[/yellow]"
+                                    )
+                                    self.console.print(
+                                        f"[dim]Use /skills enable {disabled_skill_name} to enable it[/dim]"
+                                    )
+                                    continue
                                 # Command not found in registry
                                 self.console.print(f"[yellow]Unknown command: /{cmd_name}[/yellow]")
                                 self.console.print("[dim]Type /help to see available commands[/dim]")
