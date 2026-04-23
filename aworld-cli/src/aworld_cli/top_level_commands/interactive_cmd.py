@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from typing import Sequence
 
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
+from aworld_cli.top_level_commands.invocation import parse_command_invocation_args
 
 
 def _register_interactive_options(parser: argparse.ArgumentParser) -> None:
@@ -36,32 +36,15 @@ def _build_interactive_parser(add_help: bool = True) -> argparse.ArgumentParser:
     return parser
 
 
-def _find_interactive_command_index(argv: Sequence[str]) -> int | None:
+def _parse_interactive_invocation_args(argv) -> argparse.Namespace:
     from aworld_cli.main import _GLOBAL_OPTIONS_WITH_VALUES
 
-    index = 1 if argv else 0
-    while index < len(argv):
-        token = argv[index]
-        if token in _GLOBAL_OPTIONS_WITH_VALUES:
-            index += 2
-            continue
-        if token.startswith("-"):
-            index += 1
-            continue
-        if token == "interactive":
-            return index
-        return None
-    return None
-
-
-def _parse_interactive_invocation_args(argv: Sequence[str]) -> argparse.Namespace:
-    interactive_index = _find_interactive_command_index(argv)
-    if interactive_index is None:
-        return _build_interactive_parser(add_help=False).parse_args([])
-
-    parse_argv = list(argv[1:interactive_index]) + list(argv[interactive_index + 1 :])
-    args, _ = _build_interactive_parser(add_help=False).parse_known_args(parse_argv)
-    return args
+    return parse_command_invocation_args(
+        argv,
+        command_name="interactive",
+        parser=_build_interactive_parser(add_help=False),
+        options_with_values=_GLOBAL_OPTIONS_WITH_VALUES,
+    )
 
 
 class InteractiveTopLevelCommand:

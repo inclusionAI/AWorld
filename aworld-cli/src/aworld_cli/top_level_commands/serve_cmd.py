@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from typing import Sequence
 
 from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
+from aworld_cli.top_level_commands.invocation import parse_command_invocation_args
 
 
 def _register_serve_options(parser: argparse.ArgumentParser) -> None:
@@ -89,32 +89,15 @@ def _build_serve_invocation_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _find_serve_command_index(argv: Sequence[str]) -> int | None:
+def _parse_serve_invocation_args(argv) -> argparse.Namespace:
     from aworld_cli.main import _GLOBAL_OPTIONS_WITH_VALUES
 
-    index = 1 if argv else 0
-    while index < len(argv):
-        token = argv[index]
-        if token in _GLOBAL_OPTIONS_WITH_VALUES:
-            index += 2
-            continue
-        if token.startswith("-"):
-            index += 1
-            continue
-        if token == "serve":
-            return index
-        return None
-    return None
-
-
-def _parse_serve_invocation_args(argv: Sequence[str]) -> argparse.Namespace:
-    serve_index = _find_serve_command_index(argv)
-    if serve_index is None:
-        return _build_serve_invocation_parser().parse_args([])
-
-    parse_argv = list(argv[1:serve_index]) + list(argv[serve_index + 1 :])
-    args, _ = _build_serve_invocation_parser().parse_known_args(parse_argv)
-    return args
+    return parse_command_invocation_args(
+        argv,
+        command_name="serve",
+        parser=_build_serve_invocation_parser(),
+        options_with_values=_GLOBAL_OPTIONS_WITH_VALUES,
+    )
 
 
 class ServeTopLevelCommand:
