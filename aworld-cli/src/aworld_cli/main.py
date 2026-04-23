@@ -820,9 +820,10 @@ Batch Jobs:
         'command',
         nargs='?',
         default='interactive',
-        choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugins', 'gateway'],
+        choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugins', 'gateway', 'acp'],
         help='Command to execute (default: interactive). Use "serve" to start HTTP/MCP servers, '
-             '"batch-job" to run batch jobs, "plugins" to manage plugins, or "gateway" to manage the gateway.'
+             '"batch-job" to run batch jobs, "plugins" to manage plugins, "gateway" to manage the gateway, '
+             'or "acp" to run ACP backend host and validation commands.'
     )
     
     parser.add_argument(
@@ -1007,7 +1008,7 @@ Batch Jobs:
         )
         parser_zh.add_argument('-zh', '--zh', action='store_true', help='显示中文帮助')
         parser_zh.add_argument('--examples', action='store_true', help='显示使用示例')
-        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugins', 'gateway'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugins" 管理插件，使用 "gateway" 管理网关。')
+        parser_zh.add_argument('command', nargs='?', default='interactive', choices=['interactive', 'list', 'serve', 'batch', 'batch-job', 'plugins', 'gateway', 'acp'], help='要执行的命令（默认：interactive）。使用 "serve" 启动 HTTP/MCP 服务器，使用 "batch-job" 运行批量任务，使用 "plugins" 管理插件，使用 "gateway" 管理网关，使用 "acp" 运行 ACP backend host 与验证命令。')
         parser_zh.add_argument('--task', type=str, help='发送给 agent 的任务（非交互模式）')
         parser_zh.add_argument('--agent', type=str, help='要使用的 agent 名称（直接运行模式必需）')
         parser_zh.add_argument('--max-runs', type=int, help='最大运行次数（直接运行模式）')
