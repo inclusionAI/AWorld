@@ -67,6 +67,7 @@ def _write_cli_command_plugin(
     command_name: str = "demo",
     *,
     aliases: tuple[str, ...] = (),
+    visibility: str = "public",
 ) -> None:
     manifest_dir = plugin_root / ".aworld-plugin"
     handlers_dir = plugin_root / "cli_commands"
@@ -84,6 +85,7 @@ def _write_cli_command_plugin(
                             "id": command_name,
                             "name": command_name,
                             "target": f"cli_commands/{command_name}.py",
+                            "visibility": visibility,
                             "metadata": {"aliases": list(aliases)},
                         }
                     ]
@@ -168,6 +170,25 @@ def test_sync_plugin_cli_commands_registers_manifest_declared_aliases(
     assert command is not None
     assert registry.get("demo-alias") is command
     assert registry.get("demo-short") is command
+
+
+def test_sync_plugin_cli_commands_registers_hidden_command_for_internal_lookup(
+    tmp_path: Path,
+) -> None:
+    plugin_root = tmp_path / "demo-plugin"
+    _write_cli_command_plugin(
+        plugin_root,
+        command_name="hidden-demo",
+        visibility="hidden",
+    )
+    registry = TopLevelCommandRegistry()
+
+    sync_plugin_cli_commands(registry, discover_plugins([plugin_root]))
+
+    command = registry.get("hidden-demo")
+
+    assert command is not None
+    assert [item.name for item in registry.list_commands(include_hidden=False)] == []
 
 
 def test_maybe_dispatch_top_level_command_accepts_manifest_declared_alias(

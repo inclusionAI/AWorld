@@ -8,9 +8,16 @@ from aworld_cli.core.top_level_command_system import TopLevelCommandRegistry
 
 
 class PluginTopLevelCommandAdapter:
-    def __init__(self, command, *, aliases: tuple[str, ...]) -> None:
+    def __init__(
+        self,
+        command,
+        *,
+        aliases: tuple[str, ...],
+        visible_in_help: bool,
+    ) -> None:
         self._command = command
         self._aliases = aliases
+        self._visible_in_help = visible_in_help
 
     @property
     def name(self):
@@ -29,6 +36,10 @@ class PluginTopLevelCommandAdapter:
             if normalized and normalized not in merged:
                 merged.append(normalized)
         return tuple(merged)
+
+    @property
+    def visible_in_help(self) -> bool:
+        return self._visible_in_help
 
     def register_parser(self, subparsers) -> None:
         return self._command.register_parser(subparsers)
@@ -49,8 +60,6 @@ def sync_plugin_cli_commands(
         if Path(plugin.manifest.plugin_root).resolve() in builtin_roots:
             registration_source = "builtin"
         for entrypoint in plugin.manifest.entrypoints.get("cli_commands", ()):
-            if entrypoint.visibility == "hidden":
-                continue
             command_name = entrypoint.name or entrypoint.entrypoint_id
             if registry.get(command_name) is not None:
                 continue
@@ -109,4 +118,8 @@ def _load_plugin_cli_command(plugin, entrypoint):
     else:
         aliases = tuple()
 
-    return PluginTopLevelCommandAdapter(command, aliases=aliases)
+    return PluginTopLevelCommandAdapter(
+        command,
+        aliases=aliases,
+        visible_in_help=entrypoint.visibility != "hidden",
+    )
