@@ -2111,6 +2111,7 @@ class AWorldCLI:
         requested_skill_names: Optional[list[str] | tuple[str, ...]] = None,
     ):
         from .core.skill_activation_resolver import SkillActivationResolver, SkillResolverRequest
+        from .core.skill_state_manager import SkillStateManager
 
         _, plugin_roots, resolver_inputs = self._skill_resolution_environment(
             agent_name=agent_name,
@@ -2122,6 +2123,7 @@ class AWorldCLI:
             runtime_scope="session",
             agent_name=agent_name,
             requested_skill_names=tuple(self._normalize_skill_names(requested_skill_names)),
+            disabled_skill_names=SkillStateManager().disabled_skill_names(),
             compatibility_sources=tuple(
                 str(item)
                 for item in resolver_inputs.get("compatibility_sources", [])

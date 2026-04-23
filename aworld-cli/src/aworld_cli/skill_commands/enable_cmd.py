@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from aworld_cli.core.installed_skill_manager import InstalledSkillManager
+from aworld_cli.core.skill_toggle_manager import SkillToggleManager
 
 
 class EnableSkillCommand:
@@ -10,7 +10,7 @@ class EnableSkillCommand:
 
     @property
     def description(self) -> str:
-        return "Enable an installed skill package by install id or skill name"
+        return "Enable a skill or installed skill package"
 
     @property
     def aliases(self) -> tuple[str, ...]:
@@ -18,7 +18,7 @@ class EnableSkillCommand:
 
     @property
     def usage(self) -> str:
-        return "/skills enable <install-id-or-skill-name>"
+        return "/skills enable <skill-name-or-package-name>"
 
     async def run(
         self,
@@ -31,12 +31,17 @@ class EnableSkillCommand:
         identifier = str(args_text or "").strip()
         if not identifier:
             cli.console.print(
-                "[yellow]Usage: /skills enable <install-id-or-skill-name>[/yellow]"
+                "[yellow]Usage: /skills enable <skill-name-or-package-name>[/yellow]"
             )
             return True
 
-        record = InstalledSkillManager().enable_install(identifier)
-        cli.console.print(
-            f"[green]Enabled skill package:[/green] {record['install_id']}"
-        )
+        result = SkillToggleManager().enable(identifier)
+        if result.target_kind == "package":
+            cli.console.print(
+                f"[green]Enabled skill package:[/green] {result.identifier}"
+            )
+        else:
+            cli.console.print(
+                f"[green]Enabled skill:[/green] {result.identifier}"
+            )
         return True

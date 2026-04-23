@@ -12,6 +12,7 @@ from aworld_cli import main as main_module
 from aworld_cli.console import AWorldCLI
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
 from aworld_cli.core.plugin_manager import PluginManager
+from aworld_cli.core.skill_state_manager import SkillStateManager
 from aworld_cli.core.skill_registry import resolve_repo_aworld_skills_path
 from aworld_cli.core.skill_activation_resolver import (
     SkillActivationResolver,
@@ -144,6 +145,30 @@ def test_skill_disable_and_enable_cli(
     assert installs[0]["enabled"] is True
 
 
+def test_skill_disable_and_enable_runtime_skill_cli(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    runtime_source = tmp_path / "runtime-skills"
+    _write_skill(runtime_source, "youtube_search")
+    monkeypatch.setenv("SKILLS_PATH", str(runtime_source))
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "disable", "youtube_search"])
+    main_module.main()
+    disable_output = capsys.readouterr().out
+    assert "disabled successfully" in disable_output
+    assert SkillStateManager().is_enabled("youtube_search") is False
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "enable", "youtube_search"])
+    main_module.main()
+    enable_output = capsys.readouterr().out
+    assert "enabled successfully" in enable_output
+    assert SkillStateManager().is_enabled("youtube_search") is True
+
+
 def test_skill_list_cli_shows_enabled_state(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -186,6 +211,48 @@ def test_skill_list_cli_shows_runtime_aworld_skills_source_without_installs(
 
     assert "No installed skill packages" in list_output
     assert str(repo_aworld_skills) in list_output
+
+
+def test_skill_list_cli_shows_runtime_skill_names_without_installs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    runtime_source = tmp_path / "runtime-skills"
+    _write_skill(runtime_source, "youtube_search")
+    monkeypatch.setenv("SKILLS_PATH", str(runtime_source))
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "list"])
+    main_module.main()
+
+    list_output = capsys.readouterr().out
+
+    assert "Runtime skills:" in list_output
+    assert "youtube_search" in list_output
+
+
+def test_skill_list_cli_shows_disabled_runtime_skill_state(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    runtime_source = tmp_path / "runtime-skills"
+    _write_skill(runtime_source, "youtube_search")
+    monkeypatch.setenv("SKILLS_PATH", str(runtime_source))
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "disable", "youtube_search"])
+    main_module.main()
+    capsys.readouterr()
+
+    monkeypatch.setattr(sys, "argv", ["aworld-cli", "skill", "list"])
+    main_module.main()
+    list_output = capsys.readouterr().out
+
+    assert "youtube_search | enabled=False" in list_output
 
 
 def test_skill_install_creates_plugin_managed_skill_record(
@@ -493,20 +560,19 @@ async def test_console_skills_disable_and_enable_by_skill_name(
     tmp_path: Path,
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    source = tmp_path / "youtube-skills"
-    _write_skill(source / "skills", "youtube_search")
-    InstalledSkillManager().install(source=source, mode="copy", scope="global")
+    monkeypatch.delenv("SKILLS_DIR", raising=False)
+    source = tmp_path / "runtime-skills"
+    _write_skill(source, "youtube_search")
+    monkeypatch.setenv("SKILLS_PATH", str(source))
 
     cli = AWorldCLI()
     await cli._handle_skills_command("/skills disable youtube_search")
 
-    installs = InstalledSkillManager().list_installs(include_disabled=True)
-    assert installs[0]["enabled"] is False
+    assert SkillStateManager().is_enabled("youtube_search") is False
 
     await cli._handle_skills_command("/skills enable youtube_search")
 
-    installs = InstalledSkillManager().list_installs(include_disabled=True)
-    assert installs[0]["enabled"] is True
+    assert SkillStateManager().is_enabled("youtube_search") is True
 
 
 @pytest.mark.asyncio

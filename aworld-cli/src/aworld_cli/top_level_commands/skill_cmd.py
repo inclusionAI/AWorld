@@ -3,9 +3,27 @@ from __future__ import annotations
 from pathlib import Path
 
 from aworld_cli.core.installed_skill_manager import InstalledSkillManager
+from aworld_cli.core.skill_state_manager import SkillStateManager
+from aworld_cli.core.skill_toggle_manager import SkillToggleManager
 
 
 class SkillTopLevelCommand:
+    def _print_runtime_skills(self, runtime_skills) -> None:
+        runtime_skill_configs = runtime_skills.get_all_skills()
+        state_manager = SkillStateManager()
+        if runtime_skills.source_paths:
+            print("📚 Runtime skill sources:")
+            for source_path in runtime_skills.source_paths:
+                print(f"  - {source_path}")
+
+        if runtime_skill_configs:
+            print("🧠 Runtime skills:")
+            for skill_name, skill_config in sorted(runtime_skill_configs.items()):
+                skill_path = str(skill_config.get("skill_path", "") or "—")
+                print(
+                    f"  - {skill_name} | enabled={state_manager.is_enabled(skill_name)} | path={skill_path}"
+                )
+
     @property
     def name(self) -> str:
         return "skill"
@@ -87,6 +105,7 @@ class SkillTopLevelCommand:
 
     def run(self, args, context) -> int | None:
         manager = InstalledSkillManager()
+        toggle_manager = SkillToggleManager(installed_manager=manager)
         from aworld_cli.core.runtime_skill_registry import build_runtime_skill_registry_view
 
         if args.skill_action == "install":
@@ -109,29 +128,30 @@ class SkillTopLevelCommand:
             if not installs:
                 print("📦 No installed skill packages")
                 print(f"📍 Installed root: {manager.installed_root}")
-                print("📚 Runtime skill sources:")
-                for source_path in runtime_skills.source_paths:
-                    print(f"  - {source_path}")
+                self._print_runtime_skills(runtime_skills)
                 return 0
             for install in installs:
                 print(
                     f"{install['install_id']} | enabled={install.get('enabled', True)} | scope={install['scope']} | "
                     f"skill_count={install['skill_count']} | source={install['source']}"
                 )
-            if runtime_skills.source_paths:
-                print("📚 Runtime skill sources:")
-                for source_path in runtime_skills.source_paths:
-                    print(f"  - {source_path}")
+            self._print_runtime_skills(runtime_skills)
             return 0
 
         if args.skill_action == "enable":
-            record = manager.enable_install(args.install_id)
-            print(f"✅ Skill package '{record['install_id']}' enabled successfully")
+            result = toggle_manager.enable(args.install_id)
+            if result.target_kind == "package":
+                print(f"✅ Skill package '{result.identifier}' enabled successfully")
+            else:
+                print(f"✅ Skill '{result.identifier}' enabled successfully")
             return 0
 
         if args.skill_action == "disable":
-            record = manager.disable_install(args.install_id)
-            print(f"✅ Skill package '{record['install_id']}' disabled successfully")
+            result = toggle_manager.disable(args.install_id)
+            if result.target_kind == "package":
+                print(f"✅ Skill package '{result.identifier}' disabled successfully")
+            else:
+                print(f"✅ Skill '{result.identifier}' disabled successfully")
             return 0
 
         if args.skill_action == "remove":

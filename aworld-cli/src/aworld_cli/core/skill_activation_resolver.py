@@ -24,6 +24,7 @@ class SkillResolverRequest:
     agent_name: str | None = None
     task_text: str | None = None
     requested_skill_names: tuple[str, ...] = ()
+    disabled_skill_names: tuple[str, ...] = ()
     compatibility_sources: tuple[str, ...] = ()
     compatibility_skill_patterns: tuple[str, ...] = ()
 
@@ -109,8 +110,15 @@ class SkillActivationResolver:
         request: SkillResolverRequest,
     ) -> list[ResolvedSkillCandidate]:
         filtered: list[ResolvedSkillCandidate] = []
+        disabled_skill_names = {
+            str(skill_name).strip().lower()
+            for skill_name in request.disabled_skill_names
+            if str(skill_name).strip()
+        }
         for candidate in candidates:
             if candidate.visibility != "public":
+                continue
+            if candidate.skill_name.strip().lower() in disabled_skill_names:
                 continue
             if not self._scope_allows(
                 candidate.scope,
