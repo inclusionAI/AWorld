@@ -518,14 +518,6 @@ def build_parser(zh: bool = False) -> argparse.ArgumentParser:
     parser.add_argument("--agent-dir", type=str, action="append", help="包含 agents 的目录（可指定多次）。未指定时默认使用 LOCAL_AGENTS_DIR 或 AWORLD_DEFAULT_AGENT_DIR（默认 ./agents）。" if zh else "Directory containing agents (can be specified multiple times). Default: LOCAL_AGENTS_DIR or AWORLD_DEFAULT_AGENT_DIR (./agents) when not set.")
     parser.add_argument("--agent-file", type=str, action="append", help="单个 agent 文件路径（Python .py 或 Markdown .md，可指定多次）。" if zh else "Individual agent file path (Python .py or Markdown .md, can be specified multiple times).")
     parser.add_argument("--skill-path", type=str, action="append", help="技能源路径（本地目录或 GitHub URL，可指定多次）。覆盖 SKILLS_PATH 环境变量。" if zh else "Skill source path (local directory or GitHub URL, can be specified multiple times). Overrides SKILLS_PATH environment variable.")
-    parser.add_argument("--http", action="store_true", help="启动 HTTP 服务器（用于 serve 命令）" if zh else "Start HTTP server (for serve command)")
-    parser.add_argument("--http-host", type=str, default="0.0.0.0", help="HTTP 服务器主机（默认：0.0.0.0）" if zh else "HTTP server host (default: 0.0.0.0)")
-    parser.add_argument("--http-port", type=int, default=8000, help="HTTP 服务器端口（默认：8000）" if zh else "HTTP server port (default: 8000)")
-    parser.add_argument("--mcp", action="store_true", help="启动 MCP 服务器（用于 serve 命令）" if zh else "Start MCP server (for serve command)")
-    parser.add_argument("--mcp-name", type=str, default="AWorldAgent", help="MCP 服务器名称（默认：AWorldAgent）" if zh else "MCP server name (default: AWorldAgent)")
-    parser.add_argument("--mcp-transport", type=str, choices=["stdio", "sse", "streamable-http"], default="stdio", help="MCP 传输类型：stdio、sse 或 streamable-http（默认：stdio）" if zh else "MCP transport type: stdio, sse, or streamable-http (default: stdio)")
-    parser.add_argument("--mcp-host", type=str, default="0.0.0.0", help="MCP 服务器主机（用于 SSE/streamable-http 传输，默认：0.0.0.0）" if zh else "MCP server host for SSE/streamable-http transport (default: 0.0.0.0)")
-    parser.add_argument("--mcp-port", type=int, default=8001, help="MCP 服务器端口（用于 SSE/streamable-http 传输，默认：8001）" if zh else "MCP server port for SSE/streamable-http transport (default: 8001)")
     parser.add_argument("--config", action="store_true", help="启动交互式全局配置编辑器（模型提供商、API 密钥等）并退出。" if zh else "Launch interactive global configuration editor (model provider, API key, etc.) and exit.")
     return parser
 

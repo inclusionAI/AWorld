@@ -1,6 +1,8 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def test_plugins_command_is_registered_via_plugin_registry():
     from aworld_cli import main as main_module
@@ -301,6 +303,15 @@ def test_interactive_command_dispatches_with_bootstrap_and_global_options(
             "agent_files": None,
         }
     ]
+
+
+def test_global_parser_help_excludes_serve_specific_flags() -> None:
+    from aworld_cli.main import build_parser
+
+    help_text = build_parser().format_help()
+
+    assert "--http" not in help_text
+    assert "--mcp" not in help_text
 
 
 def test_plugins_without_subcommand_defaults_to_list(monkeypatch, capsys):
