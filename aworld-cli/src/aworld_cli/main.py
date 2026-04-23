@@ -692,13 +692,9 @@ def main():
     # Parse arguments normally, but keep unknown args for inner plugin commands
     args, remaining_argv = parser.parse_known_args()
 
-    # Handle --config: run interactive config editor and exit
     if getattr(args, 'config', False):
-        async def _run_config():
-            cli = AWorldCLI()
-            await cli._interactive_config_editor()
-        asyncio.run(_run_config())
-        return
+        if _dispatch_named_top_level_command("config", args, sys.argv):
+            return
     
     # Handle --examples flag: show examples and exit
     if args.examples:
