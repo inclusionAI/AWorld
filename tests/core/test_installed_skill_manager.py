@@ -186,7 +186,7 @@ def test_install_local_copy_creates_managed_entry(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
-    installed_root = tmp_path / ".aworld" / "skills" / "installed"
+    installed_root = tmp_path / ".aworld" / ".installed-skills"
     manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
     source = tmp_path / "local-source"
     _write_skill(source / "skills", "brainstorming")
@@ -197,22 +197,84 @@ def test_install_local_copy_creates_managed_entry(
     record = manager.install(
         source=source,
         mode="copy",
-        scope="project",
+        scope="global",
         install_id="copied-skill",
     )
 
     installed_entry = installed_root / "copied-skill"
+    public_skill_link = tmp_path / ".aworld" / "skills" / "brainstorming"
 
     assert installed_entry.is_dir() is True
     assert (installed_entry / "skills" / "brainstorming" / "SKILL.md").exists() is True
+    assert public_skill_link.is_symlink() is True
+    assert public_skill_link.resolve() == (
+        installed_entry / "skills" / "brainstorming"
+    ).resolve()
     assert record["install_id"] == "copied-skill"
     assert record["name"] == "copied-skill"
     assert record["source"] == str(source)
     assert Path(record["installed_path"]) == installed_entry
     assert Path(record["resolved_skill_source_path"]) == installed_entry / "skills"
     assert record["install_mode"] == "copy"
-    assert record["scope"] == "project"
+    assert record["scope"] == "global"
     assert manager.load_manifest() == [record]
+
+
+def test_global_install_disable_and_enable_syncs_public_skill_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / ".installed-skills"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source = tmp_path / "toggle-source"
+    _write_skill(source / "skills", "youtube_search")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.install(
+        source=source,
+        mode="copy",
+        scope="global",
+        install_id="toggle-pack",
+    )
+
+    public_skill_link = tmp_path / ".aworld" / "skills" / "youtube_search"
+    assert public_skill_link.is_symlink() is True
+
+    manager.disable_install("toggle-pack")
+    assert public_skill_link.exists() is False
+    assert public_skill_link.is_symlink() is False
+
+    manager.enable_install("toggle-pack")
+    assert public_skill_link.is_symlink() is True
+    assert public_skill_link.resolve() == (
+        installed_root / "toggle-pack" / "skills" / "youtube_search"
+    ).resolve()
+
+
+def test_agent_scoped_install_does_not_create_public_skill_links(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / ".installed-skills"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+    source = tmp_path / "agent-source"
+    _write_skill(source / "skills", "brainstorming")
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+    manager.install(
+        source=source,
+        mode="copy",
+        scope="agent:developer",
+        install_id="agent-pack",
+    )
+
+    public_skill_link = tmp_path / ".aworld" / "skills" / "brainstorming"
+    assert public_skill_link.exists() is False
+    assert public_skill_link.is_symlink() is False
 
 
 def test_install_rolls_back_filesystem_and_manifest_when_manifest_replace_fails(
@@ -449,6 +511,30 @@ def test_update_git_install_pulls_existing_checkout(
     assert next(
         item for item in manager.list_installs() if item["install_id"] == "git-skill"
     )["skill_count"] == 2
+
+
+def test_install_rejects_unsupported_at_source_spec_without_cloning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    installed_root = tmp_path / ".aworld" / ".installed-skills"
+    manifest_path = tmp_path / ".aworld" / "skills" / ".manifest.json"
+
+    manager = InstalledSkillManager(
+        installed_root=installed_root, manifest_path=manifest_path
+    )
+
+    def _unexpected_clone(*args, **kwargs):  # type: ignore[no-untyped-def]
+        raise AssertionError("git clone should not run for an unsupported @ source spec")
+
+    monkeypatch.setattr(subprocess, "run", _unexpected_clone)
+
+    with pytest.raises(ValueError, match="Unsupported skill source"):
+        manager.install(
+            source="obsidian@obsidian-skills",
+            mode="clone",
+            scope="global",
+        )
 
 
 def test_update_install_allows_same_skill_package_with_embedded_framework_plugin_id(

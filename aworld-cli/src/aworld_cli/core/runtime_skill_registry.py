@@ -89,13 +89,4 @@ def _iter_runtime_compat_sources(
     default_skills_dir = (cwd or Path.cwd()) / "skills"
     _add(default_skills_dir)
 
-    manager = InstalledSkillManager()
-    for install in sorted(
-        manager.list_installs(include_disabled=False),
-        key=lambda item: str(item.get("install_id", "")),
-    ):
-        if install.get("scope") != "global":
-            continue
-        _add(install.get("resolved_skill_source_path"))
-
     return ordered
