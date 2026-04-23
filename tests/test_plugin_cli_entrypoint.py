@@ -49,6 +49,15 @@ def test_serve_command_is_registered_via_plugin_registry():
     assert command is not None
 
 
+def test_interactive_command_is_registered_via_plugin_registry():
+    from aworld_cli import main as main_module
+
+    registry = main_module._build_top_level_command_registry()
+    command = registry.get("interactive")
+
+    assert command is not None
+
+
 def test_list_command_dispatches_before_global_config_loading(monkeypatch, capsys):
     from aworld_cli.main import main
 
@@ -198,6 +207,95 @@ def test_serve_command_dispatches_with_bootstrap_and_global_options(
             "mcp_transport": "stdio",
             "mcp_host": "0.0.0.0",
             "mcp_port": 8001,
+            "remote_backends": ["http://backend"],
+            "local_dirs": ["./resolved-agents"],
+            "agent_files": None,
+        }
+    ]
+
+
+def test_interactive_command_dispatches_with_bootstrap_and_global_options(
+    monkeypatch,
+    capsys,
+):
+    from aworld_cli import main as main_module
+
+    calls = {
+        "load_config_with_env": None,
+        "init_middlewares": [],
+        "show_banner": 0,
+        "get_skill_registry": [],
+        "resolve_agent_dirs": [],
+        "run_interactive_mode": [],
+    }
+
+    class FakeRegistry:
+        def get_all_skills(self):
+            return {"brainstorming": object()}
+
+    async def fake_run_interactive_mode(**kwargs):
+        calls["run_interactive_mode"].append(kwargs)
+
+    monkeypatch.setattr(
+        "aworld_cli.main._show_banner",
+        lambda: calls.__setitem__("show_banner", calls["show_banner"] + 1),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.main.init_middlewares",
+        lambda **kwargs: calls["init_middlewares"].append(kwargs),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.main._resolve_agent_dirs",
+        lambda agent_dirs: calls["resolve_agent_dirs"].append(agent_dirs)
+        or ["./resolved-agents"],
+    )
+    monkeypatch.setattr(
+        "aworld_cli.core.config.load_config_with_env",
+        lambda env_file: calls.__setitem__("load_config_with_env", env_file)
+        or ({"provider": "demo"}, "env", env_file),
+    )
+    monkeypatch.setattr("aworld_cli.core.config.has_model_config", lambda config: True)
+    monkeypatch.setattr(
+        "aworld_cli.core.skill_registry.get_skill_registry",
+        lambda skill_paths=None: calls["get_skill_registry"].append(skill_paths)
+        or FakeRegistry(),
+    )
+    monkeypatch.setattr(
+        "aworld_cli.main._run_interactive_mode",
+        fake_run_interactive_mode,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "--env-file",
+            "custom.env",
+            "--skill-path",
+            "./skills",
+            "--agent-dir",
+            "./agents",
+            "--remote-backend",
+            "http://backend",
+            "--skill",
+            "brainstorming",
+            "interactive",
+            "--agent",
+            "Developer",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert handled is True
+    assert captured.out == ""
+    assert calls["load_config_with_env"] == "custom.env"
+    assert calls["show_banner"] == 1
+    assert len(calls["init_middlewares"]) == 1
+    assert calls["get_skill_registry"] == [["./skills"]]
+    assert calls["resolve_agent_dirs"] == [["./agents"]]
+    assert calls["run_interactive_mode"] == [
+        {
+            "agent_name": "Developer",
+            "requested_skill_names": ["brainstorming"],
             "remote_backends": ["http://backend"],
             "local_dirs": ["./resolved-agents"],
             "agent_files": None,
