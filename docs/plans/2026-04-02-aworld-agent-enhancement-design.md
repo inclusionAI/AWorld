@@ -339,7 +339,7 @@ User → CLI → Command (generates prompt) → Agent → Sandbox → Agent Tool
 
 #### **3.1.1 Modify Developer Agent**
 
-**File**: `aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/developer/developer.py`
+**File**: `aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/developer/developer.py`
 
 **Current Code:**
 ```python
@@ -365,7 +365,7 @@ sandbox.reuse = True
 
 #### **3.1.2 Modify Aworld Agent**
 
-**File**: `aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/aworld_agent.py`
+**File**: `aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/aworld_agent.py`
 
 **Current Code:**
 ```python
@@ -2018,7 +2018,7 @@ Available commands:
 **AWorld Existing Code:**
 - Sandbox: `aworld/sandbox/`
 - Tools: `aworld/tools/`, `aworld/core/tool/`
-- Agents: `aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/`
+- Agents: `aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/`
 
 **Design Documents:**
 - CLAUDE.md: Project conventions and principles
@@ -2056,7 +2056,7 @@ tests/
 
 **Modified Files:**
 ```
-aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/
+aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/
 ├── developer/developer.py       # Add builtin_tools to sandbox
 └── aworld_agent.py              # Add builtin_tools + new tool registrations
 

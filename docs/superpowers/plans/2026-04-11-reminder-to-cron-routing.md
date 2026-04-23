@@ -13,14 +13,14 @@
 ### Task 1: Add Prompt Policy For Reminder Requests
 
 **Files:**
-- Modify: `/Users/wuman/Documents/workspace/aworld-mas/aworld/aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/prompt.txt`
-- Modify: `/Users/wuman/Documents/workspace/aworld-mas/aworld/aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/aworld_agent.py`
+- Modify: `/Users/wuman/Documents/workspace/aworld-mas/aworld/aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/prompt.txt`
+- Modify: `/Users/wuman/Documents/workspace/aworld-mas/aworld/aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/aworld_agent.py`
 - Test: `/Users/wuman/Documents/workspace/aworld-mas/aworld/tests/core/agent/test_aworld_prompt_policy.py`
 
 - [ ] **Step 1: Write the failing prompt-policy test**
 
 ```python
-from aworld_cli.inner_plugins.smllc.agents.aworld_agent import load_aworld_system_prompt
+from aworld_cli.builtin_agents.smllc.agents.aworld_agent import load_aworld_system_prompt
 
 
 def test_aworld_prompt_routes_reminders_to_cron():
@@ -68,8 +68,8 @@ Expected: PASS
 - [ ] **Step 6: Commit**
 
 ```bash
-git add aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/prompt.txt \
-        aworld-cli/src/aworld_cli/inner_plugins/smllc/agents/aworld_agent.py \
+git add aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/prompt.txt \
+        aworld-cli/src/aworld_cli/builtin_agents/smllc/agents/aworld_agent.py \
         tests/core/agent/test_aworld_prompt_policy.py
 git commit -m "feat: route reminder requests to cron in aworld prompt"
 ```

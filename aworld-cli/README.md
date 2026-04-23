@@ -6,7 +6,7 @@ AWorld CLI is a command-line tool for interacting with AWorld agents.
 
 - **Interactive CLI**: Rich terminal interface for agent interaction
 - **Agent Discovery**: Automatic discovery of agents using `@agent` decorator
-- **Built-in Agents**: Automatically loads built-in agents from `inner_plugins/*/agents` directories (no configuration required)
+- **Built-in Agents**: Automatically loads built-in agents from `builtin_agents/*/agents` directories (no configuration required)
 - **Multiple Sources**: Support for local and remote agents
 - **Streaming Output**: Real-time streaming of agent responses
 - **Agent Priority**: Built-in agents → Local agents → Remote agents
@@ -87,7 +87,7 @@ aworld-cli
 aworld-cli list
 
 # Example output:
-# 📦 Loading built-in agents from: .../inner_plugins/smllc/agents
+# 📦 Loading built-in agents from: .../builtin_agents/smllc/agents
 # 📚 Loaded 2 global skill(s): text2agent, optimizer
 # 
 #                                                                   Available Agents
@@ -138,7 +138,7 @@ Place the file in the directory specified by `LOCAL_AGENTS_DIR` or use `--agent-
 
 ## Agent Loading Priority
 
-1. 📦 **Built-in Agents** (`inner_plugins/*/agents`) - Always loaded first (no configuration required)
+1. 📦 **Built-in Agents** (`builtin_agents/*/agents`) - Always loaded first (no configuration required)
    - Only loads `agents` directories from each plugin
    - Skills are managed separately by `skill_registry`
 2. 📂 **Local Agents** (`LOCAL_AGENTS_DIR` or `--agent-dir`) - User-configured local agents
@@ -146,7 +146,7 @@ Place the file in the directory specified by `LOCAL_AGENTS_DIR` or use `--agent-
 
 **Built-in Agents:**
 - **Aworld**: A versatile AI assistant that can execute tasks directly or delegate to specialized agent teams
-  - Location: `inner_plugins/smllc/agents/`
+  - Location: `builtin_agents/smllc/agents/`
   - Supports direct execution with MCP tools and skills
   - Can delegate complex tasks to agent teams
   - Includes agent creation skills
@@ -162,7 +162,7 @@ Place the file in the directory specified by `LOCAL_AGENTS_DIR` or use `--agent-
 - `SKILLS_CACHE_DIR`: Custom cache directory for GitHub skill repositories (default: ~/.aworld/skills)
 - `AWORLD_DISABLE_CONSOLE_LOG`: Disable console logging (set to 'true')
 
-**Note:** Built-in agents from `inner_plugins/*/agents` directories are always loaded automatically, regardless of environment variable configuration. Only the `agents` subdirectories are scanned to avoid loading unnecessary files.
+**Note:** Built-in agents from `builtin_agents/*/agents` directories are always loaded automatically, regardless of environment variable configuration. Only the `agents` subdirectories are scanned to avoid loading unnecessary files.
 
 ## Installed Skills
 
