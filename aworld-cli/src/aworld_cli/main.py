@@ -10,7 +10,6 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from aworld.memory.main import _default_file_memory_store
 from aworld.plugins.discovery import discover_plugins
 
 # Suppress DEBUG/INFO logs from third-party libraries (asyncio, mcp, etc.)
@@ -142,11 +141,11 @@ sys.excepthook = _suppress_keyboard_interrupt_traceback
 os.environ.setdefault('AWORLD_DISABLE_CONSOLE_LOG', 'true')
 
 # Import aworld modules (they will respect the environment variable)
-from aworld.logs.util import logger
 from .runtime.cli import CliRuntime
 from .console import AWorldCLI
 from .models import AgentInfo
 from .executors.continuous import ContinuousExecutor
+from .runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
 from .core.top_level_command_system import (
     TopLevelCommandContext,
     TopLevelCommandRegistry,
@@ -707,42 +706,16 @@ def main():
         build_parser(zh=True).print_help()
         return
     
-    # Load configuration (priority: local .env > global config)
-    from .core.config import load_config_with_env, has_model_config
-    config_dict, source_type, source_path = load_config_with_env(args.env_file)
-
-    # Init middlewares (logging is already set up in base __init__)
-    init_middlewares(init_memory=True, init_retriever=False, custom_memory_store=_default_file_memory_store())
-
-    if show_banner_flag:
-        _show_banner()
-
-    # Display configuration source
-    from ._globals import console
-    # Require model config for commands that use the agent. Top-level plugin
-    # commands such as `list`, `plugins`, and `skill` return earlier.
-    if not has_model_config(config_dict):
-        console.print("[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]")
-        console.print("[dim]Run: aworld-cli --config[/dim]")
-        console.print("[dim]Or create .env in the current directory. See: [link=https://github.com/inclusionAI/AWorld/blob/main/README.md]README[/link][/dim]")
+    try:
+        bootstrap_runtime(
+            env_file=args.env_file,
+            skill_paths=args.skill_path,
+            show_banner=show_banner_flag,
+            init_middlewares_fn=init_middlewares,
+            show_banner_fn=_show_banner,
+        )
+    except RuntimeBootstrapError:
         sys.exit(1)
-    
-    # Initialize skill registry early with command-line arguments (overrides env vars)
-    # This ensures skill registry is ready before agents are loaded
-    from .core.skill_registry import get_skill_registry
-
-    if args.skill_path:
-        # Initialize registry with command-line skill paths (these take precedence)
-        registry = get_skill_registry(skill_paths=args.skill_path)
-    else:
-        # Still initialize registry to load from env vars and defaults
-        registry = get_skill_registry()
-    
-    # Display global skills loading information
-    all_skills = registry.get_all_skills()
-    if all_skills:
-        skill_names = list(all_skills.keys())
-        logger.info("Loaded %d global skill(s): %s", len(skill_names), ", ".join(skill_names))
 
     # Resolve default agent_dir when --agent-dir not specified (env LOCAL_AGENTS_DIR / AWORLD_DEFAULT_AGENT_DIR)
     args.agent_dir = _resolve_agent_dirs(args.agent_dir)

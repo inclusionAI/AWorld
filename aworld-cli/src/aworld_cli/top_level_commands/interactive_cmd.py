@@ -4,8 +4,7 @@ import argparse
 import asyncio
 from typing import Sequence
 
-from aworld.logs.util import logger
-from aworld.memory.main import _default_file_memory_store
+from aworld_cli.runtime_bootstrap import RuntimeBootstrapError, bootstrap_runtime
 
 
 def _register_interactive_options(parser: argparse.ArgumentParser) -> None:
@@ -88,9 +87,6 @@ class InteractiveTopLevelCommand:
         _register_interactive_options(command_parser)
 
     def run(self, args, context) -> int | None:
-        from aworld_cli._globals import console
-        from aworld_cli.core.config import has_model_config, load_config_with_env
-        from aworld_cli.core.skill_registry import get_skill_registry
         from aworld_cli.main import (
             _resolve_agent_dirs,
             _run_interactive_mode,
@@ -99,39 +95,16 @@ class InteractiveTopLevelCommand:
         )
 
         invocation_args = _parse_interactive_invocation_args(context.argv)
-        config_dict, _, _ = load_config_with_env(invocation_args.env_file)
-        init_middlewares(
-            init_memory=True,
-            init_retriever=False,
-            custom_memory_store=_default_file_memory_store(),
-        )
-
-        if "--no-banner" not in context.argv:
-            _show_banner()
-
-        if not has_model_config(config_dict):
-            console.print(
-                "[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]"
+        try:
+            bootstrap_runtime(
+                env_file=invocation_args.env_file,
+                skill_paths=invocation_args.skill_path,
+                show_banner="--no-banner" not in context.argv,
+                init_middlewares_fn=init_middlewares,
+                show_banner_fn=_show_banner,
             )
-            console.print("[dim]Run: aworld-cli --config[/dim]")
-            console.print(
-                "[dim]Or create .env in the current directory. See: [link=https://github.com/inclusionAI/AWorld/blob/main/README.md]README[/link][/dim]"
-            )
+        except RuntimeBootstrapError:
             return 1
-
-        if invocation_args.skill_path:
-            registry = get_skill_registry(skill_paths=invocation_args.skill_path)
-        else:
-            registry = get_skill_registry()
-
-        all_skills = registry.get_all_skills()
-        if all_skills:
-            skill_names = list(all_skills.keys())
-            logger.info(
-                "Loaded %d global skill(s): %s",
-                len(skill_names),
-                ", ".join(skill_names),
-            )
 
         asyncio.run(
             _run_interactive_mode(
