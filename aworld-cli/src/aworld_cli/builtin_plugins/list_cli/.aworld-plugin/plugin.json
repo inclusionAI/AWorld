@@ -1,0 +1,18 @@
+{
+  "id": "aworld-list-cli",
+  "name": "aworld-list-cli",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "list",
+        "name": "list",
+        "target": "cli_commands/list.py",
+        "scope": "workspace",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}

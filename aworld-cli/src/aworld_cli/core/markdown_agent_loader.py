@@ -11,14 +11,14 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 from aworld.sandbox import Sandbox
-from aworld.utils.skill_loader import extract_front_matter, collect_skill_docs
-from .skill_registry import get_skill_registry
+from aworld.utils.skill_loader import extract_front_matter
 from aworld.agents.llm_agent import Agent
 from aworld.core.agent.swarm import Swarm
 from aworld.config import AgentConfig, ModelConfig
 from aworld.logs.util import logger
 from aworld.mcp_client.utils import extract_mcp_servers_from_config
 
+from .skill_registry import build_skill_resolver_inputs
 from .agent_registry import LocalAgent, LocalAgentRegistry
 
 
@@ -400,128 +400,50 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
             logger.warning(f"⚠️ ptc_tools should be a list in {md_file_path}, converting")
             ptc_tools = [ptc_tools] if ptc_tools else []
         
-        # Get skill registry (will auto-initialize with default ./skills if exists)
-        registry = get_skill_registry()
-        
-        # Always register ../skills directory relative to markdown file (if exists)
-        # This is the default skills directory for markdown agents
+        # Build compatibility resolver inputs from markdown-only skill hints.
+        compatibility_sources: List[str] = []
+        compatibility_patterns: List[str] = []
+
         default_skills_dir = (md_file_path.parent / "../skills").resolve()
         if default_skills_dir.exists() and default_skills_dir.is_dir():
-            try:
-                count = registry.register_source(str(default_skills_dir), source_name=str(default_skills_dir))
-                if count > 0:
-                    print(f"📚 Registered skills directory: {default_skills_dir} ({count} skills)")
-                logger.debug(f"📚 Registered default skills directory: {default_skills_dir}")
-            except Exception as e:
-                # Source might already be registered, that's fine
-                logger.debug(f"ℹ️ Default skills directory registration: {default_skills_dir} ({e})")
-        
-        # Parse skills_path (semicolon-separated) and register to registry
+            compatibility_sources.append(str(default_skills_dir))
+
         skills_path = front_matter.get("skills_path")
         if skills_path:
             try:
-                # Split by semicolon to get multiple paths
                 skill_sources = [s.strip() for s in str(skills_path).split(';') if s.strip()]
-                
                 for source in skill_sources:
-                    try:
-                        # Resolve path relative to markdown file directory if it's a local path
-                        if 'github.com' in source or source.startswith('git@'):
-                            # GitHub URL, use as-is
-                            resolved_source = source
-                            source_name = source
-                        else:
-                            # Local path, resolve relative to markdown file directory
-                            if os.path.isabs(source):
-                                resolved_source = Path(source)
-                            else:
-                                resolved_source = (md_file_path.parent / source).resolve()
-                            
-                            resolved_source_str = str(resolved_source)
-                            source_name = resolved_source_str
-                            resolved_source = resolved_source_str
-                        
-                        # Register source to registry
-                        count = registry.register_source(resolved_source, source_name=source_name)
-                        if count > 0:
-                            print(f"📚 Registered skill source: {source_name} ({count} skills)")
-                        logger.debug(f"📚 Registered skill source: {source_name}")
-                    except Exception as e:
-                        logger.warning(f"⚠️ Failed to register skill source '{source}': {e}")
+                    if 'github.com' in source or source.startswith('git@'):
+                        compatibility_sources.append(source)
+                        continue
+                    if os.path.isabs(source):
+                        resolved_source = Path(source)
+                    else:
+                        resolved_source = (md_file_path.parent / source).resolve()
+                    compatibility_sources.append(str(resolved_source))
             except Exception as e:
                 logger.error(f"❌ Failed to parse skills_path: {e}")
                 import traceback
                 logger.debug(traceback.format_exc())
         
-        # Parse skill_names (semicolon-separated) and get skills from registry
-        # Supports both exact skill names and regex patterns (prefixed with "regex:")
-        # If skill_names is not configured, skill_configs will be empty (no skills loaded)
         skill_names_str = front_matter.get("skill_names")
-        skill_configs = {}
         if skill_names_str:
             try:
-                # Split by semicolon to get multiple skill names or regex patterns
-                skill_patterns = [pattern.strip() for pattern in str(skill_names_str).split(';') if pattern.strip()]
-                
-                # Get all skills from registry
-                all_registry_skills = registry.get_all_skills()
-                found_skills = []
-                missing_skills = []
-                
-                for pattern in skill_patterns:
-                    # Check if this is a regex pattern (prefixed with "regex:")
-                    if pattern.startswith("regex:"):
-                        # Extract regex pattern (remove "regex:" prefix)
-                        regex_pattern = pattern[6:].strip()
-                        try:
-                            # Use regex to find matching skills
-                            matched_skills = registry.get_skills_by_regex(regex_pattern, match_field="name")
-                            
-                            for skill_name, skill_data in matched_skills.items():
-                                # Skip if already added (avoid duplicates)
-                                if skill_name not in skill_configs:
-                                    # Convert to AgentConfig format
-                                    skill_configs[skill_name] = {
-                                        "name": skill_data.get("name", skill_name),
-                                        "desc": skill_data.get("description", skill_data.get("desc", "")),
-                                        "usage": skill_data.get("usage", ""),
-                                        "tool_list": skill_data.get("tool_list", {}),
-                                        "type": skill_data.get("type", ""),
-                                        "active": skill_data.get("active", False)
-                                    }
-                                    found_skills.append(skill_name)
-                        except Exception as regex_error:
-                            logger.warning(f"⚠️ Invalid regex pattern '{regex_pattern}': {regex_error}")
-                            missing_skills.append(pattern)
-                    else:
-                        # Exact skill name match
-                        if pattern in all_registry_skills:
-                            skill_data = all_registry_skills[pattern]
-                            # Convert to AgentConfig format
-                            skill_configs[pattern] = {
-                                "name": skill_data.get("name", pattern),
-                                "desc": skill_data.get("description", skill_data.get("desc", "")),
-                                "usage": skill_data.get("usage", ""),
-                                "tool_list": skill_data.get("tool_list", {}),
-                                "type": skill_data.get("type", ""),
-                                "active": skill_data.get("active", False)
-                            }
-                            found_skills.append(pattern)
-                        else:
-                            missing_skills.append(pattern)
-                
-                if found_skills:
-                    skill_list_str = ", ".join(found_skills)
-                    print(f"📚 Loaded {len(found_skills)} skill(s) for agent '{agent_name}': {skill_list_str}")
-                    logger.info(f"✅ Loaded {len(found_skills)} skill(s) from registry: {found_skills}")
-                if missing_skills:
-                    missing_list_str = ", ".join(missing_skills)
-                    print(f"⚠️ Skill(s) not found for agent '{agent_name}': {missing_list_str}")
-                    logger.warning(f"⚠️ Skill(s) not found in registry: {missing_skills}. Available skills: {list(all_registry_skills.keys())}")
+                compatibility_patterns = [
+                    pattern.strip()
+                    for pattern in str(skill_names_str).split(';')
+                    if pattern.strip()
+                ]
             except Exception as e:
-                logger.error(f"❌ Failed to get skills from registry: {e}")
+                logger.error(f"❌ Failed to parse skill_names: {e}")
                 import traceback
                 logger.debug(traceback.format_exc())
+        resolver_inputs = build_skill_resolver_inputs(
+            skill_names=compatibility_patterns,
+        )
+        resolver_inputs["compatibility_sources"] = list(
+            dict.fromkeys(compatibility_sources + resolver_inputs["compatibility_sources"])
+        )
         
         # Get markdown body content as prompt
         body_lines = content_lines[body_start:]
@@ -563,7 +485,8 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
 
             agent_config = AgentConfig(
                 llm_config=llm_config,
-                skill_configs=skill_configs if skill_configs else {}
+                skill_configs={},
+                ext={"skill_resolver_inputs": resolver_inputs},
             )
             """Build Swarm from markdown agent definition."""
 
@@ -599,7 +522,8 @@ def parse_markdown_agent(md_file_path: Path) -> Optional[LocalAgent]:
                 "ptc_tools": ptc_tools,
                 "skills_path": skills_path,
                 "skill_names": skill_names_str,
-                "skill_configs": skill_configs
+                "skill_configs": {},
+                "skill_resolver_inputs": resolver_inputs,
             }
         )
         
@@ -663,4 +587,3 @@ def load_markdown_agents(agents_dir: Path) -> List[LocalAgent]:
 
 
 __all__ = ["parse_markdown_agent", "load_markdown_agents"]
-

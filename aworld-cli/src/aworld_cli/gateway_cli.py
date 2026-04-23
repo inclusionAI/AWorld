@@ -10,6 +10,10 @@ from typing import Sequence
 import uvicorn
 
 from aworld_cli.core.boot_logging import enable_quiet_gateway_boot
+from aworld_cli.top_level_commands.invocation import (
+    find_command_index,
+    parse_command_invocation_args,
+)
 from aworld_gateway import GATEWAY_DISPLAY_NAME
 from aworld_gateway.agent_resolver import AgentResolver
 from aworld_gateway.config import GatewayConfigLoader
@@ -50,6 +54,11 @@ def build_gateway_parser() -> argparse.ArgumentParser:
         description=f"{GATEWAY_DISPLAY_NAME} management commands",
         prog="aworld-cli gateway",
     )
+    register_gateway_subcommands(parser)
+    return parser
+
+
+def register_gateway_subcommands(parser: argparse.ArgumentParser) -> None:
     subparsers = parser.add_subparsers(
         dest="gateway_action",
         help="Gateway action to perform",
@@ -65,25 +74,33 @@ def build_gateway_parser() -> argparse.ArgumentParser:
         required=True,
     )
     channel_subparsers.add_parser("list", help="List registered channels")
+
+
+def build_gateway_global_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("--env-file", default=".env")
+    parser.add_argument("--remote-backend", action="append")
+    parser.add_argument("--agent-dir", action="append")
+    parser.add_argument("--agent-file", action="append")
+    parser.add_argument("--skill-path", action="append")
     return parser
 
 
+def parse_gateway_global_args(argv: Sequence[str]) -> argparse.Namespace:
+    return parse_command_invocation_args(
+        argv,
+        command_name="gateway",
+        parser=build_gateway_global_parser(),
+        options_with_values=GLOBAL_OPTIONS_WITH_VALUES,
+    )
+
+
 def find_gateway_command_index(argv: Sequence[str]) -> int | None:
-    index = 1 if argv else 0
-
-    while index < len(argv):
-        token = argv[index]
-        if token in GLOBAL_OPTIONS_WITH_VALUES:
-            index += 2
-            continue
-        if token.startswith("-"):
-            index += 1
-            continue
-        if token == "gateway":
-            return index
-        return None
-
-    return None
+    return find_command_index(
+        argv,
+        command_name="gateway",
+        options_with_values=GLOBAL_OPTIONS_WITH_VALUES,
+    )
 
 
 def extract_gateway_argv(argv: Sequence[str]) -> list[str]:

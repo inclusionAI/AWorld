@@ -30,7 +30,7 @@ def _run_aworld_cli_configuration():
     # Build Aworld agent (simulating aworld-cli startup)
     logger.info("\n[Step 1] Building Aworld agent via aworld-cli method...")
     try:
-        from aworld_cli.inner_plugins.smllc.agents.aworld_agent import build_aworld_agent
+        from aworld_cli.builtin_agents.smllc.agents.aworld_agent import build_aworld_agent
         aworld_swarm = build_aworld_agent()
         logger.info("✓ Aworld TeamSwarm built")
     except Exception as e:
@@ -128,7 +128,7 @@ def _run_spawn_subagent_tool_availability():
     env_path = Path(__file__).parent / '.env'
     load_dotenv(env_path)
 
-    from aworld_cli.inner_plugins.smllc.agents.aworld_agent import build_aworld_agent
+    from aworld_cli.builtin_agents.smllc.agents.aworld_agent import build_aworld_agent
     aworld_swarm = build_aworld_agent()
     aworld_swarm.reset()
     aworld_agent = aworld_swarm.agent_graph.root_agent
