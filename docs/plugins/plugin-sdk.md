@@ -56,6 +56,63 @@ Resolution is deterministic and follows plugin discovery order.
 Host-owned plugin capability helpers live under `aworld_cli.plugin_capabilities`.
 Legacy alias namespaces `aworld_cli.plugin_runtime.*` and `aworld_cli.plugin_framework.*` have been removed.
 
+## CLI Command Contract
+
+Framework plugins may contribute top-level CLI commands through manifest `entrypoints.cli_commands`.
+
+Minimal manifest example:
+
+```json
+{
+  "id": "example-cli-plugin",
+  "version": "1.0.0",
+  "entrypoints": {
+    "cli_commands": [
+      {
+        "id": "example",
+        "name": "example",
+        "target": "cli_commands/example.py",
+        "metadata": {
+          "factory": "build_command",
+          "aliases": ["example-short"]
+        }
+      }
+    ]
+  }
+}
+```
+
+Target module contract:
+
+- default factory name is `build_command`
+- the factory must return a `TopLevelCommand`-compatible object
+- alternatively, the module may expose a `COMMAND` object directly
+
+Command object requirements:
+
+- `name`
+- `description`
+- `register_parser(subparsers)`
+- `run(args, context)`
+
+Current bootstrap behavior:
+
+- only enabled framework plugins contribute top-level CLI commands
+- `metadata.aliases` registers additional top-level command aliases
+- aliases are normalized to the canonical command name before `argparse` dispatch
+- `visibility: "hidden"` suppresses registration
+- reserved kernel command names cannot be overridden by plugins
+
+Reserved top-level kernel commands:
+
+- `interactive`
+- `list`
+- `serve`
+- `batch`
+- `batch-job`
+- `plugins`
+- `gateway`
+
 Current plugin-safe HUD helper API:
 
 - `aworld_cli.plugin_capabilities.hud_helpers.format_hud_tokens`

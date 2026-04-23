@@ -380,7 +380,7 @@ async def test_spawn_parallel_with_aworld_agent():
 
     # Import AWorld agent builder
     try:
-        from aworld_cli.inner_plugins.smllc.agents.aworld_agent import build_aworld_agent
+        from aworld_cli.builtin_agents.smllc.agents.aworld_agent import build_aworld_agent
     except ImportError as e:
         logger.error(f"✗ Failed to import build_aworld_agent: {e}")
         logger.error("Make sure aworld-cli is in PYTHONPATH")

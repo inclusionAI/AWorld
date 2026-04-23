@@ -1420,8 +1420,63 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # get current active skills
         skills = await context.get_active_skills(namespace=self.id())
 
+        forced_skill_names = self._requested_skill_names_from_context(context)
+        if forced_skill_names and self._should_disable_tools_for_forced_skills(
+                forced_skill_names=forced_skill_names,
+                active_skills=skills,
+        ):
+            logger.info(
+                "Forced instruction-only skills active for agent %s; disabling runtime tool access",
+                self.id(),
+            )
+            return []
+
         return await skill_translate_tools(skills=skills, skill_configs=self.skill_configs, tools=self.tools,
                                            tool_mapping=self.tool_mapping)
+
+    @staticmethod
+    def _requested_skill_names_from_context(context: Context) -> List[str]:
+        task_input = getattr(context, "task_input_object", None)
+        metadata = getattr(task_input, "metadata", None)
+        if not isinstance(metadata, dict):
+            return []
+        requested = metadata.get("requested_skill_names")
+        if not isinstance(requested, list):
+            return []
+        return [str(item).strip() for item in requested if str(item).strip()]
+
+    @staticmethod
+    def _is_instruction_only_skill(skill_config: Dict[str, Any]) -> bool:
+        if not isinstance(skill_config, dict):
+            return False
+        if skill_config.get("type") == "agent":
+            return False
+        return not bool(skill_config.get("tool_list"))
+
+    def _should_disable_tools_for_forced_skills(
+            self,
+            *,
+            forced_skill_names: List[str],
+            active_skills: List[str],
+    ) -> bool:
+        if not forced_skill_names:
+            return False
+
+        active_skill_set = set(active_skills or [])
+        forced_active_configs: list[Dict[str, Any]] = []
+
+        for skill_name in forced_skill_names:
+            if skill_name not in active_skill_set:
+                continue
+            skill_config = self.skill_configs.get(skill_name)
+            if not isinstance(skill_config, dict):
+                continue
+            forced_active_configs.append(skill_config)
+
+        if not forced_active_configs:
+            return False
+
+        return all(self._is_instruction_only_skill(skill) for skill in forced_active_configs)
 
     async def _add_tool_result_token_ids_to_context(self, context: Context):
         """Add tool result token ids to context"""

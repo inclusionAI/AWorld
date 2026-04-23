@@ -13,7 +13,7 @@ from aworld.runners.hook.hook_factory import HookFactory
 from aworld.runners.hook.hooks import PreLLMCallHook, PostLLMCallHook
 from aworld.sandbox import Sandbox
 from aworld_cli.core import agent
-from aworld_cli.core.skill_registry import collect_plugin_and_user_skills
+from aworld_cli.core.skill_registry import build_skill_resolver_inputs
 from .mcp_config import mcp_config
 
 
@@ -65,8 +65,10 @@ def build_developer_swarm(sandbox: 'Sandbox' = None):
     plugin_base_dir = Path(__file__).resolve().parents[2]  # smllc bundle root
     # Get user skills directory from environment (optional)
     env_skills_path = os.environ.get("DEVELOPER_SKILLS_PATH")
-    env_skills_dir = Path(os.path.expanduser(env_skills_path)).resolve() if env_skills_path else None
-    skill_configs = collect_plugin_and_user_skills(plugin_base_dir, user_dir=env_skills_dir)
+    resolver_inputs = build_skill_resolver_inputs(
+        plugin_base_dir,
+        user_dir=env_skills_path,
+    )
 
     # Create Agent configuration
     agent_config = AgentConfig(
@@ -80,7 +82,8 @@ def build_developer_swarm(sandbox: 'Sandbox' = None):
             params={"max_completion_tokens": 64000},
             llm_stream_call=os.environ.get("STREAM", "0").lower() in ("1", "true", "yes")
         ),
-        skill_configs=skill_configs
+        skill_configs={},
+        ext={"skill_resolver_inputs": resolver_inputs},
     )
 
     # Extract all server keys from mcp_config
