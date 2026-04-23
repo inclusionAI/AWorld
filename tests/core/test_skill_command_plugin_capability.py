@@ -65,3 +65,20 @@ def build_command():
     assert commands[0].name == "pin"
     assert commands[0].description == "Pin a skill for the next task"
     assert commands[0].aliases == ("select",)
+
+
+def test_builtin_skill_cli_plugin_owns_its_skill_command_implementations() -> None:
+    plugin_root = (
+        Path(__file__).resolve().parents[2]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "skill_cli"
+        / "skill_commands"
+    )
+
+    for module_name in ("clear.py", "disable.py", "enable.py", "use.py"):
+        module_path = plugin_root / module_name
+        content = module_path.read_text(encoding="utf-8")
+        assert "aworld_cli.skill_commands" not in content
