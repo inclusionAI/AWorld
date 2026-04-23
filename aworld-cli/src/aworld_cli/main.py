@@ -576,7 +576,7 @@ def _build_top_level_command_registry() -> TopLevelCommandRegistry:
 
 
 def _build_parser_command_choices() -> list[str]:
-    command_names = ["interactive", "serve", "batch", "batch-job", "plugins"]
+    command_names = ["interactive", "batch", "batch-job", "plugins"]
     registry = _build_top_level_command_registry()
     for command in registry.list_commands():
         if command.name not in command_names:
@@ -746,28 +746,6 @@ def main():
 
     # Resolve default agent_dir when --agent-dir not specified (env LOCAL_AGENTS_DIR / AWORLD_DEFAULT_AGENT_DIR)
     args.agent_dir = _resolve_agent_dirs(args.agent_dir)
-
-    # Handle 'serve' command: start HTTP and/or MCP servers
-    if args.command == "serve":
-        if not args.http and not args.mcp:
-            print("❌ Error: At least one of --http or --mcp must be specified for serve command")
-            parser.print_help()
-            return
-        
-        asyncio.run(_run_serve_mode(
-            http=args.http,
-            http_host=args.http_host,
-            http_port=args.http_port,
-            mcp=args.mcp,
-            mcp_name=args.mcp_name,
-            mcp_transport=args.mcp_transport,
-            mcp_host=args.mcp_host,
-            mcp_port=args.mcp_port,
-            remote_backends=args.remote_backend,
-            local_dirs=args.agent_dir,
-            agent_files=args.agent_file
-        ))
-        return
 
     # Handle direct run mode (参考 continuous-claude)
     if args.task:
