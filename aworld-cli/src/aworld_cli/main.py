@@ -5,8 +5,6 @@ Provides CLI interface without requiring aworldappinfra.
 from __future__ import annotations
 
 import argparse
-import asyncio
-import json
 import logging
 import os
 import sys
@@ -14,65 +12,6 @@ from pathlib import Path
 from typing import Optional
 
 from aworld.plugins.discovery import discover_plugins
-from .acp.cli import build_acp_parser, find_acp_command_index
-
-
-def _dispatch_acp_early_if_needed() -> None:
-    acp_index = find_acp_command_index(sys.argv)
-    if acp_index is None:
-        return
-
-    acp_parser = build_acp_parser()
-    acp_args = acp_parser.parse_args(sys.argv[acp_index + 1 :])
-
-    if acp_args.acp_action == "self-test":
-        from .acp.self_test import run_self_test
-
-        raise SystemExit(asyncio.run(run_self_test()))
-
-    if acp_args.acp_action == "describe-validation":
-        from .acp.validate_host import build_validate_stdio_host_help
-
-        sys.stdout.write(json.dumps(build_validate_stdio_host_help(), ensure_ascii=False) + "\n")
-        sys.stdout.flush()
-        raise SystemExit(0)
-
-    if acp_args.acp_action == "render-validation-config":
-        from .acp.validate_host import render_validation_config, write_rendered_validation_config
-
-        payload = render_validation_config(
-            topology=acp_args.topology,
-            expand_placeholders_flag=acp_args.expand_placeholders,
-            env_assignments=acp_args.env,
-        )
-        write_rendered_validation_config(payload, output_file=acp_args.output_file)
-        sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
-        sys.stdout.flush()
-        raise SystemExit(0)
-
-    if acp_args.acp_action == "validate-stdio-host":
-        from .acp.validate_host import run_validate_stdio_host
-
-        raise SystemExit(
-            asyncio.run(
-                run_validate_stdio_host(
-                    command=acp_args.command,
-                    config_file=acp_args.config_file,
-                    topology=acp_args.topology,
-                    cwd=acp_args.cwd,
-                    env_assignments=acp_args.env,
-                    env_json=acp_args.env_json,
-                    profile_name=acp_args.profile,
-                    session_params_json=acp_args.session_params_json,
-                    startup_timeout_seconds=acp_args.startup_timeout_seconds,
-                    startup_retries=acp_args.startup_retries,
-                )
-            )
-        )
-
-    from .acp.server import run_stdio_server
-
-    raise SystemExit(asyncio.run(run_stdio_server()))
 
 # Suppress DEBUG/INFO logs from third-party libraries (asyncio, mcp, etc.)
 # Only show WARNING and above for non-aworld modules
@@ -755,8 +694,6 @@ def main():
     Entry point for the AWorld CLI.
     Supports both interactive and non-interactive (direct run) modes.
     """
-    _dispatch_acp_early_if_needed()
-
     # Check for --no-banner flag early (before parsing)
     show_banner_flag = "--no-banner" not in sys.argv
     

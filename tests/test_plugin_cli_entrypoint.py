@@ -33,6 +33,15 @@ def test_gateway_command_is_registered_via_plugin_registry():
     assert command is not None
 
 
+def test_acp_command_is_registered_via_plugin_registry():
+    from aworld_cli import main as main_module
+
+    registry = main_module._build_top_level_command_registry()
+    command = registry.get("acp")
+
+    assert command is not None
+
+
 def test_list_command_is_registered_via_plugin_registry():
     from aworld_cli import main as main_module
 
@@ -58,6 +67,19 @@ def test_interactive_command_is_registered_via_plugin_registry():
     command = registry.get("interactive")
 
     assert command is not None
+
+
+def test_acp_command_dispatches_via_plugin_registry(capsys):
+    from aworld_cli import main as main_module
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        ["aworld-cli", "acp", "describe-validation"]
+    )
+
+    output = capsys.readouterr().out
+
+    assert handled is True
+    assert '"topologies"' in output
 
 
 def test_list_command_dispatches_before_global_config_loading(monkeypatch, capsys):
