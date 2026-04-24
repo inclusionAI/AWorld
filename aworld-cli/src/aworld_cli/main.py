@@ -5,6 +5,7 @@ Provides CLI interface without requiring aworldappinfra.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
 import os
 import sys
@@ -660,7 +661,7 @@ def _maybe_dispatch_top_level_command(argv: list[str]) -> bool:
     except SystemExit:
         return True
 
-    selected_command = registry.get(getattr(args, "command", ""))
+    selected_command = registry.get(canonical_name or getattr(args, "command", ""))
     if selected_command is None:
         return False
 
