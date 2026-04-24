@@ -2,6 +2,8 @@
 Command-line entry point for aworld-cli.
 Provides CLI interface without requiring aworldappinfra.
 """
+from __future__ import annotations
+
 import argparse
 import asyncio
 import logging
@@ -580,7 +582,7 @@ def _build_top_level_command_registry() -> TopLevelCommandRegistry:
 
 
 def _build_parser_command_choices() -> list[str]:
-    command_names = ["interactive", "batch", "batch-job", "plugins"]
+    command_names = ["interactive", "batch", "batch-job", "plugins", "acp"]
     registry = _build_top_level_command_registry()
     for command in registry.list_commands(include_hidden=False):
         if command.name not in command_names:
@@ -659,7 +661,7 @@ def _maybe_dispatch_top_level_command(argv: list[str]) -> bool:
     except SystemExit:
         return True
 
-    selected_command = registry.get(getattr(args, "command", ""))
+    selected_command = registry.get(canonical_name or getattr(args, "command", ""))
     if selected_command is None:
         return False
 

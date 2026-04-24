@@ -33,6 +33,15 @@ def test_gateway_command_is_registered_via_plugin_registry():
     assert command is not None
 
 
+def test_acp_command_is_registered_via_plugin_registry():
+    from aworld_cli import main as main_module
+
+    registry = main_module._build_top_level_command_registry()
+    command = registry.get("acp")
+
+    assert command is not None
+
+
 def test_list_command_is_registered_via_plugin_registry():
     from aworld_cli import main as main_module
 
@@ -58,6 +67,60 @@ def test_interactive_command_is_registered_via_plugin_registry():
     command = registry.get("interactive")
 
     assert command is not None
+
+
+def test_acp_command_dispatches_via_plugin_registry(capsys):
+    from aworld_cli import main as main_module
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        ["aworld-cli", "acp", "describe-validation"]
+    )
+
+    output = capsys.readouterr().out
+
+    assert handled is True
+    assert '"topologies"' in output
+
+
+def test_acp_command_dispatches_when_nested_command_option_is_present(
+    monkeypatch,
+):
+    from aworld_cli import main as main_module
+
+    calls = {"args": None, "argv": None}
+
+    def fake_run(self, args, context):
+        calls["args"] = args
+        calls["argv"] = tuple(context.argv)
+        return 0
+
+    monkeypatch.setattr(
+        "aworld_cli.top_level_commands.acp_cmd.AcpTopLevelCommand.run",
+        fake_run,
+    )
+
+    handled = main_module._maybe_dispatch_top_level_command(
+        [
+            "aworld-cli",
+            "--no-banner",
+            "acp",
+            "validate-stdio-host",
+            "--command",
+            "python -m aworld_cli.main --no-banner acp",
+        ]
+    )
+
+    assert handled is True
+    assert calls["argv"] == (
+        "aworld-cli",
+        "--no-banner",
+        "acp",
+        "validate-stdio-host",
+        "--command",
+        "python -m aworld_cli.main --no-banner acp",
+    )
+    assert calls["args"].acp_action == "validate-stdio-host"
+    assert calls["args"].command == "python -m aworld_cli.main --no-banner acp"
 
 
 def test_list_command_dispatches_before_global_config_loading(monkeypatch, capsys):
