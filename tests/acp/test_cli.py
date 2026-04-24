@@ -3,16 +3,21 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import argparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from aworld_cli.acp.cli import build_acp_parser, find_acp_command_index
+from aworld_cli.acp.cli import build_acp_parser, register_acp_subcommands
 
 
-def test_find_acp_command_index_detects_top_level_command() -> None:
-    assert find_acp_command_index(["aworld-cli", "acp"]) == 1
-    assert find_acp_command_index(["aworld-cli", "--no-banner", "acp", "self-test"]) == 2
+def test_register_acp_subcommands_supports_top_level_parser_embedding() -> None:
+    parser = argparse.ArgumentParser(prog="aworld-cli acp")
+    register_acp_subcommands(parser)
+
+    args = parser.parse_args(["describe-validation"])
+
+    assert args.acp_action == "describe-validation"
 
 
 def test_build_acp_parser_defaults_to_serve() -> None:
