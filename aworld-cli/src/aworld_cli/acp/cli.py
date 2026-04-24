@@ -1,19 +1,10 @@
 import argparse
 
 
-def build_acp_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
-        description="ACP backend host commands",
-        prog="aworld-cli acp",
-    )
-    register_acp_subcommands(parser)
-    parser.set_defaults(acp_action="serve")
-    return parser
-
-
 def register_acp_subcommands(parser: argparse.ArgumentParser) -> None:
     subparsers = parser.add_subparsers(dest="acp_action")
     subparsers.required = False
+    parser.set_defaults(acp_action="serve")
     subparsers.add_parser("serve", help="Run the ACP stdio host")
     subparsers.add_parser("self-test", help="Run ACP self-validation")
     subparsers.add_parser(
