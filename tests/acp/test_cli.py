@@ -8,7 +8,7 @@ import argparse
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from aworld_cli.acp.cli import build_acp_parser, register_acp_subcommands
+from aworld_cli.acp.cli import register_acp_subcommands
 
 
 def test_register_acp_subcommands_supports_top_level_parser_embedding() -> None:
@@ -20,32 +20,36 @@ def test_register_acp_subcommands_supports_top_level_parser_embedding() -> None:
     assert args.acp_action == "describe-validation"
 
 
-def test_build_acp_parser_defaults_to_serve() -> None:
-    parser = build_acp_parser()
+def test_register_acp_subcommands_defaults_to_serve() -> None:
+    parser = argparse.ArgumentParser(prog="aworld-cli acp")
+    register_acp_subcommands(parser)
 
     args = parser.parse_args([])
 
     assert args.acp_action == "serve"
 
 
-def test_build_acp_parser_supports_self_test() -> None:
-    parser = build_acp_parser()
+def test_register_acp_subcommands_supports_self_test() -> None:
+    parser = argparse.ArgumentParser(prog="aworld-cli acp")
+    register_acp_subcommands(parser)
 
     args = parser.parse_args(["self-test"])
 
     assert args.acp_action == "self-test"
 
 
-def test_build_acp_parser_supports_describe_validation() -> None:
-    parser = build_acp_parser()
+def test_register_acp_subcommands_supports_describe_validation() -> None:
+    parser = argparse.ArgumentParser(prog="aworld-cli acp")
+    register_acp_subcommands(parser)
 
     args = parser.parse_args(["describe-validation"])
 
     assert args.acp_action == "describe-validation"
 
 
-def test_build_acp_parser_supports_render_validation_config() -> None:
-    parser = build_acp_parser()
+def test_register_acp_subcommands_supports_render_validation_config() -> None:
+    parser = argparse.ArgumentParser(prog="aworld-cli acp")
+    register_acp_subcommands(parser)
 
     args = parser.parse_args(
         [
@@ -67,8 +71,9 @@ def test_build_acp_parser_supports_render_validation_config() -> None:
     assert args.env == ["AWORLD_WORKER_WORKSPACE=/tmp/worker"]
 
 
-def test_build_acp_parser_supports_validate_stdio_host() -> None:
-    parser = build_acp_parser()
+def test_register_acp_subcommands_supports_validate_stdio_host() -> None:
+    parser = argparse.ArgumentParser(prog="aworld-cli acp")
+    register_acp_subcommands(parser)
 
     args = parser.parse_args(
         [
