@@ -491,35 +491,46 @@ class AcpStdioServer:
             if text:
                 return text
 
+        if isinstance(prompt, list):
+            text = self._normalize_content_blocks(prompt)
+            if text:
+                return text
+
         if isinstance(prompt, dict):
             if isinstance(prompt.get("text"), str) and prompt["text"].strip():
                 return prompt["text"].strip()
 
             content = prompt.get("content")
             if isinstance(content, list):
-                parts: list[str] = []
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "text" and isinstance(block.get("text"), str):
-                        text = block["text"].strip()
-                        if text:
-                            parts.append(text)
-                        continue
-
-                    resource_text = self._extract_embedded_resource_text(block)
-                    if resource_text:
-                        parts.append(resource_text)
-                        continue
-
-                    resource_link_text = self._format_resource_link_reference(block)
-                    if resource_link_text:
-                        parts.append(resource_link_text)
-
-                if parts:
-                    return "\n".join(parts)
+                text = self._normalize_content_blocks(content)
+                if text:
+                    return text
 
         raise ValueError(AWORLD_ACP_UNSUPPORTED_PROMPT_CONTENT)
+
+    def _normalize_content_blocks(self, content: list[Any]) -> str | None:
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text" and isinstance(block.get("text"), str):
+                text = block["text"].strip()
+                if text:
+                    parts.append(text)
+                continue
+
+            resource_text = self._extract_embedded_resource_text(block)
+            if resource_text:
+                parts.append(resource_text)
+                continue
+
+            resource_link_text = self._format_resource_link_reference(block)
+            if resource_link_text:
+                parts.append(resource_link_text)
+
+        if parts:
+            return "\n".join(parts)
+        return None
 
     @staticmethod
     def _extract_embedded_resource_text(block: dict[str, Any]) -> str | None:
