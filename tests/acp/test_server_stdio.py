@@ -168,6 +168,62 @@ def test_acp_server_new_session_and_prompt_emit_session_update() -> None:
         proc.wait(timeout=5)
 
 
+def test_acp_server_accepts_current_acp_session_methods() -> None:
+    proc = _spawn_acp_server()
+    try:
+        assert proc.stdin is not None
+        proc.stdin.write(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": 1,
+                        "clientCapabilities": {"fs": {"readTextFile": False, "writeTextFile": False}},
+                        "clientInfo": {"name": "happy-cli", "version": "test"},
+                    },
+                }
+            )
+            + "\n"
+        )
+        proc.stdin.write('{"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":".","mcpServers":[]}}\n')
+        proc.stdin.flush()
+
+        _ = _read_json_line(proc)
+        new_session = _read_json_line(proc)
+        session_id = new_session["result"]["sessionId"]
+
+        proc.stdin.write(
+            json.dumps(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "session/prompt",
+                    "params": {
+                        "sessionId": session_id,
+                        "prompt": {"content": [{"type": "text", "text": "hello"}]},
+                    },
+                }
+            )
+            + "\n"
+        )
+        proc.stdin.flush()
+
+        notification = _read_json_line(proc)
+        response = _read_json_line(proc)
+
+        assert notification["method"] == "session/update"
+        assert notification["params"]["sessionId"] == session_id
+        assert notification["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+        assert response["id"] == 3
+        assert response["result"]["status"] == "completed"
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=5)
+
+
 def test_acp_server_cancel_missing_session_returns_error() -> None:
     proc = _spawn_acp_server()
     try:
