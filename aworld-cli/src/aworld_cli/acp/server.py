@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import json
 import os
 import sys
 from pathlib import Path
@@ -394,7 +395,7 @@ class AcpStdioServer:
                         if isinstance(tool_name, str) and isinstance(tool_call_id, str):
                             state[f"tool_closed::{tool_name}"] = tool_call_id
                     update = map_runtime_event_to_session_update(session_id, event)
-                    await self._write_message(self._notification(self._session_update_method, update))
+                    await self._write_session_update(update)
 
         try:
             task = await self._turns.start_turn(session_id, _run_turn())
@@ -599,6 +600,62 @@ class AcpStdioServer:
             sys.stdout.buffer.write(payload)
             sys.stdout.buffer.flush()
 
+    async def _write_session_update(self, params: dict[str, Any]) -> None:
+        if self._session_update_method == "session/update":
+            params = self._to_current_session_update(params)
+        await self._write_message(self._notification(self._session_update_method, params))
+
+    @staticmethod
+    def _to_current_session_update(params: dict[str, Any]) -> dict[str, Any]:
+        converted = dict(params)
+        update = dict(converted.get("update") or {})
+        converted["update"] = update
+        update_type = update.get("sessionUpdate")
+
+        if update_type in {"agent_message_chunk", "agent_thought_chunk", "user_message_chunk"}:
+            content = update.get("content")
+            if isinstance(content, dict) and isinstance(content.get("text"), str) and "type" not in content:
+                update["content"] = {"type": "text", "text": content["text"]}
+            return converted
+
+        if update_type == "tool_call":
+            raw_input = update.get("content")
+            title = str(update.get("kind") or "tool")
+            update["title"] = title
+            update["kind"] = AcpStdioServer._current_tool_kind(update.get("kind"))
+            update["rawInput"] = raw_input
+            update["content"] = AcpStdioServer._current_tool_content(raw_input)
+            return converted
+
+        if update_type == "tool_call_update":
+            raw_output = update.get("content")
+            title = str(update.get("kind") or "tool")
+            update["title"] = title
+            update["kind"] = AcpStdioServer._current_tool_kind(update.get("kind"))
+            update["rawOutput"] = raw_output
+            update["content"] = AcpStdioServer._current_tool_content(raw_output)
+            return converted
+
+        return converted
+
+    @staticmethod
+    def _current_tool_kind(kind: Any) -> str:
+        if kind in {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other"}:
+            return str(kind)
+        if kind in {"shell", "terminal", "bash", "command"}:
+            return "execute"
+        return "other"
+
+    @staticmethod
+    def _current_tool_content(value: Any) -> list[dict[str, Any]] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value
+        else:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return [{"type": "content", "content": {"type": "text", "text": text}}]
+
     @staticmethod
     def _normalize_runtime_events(state: dict[str, Any], output: Any) -> list[dict[str, Any]]:
         if isinstance(output, dict) and isinstance(output.get("event_type"), str):
@@ -652,7 +709,7 @@ class AcpStdioServer:
                     "raw_output": {"code": code, "message": message},
                 },
             )
-            await self._write_message(self._notification(self._session_update_method, update))
+            await self._write_session_update(update)
             state[f"tool_closed::{tool_name}"] = tool_call_id
         if isinstance(open_tool_calls, list):
             open_tool_calls.clear()
