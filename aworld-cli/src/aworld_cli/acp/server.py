@@ -270,6 +270,7 @@ class AcpStdioServer:
         self._state_by_session: dict[str, dict[str, Any]] = {}
         self._write_lock = asyncio.Lock()
         self._output_bridge = output_bridge or AcpExecutorOutputBridge()
+        self._session_update_method = "sessionUpdate"
 
     async def run(self) -> int:
         pending_requests: set[asyncio.Task[Any]] = set()
@@ -297,6 +298,9 @@ class AcpStdioServer:
 
         try:
             if method == "initialize":
+                protocol_version = params.get("protocolVersion")
+                if isinstance(protocol_version, int) and protocol_version >= 1:
+                    self._session_update_method = "session/update"
                 response = self._response(
                     request_id,
                     {
@@ -305,11 +309,11 @@ class AcpStdioServer:
                         "agentCapabilities": {"loadSession": False},
                     },
                 )
-            elif method == "newSession":
+            elif method in ("newSession", "session/new"):
                 response = self._response(request_id, self._handle_new_session(params))
-            elif method == "prompt":
+            elif method in ("prompt", "session/prompt"):
                 response = await self._handle_prompt(request_id, params)
-            elif method == "cancel":
+            elif method in ("cancel", "session/cancel"):
                 response = await self._handle_cancel(request_id, params)
             else:
                 response = self._error(request_id, -32601, f"Unsupported method: {method}")
@@ -322,7 +326,8 @@ class AcpStdioServer:
                 data=build_error_data(detail) if detail is not None else None,
             )
 
-        await self._write_message(response)
+        if request_id is not None:
+            await self._write_message(response)
 
     def _handle_new_session(self, params: dict[str, Any]) -> dict[str, Any]:
         cwd = params.get("cwd")
@@ -389,7 +394,7 @@ class AcpStdioServer:
                         if isinstance(tool_name, str) and isinstance(tool_call_id, str):
                             state[f"tool_closed::{tool_name}"] = tool_call_id
                     update = map_runtime_event_to_session_update(session_id, event)
-                    await self._write_message(self._notification("sessionUpdate", update))
+                    await self._write_message(self._notification(self._session_update_method, update))
 
         try:
             task = await self._turns.start_turn(session_id, _run_turn())
@@ -636,7 +641,7 @@ class AcpStdioServer:
                     "raw_output": {"code": code, "message": message},
                 },
             )
-            await self._write_message(self._notification("sessionUpdate", update))
+            await self._write_message(self._notification(self._session_update_method, update))
             state[f"tool_closed::{tool_name}"] = tool_call_id
         if isinstance(open_tool_calls, list):
             open_tool_calls.clear()
