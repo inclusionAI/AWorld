@@ -1138,7 +1138,7 @@ async def test_executor_output_bridge_applies_and_restores_requested_mcp_servers
 
 
 @pytest.mark.asyncio
-async def test_executor_output_bridge_falls_back_to_message_output_when_no_agent_loaded() -> None:
+async def test_executor_output_bridge_raises_error_when_no_agent_loaded() -> None:
     class EmptyRegistry:
         @staticmethod
         def get_agent(_agent_id: str):
@@ -1160,14 +1160,11 @@ async def test_executor_output_bridge_falls_back_to_message_output_when_no_agent
         init_agents_func=lambda *_args, **_kwargs: None,
     )
 
-    outputs = [
-        output
-        async for output in bridge.stream_outputs(
-            record=record,
-            prompt_text="hello",
-        )
-    ]
-
-    assert len(outputs) == 1
-    assert isinstance(outputs[0], MessageOutput)
-    assert outputs[0].source.content == "hello"
+    with pytest.raises(ValueError, match="No ACP-capable agent found"):
+        _outputs = [
+            output
+            async for output in bridge.stream_outputs(
+                record=record,
+                prompt_text="hello",
+            )
+        ]

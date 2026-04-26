@@ -92,14 +92,10 @@ class AcpExecutorOutputBridge:
         try:
             agent = await self._resolve_agent()
             if agent is None:
-                yield MessageOutput(
-                    source=ModelResponse(
-                        id=f"acp-fallback-{record.acp_session_id}",
-                        model="aworld-cli/acp-fallback",
-                        content=prompt_text,
-                    )
+                raise ValueError(
+                    "No ACP-capable agent found. Ensure agent bundles are loaded. "
+                    "Set AWORLD_ACP_AGENT explicitly or check bootstrap configuration."
                 )
-                return
 
             executor, restore_sandbox_state = await self._create_executor(
                 agent=agent,
