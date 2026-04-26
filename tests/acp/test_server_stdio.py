@@ -21,6 +21,7 @@ SELF_TEST_SLOW_PROMPT = "__acp_self_test_slow__"
 def _spawn_acp_server() -> subprocess.Popen[str]:
     env = dict(os.environ)
     env.update(ENV)
+    env["AWORLD_ACP_SELF_TEST_BRIDGE"] = "1"
     return subprocess.Popen(
         [sys.executable, "-m", "aworld_cli.main", "--no-banner", "acp"],
         stdin=subprocess.PIPE,
