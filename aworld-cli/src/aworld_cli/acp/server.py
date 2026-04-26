@@ -597,9 +597,19 @@ class AcpStdioServer:
             sys.stdout.buffer.flush()
 
     async def _write_session_update(self, params: dict[str, Any]) -> None:
+        if self._session_update_method == "session/update" and not self._should_emit_current_session_update(params):
+            return
         if self._session_update_method == "session/update":
             params = self._to_current_session_update(params)
         await self._write_message(self._notification(self._session_update_method, params))
+
+    @staticmethod
+    def _should_emit_current_session_update(params: dict[str, Any]) -> bool:
+        update = params.get("update")
+        if not isinstance(update, dict):
+            return True
+        update_type = update.get("sessionUpdate")
+        return update_type not in {"tool_call", "tool_call_update"}
 
     @staticmethod
     def _to_current_session_update(params: dict[str, Any]) -> dict[str, Any]:
