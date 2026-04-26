@@ -216,6 +216,7 @@ def test_acp_server_accepts_current_acp_session_methods() -> None:
         assert notification["method"] == "session/update"
         assert notification["params"]["sessionId"] == session_id
         assert notification["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+        assert notification["params"]["update"]["content"] == {"type": "text", "text": "hello"}
         assert response["id"] == 3
         assert response["result"]["status"] == "completed"
     finally:
