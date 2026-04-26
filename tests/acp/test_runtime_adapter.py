@@ -54,6 +54,26 @@ def test_chunk_output_maps_to_text_delta_event() -> None:
     assert events == [{"event_type": "text_delta", "seq": 1, "text": "hello"}]
 
 
+def test_chunk_output_reasoning_maps_to_thought_delta_before_text() -> None:
+    state: dict[str, object] = {}
+    output = ChunkOutput(
+        data=ModelResponse(
+            id="resp-1",
+            model="demo",
+            content="hello",
+            reasoning_content="need to search first",
+        ),
+        metadata={},
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [
+        {"event_type": "thought_delta", "seq": 1, "text": "need to search first"},
+        {"event_type": "text_delta", "seq": 2, "text": "hello"},
+    ]
+
+
 def test_message_output_tool_calls_become_tool_start_events() -> None:
     state: dict[str, object] = {}
     output = MessageOutput(
@@ -107,3 +127,47 @@ def test_message_output_final_text_is_suppressed_after_chunk_stream() -> None:
     events = adapt_output_to_runtime_events(state, output)
 
     assert events == []
+
+
+def test_message_output_reasoning_maps_to_thought_delta() -> None:
+    state: dict[str, object] = {}
+    output = MessageOutput(
+        source=ModelResponse(
+            id="resp-1",
+            model="demo",
+            content="final answer",
+            reasoning_content="plan before answer",
+        ),
+        metadata={"sender": "Aworld", "is_finished": True},
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [
+        {"event_type": "thought_delta", "seq": 1, "text": "plan before answer"},
+        {"event_type": "final_text", "seq": 2, "text": "final answer"},
+    ]
+
+
+def test_message_output_text_requires_completion_marker_for_routed_runtime_messages() -> None:
+    state: dict[str, object] = {}
+    output = MessageOutput(
+        source=ModelResponse(id="resp-1", model="demo", content="echoed prompt"),
+        metadata={"sender": "Aworld", "receiver": None},
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == []
+
+
+def test_message_output_text_emits_when_routed_runtime_message_is_finished() -> None:
+    state: dict[str, object] = {}
+    output = MessageOutput(
+        source=ModelResponse(id="resp-1", model="demo", content="final answer"),
+        metadata={"sender": "Aworld", "receiver": None, "is_finished": True},
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [{"event_type": "final_text", "seq": 1, "text": "final answer"}]
