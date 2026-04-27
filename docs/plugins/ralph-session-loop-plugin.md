@@ -17,6 +17,22 @@ The flow is:
 
 This is the phase-1 interactive Ralph model. It is **not** the fresh-process orchestration model.
 
+## Boundary With RalphRunner
+
+The Ralph session-loop plugin and `RalphRunner` are intentionally different layers.
+
+- the Ralph plugin is an `aworld-cli` capability for continuing work across an interactive session
+- `RalphRunner` is an `aworld` framework capability for running Ralph-style convergence inside task execution
+
+The phase-1 plugin does **not** call `RalphRunner`, wrap `RalphRunner`, or depend on `RalphRunner`.
+
+The intended boundary is:
+
+- outer plugin controls whether the current CLI session should continue into another round
+- inner runner controls whether a single task execution has converged
+
+That means Ralph support in AWorld is **not** limited to the CLI plugin. Framework users can still use Ralph through runner-level APIs, while CLI users can use the session-loop plugin as a separate interaction model.
+
 ## Commands
 
 Start a Ralph loop:
@@ -122,6 +138,12 @@ Expected behavior:
 
 - first few `exit` attempts continue the loop
 - once iteration `5` is reached, `exit` is allowed
+
+Important:
+
+- plugin `--max-iterations` applies only to the outer session loop
+- it does not override or configure `RalphRunner` internal `max_iterations`
+- if a task is ever executed by a runner with its own internal iteration cap, that cap remains an inner execution concern
 
 ## Typical Workflow
 
