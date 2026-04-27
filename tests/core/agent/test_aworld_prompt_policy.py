@@ -51,3 +51,41 @@ def test_aworld_prompt_requires_using_cron_result_as_source_of_truth():
 
     assert "only trust the tool's returned fields such as `success`, `job_id`, `next_run`, and `error`" in prompt
     assert "use the returned `next_run` as the confirmed reminder time" in prompt
+
+
+def test_aworld_prompt_prefers_mac_ui_automation_for_host_local_macos_app_control():
+    prompt = load_aworld_system_prompt()
+
+    assert "When the user wants to operate a macOS app on the same host machine" in prompt
+    assert "use the macOS UI automation action tools as the primary tool path" in prompt
+    assert "`permissions`, `list_apps`, `launch_app`, `list_windows`, `focus_window`, `see`, `click`, `type`, `press`, and `scroll`" in prompt
+    assert "permissions -> list_apps/launch_app -> list_windows/focus_window -> see -> click/type/press/scroll" in prompt
+
+
+def test_aworld_prompt_forbids_shell_first_fallback_for_host_local_macos_ui_tasks():
+    prompt = load_aworld_system_prompt()
+
+    assert "Do not start with `bash`, Python, AppleScript, or ad-hoc screenshots" in prompt
+    assert "unless the `mac_ui_automation` path is unavailable or has already failed for a specific reason" in prompt
+
+
+def test_aworld_prompt_does_not_treat_mac_ui_automation_as_a_single_tool_name():
+    prompt = load_aworld_system_prompt()
+
+    assert "`mac_ui_automation` is the server/capability name, not necessarily a single callable tool name" in prompt
+    assert "Do not inspect Python modules or shell out just to discover whether those action tools exist." in prompt
+
+
+def test_aworld_prompt_prefers_current_surface_exploration_before_fallback():
+    prompt = load_aworld_system_prompt()
+
+    assert "Once the target application and likely target surface have been reached" in prompt
+    assert "prefer continuing exploration on the current surface rather than switching tools or strategies immediately" in prompt
+
+
+def test_aworld_prompt_requires_bounded_in_app_exploration_before_shell_fallback():
+    prompt = load_aworld_system_prompt()
+
+    assert "If the requested content is not yet visible but the current surface still appears relevant" in prompt
+    assert "use bounded in-app exploration first" in prompt
+    assert "Do not fall back to shell scripts, screenshots, or OCR until the current surface has been explored" in prompt
