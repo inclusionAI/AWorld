@@ -57,7 +57,8 @@ def test_aworld_prompt_prefers_mac_ui_automation_for_host_local_macos_app_contro
     prompt = load_aworld_system_prompt()
 
     assert "When the user wants to operate a macOS app on the same host machine" in prompt
-    assert "use `mac_ui_automation` as the primary tool path" in prompt
+    assert "use the macOS UI automation action tools as the primary tool path" in prompt
+    assert "`permissions`, `list_apps`, `launch_app`, `list_windows`, `focus_window`, `see`, `click`, `type`, `press`, and `scroll`" in prompt
     assert "permissions -> list_apps/launch_app -> list_windows/focus_window -> see -> click/type/press/scroll" in prompt
 
 
@@ -66,3 +67,10 @@ def test_aworld_prompt_forbids_shell_first_fallback_for_host_local_macos_ui_task
 
     assert "Do not start with `bash`, Python, AppleScript, or ad-hoc screenshots" in prompt
     assert "unless the `mac_ui_automation` path is unavailable or has already failed for a specific reason" in prompt
+
+
+def test_aworld_prompt_does_not_treat_mac_ui_automation_as_a_single_tool_name():
+    prompt = load_aworld_system_prompt()
+
+    assert "`mac_ui_automation` is the server/capability name, not necessarily a single callable tool name" in prompt
+    assert "Do not inspect Python modules or shell out just to discover whether those action tools exist." in prompt
