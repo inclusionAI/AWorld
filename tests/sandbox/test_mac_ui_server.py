@@ -1,4 +1,7 @@
 import json
+import subprocess
+import sys
+from pathlib import Path
 
 from aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main import (
     permissions,
@@ -278,6 +281,25 @@ def test_run_action_caches_permission_preflight(monkeypatch):
 
     assert calls["permissions"] == 1
     assert calls["click"] == 2
+
+
+def test_mac_ui_server_module_can_be_executed_by_path_without_relative_import_failure():
+    server_main = Path(
+        "/Users/wuman/Documents/workspace/aworld/.worktrees/aworld-host-local-mac-ui-automation/"
+        "aworld/sandbox/tool_servers/platforms/mac/ui_automation/src/main.py"
+    )
+    command = [
+        sys.executable,
+        "-c",
+        (
+            "import runpy; "
+            f"runpy.run_path({server_main.as_posix()!r}, run_name='aworld_mac_ui_server_test')"
+        ),
+    ]
+
+    result = subprocess.run(command, capture_output=True, text=True)
+
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 async def test_permissions_tool_offloads_run_action_with_to_thread(monkeypatch):

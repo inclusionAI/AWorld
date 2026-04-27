@@ -6,6 +6,7 @@ import logging
 import os
 import sys
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 from mcp.server import FastMCP
@@ -13,9 +14,26 @@ from mcp.server.fastmcp import Context
 from mcp.types import TextContent
 from pydantic import Field
 
-from .backends.peekaboo_cli import execute_peekaboo_action
-from .errors import MacUIError, error_payload
-from .preflight import detect_backend_availability, gate_enabled, is_macos_host
+if __package__ in (None, ""):
+    repo_root = Path(__file__).resolve().parents[7]
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    from aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.backends.peekaboo_cli import (
+        execute_peekaboo_action,
+    )
+    from aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.errors import (
+        MacUIError,
+        error_payload,
+    )
+    from aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.preflight import (
+        detect_backend_availability,
+        gate_enabled,
+        is_macos_host,
+    )
+else:
+    from .backends.peekaboo_cli import execute_peekaboo_action
+    from .errors import MacUIError, error_payload
+    from .preflight import detect_backend_availability, gate_enabled, is_macos_host
 
 INTERACTION_ACTIONS = {"click", "type", "press", "scroll"}
 OPTIONAL_SCOPE_FIELDS = {"app", "window_id", "window_title"}
