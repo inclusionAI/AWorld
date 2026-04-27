@@ -3,6 +3,7 @@
 from aworld.core.task import Runner, Task, TaskResponse
 from aworld.logs.util import logger
 from aworld.runners.event_runner import TaskEventRunner
+from aworld.runners.ralph.evaluator import IterationEvaluator
 from aworld.runners.ralph.input_builder import IterationInput, IterationInputBuilder
 from aworld.runners.ralph.policy import RalphLoopPolicy
 from aworld.utils.run_util import exec_tasks
@@ -37,6 +38,7 @@ class RalphRunner(Runner):
         self.policy = RalphLoopPolicy.from_config(self.ralph_config)
         self.memory_store = None
         self.input_builder = None
+        self.evaluator = None
 
         # Initialize components
         self._init_stop_detector()
@@ -48,6 +50,11 @@ class RalphRunner(Runner):
                                             work_dir=self.ralph_config.workspace)
         self.memory_store = self.loop_context.memory
         self.input_builder = IterationInputBuilder(policy=self.policy, memory_store=self.memory_store)
+        self.evaluator = IterationEvaluator(
+            context=self.loop_context,
+            memory_store=self.memory_store,
+            verify_config=self.ralph_config.verify,
+        )
 
     async def do_run(self):
         execution_result = TaskResponse()
@@ -67,6 +74,12 @@ class RalphRunner(Runner):
             logger.info(f"Iteration {iter_num} Executing task...")
             try:
                 execution_result = await self._execute_task(cur_task, iter_num=iter_num)
+                if self.evaluator is not None:
+                    await self.evaluator.evaluate(
+                        task=cur_task,
+                        iter_num=iter_num,
+                        execution_result=execution_result,
+                    )
             except:
                 logger.error(f"Error executing task: {cur_task.id}")
                 # error process

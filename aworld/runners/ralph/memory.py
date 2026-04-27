@@ -21,6 +21,9 @@ class LoopMemoryStore:
     def reflection_feedback_artifact_id(self, task_id: str, iteration: int) -> str:
         return self._artifact_id(self.context.reflect_dir(), task_id, iteration)
 
+    def verify_result_artifact_id(self, task_id: str, iteration: int) -> str:
+        return self._artifact_id(self.context.loop_dir() / "verify", task_id, iteration)
+
     def answer_path(self, task_id: str, iteration: int) -> Path:
         return self.context.answer_dir() / f"{task_id}_{iteration}"
 
@@ -73,6 +76,25 @@ class LoopMemoryStore:
     async def read_reflection_feedback(self, task_id: str, iteration: int) -> Optional[str]:
         return self._read_text_artifact(self.reflection_feedback_artifact_id(task_id, iteration))
 
+    async def write_verify_result(self, task_id: str, iteration: int, payload: dict[str, Any]) -> None:
+        await self._write_artifact(
+            artifact_id=self.verify_result_artifact_id(task_id, iteration),
+            artifact_type=ArtifactType.JSON,
+            content=payload,
+            metadata={
+                "task_id": task_id,
+                "iteration": iteration,
+                "kind": "verify_result",
+                "timestamp": time.time(),
+            },
+        )
+
+    async def read_verify_result(self, task_id: str, iteration: int) -> Optional[dict[str, Any]]:
+        artifact_data = self.context.workspace.get_artifact_data(self.verify_result_artifact_id(task_id, iteration))
+        if not artifact_data:
+            return None
+        return artifact_data.get("content")
+
     async def write_answer(self, task_id: str, iteration: int, content: Any) -> dict[str, Any]:
         return await self.write_answer_file(f"{task_id}_{iteration}", content)
 
@@ -108,10 +130,24 @@ class LoopMemoryStore:
         return f"{base_dir}_{task_id}_{iteration}"
 
     async def _write_text_artifact(self, artifact_id: str, text: str, metadata: dict[str, Any]) -> None:
-        artifact = Artifact(
+        await self._write_artifact(
             artifact_id=artifact_id,
             artifact_type=ArtifactType.TEXT,
             content=text,
+            metadata=metadata,
+        )
+
+    async def _write_artifact(
+        self,
+        artifact_id: str,
+        artifact_type: ArtifactType,
+        content: Any,
+        metadata: dict[str, Any],
+    ) -> None:
+        artifact = Artifact(
+            artifact_id=artifact_id,
+            artifact_type=artifact_type,
+            content=content,
             metadata=metadata,
         )
         await self.context.workspace.add_artifact(artifact, index=False)

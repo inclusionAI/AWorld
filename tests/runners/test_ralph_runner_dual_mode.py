@@ -5,7 +5,7 @@ import pytest
 from aworld import runner as runner_module
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.task import Task, TaskResponse
-from aworld.runners.ralph.config import RalphConfig
+from aworld.runners.ralph.config import RalphConfig, RalphVerifyConfig
 from aworld.runners.ralph.input_builder import IterationInput, IterationInputBuilder
 from aworld.runners.ralph.memory import LoopMemoryStore
 from aworld.runners.ralph.policy import RalphLoopPolicy
@@ -229,3 +229,38 @@ async def test_runner_ralph_run_preserves_public_api(monkeypatch):
     result = await runner_module.Runners.ralph_run(task, CompletionCriteria(max_iterations=1))
 
     assert result is response
+
+
+@pytest.mark.asyncio
+async def test_ralph_runner_do_run_invokes_iteration_evaluator_after_execution(tmp_path):
+    task = Task(
+        input="Build API",
+        conf=RalphConfig(
+            workspace=str(tmp_path),
+            verify=RalphVerifyConfig(enabled=True, commands=["pytest -q"], run_on_each_iteration=True),
+        ),
+    )
+    runner = RalphRunner(task=task, completion_criteria=CompletionCriteria(max_iterations=2))
+    runner.loop_context = LoopContext(
+        completion_criteria=CompletionCriteria(max_iterations=2),
+        loop_state=LoopState(),
+        work_dir=str(tmp_path),
+    )
+    response = TaskResponse(id=task.id, answer="done", success=True)
+    runner._execute_task = AsyncMock(return_value=response)
+    runner.evaluator = AsyncMock()
+    runner.stop_detector.should_stop = AsyncMock(
+        side_effect=[
+            type("StopDecision", (), {"should_stop": False, "stop_type": None, "reason": None})(),
+            type("StopDecision", (), {"should_stop": True, "stop_type": "max_iterations", "reason": "done"})(),
+        ]
+    )
+
+    result = await runner.do_run()
+
+    assert result is response
+    runner.evaluator.evaluate.assert_awaited_once_with(
+        task=task,
+        iter_num=1,
+        execution_result=response,
+    )
