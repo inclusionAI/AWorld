@@ -1,9 +1,11 @@
 """Host-local macOS UI automation MCP server."""
 
+import asyncio
 import json
 import logging
 import os
 import sys
+import time
 from typing import Any, Optional
 
 from mcp.server import FastMCP
@@ -19,6 +21,9 @@ INTERACTION_ACTIONS = {"click", "type", "press", "scroll"}
 OPTIONAL_SCOPE_FIELDS = {"app", "window_id", "window_title"}
 OPTIONAL_TIMEOUT_FIELD = "timeout_seconds"
 REQUIRED_PERMISSION_MARKERS = ("accessibility", "screen recording")
+MAX_TIMEOUT_SECONDS = 300.0
+PERMISSION_CACHE_TTL_SECONDS = 60.0
+_permission_preflight_cache: dict[str, Any] = {"checked_at": 0.0, "missing": None}
 
 _log_level = os.environ.get("MCP_LOG_LEVEL") or os.environ.get("LOG_LEVEL") or os.environ.get("LOGLEVEL") or "WARNING"
 mcp = FastMCP(
@@ -129,8 +134,7 @@ def _run_preflight(action: str) -> None:
     if action == "permissions":
         return
 
-    permissions_result = execute_peekaboo_action("permissions", {})
-    missing = _collect_missing_required_permissions(permissions_result.get("permissions", []))
+    missing = _get_missing_required_permissions()
     if missing:
         raise MacUIError(
             code="PERMISSION_MISSING",
@@ -139,9 +143,9 @@ def _run_preflight(action: str) -> None:
         )
 
 
-def _tool_response(action: str, params: dict[str, object]) -> TextContent:
+async def _tool_response(action: str, params: dict[str, object]) -> TextContent:
     try:
-        data = run_action(action, params)
+        data = await asyncio.to_thread(run_action, action, params)
     except MacUIError as exc:
         raise ValueError(json.dumps(error_payload(exc), ensure_ascii=False)) from exc
     return TextContent(
@@ -160,8 +164,11 @@ def _validate_timeout(params: dict[str, object]) -> None:
     timeout = params.get(OPTIONAL_TIMEOUT_FIELD)
     if timeout is None:
         return
-    if float(timeout) <= 0:
+    timeout_value = float(timeout)
+    if timeout_value <= 0:
         raise ValueError("timeout_seconds must be greater than 0")
+    if timeout_value > MAX_TIMEOUT_SECONDS:
+        raise ValueError(f"timeout_seconds must be less than or equal to {int(MAX_TIMEOUT_SECONDS)}")
 
 
 def _validate_coordinate_pair(params: dict[str, object]) -> None:
@@ -183,9 +190,23 @@ def _collect_missing_required_permissions(permissions: list[dict[str, Any]]) -> 
     return missing
 
 
+def _get_missing_required_permissions() -> list[dict[str, Any]]:
+    now = time.monotonic()
+    checked_at = float(_permission_preflight_cache.get("checked_at", 0.0) or 0.0)
+    cached_missing = _permission_preflight_cache.get("missing")
+    if checked_at and cached_missing is not None and now - checked_at < PERMISSION_CACHE_TTL_SECONDS:
+        return list(cached_missing)
+
+    permissions_result = execute_peekaboo_action("permissions", {})
+    missing = _collect_missing_required_permissions(permissions_result.get("permissions", []))
+    _permission_preflight_cache["checked_at"] = now
+    _permission_preflight_cache["missing"] = list(missing)
+    return missing
+
+
 @mcp.tool(description="Inspect current macOS UI automation permission status.")
 async def permissions(ctx: Context) -> TextContent:
-    return _tool_response("permissions", {})
+    return await _tool_response("permissions", {})
 
 
 @mcp.tool(description="List currently running GUI apps visible to the backend.")
@@ -193,7 +214,7 @@ async def list_apps(
     ctx: Context,
     running_only: bool = Field(default=True, description="Reserved for future use; running apps are always returned in phase 1."),
 ) -> TextContent:
-    return _tool_response("list_apps", {"running_only": running_only})
+    return await _tool_response("list_apps", {"running_only": running_only})
 
 
 @mcp.tool(description="Launch a macOS application by app name.")
@@ -201,7 +222,7 @@ async def launch_app(
     ctx: Context,
     app: str = Field(description="Application name, bundle ID, or path supported by Peekaboo launch."),
 ) -> TextContent:
-    return _tool_response("launch_app", {"app": app})
+    return await _tool_response("launch_app", {"app": app})
 
 
 @mcp.tool(description="List windows for a macOS application or the backend default scope.")
@@ -209,7 +230,7 @@ async def list_windows(
     ctx: Context,
     app: Optional[str] = Field(default=None, description="Optional app name to scope the window list."),
 ) -> TextContent:
-    return _tool_response("list_windows", {"app": app})
+    return await _tool_response("list_windows", {"app": app})
 
 
 @mcp.tool(description="Focus a specific macOS window.")
@@ -219,7 +240,7 @@ async def focus_window(
     window_id: Optional[str] = Field(default=None, description="Window identifier."),
     window_title: Optional[str] = Field(default=None, description="Window title."),
 ) -> TextContent:
-    return _tool_response(
+    return await _tool_response(
         "focus_window",
         {"app": app, "window_id": window_id, "window_title": window_title},
     )
@@ -234,7 +255,7 @@ async def see(
     include_artifact: bool = Field(default=False, description="Whether to request an annotated artifact."),
     timeout_seconds: Optional[float] = Field(default=None, description="Optional backend timeout override."),
 ) -> TextContent:
-    return _tool_response(
+    return await _tool_response(
         "see",
         {
             "app": app,
@@ -257,7 +278,7 @@ async def click(
     window_title: Optional[str] = Field(default=None, description="Optional window title."),
     timeout_seconds: Optional[float] = Field(default=None, description="Optional wait timeout override."),
 ) -> TextContent:
-    return _tool_response(
+    return await _tool_response(
         "click",
         {
             "target_id": target_id,
@@ -280,7 +301,7 @@ async def type(
     window_title: Optional[str] = Field(default=None, description="Optional window title."),
     timeout_seconds: Optional[float] = Field(default=None, description="Optional timeout override."),
 ) -> TextContent:
-    return _tool_response(
+    return await _tool_response(
         "type",
         {
             "text": text,
@@ -302,7 +323,7 @@ async def press(
     window_title: Optional[str] = Field(default=None, description="Optional window title."),
     timeout_seconds: Optional[float] = Field(default=None, description="Optional timeout override."),
 ) -> TextContent:
-    return _tool_response(
+    return await _tool_response(
         "press",
         {
             "keys": keys,
@@ -328,7 +349,7 @@ async def scroll(
     window_title: Optional[str] = Field(default=None, description="Optional window title."),
     timeout_seconds: Optional[float] = Field(default=None, description="Optional timeout override."),
 ) -> TextContent:
-    return _tool_response(
+    return await _tool_response(
         "scroll",
         {
             "direction": direction,
