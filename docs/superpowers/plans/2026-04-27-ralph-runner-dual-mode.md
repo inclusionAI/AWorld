@@ -8,6 +8,33 @@
 
 **Tech Stack:** Python 3.12, pytest, existing AWorld runner/context/workspace/sandbox stack, `Sandbox.builder()` filesystem and terminal namespaces.
 
+## Execution Status
+
+Status: Implemented on April 27, 2026.
+
+Delivered commits:
+
+- `053c43aa` `feat: add explicit ralph execution mode config`
+- `4a69a74f` `refactor: extract ralph loop memory store`
+- `74bdc286` `fix: restore ralph loop memory compatibility`
+- `b70d3042` `refactor: add dual-mode ralph iteration input builder`
+- `03112a6e` `fix: seed fresh ralph contexts from iteration input`
+- `28ade7ea` `feat: add ralph verification pipeline`
+- `4db0b847` `fix: gate ralph verification scheduling`
+- `3ba5731e` `fix: persist ralph iteration evaluation state`
+
+Verification executed on the final integrated branch:
+
+```bash
+pytest tests/runners/test_ralph_runner_dual_mode.py tests/runners/test_ralph_loop_memory_store.py tests/runners/test_ralph_iteration_evaluator.py tests/runners/test_tool_reset_compat.py -q
+```
+
+Expected/actual result:
+
+- PASS (`32 passed`)
+
+All implementation tasks below are complete. The checkbox steps are preserved as execution history for the delivery sequence.
+
 ---
 
 ## File Structure
@@ -500,11 +527,11 @@ git commit -m "feat: add ralph verification pipeline"
 
 ## Self-Review Checklist
 
-- [ ] `execution_mode` is the internal source of truth; `reuse_context` remains compatibility-only.
-- [ ] `RalphRunner` does not take on CLI session-loop or fresh-process orchestration responsibilities.
-- [ ] `LoopMemoryStore` reuses `WorkSpace`, artifacts, and sandbox file/terminal capabilities rather than creating a new storage subsystem.
-- [ ] `fresh_context` rebuilds task context from persisted memory instead of reusing runtime state.
-- [ ] `aworld.runner.ralph_run(...)` still works without new required parameters.
+- [x] `execution_mode` is the internal source of truth; `reuse_context` remains compatibility-only.
+- [x] `RalphRunner` does not take on CLI session-loop or fresh-process orchestration responsibilities.
+- [x] `LoopMemoryStore` reuses `WorkSpace`, artifacts, and sandbox file/terminal capabilities rather than creating a new storage subsystem.
+- [x] `fresh_context` rebuilds task context from persisted memory instead of reusing runtime state.
+- [x] `aworld.runner.ralph_run(...)` still works without new required parameters.
 
 ## Final Verification
 
