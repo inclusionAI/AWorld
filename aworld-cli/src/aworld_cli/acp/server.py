@@ -280,22 +280,25 @@ class AcpStdioServer:
 
     async def run(self) -> int:
         pending_requests: set[asyncio.Task[Any]] = set()
-        while True:
-            line = await asyncio.to_thread(sys.stdin.buffer.readline)
-            if not line:
-                break
+        try:
+            while True:
+                line = await asyncio.to_thread(sys.stdin.buffer.readline)
+                if not line:
+                    break
 
-            request = decode_jsonrpc_line(line)
-            if "method" not in request:
-                continue
+                request = decode_jsonrpc_line(line)
+                if "method" not in request:
+                    continue
 
-            task = asyncio.create_task(self._dispatch_request(request))
-            pending_requests.add(task)
-            task.add_done_callback(pending_requests.discard)
+                task = asyncio.create_task(self._dispatch_request(request))
+                pending_requests.add(task)
+                task.add_done_callback(pending_requests.discard)
 
-        if pending_requests:
-            await asyncio.gather(*pending_requests, return_exceptions=True)
-        return 0
+            if pending_requests:
+                await asyncio.gather(*pending_requests, return_exceptions=True)
+            return 0
+        finally:
+            await self._shutdown()
 
     async def _dispatch_request(self, request: dict[str, Any]) -> None:
         method = request["method"]
@@ -393,6 +396,10 @@ class AcpStdioServer:
                             message=str(event["message"]),
                         )
                         return
+                    if event.get("event_type") == "tool_start":
+                        tool_call_id = event.get("tool_call_id")
+                        if isinstance(tool_call_id, str):
+                            state[f"tool_input::{tool_call_id}"] = event.get("raw_input")
                     if event.get("event_type") == "tool_end":
                         tool_name = event.get("tool_name")
                         tool_call_id = event.get("tool_call_id")
@@ -402,6 +409,7 @@ class AcpStdioServer:
                             session_id=session_id,
                             tool_name=tool_name if isinstance(tool_name, str) else None,
                             payload=event.get("raw_output"),
+                            tool_input=state.get(f"tool_input::{tool_call_id}") if isinstance(tool_call_id, str) else None,
                         )
                     update = map_runtime_event_to_session_update(session_id, event)
                     await self._write_message(self._notification("sessionUpdate", update))
@@ -638,6 +646,29 @@ class AcpStdioServer:
                 self._cron_runtime_started = True
             except Exception as exc:
                 logger.warning(f"Failed to bootstrap ACP cron runtime: {exc}")
+
+    async def _shutdown(self) -> None:
+        session_ids = list(self._state_by_session.keys())
+        for session_id in session_ids:
+            self._cron_bridge.unregister_session(session_id)
+
+        scheduler = self._scheduler
+        self._state_by_session.clear()
+        self._cron_runtime_started = False
+        self._scheduler = None
+        self._notification_center = None
+
+        if scheduler is None:
+            return
+
+        stop = getattr(scheduler, "stop", None)
+        if callable(stop) and getattr(scheduler, "running", False):
+            try:
+                stop_result = stop()
+                if asyncio.iscoroutine(stop_result):
+                    await stop_result
+            except Exception as exc:
+                logger.warning(f"Failed to stop ACP cron runtime: {exc}")
 
     @staticmethod
     def _normalize_runtime_events(state: dict[str, Any], output: Any) -> list[dict[str, Any]]:
