@@ -201,7 +201,15 @@ def _collect_missing_required_permissions(permissions: list[dict[str, Any]]) -> 
     for permission in permissions:
         name = str(permission.get("name", "")).lower()
         status = str(permission.get("status", "")).lower()
-        if status == "granted":
+        is_granted = permission.get("isGranted")
+        if isinstance(is_granted, bool):
+            granted = is_granted
+        elif status:
+            granted = status == "granted"
+        else:
+            granted = False
+
+        if granted:
             continue
         if any(marker in name for marker in REQUIRED_PERMISSION_MARKERS):
             missing.append(permission)

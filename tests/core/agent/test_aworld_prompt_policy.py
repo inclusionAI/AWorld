@@ -74,3 +74,18 @@ def test_aworld_prompt_does_not_treat_mac_ui_automation_as_a_single_tool_name():
 
     assert "`mac_ui_automation` is the server/capability name, not necessarily a single callable tool name" in prompt
     assert "Do not inspect Python modules or shell out just to discover whether those action tools exist." in prompt
+
+
+def test_aworld_prompt_prefers_current_surface_exploration_before_fallback():
+    prompt = load_aworld_system_prompt()
+
+    assert "Once the target application and likely target surface have been reached" in prompt
+    assert "prefer continuing exploration on the current surface rather than switching tools or strategies immediately" in prompt
+
+
+def test_aworld_prompt_requires_bounded_in_app_exploration_before_shell_fallback():
+    prompt = load_aworld_system_prompt()
+
+    assert "If the requested content is not yet visible but the current surface still appears relevant" in prompt
+    assert "use bounded in-app exploration first" in prompt
+    assert "Do not fall back to shell scripts, screenshots, or OCR until the current surface has been explored" in prompt
