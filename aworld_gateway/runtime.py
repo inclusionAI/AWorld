@@ -5,6 +5,8 @@ import copy
 from aworld_gateway.channels.base import ChannelAdapter
 from aworld_gateway.config import DingdingChannelConfig
 from aworld_gateway.config import GatewayConfig
+from aworld_gateway.config import WechatChannelConfig
+from aworld_gateway.config import WecomChannelConfig
 from aworld_gateway.registry import ChannelRegistry
 
 
@@ -42,6 +44,18 @@ class GatewayRuntime:
             if (
                 channel_name == "dingding"
                 and isinstance(channel_config, DingdingChannelConfig)
+                and not channel_config.default_agent_id
+            ):
+                channel_config.default_agent_id = self._config.default_agent_id
+            if (
+                channel_name == "wechat"
+                and isinstance(channel_config, WechatChannelConfig)
+                and not channel_config.default_agent_id
+            ):
+                channel_config.default_agent_id = self._config.default_agent_id
+            if (
+                channel_name == "wecom"
+                and isinstance(channel_config, WecomChannelConfig)
                 and not channel_config.default_agent_id
             ):
                 channel_config.default_agent_id = self._config.default_agent_id

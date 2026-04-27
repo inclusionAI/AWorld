@@ -44,3 +44,11 @@ class GatewayConfigLoader:
         dingding = channels.get("dingding")
         if isinstance(dingding, dict):
             dingding.pop("implemented", None)
+
+        wechat = channels.get("wechat")
+        if isinstance(wechat, dict):
+            wechat.pop("implemented", None)
+
+        wecom = channels.get("wecom")
+        if isinstance(wecom, dict):
+            wecom.pop("implemented", None)
