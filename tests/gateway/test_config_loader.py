@@ -32,6 +32,8 @@ def test_load_or_init_creates_default_config_when_missing(tmp_path):
     assert raw["gateway"]["public_base_url"] is None
     assert raw["channels"]["telegram"]["enabled"] is False
     assert raw["channels"]["web"]["enabled"] is False
+    assert raw["channels"]["wechat"]["enabled"] is False
+    assert raw["channels"]["wecom"]["enabled"] is False
 
 
 def test_load_or_init_persists_public_base_url_default(tmp_path):
@@ -66,6 +68,8 @@ def test_load_or_init_preserves_existing_config(tmp_path):
             "    enabled: false\n"
             "  dingding:\n"
             "    enabled: false\n"
+            "  wechat:\n"
+            "    enabled: false\n"
             "  feishu:\n"
             "    enabled: false\n"
             "  wecom:\n"
@@ -99,6 +103,8 @@ def test_load_or_init_rejects_unknown_config_keys(tmp_path):
             "    enabled: false\n"
             "  dingding:\n"
             "    enabled: false\n"
+            "  wechat:\n"
+            "    enabled: false\n"
             "  feishu:\n"
             "    enabled: false\n"
             "  wecom:\n"
@@ -130,6 +136,8 @@ def test_load_or_init_ignores_legacy_empty_telegram_bot_token_field(tmp_path):
             "    enabled: false\n"
             "  dingding:\n"
             "    enabled: false\n"
+            "  wechat:\n"
+            "    enabled: false\n"
             "  feishu:\n"
             "    enabled: false\n"
             "  wecom:\n"
@@ -141,3 +149,36 @@ def test_load_or_init_ignores_legacy_empty_telegram_bot_token_field(tmp_path):
     config = GatewayConfigLoader(base_dir=base_dir).load_or_init()
 
     assert config.channels.telegram.bot_token_env == "AWORLD_TELEGRAM_BOT_TOKEN"
+
+
+def test_load_or_init_ignores_legacy_wecom_implemented_field(tmp_path):
+    base_dir = tmp_path / "project"
+    config_path = base_dir / ".aworld" / "gateway" / "config.yaml"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        (
+            "default_agent_id: aworld\n"
+            "gateway:\n"
+            "  host: 127.0.0.1\n"
+            "  port: 18888\n"
+            "channels:\n"
+            "  telegram:\n"
+            "    enabled: false\n"
+            "  web:\n"
+            "    enabled: false\n"
+            "  dingding:\n"
+            "    enabled: false\n"
+            "  wechat:\n"
+            "    enabled: false\n"
+            "  feishu:\n"
+            "    enabled: false\n"
+            "  wecom:\n"
+            "    enabled: false\n"
+            "    implemented: false\n"
+        ),
+        encoding="utf-8",
+    )
+
+    config = GatewayConfigLoader(base_dir=base_dir).load_or_init()
+
+    assert config.channels.wecom.enabled is False

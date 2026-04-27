@@ -8,6 +8,8 @@ from aworld_gateway.config.models import (
     PlaceholderChannelConfig,
     RouteRule,
     TelegramChannelConfig,
+    WechatChannelConfig,
+    WecomChannelConfig,
 )
 
 __all__ = [
@@ -20,4 +22,6 @@ __all__ = [
     "PlaceholderChannelConfig",
     "RouteRule",
     "TelegramChannelConfig",
+    "WechatChannelConfig",
+    "WecomChannelConfig",
 ]
