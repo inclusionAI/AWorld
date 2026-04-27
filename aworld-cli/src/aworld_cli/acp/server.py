@@ -9,12 +9,14 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from aworld.logs.util import logger
 
 from aworld.models.model_response import ModelResponse
 from aworld.output.base import MessageOutput
 from aworld.runner import Runners
 
 from .bootstrap import bootstrap_acp_plugins
+from .cron_bridge import AcpCronBridge
 from .errors import (
     AWORLD_ACP_APPROVAL_UNSUPPORTED,
     AWORLD_ACP_INVALID_CWD,
@@ -270,6 +272,11 @@ class AcpStdioServer:
         self._state_by_session: dict[str, dict[str, Any]] = {}
         self._write_lock = asyncio.Lock()
         self._output_bridge = output_bridge or AcpExecutorOutputBridge()
+        self._cron_runtime_lock = asyncio.Lock()
+        self._cron_runtime_started = False
+        self._notification_center = None
+        self._scheduler = None
+        self._cron_bridge = AcpCronBridge(write_session_update=self._write_session_update)
 
     async def run(self) -> int:
         pending_requests: set[asyncio.Task[Any]] = set()
@@ -334,6 +341,7 @@ class AcpStdioServer:
             requested_mcp_servers=params.get("mcpServers") or [],
         )
         self._state_by_session[record.acp_session_id] = {}
+        self._cron_bridge.register_session(record.acp_session_id)
         return {"sessionId": record.acp_session_id}
 
     async def _handle_prompt(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
@@ -363,6 +371,8 @@ class AcpStdioServer:
                 data=build_error_data(detail) if detail is not None else None,
             )
 
+        await self._ensure_cron_runtime_started()
+
         state: dict[str, Any] = {}
         terminal_error: dict[str, Any] | None = None
 
@@ -388,6 +398,11 @@ class AcpStdioServer:
                         tool_call_id = event.get("tool_call_id")
                         if isinstance(tool_name, str) and isinstance(tool_call_id, str):
                             state[f"tool_closed::{tool_name}"] = tool_call_id
+                        self._cron_bridge.bind_from_tool_result(
+                            session_id=session_id,
+                            tool_name=tool_name if isinstance(tool_name, str) else None,
+                            payload=event.get("raw_output"),
+                        )
                     update = map_runtime_event_to_session_update(session_id, event)
                     await self._write_message(self._notification("sessionUpdate", update))
 
@@ -582,6 +597,47 @@ class AcpStdioServer:
         async with self._write_lock:
             sys.stdout.buffer.write(payload)
             sys.stdout.buffer.flush()
+
+    async def _write_session_update(self, session_id: str, update: dict[str, Any]) -> None:
+        await self._write_message(
+            self._notification(
+                "sessionUpdate",
+                {
+                    "sessionId": session_id,
+                    "update": update,
+                },
+            )
+        )
+
+    async def _ensure_cron_runtime_started(self) -> None:
+        if self._cron_runtime_started:
+            return
+
+        async with self._cron_runtime_lock:
+            if self._cron_runtime_started:
+                return
+
+            try:
+                from aworld.core.scheduler import get_scheduler
+                from aworld_cli.runtime.cron_notifications import CronNotificationCenter
+
+                self._notification_center = CronNotificationCenter()
+                self._scheduler = get_scheduler()
+
+                async def _notification_sink(notification_data: dict[str, Any]) -> None:
+                    if self._notification_center is not None:
+                        await self._notification_center.publish(notification_data)
+                    await self._cron_bridge.publish_notification(notification_data)
+
+                self._scheduler.notification_sink = _notification_sink
+                self._scheduler.progress_sink = self._notification_center.publish_progress
+
+                if not getattr(self._scheduler, "running", False):
+                    await self._scheduler.start()
+
+                self._cron_runtime_started = True
+            except Exception as exc:
+                logger.warning(f"Failed to bootstrap ACP cron runtime: {exc}")
 
     @staticmethod
     def _normalize_runtime_events(state: dict[str, Any], output: Any) -> list[dict[str, Any]]:
