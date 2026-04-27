@@ -18,6 +18,7 @@ from .preflight import detect_backend_availability, gate_enabled, is_macos_host
 INTERACTION_ACTIONS = {"click", "type", "press", "scroll"}
 OPTIONAL_SCOPE_FIELDS = {"app", "window_id", "window_title"}
 OPTIONAL_TIMEOUT_FIELD = "timeout_seconds"
+REQUIRED_PERMISSION_MARKERS = ("accessibility", "screen recording")
 
 _log_level = os.environ.get("MCP_LOG_LEVEL") or os.environ.get("LOG_LEVEL") or os.environ.get("LOGLEVEL") or "WARNING"
 mcp = FastMCP(
@@ -46,10 +47,13 @@ def validate_action_params(action: str, params: dict[str, object]) -> None:
         _require_fields(params, "app")
         return
     if action == "list_windows":
+        _require_fields(params, "app")
         return
     if action == "focus_window":
         if not params.get("window_id") and not params.get("window_title"):
             raise ValueError("focus_window requires window_id or window_title")
+        if params.get("window_title") and not params.get("app") and not params.get("window_id"):
+            raise ValueError("focus_window with window_title requires app scope")
         return
     if action == "see":
         return
@@ -126,11 +130,7 @@ def _run_preflight(action: str) -> None:
         return
 
     permissions_result = execute_peekaboo_action("permissions", {})
-    missing = []
-    for permission in permissions_result.get("permissions", []):
-        status = str(permission.get("status", "")).lower()
-        if status != "granted":
-            missing.append(permission)
+    missing = _collect_missing_required_permissions(permissions_result.get("permissions", []))
     if missing:
         raise MacUIError(
             code="PERMISSION_MISSING",
@@ -169,6 +169,18 @@ def _validate_coordinate_pair(params: dict[str, object]) -> None:
     has_y = params.get("y") is not None
     if has_x != has_y:
         raise ValueError("x and y must be provided together")
+
+
+def _collect_missing_required_permissions(permissions: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    missing: list[dict[str, Any]] = []
+    for permission in permissions:
+        name = str(permission.get("name", "")).lower()
+        status = str(permission.get("status", "")).lower()
+        if status == "granted":
+            continue
+        if any(marker in name for marker in REQUIRED_PERMISSION_MARKERS):
+            missing.append(permission)
+    return missing
 
 
 @mcp.tool(description="Inspect current macOS UI automation permission status.")

@@ -50,9 +50,30 @@ def test_focus_window_requires_window_selector():
 def test_non_interaction_actions_accept_minimal_phase1_inputs():
     validate_action_params("permissions", {})
     validate_action_params("list_apps", {})
-    validate_action_params("list_windows", {"app": "Xiaoyuzhou"})
     validate_action_params("launch_app", {"app": "Xiaoyuzhou"})
     validate_action_params("see", {"app": "Xiaoyuzhou", "include_artifact": True})
+
+
+def test_list_windows_requires_app_selector():
+    try:
+        validate_action_params("list_windows", {})
+    except ValueError as exc:
+        assert "app" in str(exc)
+    else:
+        raise AssertionError("list_windows should require app for the peekaboo backend")
+
+
+def test_focus_window_window_title_requires_app_scope():
+    try:
+        validate_action_params("focus_window", {"window_title": "Inbox"})
+    except ValueError as exc:
+        assert "app" in str(exc)
+    else:
+        raise AssertionError("focus_window with window_title should require app scope")
+
+
+def test_focus_window_accepts_window_id_without_app():
+    validate_action_params("focus_window", {"window_id": "12345"})
 
 
 def test_run_action_reports_capability_disabled(monkeypatch):
@@ -156,3 +177,39 @@ def test_run_action_reports_missing_permissions(monkeypatch):
         assert exc.code == "PERMISSION_MISSING"
     else:
         raise AssertionError("run_action should fail when required permissions are missing")
+
+
+def test_run_action_ignores_non_required_permissions(monkeypatch):
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.gate_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.is_macos_host",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.detect_backend_availability",
+        lambda: True,
+    )
+
+    def fake_execute(action, params):
+        if action == "permissions":
+            return {
+                "permissions": [
+                    {"name": "Accessibility", "status": "granted"},
+                    {"name": "Screen Recording", "status": "granted"},
+                    {"name": "Full Disk Access", "status": "denied"},
+                ]
+            }
+        if action == "click":
+            return {"clicked": True}
+        raise AssertionError(f"unexpected action: {action}")
+
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.execute_peekaboo_action",
+        fake_execute,
+    )
+
+    result = run_action("click", {"target_id": "B1"})
+    assert result["clicked"] is True

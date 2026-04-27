@@ -21,6 +21,8 @@ ENV_FILESYSTEM_TOKEN = "AWORLD_FILESYSTEM_TOKEN"
 ENV_TERMINAL_ENDPOINT = "AWORLD_TERMINAL_ENDPOINT"
 ENV_TERMINAL_TOKEN = "AWORLD_TERMINAL_TOKEN"
 ENV_WORKSPACE = "AWORLD_WORKSPACE"
+ENV_MAC_UI_AUTOMATION_ENABLED = "AWORLD_ENABLE_MAC_UI_AUTOMATION"
+ENV_MAC_UI_AUTOMATION_BACKEND = "AWORLD_MAC_UI_AUTOMATION_BACKEND"
 
 # Server type and timeouts
 STREAMABLE_HTTP_TYPE = "streamable-http"
@@ -66,6 +68,14 @@ def get_server_env() -> Dict[str, str]:
     v = os.environ.get(ENV_WORKSPACE, "").strip()
     if v:
         env[ENV_WORKSPACE] = v
+
+    mac_ui_enabled = os.environ.get(ENV_MAC_UI_AUTOMATION_ENABLED, "").strip()
+    if mac_ui_enabled:
+        env[ENV_MAC_UI_AUTOMATION_ENABLED] = mac_ui_enabled
+
+    mac_ui_backend = os.environ.get(ENV_MAC_UI_AUTOMATION_BACKEND, "").strip()
+    if mac_ui_backend:
+        env[ENV_MAC_UI_AUTOMATION_BACKEND] = mac_ui_backend
 
     # Log suppression for MCP server subprocesses
     # These environment variables suppress verbose logging from Python-based MCP servers
