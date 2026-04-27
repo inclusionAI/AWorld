@@ -39,10 +39,30 @@ class LoopMemoryStore:
         return self._read_text_artifact(self.iteration_summary_artifact_id(task_id, iteration))
 
     async def write_reflection_feedback(self, task_id: str, iteration: int, text: str) -> None:
+        await self.write_reflection_feedback_artifact(
+            task_id=task_id,
+            iteration=iteration,
+            text=text,
+            metadata={
+                "task_id": task_id,
+                "iteration": iteration,
+                "kind": "reflection_feedback",
+                "timestamp": time.time(),
+            },
+        )
+
+    async def write_reflection_feedback_artifact(
+        self,
+        task_id: str,
+        iteration: int,
+        text: str,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> None:
         await self._write_text_artifact(
             artifact_id=self.reflection_feedback_artifact_id(task_id, iteration),
             text=text,
-            metadata={
+            metadata=metadata
+            or {
                 "task_id": task_id,
                 "iteration": iteration,
                 "kind": "reflection_feedback",
@@ -53,12 +73,15 @@ class LoopMemoryStore:
     async def read_reflection_feedback(self, task_id: str, iteration: int) -> Optional[str]:
         return self._read_text_artifact(self.reflection_feedback_artifact_id(task_id, iteration))
 
-    async def write_answer(self, task_id: str, iteration: int, content: Any) -> None:
-        await self.write_answer_file(f"{task_id}_{iteration}", content)
+    async def write_answer(self, task_id: str, iteration: int, content: Any) -> dict[str, Any]:
+        return await self.write_answer_file(f"{task_id}_{iteration}", content)
 
-    async def write_answer_file(self, filename: str, content: Any) -> None:
+    async def write_answer_file(self, filename: str, content: Any) -> dict[str, Any]:
         payload = self._serialize_answer_payload(content)
-        await self.context.sand_box.file.write_file(path=str(self.context.answer_dir() / filename), content=payload)
+        return await self.context.sand_box.file.write_file(
+            path=str(self.context.answer_dir() / filename),
+            content=payload,
+        )
 
     async def read_answer(self, task_id: str, iteration: int) -> Optional[Any]:
         result = await self.context.sand_box.file.read_file(path=str(self.answer_path(task_id, iteration)))
@@ -70,9 +93,12 @@ class LoopMemoryStore:
             try:
                 parsed = json.loads(data)
             except json.JSONDecodeError:
-                return data
+                return None
         else:
             parsed = data
+
+        if isinstance(parsed, dict) and parsed.get("type") == "text" and "content" in parsed:
+            return parsed["content"]
 
         if isinstance(parsed, dict) and "content" in parsed:
             return parsed["content"]
