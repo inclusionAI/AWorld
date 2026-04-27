@@ -87,6 +87,486 @@ async def test_prompt_streams_executor_outputs_through_adapter_and_mapper() -> N
 
 
 @pytest.mark.asyncio
+async def test_prompt_bootstraps_cron_runtime_once(monkeypatch) -> None:
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.start_calls = 0
+            self.running = False
+            self.notification_sink = None
+            self.progress_sink = None
+
+        async def start(self) -> None:
+            self.start_calls += 1
+            self.running = True
+
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            yield MessageOutput(
+                source=ModelResponse(id="resp-1", model="demo", content="ok"),
+            )
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    first = await server._handle_prompt(
+        1,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "first"}]},
+        },
+    )
+    second = await server._handle_prompt(
+        2,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "second"}]},
+        },
+    )
+
+    assert first["result"]["status"] == "completed"
+    assert second["result"]["status"] == "completed"
+    assert fake_scheduler.start_calls == 1
+    assert fake_scheduler.notification_sink is not None
+    assert fake_scheduler.progress_sink is not None
+
+
+@pytest.mark.asyncio
+async def test_acp_cron_runtime_fanouts_to_existing_notification_sink_and_restores_on_shutdown(monkeypatch) -> None:
+    previous_notifications: list[dict] = []
+
+    async def previous_sink(notification: dict) -> None:
+        previous_notifications.append(notification)
+
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.start_calls = 0
+            self.stop_calls = 0
+            self.running = False
+            self.notification_sink = previous_sink
+            self.progress_sink = None
+
+        async def start(self) -> None:
+            self.start_calls += 1
+            self.running = True
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+            self.running = False
+
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            tool_call = ToolCall(
+                id="call-cron-1",
+                function=Function(
+                    name="cron",
+                    arguments='{"action":"add","request":"一分钟后提醒我喝水"}',
+                ),
+            )
+            yield MessageOutput(
+                source=ModelResponse(
+                    id="resp-tool-start",
+                    model="demo",
+                    content="",
+                    tool_calls=[tool_call],
+                )
+            )
+            yield ToolResultOutput(
+                tool_name="cron",
+                data={"success": True, "job_id": "job-main"},
+                origin_tool_call=tool_call,
+            )
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        2,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "bind cron"}]},
+        },
+    )
+
+    assert response["result"]["status"] == "completed"
+    writes.clear()
+
+    await fake_scheduler.notification_sink(  # type: ignore[misc]
+        {
+            "job_id": "job-main",
+            "job_name": "喝水提醒",
+            "status": "ok",
+            "summary": 'Cron task "喝水提醒" completed',
+            "detail": "提醒我喝水",
+            "created_at": "2026-04-27T00:00:00+00:00",
+            "next_run_at": None,
+            "user_visible": True,
+        }
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+    assert len(previous_notifications) == 1
+    assert len(notifications) == 1
+    assert notifications[0]["params"]["sessionId"] == session["sessionId"]
+
+    await server._shutdown()
+    assert fake_scheduler.notification_sink is previous_sink
+    assert fake_scheduler.stop_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_bound_cron_notification_is_pushed_only_to_own_session(monkeypatch) -> None:
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.running = False
+            self.notification_sink = None
+            self.progress_sink = None
+
+        async def start(self) -> None:
+            self.running = True
+
+    class FakeOutputBridge:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stream_outputs(self, *, record, prompt_text):
+            self.calls += 1
+            if self.calls == 1:
+                tool_call = ToolCall(
+                    id="call-cron-1",
+                    function=Function(
+                        name="cron",
+                        arguments='{"action":"add","request":"一分钟后提醒我喝水"}',
+                    ),
+                )
+                yield MessageOutput(
+                    source=ModelResponse(
+                        id="resp-tool-start",
+                        model="demo",
+                        content="",
+                        tool_calls=[tool_call],
+                    )
+                )
+                yield ToolResultOutput(
+                    tool_name="cron",
+                    data={
+                        "success": True,
+                        "job_id": "job-main",
+                        "advance_reminder": {"job_id": "job-advance"},
+                    },
+                    origin_tool_call=tool_call,
+                )
+                return
+
+            yield MessageOutput(
+                source=ModelResponse(id=f"resp-{self.calls}", model="demo", content="noop"),
+            )
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session_one = server._handle_new_session({"cwd": ".", "mcpServers": []})
+    session_two = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        3,
+        {
+            "sessionId": session_one["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "bind cron"}]},
+        },
+    )
+
+    assert response["result"]["status"] == "completed"
+    writes.clear()
+
+    await server._cron_bridge.publish_notification(  # type: ignore[attr-defined]
+        {
+            "job_id": "job-main",
+            "job_name": "喝水提醒",
+            "status": "ok",
+            "summary": 'Cron task "喝水提醒" completed',
+            "detail": "提醒我喝水",
+            "created_at": "2026-04-26T00:00:00+00:00",
+            "next_run_at": None,
+            "user_visible": True,
+        }
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert len(notifications) == 1
+    assert notifications[0]["params"]["sessionId"] == session_one["sessionId"]
+    assert notifications[0]["params"]["sessionId"] != session_two["sessionId"]
+    assert notifications[0]["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+    assert notifications[0]["params"]["update"]["content"]["text"] == 'Cron task "喝水提醒" completed\n提醒我喝水'
+
+
+@pytest.mark.asyncio
+async def test_silent_terminal_cron_notification_clears_binding_without_visible_push(monkeypatch) -> None:
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.running = False
+            self.notification_sink = None
+            self.progress_sink = None
+
+        async def start(self) -> None:
+            self.running = True
+
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            tool_call = ToolCall(
+                id="call-cron-1",
+                function=Function(
+                    name="cron",
+                    arguments='{"action":"add","request":"一分钟后提醒我喝水"}',
+                ),
+            )
+            yield MessageOutput(
+                source=ModelResponse(
+                    id="resp-tool-start",
+                    model="demo",
+                    content="",
+                    tool_calls=[tool_call],
+                )
+            )
+            yield ToolResultOutput(
+                tool_name="cron",
+                data={"success": True, "job_id": "job-main"},
+                origin_tool_call=tool_call,
+            )
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        4,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "bind cron"}]},
+        },
+    )
+
+    assert response["result"]["status"] == "completed"
+    writes.clear()
+
+    await server._cron_bridge.publish_notification(  # type: ignore[attr-defined]
+        {
+            "job_id": "job-main",
+            "job_name": "silent recurring job",
+            "status": "ok",
+            "summary": 'Cron task "silent recurring job" completed',
+            "detail": "本次静默结束，仅用于清理绑定",
+            "created_at": "2026-04-26T00:00:00+00:00",
+            "next_run_at": None,
+            "user_visible": False,
+        }
+    )
+    await server._cron_bridge.publish_notification(  # type: ignore[attr-defined]
+        {
+            "job_id": "job-main",
+            "job_name": "silent recurring job",
+            "status": "ok",
+            "summary": 'Cron task "silent recurring job" completed',
+            "detail": "should not deliver after cleanup",
+            "created_at": "2026-04-26T00:00:01+00:00",
+            "next_run_at": None,
+            "user_visible": True,
+        }
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+    assert notifications == []
+
+
+@pytest.mark.asyncio
+async def test_cron_run_success_rebinds_existing_job_id_to_current_session(monkeypatch) -> None:
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.running = False
+            self.notification_sink = None
+            self.progress_sink = None
+
+        async def start(self) -> None:
+            self.running = True
+
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            tool_call = ToolCall(
+                id="call-cron-run-1",
+                function=Function(
+                    name="cron",
+                    arguments='{"action":"run","job_id":"job-existing"}',
+                ),
+            )
+            yield MessageOutput(
+                source=ModelResponse(
+                    id="resp-tool-start",
+                    model="demo",
+                    content="",
+                    tool_calls=[tool_call],
+                )
+            )
+            yield ToolResultOutput(
+                tool_name="cron",
+                data={"success": True, "message": "Job executed"},
+                origin_tool_call=tool_call,
+            )
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        5,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "run existing cron"}]},
+        },
+    )
+
+    assert response["result"]["status"] == "completed"
+    writes.clear()
+
+    await server._cron_bridge.publish_notification(  # type: ignore[attr-defined]
+        {
+            "job_id": "job-existing",
+            "job_name": "existing job",
+            "status": "ok",
+            "summary": 'Cron task "existing job" completed',
+            "detail": "rebound to current session",
+            "created_at": "2026-04-27T00:00:00+00:00",
+            "next_run_at": None,
+            "user_visible": True,
+        }
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+    assert len(notifications) == 1
+    assert notifications[0]["params"]["sessionId"] == session["sessionId"]
+    assert notifications[0]["params"]["update"]["content"]["text"] == 'Cron task "existing job" completed\nrebound to current session'
+
+
+@pytest.mark.asyncio
+async def test_shutdown_stops_cron_runtime_and_unregisters_sessions(monkeypatch) -> None:
+    class FakeScheduler:
+        def __init__(self) -> None:
+            self.running = False
+            self.notification_sink = None
+            self.progress_sink = None
+            self.start_calls = 0
+            self.stop_calls = 0
+
+        async def start(self) -> None:
+            self.start_calls += 1
+            self.running = True
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+            self.running = False
+
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            tool_call = ToolCall(
+                id="call-cron-1",
+                function=Function(
+                    name="cron",
+                    arguments='{"action":"add","request":"一分钟后提醒我喝水"}',
+                ),
+            )
+            yield MessageOutput(
+                source=ModelResponse(
+                    id="resp-tool-start",
+                    model="demo",
+                    content="",
+                    tool_calls=[tool_call],
+                )
+            )
+            yield ToolResultOutput(
+                tool_name="cron",
+                data={"success": True, "job_id": "job-main"},
+                origin_tool_call=tool_call,
+            )
+
+    fake_scheduler = FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: fake_scheduler)
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        6,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "bind before shutdown"}]},
+        },
+    )
+
+    assert response["result"]["status"] == "completed"
+    assert fake_scheduler.start_calls == 1
+
+    await server._shutdown()
+    assert fake_scheduler.stop_calls == 1
+
+    writes.clear()
+    await server._cron_bridge.publish_notification(  # type: ignore[attr-defined]
+        {
+            "job_id": "job-main",
+            "job_name": "job after shutdown",
+            "status": "ok",
+            "summary": 'Cron task "job after shutdown" completed',
+            "detail": "must not emit after unregister",
+            "created_at": "2026-04-27T00:00:00+00:00",
+            "next_run_at": None,
+            "user_visible": True,
+        }
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+    assert notifications == []
+
+
+@pytest.mark.asyncio
 async def test_prompt_resets_turn_local_runtime_state_between_prompts() -> None:
     class FakeOutputBridge:
         def __init__(self) -> None:
