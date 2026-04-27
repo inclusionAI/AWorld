@@ -194,6 +194,86 @@ def test_run_action_reports_missing_permissions(monkeypatch):
         raise AssertionError("run_action should fail when required permissions are missing")
 
 
+def test_run_action_accepts_peekaboo_boolean_permission_shape(monkeypatch):
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main._permission_preflight_cache",
+        {"checked_at": 0.0, "missing": None},
+    )
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.gate_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.is_macos_host",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.detect_backend_availability",
+        lambda: True,
+    )
+
+    def fake_execute(action, params):
+        if action == "permissions":
+            return {
+                "permissions": [
+                    {"name": "Accessibility", "isGranted": True},
+                    {"name": "Screen Recording", "isGranted": True},
+                ]
+            }
+        if action == "list_apps":
+            return {"apps": [{"name": "小宇宙"}]}
+        raise AssertionError(f"unexpected action: {action}")
+
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.execute_peekaboo_action",
+        fake_execute,
+    )
+
+    result = run_action("list_apps", {})
+    assert result["apps"][0]["name"] == "小宇宙"
+
+
+def test_run_action_rejects_denied_boolean_required_permissions(monkeypatch):
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main._permission_preflight_cache",
+        {"checked_at": 0.0, "missing": None},
+    )
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.gate_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.is_macos_host",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.detect_backend_availability",
+        lambda: True,
+    )
+
+    def fake_execute(action, params):
+        if action == "permissions":
+            return {
+                "permissions": [
+                    {"name": "Accessibility", "isGranted": True},
+                    {"name": "Screen Recording", "isGranted": False},
+                ]
+            }
+        raise AssertionError("action execution should not continue when permissions are missing")
+
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.execute_peekaboo_action",
+        fake_execute,
+    )
+
+    try:
+        run_action("list_apps", {})
+    except MacUIError as exc:
+        assert exc.code == "PERMISSION_MISSING"
+    else:
+        raise AssertionError("run_action should fail when required boolean permissions are denied")
+
+
 def test_run_action_ignores_non_required_permissions(monkeypatch):
     monkeypatch.setattr(
         "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main._permission_preflight_cache",
