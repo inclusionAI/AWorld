@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, call
 
 import pytest
 
@@ -7,6 +7,7 @@ from aworld.core.context.amni import ApplicationContext
 from aworld.core.task import Task, TaskResponse
 from aworld.runners.ralph.config import RalphConfig, RalphVerifyConfig
 from aworld.runners.ralph.detect.types import StopType
+from aworld.runners.ralph.evaluator import IterationEvaluationResult, VerifyCommandResult, VerifyResult
 from aworld.runners.ralph.input_builder import IterationInput, IterationInputBuilder
 from aworld.runners.ralph.memory import LoopMemoryStore
 from aworld.runners.ralph.policy import RalphLoopPolicy
@@ -250,6 +251,7 @@ async def test_ralph_runner_do_run_invokes_iteration_evaluator_after_execution(t
     response = TaskResponse(id=task.id, answer="done", success=True)
     runner._execute_task = AsyncMock(return_value=response)
     runner.evaluator = AsyncMock()
+    runner.evaluator.evaluate.return_value = IterationEvaluationResult(summary="done")
     runner.stop_detector.should_stop = AsyncMock(
         side_effect=[
             type("StopDecision", (), {"should_stop": False, "stop_type": None, "reason": None})(),
@@ -269,7 +271,7 @@ async def test_ralph_runner_do_run_invokes_iteration_evaluator_after_execution(t
 
 
 @pytest.mark.asyncio
-async def test_ralph_runner_do_run_skips_iteration_evaluator_when_run_on_each_iteration_is_disabled(tmp_path):
+async def test_ralph_runner_do_run_still_calls_evaluator_when_run_on_each_iteration_is_disabled(tmp_path):
     task = Task(
         input="Build API",
         conf=RalphConfig(
@@ -286,6 +288,7 @@ async def test_ralph_runner_do_run_skips_iteration_evaluator_when_run_on_each_it
     response = TaskResponse(id=task.id, answer="done", success=True)
     runner._execute_task = AsyncMock(return_value=response)
     runner.evaluator = AsyncMock()
+    runner.evaluator.evaluate.return_value = IterationEvaluationResult(summary="done")
     runner.stop_detector.should_stop = AsyncMock(
         side_effect=[
             type("StopDecision", (), {"should_stop": False, "stop_type": StopType.NONE, "reason": None})(),
@@ -296,7 +299,12 @@ async def test_ralph_runner_do_run_skips_iteration_evaluator_when_run_on_each_it
     result = await runner.do_run()
 
     assert result is response
-    runner.evaluator.evaluate.assert_not_awaited()
+    runner.evaluator.evaluate.assert_awaited_once_with(
+        task=task,
+        iter_num=1,
+        execution_result=response,
+        phase="post_iteration",
+    )
 
 
 @pytest.mark.asyncio
@@ -322,6 +330,16 @@ async def test_ralph_runner_do_run_verifies_before_completion_when_configured(tm
     response = TaskResponse(id=task.id, answer="done", success=True)
     runner._execute_task = AsyncMock(return_value=response)
     runner.evaluator = AsyncMock()
+    runner.evaluator.evaluate.side_effect = [
+        IterationEvaluationResult(summary="done"),
+        IterationEvaluationResult(
+            summary="done",
+            verify_result=VerifyResult(
+                passed=True,
+                commands=[VerifyCommandResult(command="pytest -q", exit_code=0, output="ok", passed=True)],
+            ),
+        ),
+    ]
     runner.stop_detector.should_stop = AsyncMock(
         side_effect=[
             type("StopDecision", (), {"should_stop": False, "stop_type": StopType.NONE, "reason": None})(),
@@ -332,12 +350,20 @@ async def test_ralph_runner_do_run_verifies_before_completion_when_configured(tm
     result = await runner.do_run()
 
     assert result is response
-    runner.evaluator.evaluate.assert_awaited_once_with(
-        task=task,
-        iter_num=1,
-        execution_result=response,
-        phase="before_completion",
-    )
+    assert runner.evaluator.evaluate.await_args_list == [
+        call(
+            task=task,
+            iter_num=1,
+            execution_result=response,
+            phase="post_iteration",
+        ),
+        call(
+            task=task,
+            iter_num=1,
+            execution_result=response,
+            phase="before_completion",
+        ),
+    ]
 
 
 @pytest.mark.asyncio
@@ -363,6 +389,7 @@ async def test_ralph_runner_do_run_does_not_verify_before_non_completion_stop(tm
     response = TaskResponse(id=task.id, answer="done", success=True)
     runner._execute_task = AsyncMock(return_value=response)
     runner.evaluator = AsyncMock()
+    runner.evaluator.evaluate.return_value = IterationEvaluationResult(summary="done")
     runner.stop_detector.should_stop = AsyncMock(
         side_effect=[
             type("StopDecision", (), {"should_stop": False, "stop_type": StopType.NONE, "reason": None})(),
@@ -373,4 +400,79 @@ async def test_ralph_runner_do_run_does_not_verify_before_non_completion_stop(tm
     result = await runner.do_run()
 
     assert result is response
-    runner.evaluator.evaluate.assert_not_awaited()
+    runner.evaluator.evaluate.assert_awaited_once_with(
+        task=task,
+        iter_num=1,
+        execution_result=response,
+        phase="post_iteration",
+    )
+
+
+@pytest.mark.asyncio
+async def test_ralph_runner_do_run_keeps_loop_alive_when_before_completion_verify_fails(tmp_path):
+    task = Task(
+        input="Build API",
+        conf=RalphConfig(
+            workspace=str(tmp_path),
+            verify=RalphVerifyConfig(
+                enabled=True,
+                commands=["pytest -q"],
+                run_on_each_iteration=False,
+                run_before_completion=True,
+            ),
+        ),
+    )
+    runner = RalphRunner(task=task, completion_criteria=CompletionCriteria(max_iterations=3))
+    runner.loop_context = LoopContext(
+        completion_criteria=CompletionCriteria(max_iterations=3),
+        loop_state=LoopState(),
+        work_dir=str(tmp_path),
+    )
+    first_response = TaskResponse(id=task.id, answer="first", success=True)
+    second_response = TaskResponse(id=task.id, answer="second", success=True)
+    runner._execute_task = AsyncMock(side_effect=[first_response, second_response])
+    runner.evaluator = AsyncMock()
+    runner.evaluator.evaluate.side_effect = [
+        IterationEvaluationResult(summary="first"),
+        IterationEvaluationResult(
+            summary="first",
+            verify_result=VerifyResult(
+                passed=False,
+                commands=[VerifyCommandResult(command="pytest -q", exit_code=1, output="FAILED", passed=False)],
+            ),
+            reflection_feedback="Verification failed",
+        ),
+        IterationEvaluationResult(summary="second"),
+    ]
+    runner.stop_detector.should_stop = AsyncMock(
+        side_effect=[
+            type("StopDecision", (), {"should_stop": False, "stop_type": StopType.NONE, "reason": None})(),
+            type("StopDecision", (), {"should_stop": True, "stop_type": StopType.COMPLETION, "reason": "done"})(),
+            type("StopDecision", (), {"should_stop": True, "stop_type": StopType.MAX_ITERATIONS, "reason": "stop"})(),
+        ]
+    )
+
+    result = await runner.do_run()
+
+    assert result is second_response
+    assert runner._execute_task.await_count == 2
+    assert runner.evaluator.evaluate.await_args_list == [
+        call(
+            task=task,
+            iter_num=1,
+            execution_result=first_response,
+            phase="post_iteration",
+        ),
+        call(
+            task=task,
+            iter_num=1,
+            execution_result=first_response,
+            phase="before_completion",
+        ),
+        call(
+            task=task,
+            iter_num=2,
+            execution_result=second_response,
+            phase="post_iteration",
+        ),
+    ]

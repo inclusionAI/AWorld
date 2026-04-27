@@ -62,8 +62,11 @@ class IterationEvaluator:
         execution_result: "TaskResponse",
         phase: str = "post_iteration",
     ) -> IterationEvaluationResult:
+        summary = self._build_summary(execution_result)
+        await self.memory_store.write_iteration_summary(task.id, iter_num, summary)
+
         if not self._should_run_verify(phase):
-            return IterationEvaluationResult()
+            return IterationEvaluationResult(summary=summary)
 
         verify_result = await self._run_verify()
         await self.memory_store.write_verify_result(task.id, iter_num, verify_result.to_payload())
@@ -76,6 +79,7 @@ class IterationEvaluator:
         return IterationEvaluationResult(
             verify_result=verify_result,
             reflection_feedback=reflection_feedback,
+            summary=summary,
         )
 
     def _should_run_verify(self, phase: str) -> bool:
@@ -165,3 +169,15 @@ class IterationEvaluator:
             )
 
         return "\n".join(lines).strip()
+
+    def _build_summary(self, execution_result: "TaskResponse") -> str:
+        if execution_result.answer is None:
+            return str(execution_result.msg or "")
+
+        if isinstance(execution_result.answer, str):
+            return execution_result.answer
+
+        try:
+            return json.dumps(execution_result.answer, ensure_ascii=False)
+        except TypeError:
+            return str(execution_result.answer)

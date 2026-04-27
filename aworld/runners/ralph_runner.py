@@ -71,9 +71,10 @@ class RalphRunner(Runner):
             logger.info(f"Iteration {iter_num} Stop condition check...")
             stop_decision = await self.stop_detector.should_stop(self.loop_context)
             if stop_decision.should_stop:
-                await self._maybe_verify_before_completion(stop_decision)
-                logger.info(f"Loop terminated: {stop_decision.stop_type}, Reason: {stop_decision.reason}")
-                break
+                should_terminate = await self._maybe_verify_before_completion(stop_decision)
+                if should_terminate:
+                    logger.info(f"Loop terminated: {stop_decision.stop_type}, Reason: {stop_decision.reason}")
+                    break
 
             # 2. Execute task
             logger.info(f"Iteration {iter_num} Executing task...")
@@ -81,13 +82,12 @@ class RalphRunner(Runner):
                 execution_result = await self._execute_task(cur_task, iter_num=iter_num)
                 self._last_execution_result = execution_result
                 self._last_executed_iteration = iter_num
-                if self._should_verify_after_iteration():
-                    await self._evaluate_iteration(
-                        task=cur_task,
-                        iter_num=iter_num,
-                        execution_result=execution_result,
-                        phase="post_iteration",
-                    )
+                await self._evaluate_iteration(
+                    task=cur_task,
+                    iter_num=iter_num,
+                    execution_result=execution_result,
+                    phase="post_iteration",
+                )
             except:
                 logger.error(f"Error executing task: {cur_task.id}")
                 # error process
@@ -97,13 +97,6 @@ class RalphRunner(Runner):
     def _init_stop_detector(self):
         detectors = self.ralph_config.stop_condition.stop_detectors or []
         self.stop_detector = create_stop_detector(custom_detectors=detectors)
-
-    def _should_verify_after_iteration(self) -> bool:
-        return bool(
-            self.evaluator is not None
-            and self.ralph_config.verify.enabled
-            and self.ralph_config.verify.run_on_each_iteration
-        )
 
     def _should_verify_before_completion(self, stop_decision) -> bool:
         return bool(
@@ -116,25 +109,37 @@ class RalphRunner(Runner):
             and stop_decision.stop_type in {StopType.COMPLETION, StopType.CUSTOM_STOPPED}
         )
 
-    async def _maybe_verify_before_completion(self, stop_decision) -> None:
+    async def _maybe_verify_before_completion(self, stop_decision) -> bool:
         if not self._should_verify_before_completion(stop_decision):
-            return
+            return True
 
-        await self._evaluate_iteration(
+        evaluation = await self._evaluate_iteration(
             task=self.task,
             iter_num=self._last_executed_iteration,
             execution_result=self._last_execution_result,
             phase="before_completion",
         )
+        if evaluation.verify_result is not None and not evaluation.verify_result.passed:
+            logger.info("Pre-completion verification failed; continuing Ralph loop for another repair iteration.")
+            return False
+        return True
 
-    async def _evaluate_iteration(self, task: Task, iter_num: int, execution_result: TaskResponse, phase: str) -> None:
-        await self.evaluator.evaluate(
+    async def _evaluate_iteration(
+        self,
+        task: Task,
+        iter_num: int,
+        execution_result: TaskResponse,
+        phase: str,
+    ):
+        evaluation = await self.evaluator.evaluate(
             task=task,
             iter_num=iter_num,
             execution_result=execution_result,
             phase=phase,
         )
-        self._last_verified_iteration = iter_num
+        if evaluation.verify_result is not None:
+            self._last_verified_iteration = iter_num
+        return evaluation
 
     async def _execute_task(self, task: Task, iter_num: int) -> TaskResponse:
         iteration_input = await self.input_builder.build(

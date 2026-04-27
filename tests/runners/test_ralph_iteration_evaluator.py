@@ -151,8 +151,10 @@ async def test_iteration_evaluator_skips_verify_when_disabled(tmp_path):
     )
 
     assert result.verify_result is None
+    assert result.summary == "Created API handlers"
     assert await context.memory.read_verify_result(task.id, 1) is None
     assert await context.memory.read_reflection_feedback(task.id, 1) is None
+    assert await context.memory.read_iteration_summary(task.id, 1) == "Created API handlers"
 
 
 @pytest.mark.asyncio
@@ -183,4 +185,6 @@ async def test_iteration_evaluator_skips_iteration_verify_when_run_on_each_itera
     )
 
     assert result.verify_result is None
+    assert result.summary == "Created API handlers"
     assert await context.memory.read_verify_result(task.id, 1) is None
+    assert await context.memory.read_iteration_summary(task.id, 1) == "Created API handlers"
