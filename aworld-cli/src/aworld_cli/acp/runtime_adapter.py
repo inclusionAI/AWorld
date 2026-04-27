@@ -95,6 +95,9 @@ def adapt_output_to_runtime_events(
     events: list[dict[str, Any]] = []
 
     if output_type == "chunk":
+        reasoning = _extract_reasoning(output)
+        if reasoning:
+            events.append(normalize_thought_delta(state, reasoning))
         text = _extract_text(output)
         if text:
             state["saw_text_delta"] = True
@@ -117,7 +120,7 @@ def adapt_output_to_runtime_events(
             events.append(normalize_thought_delta(state, reasoning))
 
         text = _extract_text(output)
-        if text and not state.get("saw_text_delta"):
+        if text and not state.get("saw_text_delta") and _should_emit_message_text(output):
             events.append(normalize_final_text(state, text))
         return events
 
@@ -171,12 +174,38 @@ def _extract_reasoning(output: Any) -> str:
     if isinstance(reasoning, str) and reasoning:
         return reasoning
 
+    data = getattr(output, "data", None)
+    data_reasoning = getattr(data, "reasoning_content", None)
+    if isinstance(data_reasoning, str) and data_reasoning:
+        return data_reasoning
+
     source = getattr(output, "source", None)
     source_reasoning = getattr(source, "reasoning_content", None)
     if isinstance(source_reasoning, str) and source_reasoning:
         return source_reasoning
 
     return ""
+
+
+def _should_emit_message_text(output: Any) -> bool:
+    metadata = getattr(output, "metadata", None)
+    if not isinstance(metadata, dict):
+        return True
+
+    is_finished = metadata.get("is_finished")
+    if is_finished is True:
+        return True
+    if is_finished is False:
+        return False
+
+    sender = metadata.get("sender")
+    receiver = metadata.get("receiver")
+    # Legacy/self-test bridges emit direct MessageOutput objects without routing metadata.
+    # Routed runtime messages without an explicit completion marker are often intermediate
+    # observations that should not be surfaced as final ACP text.
+    if sender is not None or receiver is not None:
+        return False
+    return True
 
 
 def _extract_tool_calls(output: Any) -> list[Any]:

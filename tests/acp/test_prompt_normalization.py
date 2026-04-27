@@ -12,6 +12,21 @@ from aworld_cli.acp.errors import AWORLD_ACP_UNSUPPORTED_PROMPT_CONTENT
 from aworld_cli.acp.server import AcpStdioServer
 
 
+def test_normalize_prompt_text_supports_current_acp_prompt_array() -> None:
+    server = AcpStdioServer()
+
+    prompt_text = server._normalize_prompt_text(
+        [
+            {
+                "type": "text",
+                "text": "hello from happy",
+            }
+        ]
+    )
+
+    assert prompt_text == "hello from happy"
+
+
 def test_normalize_prompt_text_supports_embedded_resource_text() -> None:
     server = AcpStdioServer()
 

@@ -620,6 +620,168 @@ async def test_prompt_resets_turn_local_runtime_state_between_prompts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_current_acp_protocol_suppresses_shell_tool_notifications() -> None:
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            tool_call = ToolCall(
+                id="call-1",
+                function=Function(name="shell", arguments='{"command":"pwd"}'),
+            )
+            yield MessageOutput(
+                source=ModelResponse(
+                    id="resp-2",
+                    model="demo",
+                    content="final",
+                    reasoning_content="searching sources",
+                    tool_calls=[tool_call],
+                ),
+                metadata={"sender": "Aworld", "is_finished": True},
+            )
+            yield ToolResultOutput(
+                tool_name="shell",
+                data={"cwd": "/tmp"},
+                origin_tool_call=tool_call,
+            )
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    server._session_update_method = "session/update"
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        3,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "hello"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "session/update"]
+
+    assert response["result"]["status"] == "completed"
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_thought_chunk",
+        "agent_message_chunk",
+    ]
+    assert notifications[0]["params"]["update"]["content"] == {"type": "text", "text": "searching sources"}
+    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+
+
+@pytest.mark.asyncio
+async def test_current_acp_protocol_suppresses_other_tool_notifications() -> None:
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            tool_call = ToolCall(
+                id="call-1",
+                function=Function(
+                    name="async_spawn_subagent__spawn",
+                    arguments='{"items":[{"type":"content","content":{"type":"text","text":"search deepseek v4"}},{"type":"text","text":"web_searcher"}]}',
+                ),
+            )
+            yield MessageOutput(
+                source=ModelResponse(
+                    id="resp-2",
+                    model="demo",
+                    content="final",
+                    reasoning_content="我先尝试搜索一下最新信息",
+                    tool_calls=[tool_call],
+                ),
+                metadata={"sender": "Aworld", "is_finished": True},
+            )
+            yield ToolResultOutput(
+                tool_name="async_spawn_subagent__spawn",
+                data={"error": "subagent unavailable"},
+                origin_tool_call=tool_call,
+            )
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    server._session_update_method = "session/update"
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        4,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "hello"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "session/update"]
+
+    assert response["result"]["status"] == "completed"
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_thought_chunk",
+        "agent_message_chunk",
+    ]
+    assert notifications[0]["params"]["update"]["content"] == {"type": "text", "text": "我先尝试搜索一下最新信息"}
+    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+
+
+@pytest.mark.asyncio
+async def test_current_acp_protocol_suppresses_execute_tool_notifications() -> None:
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            tool_call = ToolCall(
+                id="call-1",
+                function=Function(name="execute", arguments='{"command":"curl https://x.com"}'),
+            )
+            yield MessageOutput(
+                source=ModelResponse(
+                    id="resp-2",
+                    model="demo",
+                    content="final",
+                    reasoning_content="我先检查一下页面",
+                    tool_calls=[tool_call],
+                ),
+                metadata={"sender": "Aworld", "is_finished": True},
+            )
+            yield ToolResultOutput(
+                tool_name="execute",
+                data={"stdout": "ok"},
+                origin_tool_call=tool_call,
+            )
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    server._session_update_method = "session/update"
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        5,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "hello"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "session/update"]
+
+    assert response["result"]["status"] == "completed"
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_thought_chunk",
+        "agent_message_chunk",
+    ]
+    assert notifications[0]["params"]["update"]["content"] == {"type": "text", "text": "我先检查一下页面"}
+    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+
+
+@pytest.mark.asyncio
 async def test_prompt_rejects_unsupported_prompt_content_with_structured_error() -> None:
     server = AcpStdioServer(output_bridge=object())
     session = server._handle_new_session({"cwd": ".", "mcpServers": []})
@@ -1618,7 +1780,7 @@ async def test_executor_output_bridge_applies_and_restores_requested_mcp_servers
 
 
 @pytest.mark.asyncio
-async def test_executor_output_bridge_falls_back_to_message_output_when_no_agent_loaded() -> None:
+async def test_executor_output_bridge_raises_error_when_no_agent_loaded() -> None:
     class EmptyRegistry:
         @staticmethod
         def get_agent(_agent_id: str):
@@ -1640,14 +1802,11 @@ async def test_executor_output_bridge_falls_back_to_message_output_when_no_agent
         init_agents_func=lambda *_args, **_kwargs: None,
     )
 
-    outputs = [
-        output
-        async for output in bridge.stream_outputs(
-            record=record,
-            prompt_text="hello",
-        )
-    ]
-
-    assert len(outputs) == 1
-    assert isinstance(outputs[0], MessageOutput)
-    assert outputs[0].source.content == "hello"
+    with pytest.raises(ValueError, match="No ACP-capable agent found"):
+        _outputs = [
+            output
+            async for output in bridge.stream_outputs(
+                record=record,
+                prompt_text="hello",
+            )
+        ]
