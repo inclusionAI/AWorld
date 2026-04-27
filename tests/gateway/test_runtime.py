@@ -16,6 +16,10 @@ def test_runtime_status_is_initialized_before_start(monkeypatch):
     monkeypatch.delenv("AWORLD_TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("AWORLD_DINGTALK_CLIENT_ID", raising=False)
     monkeypatch.delenv("AWORLD_DINGTALK_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("AWORLD_WECHAT_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("AWORLD_WECHAT_TOKEN", raising=False)
+    monkeypatch.delenv("AWORLD_WECOM_BOT_ID", raising=False)
+    monkeypatch.delenv("AWORLD_WECOM_SECRET", raising=False)
 
     runtime = GatewayRuntime(
         config=GatewayConfig(),
@@ -27,6 +31,8 @@ def test_runtime_status_is_initialized_before_start(monkeypatch):
     assert status["state"] == "registered"
     assert status["channels"]["telegram"]["state"] == "registered"
     assert status["channels"]["dingding"]["state"] == "registered"
+    assert status["channels"]["wechat"]["state"] == "registered"
+    assert status["channels"]["wecom"]["state"] == "registered"
     assert status["channels"]["web"]["state"] == "registered"
 
 
@@ -51,6 +57,10 @@ def test_runtime_start_reports_registered_channels_when_no_channels_enabled(
     monkeypatch.delenv("AWORLD_TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("AWORLD_DINGTALK_CLIENT_ID", raising=False)
     monkeypatch.delenv("AWORLD_DINGTALK_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("AWORLD_WECHAT_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("AWORLD_WECHAT_TOKEN", raising=False)
+    monkeypatch.delenv("AWORLD_WECOM_BOT_ID", raising=False)
+    monkeypatch.delenv("AWORLD_WECOM_SECRET", raising=False)
 
     runtime = GatewayRuntime(
         config=GatewayConfig(),
@@ -77,6 +87,16 @@ def test_runtime_start_reports_registered_channels_when_no_channels_enabled(
     assert status["channels"]["dingding"]["implemented"] is True
     assert status["channels"]["dingding"]["running"] is False
     assert status["channels"]["dingding"]["state"] == "registered"
+    assert status["channels"]["wechat"]["enabled"] is False
+    assert status["channels"]["wechat"]["configured"] is False
+    assert status["channels"]["wechat"]["implemented"] is True
+    assert status["channels"]["wechat"]["running"] is False
+    assert status["channels"]["wechat"]["state"] == "registered"
+    assert status["channels"]["wecom"]["enabled"] is False
+    assert status["channels"]["wecom"]["configured"] is False
+    assert status["channels"]["wecom"]["implemented"] is True
+    assert status["channels"]["wecom"]["running"] is False
+    assert status["channels"]["wecom"]["state"] == "registered"
 
     asyncio.run(runtime.stop())
     stopped_status = runtime.status()
@@ -129,6 +149,64 @@ def test_runtime_start_degrades_when_enabled_dingding_is_not_configured(
     assert status["channels"]["dingding"]["state"] == "degraded"
     assert (
         status["channels"]["dingding"]["error"]
+        == "Channel is enabled but not configured enough to start."
+    )
+
+
+def test_runtime_start_degrades_when_enabled_wechat_is_not_configured(
+    monkeypatch,
+):
+    monkeypatch.delenv("AWORLD_WECHAT_ACCOUNT_ID", raising=False)
+    monkeypatch.delenv("AWORLD_WECHAT_TOKEN", raising=False)
+
+    config = GatewayConfig()
+    config.channels.wechat.enabled = True
+    runtime = GatewayRuntime(
+        config=config,
+        registry=ChannelRegistry(),
+        router=None,
+    )
+
+    asyncio.run(runtime.start())
+
+    status = runtime.status()
+    assert status["state"] == "degraded"
+    assert status["channels"]["wechat"]["enabled"] is True
+    assert status["channels"]["wechat"]["configured"] is False
+    assert status["channels"]["wechat"]["implemented"] is True
+    assert status["channels"]["wechat"]["running"] is False
+    assert status["channels"]["wechat"]["state"] == "degraded"
+    assert (
+        status["channels"]["wechat"]["error"]
+        == "Channel is enabled but not configured enough to start."
+    )
+
+
+def test_runtime_start_degrades_when_enabled_wecom_is_not_configured(
+    monkeypatch,
+):
+    monkeypatch.delenv("AWORLD_WECOM_BOT_ID", raising=False)
+    monkeypatch.delenv("AWORLD_WECOM_SECRET", raising=False)
+
+    config = GatewayConfig()
+    config.channels.wecom.enabled = True
+    runtime = GatewayRuntime(
+        config=config,
+        registry=ChannelRegistry(),
+        router=None,
+    )
+
+    asyncio.run(runtime.start())
+
+    status = runtime.status()
+    assert status["state"] == "degraded"
+    assert status["channels"]["wecom"]["enabled"] is True
+    assert status["channels"]["wecom"]["configured"] is False
+    assert status["channels"]["wecom"]["implemented"] is True
+    assert status["channels"]["wecom"]["running"] is False
+    assert status["channels"]["wecom"]["state"] == "degraded"
+    assert (
+        status["channels"]["wecom"]["error"]
         == "Channel is enabled but not configured enough to start."
     )
 
