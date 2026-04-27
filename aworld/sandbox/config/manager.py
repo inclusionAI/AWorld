@@ -11,6 +11,7 @@ from aworld.sandbox.config.templates import (
     PYTHON_CMD_PLACEHOLDER,
     build_stdio_server_config,
     get_filesystem_script_path,
+    get_mac_ui_automation_script_path,
     get_terminal_script_path,
     get_server_env,
     ENV_WORKSPACE,
@@ -41,6 +42,8 @@ class ToolConfigManager:
                     cfg = self._config_for_filesystem()
                 elif name == "terminal":
                     cfg = self._config_for_terminal()
+                elif name == "mac_ui_automation":
+                    cfg = self._config_for_mac_ui_automation()
                 else:
                     logger.warning(f"Unknown builtin tool: {name}")
                     continue
@@ -78,6 +81,15 @@ class ToolConfigManager:
         if self.workspaces:
             env = dict(env) if env else {}
             env[ENV_WORKSPACE] = ",".join(self.workspaces)
+        return build_stdio_server_config(
+            command=PYTHON_CMD_PLACEHOLDER,
+            args=[script_path, "--stdio"],
+            env=env or None,
+        )
+
+    def _config_for_mac_ui_automation(self) -> Optional[Dict[str, Any]]:
+        script_path = get_mac_ui_automation_script_path()
+        env = get_server_env()
         return build_stdio_server_config(
             command=PYTHON_CMD_PLACEHOLDER,
             args=[script_path, "--stdio"],

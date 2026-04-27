@@ -26,6 +26,10 @@ from .developer.developer import build_developer_swarm
 from .diffusion.diffusion import build_diffusion_swarm
 from .evaluator.evaluator import build_evaluator_swarm
 from .image.image import build_image_swarm
+from .mac_ui_automation import (
+    augment_aworld_agent_builtin_tools,
+    augment_aworld_agent_mcp_servers,
+)
 
 # Import SpawnSubagentTool to ensure it's registered in ToolFactory
 from aworld.core.tool.builtin import SpawnSubagentTool
@@ -214,9 +218,12 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         }
     }
 
+    builtin_tools = augment_aworld_agent_builtin_tools(["filesystem", "terminal"])
+    aworld_mcp_servers = augment_aworld_agent_mcp_servers(["terminal"])
+
     sandbox = Sandbox(
         mcp_config=mcp_config,
-        builtin_tools=["filesystem", "terminal"],  # Phase 1: Expose filesystem tools
+        builtin_tools=builtin_tools,
         workspaces=[os.getcwd()]  # Allow current working directory
     )
     sandbox.reuse = True
@@ -229,7 +236,7 @@ def build_aworld_agent(include_skills: Optional[str] = None):
         desc="Aworld - A versatile AI assistant capable of executing tasks directly or delegating to agent teams",
         conf=agent_config,
         system_prompt=load_aworld_system_prompt(),
-        mcp_servers=["terminal"],  # Enable terminal for information gathering (curl, wget, etc.)
+        mcp_servers=aworld_mcp_servers,  # Keep default terminal access and opt-in macOS UI automation when enabled
         sandbox=sandbox,  # Shared sandbox (tools filtered by agent's mcp_servers config)
         tool_names=[
             CONTEXT_TOOL,      # Core: Context management

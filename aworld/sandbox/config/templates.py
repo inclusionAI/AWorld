@@ -47,6 +47,11 @@ def get_terminal_script_path() -> str:
     return str(_tool_servers_root() / "terminal" / "src" / "terminal.py")
 
 
+def get_mac_ui_automation_script_path() -> str:
+    """Absolute path to the macOS UI automation server main.py."""
+    return str(_tool_servers_root() / "platforms" / "mac" / "ui_automation" / "src" / "main.py")
+
+
 def get_server_env() -> Dict[str, str]:
     """
     Read env values that should be forwarded to MCP server processes.
