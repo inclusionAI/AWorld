@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
+import json
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -59,8 +60,9 @@ class IterationEvaluator:
         task: "Task",
         iter_num: int,
         execution_result: "TaskResponse",
+        phase: str = "post_iteration",
     ) -> IterationEvaluationResult:
-        if not self._should_run_verify():
+        if not self._should_run_verify(phase):
             return IterationEvaluationResult()
 
         verify_result = await self._run_verify()
@@ -76,8 +78,15 @@ class IterationEvaluator:
             reflection_feedback=reflection_feedback,
         )
 
-    def _should_run_verify(self) -> bool:
-        return bool(self.verify_config.enabled and self.verify_config.commands)
+    def _should_run_verify(self, phase: str) -> bool:
+        if not (self.verify_config.enabled and self.verify_config.commands):
+            return False
+
+        if phase == "post_iteration":
+            return bool(self.verify_config.run_on_each_iteration)
+        if phase == "before_completion":
+            return bool(self.verify_config.run_before_completion)
+        return False
 
     async def _run_verify(self) -> VerifyResult:
         command_results: list[VerifyCommandResult] = []
@@ -101,8 +110,8 @@ class IterationEvaluator:
         )
 
     def _parse_terminal_result(self, command: str, terminal_result: dict[str, Any]) -> VerifyCommandResult:
-        terminal_data = terminal_result.get("data") or {}
-        metadata = terminal_data.get("metadata") or {}
+        terminal_data = self._decode_json_payload(terminal_result.get("data"))
+        metadata = self._decode_json_payload(terminal_data.get("metadata"))
         exit_code = metadata.get("return_code")
         if exit_code is None:
             exit_code = 0 if terminal_data.get("success") else -1
@@ -120,6 +129,21 @@ class IterationEvaluator:
             output=output,
             passed=passed,
         )
+
+    def _decode_json_payload(self, payload: Any) -> dict[str, Any]:
+        if isinstance(payload, dict):
+            return payload
+        if isinstance(payload, str):
+            try:
+                decoded = json.loads(payload)
+            except json.JSONDecodeError:
+                return {"message": payload}
+            if isinstance(decoded, dict):
+                return decoded
+            return {"message": decoded}
+        if payload is None:
+            return {}
+        return {"message": payload}
 
     def _build_verify_failure_feedback(self, verify_result: VerifyResult) -> str:
         lines = [
