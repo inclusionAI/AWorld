@@ -10,12 +10,14 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from aworld.logs.util import logger
 
 from aworld.models.model_response import ModelResponse
 from aworld.output.base import MessageOutput
 from aworld.runner import Runners
 
 from .bootstrap import bootstrap_acp_plugins
+from .cron_bridge import AcpCronBridge
 from .errors import (
     AWORLD_ACP_APPROVAL_UNSUPPORTED,
     AWORLD_ACP_INVALID_CWD,
@@ -267,26 +269,38 @@ class AcpStdioServer:
         self._state_by_session: dict[str, dict[str, Any]] = {}
         self._write_lock = asyncio.Lock()
         self._output_bridge = output_bridge or AcpExecutorOutputBridge()
+        self._cron_runtime_lock = asyncio.Lock()
+        self._cron_runtime_started = False
+        self._notification_center = None
+        self._scheduler = None
+        self._cron_bridge = AcpCronBridge(write_session_update=self._write_session_update_for_session)
+        self._previous_notification_sink = None
+        self._previous_progress_sink = None
+        self._installed_notification_sink = None
+        self._installed_progress_sink = None
         self._session_update_method = "sessionUpdate"
 
     async def run(self) -> int:
         pending_requests: set[asyncio.Task[Any]] = set()
-        while True:
-            line = await asyncio.to_thread(sys.stdin.buffer.readline)
-            if not line:
-                break
+        try:
+            while True:
+                line = await asyncio.to_thread(sys.stdin.buffer.readline)
+                if not line:
+                    break
 
-            request = decode_jsonrpc_line(line)
-            if "method" not in request:
-                continue
+                request = decode_jsonrpc_line(line)
+                if "method" not in request:
+                    continue
 
-            task = asyncio.create_task(self._dispatch_request(request))
-            pending_requests.add(task)
-            task.add_done_callback(pending_requests.discard)
+                task = asyncio.create_task(self._dispatch_request(request))
+                pending_requests.add(task)
+                task.add_done_callback(pending_requests.discard)
 
-        if pending_requests:
-            await asyncio.gather(*pending_requests, return_exceptions=True)
-        return 0
+            if pending_requests:
+                await asyncio.gather(*pending_requests, return_exceptions=True)
+            return 0
+        finally:
+            await self._shutdown()
 
     async def _dispatch_request(self, request: dict[str, Any]) -> None:
         method = request["method"]
@@ -336,6 +350,7 @@ class AcpStdioServer:
             requested_mcp_servers=params.get("mcpServers") or [],
         )
         self._state_by_session[record.acp_session_id] = {}
+        self._cron_bridge.register_session(record.acp_session_id)
         return {"sessionId": record.acp_session_id}
 
     async def _handle_prompt(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
@@ -365,6 +380,8 @@ class AcpStdioServer:
                 data=build_error_data(detail) if detail is not None else None,
             )
 
+        await self._ensure_cron_runtime_started()
+
         state: dict[str, Any] = {}
         terminal_error: dict[str, Any] | None = None
 
@@ -385,11 +402,21 @@ class AcpStdioServer:
                             message=str(event["message"]),
                         )
                         return
+                    if event.get("event_type") == "tool_start":
+                        tool_call_id = event.get("tool_call_id")
+                        if isinstance(tool_call_id, str):
+                            state[f"tool_input::{tool_call_id}"] = event.get("raw_input")
                     if event.get("event_type") == "tool_end":
                         tool_name = event.get("tool_name")
                         tool_call_id = event.get("tool_call_id")
                         if isinstance(tool_name, str) and isinstance(tool_call_id, str):
                             state[f"tool_closed::{tool_name}"] = tool_call_id
+                        self._cron_bridge.bind_from_tool_result(
+                            session_id=session_id,
+                            tool_name=tool_name if isinstance(tool_name, str) else None,
+                            payload=event.get("raw_output"),
+                            tool_input=state.get(f"tool_input::{tool_call_id}") if isinstance(tool_call_id, str) else None,
+                        )
                     update = map_runtime_event_to_session_update(session_id, event)
                     await self._write_session_update(update)
 
@@ -596,6 +623,14 @@ class AcpStdioServer:
             sys.stdout.buffer.write(payload)
             sys.stdout.buffer.flush()
 
+    async def _write_session_update_for_session(self, session_id: str, update: dict[str, Any]) -> None:
+        await self._write_session_update(
+            {
+                "sessionId": session_id,
+                "update": update,
+            }
+        )
+
     async def _write_session_update(self, params: dict[str, Any]) -> None:
         if self._session_update_method == "session/update" and not self._should_emit_current_session_update(params):
             return
@@ -661,6 +696,90 @@ class AcpStdioServer:
         else:
             text = json.dumps(value, ensure_ascii=False, sort_keys=True)
         return [{"type": "content", "content": {"type": "text", "text": text}}]
+
+    async def _ensure_cron_runtime_started(self) -> None:
+        if self._cron_runtime_started:
+            return
+
+        async with self._cron_runtime_lock:
+            if self._cron_runtime_started:
+                return
+
+            try:
+                from aworld.core.scheduler import get_scheduler
+                from aworld_cli.runtime.cron_notifications import CronNotificationCenter
+
+                self._notification_center = CronNotificationCenter()
+                self._scheduler = get_scheduler()
+                self._previous_notification_sink = getattr(self._scheduler, "notification_sink", None)
+                self._previous_progress_sink = getattr(self._scheduler, "progress_sink", None)
+
+                async def _notification_sink(notification_data: dict[str, Any]) -> None:
+                    previous_sink = self._previous_notification_sink
+                    if previous_sink is not None:
+                        previous_result = previous_sink(notification_data)
+                        if asyncio.iscoroutine(previous_result):
+                            await previous_result
+                    if self._notification_center is not None:
+                        await self._notification_center.publish(notification_data)
+                    await self._cron_bridge.publish_notification(notification_data)
+
+                async def _progress_sink(progress_data: dict[str, Any]) -> None:
+                    previous_sink = self._previous_progress_sink
+                    if previous_sink is not None:
+                        previous_result = previous_sink(progress_data)
+                        if asyncio.iscoroutine(previous_result):
+                            await previous_result
+                    if self._notification_center is not None:
+                        await self._notification_center.publish_progress(progress_data)
+
+                self._installed_notification_sink = _notification_sink
+                self._installed_progress_sink = _progress_sink
+                self._scheduler.notification_sink = _notification_sink
+                self._scheduler.progress_sink = _progress_sink
+
+                if not getattr(self._scheduler, "running", False):
+                    await self._scheduler.start()
+
+                self._cron_runtime_started = True
+            except Exception as exc:
+                logger.warning(f"Failed to bootstrap ACP cron runtime: {exc}")
+
+    async def _shutdown(self) -> None:
+        session_ids = list(self._state_by_session.keys())
+        for session_id in session_ids:
+            self._cron_bridge.unregister_session(session_id)
+
+        scheduler = self._scheduler
+        previous_notification_sink = self._previous_notification_sink
+        previous_progress_sink = self._previous_progress_sink
+        installed_notification_sink = self._installed_notification_sink
+        installed_progress_sink = self._installed_progress_sink
+        self._state_by_session.clear()
+        self._cron_runtime_started = False
+        self._scheduler = None
+        self._notification_center = None
+        self._previous_notification_sink = None
+        self._previous_progress_sink = None
+        self._installed_notification_sink = None
+        self._installed_progress_sink = None
+
+        if scheduler is None:
+            return
+
+        if getattr(scheduler, "notification_sink", None) is installed_notification_sink:
+            scheduler.notification_sink = previous_notification_sink
+        if getattr(scheduler, "progress_sink", None) is installed_progress_sink:
+            scheduler.progress_sink = previous_progress_sink
+
+        stop = getattr(scheduler, "stop", None)
+        if callable(stop) and getattr(scheduler, "running", False):
+            try:
+                stop_result = stop()
+                if asyncio.iscoroutine(stop_result):
+                    await stop_result
+            except Exception as exc:
+                logger.warning(f"Failed to stop ACP cron runtime: {exc}")
 
     @staticmethod
     def _normalize_runtime_events(state: dict[str, Any], output: Any) -> list[dict[str, Any]]:
