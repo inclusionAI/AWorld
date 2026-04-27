@@ -26,6 +26,8 @@ class RalphLoopCommand(PluginBoundCommand):
             parsed["completion_promise"],
         )
         handle = self.get_state_handle(context)
+        if handle is None:
+            raise ValueError("/ralph-loop requires session-aware plugin state")
         handle.write(
             {
                 "active": True,

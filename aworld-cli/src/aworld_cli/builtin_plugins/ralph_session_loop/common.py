@@ -3,6 +3,9 @@ import re
 import shlex
 from datetime import datetime, timezone
 
+MAX_SUMMARY_LENGTH = 160
+ELLIPSIS = "..."
+
 
 class RalphArgumentParser(argparse.ArgumentParser):
     def error(self, message):
@@ -68,10 +71,10 @@ def extract_completion_promise(answer: str | None) -> str | None:
     return match.group(1).strip()
 
 
-def summarize_text(text: str | None, limit: int = 160) -> str | None:
+def summarize_text(text: str | None, limit: int = MAX_SUMMARY_LENGTH) -> str | None:
     if text is None:
         return None
     normalized = " ".join(str(text).split())
     if len(normalized) <= limit:
         return normalized
-    return normalized[: limit - 3] + "..."
+    return normalized[: limit - len(ELLIPSIS)] + ELLIPSIS

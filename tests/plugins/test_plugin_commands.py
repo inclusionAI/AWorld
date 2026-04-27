@@ -2,7 +2,14 @@ from types import SimpleNamespace
 
 from pathlib import Path
 
+import pytest
+
 from aworld_cli.core.command_system import CommandContext, CommandRegistry
+from aworld_cli.builtin_plugins.ralph_session_loop.common import (
+    extract_completion_promise,
+    parse_loop_args,
+    summarize_text,
+)
 from aworld.plugins.discovery import discover_plugins
 from aworld_cli.plugin_capabilities.commands import PluginPromptCommand, register_plugin_commands, sync_plugin_commands
 from aworld_cli.plugin_capabilities.state import PluginStateStore
@@ -37,6 +44,35 @@ def _get_builtin_ralph_plugin_root() -> Path:
         / "builtin_plugins"
         / "ralph_session_loop"
     )
+
+
+@pytest.mark.parametrize("user_args", ['"Build API" --max-iterations 0', '"Build API" --max-iterations -5'])
+def test_parse_loop_args_rejects_non_positive_max_iterations(user_args):
+    with pytest.raises(ValueError, match="--max-iterations must be >= 1"):
+        parse_loop_args(user_args)
+
+
+def test_parse_loop_args_rejects_malformed_quotes():
+    with pytest.raises(ValueError, match="quotation"):
+        parse_loop_args('"Build API --verify unclosed')
+
+
+def test_extract_completion_promise_strips_multiline_content():
+    answer = "Done\n<promise>\nCOMPLETE\n</promise>"
+
+    assert extract_completion_promise(answer) == "COMPLETE"
+
+
+def test_extract_completion_promise_strips_surrounding_whitespace():
+    assert extract_completion_promise("<promise>  COMPLETE  </promise>") == "COMPLETE"
+
+
+def test_summarize_text_handles_edge_cases():
+    assert summarize_text("") == ""
+    assert summarize_text("a" * 160) == "a" * 160
+    assert summarize_text("a" * 161) == "a" * 157 + "..."
+    assert summarize_text("Hello 🎉 World", limit=10) == "Hello 🎉..."
+    assert summarize_text(None) is None
 
 
 def test_register_plugin_command_from_manifest():
@@ -258,8 +294,35 @@ async def test_ralph_loop_command_initializes_session_state(tmp_path):
         assert payload["completion_promise"] == "COMPLETE"
         assert payload["verify_commands"] == ["pytest tests/api -q"]
         assert "Task:" in prompt
+        assert "Build a REST API" in prompt
         assert "Verification requirements:" in prompt
+        assert "1. Run: pytest tests/api -q" in prompt
+        assert "Completion rule:" in prompt
         assert "Only output <promise>COMPLETE</promise>" in prompt
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_ralph_loop_command_rejects_missing_state_handle_at_prompt_time(tmp_path):
+    plugin_root = _get_builtin_ralph_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+        command = CommandRegistry.get("ralph-loop")
+
+        with pytest.raises(ValueError, match="session-aware plugin state"):
+            await command.get_prompt(
+                CommandContext(
+                    cwd=str(tmp_path / "workspace"),
+                    user_args='"Build API"',
+                    runtime=None,
+                    session_id=None,
+                )
+            )
     finally:
         CommandRegistry.restore(snapshot)
 
