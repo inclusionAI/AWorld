@@ -33,6 +33,7 @@ class AcpCronBridge:
         session_id: str,
         tool_name: str | None,
         payload: Any,
+        tool_input: Any = None,
     ) -> None:
         if not session_id or session_id not in self._session_ids:
             return
@@ -41,7 +42,11 @@ class AcpCronBridge:
         if not isinstance(payload, dict) or payload.get("success") is not True:
             return
 
-        for job_id in self._extract_job_ids(payload):
+        job_ids = self._extract_job_ids(payload)
+        if not job_ids:
+            job_ids = self._extract_job_ids_from_tool_input(tool_input, payload)
+
+        for job_id in job_ids:
             self._job_bindings[job_id] = session_id
 
     async def publish_notification(self, notification_data: dict[str, Any]) -> None:
@@ -111,6 +116,21 @@ class AcpCronBridge:
                 job_ids.append(advance_job_id.strip())
 
         return job_ids
+
+    @staticmethod
+    def _extract_job_ids_from_tool_input(tool_input: Any, payload: dict[str, Any]) -> list[str]:
+        if not isinstance(tool_input, dict):
+            return []
+
+        action = tool_input.get("action")
+        if action != "run":
+            return []
+
+        job_id = tool_input.get("job_id")
+        if isinstance(job_id, str) and job_id.strip():
+            return [job_id.strip()]
+
+        return []
 
     @staticmethod
     def _render_notification_text(notification_data: dict[str, Any]) -> str:
