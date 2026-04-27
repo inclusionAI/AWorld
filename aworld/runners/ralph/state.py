@@ -1,7 +1,5 @@
 # coding: utf-8
 # Copyright (c) inclusionAI.
-import json
-import os
 import time
 import uuid
 from copy import deepcopy
@@ -14,7 +12,8 @@ from aworld.core.context.amni.config import AmniConfigLevel
 from aworld.core.context.base import Context
 from aworld.core.task import Task
 from aworld.logs.util import logger
-from aworld.output import Artifact, ArtifactType, WorkSpace
+from aworld.output import WorkSpace
+from aworld.runners.ralph.memory import LoopMemoryStore
 from aworld.runners.ralph.types import CompletionCriteria
 from aworld.sandbox import Sandbox
 from aworld.utils.common import convert_to_subclass
@@ -60,6 +59,16 @@ class LoopContext(ApplicationContext):
     """Loop context records the global information of the entire process."""
 
     def __init__(self, loop_state: LoopState = LoopState(), work_dir: str = ".", **kwargs):
+        if "task_state" not in kwargs:
+            base_context = ApplicationContext.create(task_content="")
+            kwargs = {
+                "task_state": base_context.task_state,
+                "workspace": getattr(base_context, "_workspace", None),
+                "parent": getattr(base_context, "_parent", None),
+                "context_config": base_context.get_config(),
+                "working_dir": getattr(base_context, "_working_dir", None),
+                **kwargs,
+            }
         super().__init__(**kwargs)
         self.loop_init(loop_state=loop_state, work_dir=work_dir)
 
@@ -72,9 +81,15 @@ class LoopContext(ApplicationContext):
         self.loop_state = loop_state
         self.work_dir = work_dir
         self.workspace = WorkSpace(workspace_id=self.work_dir)
-        self.checkpoints_dir()
+        self.check_directories()
         # use sandbox to manager file IO
-        self.sand_box = Sandbox.builder().builtin_tools(["filesystem"]).workspaces([work_dir]).build()
+        self.sand_box = (
+            Sandbox.builder()
+            .builtin_tools(["filesystem", "terminal"])
+            .workspaces([work_dir])
+            .build()
+        )
+        self.memory = LoopMemoryStore(self)
 
     @property
     def completion_criteria(self) -> CompletionCriteria:
@@ -101,6 +116,9 @@ class LoopContext(ApplicationContext):
     def summary_dir(self) -> Path:
         return self.task_dir() / "summary"
 
+    def answer_dir(self) -> Path:
+        return self.task_dir() / "answer"
+
     def reflect_dir(self) -> Path:
         return self.loop_dir() / "reflect"
 
@@ -121,6 +139,10 @@ class LoopContext(ApplicationContext):
         """Create necessary directories."""
         self.loop_dir().mkdir(parents=True, exist_ok=True)
         self.task_dir().mkdir(parents=True, exist_ok=True)
+        self.answer_dir().mkdir(parents=True, exist_ok=True)
+        self.summary_dir().mkdir(parents=True, exist_ok=True)
+        self.reflect_dir().mkdir(parents=True, exist_ok=True)
+        self.stop_dir().mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir().mkdir(parents=True, exist_ok=True)
 
     async def build_sub_context(self, sub_task_content: Any, sub_task_id: str = None, **kwargs):
@@ -167,18 +189,15 @@ class LoopContext(ApplicationContext):
         task_answer = ''
         if iter_num > 1:
             # read answer
-            path = f"{self.work_dir}/{self.task_dir()}/answer/{task.id}_{iter_num - 1}"
-            if os.path.exists(path):
+            answer_path = self.memory.answer_path(task.id, iter_num - 1)
+            if answer_path.exists():
                 logger.info(f"Read answer for task {task.id} iteration {iter_num - 1}")
-                res = await self.sand_box.file.read_file(path)
-                task_answer = json.loads(res.get('data', '{}')).get('content', '')
+                task_answer = await self.memory.read_answer(task.id, iter_num - 1) or ""
 
             # Read reflection/feedback from previous iteration
-            artifact_id = f"{self.reflect_dir()}_{task.id}_{iter_num - 1}"
-            info = self.workspace.get_artifact_data(artifact_id)
+            feedback_content = await self.memory.read_reflection_feedback(task.id, iter_num - 1) or ""
 
-            if info and info.get("content"):
-                feedback_content = info.get("content")
+            if feedback_content:
                 logger.info(f"Read feedback for task {task.id} iteration {iter_num}: {feedback_content[:100]}...")
             else:
                 # Default feedback if no artifact found
@@ -222,7 +241,6 @@ class LoopContext(ApplicationContext):
             return
 
         task_id = task_context.get_task().id if task_context.get_task() else "unknown"
-        artifact_id = f"{self.reflect_dir()}_{task_id}_{iter_num}"
 
         # Handle different content types
         if isinstance(content, str):
@@ -237,20 +255,12 @@ class LoopContext(ApplicationContext):
             logger.warning(f"Unsupported content type: {type(content)}, converting to string")
             artifact_content = str(content)
 
-        artifact = Artifact(
-            artifact_id=artifact_id,
-            artifact_type=ArtifactType.TEXT,
-            content=artifact_content,
-            metadata={
-                "context_type": content_type,
-                "iteration": iter_num,
-                "task_id": task_id,
-                "timestamp": time.time()
-            }
+        await self.memory.write_reflection_feedback(task_id, iter_num, artifact_content)
+        logger.info(
+            f"Written {content_type} to loop context: "
+            f"{self.memory.reflection_feedback_artifact_id(task_id, iter_num)} "
+            f"(length: {len(artifact_content)})"
         )
-
-        await self.workspace.add_artifact(artifact, index=False)
-        logger.info(f"Written {content_type} to loop context: {artifact_id} (length: {len(artifact_content)})")
 
     def _format_dict_content(self, content: dict) -> str:
         """Format dictionary content as readable text."""
@@ -284,7 +294,15 @@ class LoopContext(ApplicationContext):
     async def add_file(self, filename: Optional[str], content: Optional[Any], mime_type: Optional[str] = "text",
                        namespace: str = "default", origin_type: str = None, origin_path: str = None,
                        refresh_workspace: bool = True) -> Tuple[bool, Optional[str], Optional[str]]:
-        res = await self.sand_box.file.write_file(path=f"{self.work_dir}/{self.task_dir()}/answer/{filename}", content=content)
+        if not filename:
+            return False, filename, content
+
+        task_key, separator, suffix = filename.rpartition("_")
+        if separator and suffix.isdigit():
+            await self.memory.write_answer(task_key, int(suffix), content)
+        else:
+            await self.memory.write_answer_file(filename, content)
+        res = {"success": True}
         return res.get('success'), filename, content
 
 
