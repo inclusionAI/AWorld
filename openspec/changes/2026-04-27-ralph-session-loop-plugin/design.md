@@ -68,6 +68,31 @@ Rejected alternative:
 - Build the phase-1 interactive loop directly on `RalphRunner`.
   Rejected because `RalphRunner` is a task-execution loop, not a session-lifecycle controller.
 
+### Decision: Ralph plugin and RalphRunner remain parallel abstractions
+
+Phase 1 must preserve a clear layer boundary between the CLI Ralph plugin and framework-level `RalphRunner`.
+
+Boundary definition:
+
+- the Ralph plugin is an `aworld-cli` interaction-layer capability
+- `RalphRunner` is an `aworld` framework execution-layer capability
+- the plugin controls whether the current session continues into another round
+- the runner controls whether a single task execution has converged
+
+Implications:
+
+- the phase-1 plugin must not invoke `RalphRunner` implicitly
+- the plugin must not treat `RalphRunner` as the only way AWorld can expose Ralph semantics
+- plugin `--max-iterations` applies only to session continuation
+- runner `completion_criteria.max_iterations` applies only to inner task execution
+- phase 1 does not define a priority or override relationship between those two limits
+
+Why:
+
+- This keeps the CLI interaction model independent from framework runtime choices.
+- It avoids hidden coupling between session control and task execution.
+- It preserves two valid adoption paths: interactive CLI Ralph and framework/programmatic Ralph.
+
 ### Decision: The stop hook is the only loop controller
 
 The phase-1 control path should be:
