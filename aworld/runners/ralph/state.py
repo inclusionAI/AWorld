@@ -13,7 +13,9 @@ from aworld.core.context.base import Context
 from aworld.core.task import Task
 from aworld.logs.util import logger
 from aworld.output import WorkSpace
+from aworld.runners.ralph.input_builder import IterationInputBuilder
 from aworld.runners.ralph.memory import LoopMemoryStore
+from aworld.runners.ralph.policy import RalphLoopPolicy
 from aworld.runners.ralph.types import CompletionCriteria
 from aworld.sandbox import Sandbox
 from aworld.utils.common import convert_to_subclass
@@ -195,37 +197,24 @@ class LoopContext(ApplicationContext):
         Returns:
             Context with injected feedback
         """
-        feedback_content = ""
-        task_answer = ''
-        if iter_num > 1:
-            # read answer
-            task_answer = await self.memory.read_answer(task.id, iter_num - 1) or ""
-            if task_answer:
-                logger.info(f"Read answer for task {task.id} iteration {iter_num - 1}")
-
-            # Read reflection/feedback from previous iteration
-            feedback_content = await self.memory.read_reflection_feedback(task.id, iter_num - 1) or ""
-
-            if feedback_content:
-                logger.info(f"Read feedback for task {task.id} iteration {iter_num}: {feedback_content[:100]}...")
-            else:
-                # Default feedback if no artifact found
-                feedback_content = "Your previous answer was incorrect. Please read the original question carefully, check and analyze it, and try to answer it again."
-                logger.info(f"No feedback artifact found, using default feedback for iteration {iter_num}")
-
-        # Inject feedback into task input
-        if feedback_content:
-            if reuse_context:
-                task_content = f"Previous answer: {task_answer}\n\n{feedback_content}"
-            else:
-                task_content = f"Previous answer: {task_answer}\n\n{feedback_content}\n\nOriginal task: {task.input}"
-        else:
-            task_content = task.input
+        builder = IterationInputBuilder(
+            policy=RalphLoopPolicy(
+                execution_mode="reuse_context" if reuse_context else "fresh_context",
+                verify_enabled=False,
+            ),
+            memory_store=self.memory,
+        )
+        iteration_input = await builder.build(
+            task_id=task.id,
+            original_task=kwargs.get("original_task", task.input),
+            iteration=iter_num,
+        )
+        task_content = iteration_input.task_input
 
         task.input = task_content
         logger.debug(f"Task input after feedback injection: {task_content[:200]}...")
 
-        if reuse_context:
+        if iteration_input.reuse_context:
             return self
         return await self.build_sub_context(sub_task_content=task_content, sub_task_id=task.id, task=task, **kwargs)
 
