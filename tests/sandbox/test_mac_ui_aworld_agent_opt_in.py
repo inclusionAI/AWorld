@@ -34,3 +34,13 @@ def test_tool_config_manager_exposes_mac_ui_automation_builtin():
     assert server["type"] == "stdio"
     assert server["args"][-1] == "--stdio"
     assert "platforms/mac/ui_automation/src/main.py" in server["args"][0]
+
+
+def test_tool_config_manager_forwards_mac_ui_gate_env(monkeypatch):
+    monkeypatch.setenv("AWORLD_ENABLE_MAC_UI_AUTOMATION", "1")
+    monkeypatch.setenv("AWORLD_MAC_UI_AUTOMATION_BACKEND", "peekaboo_cli")
+    config = ToolConfigManager(mode="local").get_mcp_config([MAC_UI_AUTOMATION_SERVER_NAME])
+    server_env = config["mcpServers"][MAC_UI_AUTOMATION_SERVER_NAME]["env"]
+
+    assert server_env["AWORLD_ENABLE_MAC_UI_AUTOMATION"] == "1"
+    assert server_env["AWORLD_MAC_UI_AUTOMATION_BACKEND"] == "peekaboo_cli"

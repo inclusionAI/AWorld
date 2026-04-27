@@ -73,6 +73,11 @@ export AWORLD_MAC_UI_AUTOMATION_BACKEND=peekaboo_cli
 5. Use `permissions` first, then `list_apps` / `launch_app` / `see` before
    interaction actions.
 
+Current `peekaboo_cli` backend notes:
+
+- `list_windows` currently requires `app`
+- `focus_window` accepts `window_id` directly, or `app` + `window_title`
+
 ## Validation Anchor
 
 Phase 1 is anchored on a Xiaoyuzhou validation flow:
