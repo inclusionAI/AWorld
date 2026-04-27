@@ -58,7 +58,13 @@ class LoopState:
 class LoopContext(ApplicationContext):
     """Loop context records the global information of the entire process."""
 
-    def __init__(self, loop_state: LoopState = LoopState(), work_dir: str = ".", **kwargs):
+    def __init__(
+        self,
+        completion_criteria: Optional[CompletionCriteria] = None,
+        loop_state: Optional[LoopState] = None,
+        work_dir: str = ".",
+        **kwargs,
+    ):
         if "task_state" not in kwargs:
             base_context = ApplicationContext.create(task_content="")
             kwargs = {
@@ -70,15 +76,19 @@ class LoopContext(ApplicationContext):
                 **kwargs,
             }
         super().__init__(**kwargs)
-        self.loop_init(loop_state=loop_state, work_dir=work_dir)
+        self.loop_init(
+            completion_criteria=completion_criteria,
+            loop_state=loop_state,
+            work_dir=work_dir,
+        )
 
     def loop_init(self,
-                  completion_criteria: CompletionCriteria = CompletionCriteria(),
-                  loop_state: LoopState = LoopState(),
+                  completion_criteria: Optional[CompletionCriteria] = None,
+                  loop_state: Optional[LoopState] = None,
                   work_dir: str = "."):
         self._id = uuid.uuid4().hex
-        self._completion_criteria = completion_criteria
-        self.loop_state = loop_state
+        self._completion_criteria = completion_criteria or CompletionCriteria()
+        self.loop_state = loop_state or LoopState()
         self.work_dir = work_dir
         self.workspace = WorkSpace(workspace_id=self.work_dir)
         self.check_directories()
@@ -189,10 +199,9 @@ class LoopContext(ApplicationContext):
         task_answer = ''
         if iter_num > 1:
             # read answer
-            answer_path = self.memory.answer_path(task.id, iter_num - 1)
-            if answer_path.exists():
+            task_answer = await self.memory.read_answer(task.id, iter_num - 1) or ""
+            if task_answer:
                 logger.info(f"Read answer for task {task.id} iteration {iter_num - 1}")
-                task_answer = await self.memory.read_answer(task.id, iter_num - 1) or ""
 
             # Read reflection/feedback from previous iteration
             feedback_content = await self.memory.read_reflection_feedback(task.id, iter_num - 1) or ""
@@ -255,7 +264,18 @@ class LoopContext(ApplicationContext):
             logger.warning(f"Unsupported content type: {type(content)}, converting to string")
             artifact_content = str(content)
 
-        await self.memory.write_reflection_feedback(task_id, iter_num, artifact_content)
+        await self.memory.write_reflection_feedback_artifact(
+            task_id=task_id,
+            iteration=iter_num,
+            text=artifact_content,
+            metadata={
+                "context_type": content_type,
+                "iteration": iter_num,
+                "task_id": task_id,
+                "timestamp": time.time(),
+                "kind": "reflection_feedback",
+            },
+        )
         logger.info(
             f"Written {content_type} to loop context: "
             f"{self.memory.reflection_feedback_artifact_id(task_id, iter_num)} "
@@ -299,10 +319,10 @@ class LoopContext(ApplicationContext):
 
         task_key, separator, suffix = filename.rpartition("_")
         if separator and suffix.isdigit():
-            await self.memory.write_answer(task_key, int(suffix), content)
+            result = await self.memory.write_answer(task_key, int(suffix), content)
         else:
-            await self.memory.write_answer_file(filename, content)
-        res = {"success": True}
+            result = await self.memory.write_answer_file(filename, content)
+        res = result if isinstance(result, dict) else {"success": bool(result)}
         return res.get('success'), filename, content
 
 
