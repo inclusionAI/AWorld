@@ -6,6 +6,7 @@ from aworld import runner as runner_module
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.task import Task, TaskResponse
 from aworld.runners.ralph.config import RalphConfig, RalphVerifyConfig
+from aworld.runners.ralph.detect.types import StopType
 from aworld.runners.ralph.input_builder import IterationInput, IterationInputBuilder
 from aworld.runners.ralph.memory import LoopMemoryStore
 from aworld.runners.ralph.policy import RalphLoopPolicy
@@ -263,4 +264,113 @@ async def test_ralph_runner_do_run_invokes_iteration_evaluator_after_execution(t
         task=task,
         iter_num=1,
         execution_result=response,
+        phase="post_iteration",
     )
+
+
+@pytest.mark.asyncio
+async def test_ralph_runner_do_run_skips_iteration_evaluator_when_run_on_each_iteration_is_disabled(tmp_path):
+    task = Task(
+        input="Build API",
+        conf=RalphConfig(
+            workspace=str(tmp_path),
+            verify=RalphVerifyConfig(enabled=True, commands=["pytest -q"], run_on_each_iteration=False),
+        ),
+    )
+    runner = RalphRunner(task=task, completion_criteria=CompletionCriteria(max_iterations=2))
+    runner.loop_context = LoopContext(
+        completion_criteria=CompletionCriteria(max_iterations=2),
+        loop_state=LoopState(),
+        work_dir=str(tmp_path),
+    )
+    response = TaskResponse(id=task.id, answer="done", success=True)
+    runner._execute_task = AsyncMock(return_value=response)
+    runner.evaluator = AsyncMock()
+    runner.stop_detector.should_stop = AsyncMock(
+        side_effect=[
+            type("StopDecision", (), {"should_stop": False, "stop_type": StopType.NONE, "reason": None})(),
+            type("StopDecision", (), {"should_stop": True, "stop_type": StopType.MAX_ITERATIONS, "reason": "done"})(),
+        ]
+    )
+
+    result = await runner.do_run()
+
+    assert result is response
+    runner.evaluator.evaluate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_ralph_runner_do_run_verifies_before_completion_when_configured(tmp_path):
+    task = Task(
+        input="Build API",
+        conf=RalphConfig(
+            workspace=str(tmp_path),
+            verify=RalphVerifyConfig(
+                enabled=True,
+                commands=["pytest -q"],
+                run_on_each_iteration=False,
+                run_before_completion=True,
+            ),
+        ),
+    )
+    runner = RalphRunner(task=task, completion_criteria=CompletionCriteria(max_iterations=3))
+    runner.loop_context = LoopContext(
+        completion_criteria=CompletionCriteria(max_iterations=3),
+        loop_state=LoopState(),
+        work_dir=str(tmp_path),
+    )
+    response = TaskResponse(id=task.id, answer="done", success=True)
+    runner._execute_task = AsyncMock(return_value=response)
+    runner.evaluator = AsyncMock()
+    runner.stop_detector.should_stop = AsyncMock(
+        side_effect=[
+            type("StopDecision", (), {"should_stop": False, "stop_type": StopType.NONE, "reason": None})(),
+            type("StopDecision", (), {"should_stop": True, "stop_type": StopType.COMPLETION, "reason": "done"})(),
+        ]
+    )
+
+    result = await runner.do_run()
+
+    assert result is response
+    runner.evaluator.evaluate.assert_awaited_once_with(
+        task=task,
+        iter_num=1,
+        execution_result=response,
+        phase="before_completion",
+    )
+
+
+@pytest.mark.asyncio
+async def test_ralph_runner_do_run_does_not_verify_before_non_completion_stop(tmp_path):
+    task = Task(
+        input="Build API",
+        conf=RalphConfig(
+            workspace=str(tmp_path),
+            verify=RalphVerifyConfig(
+                enabled=True,
+                commands=["pytest -q"],
+                run_on_each_iteration=False,
+                run_before_completion=True,
+            ),
+        ),
+    )
+    runner = RalphRunner(task=task, completion_criteria=CompletionCriteria(max_iterations=2))
+    runner.loop_context = LoopContext(
+        completion_criteria=CompletionCriteria(max_iterations=2),
+        loop_state=LoopState(),
+        work_dir=str(tmp_path),
+    )
+    response = TaskResponse(id=task.id, answer="done", success=True)
+    runner._execute_task = AsyncMock(return_value=response)
+    runner.evaluator = AsyncMock()
+    runner.stop_detector.should_stop = AsyncMock(
+        side_effect=[
+            type("StopDecision", (), {"should_stop": False, "stop_type": StopType.NONE, "reason": None})(),
+            type("StopDecision", (), {"should_stop": True, "stop_type": StopType.MAX_ITERATIONS, "reason": "done"})(),
+        ]
+    )
+
+    result = await runner.do_run()
+
+    assert result is response
+    runner.evaluator.evaluate.assert_not_awaited()

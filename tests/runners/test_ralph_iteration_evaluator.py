@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -32,13 +33,16 @@ async def test_iteration_evaluator_persists_failed_verify_output(tmp_path):
     context.sand_box.terminal.run_code = AsyncMock(
         return_value={
             "success": True,
-            "data": {
-                "success": False,
-                "metadata": {
-                    "return_code": 1,
-                    "output_data": "FAILED tests/test_api.py::test_handlers",
-                },
-            },
+            "data": json.dumps(
+                {
+                    "success": False,
+                    "message": "Command failed",
+                    "metadata": {
+                        "return_code": 1,
+                        "output_data": "FAILED tests/test_api.py::test_handlers",
+                    },
+                }
+            ),
             "error": None,
         }
     )
@@ -86,13 +90,16 @@ async def test_iteration_evaluator_feeds_verify_failure_into_next_iteration_inpu
     context.sand_box.terminal.run_code = AsyncMock(
         return_value={
             "success": True,
-            "data": {
-                "success": False,
-                "metadata": {
-                    "return_code": 1,
-                    "output_data": "FAILED tests/test_api.py::test_handlers",
-                },
-            },
+            "data": json.dumps(
+                {
+                    "success": False,
+                    "message": "Command failed",
+                    "metadata": {
+                        "return_code": 1,
+                        "output_data": "FAILED tests/test_api.py::test_handlers",
+                    },
+                }
+            ),
             "error": None,
         }
     )
@@ -146,3 +153,34 @@ async def test_iteration_evaluator_skips_verify_when_disabled(tmp_path):
     assert result.verify_result is None
     assert await context.memory.read_verify_result(task.id, 1) is None
     assert await context.memory.read_reflection_feedback(task.id, 1) is None
+
+
+@pytest.mark.asyncio
+async def test_iteration_evaluator_skips_iteration_verify_when_run_on_each_iteration_is_disabled(tmp_path):
+    context = LoopContext(
+        completion_criteria=CompletionCriteria(),
+        loop_state=LoopState(),
+        work_dir=str(tmp_path),
+    )
+    task = Task(input="Build an API")
+    evaluator = IterationEvaluator(
+        context=context,
+        memory_store=LoopMemoryStore(context),
+        verify_config=RalphVerifyConfig(
+            enabled=True,
+            commands=["pytest -q"],
+            run_on_each_iteration=False,
+            run_before_completion=False,
+        ),
+    )
+    context.sand_box.terminal.run_code = AsyncMock(side_effect=AssertionError("iteration verify should be skipped"))
+
+    result = await evaluator.evaluate(
+        task=task,
+        iter_num=1,
+        execution_result=TaskResponse(id=task.id, answer="Created API handlers", success=True),
+        phase="post_iteration",
+    )
+
+    assert result.verify_result is None
+    assert await context.memory.read_verify_result(task.id, 1) is None
