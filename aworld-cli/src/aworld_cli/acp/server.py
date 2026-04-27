@@ -277,6 +277,10 @@ class AcpStdioServer:
         self._notification_center = None
         self._scheduler = None
         self._cron_bridge = AcpCronBridge(write_session_update=self._write_session_update)
+        self._previous_notification_sink = None
+        self._previous_progress_sink = None
+        self._installed_notification_sink = None
+        self._installed_progress_sink = None
 
     async def run(self) -> int:
         pending_requests: set[asyncio.Task[Any]] = set()
@@ -631,14 +635,32 @@ class AcpStdioServer:
 
                 self._notification_center = CronNotificationCenter()
                 self._scheduler = get_scheduler()
+                self._previous_notification_sink = getattr(self._scheduler, "notification_sink", None)
+                self._previous_progress_sink = getattr(self._scheduler, "progress_sink", None)
 
                 async def _notification_sink(notification_data: dict[str, Any]) -> None:
+                    previous_sink = self._previous_notification_sink
+                    if previous_sink is not None:
+                        previous_result = previous_sink(notification_data)
+                        if asyncio.iscoroutine(previous_result):
+                            await previous_result
                     if self._notification_center is not None:
                         await self._notification_center.publish(notification_data)
                     await self._cron_bridge.publish_notification(notification_data)
 
+                async def _progress_sink(progress_data: dict[str, Any]) -> None:
+                    previous_sink = self._previous_progress_sink
+                    if previous_sink is not None:
+                        previous_result = previous_sink(progress_data)
+                        if asyncio.iscoroutine(previous_result):
+                            await previous_result
+                    if self._notification_center is not None:
+                        await self._notification_center.publish_progress(progress_data)
+
+                self._installed_notification_sink = _notification_sink
+                self._installed_progress_sink = _progress_sink
                 self._scheduler.notification_sink = _notification_sink
-                self._scheduler.progress_sink = self._notification_center.publish_progress
+                self._scheduler.progress_sink = _progress_sink
 
                 if not getattr(self._scheduler, "running", False):
                     await self._scheduler.start()
@@ -653,13 +675,26 @@ class AcpStdioServer:
             self._cron_bridge.unregister_session(session_id)
 
         scheduler = self._scheduler
+        previous_notification_sink = self._previous_notification_sink
+        previous_progress_sink = self._previous_progress_sink
+        installed_notification_sink = self._installed_notification_sink
+        installed_progress_sink = self._installed_progress_sink
         self._state_by_session.clear()
         self._cron_runtime_started = False
         self._scheduler = None
         self._notification_center = None
+        self._previous_notification_sink = None
+        self._previous_progress_sink = None
+        self._installed_notification_sink = None
+        self._installed_progress_sink = None
 
         if scheduler is None:
             return
+
+        if getattr(scheduler, "notification_sink", None) is installed_notification_sink:
+            scheduler.notification_sink = previous_notification_sink
+        if getattr(scheduler, "progress_sink", None) is installed_progress_sink:
+            scheduler.progress_sink = previous_progress_sink
 
         stop = getattr(scheduler, "stop", None)
         if callable(stop) and getattr(scheduler, "running", False):
