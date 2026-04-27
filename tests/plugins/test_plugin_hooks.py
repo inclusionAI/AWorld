@@ -302,6 +302,78 @@ async def test_ralph_stop_hook_blocks_and_continues_when_active(tmp_path):
     assert result.action == "block_and_continue"
     assert "Task:" in result.follow_up_prompt
     assert "Verification requirements:" in result.follow_up_prompt
+    assert "pytest tests/api -q" in result.follow_up_prompt
+    assert handle.read()["iteration"] == 2
+
+
+@pytest.mark.asyncio
+async def test_ralph_stop_hook_denies_when_handle_is_missing_for_active_state(tmp_path):
+    plugin_root = _get_builtin_ralph_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    result = await hooks["stop"][0].run(
+        event={"session_id": "session-1"},
+        state={"active": True},
+    )
+
+    assert result.action == "deny"
+    assert "unavailable" in result.reason.lower()
+
+
+@pytest.mark.asyncio
+async def test_ralph_stop_hook_handles_missing_prompt_field(tmp_path):
+    plugin_root = _get_builtin_ralph_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    store = PluginStateStore(tmp_path / "plugin-state")
+    state_path = store.session_state("ralph-session-loop", "session-1")
+    handle = store.handle(state_path)
+    handle.write(
+        {
+            "active": True,
+            "iteration": 1,
+            "max_iterations": 5,
+        }
+    )
+
+    result = await hooks["stop"][0].run(
+        event={"session_id": "session-1"},
+        state={"__plugin_state__": handle, **handle.read()},
+    )
+
+    assert result.action == "block_and_continue"
+    assert "Task:" in result.follow_up_prompt
+    assert handle.read()["iteration"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("iteration_value", [None, -3, "oops"])
+async def test_ralph_stop_hook_handles_invalid_iteration_value(tmp_path, iteration_value):
+    plugin_root = _get_builtin_ralph_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    store = PluginStateStore(tmp_path / "plugin-state")
+    state_path = store.session_state("ralph-session-loop", "session-1")
+    handle = store.handle(state_path)
+    handle.write(
+        {
+            "active": True,
+            "prompt": "Build a REST API",
+            "iteration": iteration_value,
+            "max_iterations": 5,
+            "verify_commands": [],
+        }
+    )
+
+    result = await hooks["stop"][0].run(
+        event={"session_id": "session-1"},
+        state={"__plugin_state__": handle, **handle.read()},
+    )
+
+    assert result.action == "block_and_continue"
     assert handle.read()["iteration"] == 2
 
 

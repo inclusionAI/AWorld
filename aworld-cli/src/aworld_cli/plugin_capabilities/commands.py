@@ -25,16 +25,19 @@ class PluginBoundCommand(Command):
         tools = self._entrypoint.permissions.get("allowed_tools", [])
         return [str(item) for item in tools]
 
+    def _resolve_session_id(self, context: CommandContext):
+        runtime = getattr(context, "runtime", None)
+        return getattr(context, "session_id", None) or getattr(runtime, "session_id", None)
+
     def resolve_state_path(self, context: CommandContext):
         runtime = getattr(context, "runtime", None)
         if runtime is None or not hasattr(runtime, "_resolve_plugin_state_path"):
             return None
 
-        session_id = getattr(context, "session_id", None) or getattr(runtime, "session_id", None)
         return runtime._resolve_plugin_state_path(
             plugin_id=self._plugin.manifest.plugin_id,
             scope=self._entrypoint.scope,
-            session_id=session_id,
+            session_id=self._resolve_session_id(context),
             workspace_path=context.cwd,
         )
 

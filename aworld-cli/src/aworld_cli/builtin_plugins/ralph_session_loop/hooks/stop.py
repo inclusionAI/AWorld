@@ -4,6 +4,22 @@ from aworld_cli.builtin_plugins.ralph_session_loop.common import (
 )
 
 
+def _coerce_iteration(value) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return parsed if parsed > 0 else 1
+
+
+def _coerce_positive_limit(value):
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def handle_event(event, state):
     handle = state.get("__plugin_state__")
     if handle is None:
@@ -24,9 +40,9 @@ def handle_event(event, state):
             "reason": f"Ralph completion promise satisfied: {completion_promise}",
         }
 
-    iteration = int(current.get("iteration", 1) or 1)
-    max_iterations = current.get("max_iterations")
-    if max_iterations is not None and int(max_iterations) > 0 and iteration >= int(max_iterations):
+    iteration = _coerce_iteration(current.get("iteration", 1))
+    max_iterations = _coerce_positive_limit(current.get("max_iterations"))
+    if max_iterations is not None and iteration >= max_iterations:
         handle.clear()
         return {
             "action": "allow",
