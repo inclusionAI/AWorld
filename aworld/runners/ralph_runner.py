@@ -83,8 +83,8 @@ class RalphRunner(Runner):
             original_task=self.original_task_input,
             iteration=iter_num,
         )
-        self.task_context = await self._build_iteration_context(iteration_input, task, iter_num)
         task.input = iteration_input.task_input
+        self.task_context = await self._build_iteration_context(iteration_input, task, iter_num)
         task.context = self.task_context
 
         results = await exec_tasks(tasks=[task])

@@ -161,14 +161,15 @@ class LoopContext(ApplicationContext):
         # no need agent info to sub context
         context_config = AmniConfigFactory.create(AmniConfigLevel.NAVIGATOR)
         context_config.agent_config.neuron_names.clear()
+        sub_task_content = str(sub_task_content)
 
         task = kwargs.get("task")
         task_input = TaskInput(
             user_id=task.user_id or '',
             session_id=task.session_id or uuid.uuid4().hex,
             task_id=task.id,
-            task_content=task.input,
-            origin_user_input=task.input
+            task_content=sub_task_content,
+            origin_user_input=sub_task_content,
         )
         context_config = None
         new_context = await ApplicationContext.from_input(task_input, context_config=context_config)
@@ -181,6 +182,7 @@ class LoopContext(ApplicationContext):
 
         new_context.task_id = sub_task_id
         new_context.task_input = sub_task_content
+        new_context.origin_user_input = sub_task_content
         self.add_task_node(sub_task_id, self.task_id, caller_agent_info={}, **kwargs)
         return new_context
 
