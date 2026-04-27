@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
+import json
 import os
 import sys
 from pathlib import Path
@@ -91,14 +92,10 @@ class AcpExecutorOutputBridge:
         try:
             agent = await self._resolve_agent()
             if agent is None:
-                yield MessageOutput(
-                    source=ModelResponse(
-                        id=f"acp-fallback-{record.acp_session_id}",
-                        model="aworld-cli/acp-fallback",
-                        content=prompt_text,
-                    )
+                raise ValueError(
+                    "No ACP-capable agent found. Ensure agent bundles are loaded. "
+                    "Set AWORLD_ACP_AGENT explicitly or check bootstrap configuration."
                 )
-                return
 
             executor, restore_sandbox_state = await self._create_executor(
                 agent=agent,
@@ -270,6 +267,7 @@ class AcpStdioServer:
         self._state_by_session: dict[str, dict[str, Any]] = {}
         self._write_lock = asyncio.Lock()
         self._output_bridge = output_bridge or AcpExecutorOutputBridge()
+        self._session_update_method = "sessionUpdate"
 
     async def run(self) -> int:
         pending_requests: set[asyncio.Task[Any]] = set()
@@ -297,6 +295,9 @@ class AcpStdioServer:
 
         try:
             if method == "initialize":
+                protocol_version = params.get("protocolVersion")
+                if isinstance(protocol_version, int) and protocol_version >= 1:
+                    self._session_update_method = "session/update"
                 response = self._response(
                     request_id,
                     {
@@ -305,11 +306,11 @@ class AcpStdioServer:
                         "agentCapabilities": {"loadSession": False},
                     },
                 )
-            elif method == "newSession":
+            elif method in ("newSession", "session/new"):
                 response = self._response(request_id, self._handle_new_session(params))
-            elif method == "prompt":
+            elif method in ("prompt", "session/prompt"):
                 response = await self._handle_prompt(request_id, params)
-            elif method == "cancel":
+            elif method in ("cancel", "session/cancel"):
                 response = await self._handle_cancel(request_id, params)
             else:
                 response = self._error(request_id, -32601, f"Unsupported method: {method}")
@@ -322,7 +323,8 @@ class AcpStdioServer:
                 data=build_error_data(detail) if detail is not None else None,
             )
 
-        await self._write_message(response)
+        if request_id is not None:
+            await self._write_message(response)
 
     def _handle_new_session(self, params: dict[str, Any]) -> dict[str, Any]:
         cwd = params.get("cwd")
@@ -389,7 +391,7 @@ class AcpStdioServer:
                         if isinstance(tool_name, str) and isinstance(tool_call_id, str):
                             state[f"tool_closed::{tool_name}"] = tool_call_id
                     update = map_runtime_event_to_session_update(session_id, event)
-                    await self._write_message(self._notification("sessionUpdate", update))
+                    await self._write_session_update(update)
 
         try:
             task = await self._turns.start_turn(session_id, _run_turn())
@@ -486,35 +488,46 @@ class AcpStdioServer:
             if text:
                 return text
 
+        if isinstance(prompt, list):
+            text = self._normalize_content_blocks(prompt)
+            if text:
+                return text
+
         if isinstance(prompt, dict):
             if isinstance(prompt.get("text"), str) and prompt["text"].strip():
                 return prompt["text"].strip()
 
             content = prompt.get("content")
             if isinstance(content, list):
-                parts: list[str] = []
-                for block in content:
-                    if not isinstance(block, dict):
-                        continue
-                    if block.get("type") == "text" and isinstance(block.get("text"), str):
-                        text = block["text"].strip()
-                        if text:
-                            parts.append(text)
-                        continue
-
-                    resource_text = self._extract_embedded_resource_text(block)
-                    if resource_text:
-                        parts.append(resource_text)
-                        continue
-
-                    resource_link_text = self._format_resource_link_reference(block)
-                    if resource_link_text:
-                        parts.append(resource_link_text)
-
-                if parts:
-                    return "\n".join(parts)
+                text = self._normalize_content_blocks(content)
+                if text:
+                    return text
 
         raise ValueError(AWORLD_ACP_UNSUPPORTED_PROMPT_CONTENT)
+
+    def _normalize_content_blocks(self, content: list[Any]) -> str | None:
+        parts: list[str] = []
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text" and isinstance(block.get("text"), str):
+                text = block["text"].strip()
+                if text:
+                    parts.append(text)
+                continue
+
+            resource_text = self._extract_embedded_resource_text(block)
+            if resource_text:
+                parts.append(resource_text)
+                continue
+
+            resource_link_text = self._format_resource_link_reference(block)
+            if resource_link_text:
+                parts.append(resource_link_text)
+
+        if parts:
+            return "\n".join(parts)
+        return None
 
     @staticmethod
     def _extract_embedded_resource_text(block: dict[str, Any]) -> str | None:
@@ -583,6 +596,72 @@ class AcpStdioServer:
             sys.stdout.buffer.write(payload)
             sys.stdout.buffer.flush()
 
+    async def _write_session_update(self, params: dict[str, Any]) -> None:
+        if self._session_update_method == "session/update" and not self._should_emit_current_session_update(params):
+            return
+        if self._session_update_method == "session/update":
+            params = self._to_current_session_update(params)
+        await self._write_message(self._notification(self._session_update_method, params))
+
+    @staticmethod
+    def _should_emit_current_session_update(params: dict[str, Any]) -> bool:
+        update = params.get("update")
+        if not isinstance(update, dict):
+            return True
+        update_type = update.get("sessionUpdate")
+        return update_type not in {"tool_call", "tool_call_update"}
+
+    @staticmethod
+    def _to_current_session_update(params: dict[str, Any]) -> dict[str, Any]:
+        converted = dict(params)
+        update = dict(converted.get("update") or {})
+        converted["update"] = update
+        update_type = update.get("sessionUpdate")
+
+        if update_type in {"agent_message_chunk", "agent_thought_chunk", "user_message_chunk"}:
+            content = update.get("content")
+            if isinstance(content, dict) and isinstance(content.get("text"), str) and "type" not in content:
+                update["content"] = {"type": "text", "text": content["text"]}
+            return converted
+
+        if update_type == "tool_call":
+            raw_input = update.get("content")
+            title = str(update.get("kind") or "tool")
+            update["title"] = title
+            update["kind"] = AcpStdioServer._current_tool_kind(update.get("kind"))
+            update["rawInput"] = raw_input
+            update["content"] = AcpStdioServer._current_tool_content(raw_input)
+            return converted
+
+        if update_type == "tool_call_update":
+            raw_output = update.get("content")
+            title = str(update.get("kind") or "tool")
+            update["title"] = title
+            update["kind"] = AcpStdioServer._current_tool_kind(update.get("kind"))
+            update["rawOutput"] = raw_output
+            update["content"] = AcpStdioServer._current_tool_content(raw_output)
+            return converted
+
+        return converted
+
+    @staticmethod
+    def _current_tool_kind(kind: Any) -> str:
+        if kind in {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other"}:
+            return str(kind)
+        if kind in {"shell", "terminal", "bash", "command"}:
+            return "execute"
+        return "other"
+
+    @staticmethod
+    def _current_tool_content(value: Any) -> list[dict[str, Any]] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            text = value
+        else:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        return [{"type": "content", "content": {"type": "text", "text": text}}]
+
     @staticmethod
     def _normalize_runtime_events(state: dict[str, Any], output: Any) -> list[dict[str, Any]]:
         if isinstance(output, dict) and isinstance(output.get("event_type"), str):
@@ -636,7 +715,7 @@ class AcpStdioServer:
                     "raw_output": {"code": code, "message": message},
                 },
             )
-            await self._write_message(self._notification("sessionUpdate", update))
+            await self._write_session_update(update)
             state[f"tool_closed::{tool_name}"] = tool_call_id
         if isinstance(open_tool_calls, list):
             open_tool_calls.clear()
