@@ -56,6 +56,74 @@ Resolution is deterministic and follows plugin discovery order.
 Host-owned plugin capability helpers live under `aworld_cli.plugin_capabilities`.
 Legacy alias namespaces `aworld_cli.plugin_runtime.*` and `aworld_cli.plugin_framework.*` have been removed.
 
+## Interactive Slash Command Contract
+
+Framework plugins may contribute interactive slash commands through manifest `entrypoints.commands`.
+
+Minimal markdown-backed manifest example:
+
+```json
+{
+  "id": "example-command-plugin",
+  "version": "1.0.0",
+  "entrypoints": {
+    "commands": [
+      {
+        "id": "review-loop",
+        "name": "review-loop",
+        "target": "commands/review-loop.md",
+        "scope": "workspace"
+      }
+    ]
+  }
+}
+```
+
+Markdown-backed command behavior:
+
+- the target file is loaded as prompt text
+- the CLI appends `User args: ...`
+- the generated prompt is executed through the active agent session
+
+Framework plugins may also contribute Python-backed interactive commands.
+
+Minimal Python-backed manifest example:
+
+```json
+{
+  "id": "example-command-plugin",
+  "version": "1.0.0",
+  "entrypoints": {
+    "commands": [
+      {
+        "id": "ralph-loop",
+        "name": "ralph-loop",
+        "target": "commands/ralph_loop.py",
+        "scope": "session",
+        "metadata": {
+          "factory": "build_command"
+        }
+      }
+    ]
+  }
+}
+```
+
+Python target module contract:
+
+- default factory name is `build_command`
+- the factory is called as `build_command(plugin, entrypoint)`
+- the factory must return an `aworld_cli.core.command_system.Command` instance
+
+Useful host integration points for Python-backed commands:
+
+- `CommandContext.cwd`
+- `CommandContext.user_args`
+- `CommandContext.runtime`
+- `CommandContext.session_id`
+
+If a command needs access to plugin-scoped persisted state, it should resolve state through the runtime-owned plugin state store rather than creating ad hoc dotfiles.
+
 ## CLI Command Contract
 
 Framework plugins may contribute top-level CLI commands through manifest `entrypoints.cli_commands`.

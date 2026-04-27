@@ -12,6 +12,17 @@ from aworld_cli.plugin_capabilities.state import PluginStateStore
 from aworld_cli.runtime.base import BaseCliRuntime
 
 
+def _get_builtin_ralph_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "ralph_session_loop"
+    )
+
+
 def test_load_plugin_hook_entrypoints():
     plugin_root = Path("tests/fixtures/plugins/ralph_like").resolve()
     plugin = discover_plugins([plugin_root])[0]
@@ -260,3 +271,98 @@ async def test_plugin_hook_adapter_caches_loaded_handler_module(tmp_path):
     await hook.run(event={}, state={})
 
     assert import_log.read_text(encoding="utf-8") == "x"
+
+
+@pytest.mark.asyncio
+async def test_ralph_stop_hook_blocks_and_continues_when_active(tmp_path):
+    plugin_root = _get_builtin_ralph_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    store = PluginStateStore(tmp_path / "plugin-state")
+    state_path = store.session_state("ralph-session-loop", "session-1")
+    handle = store.handle(state_path)
+    handle.write(
+        {
+            "active": True,
+            "prompt": "Build a REST API",
+            "iteration": 1,
+            "max_iterations": 5,
+            "completion_promise": "COMPLETE",
+            "verify_commands": ["pytest tests/api -q"],
+            "last_final_answer": "not done yet",
+        }
+    )
+
+    result = await hooks["stop"][0].run(
+        event={"session_id": "session-1"},
+        state={"__plugin_state__": handle, **handle.read()},
+    )
+
+    assert result.action == "block_and_continue"
+    assert "Task:" in result.follow_up_prompt
+    assert "Verification requirements:" in result.follow_up_prompt
+    assert handle.read()["iteration"] == 2
+
+
+@pytest.mark.asyncio
+async def test_ralph_stop_hook_allows_exit_on_exact_completion_promise(tmp_path):
+    plugin_root = _get_builtin_ralph_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    store = PluginStateStore(tmp_path / "plugin-state")
+    state_path = store.session_state("ralph-session-loop", "session-1")
+    handle = store.handle(state_path)
+    handle.write(
+        {
+            "active": True,
+            "prompt": "Build a REST API",
+            "iteration": 1,
+            "completion_promise": "COMPLETE",
+            "verify_commands": [],
+        }
+    )
+
+    await hooks["task_completed"][0].run(
+        event={"final_answer": "All done.\n<promise>COMPLETE</promise>", "task_status": "completed"},
+        state={"__plugin_state__": handle, **handle.read()},
+    )
+
+    result = await hooks["stop"][0].run(
+        event={"session_id": "session-1"},
+        state={"__plugin_state__": handle, **handle.read()},
+    )
+
+    assert result.action == "allow"
+    assert handle.read() == {}
+
+
+@pytest.mark.asyncio
+async def test_ralph_stop_hook_allows_exit_when_max_iterations_reached(tmp_path):
+    plugin_root = _get_builtin_ralph_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    store = PluginStateStore(tmp_path / "plugin-state")
+    state_path = store.session_state("ralph-session-loop", "session-1")
+    handle = store.handle(state_path)
+    handle.write(
+        {
+            "active": True,
+            "prompt": "Build a REST API",
+            "iteration": 5,
+            "max_iterations": 5,
+            "completion_promise": "COMPLETE",
+            "verify_commands": [],
+            "last_final_answer": "still failing",
+        }
+    )
+
+    result = await hooks["stop"][0].run(
+        event={"session_id": "session-1"},
+        state={"__plugin_state__": handle, **handle.read()},
+    )
+
+    assert result.action == "allow"
+    assert handle.read() == {}

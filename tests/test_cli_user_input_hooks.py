@@ -12,7 +12,22 @@ from aworld.core.context.session import Session
 from aworld.runners.hook.hook_factory import HookManager
 from aworld.runners.hook.v2 import permission
 from aworld_cli.console import AWorldCLI
+from aworld_cli.core.command_system import CommandContext, CommandRegistry
 from aworld_cli.plugin_capabilities.hooks import PluginHookResult
+from aworld_cli.plugin_capabilities.commands import register_plugin_commands
+from aworld_cli.runtime.base import BaseCliRuntime
+from aworld.plugins.discovery import discover_plugins
+
+
+def _get_builtin_ralph_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[1]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "ralph_session_loop"
+    )
 
 
 class TestCliUserInputHooks:
@@ -335,3 +350,210 @@ EOF
 
         assert should_exit is True
         assert follow_up_prompt is None
+
+    @pytest.mark.asyncio
+    async def test_apply_stop_hooks_runs_built_in_ralph_continuation_flow(self, tmp_path):
+        class DummyRuntime(BaseCliRuntime):
+            def __init__(self, plugin_dirs):
+                self.plugin_dirs = plugin_dirs
+                super().__init__(agent_name="Aworld")
+
+            async def _load_agents(self):
+                return []
+
+            async def _create_executor(self, agent):
+                return None
+
+            def _get_source_type(self):
+                return "TEST"
+
+            def _get_source_location(self):
+                return "test://ralph"
+
+        plugin = discover_plugins([_get_builtin_ralph_plugin_root()])[0]
+        runtime = DummyRuntime([_get_builtin_ralph_plugin_root()])
+
+        snapshot = CommandRegistry.snapshot()
+        try:
+            CommandRegistry.clear()
+            runtime._initialize_plugin_framework()
+            register_plugin_commands([plugin])
+
+            loop_command = CommandRegistry.get("ralph-loop")
+            assert loop_command is not None
+
+            workspace_path = str(tmp_path)
+            await loop_command.get_prompt(
+                CommandContext(
+                    cwd=workspace_path,
+                    user_args='"Build a REST API" --verify "pytest tests/api -q" --completion-promise "COMPLETE" --max-iterations 5',
+                    runtime=runtime,
+                    session_id="session-1",
+                )
+            )
+
+            cli = AWorldCLI()
+            session = Session()
+            session.session_id = "session-1"
+            context = Context(task_id="task-1", session=session)
+            context.workspace_path = workspace_path
+
+            executor_instance = MagicMock()
+            executor_instance.context = context
+            executor_instance._base_runtime = runtime
+            executor_instance.session_id = "session-1"
+
+            should_exit, follow_up_prompt = await cli._apply_stop_hooks(
+                executor_instance=executor_instance
+            )
+
+            assert should_exit is False
+            assert "Task:" in follow_up_prompt
+            assert "Verification requirements:" in follow_up_prompt
+
+            state = runtime.build_plugin_hook_state(
+                "ralph-session-loop",
+                "session",
+                executor_instance=executor_instance,
+            )
+            assert state["iteration"] == 2
+        finally:
+            CommandRegistry.restore(snapshot)
+
+    @pytest.mark.asyncio
+    async def test_apply_stop_hooks_allows_exit_after_ralph_completion(self, tmp_path):
+        class DummyRuntime(BaseCliRuntime):
+            def __init__(self, plugin_dirs):
+                self.plugin_dirs = plugin_dirs
+                super().__init__(agent_name="Aworld")
+
+            async def _load_agents(self):
+                return []
+
+            async def _create_executor(self, agent):
+                return None
+
+            def _get_source_type(self):
+                return "TEST"
+
+            def _get_source_location(self):
+                return "test://ralph"
+
+        plugin = discover_plugins([_get_builtin_ralph_plugin_root()])[0]
+        runtime = DummyRuntime([_get_builtin_ralph_plugin_root()])
+
+        snapshot = CommandRegistry.snapshot()
+        try:
+            CommandRegistry.clear()
+            runtime._initialize_plugin_framework()
+            register_plugin_commands([plugin])
+
+            loop_command = CommandRegistry.get("ralph-loop")
+            assert loop_command is not None
+
+            workspace_path = str(tmp_path)
+            await loop_command.get_prompt(
+                CommandContext(
+                    cwd=workspace_path,
+                    user_args='"Build a REST API" --completion-promise "COMPLETE"',
+                    runtime=runtime,
+                    session_id="session-1",
+                )
+            )
+
+            cli = AWorldCLI()
+            session = Session()
+            session.session_id = "session-1"
+            context = Context(task_id="task-1", session=session)
+            context.workspace_path = workspace_path
+
+            executor_instance = MagicMock()
+            executor_instance.context = context
+            executor_instance._base_runtime = runtime
+            executor_instance.session_id = "session-1"
+
+            await runtime.run_plugin_hooks(
+                "task_completed",
+                event={"task_status": "completed", "final_answer": "<promise>COMPLETE</promise>"},
+                executor_instance=executor_instance,
+            )
+
+            should_exit, follow_up_prompt = await cli._apply_stop_hooks(
+                executor_instance=executor_instance
+            )
+
+            assert should_exit is True
+            assert follow_up_prompt is None
+        finally:
+            CommandRegistry.restore(snapshot)
+
+    @pytest.mark.asyncio
+    async def test_apply_stop_hooks_allows_exit_after_cancel_ralph(self, tmp_path):
+        class DummyRuntime(BaseCliRuntime):
+            def __init__(self, plugin_dirs):
+                self.plugin_dirs = plugin_dirs
+                super().__init__(agent_name="Aworld")
+
+            async def _load_agents(self):
+                return []
+
+            async def _create_executor(self, agent):
+                return None
+
+            def _get_source_type(self):
+                return "TEST"
+
+            def _get_source_location(self):
+                return "test://ralph"
+
+        plugin = discover_plugins([_get_builtin_ralph_plugin_root()])[0]
+        runtime = DummyRuntime([_get_builtin_ralph_plugin_root()])
+
+        snapshot = CommandRegistry.snapshot()
+        try:
+            CommandRegistry.clear()
+            runtime._initialize_plugin_framework()
+            register_plugin_commands([plugin])
+
+            workspace_path = str(tmp_path)
+            loop_command = CommandRegistry.get("ralph-loop")
+            cancel_command = CommandRegistry.get("cancel-ralph")
+            assert loop_command is not None
+            assert cancel_command is not None
+
+            await loop_command.get_prompt(
+                CommandContext(
+                    cwd=workspace_path,
+                    user_args='"Build a REST API" --max-iterations 5',
+                    runtime=runtime,
+                    session_id="session-1",
+                )
+            )
+            await cancel_command.execute(
+                CommandContext(
+                    cwd=workspace_path,
+                    user_args="",
+                    runtime=runtime,
+                    session_id="session-1",
+                )
+            )
+
+            cli = AWorldCLI()
+            session = Session()
+            session.session_id = "session-1"
+            context = Context(task_id="task-1", session=session)
+            context.workspace_path = workspace_path
+
+            executor_instance = MagicMock()
+            executor_instance.context = context
+            executor_instance._base_runtime = runtime
+            executor_instance.session_id = "session-1"
+
+            should_exit, follow_up_prompt = await cli._apply_stop_hooks(
+                executor_instance=executor_instance
+            )
+
+            assert should_exit is True
+            assert follow_up_prompt is None
+        finally:
+            CommandRegistry.restore(snapshot)

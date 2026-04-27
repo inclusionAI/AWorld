@@ -9,6 +9,36 @@ from aworld_cli.plugin_capabilities.state import PluginStateStore
 from aworld_cli.runtime.base import BaseCliRuntime
 
 
+def _build_dummy_runtime(tmp_path):
+    class DummyRuntime(BaseCliRuntime):
+        async def _load_agents(self):
+            return []
+
+        async def _create_executor(self, agent):
+            return None
+
+        def _get_source_type(self):
+            return "TEST"
+
+        def _get_source_location(self):
+            return "test://commands"
+
+    runtime = DummyRuntime(agent_name="Aworld")
+    runtime._plugin_state_store = PluginStateStore(tmp_path / "state")
+    return runtime
+
+
+def _get_builtin_ralph_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "ralph_session_loop"
+    )
+
+
 def test_register_plugin_command_from_manifest():
     plugin_root = Path("tests/fixtures/plugins/code_review_like").resolve()
     plugin = discover_plugins([plugin_root])[0]
@@ -58,6 +88,74 @@ def test_sync_plugin_commands_removes_stale_plugin_commands():
         assert CommandRegistry.get("code-review") is None
     finally:
         CommandRegistry.restore(snapshot)
+
+
+def test_register_python_backed_plugin_command_from_manifest(tmp_path):
+    plugin_root = tmp_path / "python_plugin"
+    (plugin_root / ".aworld-plugin").mkdir(parents=True)
+    (plugin_root / "commands").mkdir()
+    (plugin_root / ".aworld-plugin" / "plugin.json").write_text(
+        (
+            "{"
+            "\"id\": \"python-plugin\", "
+            "\"name\": \"python-plugin\", "
+            "\"version\": \"1.0.0\", "
+            "\"entrypoints\": {"
+            "\"commands\": ["
+            "{"
+            "\"id\": \"python-backed\", "
+            "\"name\": \"python-backed\", "
+            "\"target\": \"commands/python_backed.py\""
+            "}"
+            "]"
+            "}"
+            "}"
+        ),
+        encoding="utf-8",
+    )
+    (plugin_root / "commands" / "python_backed.py").write_text(
+        "from aworld_cli.core.command_system import Command\n"
+        "class PythonBackedCommand(Command):\n"
+        "    @property\n"
+        "    def name(self):\n"
+        "        return 'python-backed'\n"
+        "    @property\n"
+        "    def description(self):\n"
+        "        return 'Python backed command'\n"
+        "    async def get_prompt(self, context):\n"
+        "        return f'hello {context.user_args}'\n"
+        "def build_command(plugin, entrypoint):\n"
+        "    return PythonBackedCommand()\n",
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("python-backed")
+        assert command is not None
+        assert command.command_type == "prompt"
+        prompt = __import__("asyncio").run(
+            command.get_prompt(CommandContext(cwd=str(plugin_root), user_args="world"))
+        )
+        assert prompt == "hello world"
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+def test_command_context_carries_executor_session_id():
+    context = CommandContext(
+        cwd="/tmp",
+        user_args="--flag",
+        runtime=SimpleNamespace(),
+        session_id="session-123",
+    )
+
+    assert context.session_id == "session-123"
 
 
 def test_plugin_command_workspace_state_is_shared_with_hook_runtime(tmp_path):
@@ -122,3 +220,85 @@ def test_plugin_command_workspace_state_is_shared_with_hook_runtime(tmp_path):
     )
 
     assert hook_state["iteration"] == 2
+
+
+async def test_ralph_loop_command_initializes_session_state(tmp_path):
+    plugin_root = _get_builtin_ralph_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+        command = CommandRegistry.get("ralph-loop")
+        runtime = _build_dummy_runtime(tmp_path)
+        workspace_path = str(tmp_path / "workspace")
+
+        prompt = await command.get_prompt(
+            CommandContext(
+                cwd=workspace_path,
+                user_args='"Build a REST API" --verify "pytest tests/api -q" --completion-promise "COMPLETE" --max-iterations 5',
+                runtime=runtime,
+                session_id="session-1",
+            )
+        )
+
+        state_path = runtime._resolve_plugin_state_path(
+            plugin_id=plugin.manifest.plugin_id,
+            scope="session",
+            session_id="session-1",
+            workspace_path=workspace_path,
+        )
+        payload = runtime._plugin_state_store.handle(state_path).read()
+
+        assert payload["active"] is True
+        assert payload["prompt"] == "Build a REST API"
+        assert payload["iteration"] == 1
+        assert payload["max_iterations"] == 5
+        assert payload["completion_promise"] == "COMPLETE"
+        assert payload["verify_commands"] == ["pytest tests/api -q"]
+        assert "Task:" in prompt
+        assert "Verification requirements:" in prompt
+        assert "Only output <promise>COMPLETE</promise>" in prompt
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+async def test_cancel_ralph_clears_session_state(tmp_path):
+    plugin_root = _get_builtin_ralph_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+        runtime = _build_dummy_runtime(tmp_path)
+        workspace_path = str(tmp_path / "workspace")
+        state_path = runtime._resolve_plugin_state_path(
+            plugin_id=plugin.manifest.plugin_id,
+            scope="session",
+            session_id="session-1",
+            workspace_path=workspace_path,
+        )
+        runtime._plugin_state_store.handle(state_path).write(
+            {
+                "active": True,
+                "prompt": "Build a REST API",
+                "iteration": 2,
+            }
+        )
+
+        command = CommandRegistry.get("cancel-ralph")
+        result = await command.execute(
+            CommandContext(
+                cwd=workspace_path,
+                user_args="",
+                runtime=runtime,
+                session_id="session-1",
+            )
+        )
+
+        assert "cancel" in result.lower()
+        assert runtime._plugin_state_store.handle(state_path).read() == {}
+    finally:
+        CommandRegistry.restore(snapshot)
