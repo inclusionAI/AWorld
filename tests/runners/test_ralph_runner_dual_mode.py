@@ -158,6 +158,65 @@ async def test_ralph_runner_build_iteration_context_uses_fresh_sub_context(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_ralph_runner_build_iteration_context_seeds_real_fresh_context_from_iteration_payload(tmp_path):
+    task = Task(input="stale task input", conf=RalphConfig(execution_mode="fresh_context", workspace=str(tmp_path)))
+    runner = RalphRunner(task=task, completion_criteria=CompletionCriteria())
+    runner.loop_context = LoopContext(
+        completion_criteria=CompletionCriteria(),
+        loop_state=LoopState(),
+        work_dir=str(tmp_path),
+    )
+
+    iteration_input = IterationInput(task_input="current iteration payload", reuse_context=False)
+
+    context = await runner._build_iteration_context(iteration_input, task, iter_num=2)
+
+    assert context.task_input == "current iteration payload"
+    assert context.origin_user_input == "current iteration payload"
+    assert context.task_state.task_input.task_content == "current iteration payload"
+    assert context.task_state.task_input.origin_user_input == "current iteration payload"
+
+
+@pytest.mark.asyncio
+async def test_ralph_runner_execute_task_uses_current_iteration_payload_for_fresh_context(tmp_path, monkeypatch):
+    task = Task(input="stale task input", conf=RalphConfig(execution_mode="fresh_context", workspace=str(tmp_path)))
+    runner = RalphRunner(task=task, completion_criteria=CompletionCriteria())
+    runner.loop_context = LoopContext(
+        completion_criteria=CompletionCriteria(),
+        loop_state=LoopState(),
+        work_dir=str(tmp_path),
+    )
+    runner.memory_store = runner.loop_context.memory
+
+    class StubBuilder:
+        async def build(self, **kwargs):
+            return IterationInput(task_input="current iteration payload", reuse_context=False)
+
+    runner.input_builder = StubBuilder()
+    captured = {}
+
+    async def fake_exec_tasks(tasks):
+        current_task = tasks[0]
+        captured["task_input"] = current_task.input
+        captured["origin_user_input"] = current_task.context.origin_user_input
+        return {
+            current_task.id: TaskResponse(
+                id=current_task.id,
+                answer="done",
+                success=True,
+            )
+        }
+
+    monkeypatch.setattr("aworld.runners.ralph_runner.exec_tasks", fake_exec_tasks)
+
+    await runner._execute_task(task, iter_num=2)
+
+    assert captured["task_input"] == "current iteration payload"
+    assert captured["origin_user_input"] == "current iteration payload"
+    assert task.input == "current iteration payload"
+
+
+@pytest.mark.asyncio
 async def test_runner_ralph_run_preserves_public_api(monkeypatch):
     task = Task(input="Build API", conf=RalphConfig())
     response = TaskResponse(id=task.id, answer="done", success=True)
