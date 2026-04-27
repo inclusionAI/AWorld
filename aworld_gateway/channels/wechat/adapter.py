@@ -1,30 +1,30 @@
 from __future__ import annotations
 
 from aworld_gateway.channels.base import ChannelAdapter, ChannelMetadata
-from aworld_gateway.channels.wecom.connector import WecomConnector
-from aworld_gateway.config import WecomChannelConfig
+from aworld_gateway.channels.wechat.connector import WechatConnector
+from aworld_gateway.config import WechatChannelConfig
 from aworld_gateway.types import OutboundEnvelope
 
 
-class WecomChannelAdapter(ChannelAdapter):
+class WechatChannelAdapter(ChannelAdapter):
     def __init__(
         self,
-        config: WecomChannelConfig | None = None,
+        config: WechatChannelConfig | None = None,
         *,
         router: object | None = None,
-        connector_cls: type[WecomConnector] = WecomConnector,
+        connector_cls: type[WechatConnector] = WechatConnector,
     ) -> None:
         if config is None:
-            config = WecomChannelConfig()
+            config = WechatChannelConfig()
         super().__init__(config)
         self._config = config
         self._router = router
         self._connector_cls = connector_cls
-        self._connector: WecomConnector | None = None
+        self._connector: WechatConnector | None = None
 
     @classmethod
     def metadata(cls) -> ChannelMetadata:
-        return ChannelMetadata(name="wecom", implemented=True)
+        return ChannelMetadata(name="wechat", implemented=True)
 
     async def start(self) -> None:
         self._connector = self._connector_cls(
@@ -39,7 +39,7 @@ class WecomChannelAdapter(ChannelAdapter):
 
     async def send(self, envelope: OutboundEnvelope):
         if self._connector is None:
-            raise RuntimeError("WeCom channel adapter is not started.")
+            raise RuntimeError("WeChat channel adapter is not started.")
         metadata = dict(envelope.metadata)
         outbound_attachments = self._event_attachments(envelope.events)
         if outbound_attachments:
@@ -50,7 +50,6 @@ class WecomChannelAdapter(ChannelAdapter):
         return await self._connector.send_text(
             chat_id=envelope.conversation_id,
             text=envelope.text,
-            reply_to_message_id=envelope.reply_to_message_id,
             metadata=metadata,
         )
 

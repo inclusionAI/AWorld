@@ -11,11 +11,14 @@ from aworld_gateway.channels.dingding.adapter import DingdingChannelAdapter
 from aworld_gateway.channels.feishu.adapter import FeishuChannelAdapter
 from aworld_gateway.channels.telegram.adapter import TelegramChannelAdapter
 from aworld_gateway.channels.web.adapter import WebChannelAdapter
+from aworld_gateway.channels.wechat.adapter import WechatChannelAdapter
 from aworld_gateway.channels.wecom.adapter import WecomChannelAdapter
 from aworld_gateway.config import (
     BaseChannelConfig,
     DingdingChannelConfig,
     TelegramChannelConfig,
+    WechatChannelConfig,
+    WecomChannelConfig,
 )
 
 ChannelMetaSummary: TypeAlias = dict[str, object]
@@ -46,13 +49,18 @@ class ChannelRegistry:
                     label="DingTalk",
                     adapter_class=DingdingChannelAdapter,
                 ),
+                "wechat": ChannelRegistration(
+                    metadata=ChannelMetadata(name="wechat", implemented=True),
+                    label="WeChat",
+                    adapter_class=WechatChannelAdapter,
+                ),
                 "feishu": ChannelRegistration(
                     metadata=ChannelMetadata(name="feishu", implemented=False),
                     label="Feishu",
                     adapter_class=FeishuChannelAdapter,
                 ),
                 "wecom": ChannelRegistration(
-                    metadata=ChannelMetadata(name="wecom", implemented=False),
+                    metadata=ChannelMetadata(name="wecom", implemented=True),
                     label="WeCom",
                     adapter_class=WecomChannelAdapter,
                 ),
@@ -119,6 +127,24 @@ class ChannelRegistry:
                 return False
             return bool(os.getenv(config.client_id_env)) and bool(
                 os.getenv(config.client_secret_env)
+            )
+
+        if channel_id == "wechat":
+            if not isinstance(config, WechatChannelConfig):
+                return False
+            if not config.account_id_env or not config.token_env:
+                return False
+            return bool(os.getenv(config.account_id_env)) and bool(
+                os.getenv(config.token_env)
+            )
+
+        if channel_id == "wecom":
+            if not isinstance(config, WecomChannelConfig):
+                return False
+            if not config.bot_id_env or not config.secret_env:
+                return False
+            return bool(os.getenv(config.bot_id_env)) and bool(
+                os.getenv(config.secret_env)
             )
 
         return True

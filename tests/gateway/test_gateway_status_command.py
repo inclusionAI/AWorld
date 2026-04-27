@@ -27,6 +27,10 @@ def test_gateway_status_reports_default_agent_and_channel_flags(
     assert status["channels"]["telegram"]["implemented"] is True
     assert status["channels"]["dingding"]["enabled"] is False
     assert status["channels"]["dingding"]["implemented"] is True
+    assert status["channels"]["wechat"]["enabled"] is False
+    assert status["channels"]["wechat"]["implemented"] is True
+    assert status["channels"]["wecom"]["enabled"] is False
+    assert status["channels"]["wecom"]["implemented"] is True
     assert status["channels"]["web"]["implemented"] is False
 
 
@@ -35,11 +39,15 @@ def test_gateway_channels_list_contains_placeholder_channels(
 ) -> None:
     rows = handle_gateway_channels_list(base_dir=tmp_path)
 
-    assert set(rows) >= {"telegram", "web", "dingding", "feishu", "wecom"}
+    assert set(rows) >= {"telegram", "web", "dingding", "wechat", "feishu", "wecom"}
     assert rows["telegram"]["enabled"] is False
     assert rows["telegram"]["implemented"] is True
     assert rows["dingding"]["enabled"] is False
     assert rows["dingding"]["implemented"] is True
+    assert rows["wechat"]["enabled"] is False
+    assert rows["wechat"]["implemented"] is True
+    assert rows["wecom"]["enabled"] is False
+    assert rows["wecom"]["implemented"] is True
     assert rows["web"]["implemented"] is False
 
 
