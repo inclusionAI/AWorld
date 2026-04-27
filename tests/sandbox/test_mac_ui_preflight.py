@@ -1,6 +1,7 @@
 from aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.preflight import (
     detect_backend_availability,
     gate_enabled,
+    is_macos_host,
 )
 
 
@@ -17,3 +18,11 @@ def test_detect_backend_availability_checks_peekaboo(monkeypatch):
         lambda name: "/usr/local/bin/peekaboo" if name == "peekaboo" else None,
     )
     assert detect_backend_availability() is True
+
+
+def test_is_macos_host_rejects_non_darwin(monkeypatch):
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.preflight.platform.system",
+        lambda: "Linux",
+    )
+    assert is_macos_host() is False

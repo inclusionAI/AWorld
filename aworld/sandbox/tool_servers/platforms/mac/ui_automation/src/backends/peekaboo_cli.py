@@ -1,3 +1,4 @@
+import os
 import json
 import subprocess
 import tempfile
@@ -7,6 +8,7 @@ from typing import Any
 from ..errors import MacUIError
 
 DEFAULT_TIMEOUT_SECONDS = 20.0
+MAX_TIMEOUT_SECONDS = 300.0
 
 
 def execute_peekaboo_action(action: str, params: dict[str, object]) -> dict[str, Any]:
@@ -14,9 +16,10 @@ def execute_peekaboo_action(action: str, params: dict[str, object]) -> dict[str,
     commands = _build_peekaboo_commands(action, prepared)
     timeout_seconds = _resolve_timeout_seconds(prepared)
     last_result: dict[str, Any] = {}
+    artifact_path = prepared.get("_artifact_path")
 
-    for command in commands:
-        try:
+    try:
+        for command in commands:
             process = subprocess.run(
                 command,
                 capture_output=True,
@@ -24,24 +27,28 @@ def execute_peekaboo_action(action: str, params: dict[str, object]) -> dict[str,
                 timeout=timeout_seconds,
                 check=False,
             )
-        except FileNotFoundError as exc:
-            raise MacUIError(
-                code="BACKEND_NOT_AVAILABLE",
-                message="Peekaboo CLI is not available on PATH",
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise MacUIError(
-                code="ACTION_TIMEOUT",
-                message=f"Peekaboo action '{action}' timed out",
-                details={"action": action, "timeout_seconds": timeout_seconds},
-            ) from exc
+            if process.returncode != 0:
+                _cleanup_artifact_file(artifact_path)
+                raise normalize_backend_failure(action, process.returncode, process.stderr)
 
-        if process.returncode != 0:
-            raise normalize_backend_failure(action, process.returncode, process.stderr)
+            last_result = parse_peekaboo_output(action, process.stdout)
+    except FileNotFoundError as exc:
+        _cleanup_artifact_file(artifact_path)
+        raise MacUIError(
+            code="BACKEND_NOT_AVAILABLE",
+            message="Peekaboo CLI is not available on PATH",
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        _cleanup_artifact_file(artifact_path)
+        raise MacUIError(
+            code="ACTION_TIMEOUT",
+            message=f"Peekaboo action '{action}' timed out",
+            details={"action": action, "timeout_seconds": timeout_seconds},
+        ) from exc
+    except Exception:
+        _cleanup_artifact_file(artifact_path)
+        raise
 
-        last_result = parse_peekaboo_output(action, process.stdout)
-
-    artifact_path = prepared.get("_artifact_path")
     if isinstance(artifact_path, str) and artifact_path and "artifact_reference" not in last_result:
         last_result["artifact_reference"] = artifact_path
     return last_result
@@ -252,4 +259,19 @@ def _resolve_timeout_seconds(params: dict[str, object]) -> float:
     timeout = params.get("timeout_seconds")
     if timeout is None:
         return DEFAULT_TIMEOUT_SECONDS
-    return float(timeout)
+    timeout_value = float(timeout)
+    if timeout_value <= 0:
+        raise ValueError("timeout_seconds must be greater than 0")
+    if timeout_value > MAX_TIMEOUT_SECONDS:
+        raise ValueError(f"timeout_seconds must be less than or equal to {int(MAX_TIMEOUT_SECONDS)}")
+    return timeout_value
+
+
+def _cleanup_artifact_file(path: object) -> None:
+    if not isinstance(path, str) or not path:
+        return
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass

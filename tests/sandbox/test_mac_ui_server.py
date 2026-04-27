@@ -1,4 +1,7 @@
+import json
+
 from aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main import (
+    permissions,
     run_action,
     normalize_see_result,
     resolve_click_target,
@@ -36,6 +39,15 @@ def test_interaction_actions_accept_timeout_override():
     validate_action_params("type", {"text": "hello", "timeout_seconds": 10.0})
     validate_action_params("press", {"keys": "enter", "timeout_seconds": 10.0})
     validate_action_params("scroll", {"direction": "down", "amount": 2, "timeout_seconds": 10.0})
+
+
+def test_timeout_seconds_has_upper_bound():
+    try:
+        validate_action_params("click", {"target_id": "B1", "timeout_seconds": 301.0})
+    except ValueError as exc:
+        assert "300" in str(exc)
+    else:
+        raise AssertionError("timeout_seconds should be capped")
 
 
 def test_focus_window_requires_window_selector():
@@ -181,6 +193,10 @@ def test_run_action_reports_missing_permissions(monkeypatch):
 
 def test_run_action_ignores_non_required_permissions(monkeypatch):
     monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main._permission_preflight_cache",
+        {"checked_at": 0.0, "missing": None},
+    )
+    monkeypatch.setattr(
         "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.gate_enabled",
         lambda: True,
     )
@@ -213,3 +229,73 @@ def test_run_action_ignores_non_required_permissions(monkeypatch):
 
     result = run_action("click", {"target_id": "B1"})
     assert result["clicked"] is True
+
+
+def test_run_action_caches_permission_preflight(monkeypatch):
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main._permission_preflight_cache",
+        {"checked_at": 0.0, "missing": None},
+    )
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.gate_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.is_macos_host",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.detect_backend_availability",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.time.monotonic",
+        lambda: 100.0,
+    )
+
+    calls = {"permissions": 0, "click": 0}
+
+    def fake_execute(action, params):
+        calls[action] += 1
+        if action == "permissions":
+            return {
+                "permissions": [
+                    {"name": "Accessibility", "status": "granted"},
+                    {"name": "Screen Recording", "status": "granted"},
+                ]
+            }
+        if action == "click":
+            return {"clicked": True}
+        raise AssertionError(f"unexpected action: {action}")
+
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.execute_peekaboo_action",
+        fake_execute,
+    )
+
+    run_action("click", {"target_id": "B1"})
+    run_action("click", {"target_id": "B1"})
+
+    assert calls["permissions"] == 1
+    assert calls["click"] == 2
+
+
+async def test_permissions_tool_offloads_run_action_with_to_thread(monkeypatch):
+    calls = {}
+
+    async def fake_to_thread(func, *args, **kwargs):
+        calls["func"] = func
+        calls["args"] = args
+        return {"permissions": []}
+
+    monkeypatch.setattr(
+        "aworld.sandbox.tool_servers.platforms.mac.ui_automation.src.main.asyncio.to_thread",
+        fake_to_thread,
+    )
+
+    response = await permissions(None)
+    payload = json.loads(response.text)
+
+    assert calls["func"].__name__ == "run_action"
+    assert calls["args"] == ("permissions", {})
+    assert payload["ok"] is True
