@@ -19,6 +19,13 @@ def _get_builtin_aworld_hud_root() -> Path:
     raise AssertionError("built-in aworld_hud plugin root not found")
 
 
+def _get_builtin_ralph_plugin_root() -> Path:
+    for root in get_builtin_plugin_roots():
+        if root.name == "ralph_session_loop":
+            return root
+    raise AssertionError("built-in ralph_session_loop plugin root not found")
+
+
 def test_collect_hud_lines_orders_by_section_and_priority():
     plugin_root = _get_builtin_aworld_hud_root()
     plugin = discover_plugins([plugin_root])[0]
@@ -639,3 +646,29 @@ def test_status_bar_renders_multiline_html(monkeypatch):
 
     assert "\n" in rendered
     assert "Task: task_001" in rendered
+
+
+def test_ralph_hud_renders_active_loop_state():
+    plugin_root = _get_builtin_ralph_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    lines = collect_hud_lines(
+        plugins=[plugin],
+        context={
+            "workspace": {"name": "aworld"},
+            "session": {"agent": "Aworld", "mode": "Chat", "session_id": "session-1"},
+        },
+        plugin_state_provider=lambda plugin_id, scope, context: {
+            "active": True,
+            "iteration": 2,
+            "max_iterations": 5,
+            "completion_promise": "COMPLETE",
+        },
+    )
+
+    assert [line.section for line in lines] == ["session"]
+    assert lines[0].segments == (
+        "Ralph: active",
+        "Iter: 2/5",
+        "Promise: COMPLETE",
+    )

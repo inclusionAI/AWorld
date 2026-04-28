@@ -32,6 +32,7 @@ class CommandContext:
     sandbox: Optional[Any] = None
     agent_config: Optional[Any] = None
     runtime: Optional[Any] = None
+    session_id: Optional[str] = None
 
     def __post_init__(self):
         """Validate context"""

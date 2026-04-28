@@ -2730,6 +2730,7 @@ class AWorldCLI:
                                     sandbox=None,  # TODO: Pass actual sandbox if available
                                     agent_config=None,  # TODO: Pass agent config if needed
                                     runtime=runtime,
+                                    session_id=getattr(executor_instance, "session_id", None),
                                 )
 
                                 try:
