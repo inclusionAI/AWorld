@@ -227,6 +227,25 @@ def test_bridge_install_scheduler_sink_supports_multiple_scheduler_instances(
     assert scheduler_one.notification_sink is not scheduler_two.notification_sink
 
 
+def test_bridge_uninstall_scheduler_sink_restores_previous_sink(tmp_path: Path) -> None:
+    class _Scheduler:
+        def __init__(self) -> None:
+            self.notification_sink = None
+
+    async def previous_sink(notification) -> None:
+        return None
+
+    bridge = CronPushBridge(binding_store=CronPushBindingStore(tmp_path / "cron-push.json"))
+    scheduler = _Scheduler()
+    scheduler.notification_sink = previous_sink
+
+    bridge.install_scheduler_sink(scheduler)
+    assert scheduler.notification_sink is not previous_sink
+
+    bridge.uninstall_scheduler_sink(scheduler)
+    assert scheduler.notification_sink is previous_sink
+
+
 def test_bridge_silent_terminal_notification_cleans_binding_without_sending(
     tmp_path: Path,
 ) -> None:

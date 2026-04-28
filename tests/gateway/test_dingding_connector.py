@@ -282,6 +282,39 @@ def test_connector_start_bootstraps_cron_scheduler(monkeypatch) -> None:
     assert scheduler.stop_calls == 1
 
 
+def test_connector_stop_restores_previous_scheduler_sink(monkeypatch) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+
+    async def previous_sink(notification) -> None:
+        return None
+
+    class _FakeScheduler:
+        def __init__(self) -> None:
+            self.executor = None
+            self.notification_sink = previous_sink
+            self.running = False
+
+    scheduler = _FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: scheduler)
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld"),
+        bridge=_FakeBridge(),
+        stream_module=_FakeStreamModule,
+        http_client=_FakeHttpClient(),
+        thread_cls=_FakeThread,
+    )
+
+    asyncio.run(connector.start())
+
+    assert scheduler.notification_sink is not previous_sink
+
+    asyncio.run(connector.stop())
+
+    assert scheduler.notification_sink is previous_sink
+
+
 def test_connector_reset_command_rotates_session_and_sends_confirmation() -> None:
     bridge = _FakeBridge()
     connector = DingTalkConnector(

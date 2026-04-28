@@ -25,6 +25,7 @@ class CronPushBridge:
         self._binding_store = binding_store
         self._senders: dict[str, CronPushSender] = {}
         self._installed_scheduler_sinks: dict[int, Any] = {}
+        self._previous_scheduler_sinks: dict[int, Any] = {}
 
     def register_sender(self, channel: str, sender: CronPushSender) -> None:
         normalized_channel = str(channel or "").strip().lower()
@@ -93,6 +94,16 @@ class CronPushBridge:
 
         scheduler.notification_sink = _fanout
         self._installed_scheduler_sinks[scheduler_key] = _fanout
+        self._previous_scheduler_sinks[scheduler_key] = previous_sink
+
+    def uninstall_scheduler_sink(self, scheduler: Any) -> None:
+        scheduler_key = id(scheduler)
+        installed_sink = self._installed_scheduler_sinks.pop(scheduler_key, None)
+        previous_sink = self._previous_scheduler_sinks.pop(scheduler_key, None)
+        if installed_sink is None:
+            return
+        if getattr(scheduler, "notification_sink", None) is installed_sink:
+            scheduler.notification_sink = previous_sink
 
     @staticmethod
     def extract_job_ids(output: Any) -> list[str]:

@@ -173,6 +173,8 @@ class DingTalkConnector:
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
         self._background_tasks.clear()
+        if self._cron_scheduler is not None:
+            self._cron_push_bridge.uninstall_scheduler_sink(self._cron_scheduler)
         if self._cron_scheduler_started_by_connector and self._cron_scheduler is not None:
             stop = getattr(self._cron_scheduler, "stop", None)
             if callable(stop):
@@ -190,6 +192,7 @@ class DingTalkConnector:
                 if isawaitable(stop_result):
                     await stop_result
                 break
+        self._cron_scheduler = None
         await self._http.aclose()
 
     async def handle_callback(self, callback_payload) -> None:

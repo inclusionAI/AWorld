@@ -298,6 +298,7 @@ class WechatConnector:
         self._token = ""
         self._base_url = DEFAULT_BASE_URL
         self._cdn_base_url = DEFAULT_CDN_BASE_URL
+        self._cron_scheduler = None
         self._sync_buf = ""
         self._seen_message_ids: set[str] = set()
         self._cron_push_bridge = CronPushBridge(
@@ -327,7 +328,8 @@ class WechatConnector:
         self._token_store.restore(self._account_id)
         self._poll_session = self._build_session()
         self._send_session = self._build_session()
-        self._cron_push_bridge.install_scheduler_sink(get_scheduler())
+        self._cron_scheduler = get_scheduler()
+        self._cron_push_bridge.install_scheduler_sink(self._cron_scheduler)
         self.started = True
         self._poll_task = asyncio.create_task(self._poll_loop())
 
@@ -344,6 +346,9 @@ class WechatConnector:
         await _close_session(self._send_session)
         self._poll_session = None
         self._send_session = None
+        if self._cron_scheduler is not None:
+            self._cron_push_bridge.uninstall_scheduler_sink(self._cron_scheduler)
+            self._cron_scheduler = None
 
     async def send_text(
         self,
