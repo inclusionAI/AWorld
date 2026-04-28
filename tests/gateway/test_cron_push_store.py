@@ -1,0 +1,75 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from aworld_gateway.cron_push import (
+    CronNotificationFormatter,
+    CronPushBindingStore,
+)
+
+
+def test_store_round_trips_binding_payload_and_injects_job_id(tmp_path: Path) -> None:
+    store = CronPushBindingStore(tmp_path / "cron-push.json")
+
+    store.upsert(
+        "job-main",
+        {
+            "channel": "wechat",
+            "account_id": "wx-account",
+            "conversation_id": "chat-1",
+            "sender_id": "user-1",
+            "target": {"chat_id": "chat-1"},
+            "meta": {"created_from": "cron_tool"},
+        },
+    )
+
+    assert store.get("job-main") == {
+        "job_id": "job-main",
+        "channel": "wechat",
+        "account_id": "wx-account",
+        "conversation_id": "chat-1",
+        "sender_id": "user-1",
+        "target": {"chat_id": "chat-1"},
+        "meta": {"created_from": "cron_tool"},
+    }
+
+
+def test_store_ignores_invalid_json_file(tmp_path: Path) -> None:
+    path = tmp_path / "cron-push.json"
+    path.write_text("{not-json", encoding="utf-8")
+
+    store = CronPushBindingStore(path)
+
+    assert store.get("missing") is None
+
+
+def test_store_remove_deletes_binding(tmp_path: Path) -> None:
+    store = CronPushBindingStore(tmp_path / "cron-push.json")
+    store.upsert("job-main", {"channel": "dingtalk", "target": {"session_webhook": "https://callback"}})
+
+    store.remove("job-main")
+
+    assert store.get("job-main") is None
+
+
+def test_formatter_renders_summary_detail_and_next_run() -> None:
+    text = CronNotificationFormatter.format(
+        {
+            "summary": 'Cron task "喝水提醒" completed',
+            "detail": "提醒我喝水",
+            "next_run_at": "2026-04-28T09:00:00+08:00",
+        }
+    )
+
+    assert text == 'Cron task "喝水提醒" completed\n提醒我喝水\n下次执行：2026-04-28T09:00:00+08:00'
+
+
+def test_formatter_skips_duplicate_detail() -> None:
+    text = CronNotificationFormatter.format(
+        {
+            "summary": 'Cron task "喝水提醒" completed',
+            "detail": 'Cron task "喝水提醒" completed',
+        }
+    )
+
+    assert text == 'Cron task "喝水提醒" completed'
