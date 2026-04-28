@@ -207,3 +207,34 @@ async def test_connector_recurring_scheduler_notification_preserves_binding(
     )
 
     await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_stop_restores_previous_scheduler_sink(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    async def previous_sink(notification) -> None:
+        return None
+
+    scheduler = _FakeScheduler()
+    scheduler.notification_sink = previous_sink
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: scheduler)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(default_agent_id="aworld"),
+        router=None,
+        storage_root=tmp_path,
+    )
+    await connector.start()
+
+    assert scheduler.notification_sink is not previous_sink
+
+    await connector.stop()
+
+    assert scheduler.notification_sink is previous_sink
