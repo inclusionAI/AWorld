@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 import uuid
@@ -36,6 +37,7 @@ from aworld_gateway.channels.wechat.media import (
     sanitize_filename,
 )
 from aworld_gateway.config import WechatChannelConfig
+from aworld_gateway.cron_push import CronPushBindingStore, CronPushBridge
 from aworld_gateway.types import InboundEnvelope
 
 try:
@@ -50,6 +52,7 @@ ILINK_APP_CLIENT_VERSION = str((2 << 16) | (2 << 8) | 0)
 EP_GET_UPDATES = "ilink/bot/getupdates"
 EP_SEND_MESSAGE = "ilink/bot/sendmessage"
 EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
+DEDUP_MAX_SIZE = 1000
 
 SendMessageFunc = Callable[..., Awaitable[dict[str, object]]]
 GetUpdatesFunc = Callable[..., Awaitable[dict[str, object]]]
@@ -57,6 +60,7 @@ DownloadMediaFunc = Callable[..., Awaitable[bytes]]
 GetUploadUrlFunc = Callable[..., Awaitable[dict[str, object]]]
 UploadCiphertextFunc = Callable[..., Awaitable[str]]
 SendMediaMessageFunc = Callable[..., Awaitable[dict[str, object]]]
+logger = logging.getLogger(__name__)
 
 
 def _base_info() -> dict[str, str]:
@@ -297,10 +301,17 @@ class WechatConnector:
         self._token = ""
         self._base_url = DEFAULT_BASE_URL
         self._cdn_base_url = DEFAULT_CDN_BASE_URL
+        self._cron_scheduler = None
         self._sync_buf = ""
-        self._seen_message_ids: set[str] = set()
+        self._seen_message_ids: dict[str, None] = {}
+        self._cron_push_bridge = CronPushBridge(
+            binding_store=CronPushBindingStore(self._storage_root / "cron-push-bindings.json")
+        )
+        self._cron_push_bridge.register_sender("wechat", self._send_cron_push_text)
 
     async def start(self) -> None:
+        from aworld.core.scheduler import get_scheduler
+
         account_id_env = self._optional_env(self.config.account_id_env)
         token_env = self._optional_env(self.config.token_env)
         base_url_env = self._optional_env(self.config.base_url_env)
@@ -320,6 +331,8 @@ class WechatConnector:
         self._token_store.restore(self._account_id)
         self._poll_session = self._build_session()
         self._send_session = self._build_session()
+        self._cron_scheduler = get_scheduler()
+        self._cron_push_bridge.install_scheduler_sink(self._cron_scheduler)
         self.started = True
         self._poll_task = asyncio.create_task(self._poll_loop())
 
@@ -336,6 +349,9 @@ class WechatConnector:
         await _close_session(self._send_session)
         self._poll_session = None
         self._send_session = None
+        if self._cron_scheduler is not None:
+            self._cron_push_bridge.uninstall_scheduler_sink(self._cron_scheduler)
+            self._cron_scheduler = None
 
     async def send_text(
         self,
@@ -479,10 +495,8 @@ class WechatConnector:
             return
 
         message_id = str(message.get("message_id") or "").strip()
-        if message_id:
-            if message_id in self._seen_message_ids:
-                return
-            self._seen_message_ids.add(message_id)
+        if self._remember_seen_message_id(message_id):
+            return
 
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
@@ -516,6 +530,19 @@ class WechatConnector:
             metadata["attachments"] = attachments
             metadata["wechat_media"] = inbound_media["wechat_media"]
             metadata["multimodal_parts"] = inbound_media["multimodal_parts"]
+
+        async def on_output(output) -> None:
+            self._cron_push_bridge.bind_output(
+                output,
+                {
+                    "channel": "wechat",
+                    "account_id": self._account_id,
+                    "conversation_id": conversation_id,
+                    "sender_id": sender_id,
+                    "target": {"chat_id": conversation_id},
+                },
+            )
+
         outbound = await self.router.handle_inbound(
             InboundEnvelope(
                 channel="wechat",
@@ -530,12 +557,22 @@ class WechatConnector:
                 metadata=metadata,
             ),
             channel_default_agent_id=self.config.default_agent_id,
+            on_output=on_output,
         )
         await self.send_text(
             chat_id=outbound.conversation_id,
             text=outbound.text,
             metadata=outbound.metadata,
         )
+
+    async def _send_cron_push_text(self, binding, text: str, notification) -> None:
+        target = binding.get("target") if isinstance(binding, dict) else None
+        if not isinstance(target, dict):
+            return
+        chat_id = str(target.get("chat_id") or "").strip()
+        if not chat_id:
+            return
+        await self.send_text(chat_id=chat_id, text=text)
 
     async def _collect_inbound_attachments(
         self,
@@ -776,7 +813,26 @@ class WechatConnector:
                 self._sync_buf = next_sync_buf
             for message in response.get("msgs") or []:
                 if isinstance(message, dict):
-                    await self._process_message(message)
+                    try:
+                        await self._process_message(message)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception(
+                            "WeChat poll loop failed to process message",
+                            extra={"message_id": str(message.get("message_id") or "").strip()},
+                        )
+
+    def _remember_seen_message_id(self, message_id: str) -> bool:
+        normalized = str(message_id or "").strip()
+        if not normalized:
+            return False
+        if normalized in self._seen_message_ids:
+            return True
+        self._seen_message_ids[normalized] = None
+        while len(self._seen_message_ids) > DEDUP_MAX_SIZE:
+            self._seen_message_ids.pop(next(iter(self._seen_message_ids)))
+        return False
 
     def _build_session(self) -> object:
         if aiohttp is None:
