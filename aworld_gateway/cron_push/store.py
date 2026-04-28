@@ -6,8 +6,7 @@ from pathlib import Path
 
 from aworld_gateway.cron_push.types import (
     CronPushBinding,
-    copy_cron_push_binding,
-    with_cron_push_job_id,
+    normalize_cron_push_binding,
 )
 
 
@@ -21,7 +20,9 @@ class CronPushBindingStore:
         if not normalized_job_id:
             return
 
-        payload = with_cron_push_job_id(normalized_job_id, binding)
+        payload = normalize_cron_push_binding(binding, job_id=normalized_job_id)
+        if payload is None:
+            return
 
         with self._lock:
             data = self._read_unlocked()
@@ -36,9 +37,7 @@ class CronPushBindingStore:
         with self._lock:
             data = self._read_unlocked()
             binding = data.get(normalized_job_id)
-            if not isinstance(binding, dict):
-                return None
-            return copy_cron_push_binding(binding)
+            return normalize_cron_push_binding(binding, job_id=normalized_job_id)
 
     def remove(self, job_id: str) -> None:
         normalized_job_id = str(job_id or "").strip()
@@ -64,15 +63,25 @@ class CronPushBindingStore:
         if not isinstance(raw, dict):
             return {}
 
-        return {
-            str(job_id): value
-            for job_id, value in raw.items()
-            if isinstance(value, dict)
-        }
+        data: dict[str, CronPushBinding] = {}
+        for job_id, value in raw.items():
+            normalized_job_id = str(job_id or "").strip()
+            if not normalized_job_id:
+                continue
+
+            binding = normalize_cron_push_binding(value, job_id=normalized_job_id)
+            if binding is None:
+                continue
+
+            data[normalized_job_id] = binding
+
+        return data
 
     def _write_unlocked(self, data: dict[str, CronPushBinding]) -> None:
         self._file_path.parent.mkdir(parents=True, exist_ok=True)
-        self._file_path.write_text(
+        temp_path = self._file_path.with_name(f"{self._file_path.name}.tmp")
+        temp_path.write_text(
             json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        temp_path.replace(self._file_path)

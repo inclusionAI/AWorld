@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from aworld_gateway.cron_push import (
@@ -50,6 +51,79 @@ def test_store_remove_deletes_binding(tmp_path: Path) -> None:
     store.remove("job-main")
 
     assert store.get("job-main") is None
+
+
+def test_store_blank_job_id_is_noop_for_upsert_and_remove(tmp_path: Path) -> None:
+    path = tmp_path / "cron-push.json"
+    store = CronPushBindingStore(path)
+
+    store.upsert("", {"channel": "wechat"})
+    store.remove("   ")
+
+    assert not path.exists()
+    assert store.get("") is None
+
+
+def test_store_ignores_malformed_binding_loaded_from_disk(tmp_path: Path) -> None:
+    path = tmp_path / "cron-push.json"
+    path.write_text(
+        json.dumps(
+            {
+                "job-good": {
+                    "job_id": "job-good",
+                    "channel": "wechat",
+                    "target": {"chat_id": "chat-1"},
+                },
+                "job-bad-scalar": {
+                    "job_id": "job-bad-scalar",
+                    "channel": 123,
+                },
+                "job-bad-target": {
+                    "job_id": "job-bad-target",
+                    "channel": "wechat",
+                    "target": "chat-1",
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+
+    store = CronPushBindingStore(path)
+
+    assert store.get("job-good") == {
+        "job_id": "job-good",
+        "channel": "wechat",
+        "target": {"chat_id": "chat-1"},
+    }
+    assert store.get("job-bad-scalar") is None
+    assert store.get("job-bad-target") is None
+
+
+def test_store_upsert_uses_atomic_replace_and_round_trips(tmp_path: Path, monkeypatch) -> None:
+    store_path = tmp_path / "cron-push.json"
+    store = CronPushBindingStore(store_path)
+    replace_calls: list[tuple[str, str]] = []
+    original_replace = Path.replace
+
+    def tracked_replace(self: Path, target: Path) -> Path:
+        replace_calls.append((str(self), str(target)))
+        return original_replace(self, target)
+
+    monkeypatch.setattr(Path, "replace", tracked_replace)
+
+    store.upsert("job-main", {"channel": "wechat", "meta": {"source": "test"}})
+
+    assert store.get("job-main") == {
+        "job_id": "job-main",
+        "channel": "wechat",
+        "meta": {"source": "test"},
+    }
+    assert replace_calls == [
+        (str(tmp_path / "cron-push.json.tmp"), str(store_path)),
+    ]
 
 
 def test_formatter_renders_summary_detail_and_next_run() -> None:
