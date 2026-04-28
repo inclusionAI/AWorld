@@ -278,6 +278,130 @@ async def test_connector_start_launches_poll_loop_and_processes_updates(
 
 
 @pytest.mark.asyncio
+async def test_connector_poll_loop_continues_after_process_message_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    responses = [
+        {
+            "ret": 0,
+            "get_updates_buf": "buf-1",
+            "msgs": [
+                {"message_id": "m-1", "from_user_id": "user-1", "item_list": []},
+                {"message_id": "m-2", "from_user_id": "user-2", "item_list": []},
+            ],
+        },
+        {"ret": 0, "get_updates_buf": "buf-2", "msgs": []},
+    ]
+    processed: list[str] = []
+
+    async def fake_get_updates(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        sync_buf: str,
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        del session, base_url, token, sync_buf, timeout_ms
+        response = responses.pop(0)
+        if not responses:
+            connector.started = False
+        return response
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+        get_updates_func=fake_get_updates,
+    )
+    connector.started = True
+    connector._poll_session = object()
+    connector._account_id = "wx-account"
+    connector._token = "wx-token"
+
+    async def fake_process_message(message: dict[str, object]) -> None:
+        processed.append(str(message["message_id"]))
+        if message["message_id"] == "m-1":
+            raise RuntimeError("boom")
+
+    connector._process_message = fake_process_message  # type: ignore[method-assign]
+
+    result = await asyncio.gather(connector._poll_loop(), return_exceptions=True)
+
+    assert result == [None]
+    assert processed == ["m-1", "m-2"]
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_deduplicates_repeated_message_id(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(default_agent_id="aworld"),
+        router=router,
+        storage_root=tmp_path,
+    )
+    connector.send_text = lambda **kwargs: asyncio.sleep(0, result=kwargs)  # type: ignore[method-assign]
+    await connector.start()
+
+    message = {
+        "message_id": "m-dup",
+        "from_user_id": "user-1",
+        "item_list": [{"type": 1, "text_item": {"text": "ping"}}],
+    }
+
+    await connector._process_message(message)
+    await connector._process_message(message)
+
+    assert len(router.calls) == 1
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_bounds_seen_message_ids(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import DEDUP_MAX_SIZE, WechatConnector
+
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+    )
+    connector._account_id = "wx-account"
+
+    for index in range(DEDUP_MAX_SIZE + 25):
+        await connector._process_message(
+            {
+                "message_id": f"m-{index}",
+                "from_user_id": "user-1",
+                "item_list": [{"type": 1, "text_item": {"text": "ping"}}],
+            }
+        )
+
+    assert len(connector._seen_message_ids) == DEDUP_MAX_SIZE
+    assert "m-0" not in connector._seen_message_ids
+    assert f"m-{DEDUP_MAX_SIZE + 24}" in connector._seen_message_ids
+
+
+@pytest.mark.asyncio
 async def test_connector_start_restores_persisted_token_and_base_url(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
