@@ -15,10 +15,10 @@ from aworld_gateway.types import OutboundEnvelope
 
 class _FakeRouter:
     def __init__(self) -> None:
-        self.calls: list[tuple[object, str | None]] = []
+        self.calls: list[tuple[object, str | None, object | None]] = []
 
-    async def handle_inbound(self, inbound, *, channel_default_agent_id):
-        self.calls.append((inbound, channel_default_agent_id))
+    async def handle_inbound(self, inbound, *, channel_default_agent_id, on_output=None):
+        self.calls.append((inbound, channel_default_agent_id, on_output))
         return OutboundEnvelope(
             channel="wechat",
             account_id=inbound.account_id,
@@ -63,10 +63,11 @@ async def test_connector_process_message_caches_context_token_and_routes_text(
         }
     )
 
-    inbound, channel_default_agent_id = router.calls[0]
+    inbound, channel_default_agent_id, on_output = router.calls[0]
     assert inbound.text == "ping"
     assert inbound.conversation_id == "user-1"
     assert channel_default_agent_id == "aworld"
+    assert callable(on_output)
     assert connector._token_store.get("wx-account", "user-1") == "ctx-1"
     assert sent == [("user-1", "echo:ping", {})]
     await connector.stop()
@@ -428,7 +429,7 @@ async def test_connector_process_message_downloads_image_attachment_and_routes_p
         }
     )
 
-    inbound, _channel_default_agent_id = router.calls[0]
+    inbound, _channel_default_agent_id, _on_output = router.calls[0]
     assert inbound.text.startswith("Attachments:")
     assert len(inbound.metadata["attachments"]) == 1
     attachment = inbound.metadata["attachments"][0]
@@ -505,7 +506,7 @@ async def test_connector_process_message_builds_structured_file_metadata_without
         }
     )
 
-    inbound, _channel_default_agent_id = router.calls[0]
+    inbound, _channel_default_agent_id, _on_output = router.calls[0]
     assert inbound.metadata["attachments"][0]["type"] == "file"
     assert inbound.metadata["wechat_media"] == [
         {

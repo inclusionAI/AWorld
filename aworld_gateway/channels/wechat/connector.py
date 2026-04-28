@@ -36,6 +36,7 @@ from aworld_gateway.channels.wechat.media import (
     sanitize_filename,
 )
 from aworld_gateway.config import WechatChannelConfig
+from aworld_gateway.cron_push import CronPushBindingStore, CronPushBridge
 from aworld_gateway.types import InboundEnvelope
 
 try:
@@ -299,8 +300,14 @@ class WechatConnector:
         self._cdn_base_url = DEFAULT_CDN_BASE_URL
         self._sync_buf = ""
         self._seen_message_ids: set[str] = set()
+        self._cron_push_bridge = CronPushBridge(
+            binding_store=CronPushBindingStore(self._storage_root / "cron-push-bindings.json")
+        )
+        self._cron_push_bridge.register_sender("wechat", self._send_cron_push_text)
 
     async def start(self) -> None:
+        from aworld.core.scheduler import get_scheduler
+
         account_id_env = self._optional_env(self.config.account_id_env)
         token_env = self._optional_env(self.config.token_env)
         base_url_env = self._optional_env(self.config.base_url_env)
@@ -320,6 +327,7 @@ class WechatConnector:
         self._token_store.restore(self._account_id)
         self._poll_session = self._build_session()
         self._send_session = self._build_session()
+        self._cron_push_bridge.install_scheduler_sink(get_scheduler())
         self.started = True
         self._poll_task = asyncio.create_task(self._poll_loop())
 
@@ -516,6 +524,19 @@ class WechatConnector:
             metadata["attachments"] = attachments
             metadata["wechat_media"] = inbound_media["wechat_media"]
             metadata["multimodal_parts"] = inbound_media["multimodal_parts"]
+
+        async def on_output(output) -> None:
+            self._cron_push_bridge.bind_output(
+                output,
+                {
+                    "channel": "wechat",
+                    "account_id": self._account_id,
+                    "conversation_id": conversation_id,
+                    "sender_id": sender_id,
+                    "target": {"chat_id": conversation_id},
+                },
+            )
+
         outbound = await self.router.handle_inbound(
             InboundEnvelope(
                 channel="wechat",
@@ -530,12 +551,22 @@ class WechatConnector:
                 metadata=metadata,
             ),
             channel_default_agent_id=self.config.default_agent_id,
+            on_output=on_output,
         )
         await self.send_text(
             chat_id=outbound.conversation_id,
             text=outbound.text,
             metadata=outbound.metadata,
         )
+
+    async def _send_cron_push_text(self, binding, text: str, notification) -> None:
+        target = binding.get("target") if isinstance(binding, dict) else None
+        if not isinstance(target, dict):
+            return
+        chat_id = str(target.get("chat_id") or "").strip()
+        if not chat_id:
+            return
+        await self.send_text(chat_id=chat_id, text=text)
 
     async def _collect_inbound_attachments(
         self,
