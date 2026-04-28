@@ -18,10 +18,6 @@ from uuid import uuid4
 import httpx
 
 from aworld_gateway.channels.dingding.bridge import AworldDingdingBridge
-from aworld_gateway.channels.dingding.cron_bindings import (
-    DingdingCronBindingStore,
-    DingdingCronNotifier,
-)
 from aworld_gateway.channels.dingding.types import (
     AICardInstance,
     ExtractedMessage,
@@ -30,6 +26,7 @@ from aworld_gateway.channels.dingding.types import (
     PendingFileMessage,
 )
 from aworld_gateway.config import DingdingChannelConfig
+from aworld_gateway.cron_push import CronPushBindingStore, CronPushBridge
 from aworld_gateway.http.artifact_service import ArtifactService
 from aworld.logs.util import logger
 
@@ -120,9 +117,12 @@ class DingTalkConnector:
         self._callback_fingerprints: dict[str, float] = {}
         self._callback_fingerprint_lock = threading.Lock()
         self._background_tasks: set[asyncio.Task[None]] = set()
-        self._cron_binding_store = DingdingCronBindingStore(self._binding_store_path())
-        self._cron_notifier = DingdingCronNotifier(self, self._cron_binding_store)
-        self._cron_notification_sink_registered = False
+        binding_store_path = self._binding_store_path()
+        self._migrate_legacy_cron_bindings(binding_store_path)
+        self._cron_push_bridge = CronPushBridge(
+            binding_store=CronPushBindingStore(binding_store_path)
+        )
+        self._cron_push_bridge.register_sender("dingtalk", self._send_cron_push_text)
         self._cron_scheduler = None
         self._cron_scheduler_started_by_connector = False
 
@@ -173,6 +173,8 @@ class DingTalkConnector:
         if self._background_tasks:
             await asyncio.gather(*self._background_tasks, return_exceptions=True)
         self._background_tasks.clear()
+        if self._cron_scheduler is not None:
+            self._cron_push_bridge.uninstall_scheduler_sink(self._cron_scheduler)
         if self._cron_scheduler_started_by_connector and self._cron_scheduler is not None:
             stop = getattr(self._cron_scheduler, "stop", None)
             if callable(stop):
@@ -190,6 +192,7 @@ class DingTalkConnector:
                 if isawaitable(stop_result):
                     await stop_result
                 break
+        self._cron_scheduler = None
         await self._http.aclose()
 
     async def handle_callback(self, callback_payload) -> None:
@@ -331,7 +334,6 @@ class DingTalkConnector:
                     )
                 )
         streamed_parts: list[str] = []
-        observed_cron_job_ids: set[str] = set()
         last_card_push_at = -AI_CARD_STREAM_UPDATE_INTERVAL_SECONDS
         streamed_chunk_count = 0
         card_push_count = 0
@@ -368,19 +370,17 @@ class DingTalkConnector:
                     f"conversation={str(data.get('conversationId') or data.get('senderStaffId') or data.get('senderId') or '').strip()} "
                     f"{summary}"
                 )
-            for job_id in self._extract_cron_job_ids(output):
-                if job_id in observed_cron_job_ids:
-                    continue
-                observed_cron_job_ids.add(job_id)
-                self._cron_binding_store.upsert(
-                    job_id,
-                    {
-                        "session_webhook": session_webhook,
-                        "conversation_id": str(data.get("conversationId") or "").strip(),
-                        "sender_id": str(data.get("senderStaffId") or data.get("senderId") or "").strip(),
-                    },
-                )
-                self._ensure_cron_notification_sink_registered()
+            self._cron_push_bridge.bind_output(
+                output,
+                {
+                    "channel": "dingtalk",
+                    "conversation_id": str(data.get("conversationId") or "").strip(),
+                    "sender_id": str(
+                        data.get("senderStaffId") or data.get("senderId") or ""
+                    ).strip(),
+                    "target": {"session_webhook": session_webhook},
+                },
+            )
 
         try:
             result = await self._bridge.run(
@@ -459,6 +459,54 @@ class DingTalkConnector:
             if base_dir.is_absolute():
                 return base_dir.parent / "cron-bindings.json"
         return Path(".aworld/gateway/dingding/cron-bindings.json").resolve()
+
+    @staticmethod
+    def _migrate_legacy_cron_bindings(file_path: Path) -> None:
+        if not file_path.exists():
+            return
+
+        try:
+            raw = json.loads(file_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+
+        if not isinstance(raw, dict):
+            return
+
+        migrated: dict[str, dict[str, object]] = {}
+        changed = False
+        for job_id, value in raw.items():
+            normalized_job_id = str(job_id or "").strip()
+            if not normalized_job_id or not isinstance(value, dict):
+                continue
+
+            if isinstance(value.get("channel"), str) and isinstance(value.get("target"), dict):
+                migrated[normalized_job_id] = dict(value)
+                continue
+
+            session_webhook = str(value.get("session_webhook") or "").strip()
+            if not session_webhook:
+                continue
+
+            changed = True
+            migrated[normalized_job_id] = {
+                "job_id": str(value.get("job_id") or normalized_job_id),
+                "channel": "dingtalk",
+                "conversation_id": str(value.get("conversation_id") or "").strip(),
+                "sender_id": str(value.get("sender_id") or "").strip(),
+                "target": {"session_webhook": session_webhook},
+            }
+
+        if not changed:
+            return
+
+        file_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = file_path.with_name(f"{file_path.name}.tmp")
+        temp_path.write_text(
+            json.dumps(migrated, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temp_path.replace(file_path)
 
     @staticmethod
     def _mirror_business_log_to_std_logging(message: str) -> None:
@@ -546,7 +594,7 @@ class DingTalkConnector:
                 except ValueError:
                     pass
 
-        self._ensure_cron_notification_sink_registered(scheduler=scheduler)
+        self._cron_push_bridge.install_scheduler_sink(scheduler)
 
         if getattr(scheduler, "running", False):
             return
@@ -617,75 +665,16 @@ class DingTalkConnector:
         if exc is not None:
             logger.warning(f"DingTalk callback task failed: {exc}")
 
-    def _ensure_cron_notification_sink_registered(self, scheduler=None) -> None:
-        if self._cron_notification_sink_registered:
+    async def _send_cron_push_text(self, binding, text: str, notification) -> None:
+        target = binding.get("target") if isinstance(binding, dict) else None
+        if not isinstance(target, dict):
             return
 
-        if scheduler is None:
-            try:
-                from aworld.core.scheduler import get_scheduler
-            except Exception as exc:
-                logger.warning(f"Failed to import cron scheduler for DingTalk notification fanout: {exc}")
-                return
-            scheduler = get_scheduler()
-        previous_sink = getattr(scheduler, "notification_sink", None)
+        session_webhook = str(target.get("session_webhook") or "").strip()
+        if not session_webhook:
+            return
 
-        async def _fanout(notification) -> None:
-            if previous_sink is not None:
-                previous_result = previous_sink(notification)
-                if isawaitable(previous_result):
-                    await previous_result
-            await self._cron_notifier.publish(notification)
-
-        scheduler.notification_sink = _fanout
-        self._cron_notification_sink_registered = True
-
-    @staticmethod
-    def _extract_cron_job_ids(output) -> list[str]:
-        if getattr(output, "output_type", lambda: None)() != "tool_call_result":
-            return []
-
-        tool_name = str(getattr(output, "tool_name", "") or "").strip().lower()
-        if tool_name != "cron":
-            return []
-
-        payload = DingTalkConnector._coerce_output_payload(getattr(output, "data", None))
-        if not isinstance(payload, dict):
-            return []
-        if payload.get("success") is False:
-            return []
-
-        job_ids: list[str] = []
-        primary_job_id = str(payload.get("job_id") or "").strip()
-        if primary_job_id:
-            job_ids.append(primary_job_id)
-
-        advance_reminder = payload.get("advance_reminder")
-        if isinstance(advance_reminder, dict):
-            advance_job_id = str(advance_reminder.get("job_id") or "").strip()
-            if advance_job_id:
-                job_ids.append(advance_job_id)
-
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for job_id in job_ids:
-            if job_id in seen:
-                continue
-            seen.add(job_id)
-            deduped.append(job_id)
-        return deduped
-
-    @staticmethod
-    def _coerce_output_payload(value):
-        if isinstance(value, dict):
-            return value
-        if isinstance(value, str):
-            try:
-                parsed = json.loads(value)
-            except json.JSONDecodeError:
-                return value
-            return parsed
-        return value
+        await self.send_text(session_webhook=session_webhook, text=text)
 
     @staticmethod
     def _parse_data(raw) -> dict:
