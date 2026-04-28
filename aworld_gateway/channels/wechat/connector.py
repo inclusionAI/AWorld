@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import logging
 import os
 import secrets
 import uuid
@@ -51,6 +52,7 @@ ILINK_APP_CLIENT_VERSION = str((2 << 16) | (2 << 8) | 0)
 EP_GET_UPDATES = "ilink/bot/getupdates"
 EP_SEND_MESSAGE = "ilink/bot/sendmessage"
 EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
+DEDUP_MAX_SIZE = 1000
 
 SendMessageFunc = Callable[..., Awaitable[dict[str, object]]]
 GetUpdatesFunc = Callable[..., Awaitable[dict[str, object]]]
@@ -58,6 +60,7 @@ DownloadMediaFunc = Callable[..., Awaitable[bytes]]
 GetUploadUrlFunc = Callable[..., Awaitable[dict[str, object]]]
 UploadCiphertextFunc = Callable[..., Awaitable[str]]
 SendMediaMessageFunc = Callable[..., Awaitable[dict[str, object]]]
+logger = logging.getLogger(__name__)
 
 
 def _base_info() -> dict[str, str]:
@@ -300,7 +303,7 @@ class WechatConnector:
         self._cdn_base_url = DEFAULT_CDN_BASE_URL
         self._cron_scheduler = None
         self._sync_buf = ""
-        self._seen_message_ids: set[str] = set()
+        self._seen_message_ids: dict[str, None] = {}
         self._cron_push_bridge = CronPushBridge(
             binding_store=CronPushBindingStore(self._storage_root / "cron-push-bindings.json")
         )
@@ -492,10 +495,8 @@ class WechatConnector:
             return
 
         message_id = str(message.get("message_id") or "").strip()
-        if message_id:
-            if message_id in self._seen_message_ids:
-                return
-            self._seen_message_ids.add(message_id)
+        if self._remember_seen_message_id(message_id):
+            return
 
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
@@ -812,7 +813,26 @@ class WechatConnector:
                 self._sync_buf = next_sync_buf
             for message in response.get("msgs") or []:
                 if isinstance(message, dict):
-                    await self._process_message(message)
+                    try:
+                        await self._process_message(message)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception(
+                            "WeChat poll loop failed to process message",
+                            extra={"message_id": str(message.get("message_id") or "").strip()},
+                        )
+
+    def _remember_seen_message_id(self, message_id: str) -> bool:
+        normalized = str(message_id or "").strip()
+        if not normalized:
+            return False
+        if normalized in self._seen_message_ids:
+            return True
+        self._seen_message_ids[normalized] = None
+        while len(self._seen_message_ids) > DEDUP_MAX_SIZE:
+            self._seen_message_ids.pop(next(iter(self._seen_message_ids)))
+        return False
 
     def _build_session(self) -> object:
         if aiohttp is None:
