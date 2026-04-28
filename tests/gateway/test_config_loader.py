@@ -182,3 +182,82 @@ def test_load_or_init_ignores_legacy_wecom_implemented_field(tmp_path):
     config = GatewayConfigLoader(base_dir=base_dir).load_or_init()
 
     assert config.channels.wecom.enabled is False
+
+
+def test_load_or_init_uses_direct_config_when_base_dir_is_gateway_dir(tmp_path):
+    project_root = tmp_path / "project"
+    gateway_dir = project_root / ".aworld" / "gateway"
+    gateway_dir.mkdir(parents=True)
+
+    direct_config_path = gateway_dir / "config.yaml"
+    nested_config_path = gateway_dir / ".aworld" / "gateway" / "config.yaml"
+    nested_config_path.parent.mkdir(parents=True)
+
+    direct_config_path.write_text(
+        (
+            "default_agent_id: direct-agent\n"
+            "gateway:\n"
+            "  host: 127.0.0.1\n"
+            "  port: 18888\n"
+            "channels:\n"
+            "  telegram:\n"
+            "    enabled: false\n"
+            "  web:\n"
+            "    enabled: false\n"
+            "  dingding:\n"
+            "    enabled: true\n"
+            "  wechat:\n"
+            "    enabled: false\n"
+            "  feishu:\n"
+            "    enabled: false\n"
+            "  wecom:\n"
+            "    enabled: false\n"
+        ),
+        encoding="utf-8",
+    )
+    nested_config_path.write_text(
+        (
+            "default_agent_id: nested-agent\n"
+            "gateway:\n"
+            "  host: 127.0.0.1\n"
+            "  port: 18888\n"
+            "channels:\n"
+            "  telegram:\n"
+            "    enabled: false\n"
+            "  web:\n"
+            "    enabled: false\n"
+            "  dingding:\n"
+            "    enabled: false\n"
+            "  wechat:\n"
+            "    enabled: false\n"
+            "  feishu:\n"
+            "    enabled: false\n"
+            "  wecom:\n"
+            "    enabled: false\n"
+        ),
+        encoding="utf-8",
+    )
+
+    loader = GatewayConfigLoader(base_dir=gateway_dir)
+    config = loader.load_or_init()
+
+    assert loader.config_path == direct_config_path
+    assert config.default_agent_id == "direct-agent"
+    assert config.channels.dingding.enabled is True
+
+
+def test_load_or_init_creates_direct_config_when_base_dir_is_gateway_dir(tmp_path):
+    project_root = tmp_path / "project"
+    gateway_dir = project_root / ".aworld" / "gateway"
+    gateway_dir.mkdir(parents=True)
+
+    loader = GatewayConfigLoader(base_dir=gateway_dir)
+    config = loader.load_or_init()
+
+    direct_config_path = gateway_dir / "config.yaml"
+    nested_config_path = gateway_dir / ".aworld" / "gateway" / "config.yaml"
+
+    assert loader.config_path == direct_config_path
+    assert config.default_agent_id == "aworld"
+    assert direct_config_path.exists()
+    assert not nested_config_path.exists()
