@@ -4,6 +4,14 @@ from typing import Any, TypeAlias, TypedDict
 
 CronPushTarget: TypeAlias = dict[str, Any]
 CronPushMeta: TypeAlias = dict[str, Any]
+_SCALAR_BINDING_FIELDS = (
+    "job_id",
+    "channel",
+    "account_id",
+    "conversation_id",
+    "sender_id",
+)
+_MAPPING_BINDING_FIELDS = ("target", "meta")
 
 
 class CronPushBinding(TypedDict, total=False):
@@ -24,11 +32,32 @@ class CronNotificationPayload(TypedDict, total=False):
     user_visible: bool
 
 
-def copy_cron_push_binding(binding: CronPushBinding) -> CronPushBinding:
-    return dict(binding)
+def normalize_cron_push_binding(
+    binding: object,
+    *,
+    job_id: str | None = None,
+) -> CronPushBinding | None:
+    if not isinstance(binding, dict):
+        return None
 
+    normalized: CronPushBinding = {}
+    for field in _SCALAR_BINDING_FIELDS:
+        value = binding.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str):
+            return None
+        normalized[field] = value
 
-def with_cron_push_job_id(job_id: str, binding: CronPushBinding) -> CronPushBinding:
-    payload = copy_cron_push_binding(binding)
-    payload["job_id"] = job_id
-    return payload
+    for field in _MAPPING_BINDING_FIELDS:
+        value = binding.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            return None
+        normalized[field] = dict(value)
+
+    if job_id is not None:
+        normalized["job_id"] = job_id
+
+    return normalized
