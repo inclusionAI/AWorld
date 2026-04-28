@@ -1392,6 +1392,7 @@ def test_connector_binds_dingding_cron_jobs_and_fanouts_notifications(
         sent.append((session_webhook, text))
 
     connector.send_text = fake_send_text  # type: ignore[method-assign]
+    asyncio.run(connector._prepare_cron_runtime())
 
     asyncio.run(
         connector.handle_callback(
@@ -1405,17 +1406,19 @@ def test_connector_binds_dingding_cron_jobs_and_fanouts_notifications(
     )
 
     assert scheduler.notification_sink is not None
-    assert connector._cron_binding_store.get("job-main") == {
+    assert connector._cron_push_bridge._binding_store.get("job-main") == {
         "job_id": "job-main",
-        "session_webhook": "https://callback",
+        "channel": "dingtalk",
         "conversation_id": "conv-1",
         "sender_id": "user-1",
+        "target": {"session_webhook": "https://callback"},
     }
-    assert connector._cron_binding_store.get("job-advance") == {
+    assert connector._cron_push_bridge._binding_store.get("job-advance") == {
         "job_id": "job-advance",
-        "session_webhook": "https://callback",
+        "channel": "dingtalk",
         "conversation_id": "conv-1",
         "sender_id": "user-1",
+        "target": {"session_webhook": "https://callback"},
     }
 
     asyncio.run(
@@ -1434,12 +1437,150 @@ def test_connector_binds_dingding_cron_jobs_and_fanouts_notifications(
         ("https://callback", "已创建提醒"),
         ("https://callback", 'Cron task "喝水提醒" completed\n提醒我喝水'),
     ]
-    assert connector._cron_binding_store.get("job-main") is None
-    assert connector._cron_binding_store.get("job-advance") == {
+    assert connector._cron_push_bridge._binding_store.get("job-main") is None
+    assert connector._cron_push_bridge._binding_store.get("job-advance") == {
         "job_id": "job-advance",
-        "session_webhook": "https://callback",
+        "channel": "dingtalk",
         "conversation_id": "conv-1",
         "sender_id": "user-1",
+        "target": {"session_webhook": "https://callback"},
+    }
+
+
+def test_connector_preserves_dingding_cron_binding_for_recurring_notifications(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class _CronBridge(_FakeBridge):
+        async def run(
+            self,
+            *,
+            agent_id: str,
+            session_id: str,
+            text: str,
+            on_text_chunk=None,
+            on_output=None,
+        ) -> DingdingBridgeResult:
+            self.calls.append(
+                {
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "text": text,
+                }
+            )
+            if on_output is not None:
+                await on_output(
+                    ToolResultOutput(
+                        tool_name="cron",
+                        action_name="cron_tool",
+                        data={
+                            "success": True,
+                            "job_id": "job-main",
+                        },
+                    )
+                )
+            return DingdingBridgeResult(text="已创建提醒")
+
+    class _FakeScheduler:
+        def __init__(self) -> None:
+            self.notification_sink = None
+
+    scheduler = _FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: scheduler)
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(
+            default_agent_id="agent-1",
+            workspace_dir=str(tmp_path / "workspace"),
+        ),
+        bridge=_CronBridge(),
+        stream_module=object(),
+    )
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        sent.append((session_webhook, text))
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    asyncio.run(connector._prepare_cron_runtime())
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "明天早上九点提醒我开会"},
+            }
+        )
+    )
+
+    assert scheduler.notification_sink is not None
+
+    asyncio.run(
+        scheduler.notification_sink(
+            {
+                "job_id": "job-main",
+                "summary": 'Cron task "开会提醒" completed',
+                "detail": "提醒我开会",
+                "next_run_at": "2026-04-29T09:00:00+08:00",
+            }
+        )
+    )
+
+    assert sent == [
+        ("https://callback", PROCESSING_ACK_TEXT),
+        ("https://callback", "已创建提醒"),
+        (
+            "https://callback",
+            'Cron task "开会提醒" completed\n提醒我开会\n下次执行：2026-04-29T09:00:00+08:00',
+        ),
+    ]
+    assert connector._cron_push_bridge._binding_store.get("job-main") == {
+        "job_id": "job-main",
+        "channel": "dingtalk",
+        "conversation_id": "conv-1",
+        "sender_id": "user-1",
+        "target": {"session_webhook": "https://callback"},
+    }
+
+
+def test_connector_migrates_legacy_dingding_cron_bindings_to_shared_shape(
+    tmp_path: Path,
+) -> None:
+    workspace_dir = (tmp_path / "workspace").resolve()
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    binding_store_path = workspace_dir.parent / "cron-bindings.json"
+    binding_store_path.write_text(
+        json.dumps(
+            {
+                "job-main": {
+                    "job_id": "job-main",
+                    "session_webhook": "https://callback",
+                    "conversation_id": "conv-1",
+                    "sender_id": "user-1",
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(
+            default_agent_id="agent-1",
+            workspace_dir=str(workspace_dir),
+        ),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+    )
+
+    assert connector._cron_push_bridge._binding_store.get("job-main") == {
+        "job_id": "job-main",
+        "channel": "dingtalk",
+        "conversation_id": "conv-1",
+        "sender_id": "user-1",
+        "target": {"session_webhook": "https://callback"},
     }
 
 
