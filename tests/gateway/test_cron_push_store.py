@@ -57,7 +57,7 @@ def test_store_blank_job_id_is_noop_for_upsert_and_remove(tmp_path: Path) -> Non
     path = tmp_path / "cron-push.json"
     store = CronPushBindingStore(path)
 
-    store.upsert("", {"channel": "wechat"})
+    store.upsert("", {"channel": "wechat", "target": {"chat_id": "chat-1"}})
     store.remove("   ")
 
     assert not path.exists()
@@ -114,16 +114,34 @@ def test_store_upsert_uses_atomic_replace_and_round_trips(tmp_path: Path, monkey
 
     monkeypatch.setattr(Path, "replace", tracked_replace)
 
-    store.upsert("job-main", {"channel": "wechat", "meta": {"source": "test"}})
+    store.upsert(
+        "job-main",
+        {
+            "channel": "wechat",
+            "target": {"chat_id": "chat-1"},
+            "meta": {"source": "test"},
+        },
+    )
 
     assert store.get("job-main") == {
         "job_id": "job-main",
         "channel": "wechat",
+        "target": {"chat_id": "chat-1"},
         "meta": {"source": "test"},
     }
     assert replace_calls == [
         (str(tmp_path / "cron-push.json.tmp"), str(store_path)),
     ]
+
+
+def test_store_upsert_ignores_invalid_in_memory_binding(tmp_path: Path) -> None:
+    store = CronPushBindingStore(tmp_path / "cron-push.json")
+
+    store.upsert("job-missing-channel", {"target": {"chat_id": "chat-1"}})
+    store.upsert("job-bad-target", {"channel": "wechat", "target": "chat-1"})  # type: ignore[arg-type]
+
+    assert store.get("job-missing-channel") is None
+    assert store.get("job-bad-target") is None
 
 
 def test_formatter_renders_summary_detail_and_next_run() -> None:

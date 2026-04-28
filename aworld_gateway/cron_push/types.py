@@ -60,4 +60,12 @@ def normalize_cron_push_binding(
     if job_id is not None:
         normalized["job_id"] = job_id
 
+    channel = normalized.get("channel")
+    if not isinstance(channel, str) or not channel.strip():
+        return None
+
+    target = normalized.get("target")
+    if not isinstance(target, dict):
+        return None
+
     return normalized
