@@ -19,6 +19,17 @@ def _set_isolated_plugin_dir(monkeypatch, tmp_path: Path) -> Path:
     return plugin_dir
 
 
+def _get_builtin_ralph_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "ralph_session_loop"
+    )
+
+
 def test_code_review_like_plugin_registers_command_and_assets(tmp_path):
     manager = PluginManager(plugin_dir=tmp_path / "plugins")
     plugin_root = Path("tests/fixtures/plugins/code_review_like").resolve()
@@ -67,6 +78,22 @@ def test_runtime_initialization_registers_enabled_plugin_commands(tmp_path):
         runtime._initialize_plugin_framework()
 
         assert CommandRegistry.get("code-review") is not None
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+def test_builtin_ralph_plugin_registers_commands_and_hook_capability():
+    plugin_root = _get_builtin_ralph_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        assert CommandRegistry.get("ralph-loop") is not None
+        assert CommandRegistry.get("cancel-ralph") is not None
+        assert plugin.manifest.capabilities == {"commands", "hooks", "hud"}
     finally:
         CommandRegistry.restore(snapshot)
 

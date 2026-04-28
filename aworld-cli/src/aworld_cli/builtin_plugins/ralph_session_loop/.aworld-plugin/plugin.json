@@ -1,0 +1,64 @@
+{
+  "id": "ralph-session-loop",
+  "name": "ralph-session-loop",
+  "version": "1.0.0",
+  "entrypoints": {
+    "commands": [
+      {
+        "id": "ralph-loop",
+        "name": "ralph-loop",
+        "description": "Start a Ralph session loop in the current CLI session",
+        "target": "commands/ralph_loop.py",
+        "scope": "session"
+      },
+      {
+        "id": "cancel-ralph",
+        "name": "cancel-ralph",
+        "description": "Cancel the active Ralph session loop",
+        "target": "commands/cancel_ralph.py",
+        "scope": "session"
+      }
+    ],
+    "hooks": [
+      {
+        "id": "ralph-task-completed",
+        "target": "hooks/task_completed.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "task_completed"
+        }
+      },
+      {
+        "id": "ralph-task-error",
+        "target": "hooks/task_error.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "task_error"
+        }
+      },
+      {
+        "id": "ralph-task-interrupted",
+        "target": "hooks/task_interrupted.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "task_interrupted"
+        }
+      },
+      {
+        "id": "ralph-stop-loop",
+        "target": "hooks/stop.py",
+        "scope": "session",
+        "metadata": {
+          "hook_point": "stop"
+        }
+      }
+    ],
+    "hud": [
+      {
+        "id": "ralph-status",
+        "target": "hud/status.py",
+        "scope": "session"
+      }
+    ]
+  }
+}

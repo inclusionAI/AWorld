@@ -6,8 +6,8 @@ from threading import Thread
 
 from aworld.agents.llm_agent import Agent
 from aworld.core.task import Task
-from aworld.ralph_loop.config import RalphConfig
-from aworld.ralph_loop.types import CompletionCriteria
+from aworld.runners.ralph.config import RalphConfig
+from aworld.runners.ralph.types import CompletionCriteria
 from aworld.runner import Runners
 from examples.aworld_quick_start.common import agent_config
 
@@ -53,7 +53,9 @@ async def main():
 
     # Run
     question = "30,000 divided by 1.2 "
-    task = Task(input=question, agent=search, conf=RalphConfig.create(model_config=agent_config.llm_config))
+    ralph_config = RalphConfig.create(model_config=agent_config.llm_config)
+    ralph_config.execution_mode = "reuse_context"
+    task = Task(input=question, agent=search, conf=ralph_config)
     completion_criteria = CompletionCriteria(answer="25000")
     res = await Runners.ralph_run(task=task, completion_criteria=completion_criteria)
     print(res.answer)
