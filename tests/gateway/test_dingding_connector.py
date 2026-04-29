@@ -123,18 +123,34 @@ class _FakeThread:
 
 
 class _FakeResponse:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        payload: dict[str, object] | None = None,
+        error: Exception | None = None,
+        headers: dict[str, str] | None = None,
+        content: bytes = b"",
+    ) -> None:
         self.raised = False
+        self.payload = payload or {}
+        self.error = error
+        self.headers = headers or {}
+        self.content = content
 
     def raise_for_status(self) -> None:
+        if self.error is not None:
+            raise self.error
         self.raised = True
+
+    def json(self) -> dict[str, object]:
+        return dict(self.payload)
 
 
 class _FakeHttpClient:
     def __init__(self) -> None:
         self.closed = False
         self.calls: list[tuple[str, dict[str, object]]] = []
-        self.response = _FakeResponse()
+        self.response = _FakeResponse(payload={"accessToken": "access-token", "expireIn": 7200})
 
     async def post(self, url: str, **kwargs):
         self.calls.append((url, kwargs))
@@ -233,6 +249,103 @@ def test_connector_logs_startup_and_outbound_send(
     assert "DingTalk outbound message sending" in caplog.text
     assert "DingTalk outbound message sent" in caplog.text
     assert "DingTalk connector stopped" in caplog.text
+
+
+def test_connector_logs_upstream_auth_validation_on_start(
+    monkeypatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld"),
+        bridge=_FakeBridge(),
+        stream_module=_FakeStreamModule,
+        http_client=_FakeHttpClient(),
+        thread_cls=_FakeThread,
+    )
+
+    asyncio.run(connector.start())
+    asyncio.run(connector.stop())
+
+    assert "DingTalk access token refresh requested" in caplog.text
+    assert "DingTalk access token refreshed expires_in_seconds=7200" in caplog.text
+    assert "DingTalk upstream auth validated" in caplog.text
+
+
+def test_connector_logs_stream_runner_failure(
+    monkeypatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    class _FailingStreamClient(_FakeStreamClient):
+        def start_forever(self) -> None:
+            self.start_forever_calls += 1
+            raise RuntimeError("stream down")
+
+    class _FailingStreamModule(_FakeStreamModule):
+        DingTalkStreamClient = _FailingStreamClient
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld"),
+        bridge=_FakeBridge(),
+        stream_module=_FailingStreamModule,
+        http_client=_FakeHttpClient(),
+        thread_cls=_FakeThread,
+    )
+
+    asyncio.run(connector.start())
+    asyncio.run(connector.stop())
+
+    assert "DingTalk stream runner entering mode=start_forever" in caplog.text
+    assert "DingTalk stream runner failed mode=start_forever error=stream down" in caplog.text
+    assert "DingTalk stream runner exited mode=start_forever" in caplog.text
+
+
+def test_connector_logs_outbound_send_failure(
+    monkeypatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    http_client = _FakeHttpClient()
+    http_client.response = _FakeResponse(error=RuntimeError("send failed"))
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld"),
+        bridge=_FakeBridge(),
+        stream_module=_FakeStreamModule,
+        http_client=http_client,
+        thread_cls=_FakeThread,
+    )
+
+    asyncio.run(connector.start())
+    connector._access_token = "access-token"
+    connector._access_token_expiry = time.time() + 3600
+
+    with pytest.raises(RuntimeError, match="send failed"):
+        asyncio.run(
+            connector.send_text(
+                session_webhook="https://example.com/robot/send?access_token=secret",
+                text="pong",
+            )
+        )
+
+    asyncio.run(connector.stop())
+
+    assert "DingTalk outbound message failed target=example.com/robot/send" in caplog.text
 
 
 def test_connector_stop_closes_http_client(monkeypatch) -> None:
