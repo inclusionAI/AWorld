@@ -94,6 +94,48 @@ def test_enable_aworld_console_logging_for_gateway_reconfigures_disabled_logger(
     assert fake_logger.calls[-1]["disable_console"] is False
 
 
+def test_configure_gateway_file_logging_writes_to_dedicated_gateway_log(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.delenv("AWORLD_GATEWAY_LOG_PATH", raising=False)
+
+    log_path = gateway_cli._configure_gateway_file_logging(base_dir=tmp_path)
+
+    from aworld_gateway.logging import get_gateway_logger
+
+    get_gateway_logger("test").info("gateway-log-check")
+
+    assert log_path == tmp_path / "logs" / "gateway.log"
+    assert log_path.exists()
+    assert "gateway-log-check" in log_path.read_text(encoding="utf-8")
+
+
+def test_resolve_gateway_log_path_honors_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.logging import resolve_gateway_log_path
+
+    expected = (tmp_path / "custom" / "gateway.log").resolve()
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(expected))
+
+    assert resolve_gateway_log_path() == expected
+
+
+def test_get_gateway_logger_returns_named_child_logger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.logging import GATEWAY_LOGGER_NAME, get_gateway_logger
+
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+
+    logger = get_gateway_logger("child component")
+
+    assert logger.name == f"{GATEWAY_LOGGER_NAME}.child_component"
+
+
 def test_serve_gateway_enables_console_logging_before_loading_agents(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

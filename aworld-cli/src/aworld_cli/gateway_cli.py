@@ -20,6 +20,7 @@ from aworld_gateway.config import GatewayConfigLoader
 from aworld_gateway.config import GatewayConfig
 from aworld_gateway.http.artifact_service import ArtifactService
 from aworld_gateway.http.server import create_gateway_app
+from aworld_gateway.logging import configure_gateway_logging, get_gateway_logger
 from aworld_gateway.registry import ChannelRegistry
 from aworld_gateway.router import GatewayRouter, LocalCliAgentBackend
 from aworld_gateway.runtime import GatewayRuntime
@@ -215,6 +216,13 @@ def _enable_aworld_console_logging_for_gateway() -> None:
     )
 
 
+def _configure_gateway_file_logging(*, base_dir: Path) -> Path:
+    log_path = (base_dir / "logs" / "gateway.log").resolve()
+    os.environ["AWORLD_GATEWAY_LOG_PATH"] = str(log_path)
+    configure_gateway_logging(log_path=log_path)
+    return log_path
+
+
 def handle_gateway_status(base_dir: Path | str | None = None) -> dict[str, object]:
     config = _load_gateway_config_read_only(base_dir)
     runtime = GatewayRuntime(
@@ -252,8 +260,15 @@ async def serve_gateway(
     local_dirs: list[str] | None,
     agent_files: list[str] | None,
 ) -> None:
+    resolved_base_dir = Path.cwd() if base_dir is None else Path(base_dir)
+    gateway_log_path = _configure_gateway_file_logging(base_dir=resolved_base_dir)
+    gateway_logger = get_gateway_logger("cli")
     _enable_aworld_console_logging_for_gateway()
     enable_quiet_gateway_boot()
+    gateway_logger.info(
+        "Gateway server boot starting "
+        f"base_dir={resolved_base_dir.resolve()} log_path={gateway_log_path}"
+    )
 
     from aworld_cli.main import load_all_agents
 
@@ -263,7 +278,6 @@ async def serve_gateway(
         agent_files=agent_files,
     )
 
-    resolved_base_dir = Path.cwd() if base_dir is None else Path(base_dir)
     config = GatewayConfigLoader(base_dir=resolved_base_dir).load_or_init()
     artifact_service = _build_artifact_service(base_dir=resolved_base_dir, config=config)
     router = GatewayRouter(
@@ -279,6 +293,10 @@ async def serve_gateway(
     )
 
     await runtime.start()
+    gateway_logger.info(
+        "Gateway runtime started "
+        f"host={config.gateway.host} port={config.gateway.port}"
+    )
     telegram_adapter = runtime.get_started_channel("telegram")
     app = create_gateway_app(
         runtime_status=runtime.status(),
@@ -296,4 +314,6 @@ async def serve_gateway(
     try:
         await server.serve()
     finally:
+        gateway_logger.info("Gateway runtime stopping")
         await runtime.stop()
+        gateway_logger.info("Gateway runtime stopped")

@@ -28,6 +28,7 @@ from aworld_gateway.channels.dingding.types import (
 from aworld_gateway.config import DingdingChannelConfig
 from aworld_gateway.cron_push import CronPushBindingStore, CronPushBridge
 from aworld_gateway.http.artifact_service import ArtifactService
+from aworld_gateway.logging import get_gateway_logger
 from aworld.logs.util import logger
 
 DINGTALK_API = "https://api.dingtalk.com"
@@ -39,6 +40,7 @@ AI_CARD_STREAM_UPDATE_INTERVAL_SECONDS = 0.3
 PROCESSING_ACK_DELAY_SECONDS = 0.8
 CALLBACK_DEDUPE_WINDOW_SECONDS = 15.0
 PROCESSING_ACK_TEXT = "已收到，正在处理。"
+WEBHOOK_HASH_DIGEST_LENGTH = 10
 TRIVIAL_SHORT_REQUEST_MAX_CHARS = 12
 COMPLEX_REQUEST_KEYWORDS = (
     "分析",
@@ -86,6 +88,7 @@ INLINE_CODE_LOCAL_REF_RE = re.compile(
 PLAIN_LOCAL_REF_RE = re.compile(
     r"(artifact://[^\s<>)]+|attachment://[^\s<>)]+|file://[^\s<>)]+|MEDIA:[^\s<>)]+|(?:/|~)[^\s<>)]+|[A-Za-z]:[\\/][^\s<>)]+)"
 )
+gateway_logger = get_gateway_logger("dingding.connector")
 
 
 class DingTalkConnector:
@@ -127,6 +130,11 @@ class DingTalkConnector:
         self._cron_scheduler_started_by_connector = False
 
     async def start(self) -> None:
+        gateway_logger.info(
+            "DingTalk connector starting "
+            f"workspace_dir={self._config.workspace_dir or ''} "
+            f"client_id_env={self._config.client_id_env or ''}"
+        )
         credential = self._stream_module.Credential(
             self._required_env(self._config.client_id_env),
             self._required_env(self._config.client_secret_env),
@@ -150,24 +158,42 @@ class DingTalkConnector:
             _MessageHandler(),
         )
         await self._prepare_cron_runtime()
+        await self._validate_upstream_auth()
 
         start_forever = getattr(self._client, "start_forever", None)
         if callable(start_forever):
             self._stream_thread = self._thread_cls(
-                target=start_forever,
+                target=self._run_stream_forever,
                 name="aworld-gateway-dingtalk-stream",
                 daemon=True,
             )
             self._stream_thread.start()
+            gateway_logger.info(
+                "DingTalk stream client started mode=start_forever thread=True"
+            )
             return
 
         start = getattr(self._client, "start", None)
         if callable(start):
-            start_result = start()
-            if isawaitable(start_result):
-                await start_result
+            gateway_logger.info("DingTalk stream runner entering mode=start")
+            try:
+                start_result = start()
+                if isawaitable(start_result):
+                    await start_result
+                gateway_logger.info(
+                    "DingTalk stream client started mode=start thread=False"
+                )
+            except Exception as exc:
+                gateway_logger.exception(
+                    "DingTalk stream runner failed "
+                    f"mode=start error={exc}"
+                )
+                raise
+            finally:
+                gateway_logger.info("DingTalk stream runner exited mode=start")
 
     async def stop(self) -> None:
+        gateway_logger.info("DingTalk connector stopping")
         for task in list(self._background_tasks):
             task.cancel()
         if self._background_tasks:
@@ -194,27 +220,34 @@ class DingTalkConnector:
                 break
         self._cron_scheduler = None
         await self._http.aclose()
+        gateway_logger.info("DingTalk connector stopped")
 
     async def handle_callback(self, callback_payload) -> None:
         data = self._parse_data(callback_payload)
         if not data:
+            gateway_logger.info("DingTalk callback skipped reason=invalid_payload")
             return
+        self._log_callback_received(data)
         if self._should_skip_duplicate_callback(data):
+            gateway_logger.info("DingTalk callback skipped reason=duplicate")
             return
         await self._handle_callback_data(data)
 
     async def _handle_callback_data(self, data: dict) -> None:
         session_webhook = str(data.get("sessionWebhook") or "").strip()
         if not session_webhook:
+            gateway_logger.info("DingTalk callback skipped reason=missing_session_webhook")
             return
 
         sender_id = str(data.get("senderStaffId") or data.get("senderId") or "").strip()
         if not sender_id:
+            gateway_logger.info("DingTalk callback skipped reason=missing_sender")
             return
 
         message = self._extract_message(data)
         user_text = message.text.strip()
         if not user_text and not message.attachments:
+            gateway_logger.info("DingTalk callback skipped reason=empty_message")
             return
 
         conversation_key = str(data.get("conversationId") or sender_id).strip()
@@ -267,8 +300,11 @@ class DingTalkConnector:
     def _schedule_callback(self, callback_payload) -> None:
         data = self._parse_data(callback_payload)
         if not data:
+            gateway_logger.info("DingTalk callback skipped reason=invalid_payload")
             return
+        self._log_callback_received(data)
         if self._should_skip_duplicate_callback(data):
+            gateway_logger.info("DingTalk callback skipped reason=duplicate")
             return
 
         task = asyncio.create_task(self._handle_callback_data(data))
@@ -276,16 +312,32 @@ class DingTalkConnector:
         task.add_done_callback(self._finalize_background_task)
 
     async def send_text(self, *, session_webhook: str, text: str) -> None:
-        token = await self._get_access_token()
-        response = await self._http.post(
-            session_webhook,
-            headers={
-                "x-acs-dingtalk-access-token": token,
-                "Content-Type": "application/json",
-            },
-            json={"msgtype": "text", "text": {"content": text}},
+        target = self._describe_webhook(session_webhook)
+        gateway_logger.info(
+            "DingTalk outbound message sending "
+            f"target={target} chars={len(text)}"
         )
-        response.raise_for_status()
+        try:
+            token = await self._get_access_token()
+            response = await self._http.post(
+                session_webhook,
+                headers={
+                    "x-acs-dingtalk-access-token": token,
+                    "Content-Type": "application/json",
+                },
+                json={"msgtype": "text", "text": {"content": text}},
+            )
+            response.raise_for_status()
+            gateway_logger.info(
+                "DingTalk outbound message sent "
+                f"target={target} chars={len(text)}"
+            )
+        except Exception as exc:
+            gateway_logger.exception(
+                "DingTalk outbound message failed "
+                f"target={target} chars={len(text)} error={exc}"
+            )
+            raise
 
     async def _run_message_round(
         self,
@@ -526,6 +578,17 @@ class DingTalkConnector:
             return text
         return f"{text[: limit - 3]}..."
 
+    @staticmethod
+    def _describe_webhook(session_webhook: str) -> str:
+        normalized = str(session_webhook or "").strip()
+        if not normalized:
+            return "missing"
+        digest = hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:WEBHOOK_HASH_DIGEST_LENGTH]
+        parsed = urlparse(normalized)
+        host = parsed.netloc or "unknown-host"
+        path = parsed.path or "/"
+        return f"{host}{path}#{digest}"
+
     @classmethod
     def _summarize_runtime_output_for_log(cls, output) -> str:
         output_type_getter = getattr(output, "output_type", None)
@@ -663,6 +726,7 @@ class DingTalkConnector:
             return
         exc = task.exception()
         if exc is not None:
+            gateway_logger.warning(f"DingTalk callback task failed: {exc}")
             logger.warning(f"DingTalk callback task failed: {exc}")
 
     async def _send_cron_push_text(self, binding, text: str, notification) -> None:
@@ -687,6 +751,15 @@ class DingTalkConnector:
                 return {}
             return parsed if isinstance(parsed, dict) else {}
         return {}
+
+    def _log_callback_received(self, data: dict) -> None:
+        gateway_logger.info(
+            "DingTalk callback received "
+            f"conversation={str(data.get('conversationId') or '').strip() or 'unknown'} "
+            f"sender={str(data.get('senderStaffId') or data.get('senderId') or '').strip() or 'unknown'} "
+            f"message_id={str(data.get('messageId') or data.get('msgId') or data.get('eventId') or '').strip() or 'unknown'} "
+            f"has_session_webhook={bool(str(data.get('sessionWebhook') or '').strip())}"
+        )
 
     @staticmethod
     def _new_session_id(conversation_key: str) -> str:
@@ -1056,30 +1129,77 @@ class DingTalkConnector:
             raise ValueError(f"Missing required env var: {name}")
         return value
 
+    async def _validate_upstream_auth(self) -> None:
+        try:
+            await self._get_access_token()
+        except Exception as exc:
+            gateway_logger.warning(
+                "DingTalk upstream auth validation failed "
+                f"client_id_env={self._config.client_id_env or ''} error={exc}"
+            )
+            return
+        gateway_logger.info(
+            "DingTalk upstream auth validated "
+            f"client_id_env={self._config.client_id_env or ''}"
+        )
+
+    def _run_stream_forever(self) -> None:
+        if self._client is None:
+            gateway_logger.warning("DingTalk stream runner skipped reason=missing_client")
+            return
+        start_forever = getattr(self._client, "start_forever", None)
+        if not callable(start_forever):
+            gateway_logger.warning(
+                "DingTalk stream runner skipped reason=start_forever_unavailable"
+            )
+            return
+        gateway_logger.info("DingTalk stream runner entering mode=start_forever")
+        try:
+            start_forever()
+        except Exception as exc:
+            gateway_logger.exception(
+                "DingTalk stream runner failed "
+                f"mode=start_forever error={exc}"
+            )
+        finally:
+            gateway_logger.info("DingTalk stream runner exited mode=start_forever")
+
     async def _get_access_token(self) -> str:
         now = time.time()
         if self._access_token and self._access_token_expiry - 60 > now:
             return self._access_token
 
-        response = await self._http.post(
-            f"{DINGTALK_API}/v1.0/oauth2/accessToken",
-            json={
-                "appKey": self._required_env(self._config.client_id_env),
-                "appSecret": self._required_env(self._config.client_secret_env),
-            },
-        )
-        response.raise_for_status()
-        data = response.json()
-        token = str(data["accessToken"])
-        self._access_token = token
-        self._access_token_expiry = now + int(data.get("expireIn", 7200))
-        return token
+        gateway_logger.info("DingTalk access token refresh requested")
+        try:
+            response = await self._http.post(
+                f"{DINGTALK_API}/v1.0/oauth2/accessToken",
+                json={
+                    "appKey": self._required_env(self._config.client_id_env),
+                    "appSecret": self._required_env(self._config.client_secret_env),
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            token = str(data["accessToken"])
+            expires_in = int(data.get("expireIn", 7200))
+            self._access_token = token
+            self._access_token_expiry = now + expires_in
+            gateway_logger.info(
+                f"DingTalk access token refreshed expires_in_seconds={expires_in}"
+            )
+            return token
+        except Exception as exc:
+            gateway_logger.exception(
+                f"DingTalk access token refresh failed error={exc}"
+            )
+            raise
 
     async def _get_oapi_access_token(self) -> str | None:
         now = time.time()
         if self._oapi_access_token and self._oapi_access_token_expiry - 60 > now:
             return self._oapi_access_token
 
+        gateway_logger.info("DingTalk OAPI access token refresh requested")
         try:
             response = await self._http.get(
                 f"{OAPI_API}/gettoken",
@@ -1091,14 +1211,28 @@ class DingTalkConnector:
             response.raise_for_status()
             data = response.json()
             if int(data.get("errcode", 1)) != 0:
+                gateway_logger.warning(
+                    "DingTalk OAPI access token rejected "
+                    f"errcode={data.get('errcode')} errmsg={data.get('errmsg') or ''}"
+                )
                 return None
             token = str(data.get("access_token") or "").strip()
             if not token:
+                gateway_logger.warning(
+                    "DingTalk OAPI access token missing in response"
+                )
                 return None
             self._oapi_access_token = token
-            self._oapi_access_token_expiry = now + int(data.get("expires_in", 7200))
+            expires_in = int(data.get("expires_in", 7200))
+            self._oapi_access_token_expiry = now + expires_in
+            gateway_logger.info(
+                f"DingTalk OAPI access token refreshed expires_in_seconds={expires_in}"
+            )
             return token
-        except Exception:
+        except Exception as exc:
+            gateway_logger.warning(
+                f"DingTalk OAPI access token refresh failed error={exc}"
+            )
             return None
 
     async def _process_local_media_links(

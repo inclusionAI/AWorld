@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import logging
 from inspect import isawaitable
 import json
 from typing import Any, Awaitable, Callable
 
 from aworld_gateway.cron_push.formatter import CronNotificationFormatter
+from aworld_gateway.logging import get_gateway_logger
 from aworld_gateway.cron_push.store import CronPushBindingStore
 from aworld_gateway.cron_push.types import (
     CronNotificationPayload,
@@ -17,7 +17,7 @@ CronPushSender = Callable[
     [CronPushBinding, str, CronNotificationPayload],
     Awaitable[None],
 ]
-logger = logging.getLogger(__name__)
+logger = get_gateway_logger("cron_push.bridge")
 
 
 class CronPushBridge:
@@ -32,6 +32,7 @@ class CronPushBridge:
         if not normalized_channel:
             return
         self._senders[normalized_channel] = sender
+        logger.info(f"Cron push sender registered channel={normalized_channel}")
 
     def bind_output(
         self,
@@ -45,34 +46,63 @@ class CronPushBridge:
         job_ids = self.extract_job_ids(output)
         for job_id in job_ids:
             self._binding_store.upsert(job_id, binding)
+            logger.info(
+                "Cron push binding stored "
+                f"channel={binding.get('channel')} job_id={job_id}"
+            )
         return job_ids
 
     async def publish_notification(self, notification: CronNotificationPayload) -> None:
         job_id = str(notification.get("job_id") or "").strip()
         if not job_id:
+            logger.info("Cron push notification skipped reason=missing_job_id")
             return
 
         binding = self._binding_store.get(job_id)
         if binding is None:
+            logger.info(
+                f"Cron push notification skipped job_id={job_id} reason=binding_missing"
+            )
             return
 
         sender = self._senders.get(str(binding.get("channel") or "").strip().lower())
         user_visible = notification.get("user_visible") is not False
         text = CronNotificationFormatter.format(notification)
         is_terminal = not notification.get("next_run_at")
+        if sender is None:
+            logger.info(
+                "Cron push notification skipped "
+                f"channel={binding.get('channel')} job_id={job_id} reason=sender_missing"
+            )
+        elif not user_visible:
+            logger.info(
+                "Cron push notification skipped "
+                f"channel={binding.get('channel')} job_id={job_id} reason=user_hidden"
+            )
+        elif not text:
+            logger.info(
+                "Cron push notification skipped "
+                f"channel={binding.get('channel')} job_id={job_id} reason=empty_text"
+            )
+        else:
+            logger.info(
+                "Cron push notification publishing "
+                f"channel={binding.get('channel')} job_id={job_id}"
+            )
         try:
             if sender is not None and user_visible and text:
                 await sender(binding, text, notification)
         except Exception as exc:
-            logger.warning(
-                "Cron push sender failed for channel=%s job_id=%s: %s",
-                binding.get("channel"),
-                job_id,
-                exc,
+            logger.exception(
+                "Cron push sender failed "
+                f"channel={binding.get('channel')} job_id={job_id} error={exc}"
             )
         finally:
             if is_terminal:
                 self._binding_store.remove(job_id)
+                logger.info(
+                    f"Cron push binding removed job_id={job_id} reason=terminal_notification"
+                )
 
     def install_scheduler_sink(self, scheduler: Any) -> None:
         scheduler_key = id(scheduler)
@@ -95,6 +125,7 @@ class CronPushBridge:
         scheduler.notification_sink = _fanout
         self._installed_scheduler_sinks[scheduler_key] = _fanout
         self._previous_scheduler_sinks[scheduler_key] = previous_sink
+        logger.info(f"Cron push scheduler sink installed scheduler={scheduler_key}")
 
     def uninstall_scheduler_sink(self, scheduler: Any) -> None:
         scheduler_key = id(scheduler)
@@ -104,6 +135,7 @@ class CronPushBridge:
             return
         if getattr(scheduler, "notification_sink", None) is installed_sink:
             scheduler.notification_sink = previous_sink
+        logger.info(f"Cron push scheduler sink uninstalled scheduler={scheduler_key}")
 
     @staticmethod
     def extract_job_ids(output: Any) -> list[str]:
