@@ -4,7 +4,6 @@ import asyncio
 import base64
 import hashlib
 import json
-import logging
 import os
 import secrets
 import uuid
@@ -38,6 +37,7 @@ from aworld_gateway.channels.wechat.media import (
 )
 from aworld_gateway.config import WechatChannelConfig
 from aworld_gateway.cron_push import CronPushBindingStore, CronPushBridge
+from aworld_gateway.logging import get_gateway_logger
 from aworld_gateway.types import InboundEnvelope
 
 try:
@@ -53,6 +53,7 @@ EP_GET_UPDATES = "ilink/bot/getupdates"
 EP_SEND_MESSAGE = "ilink/bot/sendmessage"
 EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
 DEDUP_MAX_SIZE = 1000
+LOG_TEXT_TRUNCATE_LIMIT = 300
 
 SendMessageFunc = Callable[..., Awaitable[dict[str, object]]]
 GetUpdatesFunc = Callable[..., Awaitable[dict[str, object]]]
@@ -60,7 +61,7 @@ DownloadMediaFunc = Callable[..., Awaitable[bytes]]
 GetUploadUrlFunc = Callable[..., Awaitable[dict[str, object]]]
 UploadCiphertextFunc = Callable[..., Awaitable[str]]
 SendMediaMessageFunc = Callable[..., Awaitable[dict[str, object]]]
-logger = logging.getLogger(__name__)
+logger = get_gateway_logger("wechat.connector")
 
 
 def _base_info() -> dict[str, str]:
@@ -328,6 +329,11 @@ class WechatConnector:
         if not self._token:
             raise ValueError("Missing WeChat token env")
 
+        logger.info(
+            "WeChat connector starting "
+            f"account={self._account_id} base_url={self._base_url} "
+            f"storage_root={self._storage_root.resolve()}"
+        )
         self._token_store.restore(self._account_id)
         self._poll_session = self._build_session()
         self._send_session = self._build_session()
@@ -335,8 +341,13 @@ class WechatConnector:
         self._cron_push_bridge.install_scheduler_sink(self._cron_scheduler)
         self.started = True
         self._poll_task = asyncio.create_task(self._poll_loop())
+        logger.info(
+            "WeChat connector started "
+            f"account={self._account_id} poll_task={self._poll_task is not None}"
+        )
 
     async def stop(self) -> None:
+        logger.info(f"WeChat connector stopping account={self._account_id}")
         self.started = False
         if self._poll_task is not None:
             self._poll_task.cancel()
@@ -352,6 +363,7 @@ class WechatConnector:
         if self._cron_scheduler is not None:
             self._cron_push_bridge.uninstall_scheduler_sink(self._cron_scheduler)
             self._cron_scheduler = None
+        logger.info(f"WeChat connector stopped account={self._account_id}")
 
     async def send_text(
         self,
@@ -368,6 +380,11 @@ class WechatConnector:
         metadata_requests = self._metadata_media_requests(metadata)
         media_requests = [*inline_requests, *metadata_requests]
         last_result: dict[str, object] = {}
+        logger.info(
+            "WeChat outbound send requested "
+            f"chat_id={chat_id} text_chars={len(cleaned_text or text)} "
+            f"media_count={len(media_requests)} has_context_token={bool(context_token)}"
+        )
 
         if cleaned_text:
             last_result = await self._send_text_chunks(
@@ -400,18 +417,29 @@ class WechatConnector:
         last_result: dict[str, object] = {}
         for chunk in self._split_text(text):
             client_id = f"aworld-wechat-{uuid.uuid4().hex}"
-            result = await self._send_message_func(
-                session=self._send_session,
-                base_url=self._base_url,
-                token=self._token,
-                to=chat_id,
-                text=chunk,
-                context_token=context_token,
-                client_id=client_id,
-            )
+            try:
+                result = await self._send_message_func(
+                    session=self._send_session,
+                    base_url=self._base_url,
+                    token=self._token,
+                    to=chat_id,
+                    text=chunk,
+                    context_token=context_token,
+                    client_id=client_id,
+                )
+            except Exception:
+                logger.exception(
+                    "WeChat outbound text chunk failed "
+                    f"chat_id={chat_id} client_id={client_id} chars={len(chunk)}"
+                )
+                raise
             if "client_id" not in result:
                 result["client_id"] = client_id
             last_result = result
+            logger.info(
+                "WeChat outbound text chunk sent "
+                f"chat_id={chat_id} client_id={client_id} chars={len(chunk)}"
+            )
         return last_result
 
     async def _send_local_media(
@@ -421,73 +449,90 @@ class WechatConnector:
         request: OutboundMediaRequest,
         context_token: str | None,
     ) -> dict[str, object]:
-        plaintext = await asyncio.to_thread(request.path.read_bytes)
-        rawsize = len(plaintext)
-        rawfilemd5 = hashlib.md5(plaintext).hexdigest()
-        filekey = secrets.token_hex(16)
-        aes_key = secrets.token_bytes(16)
-        media_type, media_item = build_outbound_media_item(
-            path=request.path,
-            encrypted_query_param="",
-            aes_key_for_api="",
-            ciphertext_size=0,
-            plaintext_size=rawsize,
-            rawfilemd5=rawfilemd5,
-            force_file_attachment=request.force_file_attachment,
-            media_kind_override=request.media_kind_override,
+        logger.info(
+            "WeChat outbound media upload starting "
+            f"chat_id={chat_id} path={request.path} "
+            f"kind={request.media_kind_override or 'auto'}"
         )
-        upload_response = await self._get_upload_url_func(
-            session=self._send_session,
-            base_url=self._base_url,
-            token=self._token,
-            to_user_id=chat_id,
-            media_type=media_type,
-            filekey=filekey,
-            rawsize=rawsize,
-            rawfilemd5=rawfilemd5,
-            filesize=aes_padded_size(rawsize),
-            aeskey_hex=aes_key.hex(),
-        )
-        upload_param = str(upload_response.get("upload_param") or "").strip()
-        upload_full_url = str(upload_response.get("upload_full_url") or "").strip()
-        ciphertext = aes128_ecb_encrypt(plaintext, aes_key)
-        if upload_full_url:
-            upload_url = upload_full_url
-        elif upload_param:
-            upload_url = cdn_upload_url(self._cdn_base_url, upload_param, filekey)
-        else:
-            raise RuntimeError(
-                f"getUploadUrl returned neither upload_param nor upload_full_url: {upload_response}"
+        try:
+            plaintext = await asyncio.to_thread(request.path.read_bytes)
+            rawsize = len(plaintext)
+            rawfilemd5 = hashlib.md5(plaintext).hexdigest()
+            filekey = secrets.token_hex(16)
+            aes_key = secrets.token_bytes(16)
+            media_type, media_item = build_outbound_media_item(
+                path=request.path,
+                encrypted_query_param="",
+                aes_key_for_api="",
+                ciphertext_size=0,
+                plaintext_size=rawsize,
+                rawfilemd5=rawfilemd5,
+                force_file_attachment=request.force_file_attachment,
+                media_kind_override=request.media_kind_override,
             )
-        encrypted_query_param = await self._upload_ciphertext_func(
-            session=self._send_session,
-            ciphertext=ciphertext,
-            upload_url=upload_url,
-        )
-        aes_key_for_api = base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii")
-        _media_type, media_item = build_outbound_media_item(
-            path=request.path,
-            encrypted_query_param=encrypted_query_param,
-            aes_key_for_api=aes_key_for_api,
-            ciphertext_size=len(ciphertext),
-            plaintext_size=rawsize,
-            rawfilemd5=rawfilemd5,
-            force_file_attachment=request.force_file_attachment,
-            media_kind_override=request.media_kind_override,
-        )
-        client_id = f"aworld-wechat-{uuid.uuid4().hex}"
-        result = await self._send_media_message_func(
-            session=self._send_session,
-            base_url=self._base_url,
-            token=self._token,
-            to=chat_id,
-            item=media_item,
-            context_token=context_token,
-            client_id=client_id,
-        )
-        if "client_id" not in result:
-            result["client_id"] = client_id
-        return result
+            upload_response = await self._get_upload_url_func(
+                session=self._send_session,
+                base_url=self._base_url,
+                token=self._token,
+                to_user_id=chat_id,
+                media_type=media_type,
+                filekey=filekey,
+                rawsize=rawsize,
+                rawfilemd5=rawfilemd5,
+                filesize=aes_padded_size(rawsize),
+                aeskey_hex=aes_key.hex(),
+            )
+            upload_param = str(upload_response.get("upload_param") or "").strip()
+            upload_full_url = str(upload_response.get("upload_full_url") or "").strip()
+            ciphertext = aes128_ecb_encrypt(plaintext, aes_key)
+            if upload_full_url:
+                upload_url = upload_full_url
+            elif upload_param:
+                upload_url = cdn_upload_url(self._cdn_base_url, upload_param, filekey)
+            else:
+                raise RuntimeError(
+                    f"getUploadUrl returned neither upload_param nor upload_full_url: {upload_response}"
+                )
+            encrypted_query_param = await self._upload_ciphertext_func(
+                session=self._send_session,
+                ciphertext=ciphertext,
+                upload_url=upload_url,
+            )
+            aes_key_for_api = base64.b64encode(aes_key.hex().encode("ascii")).decode("ascii")
+            _media_type, media_item = build_outbound_media_item(
+                path=request.path,
+                encrypted_query_param=encrypted_query_param,
+                aes_key_for_api=aes_key_for_api,
+                ciphertext_size=len(ciphertext),
+                plaintext_size=rawsize,
+                rawfilemd5=rawfilemd5,
+                force_file_attachment=request.force_file_attachment,
+                media_kind_override=request.media_kind_override,
+            )
+            client_id = f"aworld-wechat-{uuid.uuid4().hex}"
+            result = await self._send_media_message_func(
+                session=self._send_session,
+                base_url=self._base_url,
+                token=self._token,
+                to=chat_id,
+                item=media_item,
+                context_token=context_token,
+                client_id=client_id,
+            )
+            if "client_id" not in result:
+                result["client_id"] = client_id
+            logger.info(
+                "WeChat outbound media sent "
+                f"chat_id={chat_id} client_id={client_id} bytes={rawsize} path={request.path}"
+            )
+            return result
+        except Exception:
+            logger.exception(
+                "WeChat outbound media failed "
+                f"chat_id={chat_id} path={request.path} "
+                f"kind={request.media_kind_override or 'auto'}"
+            )
+            raise
 
     async def _process_message(self, message: dict[str, Any]) -> None:
         sender_id = str(message.get("from_user_id") or "").strip()
@@ -505,8 +550,16 @@ class WechatConnector:
         conversation_type, conversation_id = self._conversation_target(message, sender_id)
         if conversation_type == "group":
             if not self._is_group_allowed(conversation_id):
+                logger.info(
+                    "WeChat inbound message skipped "
+                    f"conversation={conversation_id} message_id={message_id} reason=group_policy"
+                )
                 return
         elif not self._is_dm_allowed(sender_id):
+            logger.info(
+                "WeChat inbound message skipped "
+                f"conversation={conversation_id} message_id={message_id} reason=dm_policy"
+            )
             return
 
         item_list = message.get("item_list") or []
@@ -520,10 +573,24 @@ class WechatConnector:
         if attachment_prompt:
             text = f"{text}\n\n{attachment_prompt}".strip() if text else attachment_prompt
         if not text:
+            logger.info(
+                "WeChat inbound message skipped "
+                f"conversation={conversation_id} message_id={message_id} reason=empty_text"
+            )
             return
 
         if self.router is None:
+            logger.info(
+                "WeChat inbound message dropped "
+                f"conversation={conversation_id} message_id={message_id} reason=no_router"
+            )
             return
+
+        logger.info(
+            "WeChat inbound message "
+            f"conversation={conversation_id} sender={sender_id} message_id={message_id} "
+            f"attachments={len(attachments)} text={self._truncate_log_text(text, limit=LOG_TEXT_TRUNCATE_LIMIT)}"
+        )
 
         metadata: dict[str, Any] = {}
         if attachments:
@@ -558,6 +625,11 @@ class WechatConnector:
             ),
             channel_default_agent_id=self.config.default_agent_id,
             on_output=on_output,
+        )
+        logger.info(
+            "WeChat outbound reply "
+            f"chat_id={outbound.conversation_id} reply_to={outbound.reply_to_message_id or message_id} "
+            f"text={self._truncate_log_text(outbound.text, limit=LOG_TEXT_TRUNCATE_LIMIT)}"
         )
         await self.send_text(
             chat_id=outbound.conversation_id,
@@ -599,6 +671,10 @@ class WechatConnector:
                     timeout_seconds=candidate["timeout_seconds"],
                 )
             except Exception:
+                logger.exception(
+                    "WeChat inbound media download failed "
+                    f"message_id={message_id} index={index}"
+                )
                 continue
             path = await asyncio.to_thread(
                 self._write_inbound_attachment,
@@ -800,6 +876,7 @@ class WechatConnector:
         return requests
 
     async def _poll_loop(self) -> None:
+        logger.info(f"WeChat poll loop started account={self._account_id}")
         while self.started:
             response = await self._get_updates_func(
                 session=self._poll_session,
@@ -811,17 +888,30 @@ class WechatConnector:
             next_sync_buf = str(response.get("get_updates_buf") or "").strip()
             if next_sync_buf:
                 self._sync_buf = next_sync_buf
-            for message in response.get("msgs") or []:
-                if isinstance(message, dict):
-                    try:
-                        await self._process_message(message)
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:
-                        logger.exception(
-                            "WeChat poll loop failed to process message",
-                            extra={"message_id": str(message.get("message_id") or "").strip()},
-                        )
+            messages = [message for message in response.get("msgs") or [] if isinstance(message, dict)]
+            if messages:
+                logger.info(
+                    "WeChat poll batch received "
+                    f"account={self._account_id} message_count={len(messages)}"
+                )
+            for message in messages:
+                try:
+                    await self._process_message(message)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    logger.exception(
+                        "WeChat poll loop failed to process message "
+                        f"message_id={str(message.get('message_id') or '').strip()}"
+                    )
+        logger.info(f"WeChat poll loop stopped account={self._account_id}")
+
+    @staticmethod
+    def _truncate_log_text(value: object, *, limit: int = LOG_TEXT_TRUNCATE_LIMIT) -> str:
+        text = str(value or "").replace("\n", "\\n").strip()
+        if len(text) <= limit:
+            return text
+        return f"{text[:limit]}..."
 
     def _remember_seen_message_id(self, message_id: str) -> bool:
         normalized = str(message_id or "").strip()

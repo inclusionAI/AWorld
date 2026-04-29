@@ -8,6 +8,7 @@ from typing import Any, Protocol
 from aworld.runner import Runners
 
 from aworld_gateway.agent_resolver import AgentResolver
+from aworld_gateway.logging import get_gateway_logger
 from aworld_gateway.session_binding import SessionBinding
 from aworld_gateway.types import InboundEnvelope, OutboundEnvelope
 
@@ -16,6 +17,9 @@ try:
 except ImportError:  # pragma: no cover
     ApplicationContext = None
     TaskInput = None
+
+
+logger = get_gateway_logger("router")
 
 
 class AgentBackend(Protocol):
@@ -213,6 +217,11 @@ class GatewayRouter:
         matched_route_agent_id: str | None = None,
         on_output: Callable[[Any], Any] | None = None,
     ) -> OutboundEnvelope:
+        logger.info(
+            "Gateway router inbound "
+            f"channel={inbound.channel} conversation={inbound.conversation_id} "
+            f"message_id={inbound.message_id} sender={inbound.sender_id}"
+        )
         resolved_agent_id = self._agent_resolver.resolve(
             explicit_agent_id=explicit_agent_id,
             session_agent_id=session_agent_id,
@@ -226,6 +235,11 @@ class GatewayRouter:
             conversation_type=inbound.conversation_type,
             conversation_id=inbound.conversation_id,
         )
+        logger.info(
+            "Gateway router resolved "
+            f"agent={resolved_agent_id} session={session_id} "
+            f"channel={inbound.channel} conversation={inbound.conversation_id}"
+        )
 
         backend_run_kwargs = {
             "agent_id": resolved_agent_id,
@@ -234,9 +248,16 @@ class GatewayRouter:
         }
         if on_output is not None:
             backend_run_kwargs["on_output"] = on_output
-        response_text = await self._agent_backend.run(**backend_run_kwargs)
+        try:
+            response_text = await self._agent_backend.run(**backend_run_kwargs)
+        except Exception as exc:
+            logger.exception(
+                "Gateway router backend failed "
+                f"agent={resolved_agent_id} session={session_id} error={exc}"
+            )
+            raise
 
-        return OutboundEnvelope(
+        outbound = OutboundEnvelope(
             channel=inbound.channel,
             account_id=inbound.account_id,
             conversation_id=inbound.conversation_id,
@@ -244,3 +265,9 @@ class GatewayRouter:
             text=response_text,
             metadata=dict(inbound.metadata),
         )
+        logger.info(
+            "Gateway router outbound "
+            f"channel={outbound.channel} conversation={outbound.conversation_id} "
+            f"reply_to={outbound.reply_to_message_id} chars={len(outbound.text)}"
+        )
+        return outbound
