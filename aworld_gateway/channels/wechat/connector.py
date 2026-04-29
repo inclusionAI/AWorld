@@ -54,6 +54,7 @@ EP_SEND_MESSAGE = "ilink/bot/sendmessage"
 EP_GET_UPLOAD_URL = "ilink/bot/getuploadurl"
 DEDUP_MAX_SIZE = 1000
 LOG_TEXT_TRUNCATE_LIMIT = 300
+POLL_RETRY_DELAY_SECONDS = 2.0
 
 SendMessageFunc = Callable[..., Awaitable[dict[str, object]]]
 GetUpdatesFunc = Callable[..., Awaitable[dict[str, object]]]
@@ -305,6 +306,8 @@ class WechatConnector:
         self._cron_scheduler = None
         self._sync_buf = ""
         self._seen_message_ids: dict[str, None] = {}
+        self._poll_connection_established = False
+        self._poll_connection_healthy = False
         self._cron_push_bridge = CronPushBridge(
             binding_store=CronPushBindingStore(self._storage_root / "cron-push-bindings.json")
         )
@@ -332,7 +335,7 @@ class WechatConnector:
         logger.info(
             "WeChat connector starting "
             f"account={self._account_id} base_url={self._base_url} "
-            f"storage_root={self._storage_root.resolve()}"
+            f"cdn_base_url={self._cdn_base_url} storage_root={self._storage_root.resolve()}"
         )
         self._token_store.restore(self._account_id)
         self._poll_session = self._build_session()
@@ -340,6 +343,8 @@ class WechatConnector:
         self._cron_scheduler = get_scheduler()
         self._cron_push_bridge.install_scheduler_sink(self._cron_scheduler)
         self.started = True
+        self._poll_connection_established = False
+        self._poll_connection_healthy = False
         self._poll_task = asyncio.create_task(self._poll_loop())
         logger.info(
             "WeChat connector started "
@@ -360,6 +365,7 @@ class WechatConnector:
         await _close_session(self._send_session)
         self._poll_session = None
         self._send_session = None
+        self._poll_connection_healthy = False
         if self._cron_scheduler is not None:
             self._cron_push_bridge.uninstall_scheduler_sink(self._cron_scheduler)
             self._cron_scheduler = None
@@ -878,13 +884,38 @@ class WechatConnector:
     async def _poll_loop(self) -> None:
         logger.info(f"WeChat poll loop started account={self._account_id}")
         while self.started:
-            response = await self._get_updates_func(
-                session=self._poll_session,
-                base_url=self._base_url,
-                token=self._token,
-                sync_buf=self._sync_buf,
-                timeout_ms=35_000,
-            )
+            try:
+                response = await self._get_updates_func(
+                    session=self._poll_session,
+                    base_url=self._base_url,
+                    token=self._token,
+                    sync_buf=self._sync_buf,
+                    timeout_ms=35_000,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                self._poll_connection_healthy = False
+                logger.exception(
+                    "WeChat poll request failed "
+                    f"account={self._account_id} base_url={self._base_url} error={exc}"
+                )
+                if not self.started:
+                    break
+                await asyncio.sleep(self._poll_retry_delay_seconds())
+                continue
+            if not self._poll_connection_healthy:
+                transition = (
+                    "established"
+                    if not self._poll_connection_established
+                    else "recovered"
+                )
+                logger.info(
+                    "WeChat poll connection "
+                    f"{transition} account={self._account_id} base_url={self._base_url}"
+                )
+                self._poll_connection_established = True
+                self._poll_connection_healthy = True
             next_sync_buf = str(response.get("get_updates_buf") or "").strip()
             if next_sync_buf:
                 self._sync_buf = next_sync_buf
@@ -905,6 +936,10 @@ class WechatConnector:
                         f"message_id={str(message.get('message_id') or '').strip()}"
                     )
         logger.info(f"WeChat poll loop stopped account={self._account_id}")
+
+    @staticmethod
+    def _poll_retry_delay_seconds() -> float:
+        return POLL_RETRY_DELAY_SECONDS
 
     @staticmethod
     def _truncate_log_text(value: object, *, limit: int = LOG_TEXT_TRUNCATE_LIMIT) -> str:

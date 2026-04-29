@@ -547,6 +547,59 @@ async def test_connector_poll_loop_continues_after_process_message_failure(
 
 
 @pytest.mark.asyncio
+async def test_connector_poll_loop_logs_connection_failure_and_establishes_link(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    responses: list[object] = [
+        RuntimeError("poll failed"),
+        {"ret": 0, "get_updates_buf": "buf-1", "msgs": []},
+    ]
+
+    async def fake_get_updates(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        sync_buf: str,
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        del session, base_url, token, sync_buf, timeout_ms
+        response = responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        connector.started = False
+        return response
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+        get_updates_func=fake_get_updates,
+    )
+    connector.started = True
+    connector._poll_session = object()
+    connector._account_id = "wx-account"
+    connector._token = "wx-token"
+    connector._base_url = "https://ilink.example.test"
+    connector._poll_retry_delay_seconds = lambda: 0.0  # type: ignore[method-assign]
+
+    result = await asyncio.gather(connector._poll_loop(), return_exceptions=True)
+
+    assert result == [None]
+    assert "WeChat poll request failed account=wx-account" in caplog.text
+    assert "WeChat poll connection established account=wx-account base_url=https://ilink.example.test" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_connector_process_message_deduplicates_repeated_message_id(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
