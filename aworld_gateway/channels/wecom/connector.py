@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Protocol
 
 from aworld_gateway.config import WecomChannelConfig
+from aworld_gateway.logging import get_gateway_logger
 from aworld_gateway.types import InboundEnvelope
 from aworld_gateway.channels.wechat.media import (
     build_attachment_prompt,
@@ -50,6 +51,7 @@ VOICE_SUPPORTED_MIMES = {"audio/amr"}
 CONNECT_TIMEOUT_SECONDS = 20.0
 HEARTBEAT_INTERVAL_SECONDS = 30.0
 RECONNECT_BACKOFF_SECONDS = [2.0, 5.0, 10.0, 30.0, 60.0]
+logger = get_gateway_logger("wecom.connector")
 
 
 class WecomTransport(Protocol):
@@ -133,12 +135,17 @@ class WecomConnector:
         self._secret = self._required_env(self.config.secret_env, "Missing WeCom secret env")
         self._ws_url = self._optional_env(self.config.websocket_url_env) or DEFAULT_WS_URL
 
+        logger.info(
+            f"WeCom connector starting bot_id={self._bot_id} ws_url={self._ws_url}"
+        )
         self.started = True
         await self._open_connection()
         self._listen_task = asyncio.create_task(self._listen_loop())
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        logger.info(f"WeCom connector started bot_id={self._bot_id}")
 
     async def stop(self) -> None:
+        logger.info(f"WeCom connector stopping bot_id={self._bot_id}")
         self.started = False
         if self._listen_task is not None:
             self._listen_task.cancel()
@@ -156,9 +163,11 @@ class WecomConnector:
         self._heartbeat_task = None
         self._fail_pending_responses(RuntimeError("WeCom connector stopped"))
         await self._close_transport()
+        logger.info(f"WeCom connector stopped bot_id={self._bot_id}")
 
     async def _open_connection(self) -> None:
         await self._close_transport()
+        logger.info(f"WeCom connection opening ws_url={self._ws_url}")
         self._transport = await self._connect_func(self._ws_url)
         req_id = self._new_req_id("subscribe")
         await self._transport.send_json(
@@ -175,6 +184,7 @@ class WecomConnector:
         errcode = response.get("errcode", 0)
         if errcode not in (0, None):
             raise RuntimeError(str(response.get("errmsg") or "WeCom subscribe failed"))
+        logger.info(f"WeCom connection opened ws_url={self._ws_url}")
 
     async def _close_transport(self) -> None:
         if self._transport is not None:
@@ -195,6 +205,11 @@ class WecomConnector:
             raise ValueError("chat_id is required")
 
         media_requests = self._metadata_media_requests(metadata)
+        logger.info(
+            "WeCom outbound send requested "
+            f"chat_id={chat_id} reply_to={reply_to_message_id} "
+            f"text_chars={len(text)} media_count={len(media_requests)}"
+        )
         if media_requests:
             return await self._send_with_attachments(
                 chat_id=chat_id,
@@ -250,7 +265,8 @@ class WecomConnector:
                     await self._open_connection()
                     backoff_index = 0
                     continue
-                except Exception:
+                except Exception as exc:
+                    logger.warning(f"WeCom reconnect failed ws_url={self._ws_url} error={exc}")
                     continue
             try:
                 while self.started and self._transport is transport and not transport.closed:
@@ -265,13 +281,15 @@ class WecomConnector:
                 if not self.started:
                     return
                 self._fail_pending_responses(RuntimeError("WeCom connection interrupted"))
+                logger.warning("WeCom connection interrupted, scheduling reconnect")
                 delay = RECONNECT_BACKOFF_SECONDS[min(backoff_index, len(RECONNECT_BACKOFF_SECONDS) - 1)]
                 backoff_index += 1
                 await asyncio.sleep(delay)
                 try:
                     await self._open_connection()
                     backoff_index = 0
-                except Exception:
+                except Exception as exc:
+                    logger.warning(f"WeCom reconnect failed ws_url={self._ws_url} error={exc}")
                     continue
 
     async def _heartbeat_loop(self) -> None:
@@ -307,16 +325,20 @@ class WecomConnector:
         if cmd in CALLBACK_COMMANDS:
             await self._process_callback(payload)
             return
+        logger.info(f"WeCom payload ignored cmd={cmd or 'unknown'}")
 
     async def _process_callback(self, payload: dict[str, object]) -> None:
         body = payload.get("body")
         if not isinstance(body, dict):
+            logger.info("WeCom callback skipped reason=missing_body")
             return
 
         message_id = str(body.get("msgid") or self._payload_req_id(payload) or uuid.uuid4().hex).strip()
         if not message_id:
+            logger.info("WeCom callback skipped reason=missing_message_id")
             return
         if message_id in self._seen_message_ids:
+            logger.info(f"WeCom callback skipped reason=duplicate message_id={message_id}")
             return
         self._seen_message_ids.add(message_id)
         self._trim_seen_message_ids()
@@ -325,13 +347,22 @@ class WecomConnector:
         sender_id = str(sender.get("userid") or "").strip()
         chat_id = str(body.get("chatid") or sender_id).strip()
         if not chat_id:
+            logger.info(
+                f"WeCom callback skipped reason=missing_chat_id message_id={message_id}"
+            )
             return
 
         conversation_type = "group" if str(body.get("chattype") or "").lower() == "group" else "dm"
         if conversation_type == "group":
             if not self._is_group_allowed(chat_id):
+                logger.info(
+                    f"WeCom callback skipped reason=group_policy message_id={message_id} conversation={chat_id}"
+                )
                 return
         elif not self._is_dm_allowed(sender_id):
+            logger.info(
+                f"WeCom callback skipped reason=dm_policy message_id={message_id} sender={sender_id}"
+            )
             return
 
         req_id = self._payload_req_id(payload)
@@ -344,8 +375,22 @@ class WecomConnector:
         attachment_prompt = build_attachment_prompt(attachments)
         if attachment_prompt:
             text = f"{text}\n\n{attachment_prompt}".strip() if text else attachment_prompt
-        if not text or self.router is None:
+        if not text:
+            logger.info(
+                f"WeCom callback skipped reason=empty_text message_id={message_id} conversation={chat_id}"
+            )
             return
+        if self.router is None:
+            logger.info(
+                f"WeCom callback skipped reason=no_router message_id={message_id} conversation={chat_id}"
+            )
+            return
+
+        logger.info(
+            "WeCom inbound message "
+            f"conversation={chat_id} sender={sender_id} message_id={message_id} "
+            f"attachments={len(attachments)}"
+        )
 
         metadata: dict[str, Any] = {}
         if attachments:
@@ -368,6 +413,11 @@ class WecomConnector:
             ),
             channel_default_agent_id=self.config.default_agent_id,
         )
+        logger.info(
+            "WeCom outbound reply "
+            f"conversation={outbound.conversation_id} reply_to={outbound.reply_to_message_id} "
+            f"chars={len(outbound.text)}"
+        )
         await self.send_text(
             chat_id=outbound.conversation_id,
             text=outbound.text,
@@ -387,8 +437,11 @@ class WecomConnector:
         future: asyncio.Future[dict[str, object]] = asyncio.get_running_loop().create_future()
         self._pending_responses[req_id] = future
         try:
+            logger.info(f"WeCom request sending cmd={cmd} req_id={req_id}")
             await self._transport.send_json({"cmd": cmd, "headers": {"req_id": req_id}, "body": body})
-            return await asyncio.wait_for(future, timeout=timeout)
+            response = await asyncio.wait_for(future, timeout=timeout)
+            logger.info(f"WeCom request completed cmd={cmd} req_id={req_id}")
+            return response
         finally:
             self._pending_responses.pop(req_id, None)
 
@@ -406,10 +459,17 @@ class WecomConnector:
         future: asyncio.Future[dict[str, object]] = asyncio.get_running_loop().create_future()
         self._pending_responses[normalized_req_id] = future
         try:
+            logger.info(
+                f"WeCom reply request sending req_id={normalized_req_id} msgtype={body.get('msgtype')}"
+            )
             await self._transport.send_json(
                 {"cmd": APP_CMD_RESPONSE, "headers": {"req_id": normalized_req_id}, "body": body}
             )
-            return await asyncio.wait_for(future, timeout=timeout)
+            response = await asyncio.wait_for(future, timeout=timeout)
+            logger.info(
+                f"WeCom reply request completed req_id={normalized_req_id} msgtype={body.get('msgtype')}"
+            )
+            return response
         finally:
             self._pending_responses.pop(normalized_req_id, None)
 
@@ -494,6 +554,7 @@ class WecomConnector:
         media_result: dict[str, object] | None = None
         for attachment in attachments:
             raw_path = str(attachment.get("path") or "").strip()
+            attachment_type = str(attachment.get("type") or "").strip().lower()
             file_name = None
             local_path = extract_local_file_path(raw_path)
             if local_path is not None:
@@ -501,13 +562,22 @@ class WecomConnector:
             try:
                 prepared = await self._prepare_outbound_media(
                     raw_path,
-                    attachment_type=str(attachment.get("type") or "").strip().lower(),
+                    attachment_type=attachment_type,
                     force_file_attachment=bool(attachment.get("force_file_attachment")),
                     file_name=file_name,
                 )
             except Exception as exc:
+                logger.exception(
+                    "WeCom outbound media preparation failed "
+                    f"chat_id={chat_id} attachment_type={attachment_type} path={raw_path} error={exc}"
+                )
                 return {"error": str(exc)}
             if prepared["rejected"]:
+                logger.warning(
+                    "WeCom outbound media rejected "
+                    f"chat_id={chat_id} attachment_type={attachment_type} "
+                    f"reason={prepared['reject_reason']}"
+                )
                 note_result = await self._send_followup_markdown(
                     chat_id=chat_id,
                     text=str(prepared["reject_reason"] or ""),
@@ -516,6 +586,12 @@ class WecomConnector:
                 return {"error": str(prepared["reject_reason"] or ""), "caption": note_result}
             if not prepared["data"]:
                 continue
+            if prepared["downgraded"]:
+                logger.info(
+                    "WeCom outbound media downgraded "
+                    f"chat_id={chat_id} original_type={prepared['detected_type']} "
+                    f"final_type={prepared['final_type']} reason={prepared['downgrade_note']}"
+                )
             upload = await self._upload_media_bytes(
                 prepared["data"],
                 str(prepared["final_type"]),

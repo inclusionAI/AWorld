@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -148,6 +149,71 @@ def test_handle_inbound_forwards_on_output_callback_to_backend():
             "on_output": on_output,
         }
     ]
+
+
+def test_handle_inbound_logs_routing_flow(caplog: pytest.LogCaptureFixture):
+    backend = FakeAgentBackend()
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=backend,
+    )
+    inbound = InboundEnvelope(
+        channel="wechat",
+        account_id="acct-1",
+        conversation_id="conv-1",
+        conversation_type="dm",
+        sender_id="sender-1",
+        sender_name="Sender",
+        message_id="msg-1",
+        text="hello",
+    )
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    outbound = asyncio.run(
+        router.handle_inbound(
+            inbound,
+            channel_default_agent_id="channel-agent",
+        )
+    )
+
+    assert outbound.text == "backend reply"
+    assert "Gateway router inbound channel=wechat conversation=conv-1" in caplog.text
+    assert "Gateway router resolved agent=channel-agent session=gw:channel-agent:wechat:acct-1:dm:conv-1" in caplog.text
+    assert "Gateway router outbound channel=wechat conversation=conv-1 reply_to=msg-1" in caplog.text
+
+
+def test_handle_inbound_logs_backend_failure(caplog: pytest.LogCaptureFixture):
+    class FailingBackend:
+        async def run(self, **kwargs) -> str:
+            raise RuntimeError("backend boom")
+
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=FailingBackend(),
+    )
+    inbound = InboundEnvelope(
+        channel="wechat",
+        account_id="acct-1",
+        conversation_id="conv-1",
+        conversation_type="dm",
+        sender_id="sender-1",
+        sender_name="Sender",
+        message_id="msg-1",
+        text="hello",
+    )
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    with pytest.raises(RuntimeError, match="backend boom"):
+        asyncio.run(
+            router.handle_inbound(
+                inbound,
+                channel_default_agent_id="channel-agent",
+            )
+        )
+
+    assert "Gateway router backend failed agent=channel-agent session=gw:channel-agent:wechat:acct-1:dm:conv-1 error=backend boom" in caplog.text
 
 
 class _MissingRegistry:

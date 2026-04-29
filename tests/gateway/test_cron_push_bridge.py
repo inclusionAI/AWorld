@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -99,6 +100,68 @@ def test_bridge_persists_bindings_from_cron_tool_result(tmp_path: Path) -> None:
         "target": {"chat_id": "chat-1"},
         "meta": {"source": "cron"},
     }
+
+
+def test_bridge_logs_binding_and_terminal_cleanup(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = CronPushBindingStore(tmp_path / "cron-push.json")
+    bridge = CronPushBridge(binding_store=store)
+    output = ToolResultOutput(
+        tool_name="cron",
+        action_name="cron_tool",
+        data={"success": True, "job_id": "job-main"},
+    )
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    async def sender(binding, text: str, notification) -> None:
+        return None
+
+    bridge.register_sender("wechat", sender)
+
+    bridge.bind_output(
+        output,
+        {
+            "channel": "wechat",
+            "account_id": "acct-1",
+            "conversation_id": "conv-1",
+            "sender_id": "user-1",
+            "target": {"chat_id": "chat-1"},
+        },
+    )
+
+    asyncio.run(
+        bridge.publish_notification(
+            {
+                "job_id": "job-main",
+                "summary": "done",
+                "detail": "cron detail",
+                "next_run_at": None,
+            }
+        )
+    )
+
+    assert "Cron push binding stored channel=wechat job_id=job-main" in caplog.text
+    assert "Cron push notification publishing channel=wechat job_id=job-main" in caplog.text
+    assert "Cron push binding removed job_id=job-main reason=terminal_notification" in caplog.text
+    assert store.get("job-main") is None
+
+
+def test_bridge_logs_missing_binding_and_sender(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    store = CronPushBindingStore(tmp_path / "cron-push.json")
+    bridge = CronPushBridge(binding_store=store)
+    store.upsert("job-main", {"channel": "wechat", "target": {"chat_id": "chat-1"}})
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    asyncio.run(bridge.publish_notification({"job_id": "missing-job", "summary": "done"}))
+    asyncio.run(bridge.publish_notification({"job_id": "job-main", "summary": "done"}))
+
+    assert "Cron push notification skipped job_id=missing-job reason=binding_missing" in caplog.text
+    assert "Cron push notification skipped channel=wechat job_id=job-main reason=sender_missing" in caplog.text
 
 
 def test_bridge_dispatches_notification_to_registered_sender(tmp_path: Path) -> None:
