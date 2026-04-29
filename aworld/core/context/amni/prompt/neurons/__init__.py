@@ -19,6 +19,7 @@ class Neurons:
     GRAPH = "graph"
     ENTITY = "entity"
     AWORLD_FILE = "aworld_file"
+    RELEVANT_MEMORY = "relevant_memory"
 
 class Neuron(ABC):
     """

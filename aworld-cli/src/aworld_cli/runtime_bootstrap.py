@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import inspect
 from typing import Any, Callable
 
 from aworld.logs.util import logger
 from aworld.memory.main import _default_file_memory_store
+from aworld_cli.memory import bootstrap as memory_bootstrap
 
 
 class RuntimeBootstrapError(RuntimeError):
@@ -15,6 +17,16 @@ class RuntimeBootstrapError(RuntimeError):
 class RuntimeBootstrapResult:
     config_dict: dict[str, Any]
     skill_registry: Any
+
+
+def _supports_memory_config(init_middlewares_fn: Callable[..., None]) -> bool:
+    signature = inspect.signature(init_middlewares_fn)
+    parameters = signature.parameters.values()
+    return any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        or parameter.name == "memory_config"
+        for parameter in parameters
+    )
 
 
 def bootstrap_runtime(
@@ -34,15 +46,6 @@ def bootstrap_runtime(
 
     resolved_console = console or global_console
     config_dict, _, _ = load_config_with_env(env_file)
-    init_middlewares_fn(
-        init_memory=True,
-        init_retriever=False,
-        custom_memory_store=_default_file_memory_store(),
-    )
-
-    if show_banner:
-        show_banner_fn()
-
     if not has_model_config(config_dict):
         resolved_console.print(
             "[yellow]No model configuration (API key, etc.) detected. Please configure before starting.[/yellow]"
@@ -52,6 +55,21 @@ def bootstrap_runtime(
             "[dim]Or create .env in the current directory. See: [link=https://github.com/inclusionAI/AWorld/blob/main/README.md]README[/link][/dim]"
         )
         raise RuntimeBootstrapError("missing model configuration")
+
+    memory_bootstrap.register_cli_memory_provider()
+    memory_config = memory_bootstrap.build_cli_memory_config()
+    init_middlewares_kwargs = dict(
+        init_memory=True,
+        init_retriever=False,
+        custom_memory_store=_default_file_memory_store(),
+    )
+    if _supports_memory_config(init_middlewares_fn):
+        init_middlewares_kwargs["memory_config"] = memory_config
+
+    init_middlewares_fn(**init_middlewares_kwargs)
+
+    if show_banner:
+        show_banner_fn()
 
     registry = build_runtime_skill_registry_view(skill_paths=skill_paths)
 
