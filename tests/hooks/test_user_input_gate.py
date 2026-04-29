@@ -75,6 +75,7 @@ EOF
 
         # Create context and test input
         context = AmniContext()
+        context.workspace_path = str(tmp_path)
         user_input = "dangerous command"
 
         # Simulate console behavior: run hooks and check permission_decision
@@ -83,7 +84,8 @@ EOF
             context=context,
             hook_point=HookPoint.USER_INPUT_RECEIVED,
             hook_from='cli',
-            payload=user_input
+            payload=user_input,
+            workspace_path=str(tmp_path),
         ):
             if hook_result and hasattr(hook_result, 'headers'):
                 permission_decision = hook_result.headers.get('permission_decision')
@@ -146,6 +148,7 @@ EOF
 
         # Create context and test input
         context = AmniContext()
+        context.workspace_path = str(tmp_path)
         user_input = "safe command"
 
         # Simulate console behavior: run hooks and check permission_decision
@@ -154,7 +157,8 @@ EOF
             context=context,
             hook_point=HookPoint.USER_INPUT_RECEIVED,
             hook_from='cli',
-            payload=user_input
+            payload=user_input,
+            workspace_path=str(tmp_path),
         ):
             if hook_result and hasattr(hook_result, 'headers'):
                 permission_decision = hook_result.headers.get('permission_decision')
@@ -215,6 +219,7 @@ EOF
 
         # Create context and test input
         context = AmniContext()
+        context.workspace_path = str(tmp_path)
         user_input = "original input"
 
         # Simulate console behavior: run hooks and check updated_input
@@ -223,7 +228,8 @@ EOF
             context=context,
             hook_point=HookPoint.USER_INPUT_RECEIVED,
             hook_from='cli',
-            payload=user_input
+            payload=user_input,
+            workspace_path=str(tmp_path),
         ):
             if hook_result and hasattr(hook_result, 'headers'):
                 updated_input = hook_result.headers.get('updated_input')

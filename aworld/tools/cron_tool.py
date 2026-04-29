@@ -130,7 +130,7 @@ async def cron_tool(
     include_disabled = unwrap_fieldinfo_helper(include_disabled)
 
     def normalize_agent_name_local(raw_agent_name: Optional[str]) -> str:
-        candidate = (raw_agent_name or "Aworld").strip()
+        candidate = raw_agent_name.strip() if isinstance(raw_agent_name, str) else ""
         if not candidate:
             return "Aworld"
         if candidate.lower() == "aworld":
@@ -249,7 +249,9 @@ async def cron_tool(
         executor = getattr(current_scheduler, "executor", None)
         if executor and hasattr(executor, "get_default_agent_name"):
             try:
-                bound_agent_name = executor.get_default_agent_name()
+                candidate = executor.get_default_agent_name()
+                if isinstance(candidate, str):
+                    bound_agent_name = candidate
             except Exception:
                 bound_agent_name = None
 

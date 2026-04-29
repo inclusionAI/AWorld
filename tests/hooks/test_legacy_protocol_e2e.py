@@ -79,6 +79,7 @@ EOF
 
         # Simulate console hook processing
         context = AmniContext()
+        context.workspace_path = str(tmp_path)
         user_input = "test input"
 
         should_execute = True
@@ -96,7 +97,8 @@ EOF
             hook_point=HookPoint.USER_INPUT_RECEIVED,
             hook_from='cli',
             payload=user_input,
-            message=user_input_msg
+            message=user_input_msg,
+            workspace_path=str(tmp_path),
         ):
             if hook_result and hasattr(hook_result, 'headers'):
                 permission_decision = hook_result.headers.get('permission_decision')
@@ -165,6 +167,7 @@ EOF
 
         # Simulate console hook processing
         context = AmniContext()
+        context.workspace_path = str(tmp_path)
         user_input = "test input"
 
         should_execute = True
@@ -182,7 +185,8 @@ EOF
             hook_point=HookPoint.USER_INPUT_RECEIVED,
             hook_from='cli',
             payload=user_input,
-            message=user_input_msg
+            message=user_input_msg,
+            workspace_path=str(tmp_path),
         ):
             if hook_result and hasattr(hook_result, 'headers'):
                 permission_decision = hook_result.headers.get('permission_decision')
@@ -271,6 +275,7 @@ EOF
 
         # Simulate console hook processing
         context = AmniContext()
+        context.workspace_path = str(tmp_path)
         user_input = "test input"
 
         should_execute = True
@@ -288,7 +293,8 @@ EOF
             hook_point=HookPoint.USER_INPUT_RECEIVED,
             hook_from='cli',
             payload=user_input,
-            message=user_input_msg
+            message=user_input_msg,
+            workspace_path=str(tmp_path),
         ):
             if hook_result and hasattr(hook_result, 'headers'):
                 permission_decision = hook_result.headers.get('permission_decision')
