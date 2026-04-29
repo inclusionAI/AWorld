@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -195,6 +196,43 @@ def test_connector_start_launches_stream_client_runner(monkeypatch) -> None:
     assert connector._client.start_forever_calls == 1
     assert connector._stream_thread is not None
     assert connector._stream_thread.started is True
+
+
+def test_connector_logs_startup_and_outbound_send(
+    monkeypatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    http_client = _FakeHttpClient()
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld"),
+        bridge=_FakeBridge(),
+        stream_module=_FakeStreamModule,
+        http_client=http_client,
+        thread_cls=_FakeThread,
+    )
+
+    asyncio.run(connector.start())
+    connector._access_token = "access-token"
+    connector._access_token_expiry = time.time() + 3600
+    asyncio.run(
+        connector.send_text(
+            session_webhook="https://example.com/robot/send?access_token=secret",
+            text="pong",
+        )
+    )
+    asyncio.run(connector.stop())
+
+    assert "DingTalk connector starting" in caplog.text
+    assert "DingTalk stream client started mode=start_forever thread=True" in caplog.text
+    assert "DingTalk outbound message sending" in caplog.text
+    assert "DingTalk outbound message sent" in caplog.text
+    assert "DingTalk connector stopped" in caplog.text
 
 
 def test_connector_stop_closes_http_client(monkeypatch) -> None:
@@ -928,6 +966,39 @@ def test_connector_ignores_invalid_or_empty_callbacks() -> None:
 
     assert bridge.calls == []
     assert sent == []
+
+
+def test_connector_logs_skipped_invalid_and_duplicate_callbacks(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bridge = _FakeBridge()
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=bridge,
+        stream_module=object(),
+    )
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        return None
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    payload = {
+        "msgId": "msg-hello-1",
+        "sessionWebhook": "https://callback",
+        "conversationId": "conv-1",
+        "senderId": "user-1",
+        "text": {"content": "hello"},
+    }
+
+    asyncio.run(connector.handle_callback({"senderId": "user-1", "text": {"content": "hello"}}))
+    asyncio.run(connector.handle_callback(payload))
+    asyncio.run(connector.handle_callback(dict(payload)))
+
+    assert "DingTalk callback skipped reason=missing_session_webhook" in caplog.text
+    assert "DingTalk callback skipped reason=duplicate" in caplog.text
 
 
 def test_connector_supports_string_payload_and_empty_bridge_result() -> None:

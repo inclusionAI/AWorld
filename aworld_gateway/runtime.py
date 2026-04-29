@@ -7,7 +7,10 @@ from aworld_gateway.config import DingdingChannelConfig
 from aworld_gateway.config import GatewayConfig
 from aworld_gateway.config import WechatChannelConfig
 from aworld_gateway.config import WecomChannelConfig
+from aworld_gateway.logging import get_gateway_logger
 from aworld_gateway.registry import ChannelRegistry
+
+logger = get_gateway_logger("runtime")
 
 
 class GatewayRuntime:
@@ -30,14 +33,23 @@ class GatewayRuntime:
     async def start(self) -> None:
         await self._stop_started_adapters()
         self._channel_states = self._build_base_channel_states()
+        logger.info("Gateway runtime start requested")
 
         for channel_name, channel_state in self._channel_states.items():
             if not channel_state["enabled"]:
                 continue
             if not channel_state["configured"]:
+                logger.info(
+                    "Gateway channel skipped "
+                    f"channel={channel_name} reason=not_configured"
+                )
                 continue
             if not channel_state["implemented"]:
                 channel_state["state"] = "degraded"
+                logger.warning(
+                    "Gateway channel degraded "
+                    f"channel={channel_name} reason=not_implemented"
+                )
                 continue
 
             channel_config = getattr(self._config.channels, channel_name, None)
@@ -68,25 +80,37 @@ class GatewayRuntime:
             if adapter is None:
                 channel_state["state"] = "degraded"
                 channel_state["error"] = "Channel adapter is not available."
+                logger.warning(
+                    "Gateway channel degraded "
+                    f"channel={channel_name} reason=adapter_unavailable"
+                )
                 continue
 
             try:
+                logger.info(f"Gateway channel starting channel={channel_name}")
                 await adapter.start()
                 self._started_channels[channel_name] = adapter
                 channel_state["running"] = True
                 channel_state["state"] = "running"
                 channel_state["error"] = None
+                logger.info(f"Gateway channel started channel={channel_name}")
             except Exception as exc:
                 channel_state["running"] = False
                 channel_state["state"] = "degraded"
                 channel_state["error"] = str(exc)
+                logger.exception(
+                    f"Gateway channel failed channel={channel_name} error={exc}"
+                )
 
         self._state = self._derive_runtime_state(self._channel_states)
+        logger.info(f"Gateway runtime state={self._state}")
 
     async def stop(self) -> None:
+        logger.info("Gateway runtime stop requested")
         await self._stop_started_adapters()
         self._channel_states = self._build_base_channel_states()
         self._state = self._derive_runtime_state(self._channel_states)
+        logger.info(f"Gateway runtime stopped state={self._state}")
 
     def status(self) -> dict[str, object]:
         return copy.deepcopy(
@@ -100,8 +124,10 @@ class GatewayRuntime:
         return self._started_channels.get(channel_name)
 
     async def _stop_started_adapters(self) -> None:
-        for adapter in self._started_channels.values():
+        for channel_name, adapter in self._started_channels.items():
+            logger.info(f"Gateway channel stopping channel={channel_name}")
             await adapter.stop()
+            logger.info(f"Gateway channel stopped channel={channel_name}")
         self._started_channels = {}
 
     def _build_base_channel_states(self) -> dict[str, dict[str, object]]:

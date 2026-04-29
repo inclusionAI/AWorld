@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import sys
 from pathlib import Path
 
@@ -145,6 +146,213 @@ async def test_connector_send_text_requires_started_state(
 
     with pytest.raises(RuntimeError, match="not started"):
         await connector.send_text(chat_id="user-1", text="pong")
+
+
+@pytest.mark.asyncio
+async def test_connector_logs_inbound_and_outbound_message_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+
+    async def fake_send_message(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to: str,
+        text: str,
+        context_token: str | None,
+        client_id: str,
+    ) -> dict[str, object]:
+        return {"ret": 0, "client_id": client_id}
+
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+        send_message_func=fake_send_message,
+    )
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "ping"}}],
+        }
+    )
+    await connector.stop()
+
+    assert "WeChat connector started account=wx-account" in caplog.text
+    assert "WeChat inbound message conversation=user-1 sender=user-1 message_id=m-1" in caplog.text
+    assert "WeChat outbound text chunk sent chat_id=user-1" in caplog.text
+    assert "WeChat connector stopped account=wx-account" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connector_logs_outbound_text_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    async def fake_send_message(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to: str,
+        text: str,
+        context_token: str | None,
+        client_id: str,
+    ) -> dict[str, object]:
+        raise RuntimeError("send failed")
+
+    cfg = WechatChannelConfig()
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    connector = WechatConnector(
+        config=cfg,
+        router=None,
+        storage_root=tmp_path,
+        send_message_func=fake_send_message,
+    )
+    await connector.start()
+
+    with pytest.raises(RuntimeError, match="send failed"):
+        await connector.send_text(chat_id="user-1", text="pong")
+
+    await connector.stop()
+
+    assert "WeChat outbound text chunk failed chat_id=user-1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connector_logs_outbound_media_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    attachment = tmp_path / "demo.txt"
+    attachment.write_text("hello", encoding="utf-8")
+
+    async def fake_get_upload_url(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        to_user_id: str,
+        media_type: int,
+        filekey: str,
+        rawsize: int,
+        rawfilemd5: str,
+        filesize: int,
+        aeskey_hex: str,
+    ) -> dict[str, object]:
+        raise RuntimeError("upload url failed")
+
+    cfg = WechatChannelConfig()
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    connector = WechatConnector(
+        config=cfg,
+        router=None,
+        storage_root=tmp_path,
+        get_upload_url_func=fake_get_upload_url,
+    )
+    await connector.start()
+
+    with pytest.raises(RuntimeError, match="upload url failed"):
+        await connector.send_text(
+            chat_id="user-1",
+            text="",
+            metadata={"outbound_attachments": [{"path": str(attachment), "type": "file"}]},
+        )
+
+    await connector.stop()
+
+    assert "WeChat outbound media failed chat_id=user-1" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_connector_logs_inbound_media_download_failure_and_continues(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter()
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_download_media(
+        *,
+        session,
+        cdn_base_url: str,
+        encrypted_query_param: str | None,
+        aes_key_b64: str | None,
+        full_url: str | None,
+        timeout_seconds: float,
+    ) -> bytes:
+        raise RuntimeError("download failed")
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+        download_media_func=fake_download_media,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-1",
+            "from_user_id": "user-1",
+            "item_list": [
+                {"type": 1, "text_item": {"text": "ping"}},
+                {
+                    "type": 2,
+                    "image_item": {
+                        "media": {"full_url": "https://cdn.example.test/image.jpg"}
+                    },
+                },
+            ],
+        }
+    )
+    await connector.stop()
+
+    assert "WeChat inbound media download failed message_id=m-1 index=1" in caplog.text
+    assert router.calls[0][0].text == "ping"
+    assert sent == [("user-1", "echo:ping", {})]
 
 
 @pytest.mark.asyncio
