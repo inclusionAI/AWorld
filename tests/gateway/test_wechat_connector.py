@@ -338,15 +338,15 @@ async def test_connector_logs_inbound_media_download_failure_and_continues(
             "message_id": "m-1",
             "from_user_id": "user-1",
             "item_list": [
-                {"type": 1, "text_item": {"text": "ping"}},
-                {
-                    "type": 2,
-                    "image_item": {
-                        "media": {"full_url": "https://cdn.example.test/image.jpg"}
+                    {"type": 1, "text_item": {"text": "ping"}},
+                    {
+                        "type": 2,
+                        "image_item": {
+                            "media": {"full_url": "mock-image-resource"}
+                        },
                     },
-                },
-            ],
-        }
+                ],
+            }
     )
     await connector.stop()
 
