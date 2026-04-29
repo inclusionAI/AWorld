@@ -696,10 +696,13 @@ async def test_connector_start_restores_persisted_token_and_base_url(
 
 
 @pytest.mark.asyncio
-async def test_default_send_message_posts_ilink_payload_with_context_token() -> None:
+async def test_default_send_message_posts_ilink_payload_with_context_token(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     from aworld_gateway.channels.wechat.connector import _default_send_message
 
     calls: dict[str, object] = {}
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
 
     class _FakeResponse:
         ok = True
@@ -737,6 +740,49 @@ async def test_default_send_message_posts_ilink_payload_with_context_token() -> 
     assert '"to_user_id":"user-1"' in str(calls["data"])
     assert calls["headers"]["Authorization"] == "Bearer wx-token"
     assert result["ret"] == 0
+    assert "WeChat API request endpoint=ilink/bot/sendmessage" in caplog.text
+    assert "WeChat API response endpoint=ilink/bot/sendmessage http_status=200 ret=0" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_default_send_message_logs_http_failure(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import _default_send_message
+
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    class _FakeResponse:
+        ok = False
+        status = 500
+
+        async def text(self) -> str:
+            return "server error"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class _FakeSession:
+        def post(self, url: str, *, data: str, headers: dict[str, str], timeout):
+            del url, data, headers, timeout
+            return _FakeResponse()
+
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        await _default_send_message(
+            session=_FakeSession(),
+            base_url="https://ilink.example.test",
+            token="wx-token",
+            to="user-1",
+            text="pong",
+            context_token=None,
+            client_id="client-1",
+        )
+
+    assert "WeChat API request endpoint=ilink/bot/sendmessage" in caplog.text
+    assert "WeChat API request failed endpoint=ilink/bot/sendmessage http_status=500" in caplog.text
 
 
 @pytest.mark.asyncio
