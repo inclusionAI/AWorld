@@ -495,6 +495,38 @@ async def test_memory_plugin_task_completed_hook_appends_workspace_session_log(t
 
 
 @pytest.mark.asyncio
+async def test_memory_plugin_task_completed_hook_extracts_instructional_candidate_from_mixed_answer(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    await hooks["task_completed"][0].run(
+        event={
+            "session_id": "session-1",
+            "task_id": "task-9",
+            "task_status": "idle",
+            "workspace_path": str(workspace),
+            "final_answer": (
+                "I updated the workspace and ran the tests successfully. "
+                "Use pnpm for workspace package management. "
+                "Everything passed."
+            ),
+        },
+        state={"workspace_path": str(workspace)},
+    )
+
+    log_file = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
+    payload = json.loads(log_file.read_text(encoding="utf-8").strip())
+
+    assert payload["final_answer"].startswith("I updated the workspace and ran the tests successfully.")
+    assert payload["candidates"][0]["content"] == "Use pnpm for workspace package management."
+
+
+@pytest.mark.asyncio
 async def test_memory_plugin_task_completed_hook_auto_promotes_only_high_confidence_when_enabled(
     tmp_path,
     monkeypatch,

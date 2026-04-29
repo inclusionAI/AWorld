@@ -239,6 +239,7 @@ async def test_memory_plugin_status_reports_workspace_layers(tmp_path, monkeypat
         assert "- workspace: 1" in result
         assert "Promotion evaluations: 2" in result
         assert "Eligible for auto-promotion: 1" in result
+        assert "Auto-promotion enabled: no" in result
         assert "- medium: 1" in result
         assert "- low: 1" in result
         assert "Promotion outcomes:" in result
@@ -246,6 +247,60 @@ async def test_memory_plugin_status_reports_workspace_layers(tmp_path, monkeypat
         assert "Promotion reasons:" in result
         assert "- instructional_candidate_auto_promotion_disabled: 1" in result
         assert "- non_instructional_turn_end_observation: 1" in result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_status_reports_recent_promotion_explanations(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics" / "promotion.jsonl").write_text(
+        '{"recorded_at":"2026-04-29T00:00:00+00:00","session_id":"session-1","task_id":"task-1","memory_type":"workspace","confidence":"medium","promotion":"session_log_only","reason":"instructional_candidate_auto_promotion_disabled","eligible_for_auto_promotion":true,"content":"Use pnpm for workspace package management"}\n'
+        '{"recorded_at":"2026-04-29T00:01:00+00:00","session_id":"session-1","task_id":"task-2","memory_type":"workspace","confidence":"low","promotion":"session_log_only","reason":"non_instructional_turn_end_observation","eligible_for_auto_promotion":false,"content":"Temporary debug note for the current task only."}\n'
+        '{"recorded_at":"2026-04-29T00:02:00+00:00","session_id":"session-1","task_id":"task-3","memory_type":"workspace","confidence":"high","promotion":"durable_memory","reason":"high_confidence_workspace_instruction_auto_promoted","eligible_for_auto_promotion":true,"content":"Always use pnpm for workspace package management and never run npm install here."}\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(CommandContext(cwd=str(workspace), user_args="status"))
+
+        assert "Auto-promotion enabled: no" in result
+        assert "Latest promotion decision: durable_memory (high)" in result
+        assert "Latest decision content: Always use pnpm for workspace package management and never run npm install here." in result
+        assert "Last auto-promoted reason: high_confidence_workspace_instruction_auto_promoted" in result
+        assert "Last auto-promoted content: Always use pnpm for workspace package management and never run npm install here." in result
+        assert "Last eligible but blocked reason: instructional_candidate_auto_promotion_disabled" in result
+        assert "Last eligible but blocked content: Use pnpm for workspace package management" in result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_status_reports_auto_promotion_flag_enabled(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    monkeypatch.setenv("AWORLD_CLI_ENABLE_AUTO_PROMOTION", "1")
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(CommandContext(cwd=str(workspace), user_args="status"))
+
+        assert "Auto-promotion enabled: yes" in result
     finally:
         CommandRegistry.restore(snapshot)
 

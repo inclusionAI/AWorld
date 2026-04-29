@@ -17,6 +17,9 @@ class PromotionMetricsSummary:
     by_confidence: dict[str, int]
     by_promotion: dict[str, int]
     by_reason: dict[str, int]
+    latest_decision: dict | None = None
+    last_auto_promoted: dict | None = None
+    last_eligible_blocked: dict | None = None
 
 
 def promotion_metrics_file(workspace_path: str | os.PathLike[str]) -> Path:
@@ -60,6 +63,9 @@ def summarize_promotion_metrics(
             by_confidence={},
             by_promotion={},
             by_reason={},
+            latest_decision=None,
+            last_auto_promoted=None,
+            last_eligible_blocked=None,
         )
 
     by_confidence: Counter[str] = Counter()
@@ -67,6 +73,9 @@ def summarize_promotion_metrics(
     by_reason: Counter[str] = Counter()
     total_evaluations = 0
     eligible_for_auto_promotion = 0
+    latest_decision: dict | None = None
+    last_auto_promoted: dict | None = None
+    last_eligible_blocked: dict | None = None
 
     try:
         lines = target.read_text(encoding="utf-8").splitlines()
@@ -79,6 +88,7 @@ def summarize_promotion_metrics(
         except json.JSONDecodeError:
             continue
         total_evaluations += 1
+        latest_decision = payload
         confidence = payload.get("confidence")
         promotion = payload.get("promotion")
         reason = payload.get("reason")
@@ -90,6 +100,10 @@ def summarize_promotion_metrics(
             by_reason[reason] += 1
         if payload.get("eligible_for_auto_promotion") is True:
             eligible_for_auto_promotion += 1
+            if promotion == "session_log_only":
+                last_eligible_blocked = payload
+        if promotion == "durable_memory":
+            last_auto_promoted = payload
 
     return PromotionMetricsSummary(
         metrics_path=target,
@@ -98,4 +112,7 @@ def summarize_promotion_metrics(
         by_confidence=dict(sorted(by_confidence.items())),
         by_promotion=dict(sorted(by_promotion.items())),
         by_reason=dict(sorted(by_reason.items())),
+        latest_decision=latest_decision,
+        last_auto_promoted=last_auto_promoted,
+        last_eligible_blocked=last_eligible_blocked,
     )

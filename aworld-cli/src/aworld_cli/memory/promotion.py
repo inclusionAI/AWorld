@@ -83,7 +83,7 @@ def evaluate_turn_end_candidate(
     memory_type: str = "workspace",
     source: str = "final_answer",
 ) -> PromotionDecision:
-    normalized = (content or "").strip()
+    normalized = extract_turn_end_candidate_content(content)
     if not normalized:
         raise ValueError("Turn-end promotion candidate must not be empty")
 
@@ -110,6 +110,21 @@ def evaluate_turn_end_candidate(
         eligible_for_auto_promotion=eligible,
         evaluated_at=datetime.now(timezone.utc).isoformat(),
     )
+
+
+def extract_turn_end_candidate_content(content: str) -> str:
+    normalized = " ".join((content or "").split()).strip()
+    if not normalized:
+        return ""
+
+    best_segment = normalized
+    best_score = 0
+    for segment in _split_candidate_segments(normalized):
+        score = _candidate_segment_score(segment)
+        if score > best_score:
+            best_score = score
+            best_segment = segment
+    return best_segment
 
 
 def auto_promotion_enabled() -> bool:
@@ -160,10 +175,25 @@ def _looks_instructional(content: str) -> bool:
         return True
     if any(hint in lowered for hint in INSTRUCTIONAL_HINTS):
         return True
-
-    tokens = WORD_PATTERN.findall(lowered)
-    return len(tokens) >= 6 and ("workspace" in lowered or "tests" in lowered)
+    return False
 
 
 def _has_workspace_anchor(lowered: str) -> bool:
     return any(hint in lowered for hint in WORKSPACE_ANCHOR_HINTS)
+
+
+def _split_candidate_segments(content: str) -> list[str]:
+    segments: list[str] = []
+    for raw_segment in re.split(r"(?<=[.!?])\s+|\s*[\r\n]+\s*", content):
+        segment = raw_segment.strip(" -\t")
+        if segment:
+            segments.append(segment)
+    return segments or [content]
+
+
+def _candidate_segment_score(segment: str) -> int:
+    if _looks_high_confidence_instructional(segment):
+        return 300 + len(segment)
+    if _looks_instructional(segment):
+        return 200 + len(segment)
+    return 0
