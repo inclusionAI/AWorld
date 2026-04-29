@@ -10,6 +10,7 @@ from aworld_cli.plugin_capabilities.commands import PluginBoundCommand
 from aworld_cli.memory.durable import durable_memory_file, normalize_durable_memory_type
 from aworld_cli.memory.metrics import summarize_promotion_metrics
 from aworld_cli.memory.discovery import discover_workspace_instruction_layers
+from aworld_cli.memory.promotion import auto_promotion_enabled
 from aworld_cli.memory.provider import CliDurableMemoryProvider
 from aworld_cli.builtin_plugins.memory_cli.common import (
     ensure_workspace_memory_file,
@@ -106,6 +107,7 @@ class MemoryCommand(PluginBoundCommand):
         lines.append(f"Promotion metrics file: {metrics.metrics_path}")
         lines.append(f"Promotion evaluations: {metrics.total_evaluations}")
         lines.append(f"Eligible for auto-promotion: {metrics.eligible_for_auto_promotion}")
+        lines.append(f"Auto-promotion enabled: {'yes' if auto_promotion_enabled() else 'no'}")
         if metrics.by_confidence:
             lines.append("Promotion confidence:")
             for confidence, count in metrics.by_confidence.items():
@@ -118,6 +120,31 @@ class MemoryCommand(PluginBoundCommand):
             lines.append("Promotion reasons:")
             for reason, count in metrics.by_reason.items():
                 lines.append(f"- {reason}: {count}")
+        if metrics.latest_decision is not None:
+            lines.append(
+                "Latest promotion decision: "
+                f"{metrics.latest_decision.get('promotion', 'unknown')} "
+                f"({metrics.latest_decision.get('confidence', 'unknown')})"
+            )
+            latest_content = _one_line(metrics.latest_decision.get("content"))
+            if latest_content:
+                lines.append(f"Latest decision content: {latest_content}")
+        if metrics.last_auto_promoted is not None:
+            lines.append(
+                "Last auto-promoted reason: "
+                f"{metrics.last_auto_promoted.get('reason', 'unknown')}"
+            )
+            promoted_content = _one_line(metrics.last_auto_promoted.get("content"))
+            if promoted_content:
+                lines.append(f"Last auto-promoted content: {promoted_content}")
+        if metrics.last_eligible_blocked is not None:
+            lines.append(
+                "Last eligible but blocked reason: "
+                f"{metrics.last_eligible_blocked.get('reason', 'unknown')}"
+            )
+            blocked_content = _one_line(metrics.last_eligible_blocked.get("content"))
+            if blocked_content:
+                lines.append(f"Last eligible but blocked content: {blocked_content}")
         if layers.warning:
             lines.append(f"Warning: {layers.warning}")
         return "\n".join(lines)
@@ -203,3 +230,10 @@ class MemoryCommand(PluginBoundCommand):
 
 def build_command(plugin, entrypoint):
     return MemoryCommand(plugin, entrypoint)
+
+
+def _one_line(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    text = " ".join(value.split()).strip()
+    return text or None

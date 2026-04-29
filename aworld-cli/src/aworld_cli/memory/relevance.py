@@ -6,6 +6,15 @@ import re
 from pathlib import Path
 
 TOKEN_PATTERN = re.compile(r"[A-Za-z0-9_-]{3,}")
+CONFIDENCE_BONUS = {
+    "high": 200,
+    "medium": 100,
+    "low": -200,
+}
+PROMOTION_BONUS = {
+    "durable_memory": 200,
+    "session_log_only": 0,
+}
 
 
 def recall_relevant_session_log_texts(
@@ -50,11 +59,11 @@ def recall_relevant_session_log_texts(
                 continue
 
             recorded_at = str(payload.get("recorded_at") or "")
-            for text in _extract_candidate_texts(payload):
-                normalized = text.strip()
+            for candidate in _extract_candidate_entries(payload):
+                normalized = candidate["content"].strip()
                 if not normalized or normalized in seen_texts:
                     continue
-                score = _score_text(normalized, query_tokens)
+                score = _score_candidate(candidate, query_tokens)
                 if score <= 0:
                     continue
                 ranked.append((score, recorded_at, normalized, session_file))
@@ -74,7 +83,7 @@ def recall_relevant_session_log_texts(
     return texts, tuple(source_files)
 
 
-def _extract_candidate_texts(payload: dict) -> list[str]:
+def _extract_candidate_entries(payload: dict) -> list[dict]:
     candidates = payload.get("candidates")
     if isinstance(candidates, list) and candidates:
         extracted = []
@@ -83,13 +92,25 @@ def _extract_candidate_texts(payload: dict) -> list[str]:
                 continue
             content = candidate.get("content")
             if isinstance(content, str) and content.strip():
-                extracted.append(content.strip())
+                extracted.append(
+                    {
+                        "content": content.strip(),
+                        "confidence": str(candidate.get("confidence") or "").strip().lower(),
+                        "promotion": str(candidate.get("promotion") or "").strip().lower(),
+                    }
+                )
         if extracted:
             return extracted
 
     final_answer = payload.get("final_answer")
     if isinstance(final_answer, str) and final_answer.strip():
-        return [final_answer.strip()]
+        return [
+            {
+                "content": final_answer.strip(),
+                "confidence": "",
+                "promotion": "",
+            }
+        ]
     return []
 
 
@@ -105,3 +126,16 @@ def _score_text(text: str, query_tokens: set[str]) -> int:
     if not overlap:
         return 0
     return len(overlap) * 100 + sum(len(token) for token in overlap)
+
+
+def _score_candidate(candidate: dict, query_tokens: set[str]) -> int:
+    base_score = _score_text(candidate["content"], query_tokens)
+    if base_score <= 0:
+        return 0
+    confidence = str(candidate.get("confidence") or "").lower()
+    promotion = str(candidate.get("promotion") or "").lower()
+    return (
+        base_score
+        + CONFIDENCE_BONUS.get(confidence, 0)
+        + PROMOTION_BONUS.get(promotion, 0)
+    )

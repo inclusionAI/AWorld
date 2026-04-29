@@ -97,3 +97,103 @@ def test_relevant_memory_context_limits_results_by_relevance_order(tmp_path) -> 
         "Use pnpm and keep tests fast.",
         "Keep eslint and prettier checks in CI.",
     )
+
+
+def test_relevant_memory_context_prefers_higher_confidence_candidates_over_low_confidence_noise(
+    tmp_path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    sessions_dir = workspace / ".aworld" / "memory" / "sessions"
+
+    _write_session_log(
+        sessions_dir / "session-1.jsonl",
+        [
+            {
+                "recorded_at": "2026-04-29T10:00:00+00:00",
+                "session_id": "session-1",
+                "task_id": "task-1",
+                "final_answer": "Use pnpm for workspace package management.",
+                "candidates": [
+                    {
+                        "memory_type": "workspace",
+                        "content": "Use pnpm for workspace package management.",
+                        "confidence": "medium",
+                        "promotion": "session_log_only",
+                    }
+                ],
+            },
+            {
+                "recorded_at": "2026-04-29T10:05:00+00:00",
+                "session_id": "session-1",
+                "task_id": "task-2",
+                "final_answer": "Temporary pnpm package management tests workspace note for current task only.",
+                "candidates": [
+                    {
+                        "memory_type": "workspace",
+                        "content": "Temporary pnpm package management tests workspace note for current task only.",
+                        "confidence": "low",
+                        "promotion": "session_log_only",
+                    }
+                ],
+            },
+        ],
+    )
+
+    provider = CliDurableMemoryProvider()
+    context = provider.get_relevant_memory_context(
+        workspace_path=str(workspace),
+        query="Need pnpm package management guidance",
+        limit=1,
+    )
+
+    assert context.texts == ("Use pnpm for workspace package management.",)
+
+
+def test_relevant_memory_context_prioritizes_auto_promoted_candidates(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    sessions_dir = workspace / ".aworld" / "memory" / "sessions"
+
+    _write_session_log(
+        sessions_dir / "session-1.jsonl",
+        [
+            {
+                "recorded_at": "2026-04-29T10:00:00+00:00",
+                "session_id": "session-1",
+                "task_id": "task-1",
+                "final_answer": "Use pnpm for workspace package management, tests, CI, lint, and format checks.",
+                "candidates": [
+                    {
+                        "memory_type": "workspace",
+                        "content": "Use pnpm for workspace package management, tests, CI, lint, and format checks.",
+                        "confidence": "medium",
+                        "promotion": "session_log_only",
+                    }
+                ],
+            },
+            {
+                "recorded_at": "2026-04-29T10:10:00+00:00",
+                "session_id": "session-1",
+                "task_id": "task-2",
+                "final_answer": "Always use pnpm for workspace package management and never run npm install here.",
+                "candidates": [
+                    {
+                        "memory_type": "workspace",
+                        "content": "Always use pnpm for workspace package management and never run npm install here.",
+                        "confidence": "high",
+                        "promotion": "durable_memory",
+                    }
+                ],
+            },
+        ],
+    )
+
+    provider = CliDurableMemoryProvider()
+    context = provider.get_relevant_memory_context(
+        workspace_path=str(workspace),
+        query="Need pnpm package management guidance",
+        limit=1,
+    )
+
+    assert context.texts == (
+        "Always use pnpm for workspace package management and never run npm install here.",
+    )
