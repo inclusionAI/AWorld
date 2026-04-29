@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+from datetime import datetime
+from inspect import isawaitable
 import json
 import os
 import secrets
@@ -45,6 +47,12 @@ try:
     import aiohttp
 except ImportError:  # pragma: no cover - optional dependency boundary
     aiohttp = None  # type: ignore[assignment]
+
+try:
+    from aworld.core.context.amni import ApplicationContext, TaskInput
+except ImportError:  # pragma: no cover
+    ApplicationContext = None
+    TaskInput = None
 
 DEFAULT_BASE_URL = "https://ilinkai.weixin.qq.com"
 CHANNEL_VERSION = "2.2.0"
@@ -356,6 +364,7 @@ class WechatConnector:
         self._base_url = DEFAULT_BASE_URL
         self._cdn_base_url = DEFAULT_CDN_BASE_URL
         self._cron_scheduler = None
+        self._cron_scheduler_started_by_connector = False
         self._sync_buf = ""
         self._seen_message_ids: dict[str, None] = {}
         self._poll_connection_established = False
@@ -366,8 +375,6 @@ class WechatConnector:
         self._cron_push_bridge.register_sender("wechat", self._send_cron_push_text)
 
     async def start(self) -> None:
-        from aworld.core.scheduler import get_scheduler
-
         account_id_env = self._optional_env(self.config.account_id_env)
         token_env = self._optional_env(self.config.token_env)
         base_url_env = self._optional_env(self.config.base_url_env)
@@ -392,8 +399,7 @@ class WechatConnector:
         self._token_store.restore(self._account_id)
         self._poll_session = self._build_session()
         self._send_session = self._build_session()
-        self._cron_scheduler = get_scheduler()
-        self._cron_push_bridge.install_scheduler_sink(self._cron_scheduler)
+        await self._prepare_cron_runtime()
         self.started = True
         self._poll_connection_established = False
         self._poll_connection_healthy = False
@@ -420,8 +426,84 @@ class WechatConnector:
         self._poll_connection_healthy = False
         if self._cron_scheduler is not None:
             self._cron_push_bridge.uninstall_scheduler_sink(self._cron_scheduler)
-            self._cron_scheduler = None
+        if self._cron_scheduler_started_by_connector and self._cron_scheduler is not None:
+            stop = getattr(self._cron_scheduler, "stop", None)
+            if callable(stop):
+                stop_result = stop()
+                if isawaitable(stop_result):
+                    await stop_result
+        self._cron_scheduler_started_by_connector = False
+        self._cron_scheduler = None
         logger.info(f"WeChat connector stopped account={self._account_id}")
+
+    async def _prepare_cron_runtime(self) -> None:
+        try:
+            from aworld.core.scheduler import get_scheduler
+            from aworld_cli.core.agent_registry import LocalAgentRegistry
+        except Exception as exc:
+            logger.warning(f"Failed to import cron runtime dependencies for WeChat: {exc}")
+            return
+
+        scheduler = get_scheduler()
+        self._cron_scheduler = scheduler
+        executor = getattr(scheduler, "executor", None)
+        if executor is not None:
+            if hasattr(executor, "set_swarm_resolver"):
+
+                async def resolve_swarm(agent_name: str):
+                    agent = LocalAgentRegistry.get_agent(agent_name)
+                    if agent is None:
+                        return None
+                    return await self._get_swarm_with_context_fallback(agent)
+
+                executor.set_swarm_resolver(resolve_swarm)
+
+            if hasattr(executor, "set_default_agent_name"):
+                try:
+                    executor.set_default_agent_name(self._resolve_agent_id())
+                except ValueError:
+                    pass
+
+        self._cron_push_bridge.install_scheduler_sink(scheduler)
+
+        if getattr(scheduler, "running", False):
+            return
+
+        start = getattr(scheduler, "start", None)
+        if not callable(start):
+            return
+
+        start_result = start()
+        if isawaitable(start_result):
+            await start_result
+        self._cron_scheduler_started_by_connector = True
+
+    def _resolve_agent_id(self) -> str:
+        agent_id = str(self.config.default_agent_id or "").strip()
+        if agent_id:
+            return agent_id
+        raise ValueError("No agent id configured for WeChat channel.")
+
+    @staticmethod
+    async def _get_swarm_with_context_fallback(agent: Any) -> Any:
+        context_config = getattr(agent, "context_config", None)
+        try:
+            return await agent.get_swarm(None)
+        except (TypeError, AttributeError):
+            if TaskInput is None or ApplicationContext is None:
+                raise
+            temp_task_input = TaskInput(
+                user_id="gateway_user",
+                session_id=f"temp_session_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                task_id=f"temp_task_{datetime.now().strftime('%Y%m%d%H%M%S')}",
+                task_content="",
+                origin_user_input="",
+            )
+            temp_context = await ApplicationContext.from_input(
+                temp_task_input,
+                context_config=context_config,
+            )
+            return await agent.get_swarm(temp_context)
 
     async def send_text(
         self,

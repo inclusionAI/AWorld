@@ -696,6 +696,154 @@ async def test_connector_start_restores_persisted_token_and_base_url(
 
 
 @pytest.mark.asyncio
+async def test_connector_start_prepares_cron_runtime_and_stops_owned_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    class _FakeCronExecutor:
+        def __init__(self) -> None:
+            self.swarm_resolver = None
+            self.default_agent_name = None
+
+        def set_swarm_resolver(self, resolver) -> None:
+            self.swarm_resolver = resolver
+
+        def set_default_agent_name(self, agent_name: str | None) -> None:
+            self.default_agent_name = agent_name
+
+    class _FakeScheduler:
+        def __init__(self) -> None:
+            self.executor = _FakeCronExecutor()
+            self.notification_sink = None
+            self.running = False
+            self.start_calls = 0
+            self.stop_calls = 0
+
+        async def start(self) -> None:
+            self.start_calls += 1
+            self.running = True
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+            self.running = False
+
+    class _FakeAgent:
+        async def get_swarm(self, _context):
+            return "fake-swarm"
+
+    scheduler = _FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: scheduler)
+    monkeypatch.setattr(
+        "aworld_cli.core.agent_registry.LocalAgentRegistry.get_agent",
+        lambda agent_id: _FakeAgent() if agent_id == "agent-1" else None,
+    )
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    async def fake_get_updates(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        sync_buf: str,
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        del session, base_url, token, sync_buf, timeout_ms
+        await asyncio.sleep(0.01)
+        return {"ret": 0, "get_updates_buf": "buf-1", "msgs": []}
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(default_agent_id="agent-1"),
+        router=None,
+        storage_root=tmp_path,
+        get_updates_func=fake_get_updates,
+    )
+
+    await connector.start()
+
+    assert scheduler.start_calls == 1
+    assert scheduler.running is True
+    assert scheduler.notification_sink is not None
+    assert scheduler.executor.default_agent_name == "agent-1"
+    assert scheduler.executor.swarm_resolver is not None
+    assert await scheduler.executor.swarm_resolver("agent-1") == "fake-swarm"
+
+    await connector.stop()
+
+    assert scheduler.stop_calls == 1
+    assert scheduler.running is False
+
+
+@pytest.mark.asyncio
+async def test_connector_start_reuses_running_scheduler_without_stopping_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    class _FakeCronExecutor:
+        def __init__(self) -> None:
+            self.swarm_resolver = None
+            self.default_agent_name = None
+
+        def set_swarm_resolver(self, resolver) -> None:
+            self.swarm_resolver = resolver
+
+        def set_default_agent_name(self, agent_name: str | None) -> None:
+            self.default_agent_name = agent_name
+
+    class _FakeScheduler:
+        def __init__(self) -> None:
+            self.executor = _FakeCronExecutor()
+            self.notification_sink = None
+            self.running = True
+            self.start_calls = 0
+            self.stop_calls = 0
+
+        async def start(self) -> None:
+            self.start_calls += 1
+
+        async def stop(self) -> None:
+            self.stop_calls += 1
+
+    scheduler = _FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: scheduler)
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+
+    async def fake_get_updates(
+        *,
+        session,
+        base_url: str,
+        token: str,
+        sync_buf: str,
+        timeout_ms: int,
+    ) -> dict[str, object]:
+        del session, base_url, token, sync_buf, timeout_ms
+        await asyncio.sleep(0.01)
+        return {"ret": 0, "get_updates_buf": "buf-1", "msgs": []}
+
+    connector = WechatConnector(
+        config=WechatChannelConfig(),
+        router=None,
+        storage_root=tmp_path,
+        get_updates_func=fake_get_updates,
+    )
+
+    await connector.start()
+
+    assert scheduler.start_calls == 0
+    assert scheduler.notification_sink is not None
+    assert scheduler.executor.default_agent_name is None
+
+    await connector.stop()
+
+    assert scheduler.stop_calls == 0
+
+
+@pytest.mark.asyncio
 async def test_default_send_message_posts_ilink_payload_with_context_token(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
