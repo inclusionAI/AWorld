@@ -9,6 +9,7 @@ import secrets
 import uuid
 from pathlib import Path
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 from aworld_gateway.channels.wechat.account_store import load_account
 from aworld_gateway.channels.wechat.context_token_store import ContextTokenStore
@@ -78,17 +79,43 @@ async def _default_post_json(
     payload: dict[str, Any],
     timeout_ms: int,
 ) -> dict[str, object]:
+    request_summary = _summarize_wechat_request_payload(payload)
+    logger.info(
+        "WeChat API request "
+        f"endpoint={endpoint} timeout_ms={timeout_ms}"
+        f"{f' {request_summary}' if request_summary else ''}"
+    )
     body = _json_dumps({**payload, "base_info": _base_info()})
-    async with session.post(
-        _endpoint_url(base_url, endpoint),
-        data=body,
-        headers=_headers(token, body),
-        timeout=_build_timeout(timeout_ms),
-    ) as response:
-        raw = await response.text()
-        if not getattr(response, "ok", False):
-            raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
-        return json.loads(raw)
+    try:
+        async with session.post(
+            _endpoint_url(base_url, endpoint),
+            data=body,
+            headers=_headers(token, body),
+            timeout=_build_timeout(timeout_ms),
+        ) as response:
+            raw = await response.text()
+            if not getattr(response, "ok", False):
+                logger.warning(
+                    "WeChat API request failed "
+                    f"endpoint={endpoint} http_status={response.status} "
+                    f"body={_truncate_log_text(raw, limit=200)}"
+                )
+                raise RuntimeError(f"iLink POST {endpoint} HTTP {response.status}: {raw[:200]}")
+            data = json.loads(raw)
+            logger.info(
+                "WeChat API response "
+                f"endpoint={endpoint} http_status={getattr(response, 'status', 'unknown')} "
+                f"ret={data.get('ret', 'missing')} "
+                f"body={_truncate_log_text(raw, limit=200)}"
+            )
+            return data
+    except Exception as exc:
+        if not isinstance(exc, RuntimeError):
+            logger.exception(
+                "WeChat API request exception "
+                f"endpoint={endpoint} error={exc}"
+            )
+        raise
 
 
 async def _default_send_message(
@@ -214,21 +241,46 @@ async def _default_upload_ciphertext(
     ciphertext: bytes,
     upload_url: str,
 ) -> str:
-    async with session.post(
-        upload_url,
-        data=ciphertext,
-        headers={"Content-Type": "application/octet-stream"},
-        timeout=_build_timeout_seconds(120.0),
-    ) as response:
-        if response.status == 200:
-            encrypted_param = response.headers.get("x-encrypted-param")
-            if encrypted_param:
-                await response.read()
-                return encrypted_param
+    host = _summarize_url_host(upload_url)
+    logger.info(
+        f"WeChat CDN upload request host={host} bytes={len(ciphertext)}"
+    )
+    try:
+        async with session.post(
+            upload_url,
+            data=ciphertext,
+            headers={"Content-Type": "application/octet-stream"},
+            timeout=_build_timeout_seconds(120.0),
+        ) as response:
+            if response.status == 200:
+                encrypted_param = response.headers.get("x-encrypted-param")
+                if encrypted_param:
+                    await response.read()
+                    logger.info(
+                        "WeChat CDN upload response "
+                        f"host={host} http_status=200 has_encrypted_param=True"
+                    )
+                    return encrypted_param
+                raw = await response.text()
+                logger.warning(
+                    "WeChat CDN upload failed "
+                    f"host={host} http_status=200 reason=missing_encrypted_param "
+                    f"body={_truncate_log_text(raw, limit=200)}"
+                )
+                raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
             raw = await response.text()
-            raise RuntimeError(f"CDN upload missing x-encrypted-param header: {raw[:200]}")
-        raw = await response.text()
-        raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
+            logger.warning(
+                "WeChat CDN upload failed "
+                f"host={host} http_status={response.status} "
+                f"body={_truncate_log_text(raw, limit=200)}"
+            )
+            raise RuntimeError(f"CDN upload HTTP {response.status}: {raw[:200]}")
+    except Exception as exc:
+        if not isinstance(exc, RuntimeError):
+            logger.exception(
+                f"WeChat CDN upload exception host={host} error={exc}"
+            )
+        raise
 
 
 async def _download_bytes(
@@ -943,10 +995,7 @@ class WechatConnector:
 
     @staticmethod
     def _truncate_log_text(value: object, *, limit: int = LOG_TEXT_TRUNCATE_LIMIT) -> str:
-        text = str(value or "").replace("\n", "\\n").strip()
-        if len(text) <= limit:
-            return text
-        return f"{text[:limit]}..."
+        return _truncate_log_text(value, limit=limit)
 
     def _remember_seen_message_id(self, message_id: str) -> bool:
         normalized = str(message_id or "").strip()
@@ -975,6 +1024,44 @@ class _NoopSession:
 
 def _json_dumps(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+
+
+def _summarize_wechat_request_payload(payload: dict[str, Any]) -> str:
+    msg = payload.get("msg")
+    if isinstance(msg, dict):
+        return " ".join(
+            [
+                f"target={str(msg.get('to_user_id') or '').strip() or 'unknown'}",
+                f"client_id={str(msg.get('client_id') or '').strip() or 'unknown'}",
+                f"item_count={len(msg.get('item_list') or [])}",
+                f"has_context_token={bool(str(msg.get('context_token') or '').strip())}",
+            ]
+        )
+    if "get_updates_buf" in payload:
+        sync_buf = str(payload.get("get_updates_buf") or "").strip()
+        return f"has_sync_buf={bool(sync_buf)}"
+    if "to_user_id" in payload:
+        return " ".join(
+            [
+                f"target={str(payload.get('to_user_id') or '').strip() or 'unknown'}",
+                f"media_type={payload.get('media_type', 'unknown')}",
+                f"rawsize={payload.get('rawsize', 'unknown')}",
+                f"filesize={payload.get('filesize', 'unknown')}",
+            ]
+        )
+    return ""
+
+
+def _summarize_url_host(url: str) -> str:
+    parsed = urlparse(url)
+    return parsed.netloc or "unknown-host"
+
+
+def _truncate_log_text(value: object, *, limit: int) -> str:
+    text = str(value or "").replace("\n", "\\n").strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
 
 
 def _endpoint_url(base_url: str, endpoint: str) -> str:
