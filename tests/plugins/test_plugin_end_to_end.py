@@ -30,6 +30,17 @@ def _get_builtin_ralph_plugin_root() -> Path:
     )
 
 
+def _get_builtin_memory_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "memory_cli"
+    )
+
+
 def test_code_review_like_plugin_registers_command_and_assets(tmp_path):
     manager = PluginManager(plugin_dir=tmp_path / "plugins")
     plugin_root = Path("tests/fixtures/plugins/code_review_like").resolve()
@@ -94,6 +105,26 @@ def test_builtin_ralph_plugin_registers_commands_and_hook_capability():
         assert CommandRegistry.get("ralph-loop") is not None
         assert CommandRegistry.get("cancel-ralph") is not None
         assert plugin.manifest.capabilities == {"commands", "hooks", "hud"}
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+def test_builtin_memory_plugin_registers_memory_command():
+    plugin_root = _get_builtin_memory_plugin_root()
+    plugin = discover_plugins([plugin_root])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        memory_command = CommandRegistry.get("memory")
+        remember_command = CommandRegistry.get("remember")
+        assert memory_command is not None
+        assert remember_command is not None
+        assert memory_command.command_type == "tool"
+        assert remember_command.command_type == "tool"
+        assert plugin.manifest.capabilities == {"commands", "hooks"}
     finally:
         CommandRegistry.restore(snapshot)
 
