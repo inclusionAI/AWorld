@@ -74,6 +74,7 @@ EOF
 
         # Create context and action
         context = AmniContext()
+        context.workspace_path = str(tmp_path)
         action = [ActionModel(
             tool_name='mock_tool',
             action_name='test_action',
@@ -88,7 +89,8 @@ EOF
             context=context,
             hook_point=HookPoint.BEFORE_TOOL_CALL,
             hook_from='test',
-            payload=action
+            payload=action,
+            workspace_path=str(tmp_path),
         ):
             if hook_result and hasattr(hook_result, 'headers'):
                 permission_decision = hook_result.headers.get('permission_decision')
@@ -150,6 +152,7 @@ EOF
 
         # Create context and action
         context = AmniContext()
+        context.workspace_path = str(tmp_path)
         action = [ActionModel(
             tool_name='mock_tool',
             action_name='test_action',
@@ -165,7 +168,8 @@ EOF
             context=context,
             hook_point=HookPoint.BEFORE_TOOL_CALL,
             hook_from='test',
-            payload=action
+            payload=action,
+            workspace_path=str(tmp_path),
         ):
             if hook_result and hasattr(hook_result, 'headers'):
                 permission_decision = hook_result.headers.get('permission_decision')
@@ -228,6 +232,7 @@ EOF
 
         # Create context and action
         context = AmniContext()
+        context.workspace_path = str(tmp_path)
         action = [ActionModel(
             tool_name='mock_tool',
             action_name='test_action',
@@ -242,7 +247,8 @@ EOF
             context=context,
             hook_point=HookPoint.BEFORE_TOOL_CALL,
             hook_from='test',
-            payload=action
+            payload=action,
+            workspace_path=str(tmp_path),
         ):
             if hook_result and hasattr(hook_result, 'headers'):
                 permission_decision = hook_result.headers.get('permission_decision')
