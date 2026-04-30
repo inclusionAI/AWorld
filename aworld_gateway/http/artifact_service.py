@@ -8,6 +8,10 @@ import shutil
 import tempfile
 from uuid import uuid4
 
+from aworld_gateway.logging import get_gateway_logger
+
+logger = get_gateway_logger("http.artifact_service")
+
 
 @dataclass
 class PublishedArtifact:
@@ -73,21 +77,29 @@ class ArtifactService:
             content_type=content_type,
             published_at=datetime.now(timezone.utc),
         )
+        logger.info(
+            f"Artifact published token={token} source={resolved_source_path} snapshot={snapshot_path}"
+        )
         return token
 
     def resolve(self, token: str) -> PublishedArtifact | None:
         artifact = self._artifacts.get(token)
         if artifact is None:
+            logger.info(f"Artifact resolve missed token={token}")
             return None
 
         if not artifact.path.exists() or not artifact.path.is_file():
             self._artifacts.pop(token, None)
+            logger.warning(f"Artifact resolve invalid token={token} reason=missing_snapshot")
             return None
 
+        logger.info(f"Artifact resolved token={token} path={artifact.path}")
         return artifact
 
     def build_external_url(self, token: str) -> str:
         if self._public_base_url is None:
             raise ValueError("Artifact public_base_url is not configured.")
         suffix = f"/artifacts/{token}"
-        return f"{self._public_base_url}{suffix}"
+        url = f"{self._public_base_url}{suffix}"
+        logger.info(f"Artifact external url built token={token}")
+        return url
