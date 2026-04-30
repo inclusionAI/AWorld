@@ -83,6 +83,7 @@ EOF
         from aworld.runners.hook.utils import run_hooks
 
         context = AmniContext()
+        context.workspace_path = str(tmp_path)
         user_input = "test input"
 
         should_execute = True  # P0-3: Flag to control executor execution
@@ -100,7 +101,8 @@ EOF
             hook_point=HookPoint.USER_INPUT_RECEIVED,
             hook_from='cli',
             payload=user_input,
-            message=user_input_msg
+            message=user_input_msg,
+            workspace_path=str(tmp_path),
         ):
             if hook_result and hasattr(hook_result, 'headers'):
                 permission_decision = hook_result.headers.get('permission_decision')
@@ -172,6 +174,7 @@ EOF
         from aworld.runners.hook.utils import run_hooks
 
         context = AmniContext()
+        context.workspace_path = str(tmp_path)
         user_input = "test input"
 
         should_execute = True
@@ -189,7 +192,8 @@ EOF
             hook_point=HookPoint.USER_INPUT_RECEIVED,
             hook_from='cli',
             payload=user_input,
-            message=user_input_msg
+            message=user_input_msg,
+            workspace_path=str(tmp_path),
         ):
             if hook_result and hasattr(hook_result, 'headers'):
                 permission_decision = hook_result.headers.get('permission_decision')
@@ -205,4 +209,3 @@ EOF
         assert mock_executor.call_count == 1, \
             "Executor was NOT called despite permission_decision='allow' - allow FAILED"
         mock_executor.assert_called_once_with(user_input)
-

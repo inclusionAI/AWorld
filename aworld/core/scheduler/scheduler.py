@@ -498,10 +498,18 @@ class CronScheduler:
             await self._publish_progress(job, "info", "识别为提醒类任务，直接生成提醒内容")
             return TaskResponse(success=True, msg=reminder_detail, answer=reminder_detail)
 
-        return await self.executor.execute_with_retry(
-            job,
-            progress_callback=lambda level, message: self._publish_progress(job, level, message),
-        )
+        progress_callback = lambda level, message: self._publish_progress(job, level, message)
+        try:
+            return await self.executor.execute_with_retry(
+                job,
+                progress_callback=progress_callback,
+            )
+        except TypeError as exc:
+            # Older mocks/tests may still stub execute_with_retry(job) without the
+            # newer progress_callback keyword. Fall back to the legacy call shape.
+            if "progress_callback" not in str(exc) or "unexpected keyword argument" not in str(exc):
+                raise
+            return await self.executor.execute_with_retry(job)
 
     async def _persist_job_result(self, job: CronJob, result) -> tuple[Optional[CronJob], bool]:
         """Persist terminal execution state and return the updated job."""

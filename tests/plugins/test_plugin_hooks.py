@@ -1,4 +1,5 @@
 import sys
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -20,6 +21,17 @@ def _get_builtin_ralph_plugin_root() -> Path:
         / "aworld_cli"
         / "builtin_plugins"
         / "ralph_session_loop"
+    )
+
+
+def _get_builtin_memory_plugin_root() -> Path:
+    return (
+        Path(__file__).resolve().parents[2]
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "builtin_plugins"
+        / "memory_cli"
     )
 
 
@@ -438,3 +450,178 @@ async def test_ralph_stop_hook_allows_exit_when_max_iterations_reached(tmp_path)
 
     assert result.action == "allow"
     assert handle.read() == {}
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_task_completed_hook_appends_workspace_session_log(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    result = await hooks["task_completed"][0].run(
+        event={
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "task_status": "idle",
+            "workspace_path": str(workspace),
+            "final_answer": "Use pnpm and keep tests fast.",
+        },
+        state={"workspace_path": str(workspace)},
+    )
+
+    log_file = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
+    metrics_file = workspace / ".aworld" / "memory" / "metrics" / "promotion.jsonl"
+
+    assert result.action == "allow"
+    assert log_file.exists()
+    assert metrics_file.exists()
+    lines = log_file.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    assert '"task_id": "task-1"' in lines[0]
+    assert '"final_answer": "Use pnpm and keep tests fast."' in lines[0]
+    payload = json.loads(lines[0])
+    assert payload["candidates"][0]["confidence"] == "medium"
+    assert payload["candidates"][0]["promotion"] == "session_log_only"
+    assert payload["candidates"][0]["reason"] == "instructional_candidate_auto_promotion_disabled"
+    assert payload["candidates"][0]["eligible_for_auto_promotion"] is True
+    assert payload["candidates"][0]["evaluated_at"]
+    metrics_payload = json.loads(metrics_file.read_text(encoding="utf-8").strip())
+    assert metrics_payload["session_id"] == "session-1"
+    assert metrics_payload["task_id"] == "task-1"
+    assert metrics_payload["eligible_for_auto_promotion"] is True
+    assert metrics_payload["promotion"] == "session_log_only"
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_task_completed_hook_extracts_instructional_candidate_from_mixed_answer(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    await hooks["task_completed"][0].run(
+        event={
+            "session_id": "session-1",
+            "task_id": "task-9",
+            "task_status": "idle",
+            "workspace_path": str(workspace),
+            "final_answer": (
+                "I updated the workspace and ran the tests successfully. "
+                "Use pnpm for workspace package management. "
+                "Everything passed."
+            ),
+        },
+        state={"workspace_path": str(workspace)},
+    )
+
+    log_file = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
+    payload = json.loads(log_file.read_text(encoding="utf-8").strip())
+
+    assert payload["final_answer"].startswith("I updated the workspace and ran the tests successfully.")
+    assert payload["candidates"][0]["content"] == "Use pnpm for workspace package management."
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_task_completed_hook_auto_promotes_only_high_confidence_when_enabled(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+
+    monkeypatch.setenv("AWORLD_CLI_ENABLE_AUTO_PROMOTION", "1")
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    result = await hooks["task_completed"][0].run(
+        event={
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "task_status": "idle",
+            "workspace_path": str(workspace),
+            "final_answer": "Always use pnpm for workspace package management and never run npm install here.",
+        },
+        state={"workspace_path": str(workspace)},
+    )
+
+    log_file = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
+    metrics_file = workspace / ".aworld" / "memory" / "metrics" / "promotion.jsonl"
+    durable_file = workspace / ".aworld" / "memory" / "durable.jsonl"
+    instruction_file = workspace / ".aworld" / "AWORLD.md"
+
+    assert result.action == "allow"
+    assert log_file.exists()
+    assert metrics_file.exists()
+    assert durable_file.exists()
+    assert instruction_file.exists()
+
+    session_payload = json.loads(log_file.read_text(encoding="utf-8").strip())
+    candidate = session_payload["candidates"][0]
+    assert candidate["confidence"] == "high"
+    assert candidate["promotion"] == "durable_memory"
+    assert candidate["reason"] == "high_confidence_workspace_instruction_auto_promoted"
+    assert candidate["eligible_for_auto_promotion"] is True
+    assert candidate["auto_promoted"] is True
+
+    metrics_payload = json.loads(metrics_file.read_text(encoding="utf-8").strip())
+    assert metrics_payload["promotion"] == "durable_memory"
+    assert metrics_payload["reason"] == "high_confidence_workspace_instruction_auto_promoted"
+
+    durable_payload = json.loads(durable_file.read_text(encoding="utf-8").strip())
+    assert durable_payload["memory_type"] == "workspace"
+    assert durable_payload["content"] == "Always use pnpm for workspace package management and never run npm install here."
+    assert durable_payload["source"] == "auto_promotion"
+    assert "Always use pnpm for workspace package management" in instruction_file.read_text(
+        encoding="utf-8"
+    )
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_task_completed_hook_does_not_auto_promote_non_workspace_instruction(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+
+    monkeypatch.setenv("AWORLD_CLI_ENABLE_AUTO_PROMOTION", "1")
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    result = await hooks["task_completed"][0].run(
+        event={
+            "session_id": "session-1",
+            "task_id": "task-2",
+            "task_status": "idle",
+            "workspace_path": str(workspace),
+            "final_answer": "Must never ship broken onboarding copy to customers.",
+        },
+        state={"workspace_path": str(workspace)},
+    )
+
+    log_file = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
+    metrics_file = workspace / ".aworld" / "memory" / "metrics" / "promotion.jsonl"
+    durable_file = workspace / ".aworld" / "memory" / "durable.jsonl"
+
+    assert result.action == "allow"
+    assert log_file.exists()
+    assert metrics_file.exists()
+    assert not durable_file.exists()
+
+    session_payload = json.loads(log_file.read_text(encoding="utf-8").strip())
+    candidate = session_payload["candidates"][0]
+    assert candidate["confidence"] == "medium"
+    assert candidate["promotion"] == "session_log_only"
+    assert candidate["reason"] == "instructional_candidate_auto_promotion_disabled"
+    assert candidate["auto_promoted"] is False
+
+    metrics_payload = json.loads(metrics_file.read_text(encoding="utf-8").strip())
+    assert metrics_payload["promotion"] == "session_log_only"
+    assert metrics_payload["reason"] == "instructional_candidate_auto_promotion_disabled"
