@@ -245,8 +245,12 @@ def _create_memory_store() -> MemoryStore:
     return InMemoryMemoryStore()
 
 
-def init_middlewares(init_memory: bool = True, init_retriever: bool = True,
-                     custom_memory_store: MemoryStore = None) -> None:
+def init_middlewares(
+    init_memory: bool = True,
+    init_retriever: bool = True,
+    custom_memory_store: MemoryStore = None,
+    memory_config: MemoryConfig | None = None,
+) -> None:
     """
     Initialize Amni middlewares.
 
@@ -258,7 +262,7 @@ def init_middlewares(init_memory: bool = True, init_retriever: bool = True,
     if init_memory:
         MemoryFactory.init(
             custom_memory_store=custom_memory_store or _create_memory_store(),
-            config=build_memory_config()
+            config=memory_config or build_memory_config(),
         )
 
 def build_memory_config():
@@ -411,4 +415,3 @@ class AmniConfigFactory:
             config.env_config = env_config
             return config
         raise ValueError(f"Unsupported level: {level}")
-

@@ -159,18 +159,23 @@ Configure AWorld to use the CDP-enabled Chrome instance for browser automation.
 
 ### Configuration Steps
 
-1. **Open the memory configuration interface:**
+1. **Save the workspace preference explicitly:**
 
-   Type the following command in the AWorld CLI:
+   Run the following command in the AWorld CLI:
+   ```
+   /remember --type workspace agent_browser --cdp 9222 使用agent-browser的时候都要加上cdp参数
+   ```
+
+2. **Optional: inspect or edit the workspace instruction file:**
+
+   You can review the current workspace memory with:
+   ```
+   /memory view
+   ```
+
+   Or open the editor with:
    ```
    /memory
-   ```
-
-2. **Add the CDP configuration:**
-
-   Add the following instruction to the memory:
-   ```
-   agent_browser --cdp 9222 使用agent-browser的时候都要加上cdp参数
    ```
    
    **English translation:**
@@ -182,11 +187,14 @@ Configure AWorld to use the CDP-enabled Chrome instance for browser automation.
 
 - Instructs AWorld agents to connect to your CDP-enabled Chrome instance (port 9222)
 - Ensures browser automation commands use the correct Chrome session
-- Persists this configuration across your AWorld session
+- Persists this configuration in the current workspace memory
+- Makes the preference available in future AWorld CLI sessions started from the same workspace
 
 ### Why This Matters
 
 Without this configuration, agent-browser would try to launch its own browser instance instead of using your CDP-enabled Chrome, which could lead to connection issues.
+
+For more details about CLI memory commands, storage files, and auto-promotion behavior, see [AWorld CLI Memory](../features/aworld-cli-memory.md).
 
 ---
 

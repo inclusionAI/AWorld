@@ -35,14 +35,32 @@ def get_default_plugin_dir() -> Path:
     return Path.home() / ".aworld" / "plugins"
 
 
+def _resolve_repo_cli_package_dir() -> Path | None:
+    """Prefer the current repo checkout when running from inside the source tree."""
+    current_dir = Path.cwd().resolve()
+    for base_dir in (current_dir, *current_dir.parents):
+        candidate = base_dir / "aworld-cli" / "src" / "aworld_cli"
+        if (candidate / "__init__.py").exists():
+            return candidate.resolve()
+    return None
+
+
+def _get_cli_package_dir() -> Path:
+    """Return the aworld_cli package dir, preferring the active repo checkout."""
+    repo_package_dir = _resolve_repo_cli_package_dir()
+    if repo_package_dir is not None:
+        return repo_package_dir
+    return Path(__file__).resolve().parent.parent
+
+
 def get_builtin_plugins_base_dir() -> Path:
     """Return the canonical built-in plugin package directory."""
-    return Path(__file__).resolve().parent.parent / "builtin_plugins"
+    return _get_cli_package_dir() / "builtin_plugins"
 
 
 def get_builtin_agent_bundles_base_dir() -> Path:
     """Return the built-in agent bundle package directory."""
-    return Path(__file__).resolve().parent.parent / "builtin_agents"
+    return _get_cli_package_dir() / "builtin_agents"
 
 
 def get_builtin_plugin_roots() -> List[Path]:
