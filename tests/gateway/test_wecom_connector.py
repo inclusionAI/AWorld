@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 import sys
 from pathlib import Path
 
@@ -185,6 +186,50 @@ async def test_connector_send_text_uses_proactive_send_without_reply_context(
     assert transport.sent[-1]["cmd"] == "aibot_send_msg"
     assert result["errcode"] == 0
     await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_logs_start_callback_and_send_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wecom.connector import WecomConnector
+
+    router = _FakeRouter()
+    transport = _FakeTransport()
+    monkeypatch.setenv("AWORLD_WECOM_BOT_ID", "bot-1")
+    monkeypatch.setenv("AWORLD_WECOM_SECRET", "secret-1")
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    connector = WecomConnector(
+        config=WecomChannelConfig(default_agent_id="aworld"),
+        router=router,
+        connect_func=lambda url: asyncio.sleep(0, result=transport),
+    )
+    await connector.start()
+    transport.feed(
+        {
+            "cmd": "aibot_msg_callback",
+            "headers": {"req_id": "req-callback-1"},
+            "body": {
+                "msgid": "msg-1",
+                "chatid": "chat-1",
+                "chattype": "single",
+                "from": {"userid": "user-1"},
+                "msgtype": "text",
+                "text": {"content": "ping"},
+            },
+        }
+    )
+
+    await asyncio.sleep(0.05)
+    await connector.stop()
+
+    assert "WeCom connector starting bot_id=bot-1" in caplog.text
+    assert "WeCom connection opened ws_url=" in caplog.text
+    assert "WeCom inbound message conversation=chat-1 sender=user-1 message_id=msg-1" in caplog.text
+    assert "WeCom outbound send requested chat_id=chat-1" in caplog.text
+    assert "WeCom connector stopped bot_id=bot-1" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -419,6 +464,54 @@ async def test_connector_send_text_downgrades_large_image_to_file_and_sends_note
     assert "已转为文件格式发送" in transport.sent[-1]["body"]["markdown"]["content"]
     assert result["media"]["body"]["type"] == "file"
     await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_logs_media_downgrade_and_rejection(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from aworld_gateway.channels.wecom.connector import WecomConnector
+
+    transport = _FakeTransport()
+    monkeypatch.setenv("AWORLD_WECOM_BOT_ID", "bot-1")
+    monkeypatch.setenv("AWORLD_WECOM_SECRET", "secret-1")
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    connector = WecomConnector(
+        config=WecomChannelConfig(),
+        router=None,
+        connect_func=lambda url: asyncio.sleep(0, result=transport),
+    )
+    await connector.start()
+    connector._last_chat_req_ids["chat-1"] = "req-chat-1"
+
+    large_image = Path("/tmp/large-image.png")
+    connector._load_outbound_media = lambda source, file_name=None: asyncio.sleep(  # type: ignore[method-assign]
+        0,
+        result=(b"x" * (10 * 1024 * 1024 + 1), "image/png", large_image.name),
+    )
+    await connector.send_text(
+        chat_id="chat-1",
+        text="",
+        metadata={"outbound_attachments": [{"path": f"file://{large_image}", "type": "image"}]},
+    )
+
+    too_large = Path("/tmp/too-large.bin")
+    connector._load_outbound_media = lambda source, file_name=None: asyncio.sleep(  # type: ignore[method-assign]
+        0,
+        result=(b"x" * (20 * 1024 * 1024 + 1), "application/octet-stream", too_large.name),
+    )
+    await connector.send_text(
+        chat_id="chat-1",
+        text="",
+        metadata={"outbound_attachments": [{"path": f"file://{too_large}", "type": "file"}]},
+    )
+
+    await connector.stop()
+
+    assert "WeCom outbound media downgraded chat_id=chat-1 original_type=image final_type=file" in caplog.text
+    assert "WeCom outbound media rejected chat_id=chat-1 attachment_type=file" in caplog.text
 
 
 @pytest.mark.asyncio

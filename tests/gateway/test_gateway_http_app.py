@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 
@@ -87,6 +88,46 @@ def test_gateway_http_app_rejects_telegram_webhook_when_adapter_missing() -> Non
     assert response.json()["detail"] == "Telegram channel is not running."
 
 
+def test_gateway_http_app_logs_telegram_webhook_requests(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    seen: dict[str, object] = {}
+
+    class FakeAdapter:
+        async def handle_update(self, payload: dict[str, object]) -> None:
+            seen["payload"] = payload
+
+    app = create_gateway_app(
+        runtime_status={"channels": {}},
+        telegram_adapter=FakeAdapter(),
+    )
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    client = TestClient(app)
+    response = client.post("/webhooks/telegram", json={"message": {"text": "hi"}})
+
+    assert response.status_code == 200
+    assert seen["payload"] == {"message": {"text": "hi"}}
+    assert "Telegram webhook received path=/webhooks/telegram" in caplog.text
+    assert "Telegram webhook handled path=/webhooks/telegram" in caplog.text
+
+
+def test_gateway_http_app_logs_telegram_webhook_when_adapter_missing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_gateway_app(
+        runtime_status={"channels": {}},
+        telegram_adapter=None,
+    )
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    client = TestClient(app)
+    response = client.post("/webhooks/telegram", json={"message": {"text": "hi"}})
+
+    assert response.status_code == 503
+    assert "Telegram webhook rejected path=/webhooks/telegram reason=adapter_missing" in caplog.text
+
+
 def test_gateway_http_app_honors_custom_telegram_webhook_path() -> None:
     seen: dict[str, object] = {}
 
@@ -137,6 +178,53 @@ def test_gateway_http_app_reads_live_channel_status_from_provider() -> None:
     assert client.get("/channels").json()["telegram"]["running"] is True
 
 
+def test_gateway_http_app_logs_healthz_and_channels_requests(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_gateway_app(
+        runtime_status={
+            "channels": {
+                "telegram": {
+                    "enabled": False,
+                    "configured": False,
+                    "implemented": True,
+                    "running": False,
+                    "state": "registered",
+                    "error": None,
+                }
+            }
+        }
+    )
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    client = TestClient(app)
+    health_response = client.get("/healthz")
+    channels_response = client.get("/channels")
+
+    assert health_response.status_code == 200
+    assert channels_response.status_code == 200
+    assert "Gateway HTTP request method=GET path=/healthz status=200" in caplog.text
+    assert "Gateway HTTP request method=GET path=/channels status=200" in caplog.text
+
+
+def test_gateway_http_app_logs_failing_requests(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    app = create_gateway_app(runtime_status={"channels": {}})
+
+    @app.get("/boom")
+    async def boom() -> dict[str, object]:
+        raise RuntimeError("boom")
+
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    response = client.get("/boom")
+
+    assert response.status_code == 500
+    assert "Gateway HTTP request failed method=GET path=/boom error=boom" in caplog.text
+
+
 def test_gateway_http_app_serves_registered_artifact(tmp_path: Path) -> None:
     artifact_root = tmp_path / "artifacts"
     artifact_root.mkdir(parents=True, exist_ok=True)
@@ -156,6 +244,34 @@ def test_gateway_http_app_serves_registered_artifact(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert "report" in response.text
     assert response.headers["content-type"].startswith("text/html")
+
+
+def test_gateway_http_app_logs_artifact_requests(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    artifact_file = artifact_root / "report.html"
+    artifact_file.write_text("<html><body>report</body></html>", encoding="utf-8")
+
+    service = ArtifactService(
+        public_base_url="http://127.0.0.1:18888",
+        allowed_roots=[artifact_root],
+    )
+    token = service.publish(artifact_file)
+    app = create_gateway_app(runtime_status={"channels": {}}, artifact_service=service)
+
+    client = TestClient(app)
+    ok_response = client.get(f"/artifacts/{token}")
+    missing_response = client.get("/artifacts/missing-token")
+
+    assert ok_response.status_code == 200
+    assert missing_response.status_code == 404
+    assert f"Artifact published token={token}" in caplog.text
+    assert f"Artifact request served token={token}" in caplog.text
+    assert "Artifact request failed token=missing-token reason=not_found" in caplog.text
 
 
 def test_gateway_http_app_rejects_unknown_artifact_token(tmp_path: Path) -> None:
@@ -292,6 +408,33 @@ def test_artifact_service_build_external_url_requires_public_base_url(tmp_path: 
 
     with pytest.raises(ValueError, match="Artifact public_base_url is not configured."):
         service.build_external_url("abc")
+
+
+def test_artifact_service_logs_external_url_and_invalid_snapshot(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    artifact_file = artifact_root / "report.html"
+    artifact_file.write_text("<html><body>v1</body></html>", encoding="utf-8")
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    service = ArtifactService(
+        public_base_url="http://127.0.0.1:18888",
+        allowed_roots=[artifact_root],
+    )
+    token = service.publish(artifact_file)
+    url = service.build_external_url(token)
+    artifact = service.resolve(token)
+    assert artifact is not None
+    artifact.path.unlink()
+    resolved_again = service.resolve(token)
+
+    assert url.endswith(f"/artifacts/{token}")
+    assert resolved_again is None
+    assert f"Artifact external url built token={token}" in caplog.text
+    assert f"Artifact resolve invalid token={token} reason=missing_snapshot" in caplog.text
 
 
 def test_gateway_http_app_serves_snapshot_after_source_delete(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -120,3 +121,72 @@ def test_telegram_adapter_routes_text_update_to_router(monkeypatch) -> None:
     assert seen["inbound"].conversation_id == "1001"
     assert seen["channel_default_agent_id"] == "aworld"
     assert seen["outbound"].text == "pong"
+
+
+def test_telegram_adapter_logs_start_update_and_send(
+    monkeypatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    calls: dict[str, object] = {}
+
+    class FakeRouter:
+        async def handle_inbound(self, inbound, *, channel_default_agent_id):
+            calls["inbound"] = inbound
+            return OutboundEnvelope(
+                channel="telegram",
+                account_id="telegram",
+                conversation_id=inbound.conversation_id,
+                reply_to_message_id=inbound.message_id,
+                text="pong",
+            )
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json):
+            calls["url"] = url
+            calls["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setenv("AWORLD_TELEGRAM_BOT_TOKEN", "token-123")
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    from aworld_gateway.channels.telegram.adapter import TelegramChannelAdapter
+
+    monkeypatch.setattr(
+        "aworld_gateway.channels.telegram.adapter.httpx.AsyncClient",
+        FakeClient,
+    )
+
+    adapter = TelegramChannelAdapter(
+        TelegramChannelConfig(default_agent_id="aworld"),
+        router=FakeRouter(),
+    )
+
+    asyncio.run(adapter.start())
+    asyncio.run(
+        adapter.handle_update(
+            {
+                "message": {
+                    "message_id": 1,
+                    "chat": {"id": 1001, "type": "private"},
+                    "from": {"id": 7, "username": "user7"},
+                    "text": "ping",
+                }
+            }
+        )
+    )
+    asyncio.run(adapter.stop())
+
+    assert "Telegram connector started" in caplog.text
+    assert "Telegram inbound message conversation=1001 sender=7 message_id=1" in caplog.text
+    assert "Telegram outbound message sent conversation=1001 reply_to=1" in caplog.text
+    assert "Telegram connector stopped" in caplog.text

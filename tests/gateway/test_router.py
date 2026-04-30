@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from pathlib import Path
 
@@ -13,20 +14,29 @@ from aworld_gateway import router as router_module
 from aworld_gateway.router import GatewayRouter, LocalCliAgentBackend
 from aworld_gateway.session_binding import SessionBinding
 from aworld_gateway.types import InboundEnvelope
+from aworld.output.base import ToolResultOutput
 
 
 class FakeAgentBackend:
     def __init__(self) -> None:
         self.calls = []
 
-    async def run(self, *, agent_id: str, session_id: str, text: str) -> str:
-        self.calls.append(
-            {
-                "agent_id": agent_id,
-                "session_id": session_id,
-                "text": text,
-            }
-        )
+    async def run(
+        self,
+        *,
+        agent_id: str,
+        session_id: str,
+        text: str,
+        on_output=None,
+    ) -> str:
+        call = {
+            "agent_id": agent_id,
+            "session_id": session_id,
+            "text": text,
+        }
+        if on_output is not None:
+            call["on_output"] = on_output
+        self.calls.append(call)
         return "backend reply"
 
 
@@ -102,6 +112,110 @@ def test_handle_inbound_prefers_explicit_agent_id_over_other_sources():
     assert outbound.reply_to_message_id == "msg-2"
 
 
+def test_handle_inbound_forwards_on_output_callback_to_backend():
+    backend = FakeAgentBackend()
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=backend,
+    )
+    inbound = InboundEnvelope(
+        channel="telegram",
+        account_id="acct-3",
+        conversation_id="conv-3",
+        conversation_type="dm",
+        sender_id="acct-3",
+        sender_name=None,
+        message_id="msg-3",
+        text="observe",
+    )
+
+    def on_output(_output) -> None:
+        return None
+
+    asyncio.run(
+        router.handle_inbound(
+            inbound,
+            channel_default_agent_id="channel-agent",
+            on_output=on_output,
+        )
+    )
+
+    assert backend.calls == [
+        {
+            "agent_id": "channel-agent",
+            "session_id": "gw:channel-agent:telegram:acct-3:dm:conv-3",
+            "text": "observe",
+            "on_output": on_output,
+        }
+    ]
+
+
+def test_handle_inbound_logs_routing_flow(caplog: pytest.LogCaptureFixture):
+    backend = FakeAgentBackend()
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=backend,
+    )
+    inbound = InboundEnvelope(
+        channel="wechat",
+        account_id="acct-1",
+        conversation_id="conv-1",
+        conversation_type="dm",
+        sender_id="sender-1",
+        sender_name="Sender",
+        message_id="msg-1",
+        text="hello",
+    )
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    outbound = asyncio.run(
+        router.handle_inbound(
+            inbound,
+            channel_default_agent_id="channel-agent",
+        )
+    )
+
+    assert outbound.text == "backend reply"
+    assert "Gateway router inbound channel=wechat conversation=conv-1" in caplog.text
+    assert "Gateway router resolved agent=channel-agent session=gw:channel-agent:wechat:acct-1:dm:conv-1" in caplog.text
+    assert "Gateway router outbound channel=wechat conversation=conv-1 reply_to=msg-1" in caplog.text
+
+
+def test_handle_inbound_logs_backend_failure(caplog: pytest.LogCaptureFixture):
+    class FailingBackend:
+        async def run(self, **kwargs) -> str:
+            raise RuntimeError("backend boom")
+
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=FailingBackend(),
+    )
+    inbound = InboundEnvelope(
+        channel="wechat",
+        account_id="acct-1",
+        conversation_id="conv-1",
+        conversation_type="dm",
+        sender_id="sender-1",
+        sender_name="Sender",
+        message_id="msg-1",
+        text="hello",
+    )
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    with pytest.raises(RuntimeError, match="backend boom"):
+        asyncio.run(
+            router.handle_inbound(
+                inbound,
+                channel_default_agent_id="channel-agent",
+            )
+        )
+
+    assert "Gateway router backend failed agent=channel-agent session=gw:channel-agent:wechat:acct-1:dm:conv-1 error=backend boom" in caplog.text
+
+
 class _MissingRegistry:
     @staticmethod
     def get_agent(agent_id: str):
@@ -121,6 +235,18 @@ class _SuccessExecutor:
 
     async def cleanup_resources(self) -> None:
         self.cleanup_called = True
+
+
+class _StreamingExecutor(_SuccessExecutor):
+    instances = []
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.build_calls = []
+
+    async def _build_task(self, text: str, *, session_id: str):
+        self.build_calls.append((text, session_id))
+        return "TASK"
 
 
 class _FailingExecutor(_SuccessExecutor):
@@ -181,6 +307,115 @@ def test_local_cli_backend_cleans_up_executor_when_chat_raises():
 
     assert len(_FailingExecutor.instances) == 1
     assert _FailingExecutor.instances[0].cleanup_called is True
+
+
+def test_local_cli_backend_on_output_streams_visible_text_and_cleans_up(monkeypatch):
+    class FakeChunkOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+        def output_type(self) -> str:
+            return "chunk"
+
+    class FakeMessageOutput:
+        def __init__(self, response: str) -> None:
+            self.response = response
+
+        def output_type(self) -> str:
+            return "message"
+
+    class FakeStepOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+        def output_type(self) -> str:
+            return "step"
+
+    class FakeStreamingOutputs:
+        async def stream_events(self):
+            yield FakeChunkOutput("hello")
+            yield FakeChunkOutput(" world")
+            yield ToolResultOutput(
+                tool_name="cron",
+                action_name="cron_tool",
+                data={"job_id": "job-1"},
+            )
+            yield FakeMessageOutput("hello world")
+            yield FakeStepOutput("internal-state")
+
+    seen_output_types = []
+
+    async def on_output(output) -> None:
+        output_type_getter = getattr(output, "output_type", None)
+        seen_output_types.append(
+            output_type_getter() if callable(output_type_getter) else type(output).__name__
+        )
+
+    _StreamingExecutor.instances = []
+    monkeypatch.setattr(
+        router_module.Runners,
+        "streamed_run_task",
+        lambda *, task: FakeStreamingOutputs(),
+    )
+    backend = LocalCliAgentBackend(
+        registry_cls=_SimpleRegistry,
+        executor_cls=_StreamingExecutor,
+    )
+
+    result = asyncio.run(
+        backend.run(
+            agent_id="aworld",
+            session_id="stream-session",
+            text="hi",
+            on_output=on_output,
+        )
+    )
+
+    assert result == "hello world"
+    assert seen_output_types == ["chunk", "chunk", "tool_call_result", "message", "step"]
+    assert len(_StreamingExecutor.instances) == 1
+    assert _StreamingExecutor.instances[0].build_calls == [("hi", "stream-session")]
+    assert _StreamingExecutor.instances[0].cleanup_called is True
+
+
+def test_local_cli_backend_on_output_cleans_up_when_callback_raises(monkeypatch):
+    class FakeChunkOutput:
+        def __init__(self, content: str) -> None:
+            self.content = content
+
+        def output_type(self) -> str:
+            return "chunk"
+
+    class FakeStreamingOutputs:
+        async def stream_events(self):
+            yield FakeChunkOutput("hello")
+
+    def exploding_callback(_output) -> None:
+        raise RuntimeError("callback failed")
+
+    _StreamingExecutor.instances = []
+    monkeypatch.setattr(
+        router_module.Runners,
+        "streamed_run_task",
+        lambda *, task: FakeStreamingOutputs(),
+    )
+    backend = LocalCliAgentBackend(
+        registry_cls=_SimpleRegistry,
+        executor_cls=_StreamingExecutor,
+    )
+
+    with pytest.raises(RuntimeError, match="callback failed"):
+        asyncio.run(
+            backend.run(
+                agent_id="aworld",
+                session_id="stream-session",
+                text="hi",
+                on_output=exploding_callback,
+            )
+        )
+
+    assert len(_StreamingExecutor.instances) == 1
+    assert _StreamingExecutor.instances[0].cleanup_called is True
 
 
 def test_local_cli_backend_context_bootstrap_fallback_on_type_error(monkeypatch):

@@ -11,7 +11,7 @@ from aworld_gateway.config.models import GatewayConfig
 class GatewayConfigLoader:
     def __init__(self, base_dir: Union[str, Path]):
         self.base_dir = Path(base_dir)
-        self.config_path = self.base_dir / ".aworld" / "gateway" / "config.yaml"
+        self.config_path = self._resolve_config_path(self.base_dir)
 
     def load_or_init(self) -> GatewayConfig:
         if self.config_path.exists():
@@ -52,3 +52,10 @@ class GatewayConfigLoader:
         wecom = channels.get("wecom")
         if isinstance(wecom, dict):
             wecom.pop("implemented", None)
+
+    @staticmethod
+    def _resolve_config_path(base_dir: Path) -> Path:
+        for candidate in (base_dir, *base_dir.parents):
+            if candidate.name == "gateway" and candidate.parent.name == ".aworld":
+                return candidate / "config.yaml"
+        return base_dir / ".aworld" / "gateway" / "config.yaml"

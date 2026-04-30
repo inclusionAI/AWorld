@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -122,18 +123,34 @@ class _FakeThread:
 
 
 class _FakeResponse:
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        payload: dict[str, object] | None = None,
+        error: Exception | None = None,
+        headers: dict[str, str] | None = None,
+        content: bytes = b"",
+    ) -> None:
         self.raised = False
+        self.payload = payload or {}
+        self.error = error
+        self.headers = headers or {}
+        self.content = content
 
     def raise_for_status(self) -> None:
+        if self.error is not None:
+            raise self.error
         self.raised = True
+
+    def json(self) -> dict[str, object]:
+        return dict(self.payload)
 
 
 class _FakeHttpClient:
     def __init__(self) -> None:
         self.closed = False
         self.calls: list[tuple[str, dict[str, object]]] = []
-        self.response = _FakeResponse()
+        self.response = _FakeResponse(payload={"accessToken": "access-token", "expireIn": 7200})
 
     async def post(self, url: str, **kwargs):
         self.calls.append((url, kwargs))
@@ -195,6 +212,140 @@ def test_connector_start_launches_stream_client_runner(monkeypatch) -> None:
     assert connector._client.start_forever_calls == 1
     assert connector._stream_thread is not None
     assert connector._stream_thread.started is True
+
+
+def test_connector_logs_startup_and_outbound_send(
+    monkeypatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    http_client = _FakeHttpClient()
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld"),
+        bridge=_FakeBridge(),
+        stream_module=_FakeStreamModule,
+        http_client=http_client,
+        thread_cls=_FakeThread,
+    )
+
+    asyncio.run(connector.start())
+    connector._access_token = "access-token"
+    connector._access_token_expiry = time.time() + 3600
+    asyncio.run(
+        connector.send_text(
+            session_webhook="https://example.com/robot/send?access_token=secret",
+            text="pong",
+        )
+    )
+    asyncio.run(connector.stop())
+
+    assert "DingTalk connector starting" in caplog.text
+    assert "DingTalk stream client started mode=start_forever thread=True" in caplog.text
+    assert "DingTalk outbound message sending" in caplog.text
+    assert "DingTalk outbound message sent" in caplog.text
+    assert "DingTalk connector stopped" in caplog.text
+
+
+def test_connector_logs_upstream_auth_validation_on_start(
+    monkeypatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld"),
+        bridge=_FakeBridge(),
+        stream_module=_FakeStreamModule,
+        http_client=_FakeHttpClient(),
+        thread_cls=_FakeThread,
+    )
+
+    asyncio.run(connector.start())
+    asyncio.run(connector.stop())
+
+    assert "DingTalk access token refresh requested" in caplog.text
+    assert "DingTalk access token refreshed expires_in_seconds=7200" in caplog.text
+    assert "DingTalk upstream auth validated" in caplog.text
+
+
+def test_connector_logs_stream_runner_failure(
+    monkeypatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    class _FailingStreamClient(_FakeStreamClient):
+        def start_forever(self) -> None:
+            self.start_forever_calls += 1
+            raise RuntimeError("stream down")
+
+    class _FailingStreamModule(_FakeStreamModule):
+        DingTalkStreamClient = _FailingStreamClient
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld"),
+        bridge=_FakeBridge(),
+        stream_module=_FailingStreamModule,
+        http_client=_FakeHttpClient(),
+        thread_cls=_FakeThread,
+    )
+
+    asyncio.run(connector.start())
+    asyncio.run(connector.stop())
+
+    assert "DingTalk stream runner entering mode=start_forever" in caplog.text
+    assert "DingTalk stream runner failed mode=start_forever error=stream down" in caplog.text
+    assert "DingTalk stream runner exited mode=start_forever" in caplog.text
+
+
+def test_connector_logs_outbound_send_failure(
+    monkeypatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+    monkeypatch.setenv("AWORLD_GATEWAY_LOG_PATH", str(tmp_path / "logs" / "gateway.log"))
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    http_client = _FakeHttpClient()
+    http_client.response = _FakeResponse(error=RuntimeError("send failed"))
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld"),
+        bridge=_FakeBridge(),
+        stream_module=_FakeStreamModule,
+        http_client=http_client,
+        thread_cls=_FakeThread,
+    )
+
+    asyncio.run(connector.start())
+    connector._access_token = "access-token"
+    connector._access_token_expiry = time.time() + 3600
+
+    with pytest.raises(RuntimeError, match="send failed"):
+        asyncio.run(
+            connector.send_text(
+                session_webhook="https://example.com/robot/send?access_token=secret",
+                text="pong",
+            )
+        )
+
+    asyncio.run(connector.stop())
+
+    assert "DingTalk outbound message failed target=example.com/robot/send" in caplog.text
 
 
 def test_connector_stop_closes_http_client(monkeypatch) -> None:
@@ -280,6 +431,39 @@ def test_connector_start_bootstraps_cron_scheduler(monkeypatch) -> None:
     asyncio.run(connector.stop())
 
     assert scheduler.stop_calls == 1
+
+
+def test_connector_stop_restores_previous_scheduler_sink(monkeypatch) -> None:
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_ID", "ding-id")
+    monkeypatch.setenv("AWORLD_DINGTALK_CLIENT_SECRET", "ding-secret")
+
+    async def previous_sink(notification) -> None:
+        return None
+
+    class _FakeScheduler:
+        def __init__(self) -> None:
+            self.executor = None
+            self.notification_sink = previous_sink
+            self.running = False
+
+    scheduler = _FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: scheduler)
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="aworld"),
+        bridge=_FakeBridge(),
+        stream_module=_FakeStreamModule,
+        http_client=_FakeHttpClient(),
+        thread_cls=_FakeThread,
+    )
+
+    asyncio.run(connector.start())
+
+    assert scheduler.notification_sink is not previous_sink
+
+    asyncio.run(connector.stop())
+
+    assert scheduler.notification_sink is previous_sink
 
 
 def test_connector_reset_command_rotates_session_and_sends_confirmation() -> None:
@@ -897,6 +1081,39 @@ def test_connector_ignores_invalid_or_empty_callbacks() -> None:
     assert sent == []
 
 
+def test_connector_logs_skipped_invalid_and_duplicate_callbacks(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    bridge = _FakeBridge()
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=bridge,
+        stream_module=object(),
+    )
+    caplog.set_level(logging.INFO, logger="aworld.gateway")
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        return None
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    payload = {
+        "msgId": "msg-hello-1",
+        "sessionWebhook": "https://callback",
+        "conversationId": "conv-1",
+        "senderId": "user-1",
+        "text": {"content": "hello"},
+    }
+
+    asyncio.run(connector.handle_callback({"senderId": "user-1", "text": {"content": "hello"}}))
+    asyncio.run(connector.handle_callback(payload))
+    asyncio.run(connector.handle_callback(dict(payload)))
+
+    assert "DingTalk callback skipped reason=missing_session_webhook" in caplog.text
+    assert "DingTalk callback skipped reason=duplicate" in caplog.text
+
+
 def test_connector_supports_string_payload_and_empty_bridge_result() -> None:
     class _EmptyBridge(_FakeBridge):
         async def run(
@@ -1392,6 +1609,7 @@ def test_connector_binds_dingding_cron_jobs_and_fanouts_notifications(
         sent.append((session_webhook, text))
 
     connector.send_text = fake_send_text  # type: ignore[method-assign]
+    asyncio.run(connector._prepare_cron_runtime())
 
     asyncio.run(
         connector.handle_callback(
@@ -1405,17 +1623,19 @@ def test_connector_binds_dingding_cron_jobs_and_fanouts_notifications(
     )
 
     assert scheduler.notification_sink is not None
-    assert connector._cron_binding_store.get("job-main") == {
+    assert connector._cron_push_bridge._binding_store.get("job-main") == {
         "job_id": "job-main",
-        "session_webhook": "https://callback",
+        "channel": "dingtalk",
         "conversation_id": "conv-1",
         "sender_id": "user-1",
+        "target": {"session_webhook": "https://callback"},
     }
-    assert connector._cron_binding_store.get("job-advance") == {
+    assert connector._cron_push_bridge._binding_store.get("job-advance") == {
         "job_id": "job-advance",
-        "session_webhook": "https://callback",
+        "channel": "dingtalk",
         "conversation_id": "conv-1",
         "sender_id": "user-1",
+        "target": {"session_webhook": "https://callback"},
     }
 
     asyncio.run(
@@ -1434,12 +1654,150 @@ def test_connector_binds_dingding_cron_jobs_and_fanouts_notifications(
         ("https://callback", "已创建提醒"),
         ("https://callback", 'Cron task "喝水提醒" completed\n提醒我喝水'),
     ]
-    assert connector._cron_binding_store.get("job-main") is None
-    assert connector._cron_binding_store.get("job-advance") == {
+    assert connector._cron_push_bridge._binding_store.get("job-main") is None
+    assert connector._cron_push_bridge._binding_store.get("job-advance") == {
         "job_id": "job-advance",
-        "session_webhook": "https://callback",
+        "channel": "dingtalk",
         "conversation_id": "conv-1",
         "sender_id": "user-1",
+        "target": {"session_webhook": "https://callback"},
+    }
+
+
+def test_connector_preserves_dingding_cron_binding_for_recurring_notifications(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class _CronBridge(_FakeBridge):
+        async def run(
+            self,
+            *,
+            agent_id: str,
+            session_id: str,
+            text: str,
+            on_text_chunk=None,
+            on_output=None,
+        ) -> DingdingBridgeResult:
+            self.calls.append(
+                {
+                    "agent_id": agent_id,
+                    "session_id": session_id,
+                    "text": text,
+                }
+            )
+            if on_output is not None:
+                await on_output(
+                    ToolResultOutput(
+                        tool_name="cron",
+                        action_name="cron_tool",
+                        data={
+                            "success": True,
+                            "job_id": "job-main",
+                        },
+                    )
+                )
+            return DingdingBridgeResult(text="已创建提醒")
+
+    class _FakeScheduler:
+        def __init__(self) -> None:
+            self.notification_sink = None
+
+    scheduler = _FakeScheduler()
+    monkeypatch.setattr("aworld.core.scheduler.get_scheduler", lambda: scheduler)
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(
+            default_agent_id="agent-1",
+            workspace_dir=str(tmp_path / "workspace"),
+        ),
+        bridge=_CronBridge(),
+        stream_module=object(),
+    )
+    sent: list[tuple[str, str]] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        sent.append((session_webhook, text))
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    asyncio.run(connector._prepare_cron_runtime())
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "明天早上九点提醒我开会"},
+            }
+        )
+    )
+
+    assert scheduler.notification_sink is not None
+
+    asyncio.run(
+        scheduler.notification_sink(
+            {
+                "job_id": "job-main",
+                "summary": 'Cron task "开会提醒" completed',
+                "detail": "提醒我开会",
+                "next_run_at": "2026-04-29T09:00:00+08:00",
+            }
+        )
+    )
+
+    assert sent == [
+        ("https://callback", PROCESSING_ACK_TEXT),
+        ("https://callback", "已创建提醒"),
+        (
+            "https://callback",
+            'Cron task "开会提醒" completed\n提醒我开会\n下次执行：2026-04-29T09:00:00+08:00',
+        ),
+    ]
+    assert connector._cron_push_bridge._binding_store.get("job-main") == {
+        "job_id": "job-main",
+        "channel": "dingtalk",
+        "conversation_id": "conv-1",
+        "sender_id": "user-1",
+        "target": {"session_webhook": "https://callback"},
+    }
+
+
+def test_connector_migrates_legacy_dingding_cron_bindings_to_shared_shape(
+    tmp_path: Path,
+) -> None:
+    workspace_dir = (tmp_path / "workspace").resolve()
+    workspace_dir.mkdir(parents=True, exist_ok=True)
+    binding_store_path = workspace_dir.parent / "cron-bindings.json"
+    binding_store_path.write_text(
+        json.dumps(
+            {
+                "job-main": {
+                    "job_id": "job-main",
+                    "session_webhook": "https://callback",
+                    "conversation_id": "conv-1",
+                    "sender_id": "user-1",
+                }
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(
+            default_agent_id="agent-1",
+            workspace_dir=str(workspace_dir),
+        ),
+        bridge=_FakeBridge(),
+        stream_module=object(),
+    )
+
+    assert connector._cron_push_bridge._binding_store.get("job-main") == {
+        "job_id": "job-main",
+        "channel": "dingtalk",
+        "conversation_id": "conv-1",
+        "sender_id": "user-1",
+        "target": {"session_webhook": "https://callback"},
     }
 
 
