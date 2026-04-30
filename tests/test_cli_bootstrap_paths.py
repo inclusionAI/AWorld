@@ -1,6 +1,8 @@
 import importlib.util
 from pathlib import Path
 
+from aworld_cli.core import plugin_manager as plugin_manager_module
+from aworld_cli.core.plugin_manager import PluginManager
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BOOTSTRAP_PATH = REPO_ROOT / "aworld-cli" / "src" / "aworld_cli" / "_path_bootstrap.py"
@@ -46,3 +48,43 @@ def test_no_repo_aworld_inserted_when_sibling_package_missing(tmp_path):
     updated = module.prioritize_repo_aworld_path(list(original), str(fake_package_file))
 
     assert updated == original
+
+
+def test_builtin_plugin_base_dir_prefers_current_repo_checkout(monkeypatch):
+    repo_builtin_plugins = (
+        REPO_ROOT / "aworld-cli" / "src" / "aworld_cli" / "builtin_plugins"
+    ).resolve()
+    external_package_file = (
+        REPO_ROOT.parent
+        / "external-aworld"
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "core"
+        / "plugin_manager.py"
+    )
+
+    monkeypatch.chdir(REPO_ROOT)
+    monkeypatch.setattr(plugin_manager_module, "__file__", str(external_package_file))
+
+    assert plugin_manager_module.get_builtin_plugins_base_dir() == repo_builtin_plugins
+
+
+def test_runtime_plugin_roots_include_memory_cli_from_current_repo(monkeypatch, tmp_path):
+    external_package_file = (
+        REPO_ROOT.parent
+        / "external-aworld"
+        / "aworld-cli"
+        / "src"
+        / "aworld_cli"
+        / "core"
+        / "plugin_manager.py"
+    )
+
+    monkeypatch.chdir(REPO_ROOT)
+    monkeypatch.setattr(plugin_manager_module, "__file__", str(external_package_file))
+
+    manager = PluginManager(plugin_dir=tmp_path / "plugins")
+    runtime_roots = manager.get_runtime_plugin_roots()
+
+    assert any(path.name == "memory_cli" for path in runtime_roots)
