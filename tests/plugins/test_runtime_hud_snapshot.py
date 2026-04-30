@@ -353,6 +353,37 @@ async def test_local_executor_task_hook_delegates_to_runtime():
 
 
 @pytest.mark.asyncio
+async def test_local_executor_chat_sets_context_before_task_hooks():
+    class StopAfterHook(Exception):
+        pass
+
+    task_context = SimpleNamespace(
+        workspace_path="/tmp/workspace",
+        task_id="task-1",
+        session_id="session-1",
+    )
+    task = SimpleNamespace(id="task-1", session_id="session-1", context=task_context)
+
+    executor = object.__new__(LocalAgentExecutor)
+    executor.console = SimpleNamespace(print=lambda *args, **kwargs: None)
+    executor.session_id = "session-1"
+    executor._update_session_last_used = MagicMock()
+    executor._build_task = AsyncMock(return_value=task)
+    executor._publish_hud_task_started = MagicMock()
+    executor._execute_hooks = AsyncMock(return_value=None)
+
+    async def fail_after_assert(hook_point, event):
+        assert hook_point == "task_started"
+        assert executor.context is task_context
+        raise StopAfterHook()
+
+    executor._run_plugin_task_hook = fail_after_assert
+
+    with pytest.raises(StopAfterHook):
+        await executor.chat("hello")
+
+
+@pytest.mark.asyncio
 async def test_local_executor_task_interrupted_hook_reports_interrupted_status():
     executor = object.__new__(LocalAgentExecutor)
     executor.session_id = "session-1"
