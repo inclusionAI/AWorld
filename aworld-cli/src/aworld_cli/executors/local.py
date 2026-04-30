@@ -738,6 +738,7 @@ class LocalAgentExecutor(BaseAgentExecutor):
                 image_urls=image_urls,
                 requested_skill_names=requested_skill_names,
             )
+            self.context = getattr(task, "context", None)
             self._publish_hud_task_started(task)
             await self._run_plugin_task_hook(
                 "task_started",
