@@ -46,6 +46,29 @@ _ERROR_DETAIL_MESSAGES = {
 }
 
 
+def _bootstrap_acp_memory(*, init_middlewares_fn: Any | None = None) -> None:
+    from aworld.memory.main import _default_file_memory_store
+    from aworld_cli.memory import bootstrap as memory_bootstrap
+    from aworld_cli.runtime_bootstrap import _supports_memory_config
+
+    if init_middlewares_fn is None:
+        from aworld.core.context.amni.config import init_middlewares
+
+        init_middlewares_fn = init_middlewares
+
+    memory_bootstrap.register_cli_memory_provider()
+    memory_config = memory_bootstrap.build_cli_memory_config()
+    init_middlewares_kwargs = dict(
+        init_memory=True,
+        init_retriever=False,
+        custom_memory_store=_default_file_memory_store(),
+    )
+    if _supports_memory_config(init_middlewares_fn):
+        init_middlewares_kwargs["memory_config"] = memory_config
+
+    init_middlewares_fn(**init_middlewares_kwargs)
+
+
 class AcpExecutorOutputBridge:
     def __init__(
         self,
@@ -908,6 +931,8 @@ class AcpStdioServer:
 
 
 async def run_stdio_server() -> int:
+    _bootstrap_acp_memory()
+
     output_bridge = None
     if os.getenv("AWORLD_ACP_SELF_TEST_BRIDGE", "").strip().lower() in {"1", "true", "yes"}:
         from .self_test_bridge import DeterministicSelfTestOutputBridge
