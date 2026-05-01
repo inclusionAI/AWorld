@@ -13,10 +13,31 @@ from aworld.output.base import ChunkOutput, MessageOutput, ToolResultOutput
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
-from aworld_cli.acp.server import AcpExecutorOutputBridge, AcpStdioServer
+from aworld_cli.acp.server import AcpExecutorOutputBridge, AcpStdioServer, _bootstrap_acp_memory
 from aworld_cli.acp.human_intercept import AcpRequiresHumanError
 from aworld_cli.acp.errors import AWORLD_ACP_APPROVAL_UNSUPPORTED
 from aworld_cli.acp.session_store import AcpSessionRecord
+
+
+def test_acp_bootstrap_initializes_cli_hybrid_memory(monkeypatch, tmp_path: Path) -> None:
+    import aworld.memory.main as memory_main
+    from aworld.memory.main import MemoryFactory
+
+    monkeypatch.delenv("AWORLD_CLI_MEMORY_MODE", raising=False)
+    monkeypatch.setenv("AWORLD_MEMORY_ROOT", str(tmp_path / "runtime-memory"))
+    memory_main.MEMORY_HOLDER.clear()
+
+    try:
+        _bootstrap_acp_memory()
+
+        memory = MemoryFactory.instance()
+
+        assert memory.__class__.__name__ == "HybridMemoryProvider"
+        assert memory.config.provider == "hybrid"
+        assert hasattr(memory, "get_instruction_context")
+        assert hasattr(memory, "get_relevant_memory_context")
+    finally:
+        memory_main.MEMORY_HOLDER.clear()
 
 
 @pytest.mark.asyncio
