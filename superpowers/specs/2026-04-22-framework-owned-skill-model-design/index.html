@@ -1,0 +1,5543 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://github.com/inclusionAI/AWorld/superpowers/specs/2026-04-22-framework-owned-skill-model-design/">
+      
+      
+        <link rel="prev" href="../2026-04-21-unify-skill-plugin-model-design/">
+      
+      
+        <link rel="next" href="../2026-04-22-top-level-skill-command-plugin-design/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../imgs/logo.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>2026-04-22-Framework-Owned-Skill-Model-Design - AWorld (Agent World) harness</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../css/aworld.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="deep-purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#framework-owned-skill-model-design" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="AWorld (Agent World) harness" class="md-header__button md-logo" aria-label="AWorld (Agent World) harness" data-md-component="logo">
+      
+  <img src="../../../imgs/logo.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AWorld (Agent World) harness
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              2026-04-22-Framework-Owned-Skill-Model-Design
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="deep-purple"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="blue" data-md-color-accent="deep-purple"  aria-hidden="true"  type="radio" name="__palette" id="__palette_1">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/inclusionAI/AWorld" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    inclusionAI/AWorld
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../Get%20Start/Overview/" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../Agents/Build%20Agent/" class="md-tabs__link">
+          
+  
+  
+  Agents
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../Environment/Overview/" class="md-tabs__link">
+          
+  
+  
+  Environment
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../Training/Trainer/" class="md-tabs__link">
+          
+  
+  
+  Training
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../Deployment/OceanBase/" class="md-tabs__link">
+          
+  
+  
+  Deployment
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../Recipe/deep_search_recipe/" class="md-tabs__link">
+          
+  
+  
+  Recipe
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../aworld-agent-gap-analysis/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Aworld-Agent-Gap-Analysis
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../compact-timeout-fix/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Compact-Timeout-Fix
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../design/parallel_execution_with_isolated_context/" class="md-tabs__link">
+          
+  
+  
+  design
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../designs/architecture-rollback-baseagent-pure/" class="md-tabs__link">
+          
+  
+  
+  designs
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../examples/hooks/" class="md-tabs__link">
+          
+  
+  
+  examples
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../features/aworld-cli-memory/" class="md-tabs__link">
+          
+  
+  
+  features
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../file-path-display-improvement/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  File-Path-Display-Improvement
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../phase3-implementation-summary/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Phase3-Implementation-Summary
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../plans/2026-04-02-aworld-agent-enhancement-design/" class="md-tabs__link">
+          
+  
+  
+  plans
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../plugins/plugin-sdk/" class="md-tabs__link">
+          
+  
+  
+  plugins
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../slash-command-system-summary/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Slash-Command-System-Summary
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../../" class="md-tabs__link">
+          
+  
+  
+  superpowers
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../tool-call-logging/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Tool-Call-Logging
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../tool-output-ux-improvements/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Tool-Output-Ux-Improvements
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="AWorld (Agent World) harness" class="md-nav__button md-logo" aria-label="AWorld (Agent World) harness" data-md-component="logo">
+      
+  <img src="../../../imgs/logo.png" alt="logo">
+
+    </a>
+    AWorld (Agent World) harness
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/inclusionAI/AWorld" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    inclusionAI/AWorld
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Get%20Start/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Get%20Start/Quick%20Start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Get%20Start/Core%20Capabilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core Capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Get%20Start/Parallel%20Tasks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel Tasks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Get%20Start/Streaming%20Response/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming Response
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Get%20Start/HITL/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Human in the Loop (HITL)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agents
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Agents
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Build%20Agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Build%20Multi-Agent%20System%28MAS%29/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-Agent System(MAS)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Build%20WorkFlow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Custom%20Agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_2_6" id="__nav_2_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Runtime
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Runtime/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Runtime/Custom%20Runner/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Runner
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Runtime/Hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Agents/Trace/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Environment
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Environment
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Environment/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Environment/Using%20API/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Environment/Env%20Client/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Env Client
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Environment/Advanced%20Capabilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advanced Capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Training
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Training
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Training/Trainer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trainer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Training/Trajectory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trajectory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Training/Evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Deployment
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Deployment/OceanBase/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oceanbase
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recipe
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Recipe
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Recipe/deep_search_recipe/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deep Search Recipe
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Recipe/miniapp_build_recipe/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miniapp Build Recipe
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../Recipe/video_create_recipe/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Video Create Recipe
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../aworld-agent-gap-analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aworld-Agent-Gap-Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../compact-timeout-fix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compact-Timeout-Fix
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    design
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    design
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../design/parallel_execution_with_isolated_context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel Execution With Isolated Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../design/subagent-architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Subagent-Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../design/subagent_trajectory_design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Subagent Trajectory Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    designs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    designs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../designs/architecture-rollback-baseagent-pure/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture-Rollback-Baseagent-Pure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../designs/csi-a500-investment-test-case/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Csi-A500-Investment-Test-Case
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_10_3" id="__nav_10_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    hooks-v2
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_10_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    hooks-v2
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../designs/hooks-v2/DESIGN/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../designs/hooks-v2/DIAGRAMS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagrams
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../designs/hybrid-bdd-validation-analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid-Bdd-Validation-Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../designs/hybrid-peer-message-handling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid-Peer-Message-Handling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../designs/hybrid-swarm-architecture-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid-Swarm-Architecture-Plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../designs/hybrid-test-case-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid-Test-Case-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../designs/race-condition-fix-contextvars/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Race-Condition-Fix-Contextvars
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_11" >
+        
+          
+          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    examples
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_11">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_11_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_11_1" id="__nav_11_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    hooks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_11_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_11_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    hooks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Readme
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_12" >
+        
+          
+          <label class="md-nav__link" for="__nav_12" id="__nav_12_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    features
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_12_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_12">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    features
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../features/aworld-cli-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aworld-Cli-Memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../features/parallel-spawn-multi-agent-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel-Spawn-Multi-Agent-Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../features/parallel-subagent-spawning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel-Subagent-Spawning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../features/ralph-runner-dual-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ralph-Runner-Dual-Mode
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../file-path-display-improvement/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File-Path-Display-Improvement
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../phase3-implementation-summary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Phase3-Implementation-Summary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_15" >
+        
+          
+          <label class="md-nav__link" for="__nav_15" id="__nav_15_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    plans
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_15_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_15">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    plans
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../plans/2026-04-02-aworld-agent-enhancement-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-02-Aworld-Agent-Enhancement-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../plans/2026-04-08-cron-scheduler-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-08-Cron-Scheduler-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../plans/2026-04-08-dispatch-command-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-08-Dispatch-Command-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_16" >
+        
+          
+          <label class="md-nav__link" for="__nav_16" id="__nav_16_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    plugins
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_16_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_16">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    plugins
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../plugins/plugin-sdk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugin-Sdk
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../plugins/ralph-session-loop-plugin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ralph-Session-Loop-Plugin
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../slash-command-system-summary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Slash-Command-System-Summary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_18" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_18" id="__nav_18_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    superpowers
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_18_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_18">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    superpowers
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Readme
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_18_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_18_2" id="__nav_18_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    plans
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_18_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_18_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    plans
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-09-hooks-minimal-fix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-09-Hooks-Minimal-Fix
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-11-cli-hook-acceptance-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-11-Cli-Hook-Acceptance-Example
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-11-reminder-to-cron-routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-11-Reminder-To-Cron-Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-14-openspec-adoption/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-14-Openspec-Adoption
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-15-aworld-gateway-channel-implementation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-15-Aworld-Gateway-Channel-Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-16-aworld-gateway-dingding-channel-implementation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-16-Aworld-Gateway-Dingding-Channel-Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-16-plugin-framework-extraction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-16-Plugin-Framework-Extraction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-20-aworld-gateway-artifact-publishing-implementation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-20-Aworld-Gateway-Artifact-Publishing-Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-20-hud-plugin-boundary-batch-2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-20-Hud-Plugin-Boundary-Batch-2
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-22-top-level-skill-command-plugin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-22-Top-Level-Skill-Command-Plugin
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-27-ralph-runner-dual-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-27-Ralph-Runner-Dual-Mode
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-27-ralph-runner-fresh-context-verify-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-27-Ralph-Runner-Fresh-Context-Verify-Example
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_18_3" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_18_3" id="__nav_18_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    specs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_18_3_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_18_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    specs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-09-cron-runner-supervision-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-09-Cron-Runner-Supervision-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-09-hooks-minimal-fix-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-09-Hooks-Minimal-Fix-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-11-cli-hook-acceptance-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-11-Cli-Hook-Acceptance-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-11-cron-experience-demo-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-11-Cron-Experience-Demo-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-11-reminder-cron-routing-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-11-Reminder-Cron-Routing-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-15-aworld-codex-style-skill-install-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-15-Aworld-Codex-Style-Skill-Install-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-15-aworld-gateway-channel-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-15-Aworld-Gateway-Channel-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-16-aworld-gateway-dingding-channel-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-16-Aworld-Gateway-Dingding-Channel-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-21-unify-skill-plugin-model-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-21-Unify-Skill-Plugin-Model-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-22-Framework-Owned-Skill-Model-Design
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-22-Framework-Owned-Skill-Model-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#goal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Goal
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#problem-statement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem Statement
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design Principles
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#target-package-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Target Package Layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-abstractions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Abstractions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Core Abstractions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#skilldescriptor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SkillDescriptor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#skillcontent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SkillContent
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#skillprovider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SkillProvider
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provider-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Provider Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#filesystem-skill-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Filesystem Skill Provider
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#plugin-backed-skill-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin-Backed Skill Provider
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compatibility-skill-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compatibility Skill Provider
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#discovery-and-identity-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discovery And Identity Model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lazy-loading-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lazy Loading Model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Lazy Loading Model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#current-problem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current Problem
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#target-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Target Model
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#framework-registry-and-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Framework Registry And State
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runtime-consumption-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime Consumption Model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Runtime Consumption Model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#product-level-activation-resolver" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Product-Level Activation Resolver
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#amni-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        amni Integration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provider-owned-asset-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider-Owned Asset Resolution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compatibility-adapters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compatibility Adapters
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Compatibility Adapters">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#skill_configs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        skill_configs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#skills_path-and-skill_names" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        skills_path And skill_names
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#existing-collect_skill_docs-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Existing collect_skill_docs() API
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#migration-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration Plan
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Migration Plan">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-1-framework-foundation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 1: Framework Foundation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-2-bridge-current-cli-logic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2: Bridge Current CLI Logic
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-3-runtime-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 3: Runtime Integration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-4-remove-escape-hatches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 4: Remove Escape Hatches
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relationship-to-other-specs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationship To Other Specs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing Strategy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#risks-and-mitigations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risks And Mitigations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Risks And Mitigations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#risk-collect_skill_docs-has-too-many-callers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risk: collect_skill_docs() Has Too Many Callers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#risk-too-much-logic-moves-at-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risk: Too Much Logic Moves At Once
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#risk-provider-metadata-is-incomplete-for-legacy-sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risk: Provider Metadata Is Incomplete For Legacy Sources
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#risk-singleton-removal-breaks-existing-entrypoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risk: Singleton Removal Breaks Existing Entrypoints
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#acceptance-criteria" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acceptance Criteria
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-22-top-level-skill-command-plugin-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-22-Top-Level-Skill-Command-Plugin-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-27-ralph-runner-dual-mode-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-27-Ralph-Runner-Dual-Mode-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-27-ralph-runner-fresh-context-verify-example-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-27-Ralph-Runner-Fresh-Context-Verify-Example-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../2026-04-28-aworld-gateway-cron-push-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-28-Aworld-Gateway-Cron-Push-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tool-call-logging/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool-Call-Logging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tool-output-ux-improvements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool-Output-Ux-Improvements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#goal" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Goal
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scope" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Scope
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#problem-statement" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Problem Statement
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-principles" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Design Principles
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#target-package-layout" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Target Package Layout
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#core-abstractions" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Core Abstractions
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Core Abstractions">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#skilldescriptor" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SkillDescriptor
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#skillcontent" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SkillContent
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#skillprovider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        SkillProvider
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provider-types" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider Types
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Provider Types">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#filesystem-skill-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Filesystem Skill Provider
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#plugin-backed-skill-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Plugin-Backed Skill Provider
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#compatibility-skill-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compatibility Skill Provider
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#discovery-and-identity-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Discovery And Identity Model
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#lazy-loading-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Lazy Loading Model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Lazy Loading Model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#current-problem" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Current Problem
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#target-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Target Model
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#framework-registry-and-state" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Framework Registry And State
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runtime-consumption-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Runtime Consumption Model
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Runtime Consumption Model">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#product-level-activation-resolver" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Product-Level Activation Resolver
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#amni-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        amni Integration
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#provider-owned-asset-resolution" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Provider-Owned Asset Resolution
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compatibility-adapters" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Compatibility Adapters
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Compatibility Adapters">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#skill_configs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        skill_configs
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#skills_path-and-skill_names" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        skills_path And skill_names
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#existing-collect_skill_docs-api" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Existing collect_skill_docs() API
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#migration-plan" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Migration Plan
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Migration Plan">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#phase-1-framework-foundation" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 1: Framework Foundation
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-2-bridge-current-cli-logic" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 2: Bridge Current CLI Logic
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-3-runtime-integration" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 3: Runtime Integration
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#phase-4-remove-escape-hatches" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Phase 4: Remove Escape Hatches
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#relationship-to-other-specs" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Relationship To Other Specs
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing-strategy" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Testing Strategy
+      
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#risks-and-mitigations" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risks And Mitigations
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Risks And Mitigations">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#risk-collect_skill_docs-has-too-many-callers" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risk: collect_skill_docs() Has Too Many Callers
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#risk-too-much-logic-moves-at-once" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risk: Too Much Logic Moves At Once
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#risk-provider-metadata-is-incomplete-for-legacy-sources" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risk: Provider Metadata Is Incomplete For Legacy Sources
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#risk-singleton-removal-breaks-existing-entrypoints" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Risk: Singleton Removal Breaks Existing Entrypoints
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#acceptance-criteria" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        Acceptance Criteria
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/inclusionAI/AWorld/tree/main/docs/superpowers/specs/2026-04-22-framework-owned-skill-model-design.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="framework-owned-skill-model-design">Framework-Owned Skill Model Design</h1>
+<h2 id="goal">Goal</h2>
+<p>Move the source of truth for skill discovery, identity, loading, and asset resolution into framework code under <code>aworld/skills/</code>, while preserving the existing runtime-facing <code>skill_configs</code> ABI during migration.</p>
+<h2 id="scope">Scope</h2>
+<p>This design covers:</p>
+<ul>
+<li>introducing framework-owned skill abstractions under <code>aworld/skills/</code></li>
+<li>replacing eager full-content discovery with descriptor-first, lazy-content loading</li>
+<li>defining provider contracts for filesystem, plugin-backed, and compatibility skill sources</li>
+<li>preserving <code>skill_configs</code> as the downstream runtime ABI during the migration period</li>
+<li>defining how <code>amni</code> and <code>ContextSkillTool</code> consume framework-owned skill state</li>
+<li>positioning current CLI-owned resolver and install logic as adapters or consumers of the framework layer</li>
+</ul>
+<p>This design does not cover:</p>
+<ul>
+<li>changing user-facing <code>aworld-cli skill ...</code> syntax in this phase</li>
+<li>removing compatibility for <code>skills_path</code> and <code>skill_names</code> immediately</li>
+<li>marketplace, signature, or remote trust policy</li>
+<li>semantic version solving between skill packages</li>
+<li>redesigning prompt-time skill scoring heuristics beyond their new framework boundary</li>
+</ul>
+<h2 id="problem-statement">Problem Statement</h2>
+<p>The current branch made meaningful progress on installed-skill lifecycle and plugin-backed storage, but the ownership boundary is still wrong for the long-term architecture.</p>
+<p>Today:</p>
+<ul>
+<li><code>aworld-cli</code> owns the main skill resolver path</li>
+<li><code>aworld.utils.skill_loader.collect_skill_docs()</code> eagerly reads full <code>SKILL.md</code> bodies during discovery</li>
+<li>skill identity is effectively keyed by name within a process</li>
+<li>compatibility inputs still escape directly into eager source loading</li>
+<li><code>amni</code> still only sees ready-made <code>skill_configs</code></li>
+</ul>
+<p>This creates three structural problems:</p>
+<ol>
+<li>discovery, activation, and content loading are coupled together</li>
+<li>the framework has no formal skill provider abstraction</li>
+<li>multiple entrypoints still depend on CLI-owned skill state and a global singleton registry</li>
+</ol>
+<p>The long-term architecture should make these statements true:</p>
+<ul>
+<li>framework code owns skill descriptors, content loading, and provider contracts</li>
+<li>CLI code assembles providers and applies product-level activation policy, but does not own the skill model</li>
+<li>skills have stable source-qualified identity</li>
+<li>full <code>SKILL.md</code> content is loaded only when needed</li>
+<li><code>amni</code> can track available skills, active skills, and loaded content separately</li>
+</ul>
+<h2 id="design-principles">Design Principles</h2>
+<ol>
+<li>Framework owns the model</li>
+<li>
+<p><code>aworld-cli</code> may coordinate and present workflows, but it should not define the canonical skill data model.</p>
+</li>
+<li>
+<p>Descriptor first</p>
+</li>
+<li>
+<p>Discovery should return lightweight descriptors without eagerly loading usage bodies.</p>
+</li>
+<li>
+<p>Stable identity</p>
+</li>
+<li>
+<p>Skill identity must be provider-qualified, not only name-qualified.</p>
+</li>
+<li>
+<p>Lazy content</p>
+</li>
+<li>
+<p>Full skill body and auxiliary assets should be loaded only for active or explicitly requested skills.</p>
+</li>
+<li>
+<p>Compatibility at the boundary</p>
+</li>
+<li>Existing <code>skill_configs</code>, <code>skills_path</code>, and <code>skill_names</code> remain supported through adapters, not through duplicated internal models.</li>
+</ol>
+<h2 id="target-package-layout">Target Package Layout</h2>
+<p>Introduce a new framework package:</p>
+<ul>
+<li><code>aworld/skills/models.py</code></li>
+<li><code>SkillDescriptor</code></li>
+<li><code>SkillContent</code></li>
+<li><code>SkillSelection</code></li>
+<li>
+<p><code>ResolvedSkillSet</code> or equivalent framework-owned result types</p>
+</li>
+<li>
+<p><code>aworld/skills/providers.py</code></p>
+</li>
+<li><code>SkillProvider</code> abstract base class</li>
+<li>
+<p>shared provider utility helpers</p>
+</li>
+<li>
+<p><code>aworld/skills/registry.py</code></p>
+</li>
+<li><code>SkillRegistry</code></li>
+<li>descriptor indexing</li>
+<li>
+<p>provider coordination</p>
+</li>
+<li>
+<p><code>aworld/skills/loaders.py</code></p>
+</li>
+<li>descriptor parsing from filesystem</li>
+<li>
+<p>lazy content loaders</p>
+</li>
+<li>
+<p>optional provider modules</p>
+</li>
+<li>filesystem-backed provider</li>
+<li>plugin-backed provider</li>
+<li>compatibility adapter provider</li>
+</ul>
+<p>The existing <code>aworld.utils.skill_loader</code> module becomes transitional and should gradually delegate to the new package.</p>
+<h2 id="core-abstractions">Core Abstractions</h2>
+<h3 id="skilldescriptor"><code>SkillDescriptor</code></h3>
+<p>Represents discoverable metadata without loading the full skill body.</p>
+<p>Minimum fields:</p>
+<ul>
+<li><code>skill_id</code></li>
+<li>stable provider-qualified identity such as <code>&lt;provider_id&gt;:&lt;skill_name&gt;</code></li>
+<li><code>provider_id</code></li>
+<li><code>skill_name</code></li>
+<li><code>display_name</code></li>
+<li><code>description</code></li>
+<li><code>source_type</code></li>
+<li><code>scope</code></li>
+<li><code>visibility</code></li>
+<li><code>asset_root</code></li>
+<li><code>skill_file</code></li>
+<li><code>metadata</code></li>
+<li><code>requirements</code></li>
+</ul>
+<p>Important constraints:</p>
+<ul>
+<li>no full <code>usage</code> body in the descriptor</li>
+<li>enough metadata to render discovery UIs and to run activation filtering</li>
+</ul>
+<h3 id="skillcontent"><code>SkillContent</code></h3>
+<p>Represents the heavy content loaded on demand.</p>
+<p>Minimum fields:</p>
+<ul>
+<li><code>skill_id</code></li>
+<li><code>usage</code></li>
+<li><code>tool_list</code></li>
+<li><code>raw_frontmatter</code></li>
+<li>optional parsed auxiliary references</li>
+</ul>
+<h3 id="skillprovider"><code>SkillProvider</code></h3>
+<p>The framework-owned provider contract.</p>
+<p>Suggested shape:</p>
+<ul>
+<li><code>provider_id() -&gt; str</code></li>
+<li><code>list_descriptors() -&gt; Iterable[SkillDescriptor]</code></li>
+<li><code>load_content(skill_id: str) -&gt; SkillContent</code></li>
+<li><code>resolve_asset_path(skill_id: str, relative_path: str) -&gt; Path</code></li>
+</ul>
+<p>Optional capabilities:</p>
+<ul>
+<li>provider priority</li>
+<li>provider health / validation diagnostics</li>
+<li>provider-scoped metadata for install/update lifecycle</li>
+</ul>
+<p>This is the missing abstraction that the current branch does not yet provide.</p>
+<h2 id="provider-types">Provider Types</h2>
+<h3 id="filesystem-skill-provider">Filesystem Skill Provider</h3>
+<p>Wraps local directories or cached Git working trees.</p>
+<p>Responsibilities:</p>
+<ul>
+<li>scan for <code>SKILL.md</code> files</li>
+<li>create <code>SkillDescriptor</code> values without reading full content bodies into runtime state</li>
+<li>load the body lazily when requested</li>
+<li>expose provider-owned asset resolution rooted to the skill directory</li>
+</ul>
+<p>This provider replaces direct broad usage of <code>collect_skill_docs()</code> as the discovery primitive.</p>
+<h3 id="plugin-backed-skill-provider">Plugin-Backed Skill Provider</h3>
+<p>Wraps plugin manifests and legacy plugin synthesis from <code>aworld.plugins.discovery</code>.</p>
+<p>Responsibilities:</p>
+<ul>
+<li>turn plugin <code>skills</code> entrypoints into descriptors</li>
+<li>preserve provider identity at the plugin level</li>
+<li>expose plugin-owned asset roots</li>
+<li>bridge plugin metadata such as scope, visibility, and agent selectors into descriptor metadata</li>
+</ul>
+<p>This is where the current branch's plugin-backed install and discovery work can be reused.</p>
+<h3 id="compatibility-skill-provider">Compatibility Skill Provider</h3>
+<p>Wraps temporary compatibility sources such as markdown-agent <code>skills_path</code>.</p>
+<p>Responsibilities:</p>
+<ul>
+<li>normalize compatibility inputs into framework providers</li>
+<li>preserve explicit precedence rules</li>
+<li>keep compatibility behavior out of core runtime consumers</li>
+</ul>
+<p>This provider exists only as a migration boundary and should be removable later.</p>
+<h2 id="discovery-and-identity-model">Discovery And Identity Model</h2>
+<p>Discovery becomes a two-step process:</p>
+<ol>
+<li>providers emit descriptors</li>
+<li>framework registry indexes descriptors and applies deterministic precedence</li>
+</ol>
+<p>Identity rules:</p>
+<ul>
+<li>registry keys by <code>skill_id</code>, not plain skill name</li>
+<li>user-facing selection by plain name remains allowed only when unambiguous</li>
+<li>collisions between providers with the same <code>skill_name</code> remain visible at the framework layer even if product surfaces choose a winner</li>
+</ul>
+<p>Precedence rules should remain deterministic. The current first-wins behavior can remain as a product policy, but the framework must preserve enough identity to explain what lost and why.</p>
+<h2 id="lazy-loading-model">Lazy Loading Model</h2>
+<h3 id="current-problem">Current Problem</h3>
+<p><code>collect_skill_docs()</code> currently reads every matching <code>SKILL.md</code>, extracts full body text, and returns ready-to-use dicts. That blocks any true descriptor/content split.</p>
+<h3 id="target-model">Target Model</h3>
+<p>Descriptor loading and content loading are separate operations.</p>
+<p>At discovery time:</p>
+<ul>
+<li>parse only minimal frontmatter and descriptor metadata</li>
+<li>do not materialize <code>usage</code></li>
+<li>do not build full <code>skill_configs</code></li>
+</ul>
+<p>At activation or explicit read time:</p>
+<ul>
+<li>load <code>SkillContent</code></li>
+<li>adapt it to dict-shaped <code>skill_configs</code> only for selected skills</li>
+<li>cache loaded content by <code>skill_id</code> in framework-managed caches</li>
+</ul>
+<p>This is the core architectural change required by the review.</p>
+<h2 id="framework-registry-and-state">Framework Registry And State</h2>
+<p>Introduce a framework-owned <code>SkillRegistry</code> that is not a process-global singleton by default.</p>
+<p>Responsibilities:</p>
+<ul>
+<li>hold provider instances for one runtime assembly</li>
+<li>enumerate descriptors</li>
+<li>resolve descriptor precedence</li>
+<li>support lookup by <code>skill_id</code> and by user-facing name</li>
+<li>lazily cache loaded <code>SkillContent</code></li>
+</ul>
+<p>Important rule:</p>
+<ul>
+<li>registry lifetime should be explicit and request- or runtime-scoped</li>
+<li>a process-wide singleton may remain temporarily as a compatibility shim, but it should not be the long-term source of truth</li>
+</ul>
+<h2 id="runtime-consumption-model">Runtime Consumption Model</h2>
+<h3 id="product-level-activation-resolver">Product-Level Activation Resolver</h3>
+<p>The current <code>aworld_cli.core.SkillActivationResolver</code> should survive conceptually, but only as a consumer of framework abstractions.</p>
+<p>After refactor it should:</p>
+<ul>
+<li>request descriptors from framework providers or registry</li>
+<li>apply product rules such as agent filters, explicit <code>--skill</code> selection, and scoring</li>
+<li>choose active skill ids</li>
+<li>ask framework registry to load content for active skills</li>
+<li>build final dict-shaped <code>skill_configs</code></li>
+</ul>
+<p>It should no longer:</p>
+<ul>
+<li>call <code>collect_skill_docs()</code> directly</li>
+<li>own descriptor construction</li>
+<li>own compatibility source parsing</li>
+</ul>
+<h3 id="amni-integration"><code>amni</code> Integration</h3>
+<p><code>amni</code> currently consumes only <code>skill_configs</code>. This remains the compatibility ABI in the first migration wave.</p>
+<p>The internal direction should be:</p>
+<ul>
+<li>available skills = descriptor index</li>
+<li>active skills = selected skill ids</li>
+<li>loaded content = lazy cache</li>
+</ul>
+<p>Migration path:</p>
+<ol>
+<li>continue passing <code>skill_configs</code> into <code>amni</code></li>
+<li>add internal support for richer skill state when the framework layer is stable</li>
+<li>keep compatibility adapters until <code>ContextSkillTool</code> and related runtime pieces can consume provider-backed state more directly</li>
+</ol>
+<h2 id="provider-owned-asset-resolution">Provider-Owned Asset Resolution</h2>
+<p><code>ContextSkillTool</code> currently resolves files by <code>skill_path</code> and relative filesystem traversal.</p>
+<p>Long-term direction:</p>
+<ul>
+<li>asset resolution should be owned by the provider, not by raw path assumptions</li>
+<li>framework should expose <code>resolve_asset_path(skill_id, relative_path)</code></li>
+<li>compatibility <code>skill_path</code> can continue to be present in <code>skill_configs</code> during migration, but it should become derived data rather than the canonical authority</li>
+</ul>
+<p>This addresses the review concern that asset resolution is only partially provider-owned today.</p>
+<h2 id="compatibility-adapters">Compatibility Adapters</h2>
+<h3 id="skill_configs"><code>skill_configs</code></h3>
+<p>Keep <code>skill_configs</code> as the downstream compatibility view.</p>
+<p>Adapter rule:</p>
+<ul>
+<li><code>SkillDescriptor</code> + lazily loaded <code>SkillContent</code> -&gt; <code>skill_configs</code> entry</li>
+</ul>
+<p>The dict shape remains stable while the upstream model changes.</p>
+<h3 id="skills_path-and-skill_names"><code>skills_path</code> And <code>skill_names</code></h3>
+<p>These remain accepted during migration, but only as inputs to a compatibility provider layer.</p>
+<p>They should no longer:</p>
+<ul>
+<li>directly mutate a global singleton registry</li>
+<li>directly trigger eager final skill materialization outside the framework model</li>
+</ul>
+<h3 id="existing-collect_skill_docs-api">Existing <code>collect_skill_docs()</code> API</h3>
+<p>Treat it as legacy API.</p>
+<p>Migration approach:</p>
+<ul>
+<li>keep it for compatibility callers</li>
+<li>gradually reimplement it in terms of <code>aworld/skills/</code> descriptor and content loaders</li>
+<li>stop introducing new direct callers</li>
+</ul>
+<h2 id="migration-plan">Migration Plan</h2>
+<h3 id="phase-1-framework-foundation">Phase 1: Framework Foundation</h3>
+<ul>
+<li>create <code>aworld/skills/</code></li>
+<li>define <code>SkillDescriptor</code>, <code>SkillContent</code>, <code>SkillProvider</code>, and framework <code>SkillRegistry</code></li>
+<li>add filesystem and plugin-backed providers</li>
+</ul>
+<h3 id="phase-2-bridge-current-cli-logic">Phase 2: Bridge Current CLI Logic</h3>
+<ul>
+<li>refactor CLI resolver code to consume framework descriptors instead of constructing candidates directly</li>
+<li>keep scoring, explicit selection, and visibility logic at the product layer</li>
+<li>keep installed-skill lifecycle in CLI for now</li>
+</ul>
+<h3 id="phase-3-runtime-integration">Phase 3: Runtime Integration</h3>
+<ul>
+<li>add framework-owned lazy content cache</li>
+<li>adapt <code>amni</code> and <code>ContextSkillTool</code> to work with provider-backed resolution</li>
+<li>keep <code>skill_configs</code> as compatibility output</li>
+</ul>
+<h3 id="phase-4-remove-escape-hatches">Phase 4: Remove Escape Hatches</h3>
+<ul>
+<li>retire compatibility source short-circuits in the CLI resolver</li>
+<li>shrink or remove the global singleton <code>SkillRegistry</code></li>
+<li>sunset direct public dependence on <code>collect_skill_docs()</code></li>
+</ul>
+<h2 id="relationship-to-other-specs">Relationship To Other Specs</h2>
+<ul>
+<li><a href="/Users/wuman/Documents/workspace/aworld-mas/aworld/docs/superpowers/specs/2026-04-15-aworld-codex-style-skill-install-design.md">2026-04-15-aworld-codex-style-skill-install-design.md</a> defined the user-facing install MVP and explicitly deferred framework ownership.</li>
+<li><a href="/Users/wuman/Documents/workspace/aworld-mas/aworld/docs/superpowers/specs/2026-04-21-unify-skill-plugin-model-design.md">2026-04-21-unify-skill-plugin-model-design.md</a> unified installed-skill state onto plugin-backed packaging.</li>
+<li><a href="/Users/wuman/Documents/workspace/aworld-mas/aworld/docs/superpowers/specs/2026-04-22-top-level-skill-command-plugin-design.md">2026-04-22-top-level-skill-command-plugin-design.md</a> covers CLI extensibility and top-level command pluginization.</li>
+</ul>
+<p>This spec is the missing framework-layer architecture beneath those product- and CLI-level designs.</p>
+<h2 id="testing-strategy">Testing Strategy</h2>
+<p>Automated coverage should include:</p>
+<ol>
+<li>descriptor discovery</li>
+<li>filesystem provider returns lightweight descriptors</li>
+<li>
+<p>plugin-backed provider preserves provider identity and metadata</p>
+</li>
+<li>
+<p>lazy loading</p>
+</li>
+<li>descriptor listing does not load usage content</li>
+<li>content loads only on explicit request</li>
+<li>
+<p>cache behavior is deterministic</p>
+</li>
+<li>
+<p>identity and precedence</p>
+</li>
+<li>duplicate skill names across providers remain distinguishable internally</li>
+<li>
+<p>product-level precedence remains deterministic</p>
+</li>
+<li>
+<p>compatibility adapters</p>
+</li>
+<li><code>skill_configs</code> output remains backward compatible</li>
+<li>
+<p><code>skills_path</code> / <code>skill_names</code> still work through provider adapters</p>
+</li>
+<li>
+<p>provider-owned asset resolution</p>
+</li>
+<li>relative asset reads are confined to provider-owned roots</li>
+<li>
+<p><code>ContextSkillTool</code> path traversal guarantees are preserved</p>
+</li>
+<li>
+<p>migration regression</p>
+</li>
+<li>current CLI install/list/enable/disable flows continue to work</li>
+<li>task-time activation still produces expected <code>skill_configs</code></li>
+</ol>
+<h2 id="risks-and-mitigations">Risks And Mitigations</h2>
+<h3 id="risk-collect_skill_docs-has-too-many-callers">Risk: <code>collect_skill_docs()</code> Has Too Many Callers</h3>
+<p>This is the largest migration obstacle.</p>
+<p>Mitigation:</p>
+<ul>
+<li>introduce framework providers first</li>
+<li>reimplement <code>collect_skill_docs()</code> as an adapter rather than trying to delete it immediately</li>
+<li>stop adding new direct call sites</li>
+</ul>
+<h3 id="risk-too-much-logic-moves-at-once">Risk: Too Much Logic Moves At Once</h3>
+<p>If discovery, scoring, runtime ABI, and CLI UX all change together, the migration becomes hard to validate.</p>
+<p>Mitigation:</p>
+<ul>
+<li>move ownership first</li>
+<li>keep scoring and CLI UX stable during the first framework migration</li>
+<li>preserve <code>skill_configs</code> until the framework model is proven</li>
+</ul>
+<h3 id="risk-provider-metadata-is-incomplete-for-legacy-sources">Risk: Provider Metadata Is Incomplete For Legacy Sources</h3>
+<p>Legacy skill directories may not have enough metadata to fully support all future features.</p>
+<p>Mitigation:</p>
+<ul>
+<li>require minimal provider identity even for compatibility providers</li>
+<li>degrade gracefully when advanced metadata is absent</li>
+</ul>
+<h3 id="risk-singleton-removal-breaks-existing-entrypoints">Risk: Singleton Removal Breaks Existing Entrypoints</h3>
+<p>Several current entrypoints implicitly rely on global state.</p>
+<p>Mitigation:</p>
+<ul>
+<li>keep a compatibility singleton shim temporarily</li>
+<li>migrate runtime callers to explicit registry assembly before deleting the shim</li>
+</ul>
+<h2 id="acceptance-criteria">Acceptance Criteria</h2>
+<p>The framework architecture is considered complete when all of the following are true:</p>
+<ol>
+<li>framework-owned skill abstractions exist under <code>aworld/skills/</code>.</li>
+<li>skill discovery can produce descriptors without eagerly loading full <code>usage</code> content.</li>
+<li>skill identity is provider-qualified internally.</li>
+<li>CLI activation logic consumes framework providers or registry rather than directly calling <code>collect_skill_docs()</code>.</li>
+<li><code>skill_configs</code> remains a compatibility output rather than the primary internal model.</li>
+<li>asset resolution can be performed by provider identity rather than only by raw <code>skill_path</code>.</li>
+<li>compatibility inputs such as <code>skills_path</code> and <code>skill_names</code> flow through adapter providers instead of direct eager source loading.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © Copyright 2025 inclusionAI AWorld Team.
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "toc.follow", "content.code.copy", "content.code.annotate", "content.action.edit", "header.autohide"], "search": "../../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../../js/hide-home-edit.js"></script>
+      
+        <script src="../../../js/aworld-enhancements.js"></script>
+      
+        <script src="../../../js/github-stars.js"></script>
+      
+        <script src="../../../js/github-stats-fallback.js"></script>
+      
+    
+  </body>
+</html>

@@ -1,0 +1,5432 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://github.com/inclusionAI/AWorld/designs/hybrid-test-case-design/">
+      
+      
+        <link rel="prev" href="../hybrid-swarm-architecture-plan/">
+      
+      
+        <link rel="next" href="../race-condition-fix-contextvars/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../imgs/logo.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.7.6">
+    
+    
+      
+        <title>Hybrid-Test-Case-Design - AWorld (Agent World) harness</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.484c7ddc.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.ab4e12ef.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,700,700i%7CJetBrains+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../css/aworld.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="deep-purple">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#hybrid-swarm" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="AWorld (Agent World) harness" class="md-header__button md-logo" aria-label="AWorld (Agent World) harness" data-md-component="logo">
+      
+  <img src="../../imgs/logo.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            AWorld (Agent World) harness
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Hybrid-Test-Case-Design
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="blue" data-md-color-accent="deep-purple"  aria-hidden="true"  type="radio" name="__palette" id="__palette_0">
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="blue" data-md-color-accent="deep-purple"  aria-hidden="true"  type="radio" name="__palette" id="__palette_1">
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+      
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/inclusionAI/AWorld" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    inclusionAI/AWorld
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../Get%20Start/Overview/" class="md-tabs__link">
+          
+  
+  
+  Guides
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../Agents/Build%20Agent/" class="md-tabs__link">
+          
+  
+  
+  Agents
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../Environment/Overview/" class="md-tabs__link">
+          
+  
+  
+  Environment
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../Training/Trainer/" class="md-tabs__link">
+          
+  
+  
+  Training
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../Deployment/OceanBase/" class="md-tabs__link">
+          
+  
+  
+  Deployment
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../Recipe/deep_search_recipe/" class="md-tabs__link">
+          
+  
+  
+  Recipe
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../aworld-agent-gap-analysis/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Aworld-Agent-Gap-Analysis
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../compact-timeout-fix/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Compact-Timeout-Fix
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../design/parallel_execution_with_isolated_context/" class="md-tabs__link">
+          
+  
+  
+  design
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../architecture-rollback-baseagent-pure/" class="md-tabs__link">
+          
+  
+  
+  designs
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../examples/hooks/" class="md-tabs__link">
+          
+  
+  
+  examples
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../features/aworld-cli-memory/" class="md-tabs__link">
+          
+  
+  
+  features
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../file-path-display-improvement/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  File-Path-Display-Improvement
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../phase3-implementation-summary/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Phase3-Implementation-Summary
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../plans/2026-04-02-aworld-agent-enhancement-design/" class="md-tabs__link">
+          
+  
+  
+  plans
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../plugins/plugin-sdk/" class="md-tabs__link">
+          
+  
+  
+  plugins
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../slash-command-system-summary/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Slash-Command-System-Summary
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../superpowers/" class="md-tabs__link">
+          
+  
+  
+  superpowers
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../tool-call-logging/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Tool-Call-Logging
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../tool-output-ux-improvements/" class="md-tabs__link">
+        
+  
+  
+    
+  
+  Tool-Output-Ux-Improvements
+
+      </a>
+    </li>
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="AWorld (Agent World) harness" class="md-nav__button md-logo" aria-label="AWorld (Agent World) harness" data-md-component="logo">
+      
+  <img src="../../imgs/logo.png" alt="logo">
+
+    </a>
+    AWorld (Agent World) harness
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/inclusionAI/AWorld" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.1.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2025 Fonticons, Inc.--><path d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    inclusionAI/AWorld
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_1" id="__nav_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Guides
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Guides
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Get%20Start/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Get%20Start/Quick%20Start/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Quick Start
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Get%20Start/Core%20Capabilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Core Capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Get%20Start/Parallel%20Tasks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel Tasks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Get%20Start/Streaming%20Response/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Streaming Response
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Get%20Start/HITL/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Human in the Loop (HITL)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Agents
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Agents
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Build%20Agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Build Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Build%20Multi-Agent%20System%28MAS%29/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Multi-Agent System(MAS)
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Build%20WorkFlow/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Workflow
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Custom%20Agent/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Agent
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_2_6" id="__nav_2_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Runtime
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_2_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Runtime
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Runtime/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Runtime/Custom%20Runner/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Custom Runner
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Runtime/Hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hooks
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Agents/Trace/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trace
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Environment
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Environment
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Environment/Overview/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Overview
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Environment/Using%20API/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Using API
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Environment/Env%20Client/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Env Client
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Environment/Advanced%20Capabilities/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Advanced Capabilities
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Training
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Training
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Training/Trainer/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trainer
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Training/Trajectory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Trajectory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Training/Evaluation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Evaluation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deployment
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Deployment
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Deployment/OceanBase/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Oceanbase
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Recipe
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    Recipe
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Recipe/deep_search_recipe/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Deep Search Recipe
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Recipe/miniapp_build_recipe/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Miniapp Build Recipe
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../Recipe/video_create_recipe/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Video Create Recipe
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../aworld-agent-gap-analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aworld-Agent-Gap-Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../compact-timeout-fix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Compact-Timeout-Fix
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    design
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    design
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/parallel_execution_with_isolated_context/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel Execution With Isolated Context
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/subagent-architecture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Subagent-Architecture
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../design/subagent_trajectory_design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Subagent Trajectory Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+      
+        
+        
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    designs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    designs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../architecture-rollback-baseagent-pure/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Architecture-Rollback-Baseagent-Pure
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../csi-a500-investment-test-case/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Csi-A500-Investment-Test-Case
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_10_3" id="__nav_10_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    hooks-v2
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_10_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    hooks-v2
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hooks-v2/DESIGN/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hooks-v2/DIAGRAMS/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Diagrams
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hybrid-bdd-validation-analysis/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid-Bdd-Validation-Analysis
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hybrid-peer-message-handling/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid-Peer-Message-Handling
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../hybrid-swarm-architecture-plan/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid-Swarm-Architecture-Plan
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid-Test-Case-Design
+  
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Hybrid-Test-Case-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. 测试用例设计原则
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. 测试用例设计原则">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 基于论文的关键发现
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 测试设计目标
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-a500" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 测试场景：中证A500指数投资决策系统
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. 测试场景：中证A500指数投资决策系统">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 任务描述
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 子任务分解
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 实现代码
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 评估指标
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 预期结果
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-gaia-inspired" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 测试场景二：复杂问题求解（GAIA-Inspired）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 测试场景二：复杂问题求解（GAIA-Inspired）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 任务描述
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 实现概要
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. 测试执行计划
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. 测试执行计划">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Benchmark 运行
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 自定义测试
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 评估脚本
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. 成功标准
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. 成功标准">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 验证目标
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 预期提升范围
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 失败判定
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 下一步行动
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../race-condition-fix-contextvars/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Race-Condition-Fix-Contextvars
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_11" >
+        
+          
+          <label class="md-nav__link" for="__nav_11" id="__nav_11_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    examples
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_11_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_11">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    examples
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_11_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_11_1" id="__nav_11_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    hooks
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_11_1_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_11_1">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    hooks
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../examples/hooks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Readme
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_12" >
+        
+          
+          <label class="md-nav__link" for="__nav_12" id="__nav_12_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    features
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_12_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_12">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    features
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../features/aworld-cli-memory/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Aworld-Cli-Memory
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../features/parallel-spawn-multi-agent-guide/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel-Spawn-Multi-Agent-Guide
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../features/parallel-subagent-spawning/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Parallel-Subagent-Spawning
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../features/ralph-runner-dual-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ralph-Runner-Dual-Mode
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../file-path-display-improvement/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    File-Path-Display-Improvement
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../phase3-implementation-summary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Phase3-Implementation-Summary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_15" >
+        
+          
+          <label class="md-nav__link" for="__nav_15" id="__nav_15_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    plans
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_15_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_15">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    plans
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-02-aworld-agent-enhancement-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-02-Aworld-Agent-Enhancement-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-08-cron-scheduler-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-08-Cron-Scheduler-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plans/2026-04-08-dispatch-command-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-08-Dispatch-Command-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_16" >
+        
+          
+          <label class="md-nav__link" for="__nav_16" id="__nav_16_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    plugins
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_16_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_16">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    plugins
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plugins/plugin-sdk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Plugin-Sdk
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../plugins/ralph-session-loop-plugin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Ralph-Session-Loop-Plugin
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../slash-command-system-summary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Slash-Command-System-Summary
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_18" >
+        
+          
+          <label class="md-nav__link" for="__nav_18" id="__nav_18_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    superpowers
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_18_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_18">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    superpowers
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Readme
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_18_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_18_2" id="__nav_18_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    plans
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_18_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_18_2">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    plans
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/plans/2026-04-09-hooks-minimal-fix/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-09-Hooks-Minimal-Fix
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/plans/2026-04-11-cli-hook-acceptance-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-11-Cli-Hook-Acceptance-Example
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/plans/2026-04-11-reminder-to-cron-routing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-11-Reminder-To-Cron-Routing
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/plans/2026-04-14-openspec-adoption/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-14-Openspec-Adoption
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/plans/2026-04-15-aworld-gateway-channel-implementation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-15-Aworld-Gateway-Channel-Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/plans/2026-04-16-aworld-gateway-dingding-channel-implementation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-16-Aworld-Gateway-Dingding-Channel-Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/plans/2026-04-16-plugin-framework-extraction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-16-Plugin-Framework-Extraction
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/plans/2026-04-20-aworld-gateway-artifact-publishing-implementation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-20-Aworld-Gateway-Artifact-Publishing-Implementation
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/plans/2026-04-20-hud-plugin-boundary-batch-2/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-20-Hud-Plugin-Boundary-Batch-2
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/plans/2026-04-22-top-level-skill-command-plugin/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-22-Top-Level-Skill-Command-Plugin
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/plans/2026-04-27-ralph-runner-dual-mode/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-27-Ralph-Runner-Dual-Mode
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/plans/2026-04-27-ralph-runner-fresh-context-verify-example/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-27-Ralph-Runner-Fresh-Context-Verify-Example
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    
+    
+    
+    
+      
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_18_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_18_3" id="__nav_18_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    specs
+  
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_18_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_18_3">
+            <span class="md-nav__icon md-icon"></span>
+            
+  
+    specs
+  
+
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-09-cron-runner-supervision-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-09-Cron-Runner-Supervision-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-09-hooks-minimal-fix-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-09-Hooks-Minimal-Fix-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-11-cli-hook-acceptance-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-11-Cli-Hook-Acceptance-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-11-cron-experience-demo-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-11-Cron-Experience-Demo-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-11-reminder-cron-routing-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-11-Reminder-Cron-Routing-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-15-aworld-codex-style-skill-install-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-15-Aworld-Codex-Style-Skill-Install-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-15-aworld-gateway-channel-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-15-Aworld-Gateway-Channel-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-16-aworld-gateway-dingding-channel-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-16-Aworld-Gateway-Dingding-Channel-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-21-unify-skill-plugin-model-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-21-Unify-Skill-Plugin-Model-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-22-framework-owned-skill-model-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-22-Framework-Owned-Skill-Model-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-22-top-level-skill-command-plugin-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-22-Top-Level-Skill-Command-Plugin-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-27-ralph-runner-dual-mode-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-27-Ralph-Runner-Dual-Mode-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-27-ralph-runner-fresh-context-verify-example-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-27-Ralph-Runner-Fresh-Context-Verify-Example-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../superpowers/specs/2026-04-28-aworld-gateway-cron-push-design/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    2026-04-28-Aworld-Gateway-Cron-Push-Design
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tool-call-logging/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool-Call-Logging
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tool-output-ux-improvements/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    Tool-Output-Ux-Improvements
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#1" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1. 测试用例设计原则
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="1. 测试用例设计原则">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#11" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.1 基于论文的关键发现
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#12" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        1.2 测试设计目标
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#2-a500" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2. 测试场景：中证A500指数投资决策系统
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="2. 测试场景：中证A500指数投资决策系统">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#21" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.1 任务描述
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#22" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.2 子任务分解
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#23" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.3 实现代码
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#24" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.4 评估指标
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#25" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        2.5 预期结果
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3-gaia-inspired" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3. 测试场景二：复杂问题求解（GAIA-Inspired）
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="3. 测试场景二：复杂问题求解（GAIA-Inspired）">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#31" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.1 任务描述
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#32" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        3.2 实现概要
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#4" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4. 测试执行计划
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. 测试执行计划">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#41-benchmark" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.1 Benchmark 运行
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#42" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.2 自定义测试
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#43" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        4.3 评估脚本
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#5" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5. 成功标准
+      
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="5. 成功标准">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#51" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.1 验证目标
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#52" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.2 预期提升范围
+      
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#53" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        5.3 失败判定
+      
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#6" class="md-nav__link">
+    <span class="md-ellipsis">
+      
+        6. 下一步行动
+      
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+    <a href="https://github.com/inclusionAI/AWorld/tree/main/docs/designs/hybrid-test-case-design.md" title="Edit this page" class="md-content__button md-icon" rel="edit">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M10 20H6V4h7v5h5v3.1l2-2V8l-6-6H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h4zm10.2-7c.1 0 .3.1.4.2l1.3 1.3c.2.2.2.6 0 .8l-1 1-2.1-2.1 1-1c.1-.1.2-.2.4-.2m0 3.9L14.1 23H12v-2.1l6.1-6.1z"/></svg>
+    </a>
+  
+  
+
+
+<h1 id="hybrid-swarm">Hybrid Swarm 验证测试用例设计</h1>
+<p><strong>Date:</strong> 2026-04-03<br />
+<strong>Purpose:</strong> 设计能够充分验证 Hybrid 架构优势的测试场景<br />
+<strong>Reference:</strong> Google Research "Towards a science of scaling agent systems"</p>
+<h2 id="1">1. 测试用例设计原则</h2>
+<h3 id="11">1.1 基于论文的关键发现</h3>
+<p><strong>Hybrid 架构的理想场景：</strong>
+- ✅ 任务可以分解成多个子任务（并行化潜力）
+- ✅ 子任务之间有<strong>部分依赖</strong>（需要 peer 协作）
+- ✅ 需要中心协调和最终综合（层级监督）
+- ✅ 工具数量适中（&lt;16 个，避免工具协调开销）</p>
+<p><strong>预期性能对比：</strong>
+| 架构 | 适用场景 | 预期表现 |
+|------|---------|---------|
+| Single-Agent | 严格顺序任务 | Baseline |
+| Team (Centralized) | 完全独立子任务 | +80.9% (论文数据) |
+| <strong>Hybrid</strong> | <strong>部分依赖子任务</strong> | <strong>+15% to +25% vs Team</strong> |
+| Handoff (Decentralized) | 复杂协作推理 | 可能过度通信 |</p>
+<h3 id="12">1.2 测试设计目标</h3>
+<ol>
+<li><strong>量化对比:</strong> 同一任务在不同架构下的性能差异</li>
+<li><strong>可重现:</strong> 标准化输入和评估指标</li>
+<li><strong>现实性:</strong> 模拟真实应用场景</li>
+<li><strong>可观测:</strong> 能够追踪 peer 通信和层级调用</li>
+</ol>
+<h2 id="2-a500">2. 测试场景：中证A500指数投资决策系统</h2>
+<h3 id="21">2.1 任务描述</h3>
+<p><strong>场景：</strong> 中证A500指数下跌1个点时的投资机会分析与决策</p>
+<p><strong>输入：</strong>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-0-1"><a id="__codelineno-0-1" name="__codelineno-0-1" href="#__codelineno-0-1"></a><span class="p">{</span>
+</span><span id="__span-0-2"><a id="__codelineno-0-2" name="__codelineno-0-2" href="#__codelineno-0-2"></a><span class="w">  </span><span class="nt">&quot;product&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;AI-powered Code Review Tool&quot;</span><span class="p">,</span>
+</span><span id="__span-0-3"><a id="__codelineno-0-3" name="__codelineno-0-3" href="#__codelineno-0-3"></a><span class="w">  </span><span class="nt">&quot;target_market&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Enterprise Software Development Teams&quot;</span><span class="p">,</span>
+</span><span id="__span-0-4"><a id="__codelineno-0-4" name="__codelineno-0-4" href="#__codelineno-0-4"></a><span class="w">  </span><span class="nt">&quot;budget&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;$50,000&quot;</span><span class="p">,</span>
+</span><span id="__span-0-5"><a id="__codelineno-0-5" name="__codelineno-0-5" href="#__codelineno-0-5"></a><span class="w">  </span><span class="nt">&quot;timeline&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;Q2 2026&quot;</span>
+</span><span id="__span-0-6"><a id="__codelineno-0-6" name="__codelineno-0-6" href="#__codelineno-0-6"></a><span class="p">}</span>
+</span></code></pre></div></p>
+<p><strong>预期输出：</strong>
+<div class="language-json highlight"><pre><span></span><code><span id="__span-1-1"><a id="__codelineno-1-1" name="__codelineno-1-1" href="#__codelineno-1-1"></a><span class="p">{</span>
+</span><span id="__span-1-2"><a id="__codelineno-1-2" name="__codelineno-1-2" href="#__codelineno-1-2"></a><span class="w">  </span><span class="nt">&quot;executive_summary&quot;</span><span class="p">:</span><span class="w"> </span><span class="s2">&quot;...&quot;</span><span class="p">,</span>
+</span><span id="__span-1-3"><a id="__codelineno-1-3" name="__codelineno-1-3" href="#__codelineno-1-3"></a><span class="w">  </span><span class="nt">&quot;competitor_analysis&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-4"><a id="__codelineno-1-4" name="__codelineno-1-4" href="#__codelineno-1-4"></a><span class="w">    </span><span class="nt">&quot;top_3_competitors&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">],</span>
+</span><span id="__span-1-5"><a id="__codelineno-1-5" name="__codelineno-1-5" href="#__codelineno-1-5"></a><span class="w">    </span><span class="nt">&quot;feature_comparison&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="err">...</span><span class="p">},</span>
+</span><span id="__span-1-6"><a id="__codelineno-1-6" name="__codelineno-1-6" href="#__codelineno-1-6"></a><span class="w">    </span><span class="nt">&quot;pricing_analysis&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="err">...</span><span class="p">}</span>
+</span><span id="__span-1-7"><a id="__codelineno-1-7" name="__codelineno-1-7" href="#__codelineno-1-7"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-1-8"><a id="__codelineno-1-8" name="__codelineno-1-8" href="#__codelineno-1-8"></a><span class="w">  </span><span class="nt">&quot;market_trends&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-9"><a id="__codelineno-1-9" name="__codelineno-1-9" href="#__codelineno-1-9"></a><span class="w">    </span><span class="nt">&quot;key_trends&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">],</span>
+</span><span id="__span-1-10"><a id="__codelineno-1-10" name="__codelineno-1-10" href="#__codelineno-1-10"></a><span class="w">    </span><span class="nt">&quot;growth_projections&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="err">...</span><span class="p">}</span>
+</span><span id="__span-1-11"><a id="__codelineno-1-11" name="__codelineno-1-11" href="#__codelineno-1-11"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-1-12"><a id="__codelineno-1-12" name="__codelineno-1-12" href="#__codelineno-1-12"></a><span class="w">  </span><span class="nt">&quot;customer_insights&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-13"><a id="__codelineno-1-13" name="__codelineno-1-13" href="#__codelineno-1-13"></a><span class="w">    </span><span class="nt">&quot;pain_points&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">],</span>
+</span><span id="__span-1-14"><a id="__codelineno-1-14" name="__codelineno-1-14" href="#__codelineno-1-14"></a><span class="w">    </span><span class="nt">&quot;feature_requests&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">]</span>
+</span><span id="__span-1-15"><a id="__codelineno-1-15" name="__codelineno-1-15" href="#__codelineno-1-15"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-1-16"><a id="__codelineno-1-16" name="__codelineno-1-16" href="#__codelineno-1-16"></a><span class="w">  </span><span class="nt">&quot;technical_assessment&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span>
+</span><span id="__span-1-17"><a id="__codelineno-1-17" name="__codelineno-1-17" href="#__codelineno-1-17"></a><span class="w">    </span><span class="nt">&quot;feasibility_score&quot;</span><span class="p">:</span><span class="w"> </span><span class="mf">0.85</span><span class="p">,</span>
+</span><span id="__span-1-18"><a id="__codelineno-1-18" name="__codelineno-1-18" href="#__codelineno-1-18"></a><span class="w">    </span><span class="nt">&quot;tech_stack_recommendations&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="err">...</span><span class="p">]</span>
+</span><span id="__span-1-19"><a id="__codelineno-1-19" name="__codelineno-1-19" href="#__codelineno-1-19"></a><span class="w">  </span><span class="p">},</span>
+</span><span id="__span-1-20"><a id="__codelineno-1-20" name="__codelineno-1-20" href="#__codelineno-1-20"></a><span class="w">  </span><span class="nt">&quot;go_to_market_strategy&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">{</span><span class="err">...</span><span class="p">}</span>
+</span><span id="__span-1-21"><a id="__codelineno-1-21" name="__codelineno-1-21" href="#__codelineno-1-21"></a><span class="p">}</span>
+</span></code></pre></div></p>
+<h3 id="22">2.2 子任务分解</h3>
+<p><strong>4 个执行器代理 + 1 个协调器：</strong></p>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-2-1"><a id="__codelineno-2-1" name="__codelineno-2-1" href="#__codelineno-2-1"></a>                ResearchCoordinator (Root)
+</span><span id="__span-2-2"><a id="__codelineno-2-2" name="__codelineno-2-2" href="#__codelineno-2-2"></a>                    /    |    |    \
+</span><span id="__span-2-3"><a id="__codelineno-2-3" name="__codelineno-2-3" href="#__codelineno-2-3"></a>                   /     |    |     \
+</span><span id="__span-2-4"><a id="__codelineno-2-4" name="__codelineno-2-4" href="#__codelineno-2-4"></a>      Competitor  ←→  Market  ←→  Customer  ←→  Technical
+</span><span id="__span-2-5"><a id="__codelineno-2-5" name="__codelineno-2-5" href="#__codelineno-2-5"></a>       Analyst         Analyst     Analyst      Evaluator
+</span></code></pre></div>
+<p><strong>子任务依赖关系：</strong></p>
+<table>
+<thead>
+<tr>
+<th>子任务</th>
+<th>执行器</th>
+<th>输入依赖</th>
+<th>Peer 协作需求</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>竞品分析</td>
+<td>CompetitorAnalyst</td>
+<td>无</td>
+<td>需要 MarketAnalyst 的趋势数据</td>
+</tr>
+<tr>
+<td>市场趋势</td>
+<td>MarketAnalyst</td>
+<td>无</td>
+<td>需要 CompetitorAnalyst 的定价信息</td>
+</tr>
+<tr>
+<td>客户洞察</td>
+<td>CustomerAnalyst</td>
+<td>竞品分析</td>
+<td>需要 TechnicalEvaluator 的技术评估</td>
+</tr>
+<tr>
+<td>技术评估</td>
+<td>TechnicalEvaluator</td>
+<td>竞品分析</td>
+<td>需要 CustomerAnalyst 的需求数据</td>
+</tr>
+<tr>
+<td>最终综合</td>
+<td>ResearchCoordinator</td>
+<td>所有子任务</td>
+<td>-</td>
+</tr>
+</tbody>
+</table>
+<p><strong>关键特性：</strong>
+- ✅ 4 个子任务可以部分并行
+- ✅ 子任务之间有依赖（CompetitorAnalyst ←→ MarketAnalyst）
+- ✅ 需要中心协调（最终综合报告）
+- ✅ 工具数量：6-8 个（Web Search, Data Analysis, API Calls 等）</p>
+<h3 id="23">2.3 实现代码</h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-3-1"><a id="__codelineno-3-1" name="__codelineno-3-1" href="#__codelineno-3-1"></a><span class="c1"># ============ Agent Definitions ============</span>
+</span><span id="__span-3-2"><a id="__codelineno-3-2" name="__codelineno-3-2" href="#__codelineno-3-2"></a>
+</span><span id="__span-3-3"><a id="__codelineno-3-3" name="__codelineno-3-3" href="#__codelineno-3-3"></a><span class="k">class</span><span class="w"> </span><span class="nc">ResearchCoordinator</span><span class="p">(</span><span class="n">Agent</span><span class="p">):</span>
+</span><span id="__span-3-4"><a id="__codelineno-3-4" name="__codelineno-3-4" href="#__codelineno-3-4"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Root agent coordinating market research.&quot;&quot;&quot;</span>
+</span><span id="__span-3-5"><a id="__codelineno-3-5" name="__codelineno-3-5" href="#__codelineno-3-5"></a>
+</span><span id="__span-3-6"><a id="__codelineno-3-6" name="__codelineno-3-6" href="#__codelineno-3-6"></a>    <span class="n">system_prompt</span> <span class="o">=</span> <span class="s2">&quot;&quot;&quot;You are a market research coordinator. </span>
+</span><span id="__span-3-7"><a id="__codelineno-3-7" name="__codelineno-3-7" href="#__codelineno-3-7"></a><span class="s2">    Your job is to delegate research tasks to specialists and synthesize their findings.</span>
+</span><span id="__span-3-8"><a id="__codelineno-3-8" name="__codelineno-3-8" href="#__codelineno-3-8"></a><span class="s2">    Always ensure comprehensive coverage of competitors, market trends, customers, and technology.&quot;&quot;&quot;</span>
+</span><span id="__span-3-9"><a id="__codelineno-3-9" name="__codelineno-3-9" href="#__codelineno-3-9"></a>
+</span><span id="__span-3-10"><a id="__codelineno-3-10" name="__codelineno-3-10" href="#__codelineno-3-10"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_input</span><span class="p">):</span>
+</span><span id="__span-3-11"><a id="__codelineno-3-11" name="__codelineno-3-11" href="#__codelineno-3-11"></a>        <span class="n">product</span> <span class="o">=</span> <span class="n">task_input</span><span class="p">[</span><span class="s2">&quot;product&quot;</span><span class="p">]</span>
+</span><span id="__span-3-12"><a id="__codelineno-3-12" name="__codelineno-3-12" href="#__codelineno-3-12"></a>        <span class="n">target_market</span> <span class="o">=</span> <span class="n">task_input</span><span class="p">[</span><span class="s2">&quot;target_market&quot;</span><span class="p">]</span>
+</span><span id="__span-3-13"><a id="__codelineno-3-13" name="__codelineno-3-13" href="#__codelineno-3-13"></a>
+</span><span id="__span-3-14"><a id="__codelineno-3-14" name="__codelineno-3-14" href="#__codelineno-3-14"></a>        <span class="c1"># Phase 1: Parallel initial research (via handoffs)</span>
+</span><span id="__span-3-15"><a id="__codelineno-3-15" name="__codelineno-3-15" href="#__codelineno-3-15"></a>        <span class="n">competitor_analysis</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">call_agent</span><span class="p">(</span>
+</span><span id="__span-3-16"><a id="__codelineno-3-16" name="__codelineno-3-16" href="#__codelineno-3-16"></a>            <span class="s2">&quot;CompetitorAnalyst&quot;</span><span class="p">,</span>
+</span><span id="__span-3-17"><a id="__codelineno-3-17" name="__codelineno-3-17" href="#__codelineno-3-17"></a>            <span class="p">{</span><span class="s2">&quot;product&quot;</span><span class="p">:</span> <span class="n">product</span><span class="p">,</span> <span class="s2">&quot;market&quot;</span><span class="p">:</span> <span class="n">target_market</span><span class="p">}</span>
+</span><span id="__span-3-18"><a id="__codelineno-3-18" name="__codelineno-3-18" href="#__codelineno-3-18"></a>        <span class="p">)</span>
+</span><span id="__span-3-19"><a id="__codelineno-3-19" name="__codelineno-3-19" href="#__codelineno-3-19"></a>
+</span><span id="__span-3-20"><a id="__codelineno-3-20" name="__codelineno-3-20" href="#__codelineno-3-20"></a>        <span class="n">market_trends</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">call_agent</span><span class="p">(</span>
+</span><span id="__span-3-21"><a id="__codelineno-3-21" name="__codelineno-3-21" href="#__codelineno-3-21"></a>            <span class="s2">&quot;MarketAnalyst&quot;</span><span class="p">,</span>
+</span><span id="__span-3-22"><a id="__codelineno-3-22" name="__codelineno-3-22" href="#__codelineno-3-22"></a>            <span class="p">{</span><span class="s2">&quot;product&quot;</span><span class="p">:</span> <span class="n">product</span><span class="p">,</span> <span class="s2">&quot;market&quot;</span><span class="p">:</span> <span class="n">target_market</span><span class="p">}</span>
+</span><span id="__span-3-23"><a id="__codelineno-3-23" name="__codelineno-3-23" href="#__codelineno-3-23"></a>        <span class="p">)</span>
+</span><span id="__span-3-24"><a id="__codelineno-3-24" name="__codelineno-3-24" href="#__codelineno-3-24"></a>
+</span><span id="__span-3-25"><a id="__codelineno-3-25" name="__codelineno-3-25" href="#__codelineno-3-25"></a>        <span class="c1"># Phase 2: Deep dives with context</span>
+</span><span id="__span-3-26"><a id="__codelineno-3-26" name="__codelineno-3-26" href="#__codelineno-3-26"></a>        <span class="n">customer_insights</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">call_agent</span><span class="p">(</span>
+</span><span id="__span-3-27"><a id="__codelineno-3-27" name="__codelineno-3-27" href="#__codelineno-3-27"></a>            <span class="s2">&quot;CustomerAnalyst&quot;</span><span class="p">,</span>
+</span><span id="__span-3-28"><a id="__codelineno-3-28" name="__codelineno-3-28" href="#__codelineno-3-28"></a>            <span class="p">{</span><span class="s2">&quot;product&quot;</span><span class="p">:</span> <span class="n">product</span><span class="p">,</span> <span class="s2">&quot;competitors&quot;</span><span class="p">:</span> <span class="n">competitor_analysis</span><span class="p">}</span>
+</span><span id="__span-3-29"><a id="__codelineno-3-29" name="__codelineno-3-29" href="#__codelineno-3-29"></a>        <span class="p">)</span>
+</span><span id="__span-3-30"><a id="__codelineno-3-30" name="__codelineno-3-30" href="#__codelineno-3-30"></a>
+</span><span id="__span-3-31"><a id="__codelineno-3-31" name="__codelineno-3-31" href="#__codelineno-3-31"></a>        <span class="n">technical_assessment</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">call_agent</span><span class="p">(</span>
+</span><span id="__span-3-32"><a id="__codelineno-3-32" name="__codelineno-3-32" href="#__codelineno-3-32"></a>            <span class="s2">&quot;TechnicalEvaluator&quot;</span><span class="p">,</span>
+</span><span id="__span-3-33"><a id="__codelineno-3-33" name="__codelineno-3-33" href="#__codelineno-3-33"></a>            <span class="p">{</span><span class="s2">&quot;product&quot;</span><span class="p">:</span> <span class="n">product</span><span class="p">,</span> <span class="s2">&quot;competitors&quot;</span><span class="p">:</span> <span class="n">competitor_analysis</span><span class="p">}</span>
+</span><span id="__span-3-34"><a id="__codelineno-3-34" name="__codelineno-3-34" href="#__codelineno-3-34"></a>        <span class="p">)</span>
+</span><span id="__span-3-35"><a id="__codelineno-3-35" name="__codelineno-3-35" href="#__codelineno-3-35"></a>
+</span><span id="__span-3-36"><a id="__codelineno-3-36" name="__codelineno-3-36" href="#__codelineno-3-36"></a>        <span class="c1"># Phase 3: Synthesize</span>
+</span><span id="__span-3-37"><a id="__codelineno-3-37" name="__codelineno-3-37" href="#__codelineno-3-37"></a>        <span class="n">final_report</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_synthesize_report</span><span class="p">(</span>
+</span><span id="__span-3-38"><a id="__codelineno-3-38" name="__codelineno-3-38" href="#__codelineno-3-38"></a>            <span class="n">competitor_analysis</span><span class="p">,</span>
+</span><span id="__span-3-39"><a id="__codelineno-3-39" name="__codelineno-3-39" href="#__codelineno-3-39"></a>            <span class="n">market_trends</span><span class="p">,</span>
+</span><span id="__span-3-40"><a id="__codelineno-3-40" name="__codelineno-3-40" href="#__codelineno-3-40"></a>            <span class="n">customer_insights</span><span class="p">,</span>
+</span><span id="__span-3-41"><a id="__codelineno-3-41" name="__codelineno-3-41" href="#__codelineno-3-41"></a>            <span class="n">technical_assessment</span>
+</span><span id="__span-3-42"><a id="__codelineno-3-42" name="__codelineno-3-42" href="#__codelineno-3-42"></a>        <span class="p">)</span>
+</span><span id="__span-3-43"><a id="__codelineno-3-43" name="__codelineno-3-43" href="#__codelineno-3-43"></a>
+</span><span id="__span-3-44"><a id="__codelineno-3-44" name="__codelineno-3-44" href="#__codelineno-3-44"></a>        <span class="k">return</span> <span class="n">final_report</span>
+</span><span id="__span-3-45"><a id="__codelineno-3-45" name="__codelineno-3-45" href="#__codelineno-3-45"></a>
+</span><span id="__span-3-46"><a id="__codelineno-3-46" name="__codelineno-3-46" href="#__codelineno-3-46"></a>
+</span><span id="__span-3-47"><a id="__codelineno-3-47" name="__codelineno-3-47" href="#__codelineno-3-47"></a><span class="k">class</span><span class="w"> </span><span class="nc">CompetitorAnalyst</span><span class="p">(</span><span class="n">Agent</span><span class="p">):</span>
+</span><span id="__span-3-48"><a id="__codelineno-3-48" name="__codelineno-3-48" href="#__codelineno-3-48"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Analyze competitors.&quot;&quot;&quot;</span>
+</span><span id="__span-3-49"><a id="__codelineno-3-49" name="__codelineno-3-49" href="#__codelineno-3-49"></a>
+</span><span id="__span-3-50"><a id="__codelineno-3-50" name="__codelineno-3-50" href="#__codelineno-3-50"></a>    <span class="n">system_prompt</span> <span class="o">=</span> <span class="s2">&quot;&quot;&quot;You are a competitive intelligence analyst.</span>
+</span><span id="__span-3-51"><a id="__codelineno-3-51" name="__codelineno-3-51" href="#__codelineno-3-51"></a><span class="s2">    Identify top competitors, analyze their features, pricing, and market positioning.</span>
+</span><span id="__span-3-52"><a id="__codelineno-3-52" name="__codelineno-3-52" href="#__codelineno-3-52"></a><span class="s2">    Collaborate with MarketAnalyst for trend context.&quot;&quot;&quot;</span>
+</span><span id="__span-3-53"><a id="__codelineno-3-53" name="__codelineno-3-53" href="#__codelineno-3-53"></a>
+</span><span id="__span-3-54"><a id="__codelineno-3-54" name="__codelineno-3-54" href="#__codelineno-3-54"></a>    <span class="n">tool_names</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;web_search&quot;</span><span class="p">,</span> <span class="s2">&quot;company_data_api&quot;</span><span class="p">,</span> <span class="s2">&quot;github_search&quot;</span><span class="p">]</span>
+</span><span id="__span-3-55"><a id="__codelineno-3-55" name="__codelineno-3-55" href="#__codelineno-3-55"></a>
+</span><span id="__span-3-56"><a id="__codelineno-3-56" name="__codelineno-3-56" href="#__codelineno-3-56"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_input</span><span class="p">):</span>
+</span><span id="__span-3-57"><a id="__codelineno-3-57" name="__codelineno-3-57" href="#__codelineno-3-57"></a>        <span class="n">product</span> <span class="o">=</span> <span class="n">task_input</span><span class="p">[</span><span class="s2">&quot;product&quot;</span><span class="p">]</span>
+</span><span id="__span-3-58"><a id="__codelineno-3-58" name="__codelineno-3-58" href="#__codelineno-3-58"></a>
+</span><span id="__span-3-59"><a id="__codelineno-3-59" name="__codelineno-3-59" href="#__codelineno-3-59"></a>        <span class="c1"># Find competitors</span>
+</span><span id="__span-3-60"><a id="__codelineno-3-60" name="__codelineno-3-60" href="#__codelineno-3-60"></a>        <span class="n">competitors</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_find_competitors</span><span class="p">(</span><span class="n">product</span><span class="p">)</span>
+</span><span id="__span-3-61"><a id="__codelineno-3-61" name="__codelineno-3-61" href="#__codelineno-3-61"></a>
+</span><span id="__span-3-62"><a id="__codelineno-3-62" name="__codelineno-3-62" href="#__codelineno-3-62"></a>        <span class="c1"># Peer collaboration: Get market trends for context</span>
+</span><span id="__span-3-63"><a id="__codelineno-3-63" name="__codelineno-3-63" href="#__codelineno-3-63"></a>        <span class="n">market_trends</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">ask_peer</span><span class="p">(</span>
+</span><span id="__span-3-64"><a id="__codelineno-3-64" name="__codelineno-3-64" href="#__codelineno-3-64"></a>            <span class="n">peer_name</span><span class="o">=</span><span class="s2">&quot;MarketAnalyst&quot;</span><span class="p">,</span>
+</span><span id="__span-3-65"><a id="__codelineno-3-65" name="__codelineno-3-65" href="#__codelineno-3-65"></a>            <span class="n">question</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;What are the key market trends for </span><span class="si">{</span><span class="n">product</span><span class="si">}</span><span class="s2">?&quot;</span><span class="p">,</span>
+</span><span id="__span-3-66"><a id="__codelineno-3-66" name="__codelineno-3-66" href="#__codelineno-3-66"></a>            <span class="n">context</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;product&quot;</span><span class="p">:</span> <span class="n">product</span><span class="p">}</span>
+</span><span id="__span-3-67"><a id="__codelineno-3-67" name="__codelineno-3-67" href="#__codelineno-3-67"></a>        <span class="p">)</span>
+</span><span id="__span-3-68"><a id="__codelineno-3-68" name="__codelineno-3-68" href="#__codelineno-3-68"></a>
+</span><span id="__span-3-69"><a id="__codelineno-3-69" name="__codelineno-3-69" href="#__codelineno-3-69"></a>        <span class="c1"># Analyze features</span>
+</span><span id="__span-3-70"><a id="__codelineno-3-70" name="__codelineno-3-70" href="#__codelineno-3-70"></a>        <span class="n">feature_comparison</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_compare_features</span><span class="p">(</span>
+</span><span id="__span-3-71"><a id="__codelineno-3-71" name="__codelineno-3-71" href="#__codelineno-3-71"></a>            <span class="n">competitors</span><span class="p">,</span>
+</span><span id="__span-3-72"><a id="__codelineno-3-72" name="__codelineno-3-72" href="#__codelineno-3-72"></a>            <span class="n">market_context</span><span class="o">=</span><span class="n">market_trends</span>
+</span><span id="__span-3-73"><a id="__codelineno-3-73" name="__codelineno-3-73" href="#__codelineno-3-73"></a>        <span class="p">)</span>
+</span><span id="__span-3-74"><a id="__codelineno-3-74" name="__codelineno-3-74" href="#__codelineno-3-74"></a>
+</span><span id="__span-3-75"><a id="__codelineno-3-75" name="__codelineno-3-75" href="#__codelineno-3-75"></a>        <span class="c1"># Share pricing data with MarketAnalyst</span>
+</span><span id="__span-3-76"><a id="__codelineno-3-76" name="__codelineno-3-76" href="#__codelineno-3-76"></a>        <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">share_with_peer</span><span class="p">(</span>
+</span><span id="__span-3-77"><a id="__codelineno-3-77" name="__codelineno-3-77" href="#__codelineno-3-77"></a>            <span class="n">peer_name</span><span class="o">=</span><span class="s2">&quot;MarketAnalyst&quot;</span><span class="p">,</span>
+</span><span id="__span-3-78"><a id="__codelineno-3-78" name="__codelineno-3-78" href="#__codelineno-3-78"></a>            <span class="n">information</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-3-79"><a id="__codelineno-3-79" name="__codelineno-3-79" href="#__codelineno-3-79"></a>                <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;competitor_pricing&quot;</span><span class="p">,</span>
+</span><span id="__span-3-80"><a id="__codelineno-3-80" name="__codelineno-3-80" href="#__codelineno-3-80"></a>                <span class="s2">&quot;data&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_extract_pricing</span><span class="p">(</span><span class="n">competitors</span><span class="p">)</span>
+</span><span id="__span-3-81"><a id="__codelineno-3-81" name="__codelineno-3-81" href="#__codelineno-3-81"></a>            <span class="p">}</span>
+</span><span id="__span-3-82"><a id="__codelineno-3-82" name="__codelineno-3-82" href="#__codelineno-3-82"></a>        <span class="p">)</span>
+</span><span id="__span-3-83"><a id="__codelineno-3-83" name="__codelineno-3-83" href="#__codelineno-3-83"></a>
+</span><span id="__span-3-84"><a id="__codelineno-3-84" name="__codelineno-3-84" href="#__codelineno-3-84"></a>        <span class="k">return</span> <span class="p">{</span>
+</span><span id="__span-3-85"><a id="__codelineno-3-85" name="__codelineno-3-85" href="#__codelineno-3-85"></a>            <span class="s2">&quot;competitors&quot;</span><span class="p">:</span> <span class="n">competitors</span><span class="p">,</span>
+</span><span id="__span-3-86"><a id="__codelineno-3-86" name="__codelineno-3-86" href="#__codelineno-3-86"></a>            <span class="s2">&quot;features&quot;</span><span class="p">:</span> <span class="n">feature_comparison</span><span class="p">,</span>
+</span><span id="__span-3-87"><a id="__codelineno-3-87" name="__codelineno-3-87" href="#__codelineno-3-87"></a>            <span class="s2">&quot;market_positioning&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_analyze_positioning</span><span class="p">(</span><span class="n">competitors</span><span class="p">,</span> <span class="n">market_trends</span><span class="p">)</span>
+</span><span id="__span-3-88"><a id="__codelineno-3-88" name="__codelineno-3-88" href="#__codelineno-3-88"></a>        <span class="p">}</span>
+</span><span id="__span-3-89"><a id="__codelineno-3-89" name="__codelineno-3-89" href="#__codelineno-3-89"></a>
+</span><span id="__span-3-90"><a id="__codelineno-3-90" name="__codelineno-3-90" href="#__codelineno-3-90"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">on_peer_question</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">question</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">sender_name</span><span class="p">):</span>
+</span><span id="__span-3-91"><a id="__codelineno-3-91" name="__codelineno-3-91" href="#__codelineno-3-91"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Handle questions from peers.&quot;&quot;&quot;</span>
+</span><span id="__span-3-92"><a id="__codelineno-3-92" name="__codelineno-3-92" href="#__codelineno-3-92"></a>        <span class="k">if</span> <span class="s2">&quot;pricing&quot;</span> <span class="ow">in</span> <span class="n">question</span><span class="o">.</span><span class="n">lower</span><span class="p">():</span>
+</span><span id="__span-3-93"><a id="__codelineno-3-93" name="__codelineno-3-93" href="#__codelineno-3-93"></a>            <span class="n">competitors</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;competitors&quot;</span><span class="p">,</span> <span class="p">[])</span>
+</span><span id="__span-3-94"><a id="__codelineno-3-94" name="__codelineno-3-94" href="#__codelineno-3-94"></a>            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_extract_pricing</span><span class="p">(</span><span class="n">competitors</span><span class="p">)</span>
+</span><span id="__span-3-95"><a id="__codelineno-3-95" name="__codelineno-3-95" href="#__codelineno-3-95"></a>
+</span><span id="__span-3-96"><a id="__codelineno-3-96" name="__codelineno-3-96" href="#__codelineno-3-96"></a>        <span class="k">if</span> <span class="s2">&quot;feature&quot;</span> <span class="ow">in</span> <span class="n">question</span><span class="o">.</span><span class="n">lower</span><span class="p">():</span>
+</span><span id="__span-3-97"><a id="__codelineno-3-97" name="__codelineno-3-97" href="#__codelineno-3-97"></a>            <span class="n">feature</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;feature&quot;</span><span class="p">)</span>
+</span><span id="__span-3-98"><a id="__codelineno-3-98" name="__codelineno-3-98" href="#__codelineno-3-98"></a>            <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_competitor_features</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+</span><span id="__span-3-99"><a id="__codelineno-3-99" name="__codelineno-3-99" href="#__codelineno-3-99"></a>
+</span><span id="__span-3-100"><a id="__codelineno-3-100" name="__codelineno-3-100" href="#__codelineno-3-100"></a>        <span class="k">return</span> <span class="s2">&quot;No relevant competitor data.&quot;</span>
+</span><span id="__span-3-101"><a id="__codelineno-3-101" name="__codelineno-3-101" href="#__codelineno-3-101"></a>
+</span><span id="__span-3-102"><a id="__codelineno-3-102" name="__codelineno-3-102" href="#__codelineno-3-102"></a>
+</span><span id="__span-3-103"><a id="__codelineno-3-103" name="__codelineno-3-103" href="#__codelineno-3-103"></a><span class="k">class</span><span class="w"> </span><span class="nc">MarketAnalyst</span><span class="p">(</span><span class="n">Agent</span><span class="p">):</span>
+</span><span id="__span-3-104"><a id="__codelineno-3-104" name="__codelineno-3-104" href="#__codelineno-3-104"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Analyze market trends.&quot;&quot;&quot;</span>
+</span><span id="__span-3-105"><a id="__codelineno-3-105" name="__codelineno-3-105" href="#__codelineno-3-105"></a>
+</span><span id="__span-3-106"><a id="__codelineno-3-106" name="__codelineno-3-106" href="#__codelineno-3-106"></a>    <span class="n">system_prompt</span> <span class="o">=</span> <span class="s2">&quot;&quot;&quot;You are a market trends analyst.</span>
+</span><span id="__span-3-107"><a id="__codelineno-3-107" name="__codelineno-3-107" href="#__codelineno-3-107"></a><span class="s2">    Identify growth trends, market size, and future projections.</span>
+</span><span id="__span-3-108"><a id="__codelineno-3-108" name="__codelineno-3-108" href="#__codelineno-3-108"></a><span class="s2">    Use competitor pricing data from CompetitorAnalyst.&quot;&quot;&quot;</span>
+</span><span id="__span-3-109"><a id="__codelineno-3-109" name="__codelineno-3-109" href="#__codelineno-3-109"></a>
+</span><span id="__span-3-110"><a id="__codelineno-3-110" name="__codelineno-3-110" href="#__codelineno-3-110"></a>    <span class="n">tool_names</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;web_search&quot;</span><span class="p">,</span> <span class="s2">&quot;market_data_api&quot;</span><span class="p">,</span> <span class="s2">&quot;trend_analysis&quot;</span><span class="p">]</span>
+</span><span id="__span-3-111"><a id="__codelineno-3-111" name="__codelineno-3-111" href="#__codelineno-3-111"></a>
+</span><span id="__span-3-112"><a id="__codelineno-3-112" name="__codelineno-3-112" href="#__codelineno-3-112"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_input</span><span class="p">):</span>
+</span><span id="__span-3-113"><a id="__codelineno-3-113" name="__codelineno-3-113" href="#__codelineno-3-113"></a>        <span class="n">market</span> <span class="o">=</span> <span class="n">task_input</span><span class="p">[</span><span class="s2">&quot;market&quot;</span><span class="p">]</span>
+</span><span id="__span-3-114"><a id="__codelineno-3-114" name="__codelineno-3-114" href="#__codelineno-3-114"></a>
+</span><span id="__span-3-115"><a id="__codelineno-3-115" name="__codelineno-3-115" href="#__codelineno-3-115"></a>        <span class="c1"># Analyze trends</span>
+</span><span id="__span-3-116"><a id="__codelineno-3-116" name="__codelineno-3-116" href="#__codelineno-3-116"></a>        <span class="n">trends</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_analyze_market_trends</span><span class="p">(</span><span class="n">market</span><span class="p">)</span>
+</span><span id="__span-3-117"><a id="__codelineno-3-117" name="__codelineno-3-117" href="#__codelineno-3-117"></a>
+</span><span id="__span-3-118"><a id="__codelineno-3-118" name="__codelineno-3-118" href="#__codelineno-3-118"></a>        <span class="c1"># Wait for competitor pricing data (async)</span>
+</span><span id="__span-3-119"><a id="__codelineno-3-119" name="__codelineno-3-119" href="#__codelineno-3-119"></a>        <span class="k">try</span><span class="p">:</span>
+</span><span id="__span-3-120"><a id="__codelineno-3-120" name="__codelineno-3-120" href="#__codelineno-3-120"></a>            <span class="n">pricing_data</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">wait_for_peer_message</span><span class="p">(</span>
+</span><span id="__span-3-121"><a id="__codelineno-3-121" name="__codelineno-3-121" href="#__codelineno-3-121"></a>                <span class="n">from_peer</span><span class="o">=</span><span class="s2">&quot;CompetitorAnalyst&quot;</span><span class="p">,</span>
+</span><span id="__span-3-122"><a id="__codelineno-3-122" name="__codelineno-3-122" href="#__codelineno-3-122"></a>                <span class="n">message_type</span><span class="o">=</span><span class="s2">&quot;competitor_pricing&quot;</span><span class="p">,</span>
+</span><span id="__span-3-123"><a id="__codelineno-3-123" name="__codelineno-3-123" href="#__codelineno-3-123"></a>                <span class="n">timeout</span><span class="o">=</span><span class="mf">15.0</span>
+</span><span id="__span-3-124"><a id="__codelineno-3-124" name="__codelineno-3-124" href="#__codelineno-3-124"></a>            <span class="p">)</span>
+</span><span id="__span-3-125"><a id="__codelineno-3-125" name="__codelineno-3-125" href="#__codelineno-3-125"></a>
+</span><span id="__span-3-126"><a id="__codelineno-3-126" name="__codelineno-3-126" href="#__codelineno-3-126"></a>            <span class="c1"># Enrich trend analysis with pricing context</span>
+</span><span id="__span-3-127"><a id="__codelineno-3-127" name="__codelineno-3-127" href="#__codelineno-3-127"></a>            <span class="n">trends</span><span class="p">[</span><span class="s2">&quot;pricing_trends&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_analyze_pricing_trends</span><span class="p">(</span>
+</span><span id="__span-3-128"><a id="__codelineno-3-128" name="__codelineno-3-128" href="#__codelineno-3-128"></a>                <span class="n">pricing_data</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;data&quot;</span><span class="p">,</span> <span class="p">[])</span>
+</span><span id="__span-3-129"><a id="__codelineno-3-129" name="__codelineno-3-129" href="#__codelineno-3-129"></a>            <span class="p">)</span>
+</span><span id="__span-3-130"><a id="__codelineno-3-130" name="__codelineno-3-130" href="#__codelineno-3-130"></a>        <span class="k">except</span> <span class="ne">TimeoutError</span><span class="p">:</span>
+</span><span id="__span-3-131"><a id="__codelineno-3-131" name="__codelineno-3-131" href="#__codelineno-3-131"></a>            <span class="n">logger</span><span class="o">.</span><span class="n">warning</span><span class="p">(</span><span class="s2">&quot;No pricing data from CompetitorAnalyst&quot;</span><span class="p">)</span>
+</span><span id="__span-3-132"><a id="__codelineno-3-132" name="__codelineno-3-132" href="#__codelineno-3-132"></a>
+</span><span id="__span-3-133"><a id="__codelineno-3-133" name="__codelineno-3-133" href="#__codelineno-3-133"></a>        <span class="c1"># Broadcast key findings to all peers</span>
+</span><span id="__span-3-134"><a id="__codelineno-3-134" name="__codelineno-3-134" href="#__codelineno-3-134"></a>        <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">broadcast_to_all_peers</span><span class="p">(</span>
+</span><span id="__span-3-135"><a id="__codelineno-3-135" name="__codelineno-3-135" href="#__codelineno-3-135"></a>            <span class="n">message</span><span class="o">=</span><span class="s2">&quot;Market analysis complete&quot;</span><span class="p">,</span>
+</span><span id="__span-3-136"><a id="__codelineno-3-136" name="__codelineno-3-136" href="#__codelineno-3-136"></a>            <span class="n">data</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-3-137"><a id="__codelineno-3-137" name="__codelineno-3-137" href="#__codelineno-3-137"></a>                <span class="s2">&quot;key_trends&quot;</span><span class="p">:</span> <span class="n">trends</span><span class="p">[</span><span class="s2">&quot;key_trends&quot;</span><span class="p">][:</span><span class="mi">3</span><span class="p">],</span>
+</span><span id="__span-3-138"><a id="__codelineno-3-138" name="__codelineno-3-138" href="#__codelineno-3-138"></a>                <span class="s2">&quot;growth_rate&quot;</span><span class="p">:</span> <span class="n">trends</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;growth_rate&quot;</span><span class="p">)</span>
+</span><span id="__span-3-139"><a id="__codelineno-3-139" name="__codelineno-3-139" href="#__codelineno-3-139"></a>            <span class="p">}</span>
+</span><span id="__span-3-140"><a id="__codelineno-3-140" name="__codelineno-3-140" href="#__codelineno-3-140"></a>        <span class="p">)</span>
+</span><span id="__span-3-141"><a id="__codelineno-3-141" name="__codelineno-3-141" href="#__codelineno-3-141"></a>
+</span><span id="__span-3-142"><a id="__codelineno-3-142" name="__codelineno-3-142" href="#__codelineno-3-142"></a>        <span class="k">return</span> <span class="n">trends</span>
+</span><span id="__span-3-143"><a id="__codelineno-3-143" name="__codelineno-3-143" href="#__codelineno-3-143"></a>
+</span><span id="__span-3-144"><a id="__codelineno-3-144" name="__codelineno-3-144" href="#__codelineno-3-144"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">on_peer_question</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">question</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">sender_name</span><span class="p">):</span>
+</span><span id="__span-3-145"><a id="__codelineno-3-145" name="__codelineno-3-145" href="#__codelineno-3-145"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Respond to market trend questions.&quot;&quot;&quot;</span>
+</span><span id="__span-3-146"><a id="__codelineno-3-146" name="__codelineno-3-146" href="#__codelineno-3-146"></a>        <span class="n">product</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;product&quot;</span><span class="p">)</span>
+</span><span id="__span-3-147"><a id="__codelineno-3-147" name="__codelineno-3-147" href="#__codelineno-3-147"></a>
+</span><span id="__span-3-148"><a id="__codelineno-3-148" name="__codelineno-3-148" href="#__codelineno-3-148"></a>        <span class="k">if</span> <span class="n">product</span><span class="p">:</span>
+</span><span id="__span-3-149"><a id="__codelineno-3-149" name="__codelineno-3-149" href="#__codelineno-3-149"></a>            <span class="n">trends</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_analyze_market_trends</span><span class="p">(</span><span class="n">product</span><span class="p">)</span>
+</span><span id="__span-3-150"><a id="__codelineno-3-150" name="__codelineno-3-150" href="#__codelineno-3-150"></a>            <span class="k">return</span> <span class="sa">f</span><span class="s2">&quot;Key trends for </span><span class="si">{</span><span class="n">product</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">trends</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s1">&#39;key_trends&#39;</span><span class="p">,</span><span class="w"> </span><span class="p">[])</span><span class="si">}</span><span class="s2">&quot;</span>
+</span><span id="__span-3-151"><a id="__codelineno-3-151" name="__codelineno-3-151" href="#__codelineno-3-151"></a>
+</span><span id="__span-3-152"><a id="__codelineno-3-152" name="__codelineno-3-152" href="#__codelineno-3-152"></a>        <span class="k">return</span> <span class="s2">&quot;Please provide product context.&quot;</span>
+</span><span id="__span-3-153"><a id="__codelineno-3-153" name="__codelineno-3-153" href="#__codelineno-3-153"></a>
+</span><span id="__span-3-154"><a id="__codelineno-3-154" name="__codelineno-3-154" href="#__codelineno-3-154"></a>
+</span><span id="__span-3-155"><a id="__codelineno-3-155" name="__codelineno-3-155" href="#__codelineno-3-155"></a><span class="k">class</span><span class="w"> </span><span class="nc">CustomerAnalyst</span><span class="p">(</span><span class="n">Agent</span><span class="p">):</span>
+</span><span id="__span-3-156"><a id="__codelineno-3-156" name="__codelineno-3-156" href="#__codelineno-3-156"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Analyze customer needs and pain points.&quot;&quot;&quot;</span>
+</span><span id="__span-3-157"><a id="__codelineno-3-157" name="__codelineno-3-157" href="#__codelineno-3-157"></a>
+</span><span id="__span-3-158"><a id="__codelineno-3-158" name="__codelineno-3-158" href="#__codelineno-3-158"></a>    <span class="n">system_prompt</span> <span class="o">=</span> <span class="s2">&quot;&quot;&quot;You are a customer insights analyst.</span>
+</span><span id="__span-3-159"><a id="__codelineno-3-159" name="__codelineno-3-159" href="#__codelineno-3-159"></a><span class="s2">    Gather customer feedback, identify pain points, and feature requests.</span>
+</span><span id="__span-3-160"><a id="__codelineno-3-160" name="__codelineno-3-160" href="#__codelineno-3-160"></a><span class="s2">    Coordinate with TechnicalEvaluator on technical feasibility.&quot;&quot;&quot;</span>
+</span><span id="__span-3-161"><a id="__codelineno-3-161" name="__codelineno-3-161" href="#__codelineno-3-161"></a>
+</span><span id="__span-3-162"><a id="__codelineno-3-162" name="__codelineno-3-162" href="#__codelineno-3-162"></a>    <span class="n">tool_names</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;web_search&quot;</span><span class="p">,</span> <span class="s2">&quot;social_media_api&quot;</span><span class="p">,</span> <span class="s2">&quot;review_scraper&quot;</span><span class="p">]</span>
+</span><span id="__span-3-163"><a id="__codelineno-3-163" name="__codelineno-3-163" href="#__codelineno-3-163"></a>
+</span><span id="__span-3-164"><a id="__codelineno-3-164" name="__codelineno-3-164" href="#__codelineno-3-164"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_input</span><span class="p">):</span>
+</span><span id="__span-3-165"><a id="__codelineno-3-165" name="__codelineno-3-165" href="#__codelineno-3-165"></a>        <span class="n">product</span> <span class="o">=</span> <span class="n">task_input</span><span class="p">[</span><span class="s2">&quot;product&quot;</span><span class="p">]</span>
+</span><span id="__span-3-166"><a id="__codelineno-3-166" name="__codelineno-3-166" href="#__codelineno-3-166"></a>        <span class="n">competitors_info</span> <span class="o">=</span> <span class="n">task_input</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;competitors&quot;</span><span class="p">,</span> <span class="p">{})</span>
+</span><span id="__span-3-167"><a id="__codelineno-3-167" name="__codelineno-3-167" href="#__codelineno-3-167"></a>
+</span><span id="__span-3-168"><a id="__codelineno-3-168" name="__codelineno-3-168" href="#__codelineno-3-168"></a>        <span class="c1"># Gather customer data</span>
+</span><span id="__span-3-169"><a id="__codelineno-3-169" name="__codelineno-3-169" href="#__codelineno-3-169"></a>        <span class="n">pain_points</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_gather_pain_points</span><span class="p">(</span><span class="n">product</span><span class="p">,</span> <span class="n">competitors_info</span><span class="p">)</span>
+</span><span id="__span-3-170"><a id="__codelineno-3-170" name="__codelineno-3-170" href="#__codelineno-3-170"></a>        <span class="n">feature_requests</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_gather_feature_requests</span><span class="p">(</span><span class="n">product</span><span class="p">)</span>
+</span><span id="__span-3-171"><a id="__codelineno-3-171" name="__codelineno-3-171" href="#__codelineno-3-171"></a>
+</span><span id="__span-3-172"><a id="__codelineno-3-172" name="__codelineno-3-172" href="#__codelineno-3-172"></a>        <span class="c1"># Peer collaboration: Check technical feasibility</span>
+</span><span id="__span-3-173"><a id="__codelineno-3-173" name="__codelineno-3-173" href="#__codelineno-3-173"></a>        <span class="n">feasibility_check</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">request_peer_action</span><span class="p">(</span>
+</span><span id="__span-3-174"><a id="__codelineno-3-174" name="__codelineno-3-174" href="#__codelineno-3-174"></a>            <span class="n">peer_name</span><span class="o">=</span><span class="s2">&quot;TechnicalEvaluator&quot;</span><span class="p">,</span>
+</span><span id="__span-3-175"><a id="__codelineno-3-175" name="__codelineno-3-175" href="#__codelineno-3-175"></a>            <span class="n">action</span><span class="o">=</span><span class="s2">&quot;assess_feature_feasibility&quot;</span><span class="p">,</span>
+</span><span id="__span-3-176"><a id="__codelineno-3-176" name="__codelineno-3-176" href="#__codelineno-3-176"></a>            <span class="n">parameters</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-3-177"><a id="__codelineno-3-177" name="__codelineno-3-177" href="#__codelineno-3-177"></a>                <span class="s2">&quot;features&quot;</span><span class="p">:</span> <span class="n">feature_requests</span><span class="p">[:</span><span class="mi">5</span><span class="p">],</span>
+</span><span id="__span-3-178"><a id="__codelineno-3-178" name="__codelineno-3-178" href="#__codelineno-3-178"></a>                <span class="s2">&quot;product&quot;</span><span class="p">:</span> <span class="n">product</span>
+</span><span id="__span-3-179"><a id="__codelineno-3-179" name="__codelineno-3-179" href="#__codelineno-3-179"></a>            <span class="p">},</span>
+</span><span id="__span-3-180"><a id="__codelineno-3-180" name="__codelineno-3-180" href="#__codelineno-3-180"></a>            <span class="n">timeout</span><span class="o">=</span><span class="mf">30.0</span>
+</span><span id="__span-3-181"><a id="__codelineno-3-181" name="__codelineno-3-181" href="#__codelineno-3-181"></a>        <span class="p">)</span>
+</span><span id="__span-3-182"><a id="__codelineno-3-182" name="__codelineno-3-182" href="#__codelineno-3-182"></a>
+</span><span id="__span-3-183"><a id="__codelineno-3-183" name="__codelineno-3-183" href="#__codelineno-3-183"></a>        <span class="c1"># Filter requests by feasibility</span>
+</span><span id="__span-3-184"><a id="__codelineno-3-184" name="__codelineno-3-184" href="#__codelineno-3-184"></a>        <span class="n">prioritized_features</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_prioritize_features</span><span class="p">(</span>
+</span><span id="__span-3-185"><a id="__codelineno-3-185" name="__codelineno-3-185" href="#__codelineno-3-185"></a>            <span class="n">feature_requests</span><span class="p">,</span>
+</span><span id="__span-3-186"><a id="__codelineno-3-186" name="__codelineno-3-186" href="#__codelineno-3-186"></a>            <span class="n">feasibility_check</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;assessments&quot;</span><span class="p">,</span> <span class="p">[])</span>
+</span><span id="__span-3-187"><a id="__codelineno-3-187" name="__codelineno-3-187" href="#__codelineno-3-187"></a>        <span class="p">)</span>
+</span><span id="__span-3-188"><a id="__codelineno-3-188" name="__codelineno-3-188" href="#__codelineno-3-188"></a>
+</span><span id="__span-3-189"><a id="__codelineno-3-189" name="__codelineno-3-189" href="#__codelineno-3-189"></a>        <span class="k">return</span> <span class="p">{</span>
+</span><span id="__span-3-190"><a id="__codelineno-3-190" name="__codelineno-3-190" href="#__codelineno-3-190"></a>            <span class="s2">&quot;pain_points&quot;</span><span class="p">:</span> <span class="n">pain_points</span><span class="p">,</span>
+</span><span id="__span-3-191"><a id="__codelineno-3-191" name="__codelineno-3-191" href="#__codelineno-3-191"></a>            <span class="s2">&quot;feature_requests&quot;</span><span class="p">:</span> <span class="n">prioritized_features</span><span class="p">,</span>
+</span><span id="__span-3-192"><a id="__codelineno-3-192" name="__codelineno-3-192" href="#__codelineno-3-192"></a>            <span class="s2">&quot;customer_segments&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_segment_customers</span><span class="p">(</span><span class="n">pain_points</span><span class="p">)</span>
+</span><span id="__span-3-193"><a id="__codelineno-3-193" name="__codelineno-3-193" href="#__codelineno-3-193"></a>        <span class="p">}</span>
+</span><span id="__span-3-194"><a id="__codelineno-3-194" name="__codelineno-3-194" href="#__codelineno-3-194"></a>
+</span><span id="__span-3-195"><a id="__codelineno-3-195" name="__codelineno-3-195" href="#__codelineno-3-195"></a>
+</span><span id="__span-3-196"><a id="__codelineno-3-196" name="__codelineno-3-196" href="#__codelineno-3-196"></a><span class="k">class</span><span class="w"> </span><span class="nc">TechnicalEvaluator</span><span class="p">(</span><span class="n">Agent</span><span class="p">):</span>
+</span><span id="__span-3-197"><a id="__codelineno-3-197" name="__codelineno-3-197" href="#__codelineno-3-197"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Evaluate technical feasibility and architecture.&quot;&quot;&quot;</span>
+</span><span id="__span-3-198"><a id="__codelineno-3-198" name="__codelineno-3-198" href="#__codelineno-3-198"></a>
+</span><span id="__span-3-199"><a id="__codelineno-3-199" name="__codelineno-3-199" href="#__codelineno-3-199"></a>    <span class="n">system_prompt</span> <span class="o">=</span> <span class="s2">&quot;&quot;&quot;You are a technical architecture evaluator.</span>
+</span><span id="__span-3-200"><a id="__codelineno-3-200" name="__codelineno-3-200" href="#__codelineno-3-200"></a><span class="s2">    Assess technical feasibility, recommend tech stacks, and identify risks.</span>
+</span><span id="__span-3-201"><a id="__codelineno-3-201" name="__codelineno-3-201" href="#__codelineno-3-201"></a><span class="s2">    Respond to feasibility queries from CustomerAnalyst.&quot;&quot;&quot;</span>
+</span><span id="__span-3-202"><a id="__codelineno-3-202" name="__codelineno-3-202" href="#__codelineno-3-202"></a>
+</span><span id="__span-3-203"><a id="__codelineno-3-203" name="__codelineno-3-203" href="#__codelineno-3-203"></a>    <span class="n">tool_names</span> <span class="o">=</span> <span class="p">[</span><span class="s2">&quot;github_search&quot;</span><span class="p">,</span> <span class="s2">&quot;tech_stack_api&quot;</span><span class="p">,</span> <span class="s2">&quot;code_analysis&quot;</span><span class="p">]</span>
+</span><span id="__span-3-204"><a id="__codelineno-3-204" name="__codelineno-3-204" href="#__codelineno-3-204"></a>
+</span><span id="__span-3-205"><a id="__codelineno-3-205" name="__codelineno-3-205" href="#__codelineno-3-205"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">task_input</span><span class="p">):</span>
+</span><span id="__span-3-206"><a id="__codelineno-3-206" name="__codelineno-3-206" href="#__codelineno-3-206"></a>        <span class="n">product</span> <span class="o">=</span> <span class="n">task_input</span><span class="p">[</span><span class="s2">&quot;product&quot;</span><span class="p">]</span>
+</span><span id="__span-3-207"><a id="__codelineno-3-207" name="__codelineno-3-207" href="#__codelineno-3-207"></a>        <span class="n">competitors</span> <span class="o">=</span> <span class="n">task_input</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;competitors&quot;</span><span class="p">,</span> <span class="p">{})</span>
+</span><span id="__span-3-208"><a id="__codelineno-3-208" name="__codelineno-3-208" href="#__codelineno-3-208"></a>
+</span><span id="__span-3-209"><a id="__codelineno-3-209" name="__codelineno-3-209" href="#__codelineno-3-209"></a>        <span class="c1"># Technical assessment</span>
+</span><span id="__span-3-210"><a id="__codelineno-3-210" name="__codelineno-3-210" href="#__codelineno-3-210"></a>        <span class="n">tech_analysis</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_analyze_tech_stacks</span><span class="p">(</span><span class="n">competitors</span><span class="p">)</span>
+</span><span id="__span-3-211"><a id="__codelineno-3-211" name="__codelineno-3-211" href="#__codelineno-3-211"></a>
+</span><span id="__span-3-212"><a id="__codelineno-3-212" name="__codelineno-3-212" href="#__codelineno-3-212"></a>        <span class="c1"># Request customer needs</span>
+</span><span id="__span-3-213"><a id="__codelineno-3-213" name="__codelineno-3-213" href="#__codelineno-3-213"></a>        <span class="n">customer_needs</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">ask_peer</span><span class="p">(</span>
+</span><span id="__span-3-214"><a id="__codelineno-3-214" name="__codelineno-3-214" href="#__codelineno-3-214"></a>            <span class="n">peer_name</span><span class="o">=</span><span class="s2">&quot;CustomerAnalyst&quot;</span><span class="p">,</span>
+</span><span id="__span-3-215"><a id="__codelineno-3-215" name="__codelineno-3-215" href="#__codelineno-3-215"></a>            <span class="n">question</span><span class="o">=</span><span class="s2">&quot;What are the top 3 customer pain points?&quot;</span><span class="p">,</span>
+</span><span id="__span-3-216"><a id="__codelineno-3-216" name="__codelineno-3-216" href="#__codelineno-3-216"></a>            <span class="n">context</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;product&quot;</span><span class="p">:</span> <span class="n">product</span><span class="p">}</span>
+</span><span id="__span-3-217"><a id="__codelineno-3-217" name="__codelineno-3-217" href="#__codelineno-3-217"></a>        <span class="p">)</span>
+</span><span id="__span-3-218"><a id="__codelineno-3-218" name="__codelineno-3-218" href="#__codelineno-3-218"></a>
+</span><span id="__span-3-219"><a id="__codelineno-3-219" name="__codelineno-3-219" href="#__codelineno-3-219"></a>        <span class="c1"># Match tech solutions to customer needs</span>
+</span><span id="__span-3-220"><a id="__codelineno-3-220" name="__codelineno-3-220" href="#__codelineno-3-220"></a>        <span class="n">recommended_stack</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_recommend_tech_stack</span><span class="p">(</span>
+</span><span id="__span-3-221"><a id="__codelineno-3-221" name="__codelineno-3-221" href="#__codelineno-3-221"></a>            <span class="n">customer_needs</span><span class="p">,</span>
+</span><span id="__span-3-222"><a id="__codelineno-3-222" name="__codelineno-3-222" href="#__codelineno-3-222"></a>            <span class="n">tech_analysis</span>
+</span><span id="__span-3-223"><a id="__codelineno-3-223" name="__codelineno-3-223" href="#__codelineno-3-223"></a>        <span class="p">)</span>
+</span><span id="__span-3-224"><a id="__codelineno-3-224" name="__codelineno-3-224" href="#__codelineno-3-224"></a>
+</span><span id="__span-3-225"><a id="__codelineno-3-225" name="__codelineno-3-225" href="#__codelineno-3-225"></a>        <span class="k">return</span> <span class="p">{</span>
+</span><span id="__span-3-226"><a id="__codelineno-3-226" name="__codelineno-3-226" href="#__codelineno-3-226"></a>            <span class="s2">&quot;feasibility_score&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_calculate_feasibility</span><span class="p">(</span><span class="n">recommended_stack</span><span class="p">),</span>
+</span><span id="__span-3-227"><a id="__codelineno-3-227" name="__codelineno-3-227" href="#__codelineno-3-227"></a>            <span class="s2">&quot;tech_stack_recommendations&quot;</span><span class="p">:</span> <span class="n">recommended_stack</span><span class="p">,</span>
+</span><span id="__span-3-228"><a id="__codelineno-3-228" name="__codelineno-3-228" href="#__codelineno-3-228"></a>            <span class="s2">&quot;technical_risks&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_identify_risks</span><span class="p">(</span><span class="n">recommended_stack</span><span class="p">)</span>
+</span><span id="__span-3-229"><a id="__codelineno-3-229" name="__codelineno-3-229" href="#__codelineno-3-229"></a>        <span class="p">}</span>
+</span><span id="__span-3-230"><a id="__codelineno-3-230" name="__codelineno-3-230" href="#__codelineno-3-230"></a>
+</span><span id="__span-3-231"><a id="__codelineno-3-231" name="__codelineno-3-231" href="#__codelineno-3-231"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">on_peer_action_request</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">action</span><span class="p">,</span> <span class="n">parameters</span><span class="p">,</span> <span class="n">sender_name</span><span class="p">):</span>
+</span><span id="__span-3-232"><a id="__codelineno-3-232" name="__codelineno-3-232" href="#__codelineno-3-232"></a><span class="w">        </span><span class="sd">&quot;&quot;&quot;Handle technical evaluation requests.&quot;&quot;&quot;</span>
+</span><span id="__span-3-233"><a id="__codelineno-3-233" name="__codelineno-3-233" href="#__codelineno-3-233"></a>        <span class="k">if</span> <span class="n">action</span> <span class="o">==</span> <span class="s2">&quot;assess_feature_feasibility&quot;</span><span class="p">:</span>
+</span><span id="__span-3-234"><a id="__codelineno-3-234" name="__codelineno-3-234" href="#__codelineno-3-234"></a>            <span class="n">features</span> <span class="o">=</span> <span class="n">parameters</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;features&quot;</span><span class="p">,</span> <span class="p">[])</span>
+</span><span id="__span-3-235"><a id="__codelineno-3-235" name="__codelineno-3-235" href="#__codelineno-3-235"></a>            <span class="n">assessments</span> <span class="o">=</span> <span class="p">[]</span>
+</span><span id="__span-3-236"><a id="__codelineno-3-236" name="__codelineno-3-236" href="#__codelineno-3-236"></a>
+</span><span id="__span-3-237"><a id="__codelineno-3-237" name="__codelineno-3-237" href="#__codelineno-3-237"></a>            <span class="k">for</span> <span class="n">feature</span> <span class="ow">in</span> <span class="n">features</span><span class="p">:</span>
+</span><span id="__span-3-238"><a id="__codelineno-3-238" name="__codelineno-3-238" href="#__codelineno-3-238"></a>                <span class="n">score</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_assess_feasibility</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+</span><span id="__span-3-239"><a id="__codelineno-3-239" name="__codelineno-3-239" href="#__codelineno-3-239"></a>                <span class="n">assessments</span><span class="o">.</span><span class="n">append</span><span class="p">({</span>
+</span><span id="__span-3-240"><a id="__codelineno-3-240" name="__codelineno-3-240" href="#__codelineno-3-240"></a>                    <span class="s2">&quot;feature&quot;</span><span class="p">:</span> <span class="n">feature</span><span class="p">,</span>
+</span><span id="__span-3-241"><a id="__codelineno-3-241" name="__codelineno-3-241" href="#__codelineno-3-241"></a>                    <span class="s2">&quot;feasibility_score&quot;</span><span class="p">:</span> <span class="n">score</span><span class="p">,</span>
+</span><span id="__span-3-242"><a id="__codelineno-3-242" name="__codelineno-3-242" href="#__codelineno-3-242"></a>                    <span class="s2">&quot;complexity&quot;</span><span class="p">:</span> <span class="bp">self</span><span class="o">.</span><span class="n">_estimate_complexity</span><span class="p">(</span><span class="n">feature</span><span class="p">)</span>
+</span><span id="__span-3-243"><a id="__codelineno-3-243" name="__codelineno-3-243" href="#__codelineno-3-243"></a>                <span class="p">})</span>
+</span><span id="__span-3-244"><a id="__codelineno-3-244" name="__codelineno-3-244" href="#__codelineno-3-244"></a>
+</span><span id="__span-3-245"><a id="__codelineno-3-245" name="__codelineno-3-245" href="#__codelineno-3-245"></a>            <span class="k">return</span> <span class="p">{</span>
+</span><span id="__span-3-246"><a id="__codelineno-3-246" name="__codelineno-3-246" href="#__codelineno-3-246"></a>                <span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="s2">&quot;success&quot;</span><span class="p">,</span>
+</span><span id="__span-3-247"><a id="__codelineno-3-247" name="__codelineno-3-247" href="#__codelineno-3-247"></a>                <span class="s2">&quot;assessments&quot;</span><span class="p">:</span> <span class="n">assessments</span>
+</span><span id="__span-3-248"><a id="__codelineno-3-248" name="__codelineno-3-248" href="#__codelineno-3-248"></a>            <span class="p">}</span>
+</span><span id="__span-3-249"><a id="__codelineno-3-249" name="__codelineno-3-249" href="#__codelineno-3-249"></a>
+</span><span id="__span-3-250"><a id="__codelineno-3-250" name="__codelineno-3-250" href="#__codelineno-3-250"></a>        <span class="k">return</span> <span class="p">{</span><span class="s2">&quot;status&quot;</span><span class="p">:</span> <span class="s2">&quot;error&quot;</span><span class="p">,</span> <span class="s2">&quot;message&quot;</span><span class="p">:</span> <span class="sa">f</span><span class="s2">&quot;Unknown action: </span><span class="si">{</span><span class="n">action</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">}</span>
+</span><span id="__span-3-251"><a id="__codelineno-3-251" name="__codelineno-3-251" href="#__codelineno-3-251"></a>
+</span><span id="__span-3-252"><a id="__codelineno-3-252" name="__codelineno-3-252" href="#__codelineno-3-252"></a>
+</span><span id="__span-3-253"><a id="__codelineno-3-253" name="__codelineno-3-253" href="#__codelineno-3-253"></a><span class="c1"># ============ Swarm Configuration ============</span>
+</span><span id="__span-3-254"><a id="__codelineno-3-254" name="__codelineno-3-254" href="#__codelineno-3-254"></a>
+</span><span id="__span-3-255"><a id="__codelineno-3-255" name="__codelineno-3-255" href="#__codelineno-3-255"></a><span class="k">def</span><span class="w"> </span><span class="nf">create_market_research_swarm</span><span class="p">(</span><span class="n">architecture</span><span class="p">:</span> <span class="nb">str</span> <span class="o">=</span> <span class="s2">&quot;hybrid&quot;</span><span class="p">):</span>
+</span><span id="__span-3-256"><a id="__codelineno-3-256" name="__codelineno-3-256" href="#__codelineno-3-256"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Create market research swarm with specified architecture.</span>
+</span><span id="__span-3-257"><a id="__codelineno-3-257" name="__codelineno-3-257" href="#__codelineno-3-257"></a>
+</span><span id="__span-3-258"><a id="__codelineno-3-258" name="__codelineno-3-258" href="#__codelineno-3-258"></a><span class="sd">    Args:</span>
+</span><span id="__span-3-259"><a id="__codelineno-3-259" name="__codelineno-3-259" href="#__codelineno-3-259"></a><span class="sd">        architecture: &quot;single&quot;, &quot;team&quot;, or &quot;hybrid&quot;</span>
+</span><span id="__span-3-260"><a id="__codelineno-3-260" name="__codelineno-3-260" href="#__codelineno-3-260"></a><span class="sd">    &quot;&quot;&quot;</span>
+</span><span id="__span-3-261"><a id="__codelineno-3-261" name="__codelineno-3-261" href="#__codelineno-3-261"></a>    <span class="n">coordinator</span> <span class="o">=</span> <span class="n">ResearchCoordinator</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;ResearchCoordinator&quot;</span><span class="p">)</span>
+</span><span id="__span-3-262"><a id="__codelineno-3-262" name="__codelineno-3-262" href="#__codelineno-3-262"></a>    <span class="n">competitor_analyst</span> <span class="o">=</span> <span class="n">CompetitorAnalyst</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;CompetitorAnalyst&quot;</span><span class="p">)</span>
+</span><span id="__span-3-263"><a id="__codelineno-3-263" name="__codelineno-3-263" href="#__codelineno-3-263"></a>    <span class="n">market_analyst</span> <span class="o">=</span> <span class="n">MarketAnalyst</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;MarketAnalyst&quot;</span><span class="p">)</span>
+</span><span id="__span-3-264"><a id="__codelineno-3-264" name="__codelineno-3-264" href="#__codelineno-3-264"></a>    <span class="n">customer_analyst</span> <span class="o">=</span> <span class="n">CustomerAnalyst</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;CustomerAnalyst&quot;</span><span class="p">)</span>
+</span><span id="__span-3-265"><a id="__codelineno-3-265" name="__codelineno-3-265" href="#__codelineno-3-265"></a>    <span class="n">technical_evaluator</span> <span class="o">=</span> <span class="n">TechnicalEvaluator</span><span class="p">(</span><span class="n">name</span><span class="o">=</span><span class="s2">&quot;TechnicalEvaluator&quot;</span><span class="p">)</span>
+</span><span id="__span-3-266"><a id="__codelineno-3-266" name="__codelineno-3-266" href="#__codelineno-3-266"></a>
+</span><span id="__span-3-267"><a id="__codelineno-3-267" name="__codelineno-3-267" href="#__codelineno-3-267"></a>    <span class="k">if</span> <span class="n">architecture</span> <span class="o">==</span> <span class="s2">&quot;single&quot;</span><span class="p">:</span>
+</span><span id="__span-3-268"><a id="__codelineno-3-268" name="__codelineno-3-268" href="#__codelineno-3-268"></a>        <span class="c1"># Single agent does everything</span>
+</span><span id="__span-3-269"><a id="__codelineno-3-269" name="__codelineno-3-269" href="#__codelineno-3-269"></a>        <span class="k">return</span> <span class="n">SingleAgentSwarm</span><span class="p">(</span><span class="n">coordinator</span><span class="p">)</span>
+</span><span id="__span-3-270"><a id="__codelineno-3-270" name="__codelineno-3-270" href="#__codelineno-3-270"></a>
+</span><span id="__span-3-271"><a id="__codelineno-3-271" name="__codelineno-3-271" href="#__codelineno-3-271"></a>    <span class="k">elif</span> <span class="n">architecture</span> <span class="o">==</span> <span class="s2">&quot;team&quot;</span><span class="p">:</span>
+</span><span id="__span-3-272"><a id="__codelineno-3-272" name="__codelineno-3-272" href="#__codelineno-3-272"></a>        <span class="c1"># Team (Centralized): No peer communication</span>
+</span><span id="__span-3-273"><a id="__codelineno-3-273" name="__codelineno-3-273" href="#__codelineno-3-273"></a>        <span class="k">return</span> <span class="n">TeamSwarm</span><span class="p">(</span>
+</span><span id="__span-3-274"><a id="__codelineno-3-274" name="__codelineno-3-274" href="#__codelineno-3-274"></a>            <span class="n">coordinator</span><span class="p">,</span>
+</span><span id="__span-3-275"><a id="__codelineno-3-275" name="__codelineno-3-275" href="#__codelineno-3-275"></a>            <span class="n">competitor_analyst</span><span class="p">,</span>
+</span><span id="__span-3-276"><a id="__codelineno-3-276" name="__codelineno-3-276" href="#__codelineno-3-276"></a>            <span class="n">market_analyst</span><span class="p">,</span>
+</span><span id="__span-3-277"><a id="__codelineno-3-277" name="__codelineno-3-277" href="#__codelineno-3-277"></a>            <span class="n">customer_analyst</span><span class="p">,</span>
+</span><span id="__span-3-278"><a id="__codelineno-3-278" name="__codelineno-3-278" href="#__codelineno-3-278"></a>            <span class="n">technical_evaluator</span><span class="p">,</span>
+</span><span id="__span-3-279"><a id="__codelineno-3-279" name="__codelineno-3-279" href="#__codelineno-3-279"></a>            <span class="n">root_agent</span><span class="o">=</span><span class="n">coordinator</span>
+</span><span id="__span-3-280"><a id="__codelineno-3-280" name="__codelineno-3-280" href="#__codelineno-3-280"></a>        <span class="p">)</span>
+</span><span id="__span-3-281"><a id="__codelineno-3-281" name="__codelineno-3-281" href="#__codelineno-3-281"></a>
+</span><span id="__span-3-282"><a id="__codelineno-3-282" name="__codelineno-3-282" href="#__codelineno-3-282"></a>    <span class="k">elif</span> <span class="n">architecture</span> <span class="o">==</span> <span class="s2">&quot;hybrid&quot;</span><span class="p">:</span>
+</span><span id="__span-3-283"><a id="__codelineno-3-283" name="__codelineno-3-283" href="#__codelineno-3-283"></a>        <span class="c1"># Hybrid: Hierarchical + Peer communication</span>
+</span><span id="__span-3-284"><a id="__codelineno-3-284" name="__codelineno-3-284" href="#__codelineno-3-284"></a>        <span class="k">return</span> <span class="n">HybridSwarm</span><span class="p">(</span>
+</span><span id="__span-3-285"><a id="__codelineno-3-285" name="__codelineno-3-285" href="#__codelineno-3-285"></a>            <span class="n">coordinator</span><span class="p">,</span>
+</span><span id="__span-3-286"><a id="__codelineno-3-286" name="__codelineno-3-286" href="#__codelineno-3-286"></a>            <span class="n">competitor_analyst</span><span class="p">,</span>
+</span><span id="__span-3-287"><a id="__codelineno-3-287" name="__codelineno-3-287" href="#__codelineno-3-287"></a>            <span class="n">market_analyst</span><span class="p">,</span>
+</span><span id="__span-3-288"><a id="__codelineno-3-288" name="__codelineno-3-288" href="#__codelineno-3-288"></a>            <span class="n">customer_analyst</span><span class="p">,</span>
+</span><span id="__span-3-289"><a id="__codelineno-3-289" name="__codelineno-3-289" href="#__codelineno-3-289"></a>            <span class="n">technical_evaluator</span><span class="p">,</span>
+</span><span id="__span-3-290"><a id="__codelineno-3-290" name="__codelineno-3-290" href="#__codelineno-3-290"></a>            <span class="n">root_agent</span><span class="o">=</span><span class="n">coordinator</span><span class="p">,</span>
+</span><span id="__span-3-291"><a id="__codelineno-3-291" name="__codelineno-3-291" href="#__codelineno-3-291"></a>            <span class="n">peer_connections</span><span class="o">=</span><span class="p">[</span>
+</span><span id="__span-3-292"><a id="__codelineno-3-292" name="__codelineno-3-292" href="#__codelineno-3-292"></a>                <span class="c1"># Enable peer collaboration</span>
+</span><span id="__span-3-293"><a id="__codelineno-3-293" name="__codelineno-3-293" href="#__codelineno-3-293"></a>                <span class="p">(</span><span class="n">competitor_analyst</span><span class="p">,</span> <span class="n">market_analyst</span><span class="p">),</span>
+</span><span id="__span-3-294"><a id="__codelineno-3-294" name="__codelineno-3-294" href="#__codelineno-3-294"></a>                <span class="p">(</span><span class="n">customer_analyst</span><span class="p">,</span> <span class="n">technical_evaluator</span><span class="p">),</span>
+</span><span id="__span-3-295"><a id="__codelineno-3-295" name="__codelineno-3-295" href="#__codelineno-3-295"></a>                <span class="p">(</span><span class="n">competitor_analyst</span><span class="p">,</span> <span class="n">customer_analyst</span><span class="p">)</span>
+</span><span id="__span-3-296"><a id="__codelineno-3-296" name="__codelineno-3-296" href="#__codelineno-3-296"></a>            <span class="p">]</span>
+</span><span id="__span-3-297"><a id="__codelineno-3-297" name="__codelineno-3-297" href="#__codelineno-3-297"></a>        <span class="p">)</span>
+</span><span id="__span-3-298"><a id="__codelineno-3-298" name="__codelineno-3-298" href="#__codelineno-3-298"></a>
+</span><span id="__span-3-299"><a id="__codelineno-3-299" name="__codelineno-3-299" href="#__codelineno-3-299"></a>    <span class="k">else</span><span class="p">:</span>
+</span><span id="__span-3-300"><a id="__codelineno-3-300" name="__codelineno-3-300" href="#__codelineno-3-300"></a>        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="sa">f</span><span class="s2">&quot;Unknown architecture: </span><span class="si">{</span><span class="n">architecture</span><span class="si">}</span><span class="s2">&quot;</span><span class="p">)</span>
+</span></code></pre></div>
+<h3 id="24">2.4 评估指标</h3>
+<p><strong>主要指标：</strong></p>
+<ol>
+<li><strong>任务完成质量 (Accuracy):</strong></li>
+<li>竞品识别准确率</li>
+<li>市场趋势覆盖度</li>
+<li>技术评估正确性</li>
+<li>
+<p>最终报告完整性分数（0-100）</p>
+</li>
+<li>
+<p><strong>执行效率 (Efficiency):</strong></p>
+</li>
+<li>总执行时间（秒）</li>
+<li>Token 消耗量</li>
+<li>API 调用次数</li>
+<li>
+<p>Agent 交互轮次</p>
+</li>
+<li>
+<p><strong>协作效果 (Collaboration):</strong></p>
+</li>
+<li>Peer 通信次数</li>
+<li>信息共享有效性</li>
+<li>
+<p>跨 Agent 数据复用率</p>
+</li>
+<li>
+<p><strong>错误率 (Error Rate):</strong></p>
+</li>
+<li>任务失败率</li>
+<li>错误传播次数</li>
+<li>重试次数</li>
+</ol>
+<p><strong>评估公式：</strong>
+<div class="language-text highlight"><pre><span></span><code><span id="__span-4-1"><a id="__codelineno-4-1" name="__codelineno-4-1" href="#__codelineno-4-1"></a>Performance Score = (Quality × 0.5) + (1/Time × 0.3) + (Collaboration × 0.2)
+</span><span id="__span-4-2"><a id="__codelineno-4-2" name="__codelineno-4-2" href="#__codelineno-4-2"></a>
+</span><span id="__span-4-3"><a id="__codelineno-4-3" name="__codelineno-4-3" href="#__codelineno-4-3"></a>其中：
+</span><span id="__span-4-4"><a id="__codelineno-4-4" name="__codelineno-4-4" href="#__codelineno-4-4"></a>- Quality: 0-100 (专家评分或自动评估)
+</span><span id="__span-4-5"><a id="__codelineno-4-5" name="__codelineno-4-5" href="#__codelineno-4-5"></a>- Time: 秒数 (归一化)
+</span><span id="__span-4-6"><a id="__codelineno-4-6" name="__codelineno-4-6" href="#__codelineno-4-6"></a>- Collaboration: Peer通信有效性 0-100
+</span></code></pre></div></p>
+<h3 id="25">2.5 预期结果</h3>
+<p><strong>Hypothesis:</strong></p>
+<table>
+<thead>
+<tr>
+<th>架构</th>
+<th>质量分数</th>
+<th>执行时间</th>
+<th>Peer通信</th>
+<th>综合得分</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Single-Agent</td>
+<td>70</td>
+<td>180s</td>
+<td>0</td>
+<td><strong>Baseline</strong></td>
+</tr>
+<tr>
+<td>Team (Centralized)</td>
+<td>85</td>
+<td>120s</td>
+<td>0</td>
+<td>+30%</td>
+</tr>
+<tr>
+<td><strong>Hybrid</strong></td>
+<td><strong>90</strong></td>
+<td><strong>100s</strong></td>
+<td><strong>12次</strong></td>
+<td><strong>+45%</strong> ✨</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Hybrid 优势体现：</strong>
+1. ✅ <strong>质量提升:</strong> Peer 协作避免信息孤岛（+5分 vs Team）
+2. ✅ <strong>效率提升:</strong> 减少中心瓶颈，子任务并行执行（-20s vs Team）
+3. ✅ <strong>协作效果:</strong> CompetitorAnalyst ←→ MarketAnalyst 数据共享避免重复查询</p>
+<h2 id="3-gaia-inspired">3. 测试场景二：复杂问题求解（GAIA-Inspired）</h2>
+<h3 id="31">3.1 任务描述</h3>
+<p><strong>场景：</strong> 多步骤信息检索和推理任务</p>
+<p><strong>示例任务（GAIA Level 3 风格）：</strong></p>
+<blockquote>
+<p>"In 2026, what is the total market capitalization of the top 3 AI infrastructure companies 
+that have launched new GPU products in the past 6 months and have partnerships with 
+at least 2 major cloud providers? Provide the breakdown by company."</p>
+</blockquote>
+<p><strong>子任务分解：</strong>
+1. <strong>NewsResearcher:</strong> 搜索过去 6 个月发布 GPU 产品的公司
+2. <strong>PartnershipAnalyst:</strong> 验证云服务商合作关系
+3. <strong>FinancialAnalyst:</strong> 获取市值数据
+4. <strong>DataValidator:</strong> 交叉验证数据一致性</p>
+<p><strong>Peer 协作场景：</strong>
+- NewsResearcher 发现公司 → 询问 PartnershipAnalyst 是否满足条件
+- PartnershipAnalyst 验证后 → 通知 FinancialAnalyst 查询市值
+- DataValidator 从各 Agent 收集数据 → 交叉验证</p>
+<h3 id="32">3.2 实现概要</h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-5-1"><a id="__codelineno-5-1" name="__codelineno-5-1" href="#__codelineno-5-1"></a><span class="k">class</span><span class="w"> </span><span class="nc">MultiStepCoordinator</span><span class="p">(</span><span class="n">Agent</span><span class="p">):</span>
+</span><span id="__span-5-2"><a id="__codelineno-5-2" name="__codelineno-5-2" href="#__codelineno-5-2"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Coordinates multi-step reasoning.&quot;&quot;&quot;</span>
+</span><span id="__span-5-3"><a id="__codelineno-5-3" name="__codelineno-5-3" href="#__codelineno-5-3"></a>
+</span><span id="__span-5-4"><a id="__codelineno-5-4" name="__codelineno-5-4" href="#__codelineno-5-4"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">question</span><span class="p">):</span>
+</span><span id="__span-5-5"><a id="__codelineno-5-5" name="__codelineno-5-5" href="#__codelineno-5-5"></a>        <span class="c1"># Decompose question</span>
+</span><span id="__span-5-6"><a id="__codelineno-5-6" name="__codelineno-5-6" href="#__codelineno-5-6"></a>        <span class="n">subtasks</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_decompose_question</span><span class="p">(</span><span class="n">question</span><span class="p">)</span>
+</span><span id="__span-5-7"><a id="__codelineno-5-7" name="__codelineno-5-7" href="#__codelineno-5-7"></a>
+</span><span id="__span-5-8"><a id="__codelineno-5-8" name="__codelineno-5-8" href="#__codelineno-5-8"></a>        <span class="c1"># Execute with coordination</span>
+</span><span id="__span-5-9"><a id="__codelineno-5-9" name="__codelineno-5-9" href="#__codelineno-5-9"></a>        <span class="n">results</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_execute_subtasks_with_coordination</span><span class="p">(</span><span class="n">subtasks</span><span class="p">)</span>
+</span><span id="__span-5-10"><a id="__codelineno-5-10" name="__codelineno-5-10" href="#__codelineno-5-10"></a>
+</span><span id="__span-5-11"><a id="__codelineno-5-11" name="__codelineno-5-11" href="#__codelineno-5-11"></a>        <span class="c1"># Synthesize answer</span>
+</span><span id="__span-5-12"><a id="__codelineno-5-12" name="__codelineno-5-12" href="#__codelineno-5-12"></a>        <span class="k">return</span> <span class="bp">self</span><span class="o">.</span><span class="n">_synthesize_answer</span><span class="p">(</span><span class="n">results</span><span class="p">)</span>
+</span><span id="__span-5-13"><a id="__codelineno-5-13" name="__codelineno-5-13" href="#__codelineno-5-13"></a>
+</span><span id="__span-5-14"><a id="__codelineno-5-14" name="__codelineno-5-14" href="#__codelineno-5-14"></a>
+</span><span id="__span-5-15"><a id="__codelineno-5-15" name="__codelineno-5-15" href="#__codelineno-5-15"></a><span class="k">class</span><span class="w"> </span><span class="nc">NewsResearcher</span><span class="p">(</span><span class="n">Agent</span><span class="p">):</span>
+</span><span id="__span-5-16"><a id="__codelineno-5-16" name="__codelineno-5-16" href="#__codelineno-5-16"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Search for recent news and announcements.&quot;&quot;&quot;</span>
+</span><span id="__span-5-17"><a id="__codelineno-5-17" name="__codelineno-5-17" href="#__codelineno-5-17"></a>
+</span><span id="__span-5-18"><a id="__codelineno-5-18" name="__codelineno-5-18" href="#__codelineno-5-18"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">step</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">query</span><span class="p">):</span>
+</span><span id="__span-5-19"><a id="__codelineno-5-19" name="__codelineno-5-19" href="#__codelineno-5-19"></a>        <span class="n">companies</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_search_gpu_launches</span><span class="p">(</span><span class="n">query</span><span class="p">)</span>
+</span><span id="__span-5-20"><a id="__codelineno-5-20" name="__codelineno-5-20" href="#__codelineno-5-20"></a>
+</span><span id="__span-5-21"><a id="__codelineno-5-21" name="__codelineno-5-21" href="#__codelineno-5-21"></a>        <span class="c1"># Peer collaboration: Verify partnerships</span>
+</span><span id="__span-5-22"><a id="__codelineno-5-22" name="__codelineno-5-22" href="#__codelineno-5-22"></a>        <span class="n">verified_companies</span> <span class="o">=</span> <span class="p">[]</span>
+</span><span id="__span-5-23"><a id="__codelineno-5-23" name="__codelineno-5-23" href="#__codelineno-5-23"></a>        <span class="k">for</span> <span class="n">company</span> <span class="ow">in</span> <span class="n">companies</span><span class="p">:</span>
+</span><span id="__span-5-24"><a id="__codelineno-5-24" name="__codelineno-5-24" href="#__codelineno-5-24"></a>            <span class="n">is_qualified</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">ask_peer</span><span class="p">(</span>
+</span><span id="__span-5-25"><a id="__codelineno-5-25" name="__codelineno-5-25" href="#__codelineno-5-25"></a>                <span class="n">peer_name</span><span class="o">=</span><span class="s2">&quot;PartnershipAnalyst&quot;</span><span class="p">,</span>
+</span><span id="__span-5-26"><a id="__codelineno-5-26" name="__codelineno-5-26" href="#__codelineno-5-26"></a>                <span class="n">question</span><span class="o">=</span><span class="sa">f</span><span class="s2">&quot;Does </span><span class="si">{</span><span class="n">company</span><span class="si">}</span><span class="s2"> have 2+ cloud partnerships?&quot;</span><span class="p">,</span>
+</span><span id="__span-5-27"><a id="__codelineno-5-27" name="__codelineno-5-27" href="#__codelineno-5-27"></a>                <span class="n">context</span><span class="o">=</span><span class="p">{</span><span class="s2">&quot;company&quot;</span><span class="p">:</span> <span class="n">company</span><span class="p">,</span> <span class="s2">&quot;min_partnerships&quot;</span><span class="p">:</span> <span class="mi">2</span><span class="p">}</span>
+</span><span id="__span-5-28"><a id="__codelineno-5-28" name="__codelineno-5-28" href="#__codelineno-5-28"></a>            <span class="p">)</span>
+</span><span id="__span-5-29"><a id="__codelineno-5-29" name="__codelineno-5-29" href="#__codelineno-5-29"></a>
+</span><span id="__span-5-30"><a id="__codelineno-5-30" name="__codelineno-5-30" href="#__codelineno-5-30"></a>            <span class="k">if</span> <span class="n">is_qualified</span> <span class="o">==</span> <span class="s2">&quot;yes&quot;</span><span class="p">:</span>
+</span><span id="__span-5-31"><a id="__codelineno-5-31" name="__codelineno-5-31" href="#__codelineno-5-31"></a>                <span class="n">verified_companies</span><span class="o">.</span><span class="n">append</span><span class="p">(</span><span class="n">company</span><span class="p">)</span>
+</span><span id="__span-5-32"><a id="__codelineno-5-32" name="__codelineno-5-32" href="#__codelineno-5-32"></a>
+</span><span id="__span-5-33"><a id="__codelineno-5-33" name="__codelineno-5-33" href="#__codelineno-5-33"></a>        <span class="k">return</span> <span class="n">verified_companies</span>
+</span><span id="__span-5-34"><a id="__codelineno-5-34" name="__codelineno-5-34" href="#__codelineno-5-34"></a>
+</span><span id="__span-5-35"><a id="__codelineno-5-35" name="__codelineno-5-35" href="#__codelineno-5-35"></a>
+</span><span id="__span-5-36"><a id="__codelineno-5-36" name="__codelineno-5-36" href="#__codelineno-5-36"></a><span class="k">class</span><span class="w"> </span><span class="nc">PartnershipAnalyst</span><span class="p">(</span><span class="n">Agent</span><span class="p">):</span>
+</span><span id="__span-5-37"><a id="__codelineno-5-37" name="__codelineno-5-37" href="#__codelineno-5-37"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Verify partnership relationships.&quot;&quot;&quot;</span>
+</span><span id="__span-5-38"><a id="__codelineno-5-38" name="__codelineno-5-38" href="#__codelineno-5-38"></a>
+</span><span id="__span-5-39"><a id="__codelineno-5-39" name="__codelineno-5-39" href="#__codelineno-5-39"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">on_peer_question</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">question</span><span class="p">,</span> <span class="n">context</span><span class="p">,</span> <span class="n">sender_name</span><span class="p">):</span>
+</span><span id="__span-5-40"><a id="__codelineno-5-40" name="__codelineno-5-40" href="#__codelineno-5-40"></a>        <span class="n">company</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;company&quot;</span><span class="p">)</span>
+</span><span id="__span-5-41"><a id="__codelineno-5-41" name="__codelineno-5-41" href="#__codelineno-5-41"></a>        <span class="n">min_partnerships</span> <span class="o">=</span> <span class="n">context</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;min_partnerships&quot;</span><span class="p">,</span> <span class="mi">2</span><span class="p">)</span>
+</span><span id="__span-5-42"><a id="__codelineno-5-42" name="__codelineno-5-42" href="#__codelineno-5-42"></a>
+</span><span id="__span-5-43"><a id="__codelineno-5-43" name="__codelineno-5-43" href="#__codelineno-5-43"></a>        <span class="n">partnerships</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_check_cloud_partnerships</span><span class="p">(</span><span class="n">company</span><span class="p">)</span>
+</span><span id="__span-5-44"><a id="__codelineno-5-44" name="__codelineno-5-44" href="#__codelineno-5-44"></a>
+</span><span id="__span-5-45"><a id="__codelineno-5-45" name="__codelineno-5-45" href="#__codelineno-5-45"></a>        <span class="k">if</span> <span class="nb">len</span><span class="p">(</span><span class="n">partnerships</span><span class="p">)</span> <span class="o">&gt;=</span> <span class="n">min_partnerships</span><span class="p">:</span>
+</span><span id="__span-5-46"><a id="__codelineno-5-46" name="__codelineno-5-46" href="#__codelineno-5-46"></a>            <span class="c1"># Notify FinancialAnalyst to fetch market cap</span>
+</span><span id="__span-5-47"><a id="__codelineno-5-47" name="__codelineno-5-47" href="#__codelineno-5-47"></a>            <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">share_with_peer</span><span class="p">(</span>
+</span><span id="__span-5-48"><a id="__codelineno-5-48" name="__codelineno-5-48" href="#__codelineno-5-48"></a>                <span class="n">peer_name</span><span class="o">=</span><span class="s2">&quot;FinancialAnalyst&quot;</span><span class="p">,</span>
+</span><span id="__span-5-49"><a id="__codelineno-5-49" name="__codelineno-5-49" href="#__codelineno-5-49"></a>                <span class="n">information</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-5-50"><a id="__codelineno-5-50" name="__codelineno-5-50" href="#__codelineno-5-50"></a>                    <span class="s2">&quot;type&quot;</span><span class="p">:</span> <span class="s2">&quot;qualified_company&quot;</span><span class="p">,</span>
+</span><span id="__span-5-51"><a id="__codelineno-5-51" name="__codelineno-5-51" href="#__codelineno-5-51"></a>                    <span class="s2">&quot;company&quot;</span><span class="p">:</span> <span class="n">company</span><span class="p">,</span>
+</span><span id="__span-5-52"><a id="__codelineno-5-52" name="__codelineno-5-52" href="#__codelineno-5-52"></a>                    <span class="s2">&quot;partnerships&quot;</span><span class="p">:</span> <span class="n">partnerships</span>
+</span><span id="__span-5-53"><a id="__codelineno-5-53" name="__codelineno-5-53" href="#__codelineno-5-53"></a>                <span class="p">}</span>
+</span><span id="__span-5-54"><a id="__codelineno-5-54" name="__codelineno-5-54" href="#__codelineno-5-54"></a>            <span class="p">)</span>
+</span><span id="__span-5-55"><a id="__codelineno-5-55" name="__codelineno-5-55" href="#__codelineno-5-55"></a>            <span class="k">return</span> <span class="s2">&quot;yes&quot;</span>
+</span><span id="__span-5-56"><a id="__codelineno-5-56" name="__codelineno-5-56" href="#__codelineno-5-56"></a>
+</span><span id="__span-5-57"><a id="__codelineno-5-57" name="__codelineno-5-57" href="#__codelineno-5-57"></a>        <span class="k">return</span> <span class="s2">&quot;no&quot;</span>
+</span><span id="__span-5-58"><a id="__codelineno-5-58" name="__codelineno-5-58" href="#__codelineno-5-58"></a>
+</span><span id="__span-5-59"><a id="__codelineno-5-59" name="__codelineno-5-59" href="#__codelineno-5-59"></a>
+</span><span id="__span-5-60"><a id="__codelineno-5-60" name="__codelineno-5-60" href="#__codelineno-5-60"></a><span class="k">class</span><span class="w"> </span><span class="nc">FinancialAnalyst</span><span class="p">(</span><span class="n">Agent</span><span class="p">):</span>
+</span><span id="__span-5-61"><a id="__codelineno-5-61" name="__codelineno-5-61" href="#__codelineno-5-61"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Get financial data.&quot;&quot;&quot;</span>
+</span><span id="__span-5-62"><a id="__codelineno-5-62" name="__codelineno-5-62" href="#__codelineno-5-62"></a>
+</span><span id="__span-5-63"><a id="__codelineno-5-63" name="__codelineno-5-63" href="#__codelineno-5-63"></a>    <span class="k">async</span> <span class="k">def</span><span class="w"> </span><span class="nf">on_peer_share</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">information</span><span class="p">,</span> <span class="n">sender_name</span><span class="p">):</span>
+</span><span id="__span-5-64"><a id="__codelineno-5-64" name="__codelineno-5-64" href="#__codelineno-5-64"></a>        <span class="k">if</span> <span class="n">information</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;type&quot;</span><span class="p">)</span> <span class="o">==</span> <span class="s2">&quot;qualified_company&quot;</span><span class="p">:</span>
+</span><span id="__span-5-65"><a id="__codelineno-5-65" name="__codelineno-5-65" href="#__codelineno-5-65"></a>            <span class="n">company</span> <span class="o">=</span> <span class="n">information</span><span class="p">[</span><span class="s2">&quot;company&quot;</span><span class="p">]</span>
+</span><span id="__span-5-66"><a id="__codelineno-5-66" name="__codelineno-5-66" href="#__codelineno-5-66"></a>            <span class="n">market_cap</span> <span class="o">=</span> <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">_get_market_cap</span><span class="p">(</span><span class="n">company</span><span class="p">)</span>
+</span><span id="__span-5-67"><a id="__codelineno-5-67" name="__codelineno-5-67" href="#__codelineno-5-67"></a>
+</span><span id="__span-5-68"><a id="__codelineno-5-68" name="__codelineno-5-68" href="#__codelineno-5-68"></a>            <span class="c1"># Share with validator</span>
+</span><span id="__span-5-69"><a id="__codelineno-5-69" name="__codelineno-5-69" href="#__codelineno-5-69"></a>            <span class="k">await</span> <span class="bp">self</span><span class="o">.</span><span class="n">share_with_peer</span><span class="p">(</span>
+</span><span id="__span-5-70"><a id="__codelineno-5-70" name="__codelineno-5-70" href="#__codelineno-5-70"></a>                <span class="n">peer_name</span><span class="o">=</span><span class="s2">&quot;DataValidator&quot;</span><span class="p">,</span>
+</span><span id="__span-5-71"><a id="__codelineno-5-71" name="__codelineno-5-71" href="#__codelineno-5-71"></a>                <span class="n">information</span><span class="o">=</span><span class="p">{</span>
+</span><span id="__span-5-72"><a id="__codelineno-5-72" name="__codelineno-5-72" href="#__codelineno-5-72"></a>                    <span class="s2">&quot;company&quot;</span><span class="p">:</span> <span class="n">company</span><span class="p">,</span>
+</span><span id="__span-5-73"><a id="__codelineno-5-73" name="__codelineno-5-73" href="#__codelineno-5-73"></a>                    <span class="s2">&quot;market_cap&quot;</span><span class="p">:</span> <span class="n">market_cap</span><span class="p">,</span>
+</span><span id="__span-5-74"><a id="__codelineno-5-74" name="__codelineno-5-74" href="#__codelineno-5-74"></a>                    <span class="s2">&quot;source&quot;</span><span class="p">:</span> <span class="s2">&quot;FinancialAPI&quot;</span>
+</span><span id="__span-5-75"><a id="__codelineno-5-75" name="__codelineno-5-75" href="#__codelineno-5-75"></a>                <span class="p">}</span>
+</span><span id="__span-5-76"><a id="__codelineno-5-76" name="__codelineno-5-76" href="#__codelineno-5-76"></a>            <span class="p">)</span>
+</span></code></pre></div>
+<h2 id="4">4. 测试执行计划</h2>
+<h3 id="41-benchmark">4.1 Benchmark 运行</h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-6-1"><a id="__codelineno-6-1" name="__codelineno-6-1" href="#__codelineno-6-1"></a><span class="c1"># Step 1: Establish baseline with existing architectures</span>
+</span><span id="__span-6-2"><a id="__codelineno-6-2" name="__codelineno-6-2" href="#__codelineno-6-2"></a><span class="nb">cd</span><span class="w"> </span>examples/gaia
+</span><span id="__span-6-3"><a id="__codelineno-6-3" name="__codelineno-6-3" href="#__codelineno-6-3"></a>python<span class="w"> </span>run.py<span class="w"> </span>--split<span class="w"> </span>validation<span class="w"> </span>--start<span class="w"> </span><span class="m">0</span><span class="w"> </span>--end<span class="w"> </span><span class="m">50</span><span class="w"> </span>--architecture<span class="w"> </span>single
+</span><span id="__span-6-4"><a id="__codelineno-6-4" name="__codelineno-6-4" href="#__codelineno-6-4"></a>python<span class="w"> </span>run.py<span class="w"> </span>--split<span class="w"> </span>validation<span class="w"> </span>--start<span class="w"> </span><span class="m">0</span><span class="w"> </span>--end<span class="w"> </span><span class="m">50</span><span class="w"> </span>--architecture<span class="w"> </span>team
+</span><span id="__span-6-5"><a id="__codelineno-6-5" name="__codelineno-6-5" href="#__codelineno-6-5"></a>
+</span><span id="__span-6-6"><a id="__codelineno-6-6" name="__codelineno-6-6" href="#__codelineno-6-6"></a><span class="c1"># Step 2: Run with Hybrid architecture</span>
+</span><span id="__span-6-7"><a id="__codelineno-6-7" name="__codelineno-6-7" href="#__codelineno-6-7"></a>python<span class="w"> </span>run.py<span class="w"> </span>--split<span class="w"> </span>validation<span class="w"> </span>--start<span class="w"> </span><span class="m">0</span><span class="w"> </span>--end<span class="w"> </span><span class="m">50</span><span class="w"> </span>--architecture<span class="w"> </span>hybrid
+</span><span id="__span-6-8"><a id="__codelineno-6-8" name="__codelineno-6-8" href="#__codelineno-6-8"></a>
+</span><span id="__span-6-9"><a id="__codelineno-6-9" name="__codelineno-6-9" href="#__codelineno-6-9"></a><span class="c1"># Step 3: Compare results</span>
+</span><span id="__span-6-10"><a id="__codelineno-6-10" name="__codelineno-6-10" href="#__codelineno-6-10"></a>python<span class="w"> </span>compare_architectures.py<span class="w"> </span>--baseline<span class="w"> </span>single<span class="w"> </span>--compare<span class="w"> </span>team<span class="w"> </span>hybrid
+</span></code></pre></div>
+<h3 id="42">4.2 自定义测试</h3>
+<div class="language-bash highlight"><pre><span></span><code><span id="__span-7-1"><a id="__codelineno-7-1" name="__codelineno-7-1" href="#__codelineno-7-1"></a><span class="c1"># Run market research test case</span>
+</span><span id="__span-7-2"><a id="__codelineno-7-2" name="__codelineno-7-2" href="#__codelineno-7-2"></a><span class="nb">cd</span><span class="w"> </span>tests/hybrid_validation
+</span><span id="__span-7-3"><a id="__codelineno-7-3" name="__codelineno-7-3" href="#__codelineno-7-3"></a>python<span class="w"> </span>test_market_research.py<span class="w"> </span>--architecture<span class="w"> </span>single
+</span><span id="__span-7-4"><a id="__codelineno-7-4" name="__codelineno-7-4" href="#__codelineno-7-4"></a>python<span class="w"> </span>test_market_research.py<span class="w"> </span>--architecture<span class="w"> </span>team
+</span><span id="__span-7-5"><a id="__codelineno-7-5" name="__codelineno-7-5" href="#__codelineno-7-5"></a>python<span class="w"> </span>test_market_research.py<span class="w"> </span>--architecture<span class="w"> </span>hybrid
+</span><span id="__span-7-6"><a id="__codelineno-7-6" name="__codelineno-7-6" href="#__codelineno-7-6"></a>
+</span><span id="__span-7-7"><a id="__codelineno-7-7" name="__codelineno-7-7" href="#__codelineno-7-7"></a><span class="c1"># Generate comparison report</span>
+</span><span id="__span-7-8"><a id="__codelineno-7-8" name="__codelineno-7-8" href="#__codelineno-7-8"></a>python<span class="w"> </span>generate_report.py<span class="w"> </span>--output<span class="w"> </span>hybrid_validation_report.md
+</span></code></pre></div>
+<h3 id="43">4.3 评估脚本</h3>
+<div class="language-python highlight"><pre><span></span><code><span id="__span-8-1"><a id="__codelineno-8-1" name="__codelineno-8-1" href="#__codelineno-8-1"></a><span class="c1"># tests/hybrid_validation/evaluate.py</span>
+</span><span id="__span-8-2"><a id="__codelineno-8-2" name="__codelineno-8-2" href="#__codelineno-8-2"></a>
+</span><span id="__span-8-3"><a id="__codelineno-8-3" name="__codelineno-8-3" href="#__codelineno-8-3"></a><span class="k">def</span><span class="w"> </span><span class="nf">evaluate_market_research</span><span class="p">(</span><span class="n">result</span><span class="p">:</span> <span class="n">Dict</span><span class="p">,</span> <span class="n">ground_truth</span><span class="p">:</span> <span class="n">Dict</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+</span><span id="__span-8-4"><a id="__codelineno-8-4" name="__codelineno-8-4" href="#__codelineno-8-4"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Evaluate market research quality.&quot;&quot;&quot;</span>
+</span><span id="__span-8-5"><a id="__codelineno-8-5" name="__codelineno-8-5" href="#__codelineno-8-5"></a>
+</span><span id="__span-8-6"><a id="__codelineno-8-6" name="__codelineno-8-6" href="#__codelineno-8-6"></a>    <span class="c1"># Competitor coverage</span>
+</span><span id="__span-8-7"><a id="__codelineno-8-7" name="__codelineno-8-7" href="#__codelineno-8-7"></a>    <span class="n">competitor_score</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span>
+</span><span id="__span-8-8"><a id="__codelineno-8-8" name="__codelineno-8-8" href="#__codelineno-8-8"></a>        <span class="nb">set</span><span class="p">(</span><span class="n">result</span><span class="p">[</span><span class="s2">&quot;competitors&quot;</span><span class="p">])</span> <span class="o">&amp;</span> <span class="nb">set</span><span class="p">(</span><span class="n">ground_truth</span><span class="p">[</span><span class="s2">&quot;competitors&quot;</span><span class="p">])</span>
+</span><span id="__span-8-9"><a id="__codelineno-8-9" name="__codelineno-8-9" href="#__codelineno-8-9"></a>    <span class="p">)</span> <span class="o">/</span> <span class="nb">len</span><span class="p">(</span><span class="n">ground_truth</span><span class="p">[</span><span class="s2">&quot;competitors&quot;</span><span class="p">])</span>
+</span><span id="__span-8-10"><a id="__codelineno-8-10" name="__codelineno-8-10" href="#__codelineno-8-10"></a>
+</span><span id="__span-8-11"><a id="__codelineno-8-11" name="__codelineno-8-11" href="#__codelineno-8-11"></a>    <span class="c1"># Trend accuracy</span>
+</span><span id="__span-8-12"><a id="__codelineno-8-12" name="__codelineno-8-12" href="#__codelineno-8-12"></a>    <span class="n">trend_score</span> <span class="o">=</span> <span class="n">calculate_trend_overlap</span><span class="p">(</span>
+</span><span id="__span-8-13"><a id="__codelineno-8-13" name="__codelineno-8-13" href="#__codelineno-8-13"></a>        <span class="n">result</span><span class="p">[</span><span class="s2">&quot;market_trends&quot;</span><span class="p">],</span>
+</span><span id="__span-8-14"><a id="__codelineno-8-14" name="__codelineno-8-14" href="#__codelineno-8-14"></a>        <span class="n">ground_truth</span><span class="p">[</span><span class="s2">&quot;market_trends&quot;</span><span class="p">]</span>
+</span><span id="__span-8-15"><a id="__codelineno-8-15" name="__codelineno-8-15" href="#__codelineno-8-15"></a>    <span class="p">)</span>
+</span><span id="__span-8-16"><a id="__codelineno-8-16" name="__codelineno-8-16" href="#__codelineno-8-16"></a>
+</span><span id="__span-8-17"><a id="__codelineno-8-17" name="__codelineno-8-17" href="#__codelineno-8-17"></a>    <span class="c1"># Technical feasibility</span>
+</span><span id="__span-8-18"><a id="__codelineno-8-18" name="__codelineno-8-18" href="#__codelineno-8-18"></a>    <span class="n">tech_score</span> <span class="o">=</span> <span class="nb">abs</span><span class="p">(</span>
+</span><span id="__span-8-19"><a id="__codelineno-8-19" name="__codelineno-8-19" href="#__codelineno-8-19"></a>        <span class="n">result</span><span class="p">[</span><span class="s2">&quot;technical_feasibility&quot;</span><span class="p">]</span> <span class="o">-</span> <span class="n">ground_truth</span><span class="p">[</span><span class="s2">&quot;technical_feasibility&quot;</span><span class="p">]</span>
+</span><span id="__span-8-20"><a id="__codelineno-8-20" name="__codelineno-8-20" href="#__codelineno-8-20"></a>    <span class="p">)</span> <span class="o">/</span> <span class="n">ground_truth</span><span class="p">[</span><span class="s2">&quot;technical_feasibility&quot;</span><span class="p">]</span>
+</span><span id="__span-8-21"><a id="__codelineno-8-21" name="__codelineno-8-21" href="#__codelineno-8-21"></a>
+</span><span id="__span-8-22"><a id="__codelineno-8-22" name="__codelineno-8-22" href="#__codelineno-8-22"></a>    <span class="c1"># Report completeness</span>
+</span><span id="__span-8-23"><a id="__codelineno-8-23" name="__codelineno-8-23" href="#__codelineno-8-23"></a>    <span class="n">completeness</span> <span class="o">=</span> <span class="n">check_report_sections</span><span class="p">(</span><span class="n">result</span><span class="p">)</span>
+</span><span id="__span-8-24"><a id="__codelineno-8-24" name="__codelineno-8-24" href="#__codelineno-8-24"></a>
+</span><span id="__span-8-25"><a id="__codelineno-8-25" name="__codelineno-8-25" href="#__codelineno-8-25"></a>    <span class="n">final_score</span> <span class="o">=</span> <span class="p">(</span>
+</span><span id="__span-8-26"><a id="__codelineno-8-26" name="__codelineno-8-26" href="#__codelineno-8-26"></a>        <span class="n">competitor_score</span> <span class="o">*</span> <span class="mf">0.3</span> <span class="o">+</span>
+</span><span id="__span-8-27"><a id="__codelineno-8-27" name="__codelineno-8-27" href="#__codelineno-8-27"></a>        <span class="n">trend_score</span> <span class="o">*</span> <span class="mf">0.3</span> <span class="o">+</span>
+</span><span id="__span-8-28"><a id="__codelineno-8-28" name="__codelineno-8-28" href="#__codelineno-8-28"></a>        <span class="p">(</span><span class="mi">1</span> <span class="o">-</span> <span class="n">tech_score</span><span class="p">)</span> <span class="o">*</span> <span class="mf">0.2</span> <span class="o">+</span>
+</span><span id="__span-8-29"><a id="__codelineno-8-29" name="__codelineno-8-29" href="#__codelineno-8-29"></a>        <span class="n">completeness</span> <span class="o">*</span> <span class="mf">0.2</span>
+</span><span id="__span-8-30"><a id="__codelineno-8-30" name="__codelineno-8-30" href="#__codelineno-8-30"></a>    <span class="p">)</span> <span class="o">*</span> <span class="mi">100</span>
+</span><span id="__span-8-31"><a id="__codelineno-8-31" name="__codelineno-8-31" href="#__codelineno-8-31"></a>
+</span><span id="__span-8-32"><a id="__codelineno-8-32" name="__codelineno-8-32" href="#__codelineno-8-32"></a>    <span class="k">return</span> <span class="n">final_score</span>
+</span><span id="__span-8-33"><a id="__codelineno-8-33" name="__codelineno-8-33" href="#__codelineno-8-33"></a>
+</span><span id="__span-8-34"><a id="__codelineno-8-34" name="__codelineno-8-34" href="#__codelineno-8-34"></a>
+</span><span id="__span-8-35"><a id="__codelineno-8-35" name="__codelineno-8-35" href="#__codelineno-8-35"></a><span class="k">def</span><span class="w"> </span><span class="nf">compare_architectures</span><span class="p">(</span><span class="n">results</span><span class="p">:</span> <span class="n">Dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="n">List</span><span class="p">[</span><span class="n">Dict</span><span class="p">]])</span> <span class="o">-&gt;</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">:</span>
+</span><span id="__span-8-36"><a id="__codelineno-8-36" name="__codelineno-8-36" href="#__codelineno-8-36"></a><span class="w">    </span><span class="sd">&quot;&quot;&quot;Compare performance across architectures.&quot;&quot;&quot;</span>
+</span><span id="__span-8-37"><a id="__codelineno-8-37" name="__codelineno-8-37" href="#__codelineno-8-37"></a>
+</span><span id="__span-8-38"><a id="__codelineno-8-38" name="__codelineno-8-38" href="#__codelineno-8-38"></a>    <span class="n">comparison</span> <span class="o">=</span> <span class="p">[]</span>
+</span><span id="__span-8-39"><a id="__codelineno-8-39" name="__codelineno-8-39" href="#__codelineno-8-39"></a>
+</span><span id="__span-8-40"><a id="__codelineno-8-40" name="__codelineno-8-40" href="#__codelineno-8-40"></a>    <span class="k">for</span> <span class="n">arch</span><span class="p">,</span> <span class="n">arch_results</span> <span class="ow">in</span> <span class="n">results</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+</span><span id="__span-8-41"><a id="__codelineno-8-41" name="__codelineno-8-41" href="#__codelineno-8-41"></a>        <span class="n">comparison</span><span class="o">.</span><span class="n">append</span><span class="p">({</span>
+</span><span id="__span-8-42"><a id="__codelineno-8-42" name="__codelineno-8-42" href="#__codelineno-8-42"></a>            <span class="s2">&quot;Architecture&quot;</span><span class="p">:</span> <span class="n">arch</span><span class="p">,</span>
+</span><span id="__span-8-43"><a id="__codelineno-8-43" name="__codelineno-8-43" href="#__codelineno-8-43"></a>            <span class="s2">&quot;Avg Quality&quot;</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">([</span><span class="n">r</span><span class="p">[</span><span class="s2">&quot;quality&quot;</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">arch_results</span><span class="p">]),</span>
+</span><span id="__span-8-44"><a id="__codelineno-8-44" name="__codelineno-8-44" href="#__codelineno-8-44"></a>            <span class="s2">&quot;Avg Time (s)&quot;</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">([</span><span class="n">r</span><span class="p">[</span><span class="s2">&quot;time&quot;</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">arch_results</span><span class="p">]),</span>
+</span><span id="__span-8-45"><a id="__codelineno-8-45" name="__codelineno-8-45" href="#__codelineno-8-45"></a>            <span class="s2">&quot;Peer Communications&quot;</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">([</span><span class="n">r</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">&quot;peer_comms&quot;</span><span class="p">,</span> <span class="mi">0</span><span class="p">)</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">arch_results</span><span class="p">]),</span>
+</span><span id="__span-8-46"><a id="__codelineno-8-46" name="__codelineno-8-46" href="#__codelineno-8-46"></a>            <span class="s2">&quot;Token Usage&quot;</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">([</span><span class="n">r</span><span class="p">[</span><span class="s2">&quot;tokens&quot;</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">arch_results</span><span class="p">]),</span>
+</span><span id="__span-8-47"><a id="__codelineno-8-47" name="__codelineno-8-47" href="#__codelineno-8-47"></a>            <span class="s2">&quot;Success Rate&quot;</span><span class="p">:</span> <span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">([</span><span class="n">r</span><span class="p">[</span><span class="s2">&quot;success&quot;</span><span class="p">]</span> <span class="k">for</span> <span class="n">r</span> <span class="ow">in</span> <span class="n">arch_results</span><span class="p">])</span> <span class="o">*</span> <span class="mi">100</span>
+</span><span id="__span-8-48"><a id="__codelineno-8-48" name="__codelineno-8-48" href="#__codelineno-8-48"></a>        <span class="p">})</span>
+</span><span id="__span-8-49"><a id="__codelineno-8-49" name="__codelineno-8-49" href="#__codelineno-8-49"></a>
+</span><span id="__span-8-50"><a id="__codelineno-8-50" name="__codelineno-8-50" href="#__codelineno-8-50"></a>    <span class="n">df</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">DataFrame</span><span class="p">(</span><span class="n">comparison</span><span class="p">)</span>
+</span><span id="__span-8-51"><a id="__codelineno-8-51" name="__codelineno-8-51" href="#__codelineno-8-51"></a>
+</span><span id="__span-8-52"><a id="__codelineno-8-52" name="__codelineno-8-52" href="#__codelineno-8-52"></a>    <span class="c1"># Calculate relative improvement</span>
+</span><span id="__span-8-53"><a id="__codelineno-8-53" name="__codelineno-8-53" href="#__codelineno-8-53"></a>    <span class="n">baseline</span> <span class="o">=</span> <span class="n">df</span><span class="p">[</span><span class="n">df</span><span class="p">[</span><span class="s2">&quot;Architecture&quot;</span><span class="p">]</span> <span class="o">==</span> <span class="s2">&quot;single&quot;</span><span class="p">]</span><span class="o">.</span><span class="n">iloc</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span>
+</span><span id="__span-8-54"><a id="__codelineno-8-54" name="__codelineno-8-54" href="#__codelineno-8-54"></a>    <span class="n">df</span><span class="p">[</span><span class="s2">&quot;Quality Δ%&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">((</span><span class="n">df</span><span class="p">[</span><span class="s2">&quot;Avg Quality&quot;</span><span class="p">]</span> <span class="o">-</span> <span class="n">baseline</span><span class="p">[</span><span class="s2">&quot;Avg Quality&quot;</span><span class="p">])</span> <span class="o">/</span> <span class="n">baseline</span><span class="p">[</span><span class="s2">&quot;Avg Quality&quot;</span><span class="p">]</span> <span class="o">*</span> <span class="mi">100</span><span class="p">)</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+</span><span id="__span-8-55"><a id="__codelineno-8-55" name="__codelineno-8-55" href="#__codelineno-8-55"></a>    <span class="n">df</span><span class="p">[</span><span class="s2">&quot;Time Δ%&quot;</span><span class="p">]</span> <span class="o">=</span> <span class="p">((</span><span class="n">baseline</span><span class="p">[</span><span class="s2">&quot;Avg Time (s)&quot;</span><span class="p">]</span> <span class="o">-</span> <span class="n">df</span><span class="p">[</span><span class="s2">&quot;Avg Time (s)&quot;</span><span class="p">])</span> <span class="o">/</span> <span class="n">baseline</span><span class="p">[</span><span class="s2">&quot;Avg Time (s)&quot;</span><span class="p">]</span> <span class="o">*</span> <span class="mi">100</span><span class="p">)</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="mi">1</span><span class="p">)</span>
+</span><span id="__span-8-56"><a id="__codelineno-8-56" name="__codelineno-8-56" href="#__codelineno-8-56"></a>
+</span><span id="__span-8-57"><a id="__codelineno-8-57" name="__codelineno-8-57" href="#__codelineno-8-57"></a>    <span class="k">return</span> <span class="n">df</span>
+</span></code></pre></div>
+<h2 id="5">5. 成功标准</h2>
+<h3 id="51">5.1 验证目标</h3>
+<p><strong>Hybrid 架构应该满足：</strong></p>
+<ol>
+<li>✅ <strong>质量优于 Team:</strong> Avg Quality Score &gt; Team Score</li>
+<li>✅ <strong>效率不低于 Team:</strong> Avg Time ≤ Team Time × 1.2</li>
+<li>✅ <strong>Peer 通信有效:</strong> Peer Communication Count &gt; 0 且有实际作用</li>
+<li>✅ <strong>错误率不高于 Team:</strong> Error Rate ≤ Team Error Rate</li>
+</ol>
+<h3 id="52">5.2 预期提升范围</h3>
+<p>基于论文发现，Hybrid 在部分依赖任务上的预期提升：</p>
+<table>
+<thead>
+<tr>
+<th>指标</th>
+<th>预期提升（vs Team）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>任务质量</td>
+<td>+5% to +10%</td>
+</tr>
+<tr>
+<td>执行效率</td>
+<td>+10% to +20%</td>
+</tr>
+<tr>
+<td>综合得分</td>
+<td>+15% to +25%</td>
+</tr>
+</tbody>
+</table>
+<h3 id="53">5.3 失败判定</h3>
+<p><strong>如果出现以下情况，需要重新审视设计：</strong></p>
+<ul>
+<li>❌ Hybrid Quality &lt; Team Quality（Peer 通信引入噪声）</li>
+<li>❌ Hybrid Time &gt; Team Time × 1.5（协调开销过大）</li>
+<li>❌ Peer 通信次数 &gt; 50（过度通信）</li>
+<li>❌ Error Rate &gt; Team Error Rate × 1.2（错误放大）</li>
+</ul>
+<h2 id="6">6. 下一步行动</h2>
+<ol>
+<li><strong>实现市场研究测试用例</strong>（当前优先级最高）</li>
+<li>运行 baseline (Single + Team)</li>
+<li>实现 Hybrid 架构</li>
+<li>对比评估</li>
+<li>根据结果调优</li>
+<li>扩展到 GAIA benchmark 子集</li>
+</ol>
+<hr />
+<p><strong>Document Version:</strong> 1.0<br />
+<strong>Status:</strong> Ready for Implementation<br />
+<strong>Estimated Time:</strong> 2-3 days for test case + baseline</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+    <div class="md-copyright__highlight">
+      © Copyright 2025 inclusionAI AWorld Team.
+    </div>
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      <script id="__config" type="application/json">{"annotate": null, "base": "../..", "features": ["navigation.instant", "navigation.tracking", "navigation.tabs", "toc.follow", "content.code.copy", "content.code.annotate", "content.action.edit", "header.autohide"], "search": "../../assets/javascripts/workers/search.2c215733.min.js", "tags": null, "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": null}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.79ae519e.min.js"></script>
+      
+        <script src="../../js/hide-home-edit.js"></script>
+      
+        <script src="../../js/aworld-enhancements.js"></script>
+      
+        <script src="../../js/github-stars.js"></script>
+      
+        <script src="../../js/github-stats-fallback.js"></script>
+      
+    
+  </body>
+</html>
