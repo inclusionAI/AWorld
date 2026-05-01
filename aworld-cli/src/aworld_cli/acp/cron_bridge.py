@@ -54,7 +54,7 @@ class AcpCronBridge:
         if not job_id:
             return
 
-        session_id = self._job_bindings.get(job_id)
+        session_id = self._resolve_session_id(job_id, notification_data)
         if not session_id or session_id not in self._session_ids:
             if notification_data.get("next_run_at") is None:
                 self._job_bindings.pop(job_id, None)
@@ -93,6 +93,42 @@ class AcpCronBridge:
         finally:
             if notification_data.get("next_run_at") is None:
                 self._job_bindings.pop(job_id, None)
+
+    def _resolve_session_id(self, job_id: str, notification_data: dict[str, Any]) -> str | None:
+        explicit_session_id = self._job_bindings.get(job_id)
+        if explicit_session_id:
+            return explicit_session_id
+
+        # Some reminder paths can produce scheduler notifications even when the
+        # ACP bridge did not observe the cron tool result that created the job.
+        # When there is exactly one live ACP session, route reminder-like terminal
+        # notifications back to that session so Happy can render the completion
+        # message instead of only receiving a push notification.
+        if len(self._session_ids) != 1:
+            return None
+        if not self._should_fallback_to_sole_session(notification_data):
+            return None
+        return next(iter(self._session_ids))
+
+    @classmethod
+    def _should_fallback_to_sole_session(cls, notification_data: dict[str, Any]) -> bool:
+        if notification_data.get("user_visible") is False:
+            return False
+        if notification_data.get("next_run_at") is not None:
+            return False
+        return cls._looks_like_reminder_notification(notification_data)
+
+    @staticmethod
+    def _looks_like_reminder_notification(notification_data: dict[str, Any]) -> bool:
+        parts = [
+            notification_data.get("job_name"),
+            notification_data.get("summary"),
+            notification_data.get("detail"),
+        ]
+        text = "\n".join(str(part) for part in parts if part is not None).strip().lower()
+        if not text:
+            return False
+        return "提醒" in text or "remind" in text or "reminder" in text
 
     @staticmethod
     def _is_cron_tool(tool_name: str | None) -> bool:
