@@ -320,6 +320,72 @@ async def test_bound_cron_notification_is_pushed_only_to_own_session(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_unbound_terminal_reminder_notification_falls_back_to_sole_session() -> None:
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            yield MessageOutput(
+                source=ModelResponse(id="resp-1", model="demo", content="ready"),
+            )
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    await server._cron_bridge.publish_notification(  # type: ignore[attr-defined]
+        {
+            "job_id": "job-unbound",
+            "job_name": "运动提醒",
+            "status": "ok",
+            "summary": 'Cron task "运动提醒" completed',
+            "detail": "提醒我运动",
+            "created_at": "2026-05-01T14:20:00+00:00",
+            "next_run_at": None,
+            "user_visible": True,
+        }
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+    assert len(notifications) == 1
+    assert notifications[0]["params"]["sessionId"] == session["sessionId"]
+    assert notifications[0]["params"]["update"]["sessionUpdate"] == "agent_message_chunk"
+    assert notifications[0]["params"]["update"]["content"]["text"] == 'Cron task "运动提醒" completed\n提醒我运动'
+
+
+@pytest.mark.asyncio
+async def test_unbound_terminal_reminder_notification_does_not_guess_between_sessions() -> None:
+    server = AcpStdioServer(output_bridge=object())
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    server._handle_new_session({"cwd": ".", "mcpServers": []})
+    server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    await server._cron_bridge.publish_notification(  # type: ignore[attr-defined]
+        {
+            "job_id": "job-unbound",
+            "job_name": "运动提醒",
+            "status": "ok",
+            "summary": 'Cron task "运动提醒" completed',
+            "detail": "提醒我运动",
+            "created_at": "2026-05-01T14:20:00+00:00",
+            "next_run_at": None,
+            "user_visible": True,
+        }
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+    assert notifications == []
+
+
+@pytest.mark.asyncio
 async def test_silent_terminal_cron_notification_clears_binding_without_visible_push(monkeypatch) -> None:
     class FakeScheduler:
         def __init__(self) -> None:
