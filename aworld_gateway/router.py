@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from inspect import isawaitable
+from pathlib import Path
 from typing import Any, Protocol
 
 from aworld.runner import Runners
@@ -11,6 +12,8 @@ from aworld_gateway.agent_resolver import AgentResolver
 from aworld_gateway.logging import get_gateway_logger
 from aworld_gateway.session_binding import SessionBinding
 from aworld_gateway.types import InboundEnvelope, OutboundEnvelope
+from aworld_cli.core.command_bridge import CommandBridge
+from aworld_cli.core.tool_filter import temporary_tool_filter
 
 try:
     from aworld.core.context.amni import ApplicationContext, TaskInput
@@ -30,6 +33,7 @@ class AgentBackend(Protocol):
         session_id: str,
         text: str,
         on_output: Callable[[Any], Any] | None = None,
+        allowed_tools: list[str] | None = None,
     ) -> str: ...
 
 
@@ -54,6 +58,7 @@ class LocalCliAgentBackend:
         session_id: str,
         text: str,
         on_output: Callable[[Any], Any] | None = None,
+        allowed_tools: list[str] | None = None,
     ) -> str:
         agent = self._registry_cls.get_agent(agent_id)
         if agent is None:
@@ -86,14 +91,15 @@ class LocalCliAgentBackend:
                 session_id=session_id,
                 hooks=getattr(agent, "hooks", None),
             )
-            if on_output is None:
-                return await executor.chat(text)
-            return await self._run_with_output_observer(
-                executor=executor,
-                text=text,
-                session_id=session_id,
-                on_output=on_output,
-            )
+            with temporary_tool_filter(swarm, allowed_tools):
+                if on_output is None:
+                    return await executor.chat(text)
+                return await self._run_with_output_observer(
+                    executor=executor,
+                    text=text,
+                    session_id=session_id,
+                    on_output=on_output,
+                )
         finally:
             if executor is not None and hasattr(executor, "cleanup_resources"):
                 cleanup_result = executor.cleanup_resources()
@@ -202,10 +208,12 @@ class GatewayRouter:
         session_binding: SessionBinding,
         agent_resolver: AgentResolver,
         agent_backend: AgentBackend,
+        command_bridge: CommandBridge | None = None,
     ) -> None:
         self._session_binding = session_binding
         self._agent_resolver = agent_resolver
         self._agent_backend = agent_backend
+        self._command_bridge = command_bridge or CommandBridge()
 
     async def handle_inbound(
         self,
@@ -240,6 +248,46 @@ class GatewayRouter:
             f"agent={resolved_agent_id} session={session_id} "
             f"channel={inbound.channel} conversation={inbound.conversation_id}"
         )
+        router_on_output = on_output
+
+        async def _execute_prompt_command(
+            *,
+            prompt: str,
+            allowed_tools: list[str] | None,
+            on_output: Callable[[Any], Any] | None = None,
+        ) -> str:
+            backend_run_kwargs = {
+                "agent_id": resolved_agent_id,
+                "session_id": session_id,
+                "text": prompt,
+                "allowed_tools": allowed_tools,
+            }
+            output_callback = on_output if on_output is not None else router_on_output
+            if output_callback is not None:
+                backend_run_kwargs["on_output"] = output_callback
+            return await self._agent_backend.run(**backend_run_kwargs)
+
+        command_result = await self._command_bridge.execute(
+            text=inbound.text,
+            cwd=str(Path.cwd()),
+            session_id=session_id,
+            prompt_executor=_execute_prompt_command,
+            on_output=on_output,
+        )
+        if command_result.handled:
+            outbound = OutboundEnvelope(
+                channel=inbound.channel,
+                account_id=inbound.account_id,
+                conversation_id=inbound.conversation_id,
+                reply_to_message_id=inbound.message_id,
+                text=command_result.text,
+            )
+            logger.info(
+                "Gateway router command handled "
+                f"channel={inbound.channel} conversation={inbound.conversation_id} "
+                f"command={command_result.command_name or 'unknown'}"
+            )
+            return outbound
 
         backend_run_kwargs = {
             "agent_id": resolved_agent_id,

@@ -4,6 +4,7 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +29,7 @@ class FakeAgentBackend:
         session_id: str,
         text: str,
         on_output=None,
+        allowed_tools=None,
     ) -> str:
         call = {
             "agent_id": agent_id,
@@ -36,8 +38,42 @@ class FakeAgentBackend:
         }
         if on_output is not None:
             call["on_output"] = on_output
+        if allowed_tools is not None:
+            call["allowed_tools"] = allowed_tools
         self.calls.append(call)
         return "backend reply"
+
+
+class FakeCommandBridge:
+    def __init__(self, *, handled: bool = True, text: str = "bridge reply") -> None:
+        self.handled = handled
+        self.text = text
+        self.calls: list[dict[str, object]] = []
+
+    async def execute(
+        self,
+        *,
+        text: str,
+        cwd: str,
+        session_id: str,
+        runtime=None,
+        prompt_executor=None,
+        on_output=None,
+    ):
+        self.calls.append(
+            {
+                "text": text,
+                "cwd": cwd,
+                "session_id": session_id,
+                "runtime": runtime,
+            }
+        )
+        return SimpleNamespace(
+            handled=self.handled,
+            command_name="memory",
+            status="completed" if self.handled else "unknown",
+            text=self.text,
+        )
 
 
 def test_handle_inbound_resolves_agent_builds_session_and_routes_execution():
@@ -149,6 +185,80 @@ def test_handle_inbound_forwards_on_output_callback_to_backend():
             "on_output": on_output,
         }
     ]
+
+
+def test_handle_inbound_executes_slash_command_before_backend():
+    backend = FakeAgentBackend()
+    command_bridge = FakeCommandBridge(text="Memory instruction status")
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=backend,
+        command_bridge=command_bridge,
+    )
+    inbound = InboundEnvelope(
+        channel="wecom",
+        account_id="acct-4",
+        conversation_id="conv-4",
+        conversation_type="dm",
+        sender_id="acct-4",
+        sender_name=None,
+        message_id="msg-4",
+        text="/memory status",
+    )
+
+    outbound = asyncio.run(
+        router.handle_inbound(
+            inbound,
+            channel_default_agent_id="channel-agent",
+        )
+    )
+
+    assert backend.calls == []
+    assert command_bridge.calls == [
+        {
+            "text": "/memory status",
+            "cwd": str(Path.cwd()),
+            "session_id": "gw:channel-agent:wecom:acct-4:dm:conv-4",
+            "runtime": None,
+        }
+    ]
+    assert outbound.text == "Memory instruction status"
+    assert outbound.reply_to_message_id == "msg-4"
+
+
+def test_handle_inbound_executes_prompt_command_via_backend():
+    backend = FakeAgentBackend()
+    router = GatewayRouter(
+        session_binding=SessionBinding(),
+        agent_resolver=AgentResolver(default_agent_id="aworld"),
+        agent_backend=backend,
+    )
+    inbound = InboundEnvelope(
+        channel="wecom",
+        account_id="acct-5",
+        conversation_id="conv-5",
+        conversation_type="dm",
+        sender_id="acct-5",
+        sender_name=None,
+        message_id="msg-5",
+        text="/diff main",
+    )
+
+    outbound = asyncio.run(
+        router.handle_inbound(
+            inbound,
+            channel_default_agent_id="channel-agent",
+        )
+    )
+
+    assert len(backend.calls) == 1
+    assert backend.calls[0]["agent_id"] == "channel-agent"
+    assert backend.calls[0]["session_id"] == "gw:channel-agent:wecom:acct-5:dm:conv-5"
+    assert "Diff Summary Task" in backend.calls[0]["text"]
+    assert "main" in backend.calls[0]["text"]
+    assert "git_diff" in backend.calls[0]["allowed_tools"]
+    assert outbound.text == "backend reply"
 
 
 def test_handle_inbound_logs_routing_flow(caplog: pytest.LogCaptureFixture):
