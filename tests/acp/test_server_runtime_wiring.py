@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -84,6 +85,135 @@ async def test_prompt_streams_executor_outputs_through_adapter_and_mapper() -> N
     assert notifications[1]["params"]["update"]["content"] == {"command": "pwd"}
     assert notifications[2]["params"]["update"]["status"] == "completed"
     assert notifications[2]["params"]["update"]["content"] == {"cwd": "/tmp"}
+
+
+@pytest.mark.asyncio
+async def test_prompt_executes_slash_command_without_invoking_output_bridge(tmp_path: Path) -> None:
+    class FakeOutputBridge:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def stream_outputs(self, *, record, prompt_text):
+            self.calls += 1
+            yield MessageOutput(
+                source=ModelResponse(id="resp-1", model="demo", content="should-not-run"),
+            )
+
+    class FakeCommandBridge:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def execute(
+            self,
+            *,
+            text: str,
+            cwd: str,
+            session_id: str,
+            runtime=None,
+            prompt_executor=None,
+            on_output=None,
+        ):
+            self.calls.append(
+                {
+                    "text": text,
+                    "cwd": cwd,
+                    "session_id": session_id,
+                    "runtime": runtime,
+                }
+            )
+            return SimpleNamespace(
+                handled=True,
+                command_name="memory",
+                status="completed",
+                text="Workspace memory instructions are read from disk on demand.",
+            )
+
+    output_bridge = FakeOutputBridge()
+    command_bridge = FakeCommandBridge()
+    server = AcpStdioServer(output_bridge=output_bridge, command_bridge=command_bridge)
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": str(tmp_path), "mcpServers": []})
+
+    response = await server._handle_prompt(
+        3,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "/memory reload"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert response["result"]["status"] == "completed"
+    assert output_bridge.calls == 0
+    assert command_bridge.calls == [
+        {
+            "text": "/memory reload",
+            "cwd": str(tmp_path.resolve()),
+            "session_id": session["sessionId"],
+            "runtime": server,
+        }
+    ]
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_message_chunk"
+    ]
+    assert notifications[0]["params"]["update"]["content"]["text"] == (
+        "Workspace memory instructions are read from disk on demand."
+    )
+
+
+@pytest.mark.asyncio
+async def test_prompt_executes_prompt_command_via_streaming_output_bridge() -> None:
+    class FakeOutputBridge:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def stream_outputs(self, *, record, prompt_text, allowed_tools=None):
+            self.calls.append(
+                {
+                    "record": record,
+                    "prompt_text": prompt_text,
+                    "allowed_tools": allowed_tools,
+                }
+            )
+            yield MessageOutput(
+                source=ModelResponse(id="resp-1", model="demo", content="diff-summary"),
+            )
+
+    output_bridge = FakeOutputBridge()
+    server = AcpStdioServer(output_bridge=output_bridge)
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        4,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "/diff main"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "sessionUpdate"]
+
+    assert response["result"]["status"] == "completed"
+    assert len(output_bridge.calls) == 1
+    assert "Diff Summary Task" in str(output_bridge.calls[0]["prompt_text"])
+    assert "main" in str(output_bridge.calls[0]["prompt_text"])
+    assert "git_diff" in list(output_bridge.calls[0]["allowed_tools"])
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "agent_message_chunk"
+    ]
+    assert notifications[0]["params"]["update"]["content"]["text"] == "diff-summary"
 
 
 @pytest.mark.asyncio

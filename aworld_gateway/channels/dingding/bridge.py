@@ -8,6 +8,7 @@ from typing import Any
 from aworld.runner import Runners
 
 from aworld_gateway.channels.dingding.types import DingdingBridgeResult
+from aworld_cli.core.tool_filter import temporary_tool_filter
 
 try:
     from aworld.core.context.amni import ApplicationContext, TaskInput
@@ -37,6 +38,7 @@ class AworldDingdingBridge:
         text: Any,
         on_text_chunk: Callable[[str], Any] | None = None,
         on_output: Callable[[Any], Any] | None = None,
+        allowed_tools: list[str] | None = None,
     ) -> DingdingBridgeResult:
         agent = self._registry_cls.get_agent(agent_id)
         if agent is None:
@@ -53,28 +55,29 @@ class AworldDingdingBridge:
         try:
             chunks: list[str] = []
             saw_chunk_output = False
-            async for output in self._stream_outputs(
-                executor=executor,
-                text=text,
-                session_id=session_id,
-            ):
-                if on_output is not None:
-                    output_callback_result = on_output(output)
-                    if isawaitable(output_callback_result):
-                        await output_callback_result
-                output_type = self._output_type(output)
-                chunk = self._extract_visible_text(output)
-                if output_type == "message" and saw_chunk_output:
-                    chunk = ""
-                if not chunk:
-                    continue
-                if output_type == "chunk":
-                    saw_chunk_output = True
-                chunks.append(chunk)
-                if on_text_chunk is not None:
-                    callback_result = on_text_chunk(chunk)
-                    if isawaitable(callback_result):
-                        await callback_result
+            with temporary_tool_filter(swarm, allowed_tools):
+                async for output in self._stream_outputs(
+                    executor=executor,
+                    text=text,
+                    session_id=session_id,
+                ):
+                    if on_output is not None:
+                        output_callback_result = on_output(output)
+                        if isawaitable(output_callback_result):
+                            await output_callback_result
+                    output_type = self._output_type(output)
+                    chunk = self._extract_visible_text(output)
+                    if output_type == "message" and saw_chunk_output:
+                        chunk = ""
+                    if not chunk:
+                        continue
+                    if output_type == "chunk":
+                        saw_chunk_output = True
+                    chunks.append(chunk)
+                    if on_text_chunk is not None:
+                        callback_result = on_text_chunk(chunk)
+                        if isawaitable(callback_result):
+                            await callback_result
             return DingdingBridgeResult(text="".join(chunks).strip())
         finally:
             cleanup = getattr(executor, "cleanup_resources", None)
