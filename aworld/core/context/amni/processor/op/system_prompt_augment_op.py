@@ -298,6 +298,9 @@ class SystemPromptAugmentOp(BaseOp):
         appended_prompt, assembly_observability = self._assemble_system_prompt(
             provider=provider,
             messages=prompt_messages,
+            metadata={
+                "system_section_hints": self._build_system_section_hints(augment_prompts),
+            },
         )
 
         formatted_system_prompt = await ContextPromptTemplate(template=appended_prompt).async_format(
@@ -412,6 +415,13 @@ class SystemPromptAugmentOp(BaseOp):
         return messages
 
     @staticmethod
+    def _build_system_section_hints(augment_prompts: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        hints = [{"name": "system_prompt", "stability": "stable"}]
+        for name in (augment_prompts or {}).keys():
+            hints.append({"name": name})
+        return hints
+
+    @staticmethod
     def _stringify_system_content(content: Any) -> str:
         if isinstance(content, str):
             return content
@@ -432,11 +442,12 @@ class SystemPromptAugmentOp(BaseOp):
         *,
         provider: Any,
         messages: List[Dict[str, Any]],
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> tuple[str, Dict[str, Any]]:
         if not messages:
             return "", {}
 
-        plan = provider.build_plan(messages=messages, tools=None, metadata={})
+        plan = provider.build_plan(messages=messages, tools=None, metadata=metadata or {})
         observability = {}
         plan_observability = getattr(plan, "observability", None)
         if isinstance(plan_observability, dict):

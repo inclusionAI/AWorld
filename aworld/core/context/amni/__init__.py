@@ -19,7 +19,7 @@ from aworld.output import Artifact, WorkSpace, StreamingOutputs
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory, ContextEnvConfig
 from .contexts import ContextManager
-from .prompt.assembly import DefaultPromptAssemblyProvider
+from .prompt.assembly import DefaultPromptAssemblyProvider, CacheAwarePromptAssemblyProvider
 from .prompt.prompts import AMNI_CONTEXT_PROMPT
 from .retrieval.artifacts import SearchArtifact
 from .retrieval.artifacts.file import DirArtifact
@@ -493,7 +493,8 @@ class ApplicationContext(AmniContext):
         self._prompt_service = None
         self._freedom_space_service = None
         self._traj_service = None
-        self._prompt_assembly_provider = None
+        self._default_prompt_assembly_provider = None
+        self._cache_aware_prompt_assembly_provider = None
 
     def get_config(self) -> AmniContextConfig:
         return self._config
@@ -514,9 +515,21 @@ class ApplicationContext(AmniContext):
             if provider is not None:
                 return provider
 
-        if self._prompt_assembly_provider is None:
-            self._prompt_assembly_provider = DefaultPromptAssemblyProvider()
-        return self._prompt_assembly_provider
+        context_cache_enabled = False
+        if agent is not None and hasattr(agent, "_is_context_cache_enabled"):
+            try:
+                context_cache_enabled = bool(agent._is_context_cache_enabled(self))
+            except Exception:
+                context_cache_enabled = False
+
+        if context_cache_enabled:
+            if self._cache_aware_prompt_assembly_provider is None:
+                self._cache_aware_prompt_assembly_provider = CacheAwarePromptAssemblyProvider()
+            return self._cache_aware_prompt_assembly_provider
+
+        if self._default_prompt_assembly_provider is None:
+            self._default_prompt_assembly_provider = DefaultPromptAssemblyProvider()
+        return self._default_prompt_assembly_provider
 
     @property
     def knowledge_service(self):
