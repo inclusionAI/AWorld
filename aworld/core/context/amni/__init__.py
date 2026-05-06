@@ -790,6 +790,7 @@ class ApplicationContext(AmniContext):
             workspace = self.workspace
 
         sub_context = ApplicationContext(task_state, workspace, parent=self, context_config=self.get_config())
+        sub_context.inherit_step_parent(self.current_step_id())
         # Initialize sub-context event bus (global event bus already started, no need to restart here)
         # Upsert sub task to task state
         self.task_state_service.upsert_sub_task(sub_task_input, task_type)

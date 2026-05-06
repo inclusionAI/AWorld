@@ -29,6 +29,7 @@ from aworld_gateway.config import DingdingChannelConfig
 from aworld_gateway.cron_push import CronPushBindingStore, CronPushBridge
 from aworld_gateway.http.artifact_service import ArtifactService
 from aworld_gateway.logging import get_gateway_logger
+from aworld_cli.core.command_bridge import CommandBridge
 from aworld.logs.util import logger
 
 DINGTALK_API = "https://api.dingtalk.com"
@@ -101,6 +102,7 @@ class DingTalkConnector:
         http_client: httpx.AsyncClient | None = None,
         thread_cls: type[threading.Thread] = threading.Thread,
         artifact_service: object | None = None,
+        command_bridge: CommandBridge | None = None,
     ) -> None:
         self._config = config
         self._bridge = bridge
@@ -108,6 +110,7 @@ class DingTalkConnector:
         self._http = http_client or httpx.AsyncClient(timeout=60.0)
         self._thread_cls = thread_cls
         self._artifact_service = artifact_service
+        self._command_bridge = command_bridge or CommandBridge()
         self._session_ids: dict[str, str] = {}
         self._conversation_active_runs: dict[str, int] = {}
         self._conversation_state_lock = threading.Lock()
@@ -280,6 +283,37 @@ class DingTalkConnector:
                     f"conversation={conversation_key} session={session_id}"
                 )
 
+            async def _execute_prompt_command(
+                *,
+                prompt: str,
+                allowed_tools: list[str] | None,
+                on_output=None,
+            ) -> str:
+                await self._run_message_round(
+                    session_webhook=session_webhook,
+                    session_id=session_id,
+                    text=prompt,
+                    request_text=message.text,
+                    has_attachments=bool(message.attachments),
+                    data=data,
+                    allowed_tools=allowed_tools,
+                )
+                return ""
+
+            command_result = await self._command_bridge.execute(
+                text=user_text,
+                cwd=str(Path.cwd()),
+                session_id=session_id,
+                prompt_executor=_execute_prompt_command,
+            )
+            if command_result.handled:
+                if command_result.text:
+                    await self.send_text(
+                        session_webhook=session_webhook,
+                        text=command_result.text,
+                    )
+                return
+
             enriched_text = self._append_user_context_to_text(message.text, data)
             user_input = await self._build_llm_user_input(
                 ExtractedMessage(text=enriched_text, attachments=message.attachments),
@@ -348,7 +382,8 @@ class DingTalkConnector:
         request_text: str,
         has_attachments: bool,
         data: dict,
-    ) -> None:
+        allowed_tools: list[str] | None = None,
+    ) -> str:
         active_card = (
             await self._try_create_ai_card(data)
             if self._config.enable_ai_card
@@ -435,12 +470,17 @@ class DingTalkConnector:
             )
 
         try:
+            bridge_run_kwargs = {
+                "agent_id": self._resolve_agent_id(),
+                "session_id": session_id,
+                "text": text,
+                "on_text_chunk": on_text_chunk,
+                "on_output": on_output,
+            }
+            if allowed_tools is not None:
+                bridge_run_kwargs["allowed_tools"] = allowed_tools
             result = await self._bridge.run(
-                agent_id=self._resolve_agent_id(),
-                session_id=session_id,
-                text=text,
-                on_text_chunk=on_text_chunk,
-                on_output=on_output,
+                **bridge_run_kwargs,
             )
         except Exception as exc:
             await self._finalize_processing_ack_task(delayed_ack_task)
@@ -449,7 +489,7 @@ class DingTalkConnector:
                 card=active_card,
                 text=f"抱歉，调用 Agent 失败：{exc}",
             )
-            return
+            return ""
 
         await self._finalize_processing_ack_task(delayed_ack_task)
         final_text, pending_files = await self._process_local_media_links(result.text)
@@ -473,7 +513,7 @@ class DingTalkConnector:
                     "fallback_to_text=False"
                 )
                 await self._send_pending_files(session_webhook, pending_files)
-                return
+                return display_text
             fallback_to_text = True
             self._log_business_info(
                 "DingTalk AI Card finalize failed "
@@ -489,6 +529,7 @@ class DingTalkConnector:
             f"fallback_to_text={fallback_to_text}"
         )
         await self._send_pending_files(session_webhook, pending_files)
+        return display_text
 
     def _resolve_agent_id(self) -> str:
         agent_id = str(self._config.default_agent_id or "").strip()

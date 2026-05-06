@@ -17,6 +17,8 @@ from aworld.output.base import MessageOutput
 from aworld.runner import Runners
 
 from .bootstrap import bootstrap_acp_plugins
+from ..core.command_bridge import CommandBridge
+from ..core.tool_filter import temporary_tool_filter
 from .cron_bridge import AcpCronBridge
 from .errors import (
     AWORLD_ACP_APPROVAL_UNSUPPORTED,
@@ -88,6 +90,7 @@ class AcpExecutorOutputBridge:
         *,
         record: AcpSessionRecord,
         prompt_text: str,
+        allowed_tools: list[str] | None = None,
     ):
         executor = None
         restore_sandbox_state = lambda: None
@@ -103,13 +106,15 @@ class AcpExecutorOutputBridge:
                 agent=agent,
                 record=record,
             )
-            task = await executor._build_task(
-                prompt_text,
-                session_id=record.aworld_session_id,
-            )
-            outputs = Runners.streamed_run_task(task=task)
-            async for output in outputs.stream_events():
-                yield output
+            swarm = getattr(executor, "swarm", None)
+            with temporary_tool_filter(swarm, allowed_tools):
+                task = await executor._build_task(
+                    prompt_text,
+                    session_id=record.aworld_session_id,
+                )
+                outputs = Runners.streamed_run_task(task=task)
+                async for output in outputs.stream_events():
+                    yield output
         finally:
             if executor is not None:
                 cleanup = getattr(executor, "cleanup_resources", None)
@@ -263,12 +268,18 @@ class AcpExecutorOutputBridge:
 
 
 class AcpStdioServer:
-    def __init__(self, *, output_bridge: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        output_bridge: Any | None = None,
+        command_bridge: Any | None = None,
+    ) -> None:
         self._session_store = AcpSessionStore()
         self._turns = TurnController()
         self._state_by_session: dict[str, dict[str, Any]] = {}
         self._write_lock = asyncio.Lock()
         self._output_bridge = output_bridge or AcpExecutorOutputBridge()
+        self._command_bridge = command_bridge or CommandBridge()
         self._cron_runtime_lock = asyncio.Lock()
         self._cron_runtime_started = False
         self._notification_center = None
@@ -382,114 +393,161 @@ class AcpStdioServer:
 
         await self._ensure_cron_runtime_started()
 
-        state: dict[str, Any] = {}
-        terminal_error: dict[str, Any] | None = None
+        async def _run_streaming_prompt(
+            *,
+            executed_prompt_text: str,
+            allowed_tools: list[str] | None = None,
+        ) -> dict[str, Any]:
+            state: dict[str, Any] = {}
+            terminal_error: dict[str, Any] | None = None
 
-        async def _run_turn() -> None:
-            nonlocal terminal_error
-            async for output in self._output_bridge.stream_outputs(
-                record=record,
-                prompt_text=prompt_text,
-            ):
-                events = self._normalize_runtime_events(state, output)
-                for event in events:
-                    if event.get("event_type") == "turn_error":
-                        terminal_error = event
-                        await self._close_open_tool_lifecycles_with_error(
-                            session_id,
-                            state,
-                            code=str(event["code"]),
-                            message=str(event["message"]),
+            async def _run_turn() -> None:
+                nonlocal terminal_error
+                stream_kwargs: dict[str, Any] = {
+                    "record": record,
+                    "prompt_text": executed_prompt_text,
+                }
+                if allowed_tools is not None:
+                    stream_kwargs["allowed_tools"] = allowed_tools
+
+                async for output in self._output_bridge.stream_outputs(**stream_kwargs):
+                    events = self._normalize_runtime_events(state, output)
+                    for event in events:
+                        if event.get("event_type") == "turn_error":
+                            terminal_error = event
+                            await self._close_open_tool_lifecycles_with_error(
+                                session_id,
+                                state,
+                                code=str(event["code"]),
+                                message=str(event["message"]),
+                            )
+                            return
+                        if event.get("event_type") == "tool_start":
+                            tool_call_id = event.get("tool_call_id")
+                            if isinstance(tool_call_id, str):
+                                state[f"tool_input::{tool_call_id}"] = event.get("raw_input")
+                        if event.get("event_type") == "tool_end":
+                            tool_name = event.get("tool_name")
+                            tool_call_id = event.get("tool_call_id")
+                            if isinstance(tool_name, str) and isinstance(tool_call_id, str):
+                                state[f"tool_closed::{tool_name}"] = tool_call_id
+                            self._cron_bridge.bind_from_tool_result(
+                                session_id=session_id,
+                                tool_name=tool_name if isinstance(tool_name, str) else None,
+                                payload=event.get("raw_output"),
+                                tool_input=state.get(f"tool_input::{tool_call_id}") if isinstance(tool_call_id, str) else None,
+                            )
+                        update = map_runtime_event_to_session_update(session_id, event)
+                        await self._write_session_update(update)
+
+            try:
+                task = await self._turns.start_turn(session_id, _run_turn())
+            except AcpBusyError:
+                return self._error(
+                    request_id,
+                    -32002,
+                    AWORLD_ACP_SESSION_BUSY,
+                    data=build_error_data(
+                        AcpErrorDetail(
+                            code=AWORLD_ACP_SESSION_BUSY,
+                            message=AWORLD_ACP_SESSION_BUSY,
                         )
-                        return
-                    if event.get("event_type") == "tool_start":
-                        tool_call_id = event.get("tool_call_id")
-                        if isinstance(tool_call_id, str):
-                            state[f"tool_input::{tool_call_id}"] = event.get("raw_input")
-                    if event.get("event_type") == "tool_end":
-                        tool_name = event.get("tool_name")
-                        tool_call_id = event.get("tool_call_id")
-                        if isinstance(tool_name, str) and isinstance(tool_call_id, str):
-                            state[f"tool_closed::{tool_name}"] = tool_call_id
-                        self._cron_bridge.bind_from_tool_result(
-                            session_id=session_id,
-                            tool_name=tool_name if isinstance(tool_name, str) else None,
-                            payload=event.get("raw_output"),
-                            tool_input=state.get(f"tool_input::{tool_call_id}") if isinstance(tool_call_id, str) else None,
-                        )
-                    update = map_runtime_event_to_session_update(session_id, event)
-                    await self._write_session_update(update)
+                    ),
+                )
 
-        try:
-            task = await self._turns.start_turn(session_id, _run_turn())
-        except AcpBusyError:
-            return self._error(
-                request_id,
-                -32002,
-                AWORLD_ACP_SESSION_BUSY,
-                data=build_error_data(
-                    AcpErrorDetail(
-                        code=AWORLD_ACP_SESSION_BUSY,
-                        message=AWORLD_ACP_SESSION_BUSY,
-                    )
-                ),
-            )
-
-        try:
-            await task
-        except asyncio.CancelledError:
-            return self._response(request_id, {"status": "cancelled"})
-        except AcpRequiresHumanError:
-            await self._close_open_tool_lifecycles_with_error(
-                session_id,
-                state,
-                code=AWORLD_ACP_REQUIRES_HUMAN,
-                message=self._error_detail_message(AWORLD_ACP_REQUIRES_HUMAN),
-            )
-            return self._error(
-                request_id,
-                -32010,
-                AWORLD_ACP_REQUIRES_HUMAN,
-                data=build_error_data(
-                    AcpErrorDetail(
-                        code=AWORLD_ACP_REQUIRES_HUMAN,
-                        message=self._error_detail_message(AWORLD_ACP_REQUIRES_HUMAN),
-                        retryable=True,
-                    )
-                ),
-            )
-        except ValueError as exc:
-            detail = self._known_error_detail(str(exc))
-            if detail is not None:
+            try:
+                await task
+            except asyncio.CancelledError:
+                return self._response(request_id, {"status": "cancelled"})
+            except AcpRequiresHumanError:
                 await self._close_open_tool_lifecycles_with_error(
                     session_id,
                     state,
-                    code=detail.code,
-                    message=detail.message,
+                    code=AWORLD_ACP_REQUIRES_HUMAN,
+                    message=self._error_detail_message(AWORLD_ACP_REQUIRES_HUMAN),
                 )
                 return self._error(
                     request_id,
                     -32010,
-                    detail.code,
+                    AWORLD_ACP_REQUIRES_HUMAN,
+                    data=build_error_data(
+                        AcpErrorDetail(
+                            code=AWORLD_ACP_REQUIRES_HUMAN,
+                            message=self._error_detail_message(AWORLD_ACP_REQUIRES_HUMAN),
+                            retryable=True,
+                        )
+                    ),
+                )
+            except ValueError as exc:
+                detail = self._known_error_detail(str(exc))
+                if detail is not None:
+                    await self._close_open_tool_lifecycles_with_error(
+                        session_id,
+                        state,
+                        code=detail.code,
+                        message=detail.message,
+                    )
+                    return self._error(
+                        request_id,
+                        -32010,
+                        detail.code,
+                        data=build_error_data(detail),
+                    )
+                raise
+
+            if terminal_error is not None:
+                detail = AcpErrorDetail(
+                    code=str(terminal_error["code"]),
+                    message=str(terminal_error.get("message"))
+                    if terminal_error.get("message") is not None
+                    else self._error_detail_message(str(terminal_error["code"])),
+                    retryable=bool(terminal_error.get("retryable")) if terminal_error.get("retryable") is not None else None,
+                    data={"origin": terminal_error.get("origin"), "detail": terminal_error.get("message")},
+                )
+                return self._error(
+                    request_id,
+                    -32010,
+                    str(terminal_error["code"]),
                     data=build_error_data(detail),
                 )
-            raise
-        if terminal_error is not None:
-            detail = AcpErrorDetail(
-                code=str(terminal_error["code"]),
-                message=str(terminal_error.get("message"))
-                if terminal_error.get("message") is not None
-                else self._error_detail_message(str(terminal_error["code"])),
-                retryable=bool(terminal_error.get("retryable")) if terminal_error.get("retryable") is not None else None,
-                data={"origin": terminal_error.get("origin"), "detail": terminal_error.get("message")},
+            return self._response(request_id, {"status": "completed"})
+
+        prompt_command_response: dict[str, Any] | None = None
+
+        async def _execute_prompt_command(
+            *,
+            prompt: str,
+            allowed_tools: list[str] | None,
+            on_output=None,
+        ) -> str:
+            nonlocal prompt_command_response
+            prompt_command_response = await _run_streaming_prompt(
+                executed_prompt_text=prompt,
+                allowed_tools=allowed_tools,
             )
-            return self._error(
-                request_id,
-                -32010,
-                str(terminal_error["code"]),
-                data=build_error_data(detail),
-            )
-        return self._response(request_id, {"status": "completed"})
+            return ""
+
+        command_result = await self._command_bridge.execute(
+            text=prompt_text,
+            cwd=record.cwd,
+            session_id=session_id,
+            runtime=self,
+            prompt_executor=_execute_prompt_command,
+        )
+        if command_result.handled:
+            if prompt_command_response is not None:
+                return prompt_command_response
+            if command_result.text:
+                await self._write_session_update_for_session(
+                    session_id,
+                    {
+                        "sessionUpdate": "agent_message_chunk",
+                        "content": {"text": command_result.text},
+                    },
+                )
+            return self._response(request_id, {"status": "completed"})
+
+        return await _run_streaming_prompt(executed_prompt_text=prompt_text)
 
     async def _handle_cancel(self, request_id: Any, params: dict[str, Any]) -> dict[str, Any]:
         session_id = str(params.get("sessionId") or "")
@@ -632,19 +690,13 @@ class AcpStdioServer:
         )
 
     async def _write_session_update(self, params: dict[str, Any]) -> None:
-        if self._session_update_method == "session/update" and not self._should_emit_current_session_update(params):
-            return
         if self._session_update_method == "session/update":
             params = self._to_current_session_update(params)
         await self._write_message(self._notification(self._session_update_method, params))
 
     @staticmethod
     def _should_emit_current_session_update(params: dict[str, Any]) -> bool:
-        update = params.get("update")
-        if not isinstance(update, dict):
-            return True
-        update_type = update.get("sessionUpdate")
-        return update_type not in {"tool_call", "tool_call_update"}
+        return True
 
     @staticmethod
     def _to_current_session_update(params: dict[str, Any]) -> dict[str, Any]:
@@ -661,27 +713,33 @@ class AcpStdioServer:
 
         if update_type == "tool_call":
             raw_input = update.get("content")
-            title = str(update.get("kind") or "tool")
+            title = str(update.get("title") or update.get("kind") or "tool")
             update["title"] = title
             update["kind"] = AcpStdioServer._current_tool_kind(update.get("kind"))
             update["rawInput"] = raw_input
-            update["content"] = AcpStdioServer._current_tool_content(raw_input)
+            if update["kind"] == "step" and isinstance(raw_input, dict):
+                update["content"] = raw_input
+            else:
+                update["content"] = AcpStdioServer._current_tool_content(raw_input)
             return converted
 
         if update_type == "tool_call_update":
             raw_output = update.get("content")
-            title = str(update.get("kind") or "tool")
+            title = str(update.get("title") or update.get("kind") or "tool")
             update["title"] = title
             update["kind"] = AcpStdioServer._current_tool_kind(update.get("kind"))
             update["rawOutput"] = raw_output
-            update["content"] = AcpStdioServer._current_tool_content(raw_output)
+            if update["kind"] == "step" and isinstance(raw_output, dict):
+                update["content"] = raw_output
+            else:
+                update["content"] = AcpStdioServer._current_tool_content(raw_output)
             return converted
 
         return converted
 
     @staticmethod
     def _current_tool_kind(kind: Any) -> str:
-        if kind in {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other"}:
+        if kind in {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other", "step"}:
             return str(kind)
         if kind in {"shell", "terminal", "bash", "command"}:
             return "execute"

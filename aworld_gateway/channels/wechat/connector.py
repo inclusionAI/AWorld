@@ -42,6 +42,7 @@ from aworld_gateway.config import WechatChannelConfig
 from aworld_gateway.cron_push import CronPushBindingStore, CronPushBridge
 from aworld_gateway.logging import get_gateway_logger
 from aworld_gateway.types import InboundEnvelope
+from aworld_cli.core.command_bridge import CommandBridge
 
 try:
     import aiohttp
@@ -344,6 +345,7 @@ class WechatConnector:
         get_upload_url_func: GetUploadUrlFunc | None = None,
         upload_ciphertext_func: UploadCiphertextFunc | None = None,
         send_media_message_func: SendMediaMessageFunc | None = None,
+        command_bridge: CommandBridge | None = None,
     ) -> None:
         self.config = config
         self.router = router
@@ -369,6 +371,7 @@ class WechatConnector:
         self._seen_message_ids: dict[str, None] = {}
         self._poll_connection_established = False
         self._poll_connection_healthy = False
+        self._command_bridge = command_bridge or CommandBridge()
         self._cron_push_bridge = CronPushBridge(
             binding_store=CronPushBindingStore(self._storage_root / "cron-push-bindings.json")
         )
@@ -704,6 +707,7 @@ class WechatConnector:
 
         item_list = message.get("item_list") or []
         text = self._extract_text(item_list)
+
         inbound_media = await self._collect_inbound_attachments(
             message_id=message_id or f"wx-{uuid.uuid4().hex}",
             item_list=item_list,
@@ -711,7 +715,10 @@ class WechatConnector:
         attachments = inbound_media["attachments"]
         attachment_prompt = build_attachment_prompt(attachments)
         if attachment_prompt:
-            text = f"{text}\n\n{attachment_prompt}".strip() if text else attachment_prompt
+            if text and not CommandBridge.is_slash_command(text):
+                text = f"{text}\n\n{attachment_prompt}".strip()
+            elif not text:
+                text = attachment_prompt
         if not text:
             logger.info(
                 "WeChat inbound message skipped "
