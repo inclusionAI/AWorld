@@ -1,5 +1,6 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
+import hashlib
 import time
 
 import asyncio
@@ -380,11 +381,97 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     updated_record["response"] = serialized_response
                 if serialized_usage is not None:
                     updated_record["usage"] = serialized_usage
+                metadata = updated_record.get("cache_observability")
+                if isinstance(metadata, dict) and self._usage_has_cache_tokens(serialized_usage):
+                    metadata = dict(metadata)
+                    metadata["provider_native_cache"] = True
+                    updated_record["cache_observability"] = metadata
+                    context_info["prompt_cache_observability"] = metadata
                 llm_calls[index] = updated_record
                 context_info["llm_calls"] = llm_calls
                 break
 
         context_info["llm_output"] = llm_response
+
+    def _update_llm_call_observability(
+        self,
+        message: Message,
+        call_id: str,
+        metadata: Dict[str, Any],
+    ) -> None:
+        """Attach prompt-cache observability metadata to the matching call record."""
+        if not isinstance(metadata, dict):
+            return
+        context_info = message.context.context_info
+        llm_calls = list(context_info.get("llm_calls") or [])
+        for index in range(len(llm_calls) - 1, -1, -1):
+            record = llm_calls[index]
+            if isinstance(record, dict) and record.get("call_id") == call_id:
+                updated_record = dict(record)
+                updated_record["cache_observability"] = dict(metadata)
+                llm_calls[index] = updated_record
+                context_info["llm_calls"] = llm_calls
+                context_info["prompt_cache_observability"] = dict(metadata)
+                break
+
+    def _current_provider_name(self) -> str:
+        provider_name = getattr(getattr(self, "_llm", None), "provider_name", None)
+        if provider_name:
+            return provider_name
+        llm_config = getattr(self.conf, "llm_config", None)
+        if llm_config and getattr(llm_config, "llm_provider", None):
+            return llm_config.llm_provider
+        if getattr(self.conf, "llm_provider", None):
+            return self.conf.llm_provider
+        return "openai"
+
+    def _usage_has_cache_tokens(self, usage: Dict[str, Any] | None) -> bool:
+        if not isinstance(usage, dict):
+            return False
+        return (usage.get("cache_hit_tokens", 0) or 0) > 0 or (usage.get("cache_write_tokens", 0) or 0) > 0
+
+    def _provider_native_cache_requested(
+        self,
+        provider_name: str,
+        request_kwargs: Dict[str, Any] | None,
+    ) -> bool:
+        request_kwargs = request_kwargs or {}
+        if provider_name == "openai":
+            if request_kwargs.get("prompt_cache_key"):
+                return True
+            extra_body = request_kwargs.get("extra_body")
+            if isinstance(extra_body, dict) and extra_body.get("prompt_cache_key"):
+                return True
+        return False
+
+    def _build_prompt_cache_observability(
+        self,
+        *,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] | None = None,
+        request_kwargs: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Build real request-side prompt cache metadata for the current legacy message path."""
+        provider_name = self._current_provider_name()
+        system_messages = []
+        for msg in messages or []:
+            if isinstance(msg, dict) and msg.get("role") == "system":
+                system_messages.append(to_serializable(msg))
+        tool_payload = to_serializable(tools or [])
+        stable_payload = {
+            "system_messages": system_messages,
+            "tools": tool_payload,
+        }
+        stable_prefix_hash = hashlib.sha256(
+            json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        return {
+            "assembly_provider": "LegacyMessageAssembly",
+            "provider_name": provider_name,
+            "cache_aware_assembly": False,
+            "provider_native_cache": self._provider_native_cache_requested(provider_name, request_kwargs),
+            "stable_prefix_hash": stable_prefix_hash,
+        }
 
     @property
     def llm(self):
@@ -889,6 +976,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 "agent_id": self.id()
             }
             kwargs["response_parse_args"] = response_parse_args
+            kwargs["llm_call_id"] = llm_call_id
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
             logger.warn(f"{self.id()} result error: {e}")
@@ -1112,10 +1200,21 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
         # Prepare parameters once before retry loop
         try:
+            llm_call_id = kwargs.pop("llm_call_id", None)
             tools = await self._filter_tools(message.context)
             if not tools:
                 # Some model must be clearly defined as None
                 tools = None
+            if llm_call_id:
+                self._update_llm_call_observability(
+                    message,
+                    llm_call_id,
+                    self._build_prompt_cache_observability(
+                        messages=messages,
+                        tools=tools,
+                        request_kwargs=kwargs,
+                    ),
+                )
             self._log_messages(messages, tools=tools, context=message.context)
 
             stream_mode = kwargs.get("stream",
