@@ -27,6 +27,7 @@ AWorld 目前已经具备 `amni` context 的内容治理能力，例如 AWORLD.m
   - model 侧启用
   - provider 路径未显式禁用
 - 明确 stable prefix 不进入普通 history / memory，不再作为持久化的 system message 保存。
+- 明确每次 LLM call 的真实 request snapshot 必须以 append-only 的调用记录保存在 runtime context 中，而不是覆写到单个 `context_info["llm_input"]` 字段。
 - 新增 provider capability / lowerer 抽象：
   - 默认 provider 路径可消费 assembly provider 产物并降级为普通请求
   - Anthropic 首期实现 provider-native cache lowering
@@ -37,6 +38,7 @@ AWorld 目前已经具备 `amni` context 的内容治理能力，例如 AWORLD.m
   - `cache_write_tokens`
 - 要求任务完成日志和相关 hook payload 能输出 cache hit / write token 统计，便于观察 prompt cache 收益。
 - 要求 `prompt_logger.log` 能输出本次 prompt 的 cache 相关观测信息，至少包括是否启用 cache-aware assembly、是否走 provider-native cache lowering，以及可用时的 cache token 统计。
+- 要求 `trajectory.log` 优先记录每次 LLM call 的真实 request messages 快照，而不是仅依赖 memory 事后重建；`trajectory.log` 不承载 cache token usage。
 
 ## Capabilities
 
@@ -65,6 +67,8 @@ AWorld 目前已经具备 `amni` context 的内容治理能力，例如 AWORLD.m
   - provider 不支持原生 cache 时，请求行为仍保持普通路径，不阻塞主流程。
   - Anthropic 在开启 provider-native cache 时，可以输出 cache-aware 的原生请求形态。
   - 当 provider 返回原生 cache usage 时，AWorld 会统一汇总并在任务完成日志中输出 `cache_hit_tokens` 和 `cache_write_tokens`。
+  - 当同一条 message 内发生多次 LLM call 时，AWorld 会在 runtime context 中保留多条调用记录，避免 `llm_input` / `llm_output` / `llm_call_start_time` 被后一次调用覆盖。
+  - `trajectory.log` 在可用时会使用这些逐次调用快照作为 prompt 真相源；只有缺失快照时才允许退回 memory reconstruction。
 - Constraints preserved:
   - 不重写 `amni` 的 neurons、summary、recall、offload 主逻辑。
   - 不把 Anthropic 专有字段泄漏到 `amni` 公共对象。
