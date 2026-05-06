@@ -199,6 +199,19 @@ def test_context_cache_effective_enablement_defaults_to_true_without_amni_contex
     assert agent._allow_provider_native_cache(context) is True
 
 
+def test_provider_native_cache_requested_defaults_on_for_anthropic_when_allowed():
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_provider="anthropic",
+            llm_model_name="claude-3-5-sonnet-20241022",
+            llm_api_key="fake-key",
+        ),
+    )
+
+    assert agent._provider_native_cache_requested(_build_context(), "anthropic", {}) is True
+
+
 def test_context_cache_effective_enablement_respects_agent_and_model_opt_out():
     class FakeContext:
         def get_agent_context_config(self, namespace):
