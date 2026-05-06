@@ -1,10 +1,12 @@
 import asyncio
+import json
 import os
 import time
 import traceback
 from typing import Any, Dict, List, Optional
 
 from aworld.core.agent.base import AgentFactory
+from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
 from aworld.memory.main import MemoryFactory
 from aworld.memory.models import MemorySystemMessage, MessageMetadata
 from ... import ApplicationContext
@@ -291,10 +293,12 @@ class SystemPromptAugmentOp(BaseOp):
         agent_name = event.agent_name
         user_query = event.user_query
 
-        # Combine system prompt and augment_prompts
-        appended_prompt = event.system_prompt
-        if augment_prompts:
-            appended_prompt = event.system_prompt + "\n\n" + "\n".join(augment_prompts.values())
+        provider = self._get_prompt_assembly_provider(context, agent_id)
+        prompt_messages = self._build_system_prompt_messages(event.system_prompt, augment_prompts)
+        appended_prompt, assembly_observability = self._assemble_system_prompt(
+            provider=provider,
+            messages=prompt_messages,
+        )
 
         formatted_system_prompt = await ContextPromptTemplate(template=appended_prompt).async_format(
             context=context,
@@ -304,7 +308,10 @@ class SystemPromptAugmentOp(BaseOp):
             context=context,
             content=formatted_system_prompt,
             agent_id=agent_id,
-            agent_name=agent_name
+            agent_name=agent_name,
+            ext_info={
+                "prompt_assembly_observability": assembly_observability,
+            } if assembly_observability else None,
         )
 
         return MemoryCommand(
@@ -354,7 +361,8 @@ class SystemPromptAugmentOp(BaseOp):
                                     context: ApplicationContext,
                                     content: str,
                                     agent_id: str,
-                                    agent_name: str = None) -> MemorySystemMessage:
+                                    agent_name: str = None,
+                                    ext_info: Optional[Dict[str, Any]] = None) -> MemorySystemMessage:
         session_id = context.get_task().session_id
         task_id = context.get_task().id
         user_id = context.get_task().user_id
@@ -367,7 +375,96 @@ class SystemPromptAugmentOp(BaseOp):
                 task_id=task_id,
                 agent_id=agent_id,
                 agent_name=agent_name or 'unknown',
+                ext_info=ext_info or {},
             )
         )
 
         return system_message
+
+    def _get_prompt_assembly_provider(self, context: ApplicationContext, agent_id: Optional[str]):
+        agent = AgentFactory.agent_instance(agent_id) if agent_id else None
+        provider_getter = getattr(context, "get_prompt_assembly_provider", None)
+        if callable(provider_getter):
+            return provider_getter(agent=agent)
+
+        provider = getattr(context, "prompt_assembly_provider", None)
+        if provider is not None:
+            return provider
+
+        if agent is not None:
+            provider = getattr(agent, "prompt_assembly_provider", None)
+            if provider is not None:
+                return provider
+
+        return DefaultPromptAssemblyProvider()
+
+    @staticmethod
+    def _build_system_prompt_messages(
+        system_prompt: Optional[str],
+        augment_prompts: Optional[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        messages: List[Dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        for prompt in (augment_prompts or {}).values():
+            if prompt:
+                messages.append({"role": "system", "content": prompt})
+        return messages
+
+    @staticmethod
+    def _stringify_system_content(content: Any) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text", "")))
+                elif item is not None:
+                    parts.append(json.dumps(item, ensure_ascii=False, default=str))
+            return "\n".join(part for part in parts if part)
+        if content is None:
+            return ""
+        return json.dumps(content, ensure_ascii=False, default=str)
+
+    def _assemble_system_prompt(
+        self,
+        *,
+        provider: Any,
+        messages: List[Dict[str, Any]],
+    ) -> tuple[str, Dict[str, Any]]:
+        if not messages:
+            return "", {}
+
+        plan = provider.build_plan(messages=messages, tools=None, metadata={})
+        observability = {}
+        plan_observability = getattr(plan, "observability", None)
+        if isinstance(plan_observability, dict):
+            observability.update(plan_observability)
+        observability.setdefault("assembly_provider", provider.__class__.__name__)
+
+        stable_hash = getattr(plan, "stable_hash", None)
+        if stable_hash:
+            observability.setdefault("stable_prefix_hash", stable_hash)
+
+        assembled_messages = (
+            plan.to_model_messages()
+            if hasattr(plan, "to_model_messages")
+            else getattr(plan, "messages", messages)
+        )
+
+        system_parts = []
+        for message in assembled_messages or []:
+            if isinstance(message, dict) and message.get("role") == "system":
+                content = self._stringify_system_content(message.get("content"))
+                if content:
+                    system_parts.append(content)
+
+        if not system_parts:
+            for message in messages:
+                if isinstance(message, dict) and message.get("role") == "system":
+                    content = self._stringify_system_content(message.get("content"))
+                    if content:
+                        system_parts.append(content)
+
+        return "\n\n".join(system_parts), observability
