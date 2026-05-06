@@ -1,4 +1,4 @@
-# App Generation Recipe
+# Mini App Build
 
 Generate, evaluate, and self-evolve a complete mini-application from a single text prompt. The AWorld Agent orchestrates the full flow: **automatic creation → automatic evaluation → automatic optimization**. No manual intervention is required once you submit your prompt.
 
@@ -10,7 +10,7 @@ Generate, evaluate, and self-evolve a complete mini-application from a single te
 
 ## Example: English Word Learning App
 
-This recipe reproduces the example from the [README](../../README.md) table: an English word learning app with a UI quality target.
+This recipe reproduces the English word learning app flow shown in the main AWorld CLI examples.
 
 ### User Prompt
 
@@ -24,7 +24,7 @@ help me create an English word learning app, with a UI quality score over 0.9
 
 The **Evaluator** agent scores the generated app using objective criteria defined by a **Skill**. For this recipe we use the official AWorld Skill:
 
-- **Skill**: [app_evaluator](../../aworld-skills/app_evaluator) (aworld-skills/app_evaluator)
+- **Skill**: `app_evaluator` (shipped with the repo)
 
 If you have already installed AWorld and AWorld-CLI, the Evaluator **loads this official skill by default**. You do not need to install or configure the skill separately for this flow.
 
@@ -38,10 +38,9 @@ All steps run automatically; you only need to start the CLI and submit the promp
 
 ## How to Run
 
-1. **Install and configure AWorld-CLI**  
-   See [Your Journey with AWorld-CLI](../../README.md#your-journey-with-aworld-cli) in the main README:
-   - Clone AWorld, create conda env (Python 3.11), install AWorld and aworld-cli.
-   - Run `aworld-cli --config` in your working directory (or use a [.env file](../../README_env_config.md)).
+1. **Install and configure AWorld CLI**
+   - Follow [Installation](../Installation.md).
+   - Complete [Configuration](../Configuration.md) in your working directory.
 
 2. **Launch the CLI**  
    In your working directory, run:
@@ -61,4 +60,4 @@ All steps run automatically; you only need to start the CLI and submit the promp
 5. **Let it run**  
    The agent will generate the app, evaluate it with the official Evaluator skill, and iterate until the UI quality score meets your target. When done, run or deploy the output as needed.
 
-For installation and activation details, see the main [README](../../README.md).
+For a reusable workspace setup, keep the same `.env` or interactive CLI configuration across runs.

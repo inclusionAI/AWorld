@@ -9,15 +9,22 @@ import yaml
 docs = "docs"
 black_keys = ["Index", "docs_zh", "DESIGN_SYSTEM"]
 black_values = ["index.md"]
-file_priority = {"Guides": ["Overview", "Quick Start", "Core Capabilities", "Parallel Tasks", "Streaming Response", "Hitl"],
-                 "Agents": ["Build Agent", "Build Multi-Agent System(Mas)", "Build Workflow", "Custom Agent", "Context", "Runtime", "Memory", "Trace"],
-                 "Runtime": ["Overview", "Custom Runner", "Hooks"],
-                 "Environment": ["Overview", "Using Api", "Env Client", "Advanced Capabilities"],
+file_priority = {"Get Start": ["Overview", "Quick Start", "Core Capabilities", "Parallel Tasks", "Streaming Response", "Hitl"],
+                 "Agents": ["Build Agent", "Build Multi-Agent System(Mas)", "Build Workflow", "Custom Agent", "Context", "Runtime", "Memory", "Trace", "Parallel Subagents"],
+                 "Runtime": ["Overview", "Custom Runner", "Hooks", "Ralph Runner"],
+                 "AWorld CLI": ["Overview", "Installation", "Configuration", "Commands", "Hooks", "Plugins", "Recipes"],
+                 "Commands": ["Overview", "Memory", "Cron", "Plugins", "Gateway", "Parallel Tasks"],
+                 "Hooks": ["Overview", "Examples"],
+                 "Plugins": ["Overview", "Plugin Sdk", "Ralph Session Loop"],
+                 "Recipes": ["Overview", "Deep Search", "Mini App Build", "Video Creation"],
+                 "Environment": ["Overview", "Using Api", "Env Client", "Advanced Capabilities", "Oceanbase"],
                  "Training": ["Trainer", "Trajectory", "Evaluation"]}
-file_mapping = {"Hitl": "Human in the Loop (HITL)", "Get Start": "Guides",
+file_mapping = {"Hitl": "Human in the Loop (HITL)",
                 "Build Multi-Agent System(Mas)": "Multi-Agent System(MAS)",
-                "Build Workflow": "Workflow", "Using Api": "Using API"}
-dir_order = ["Get Start", "Agents", "Environment", "Training", "Deployment"]
+                "Build Workflow": "Workflow", "Using Api": "Using API",
+                "Plugin Sdk": "Plugin SDK", "Oceanbase": "OceanBase",
+                "Readme": "README"}
+dir_order = ["Get Start", "Agents", "AWorld CLI", "Environment", "Training"]
 
 
 def scan_path(path: str) -> List[dict]:
@@ -54,16 +61,24 @@ def scan_path(path: str) -> List[dict]:
                 if isinstance(v[file], dict):
                     new_dict = OrderedDict()
                     for in_file in file_priority.get(file, []):
-                        new_dict[in_file] = v[file].pop(in_file)
-                    new_dict.update(v[file])
+                        if in_file in v[file]:
+                            new_dict[file_mapping.get(in_file, in_file)] = v[file].pop(in_file)
+                    for leftover_key, leftover_value in v[file].items():
+                        new_dict[file_mapping.get(leftover_key, leftover_key)] = leftover_value
                     final_map[file_mapping.get(file, file)] = dict(new_dict)
                 else:
                     final_map[file_mapping.get(file, file)] = v[file]
                 v.pop(file)
         final_map.update(v)
 
-        res.append({display_name: dict(final_map)})
+        res.append({display_name: _to_nav(final_map)})
     return res
+
+
+def _to_nav(value):
+    if isinstance(value, dict):
+        return [{file_mapping.get(key, key): _to_nav(item)} for key, item in value.items()]
+    return value
 
 
 def scan(path: str) -> dict:
@@ -144,13 +159,7 @@ if __name__ == '__main__':
             "js/github-stats-fallback.js",
         ],
         "markdown_extensions": [
-            {
-                "pymdownx.highlight": {
-                    "anchor_linenums": True,
-                    "line_spans": "__span",
-                    "pygments_lang_class": True,
-                }
-            },
+            "codehilite",
             "pymdownx.inlinehilite",
             "pymdownx.snippets",
             "pymdownx.superfences",

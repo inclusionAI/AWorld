@@ -1,4 +1,4 @@
-# Deep Search Recipe
+# Deep Search
 
 A comprehensive guide to setting up and using the Deep Search capability with AWorld CLI and agent-browser integration.
 
@@ -163,7 +163,7 @@ Configure AWorld to use the CDP-enabled Chrome instance for browser automation.
 
    Run the following command in the AWorld CLI:
    ```
-   /remember --type workspace agent_browser --cdp 9222 使用agent-browser的时候都要加上cdp参数
+   /remember --type workspace When using agent-browser, always include --cdp 9222.
    ```
 
 2. **Optional: inspect or edit the workspace instruction file:**
@@ -178,11 +178,6 @@ Configure AWorld to use the CDP-enabled Chrome instance for browser automation.
    /memory
    ```
    
-   **English translation:**
-   ```
-   When using agent-browser, always include the --cdp 9222 parameter
-   ```
-
 ### What This Does
 
 - Instructs AWorld agents to connect to your CDP-enabled Chrome instance (port 9222)
@@ -194,7 +189,7 @@ Configure AWorld to use the CDP-enabled Chrome instance for browser automation.
 
 Without this configuration, agent-browser would try to launch its own browser instance instead of using your CDP-enabled Chrome, which could lead to connection issues.
 
-For more details about CLI memory commands, storage files, and auto-promotion behavior, see [AWorld CLI Memory](../features/aworld-cli-memory.md).
+For more details about memory commands, storage files, and auto-promotion behavior, see [Memory](../Commands/Memory.md).
 
 ---
 
