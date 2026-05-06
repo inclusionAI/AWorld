@@ -44,18 +44,20 @@ All steps run automatically; you only need to start the CLI and submit the promp
 
 2. **Launch the CLI**  
    In your working directory, run:
-   ```bash
-   aworld-cli
-   ```
+
+```bash
+aworld-cli
+```
 
 3. **Enter the app-creation flow**  
    Choose or enter the flow that creates an app from a prompt.
 
 4. **Submit the prompt**  
    Paste or type:
-   ```text
-   help me create an English word learning app, with a UI quality score over 0.9
-   ```
+
+```text
+help me create an English word learning app, with a UI quality score over 0.9
+```
 
 5. **Let it run**  
    The agent will generate the app, evaluate it with the official Evaluator skill, and iterate until the UI quality score meets your target. When done, run or deploy the output as needed.
