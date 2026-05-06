@@ -25,6 +25,7 @@ from aworld.runners.state_manager import EventRuntimeStateManager
 from aworld.runners.task_runner import TaskRunner
 from aworld.trace.base import get_trace_id
 from aworld.trace.instrumentation import semconv
+from aworld.models.utils import normalize_usage
 from aworld.utils.common import override_in_subclass, new_instance
 from aworld.utils.serialized_util import to_serializable
 
@@ -41,6 +42,28 @@ class TaskEventRunner(TaskRunner):
         self.background_tasks = set()
         self.state_manager = EventRuntimeStateManager.instance()
         self.inited = False
+
+    @staticmethod
+    def _normalize_token_usage(token_usage: dict | None) -> dict:
+        return normalize_usage(token_usage)
+
+    @staticmethod
+    def _format_task_finished_message(
+        *,
+        task_id: str,
+        is_sub_task: bool,
+        time_cost: float,
+        token_usage: dict | None,
+    ) -> str:
+        task_scope = "sub" if is_sub_task else "main"
+        normalized_usage = TaskEventRunner._normalize_token_usage(token_usage)
+        return (
+            f"{task_scope} task {task_id} finished, time cost: {time_cost}s, "
+            f"token cost: {normalized_usage}."
+        )
+
+    def _current_token_usage(self) -> dict:
+        return self._normalize_token_usage(self.context.token_usage if self.context else {})
 
 
     async def do_run(self, context: Context = None):
@@ -59,8 +82,16 @@ class TaskEventRunner(TaskRunner):
                 await self._do_run()
                 await self._save_trajectories()
                 resp = self._response()
-                logger.info(f'{"sub" if self.task.is_sub_task else "main"} task {self.task.id} finished'
-                            f', time cost: {time.time() - self.start_time}s, token cost: {self.context.token_usage}.')
+                time_cost = time.time() - self.start_time
+                token_usage = self._current_token_usage()
+                logger.info(
+                    self._format_task_finished_message(
+                        task_id=self.task.id,
+                        is_sub_task=self.task.is_sub_task,
+                        time_cost=time_cost,
+                        token_usage=token_usage,
+                    )
+                )
 
                 # Hooks V2: 触发 TASK_COMPLETED hook（所有任务，包括子任务）
                 try:
@@ -73,8 +104,8 @@ class TaskEventRunner(TaskRunner):
                         'task_name': self.task.name,
                         'session_id': self.context.session_id,
                         'is_sub_task': self.task.is_sub_task,
-                        'time_cost': time.time() - self.start_time,
-                        'token_usage': self.context.token_usage,
+                        'time_cost': time_cost,
+                        'token_usage': token_usage,
                         'status': 'success',
                         'timestamp': time.time()
                     }
@@ -102,8 +133,8 @@ class TaskEventRunner(TaskRunner):
                                 'event': 'session_finished',
                                 'session_id': self.context.session_id,
                                 'task_id': self.task.id,
-                                'time_cost': time.time() - self.start_time,
-                                'token_usage': self.context.token_usage,
+                                'time_cost': time_cost,
+                                'token_usage': token_usage,
                                 'status': 'success'
                             },
                             session_id=self.context.session_id,
@@ -533,7 +564,7 @@ class TaskEventRunner(TaskRunner):
                                                            id=self.task.id,
                                                            time_cost=(
                                                                time.time() - start),
-                                                           usage=self.context.token_usage,
+                                                           usage=self._current_token_usage(),
                                                            status=TaskStatusValue.SUCCESS if not msg else TaskStatusValue.FAILED)
                     break
                 logger.debug(f"{task_flag} task {self.task.id} next message snap")
@@ -649,7 +680,7 @@ class TaskEventRunner(TaskRunner):
                 context=message.context if message else self.context,
                 id=self.task.id,
                 time_cost=(time.time() - self.start_time),
-                usage=self.context.token_usage,
+                usage=self._current_token_usage(),
                 msg=f'Task timeout after {time_cost} seconds.',
                 status=TaskStatusValue.TIMEOUT
             )
@@ -666,7 +697,7 @@ class TaskEventRunner(TaskRunner):
                 context=message.context if message else self.context,
                 id=self.task.id,
                 time_cost=time_cost,
-                usage=self.context.token_usage,
+                usage=self._current_token_usage(),
                 msg=f'Task is {task_status}.',
                 status=task_status
             )

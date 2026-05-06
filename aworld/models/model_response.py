@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel
 
 from aworld.logs.util import logger
+from aworld.models.utils import normalize_usage
 
 
 class LLMResponseError(Exception):
@@ -225,7 +226,7 @@ class ModelResponse:
         self.model = model
         self.content = content
         self.tool_calls = tool_calls
-        self.usage = usage or {
+        self.usage = normalize_usage(usage) if usage is not None else {
             "completion_tokens": 0,
             "prompt_tokens": 0,
             "total_tokens": 0
