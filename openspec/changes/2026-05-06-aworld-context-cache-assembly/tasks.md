@@ -16,10 +16,10 @@
 
 ## 3. AMNI Integration
 
-- [ ] 3.1 Update `system_prompt_augment_op` to call the injected `PromptAssemblyProvider` without rewriting existing neuron production logic.
-- [ ] 3.2 Preserve the default fallback path that keeps default provider behavior close to today's ordinary request payload assembly.
-- [ ] 3.3 Add regression tests proving AWORLD.md, relevant memory, and system prompt augmentation semantics remain intact.
-- [ ] 3.4 Ensure the implementation does not introduce a parallel `AmniContext` or replacement context backend path.
+- [x] 3.1 Update `system_prompt_augment_op` to call the injected `PromptAssemblyProvider` without rewriting existing neuron production logic.
+- [x] 3.2 Preserve the default fallback path that keeps default provider behavior close to today's ordinary request payload assembly.
+- [x] 3.3 Add regression tests proving AWORLD.md, relevant memory, and system prompt augmentation semantics remain intact.
+- [x] 3.4 Ensure the implementation does not introduce a parallel `AmniContext` or replacement context backend path.
 
 ## 4. Provider Capability and Lowering
 
