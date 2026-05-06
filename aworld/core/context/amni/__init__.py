@@ -19,6 +19,7 @@ from aworld.output import Artifact, WorkSpace, StreamingOutputs
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory
 from .config import AgentContextConfig, AmniContextConfig, AmniConfigFactory, ContextEnvConfig
 from .contexts import ContextManager
+from .prompt.assembly import DefaultPromptAssemblyProvider
 from .prompt.prompts import AMNI_CONTEXT_PROMPT
 from .retrieval.artifacts import SearchArtifact
 from .retrieval.artifacts.file import DirArtifact
@@ -492,6 +493,7 @@ class ApplicationContext(AmniContext):
         self._prompt_service = None
         self._freedom_space_service = None
         self._traj_service = None
+        self._prompt_assembly_provider = None
 
     def get_config(self) -> AmniContextConfig:
         return self._config
@@ -501,6 +503,20 @@ class ApplicationContext(AmniContext):
 
     def get_agent_memory_config(self, namespace: str) -> AgentMemoryConfig:
         return self.get_config().get_agent_memory_config(namespace=namespace)
+
+    def get_prompt_assembly_provider(self, agent: Any = None):
+        provider = getattr(self, "prompt_assembly_provider", None)
+        if provider is not None:
+            return provider
+
+        if agent is not None:
+            provider = getattr(agent, "prompt_assembly_provider", None)
+            if provider is not None:
+                return provider
+
+        if self._prompt_assembly_provider is None:
+            self._prompt_assembly_provider = DefaultPromptAssemblyProvider()
+        return self._prompt_assembly_provider
 
     @property
     def knowledge_service(self):

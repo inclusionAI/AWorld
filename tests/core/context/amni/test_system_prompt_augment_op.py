@@ -2,6 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from aworld.core.context.amni import ApplicationContext
+from aworld.core.context.amni.prompt.assembly import (
+    DefaultPromptAssemblyProvider,
+    PromptAssemblyPlan,
+)
 from aworld.core.context.amni.config import AgentContextConfig
 from aworld.core.context.amni.processor.op.system_prompt_augment_op import SystemPromptAugmentOp
 
@@ -49,3 +54,58 @@ async def test_system_prompt_augment_op_enables_relevant_memory_neuron_with_awor
     assert result == {}
     assert AWORLD_FILE_NEURON_NAME in captured["names"]
     assert RELEVANT_MEMORY_NEURON_NAME in captured["names"]
+
+
+def test_application_context_resolves_default_and_agent_prompt_assembly_provider() -> None:
+    context = ApplicationContext.create(
+        session_id="session-1",
+        task_id="task-1",
+        task_content="hello",
+    )
+
+    default_provider = context.get_prompt_assembly_provider()
+    assert isinstance(default_provider, DefaultPromptAssemblyProvider)
+    assert context.get_prompt_assembly_provider() is default_provider
+
+    custom_provider = object()
+    agent = SimpleNamespace(prompt_assembly_provider=custom_provider)
+    assert context.get_prompt_assembly_provider(agent=agent) is custom_provider
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_augment_op_uses_injected_prompt_assembly_provider() -> None:
+    captured = {}
+
+    class CustomPromptAssemblyProvider:
+        def build_plan(self, *, messages, tools=None, metadata=None):
+            captured["messages"] = list(messages)
+            captured["metadata"] = dict(metadata or {})
+            return PromptAssemblyPlan(
+                messages=[
+                    {"role": "system", "content": "assembled rules"},
+                    {"role": "system", "content": "assembled memory"},
+                ],
+                stable_hash="stable-hash-1",
+                observability={"assembly_provider": "CustomPromptAssemblyProvider"},
+                metadata=dict(metadata or {}),
+            )
+
+    class FakeContext:
+        def get_prompt_assembly_provider(self, agent=None):
+            return CustomPromptAssemblyProvider()
+
+        def get_task(self):
+            return SimpleNamespace(session_id="session-1", id="task-1", user_id="user-1")
+
+    op = SystemPromptAugmentOp()
+    command = await op.build_system_command(
+        FakeContext(),
+        SimpleNamespace(agent_id="agent-1", agent_name="Agent One", user_query="hello", system_prompt="base rules"),
+        {"memory": "memory chunk"},
+    )
+
+    assert captured["messages"] == [
+        {"role": "system", "content": "base rules"},
+        {"role": "system", "content": "memory chunk"},
+    ]
+    assert command.item.content == "assembled rules\n\nassembled memory"
