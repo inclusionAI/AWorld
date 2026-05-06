@@ -134,6 +134,54 @@ Why:
 - 这样不会把普通请求路径和某个厂商的特化实现绑死。
 - 也能保留未来对 OpenAI 或其他 provider 的扩展空间。
 
+### Decision: Cache usage tokens are normalized into the common AWorld usage schema
+
+当 provider 返回原生 prompt cache 统计时，AWorld 应将其映射为统一 usage 字段，而不是直接把厂商字段名泄漏到上层日志、history 或 hook payload。
+
+统一字段：
+
+- `cache_hit_tokens`
+- `cache_write_tokens`
+
+首期映射规则：
+
+- Anthropic
+  - `cache_read_input_tokens -> cache_hit_tokens`
+  - `cache_creation_input_tokens -> cache_write_tokens`
+
+Why:
+
+- 这样日志、history、hook payload 都可以消费统一语义。
+- 也为后续接入 OpenAI 或其他 provider 的 cache usage 统计保留统一出口。
+
+### Decision: Task-completion logging should surface cache hit and write tokens when available
+
+像 `main task ... finished` 这类任务完成日志，应和现有 token usage 一起输出 cache hit / write token 统计。
+
+Why:
+
+- prompt cache 的收益如果只存在 provider 原始响应里，运维和调试价值有限。
+- 输出到任务完成日志可以最低成本地验证 cache 命中效果。
+
+### Decision: `prompt_logger.log` should surface prompt-cache path and normalized cache usage
+
+`prompt_logger.log` 应输出本次 prompt 的 cache 相关观测信息，便于从 prompt 维度判断当前请求是否真正进入了 cache-aware 路径。
+
+首期建议输出：
+
+- assembly provider 名称
+- 是否启用 cache-aware assembly
+- 是否启用 provider-native cache lowering
+- 可用时的 `cache_hit_tokens`
+- 可用时的 `cache_write_tokens`
+
+首期不要求在 `prompt_logger.log` 中做复杂命中率分析或完整前缀 fingerprint 对比，但允许记录稳定前缀 hash 或等价摘要作为调试信息。
+
+Why:
+
+- 任务完成日志适合看累计结果，但不适合判断“单次 prompt 到底走了哪条 cache 路径”。
+- `prompt_logger.log` 本身就是 prompt 级观测面，适合承载 cache-aware 装配与 lowering 的调试信息。
+
 ### Decision: Tools are represented as a stable semantic section, but serialized by providers
 
 assembly 层只表达 tools 属于 stable section 的语义，不定义 tools 的最终 wire format。
@@ -284,6 +332,18 @@ provider 能力声明。
 - `supports_message_cache: bool`
 - `supports_tool_cache_hint: bool`
 
+### `NormalizedTokenUsage`
+
+在现有通用 usage 字段基础上扩展 cache 相关统计。
+
+建议字段：
+
+- `prompt_tokens: int`
+- `completion_tokens: int`
+- `total_tokens: int`
+- `cache_hit_tokens: int`
+- `cache_write_tokens: int`
+
 ## File Touch Points
 
 首期文件落点建议如下：
@@ -326,11 +386,14 @@ provider 能力声明。
 - Anthropic native lowering 生效
 - provider 不支持时自动 fallback
 - `allow_provider_native_cache=False` 时强制 fallback
+- provider cache usage 能正确归一化为 `cache_hit_tokens` / `cache_write_tokens`
 
 ### 4. Regression tests
 
 - AWORLD.md、relevant memory、system prompt augment 语义不回归
 - 普通 provider 请求仍然可用
+- `event_runner` 任务完成日志继续可用，并在有 cache usage 时带上统一 cache token 字段
+- `prompt_logger.log` 继续可用，并在 cache-aware 请求下带上 prompt 级 cache 路径与 usage 信息
 
 ## Risks
 
