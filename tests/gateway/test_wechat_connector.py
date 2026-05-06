@@ -5,6 +5,7 @@ import base64
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -15,8 +16,9 @@ from aworld_gateway.types import OutboundEnvelope
 
 
 class _FakeRouter:
-    def __init__(self) -> None:
+    def __init__(self, *, response_text: str | None = None) -> None:
         self.calls: list[tuple[object, str | None, object | None]] = []
+        self.response_text = response_text
 
     async def handle_inbound(self, inbound, *, channel_default_agent_id, on_output=None):
         self.calls.append((inbound, channel_default_agent_id, on_output))
@@ -25,7 +27,39 @@ class _FakeRouter:
             account_id=inbound.account_id,
             conversation_id=inbound.conversation_id,
             reply_to_message_id=inbound.message_id,
-            text=f"echo:{inbound.text}",
+            text=self.response_text if self.response_text is not None else f"echo:{inbound.text}",
+        )
+
+
+class _FakeCommandBridge:
+    def __init__(self, *, handled: bool = True, text: str = "bridge:ok") -> None:
+        self.handled = handled
+        self.text = text
+        self.calls: list[dict[str, object]] = []
+
+    async def execute(
+        self,
+        *,
+        text: str,
+        cwd: str,
+        session_id: str,
+        runtime=None,
+        prompt_executor=None,
+        on_output=None,
+    ):
+        self.calls.append(
+            {
+                "text": text,
+                "cwd": cwd,
+                "session_id": session_id,
+                "runtime": runtime,
+            }
+        )
+        return SimpleNamespace(
+            handled=self.handled,
+            command_name="memory",
+            status="completed" if self.handled else "unknown",
+            text=self.text,
         )
 
 
@@ -71,6 +105,54 @@ async def test_connector_process_message_caches_context_token_and_routes_text(
     assert callable(on_output)
     assert connector._token_store.get("wx-account", "user-1") == "ctx-1"
     assert sent == [("user-1", "echo:ping", {})]
+    await connector.stop()
+
+
+@pytest.mark.asyncio
+async def test_connector_process_message_routes_slash_command_through_router(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from aworld_gateway.channels.wechat.connector import WechatConnector
+
+    router = _FakeRouter(response_text="Memory instruction status")
+    bridge = _FakeCommandBridge(text="Memory instruction status")
+    cfg = WechatChannelConfig(default_agent_id="aworld")
+    monkeypatch.setenv("AWORLD_WECHAT_ACCOUNT_ID", "wx-account")
+    monkeypatch.setenv("AWORLD_WECHAT_TOKEN", "wx-token")
+    monkeypatch.setenv("AWORLD_WECHAT_BASE_URL", "https://ilink.example.test")
+
+    sent: list[tuple[str, str, dict | None]] = []
+
+    async def fake_send_text(*, chat_id: str, text: str, metadata: dict | None = None):
+        sent.append((chat_id, text, metadata))
+        return {"chat_id": chat_id, "text": text}
+
+    connector = WechatConnector(
+        config=cfg,
+        router=router,
+        storage_root=tmp_path,
+        command_bridge=bridge,
+    )
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+    await connector.start()
+    await connector._process_message(
+        {
+            "message_id": "m-cmd-1",
+            "from_user_id": "user-1",
+            "context_token": "ctx-1",
+            "item_list": [{"type": 1, "text_item": {"text": "/memory status"}}],
+        }
+    )
+
+    assert len(router.calls) == 1
+    inbound, channel_default_agent_id, on_output = router.calls[0]
+    assert inbound.text == "/memory status"
+    assert inbound.conversation_id == "user-1"
+    assert channel_default_agent_id == "aworld"
+    assert callable(on_output)
+    assert bridge.calls == []
+    assert sent == [("user-1", "Memory instruction status", {})]
     await connector.stop()
 
 

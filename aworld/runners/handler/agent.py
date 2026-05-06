@@ -55,14 +55,24 @@ class DefaultAgentHandler(AgentHandler):
         headers = {"context": message.context}
         session_id = message.session_id
         data = message.payload
+        step_namespace = f"{message.caller or self.name()}"
         if not data:
             # error message, p2p
+            closed_step = message.context.close_step(
+                namespace=step_namespace or None,
+                expected_name=step_namespace or None,
+            )
             yield Message(
                 category=Constants.OUTPUT,
-                payload=StepOutput.build_failed_output(name=f"{message.caller or self.name()}",
-                                                       step_num=0,
-                                                       data="no data to process.",
-                                                       task_id=self.task_id),
+                payload=StepOutput.build_failed_output(
+                    name=closed_step["name"] if closed_step else step_namespace,
+                    step_num=closed_step["step_num"] if closed_step else 0,
+                    alias_name=closed_step["alias_name"] if closed_step else None,
+                    data="no data to process.",
+                    task_id=self.task_id,
+                    step_id=closed_step["step_id"] if closed_step else None,
+                    parent_step_id=closed_step["parent_step_id"] if closed_step else None,
+                ),
                 sender=self.name(),
                 session_id=session_id,
                 headers=headers
@@ -159,12 +169,21 @@ class DefaultAgentHandler(AgentHandler):
         for action in data:
             if not isinstance(action, ActionModel):
                 # error message, p2p
+                closed_step = message.context.close_step(
+                    namespace=step_namespace or None,
+                    expected_name=step_namespace or None,
+                )
                 yield Message(
                     category=Constants.OUTPUT,
-                    payload=StepOutput.build_failed_output(name=f"{message.caller or self.name()}",
-                                                           step_num=0,
-                                                           data="action not a ActionModel.",
-                                                           task_id=self.task_id),
+                    payload=StepOutput.build_failed_output(
+                        name=closed_step["name"] if closed_step else step_namespace,
+                        step_num=closed_step["step_num"] if closed_step else 0,
+                        alias_name=closed_step["alias_name"] if closed_step else None,
+                        data="action not a ActionModel.",
+                        task_id=self.task_id,
+                        step_id=closed_step["step_id"] if closed_step else None,
+                        parent_step_id=closed_step["parent_step_id"] if closed_step else None,
+                    ),
                     sender=self.name(),
                     session_id=session_id,
                     headers=headers
@@ -201,11 +220,20 @@ class DefaultAgentHandler(AgentHandler):
             logger.info(f"agent handler send tool message: {msg}")
             yield msg
         else:
+            closed_step = message.context.close_step(
+                namespace=step_namespace or None,
+                expected_name=step_namespace or None,
+            )
             yield Message(
                 category=Constants.OUTPUT,
-                payload=StepOutput.build_finished_output(name=f"{message.caller or self.name()}",
-                                                         step_num=0,
-                                                         task_id=self.task_id),
+                payload=StepOutput.build_finished_output(
+                    name=closed_step["name"] if closed_step else step_namespace,
+                    step_num=closed_step["step_num"] if closed_step else 0,
+                    alias_name=closed_step["alias_name"] if closed_step else None,
+                    task_id=self.task_id,
+                    step_id=closed_step["step_id"] if closed_step else None,
+                    parent_step_id=closed_step["parent_step_id"] if closed_step else None,
+                ),
                 sender=self.name(),
                 receiver=agents[0].tool_name,
                 session_id=session_id,

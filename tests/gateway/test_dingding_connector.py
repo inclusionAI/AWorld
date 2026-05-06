@@ -6,6 +6,7 @@ import logging
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,6 +53,7 @@ class _FakeBridge:
         text,
         on_text_chunk=None,
         on_output=None,
+        allowed_tools=None,
     ) -> DingdingBridgeResult:
         self.calls.append(
             {
@@ -60,11 +62,45 @@ class _FakeBridge:
                 "text": text,
             }
         )
+        if allowed_tools is not None:
+            self.calls[-1]["allowed_tools"] = allowed_tools
         display_text = self._display_input_text(text)
         if on_text_chunk is not None:
             await on_text_chunk("echo:")
             await on_text_chunk(display_text)
         return DingdingBridgeResult(text=f"echo:{display_text}")
+
+
+class _FakeCommandBridge:
+    def __init__(self, *, handled: bool = True, text: str = "bridge:ok") -> None:
+        self.handled = handled
+        self.text = text
+        self.calls: list[dict[str, object]] = []
+
+    async def execute(
+        self,
+        *,
+        text: str,
+        cwd: str,
+        session_id: str,
+        runtime=None,
+        prompt_executor=None,
+        on_output=None,
+    ):
+        self.calls.append(
+            {
+                "text": text,
+                "cwd": cwd,
+                "session_id": session_id,
+                "runtime": runtime,
+            }
+        )
+        return SimpleNamespace(
+            handled=self.handled,
+            command_name="memory",
+            status="completed" if self.handled else "unknown",
+            text=self.text,
+        )
 
 
 class _FakeCredential:
@@ -561,6 +597,76 @@ def test_connector_normal_callback_runs_bridge_and_sends_text() -> None:
     assert all(call["agent_id"] == "agent-1" for call in bridge.calls)
     assert session_id_1 == session_id_2
     assert sent == ["echo:hello", "echo:again"]
+
+
+def test_connector_executes_slash_command_without_agent_bridge() -> None:
+    bridge = _FakeBridge()
+    command_bridge = _FakeCommandBridge(text="Memory instruction status")
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=bridge,
+        stream_module=object(),
+        command_bridge=command_bridge,
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        assert session_webhook == "https://callback"
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "/memory status"},
+            }
+        )
+    )
+
+    assert bridge.calls == []
+    assert len(command_bridge.calls) == 1
+    assert command_bridge.calls[0]["text"] == "/memory status"
+    assert command_bridge.calls[0]["cwd"] == str(Path.cwd())
+    assert str(command_bridge.calls[0]["session_id"]).startswith("dingtalk_conv-1_")
+    assert sent == ["Memory instruction status"]
+
+
+def test_connector_executes_prompt_command_via_agent_bridge() -> None:
+    bridge = _FakeBridge()
+    connector = DingTalkConnector(
+        config=DingdingChannelConfig(default_agent_id="agent-1"),
+        bridge=bridge,
+        stream_module=object(),
+    )
+    sent: list[str] = []
+
+    async def fake_send_text(*, session_webhook: str, text: str) -> None:
+        assert session_webhook == "https://callback"
+        sent.append(text)
+
+    connector.send_text = fake_send_text  # type: ignore[method-assign]
+
+    asyncio.run(
+        connector.handle_callback(
+            {
+                "sessionWebhook": "https://callback",
+                "conversationId": "conv-1",
+                "senderId": "user-1",
+                "text": {"content": "/diff main"},
+            }
+        )
+    )
+
+    assert len(bridge.calls) == 1
+    assert "Diff Summary Task" in str(bridge.calls[0]["text"])
+    assert "main" in str(bridge.calls[0]["text"])
+    assert "git_diff" in list(bridge.calls[0]["allowed_tools"])
+    assert len(sent) == 1
+    assert sent[0].startswith("echo:## Diff Summary Task")
 
 
 def test_connector_isolates_overlapping_callbacks_with_new_session() -> None:
