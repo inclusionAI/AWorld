@@ -39,3 +39,35 @@ AWorld model providers MUST allow generic prompt assembly behavior to remain ena
 - **WHEN** the request path enables generic prompt assembly but disables provider-native prompt cache lowering
 - **THEN** AWorld MUST still use the provider-neutral prompt assembly behavior
 - **AND** the provider MUST fall back to ordinary request payload generation without attempting native prompt cache markers
+
+### Requirement: Provider cache usage MUST be normalized into common AWorld token fields
+
+AWorld model providers that expose native prompt cache usage MUST map those counters into the common AWorld usage schema rather than exposing only provider-specific field names.
+
+#### Scenario: Anthropic response includes prompt cache usage
+
+- **WHEN** an Anthropic request returns native cache usage counters
+- **THEN** AWorld MUST normalize cache-read tokens into `cache_hit_tokens`
+- **AND** it MUST normalize cache-creation tokens into `cache_write_tokens`
+- **AND** the common usage payload MUST remain usable alongside `prompt_tokens`, `completion_tokens`, and `total_tokens`
+
+### Requirement: Task-level observability MUST surface normalized cache token usage
+
+When common usage contains normalized cache token fields, task-level observability outputs MUST surface those fields together with ordinary token usage.
+
+#### Scenario: Task finishes after a cache-aware provider call
+
+- **WHEN** a task completes and the accumulated token usage includes `cache_hit_tokens` or `cache_write_tokens`
+- **THEN** task-finished logging and equivalent task-completion payloads MUST include those normalized fields
+- **AND** operators MUST NOT need to inspect raw provider responses to observe prompt cache hit or write volume
+
+### Requirement: Prompt-level observability MUST surface cache path and normalized cache usage
+
+When a request goes through prompt logging, AWorld MUST surface the prompt-cache path and any normalized cache usage that is available for that request.
+
+#### Scenario: Prompt logger records a cache-aware request
+
+- **WHEN** `prompt_logger.log` records a request that used cache-aware assembly
+- **THEN** it MUST identify whether the request used cache-aware assembly only or also used provider-native cache lowering
+- **AND** it MUST include normalized `cache_hit_tokens` and `cache_write_tokens` when those counters are available for that request
+- **AND** operators MUST be able to distinguish cache-path behavior from ordinary prompt logging without reading raw provider payloads
