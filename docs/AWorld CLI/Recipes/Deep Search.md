@@ -60,15 +60,15 @@ agent-browser is a powerful tool that enables automated browser interactions for
 
 1. **Install the agent-browser package globally:**
 
-   ```bash
-   npm install -g agent-browser
-   ```
+```bash
+npm install -g agent-browser
+```
 
 2. **Download the required Chromium binary:**
 
-   ```bash
-   agent-browser install
-   ```
+```bash
+agent-browser install
+```
 
 ### Reference
 
@@ -128,16 +128,16 @@ Set up a dedicated workspace for your Deep Search projects to keep your work org
 
 1. **Create and navigate to your workspace:**
 
-   ```bash
-   mkdir -p ~/deep_search_workspace
-   cd ~/deep_search_workspace
-   ```
+```bash
+mkdir -p ~/deep_search_workspace
+cd ~/deep_search_workspace
+```
 
 2. **Launch AWorld CLI:**
 
-   ```bash
-   aworld-cli
-   ```
+```bash
+aworld-cli
+```
 
 ### What This Does
 
@@ -162,21 +162,24 @@ Configure AWorld to use the CDP-enabled Chrome instance for browser automation.
 1. **Save the workspace preference explicitly:**
 
    Run the following command in the AWorld CLI:
-   ```
-   /remember --type workspace When using agent-browser, always include --cdp 9222.
-   ```
+
+```text
+/remember --type workspace When using agent-browser, always include --cdp 9222.
+```
 
 2. **Optional: inspect or edit the workspace instruction file:**
 
    You can review the current workspace memory with:
-   ```
-   /memory view
-   ```
+
+```text
+/memory view
+```
 
    Or open the editor with:
-   ```
-   /memory
-   ```
+
+```text
+/memory
+```
    
 ### What This Does
 

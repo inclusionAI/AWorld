@@ -81,6 +81,16 @@ def _to_nav(value):
     return value
 
 
+def _top_section_entry(value):
+    if isinstance(value, list) and value:
+        first_item = value[0]
+        if isinstance(first_item, dict):
+            return _top_section_entry(next(iter(first_item.values())))
+    if isinstance(value, str):
+        return value
+    return None
+
+
 def scan(path: str) -> dict:
     items = {}
     for name in sorted(os.listdir(path)):
@@ -108,6 +118,7 @@ def scan(path: str) -> dict:
 
 if __name__ == '__main__':
     outline = scan_path(docs)
+    site_url = os.getenv("AWORLD_DOCS_SITE_URL", "https://www.inclusion-ai.org/AWorld/").strip()
 
     theme_cfg = {
         "name": "material",
@@ -120,7 +131,6 @@ if __name__ == '__main__':
             "navigation.tabs",
             "toc.follow",
             "content.code.copy",
-            "content.code.annotate",
             "content.action.edit",
             "header.autohide",
         ],
@@ -146,7 +156,7 @@ if __name__ == '__main__':
 
     cfg = {
         "site_name": "AWorld (Agent World) harness",
-        "site_url": "https://github.com/inclusionAI/AWorld",
+        "site_url": site_url,
         "repo_url": "https://github.com/inclusionAI/AWorld",
         "repo_name": "inclusionAI/AWorld",
         "edit_uri": "tree/main/docs/",
@@ -159,28 +169,31 @@ if __name__ == '__main__':
             "js/github-stats-fallback.js",
         ],
         "markdown_extensions": [
+            "attr_list",
+            "fenced_code",
             "codehilite",
             "pymdownx.inlinehilite",
             "pymdownx.snippets",
-            "pymdownx.superfences",
         ],
         "theme": theme_cfg,
         "nav": outline,
     }
 
-    index_content = ["# Welcome to AWorld’s Documentation!"]
-    # standard structure
+    index_content = [
+        "# Welcome to AWorld's Documentation",
+        "Use the sections below to navigate the current English user documentation.",
+    ]
     for line in outline:
         for k, v in line.items():
-            if isinstance(v, dict):
-                index_content.append(f"## {k}")
-                for s_k, s_v in v.items():
-                    index_content.append(f"[{s_k}]({s_v})")
-            else:
-                index_content.append(f"[{k}]({v})")
+            entry = _top_section_entry(v)
+            if entry:
+                index_content.append(f"- [{k}]({entry})")
 
+    index_text = "\n\n".join(index_content) + "\n"
     with open("index.md", 'w') as index_file:
-        index_file.write("\n\n".join(index_content))
+        index_file.write(index_text)
+    with open(os.path.join(docs, "index.md"), 'w') as index_file:
+        index_file.write(index_text)
 
     with open('mkdocs.yml', 'w') as outfile:
         yaml.safe_dump(cfg, outfile, sort_keys=False, allow_unicode=True)
