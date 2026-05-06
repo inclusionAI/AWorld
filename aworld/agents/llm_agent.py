@@ -1,6 +1,5 @@
 # coding: utf-8
 # Copyright (c) 2025 inclusionAI.
-import hashlib
 import time
 
 import asyncio
@@ -17,6 +16,7 @@ from aworld.config.conf import AgentConfig, TaskConfig, TaskRunMode
 from aworld.core.agent.agent_desc import get_agent_desc
 from aworld.core.agent.base import BaseAgent, AgentResult, is_agent_by_name, is_agent, AgentFactory
 from aworld.core.common import ActionResult, Observation, ActionModel, Config, TaskItem
+from aworld.core.context.amni.prompt.assembly import DefaultPromptAssemblyProvider
 from aworld.core.context.base import Context
 from aworld.core.context.prompts import StringPromptTemplate
 from aworld.core.event.base import Message, ToolMessage, Constants, AgentMessage, GroupMessage, TopicType, \
@@ -486,6 +486,65 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 return True
         return False
 
+    def _get_prompt_assembly_provider(self, context: Any = None):
+        provider = None
+        if context is not None:
+            provider_getter = getattr(context, "get_prompt_assembly_provider", None)
+            if callable(provider_getter):
+                try:
+                    provider = provider_getter(agent=self)
+                except TypeError:
+                    provider = provider_getter()
+            if provider is None:
+                provider = getattr(context, "prompt_assembly_provider", None)
+        if provider is None:
+            provider = getattr(self, "prompt_assembly_provider", None)
+        if provider is None:
+            provider = DefaultPromptAssemblyProvider()
+            self.prompt_assembly_provider = provider
+        return provider
+
+    def _build_prompt_assembly_metadata(
+        self,
+        *,
+        context: Any = None,
+        request_kwargs: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        provider_name = self._current_provider_name()
+        return {
+            "provider_name": provider_name,
+            "context_cache_enabled": self._is_context_cache_enabled(context),
+            "cache_aware_assembly": False,
+            "provider_native_cache": self._provider_native_cache_requested(context, provider_name, request_kwargs),
+        }
+
+    def _build_prompt_assembly(
+        self,
+        *,
+        context: Any = None,
+        messages: List[Dict[str, Any]],
+        tools: List[Dict[str, Any]] | None = None,
+        request_kwargs: Dict[str, Any] | None = None,
+    ) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+        metadata = self._build_prompt_assembly_metadata(context=context, request_kwargs=request_kwargs)
+        provider = self._get_prompt_assembly_provider(context)
+        plan = provider.build_plan(messages=messages, tools=tools, metadata=metadata)
+
+        assembled_messages = (
+            plan.to_model_messages()
+            if hasattr(plan, "to_model_messages")
+            else to_serializable(getattr(plan, "messages", messages))
+        )
+        observability = dict(metadata)
+        plan_observability = getattr(plan, "observability", None)
+        if isinstance(plan_observability, dict):
+            observability.update(plan_observability)
+        observability.setdefault("assembly_provider", provider.__class__.__name__)
+        stable_hash = getattr(plan, "stable_hash", None)
+        if stable_hash:
+            observability.setdefault("stable_prefix_hash", stable_hash)
+        return to_serializable(assembled_messages), observability
+
     def _build_prompt_cache_observability(
         self,
         *,
@@ -494,28 +553,14 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         tools: List[Dict[str, Any]] | None = None,
         request_kwargs: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
-        """Build real request-side prompt cache metadata for the current legacy message path."""
-        provider_name = self._current_provider_name()
-        system_messages = []
-        for msg in messages or []:
-            if isinstance(msg, dict) and msg.get("role") == "system":
-                system_messages.append(to_serializable(msg))
-        tool_payload = to_serializable(tools or [])
-        stable_payload = {
-            "system_messages": system_messages,
-            "tools": tool_payload,
-        }
-        stable_prefix_hash = hashlib.sha256(
-            json.dumps(stable_payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-        ).hexdigest()
-        return {
-            "assembly_provider": "LegacyMessageAssembly",
-            "provider_name": provider_name,
-            "context_cache_enabled": self._is_context_cache_enabled(context),
-            "cache_aware_assembly": False,
-            "provider_native_cache": self._provider_native_cache_requested(context, provider_name, request_kwargs),
-            "stable_prefix_hash": stable_prefix_hash,
-        }
+        """Build request-side prompt cache metadata from the active prompt assembly provider."""
+        _, observability = self._build_prompt_assembly(
+            context=context,
+            messages=messages,
+            tools=tools,
+            request_kwargs=request_kwargs,
+        )
+        return observability
 
     @property
     def llm(self):
@@ -991,7 +1036,16 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         if hasattr(observation, 'context') and observation.context:
             self.task_histories = observation.context
 
-        messages = await self.build_llm_input(observation, info, message=message, **kwargs)
+        raw_messages = await self.build_llm_input(observation, info, message=message, **kwargs)
+        tools = await self._filter_tools(message.context)
+        if not tools:
+            tools = None
+        messages, prompt_cache_observability = self._build_prompt_assembly(
+            context=message.context,
+            messages=raw_messages,
+            tools=tools,
+            request_kwargs=kwargs,
+        )
 
         serializable_messages = to_serializable(messages)
         llm_response = None
@@ -1005,6 +1059,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             serializable_messages,
             started_at=llm_call_start_time,
         )
+        self._update_llm_call_observability(message, llm_call_id, prompt_cache_observability)
 
         try:
             events = []
@@ -1021,6 +1076,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             }
             kwargs["response_parse_args"] = response_parse_args
             kwargs["llm_call_id"] = llm_call_id
+            kwargs["prepared_tools"] = tools
+            kwargs["prompt_cache_observability"] = prompt_cache_observability
             llm_response = await self.invoke_model(messages, message=message, **kwargs)
         except Exception as e:
             logger.warn(f"{self.id()} result error: {e}")
@@ -1245,11 +1302,20 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         # Prepare parameters once before retry loop
         try:
             llm_call_id = kwargs.pop("llm_call_id", None)
-            tools = await self._filter_tools(message.context)
+            tools = kwargs.pop("prepared_tools", None)
+            prompt_cache_observability = kwargs.pop("prompt_cache_observability", None)
+            if tools is None:
+                tools = await self._filter_tools(message.context)
             if not tools:
                 # Some model must be clearly defined as None
                 tools = None
-            if llm_call_id:
+            if llm_call_id and prompt_cache_observability:
+                self._update_llm_call_observability(
+                    message,
+                    llm_call_id,
+                    prompt_cache_observability,
+                )
+            elif llm_call_id:
                 self._update_llm_call_observability(
                     message,
                     llm_call_id,
