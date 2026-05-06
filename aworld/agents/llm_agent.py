@@ -323,6 +323,69 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             self.enable_subagent = False
             self.subagent_manager = None
 
+    def _record_llm_call_request(
+        self,
+        message: Message,
+        messages: List[Dict[str, Any]],
+        *,
+        started_at: str | None = None,
+    ) -> str:
+        """Persist one request snapshot without overwriting prior LLM call state."""
+        started_at = started_at or datetime.now().isoformat()
+        call_id = uuid.uuid4().hex
+        serializable_messages = to_serializable(messages)
+        context_info = message.context.context_info
+        llm_calls = list(context_info.get("llm_calls") or [])
+        llm_calls.append(
+            {
+                "call_id": call_id,
+                "step_id": message.context.current_step_id() if message.context else None,
+                "agent_id": self.id(),
+                "started_at": started_at,
+                "request": {
+                    "messages": serializable_messages,
+                },
+            }
+        )
+        context_info["llm_calls"] = llm_calls
+        # Backward-compatible aliases for current readers.
+        context_info["llm_input"] = serializable_messages
+        context_info["llm_call_start_time"] = started_at
+        return call_id
+
+    def _record_llm_call_response(
+        self,
+        message: Message,
+        call_id: str,
+        llm_response: ModelResponse | None,
+    ) -> None:
+        """Attach response/usage to the matching call record and preserve legacy aliases."""
+        context_info = message.context.context_info
+        llm_calls = list(context_info.get("llm_calls") or [])
+        serialized_response = None
+        serialized_usage = None
+        if llm_response is not None:
+            serialized_response = (
+                llm_response.to_dict()
+                if hasattr(llm_response, "to_dict")
+                else to_serializable(llm_response)
+            )
+            serialized_usage = to_serializable(getattr(llm_response, "usage", None))
+
+        for index in range(len(llm_calls) - 1, -1, -1):
+            record = llm_calls[index]
+            if isinstance(record, dict) and record.get("call_id") == call_id:
+                updated_record = dict(record)
+                if serialized_response is not None:
+                    updated_record["response"] = serialized_response
+                if serialized_usage is not None:
+                    updated_record["usage"] = serialized_usage
+                llm_calls[index] = updated_record
+                context_info["llm_calls"] = llm_calls
+                break
+
+        context_info["llm_output"] = llm_response
+
     @property
     def llm(self):
         # lazy
@@ -800,14 +863,17 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         messages = await self.build_llm_input(observation, info, message=message, **kwargs)
 
         serializable_messages = to_serializable(messages)
-        message.context.context_info["llm_input"] = serializable_messages
         llm_response = None
         agent_result = None
         if source_span:
             source_span.set_attribute("messages", json.dumps(serializable_messages, ensure_ascii=False))
         # Record LLM call start time (used to set MemoryMessage's start_time)
         llm_call_start_time = datetime.now().isoformat()
-        message.context.context_info["llm_call_start_time"] = llm_call_start_time
+        llm_call_id = self._record_llm_call_request(
+            message,
+            serializable_messages,
+            started_at=llm_call_start_time,
+        )
 
         try:
             events = []
@@ -828,6 +894,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             logger.warn(f"{self.id()} result error: {e}")
             raise AWorldRuntimeException(str(e))
         finally:
+            self._record_llm_call_response(message, llm_call_id, llm_response)
             if llm_response:
                 if llm_response.error:
                     logger.info(f"llm result error: {llm_response.error}")
@@ -1281,8 +1348,6 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                 ))
                 return ModelResponse(id=uuid.uuid4().hex, model=self.model_name, content=to_serializable(messages))
             raise e
-        finally:
-            message.context.context_info["llm_output"] = llm_response
 
     async def custom_system_prompt(self, context: Context, content: str, tool_list: List[str] = None):
         logger.info(f"llm_agent custom_system_prompt .. agent#{type(self)}#{self.id()}")
