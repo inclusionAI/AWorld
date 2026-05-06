@@ -116,6 +116,13 @@ class BaseConfig(BaseModel):
         return ConfigDict(self.model_dump())
 
 
+class ContextCacheConfig(BaseConfig):
+    enabled: bool = True
+    allow_provider_native_cache: bool = True
+    stable_prefix_strategy: str = "hash"
+    provider_overrides: Dict[str, Any] = Field(default_factory=dict)
+
+
 class ModelConfig(BaseConfig):
     model_config = ConfigDict(extra='allow')
     llm_provider: Optional[str] = None  # Set to None to allow automatic provider detection
@@ -133,6 +140,7 @@ class ModelConfig(BaseConfig):
     params: Optional[Dict[str, Any]] = {}
     ext_config: Optional[Dict[str, Any]] = {}
     llm_response_parser: Optional[Any] = None
+    context_cache: ContextCacheConfig = Field(default_factory=ContextCacheConfig)
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
