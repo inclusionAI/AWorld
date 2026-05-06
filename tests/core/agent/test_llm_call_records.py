@@ -73,3 +73,87 @@ async def test_llm_call_records_append_without_mutating_parent_state():
             "request": {"messages": [{"role": "system", "content": "parent"}]},
         }
     ]
+
+
+def test_prompt_cache_observability_metadata_is_attached_to_call_record():
+    agent = _build_agent()
+    context = _build_context()
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    call_id = agent._record_llm_call_request(
+        message,
+        [
+            {"role": "system", "content": "rules"},
+            {"role": "user", "content": "hello"},
+        ],
+        started_at="2026-05-06T12:00:00",
+    )
+
+    agent._update_llm_call_observability(
+        message,
+        call_id,
+        metadata=agent._build_prompt_cache_observability(
+            messages=[
+                {"role": "system", "content": "rules"},
+                {"role": "user", "content": "hello"},
+            ],
+            tools=[{"function": {"name": "search", "parameters": {"type": "object"}}}],
+            request_kwargs={"prompt_cache_key": "cache-key-1"},
+        ),
+    )
+
+    record = message.context.context_info["llm_calls"][-1]
+    observability = record["cache_observability"]
+    assert observability["assembly_provider"] == "LegacyMessageAssembly"
+    assert observability["provider_name"] == "openai"
+    assert observability["cache_aware_assembly"] is False
+    assert observability["provider_native_cache"] is True
+    assert observability["stable_prefix_hash"]
+
+
+def test_llm_call_response_upgrades_native_cache_flag_when_cache_tokens_exist():
+    agent = _build_agent()
+    context = _build_context()
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": context},
+    )
+
+    call_id = agent._record_llm_call_request(
+        message,
+        [{"role": "user", "content": "hello"}],
+        started_at="2026-05-06T12:00:00",
+    )
+    agent._update_llm_call_observability(
+        message,
+        call_id,
+        metadata={
+            "assembly_provider": "LegacyMessageAssembly",
+            "provider_name": "anthropic",
+            "cache_aware_assembly": False,
+            "provider_native_cache": False,
+        },
+    )
+
+    response = ModelResponse(
+        id="resp-1",
+        model="claude-sonnet",
+        content="done",
+        usage={
+            "prompt_tokens": 100,
+            "completion_tokens": 20,
+            "total_tokens": 120,
+            "cache_hit_tokens": 80,
+        },
+    )
+    agent._record_llm_call_response(message, call_id, response)
+
+    record = message.context.context_info["llm_calls"][-1]
+    assert record["cache_observability"]["provider_native_cache"] is True

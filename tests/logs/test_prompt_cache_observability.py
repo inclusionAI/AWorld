@@ -53,8 +53,9 @@ def test_prompt_logger_logs_prompt_cache_observability(monkeypatch):
     agent = _build_agent()
     context = _build_context()
     context.context_info["prompt_cache_observability"] = {
-        "assembly_provider": "CacheAwarePromptAssemblyProvider",
-        "cache_aware_assembly": True,
+        "assembly_provider": "LegacyMessageAssembly",
+        "provider_name": "openai",
+        "cache_aware_assembly": False,
         "provider_native_cache": True,
         "stable_prefix_hash": "stable-hash-123",
     }
@@ -78,7 +79,8 @@ def test_prompt_logger_logs_prompt_cache_observability(monkeypatch):
 
     joined = "\n".join(lines)
     assert "PROMPT CACHE OBSERVABILITY" in joined
-    assert "CacheAwarePromptAssemblyProvider" in joined
+    assert "LegacyMessageAssembly" in joined
+    assert "openai" in joined
     assert "stable-hash-123" in joined
     assert "80" in joined
     assert "40" in joined
