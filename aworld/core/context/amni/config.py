@@ -6,7 +6,7 @@ from typing import Optional, List, Union, Dict
 
 from pydantic import BaseModel, Field
 
-from aworld.config import ModelConfig
+from aworld.config import ModelConfig, ContextCacheConfig
 from aworld.config.conf import AgentMemoryConfig, SummaryPromptConfig, HistoryWriteStrategy
 from aworld.core.memory import MemoryConfig, MemoryStore
 from aworld.memory.db.sqlite import SQLiteMemoryStore
@@ -82,6 +82,7 @@ class HumanNeuronStrategyConfig(NeuronStrategyConfig):
 
 
 class AgentContextConfig(BaseConfig):
+    context_cache: ContextCacheConfig = Field(default_factory=ContextCacheConfig)
     # System Prompt Augment
     enable_system_prompt_augment: bool = Field(default=False, description="enable_system_prompt_augment")
     neuron_names: Optional[list[str]] = Field(default_factory=list)

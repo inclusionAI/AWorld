@@ -1,7 +1,8 @@
 import pytest
 
 from aworld.agents.llm_agent import Agent
-from aworld.config.conf import AgentConfig
+from aworld.config.conf import AgentConfig, ModelConfig
+from aworld.core.context.amni.config import AgentContextConfig, ContextCacheConfig
 from aworld.core.context.base import Context
 from aworld.core.context.context_state import ContextState
 from aworld.core.event.base import Constants, Message
@@ -157,3 +158,34 @@ def test_llm_call_response_upgrades_native_cache_flag_when_cache_tokens_exist():
 
     record = message.context.context_info["llm_calls"][-1]
     assert record["cache_observability"]["provider_native_cache"] is True
+
+
+def test_context_cache_effective_enablement_defaults_to_true_without_amni_context():
+    agent = _build_agent()
+    context = _build_context()
+
+    assert agent._is_context_cache_enabled(context) is True
+    assert agent._allow_provider_native_cache(context) is True
+
+
+def test_context_cache_effective_enablement_respects_agent_and_model_opt_out():
+    class FakeContext:
+        def get_agent_context_config(self, namespace):
+            return AgentContextConfig(
+                context_cache=ContextCacheConfig(enabled=False, allow_provider_native_cache=True)
+            )
+
+    agent = Agent(
+        name="Aworld",
+        conf=AgentConfig(
+            llm_config=ModelConfig(
+                llm_provider="openai",
+                llm_model_name="fake-model",
+                llm_api_key="fake-key",
+                context_cache=ContextCacheConfig(enabled=False, allow_provider_native_cache=True),
+            )
+        ),
+    )
+
+    assert agent._is_context_cache_enabled(FakeContext()) is False
+    assert agent._allow_provider_native_cache(FakeContext()) is False
