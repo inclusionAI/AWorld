@@ -169,6 +169,9 @@ class PromptLogger:
         assembly_provider = observability.get("assembly_provider", "unknown")
         provider_name = observability.get("provider_name", "unknown")
         stable_prefix_hash = observability.get("stable_prefix_hash") or observability.get("stable_hash") or "n/a"
+        context_cache_enabled = PromptLogger._format_observability_status(
+            observability.get("context_cache_enabled")
+        )
         cache_aware_assembly = PromptLogger._format_observability_status(
             observability.get("cache_aware_assembly")
         )
@@ -183,6 +186,7 @@ class PromptLogger:
         prompt_logger.info(f"│ 📋 Task ID:  {context.task_id:<{BORDER_WIDTH - 12}} │")
         prompt_logger.info(f"│ 🆔 Call ID: {str(call_id):<{BORDER_WIDTH - 11}} │")
         prompt_logger.info(f"│ 🌐 Provider: {str(provider_name):<{BORDER_WIDTH - 12}} │")
+        prompt_logger.info(f"│ 🧠 Context Cache: {context_cache_enabled:<{BORDER_WIDTH - 18}} │")
         prompt_logger.info(f"│ 🏗️ Assembly Provider: {str(assembly_provider):<{BORDER_WIDTH - 23}} │")
         prompt_logger.info(f"│ ♻️ Cache-Aware Assembly: {cache_aware_assembly:<{BORDER_WIDTH - 26}} │")
         prompt_logger.info(f"│ 🔌 Provider Native Cache: {provider_native_cache:<{BORDER_WIDTH - 25}} │")
