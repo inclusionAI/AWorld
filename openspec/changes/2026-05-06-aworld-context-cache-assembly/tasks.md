@@ -6,18 +6,20 @@
 
 ## 2. Prompt Assembly
 
-- [ ] 2.1 Create `aworld/core/context/amni/prompt/assembly/` with plan, state, and hashing modules.
+- [ ] 2.1 Create `aworld/core/context/amni/prompt/assembly/` with plan, provider, state, and hashing modules.
 - [ ] 2.2 Implement a provider-neutral `PromptAssemblyPlan` and `PromptSection` model.
-- [ ] 2.3 Implement stable/dynamic section classification for phase-1 content sources.
-- [ ] 2.4 Implement hash-based stable prefix reuse in request-time runtime state only.
-- [ ] 2.5 Keep stable prefix out of history/memory persistence paths.
-- [ ] 2.6 Add unit tests for section classification, hash stability, and runtime-state reuse.
+- [ ] 2.3 Implement `PromptAssemblyProvider` plus `DefaultPromptAssemblyProvider` and `CacheAwarePromptAssemblyProvider`.
+- [ ] 2.4 Implement stable/dynamic section classification for phase-1 content sources inside the cache-aware provider.
+- [ ] 2.5 Implement hash-based stable prefix reuse in request-time runtime state only.
+- [ ] 2.6 Keep stable prefix out of history/memory persistence paths.
+- [ ] 2.7 Add unit tests for provider selection, section classification, hash stability, and runtime-state reuse.
 
 ## 3. AMNI Integration
 
-- [ ] 3.1 Update `system_prompt_augment_op` to build assembly inputs without rewriting existing neuron production logic.
-- [ ] 3.2 Preserve the default fallback path that folds the assembly plan back into ordinary request payloads.
+- [ ] 3.1 Update `system_prompt_augment_op` to call the injected `PromptAssemblyProvider` without rewriting existing neuron production logic.
+- [ ] 3.2 Preserve the default fallback path that keeps default provider behavior close to today's ordinary request payload assembly.
 - [ ] 3.3 Add regression tests proving AWORLD.md, relevant memory, and system prompt augmentation semantics remain intact.
+- [ ] 3.4 Ensure the implementation does not introduce a parallel `AmniContext` or replacement context backend path.
 
 ## 4. Provider Capability and Lowering
 

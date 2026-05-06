@@ -17,8 +17,8 @@ AWorld 目前已经具备 `amni` context 的内容治理能力，例如 AWORLD.m
 
 ## What Changes
 
-- 在 `amni` 现有 context 内容生产能力之上，新增一层 provider-neutral 的 prompt assembly 能力。
-- 为 assembly 层引入稳定前缀 / 动态后缀分段模型，以及 request-time stable hash 复用策略。
+- 在 `amni` 现有 context 内容生产能力之上，新增一个可注入的 `PromptAssemblyProvider` 抽象。
+- 默认 provider 保持接近当前字符串拼装行为；cache-aware provider 负责稳定前缀 / 动态后缀分段和 request-time stable hash 复用策略。
 - 新增双层配置入口：
   - `AgentContextConfig.context_cache`
   - `ModelConfig.context_cache`
@@ -28,20 +28,21 @@ AWorld 目前已经具备 `amni` context 的内容治理能力，例如 AWORLD.m
   - provider 路径未显式禁用
 - 明确 stable prefix 不进入普通 history / memory，不再作为持久化的 system message 保存。
 - 新增 provider capability / lowerer 抽象：
-  - 默认 provider 路径可把 assembly plan 降级为普通请求
+  - 默认 provider 路径可消费 assembly provider 产物并降级为普通请求
   - Anthropic 首期实现 provider-native cache lowering
 - 将 tools 视为 stable section 的语义成员，但 tools 的 wire-format 序列化仍由具体 provider 负责。
+- 明确不引入平行的 `AmniContext` 或替代性的 context backend；新能力通过 `amni` 下游的 provider/strategy 注入。
 
 ## Capabilities
 
 ### New Capabilities
 
-- `context-cache-assembly`: AWorld 可以在 request-time 构造 cache-friendly 的 prompt assembly plan，并在 provider 不支持时安全降级。
+- `context-cache-assembly`: AWorld 可以通过可注入的 `PromptAssemblyProvider` 在 request-time 构造 cache-friendly 的 prompt assembly plan，并在 provider 不支持时安全降级。
 - `provider-prompt-cache-lowering`: provider 可以按自身能力选择是否将 assembly plan 翻译为原生 prompt cache 请求。
 
 ### Modified Capabilities
 
-- `amni-context-management`: `amni` 继续负责 context 内容生产，但不再默认承担 stable prefix 的持久化职责。
+- `amni-context-management`: `amni` 继续负责 context 内容生产，但不再默认承担 stable prefix 的持久化职责，也不需要被替换为平行 context backend。
 - `model-provider-adaptation`: provider 适配层从“只做消息协议转换”扩展为“可选地消费 assembly plan 并执行 native lowering”。
 
 ## Impact
