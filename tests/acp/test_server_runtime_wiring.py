@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from aworld.models.model_response import Function, ModelResponse, ToolCall
-from aworld.output.base import ChunkOutput, MessageOutput, ToolResultOutput
+from aworld.output.base import ChunkOutput, MessageOutput, StepOutput, ToolResultOutput
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -85,6 +85,64 @@ async def test_prompt_streams_executor_outputs_through_adapter_and_mapper() -> N
     assert notifications[1]["params"]["update"]["content"] == {"command": "pwd"}
     assert notifications[2]["params"]["update"]["status"] == "completed"
     assert notifications[2]["params"]["update"]["content"] == {"cwd": "/tmp"}
+
+
+@pytest.mark.asyncio
+async def test_current_acp_protocol_emits_step_lifecycle_updates() -> None:
+    class FakeOutputBridge:
+        async def stream_outputs(self, *, record, prompt_text):
+            yield StepOutput.build_start_output(
+                name="planner.agent",
+                alias_name="Planner",
+                step_num=0,
+                step_id="native-step-1",
+            )
+            yield StepOutput.build_finished_output(
+                name="planner.agent",
+                alias_name="Planner",
+                step_num=0,
+                data={"summary": "done"},
+                step_id="native-step-1",
+            )
+            yield MessageOutput(
+                source=ModelResponse(
+                    id="resp-2",
+                    model="demo",
+                    content="final",
+                ),
+                metadata={"sender": "Aworld", "is_finished": True},
+            )
+
+    server = AcpStdioServer(output_bridge=FakeOutputBridge())
+    server._session_update_method = "session/update"
+    writes: list[dict] = []
+
+    async def capture(message: dict) -> None:
+        writes.append(message)
+
+    server._write_message = capture  # type: ignore[method-assign]
+    session = server._handle_new_session({"cwd": ".", "mcpServers": []})
+
+    response = await server._handle_prompt(
+        6,
+        {
+            "sessionId": session["sessionId"],
+            "prompt": {"content": [{"type": "text", "text": "hello"}]},
+        },
+    )
+
+    notifications = [message for message in writes if message.get("method") == "session/update"]
+
+    assert response["result"]["status"] == "completed"
+    assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "tool_call",
+        "tool_call_update",
+        "agent_message_chunk",
+    ]
+    assert notifications[0]["params"]["update"]["toolCallId"] == "native-step-1"
+    assert notifications[0]["params"]["update"]["title"] == "Planner"
+    assert notifications[1]["params"]["update"]["status"] == "completed"
+    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
 
 
 @pytest.mark.asyncio
@@ -816,7 +874,7 @@ async def test_prompt_resets_turn_local_runtime_state_between_prompts() -> None:
 
 
 @pytest.mark.asyncio
-async def test_current_acp_protocol_suppresses_shell_tool_notifications() -> None:
+async def test_current_acp_protocol_emits_shell_tool_notifications() -> None:
     class FakeOutputBridge:
         async def stream_outputs(self, *, record, prompt_text):
             tool_call = ToolCall(
@@ -861,15 +919,19 @@ async def test_current_acp_protocol_suppresses_shell_tool_notifications() -> Non
 
     assert response["result"]["status"] == "completed"
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "tool_call",
         "agent_thought_chunk",
         "agent_message_chunk",
+        "tool_call_update",
     ]
-    assert notifications[0]["params"]["update"]["content"] == {"type": "text", "text": "searching sources"}
-    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[0]["params"]["update"]["toolCallId"] == "call-1"
+    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "searching sources"}
+    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[3]["params"]["update"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_current_acp_protocol_suppresses_other_tool_notifications() -> None:
+async def test_current_acp_protocol_emits_other_tool_notifications() -> None:
     class FakeOutputBridge:
         async def stream_outputs(self, *, record, prompt_text):
             tool_call = ToolCall(
@@ -917,15 +979,19 @@ async def test_current_acp_protocol_suppresses_other_tool_notifications() -> Non
 
     assert response["result"]["status"] == "completed"
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "tool_call",
         "agent_thought_chunk",
         "agent_message_chunk",
+        "tool_call_update",
     ]
-    assert notifications[0]["params"]["update"]["content"] == {"type": "text", "text": "我先尝试搜索一下最新信息"}
-    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[0]["params"]["update"]["toolCallId"] == "call-1"
+    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "我先尝试搜索一下最新信息"}
+    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[3]["params"]["update"]["status"] == "completed"
 
 
 @pytest.mark.asyncio
-async def test_current_acp_protocol_suppresses_execute_tool_notifications() -> None:
+async def test_current_acp_protocol_emits_execute_tool_notifications() -> None:
     class FakeOutputBridge:
         async def stream_outputs(self, *, record, prompt_text):
             tool_call = ToolCall(
@@ -970,11 +1036,15 @@ async def test_current_acp_protocol_suppresses_execute_tool_notifications() -> N
 
     assert response["result"]["status"] == "completed"
     assert [item["params"]["update"]["sessionUpdate"] for item in notifications] == [
+        "tool_call",
         "agent_thought_chunk",
         "agent_message_chunk",
+        "tool_call_update",
     ]
-    assert notifications[0]["params"]["update"]["content"] == {"type": "text", "text": "我先检查一下页面"}
-    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[0]["params"]["update"]["toolCallId"] == "call-1"
+    assert notifications[1]["params"]["update"]["content"] == {"type": "text", "text": "我先检查一下页面"}
+    assert notifications[2]["params"]["update"]["content"] == {"type": "text", "text": "final"}
+    assert notifications[3]["params"]["update"]["status"] == "completed"
 
 
 @pytest.mark.asyncio

@@ -2,6 +2,7 @@
 # Copyright (c) 2025 inclusionAI.
 import copy
 import time
+import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -69,6 +70,19 @@ class AgentTokenIdTrajectory:
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert the AgentTokenIdTrajectory to a dictionary."""
+        return asdict(self)
+
+
+@dataclass
+class StepLifecycleRecord:
+    step_id: str
+    name: str
+    step_num: int
+    alias_name: Optional[str] = None
+    namespace: str = "default"
+    parent_step_id: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
 
@@ -553,6 +567,138 @@ class Context:
         if not agent_id or not agent_info.get(agent_id, {}).get(task_id):
             return 0
         return agent_info[agent_id][task_id].get('step', 0)
+
+    def open_step(
+        self,
+        *,
+        name: str,
+        step_num: int,
+        alias_name: str | None = None,
+        namespace: str | None = None,
+        parent_step_id: str | None = None,
+        step_id: str | None = None,
+    ) -> Dict[str, Any]:
+        resolved_namespace = self._resolve_step_namespace(namespace)
+        active_steps = self._get_active_steps_map()
+        stack = active_steps.setdefault(resolved_namespace, [])
+        if parent_step_id is None and stack:
+            parent_step_id = stack[-1].step_id
+        if parent_step_id is None:
+            parent_step_id = self._current_step_lineage_id() or self._get_inherited_step_id()
+        record = StepLifecycleRecord(
+            step_id=step_id or uuid.uuid4().hex,
+            name=name,
+            step_num=step_num,
+            alias_name=alias_name,
+            namespace=resolved_namespace,
+            parent_step_id=parent_step_id,
+        )
+        stack.append(record)
+        self.context_info["active_steps"] = active_steps
+        self._push_step_lineage(record)
+        return record.to_dict()
+
+    def close_step(
+        self,
+        *,
+        namespace: str | None = None,
+        step_id: str | None = None,
+        expected_name: str | None = None,
+        expected_step_num: int | None = None,
+    ) -> Dict[str, Any] | None:
+        resolved_namespace = self._resolve_step_namespace(namespace)
+        active_steps = self._get_active_steps_map()
+        stack = active_steps.get(resolved_namespace)
+        if not stack:
+            return None
+
+        if step_id is not None:
+            for index in range(len(stack) - 1, -1, -1):
+                record = stack[index]
+                if record.step_id == step_id:
+                    stack.pop(index)
+                    self.context_info["active_steps"] = active_steps
+                    self._remove_step_lineage(record.step_id)
+                    return record.to_dict()
+            return None
+
+        for index in range(len(stack) - 1, -1, -1):
+            record = stack[index]
+            if expected_name is not None and record.name != expected_name:
+                continue
+            if expected_step_num is not None and record.step_num != expected_step_num:
+                continue
+            stack.pop(index)
+            self.context_info["active_steps"] = active_steps
+            self._remove_step_lineage(record.step_id)
+            return record.to_dict()
+
+        return None
+
+    def current_step_id(self, namespace: str | None = None) -> str | None:
+        resolved_namespace = self._resolve_step_namespace(namespace)
+        active_steps = self._get_active_steps_map()
+        stack = active_steps.get(resolved_namespace) or []
+        if not stack:
+            if namespace is not None:
+                return None
+            return self._current_step_lineage_id() or self._get_inherited_step_id()
+        return stack[-1].step_id
+
+    def inherit_step_parent(self, parent_step_id: str | None) -> None:
+        if isinstance(parent_step_id, str) and parent_step_id:
+            self.context_info["inherited_step_id"] = parent_step_id
+        else:
+            self.context_info.pop("inherited_step_id", None)
+
+    def _resolve_step_namespace(self, namespace: str | None = None) -> str:
+        if namespace:
+            return namespace
+        current_agent_id = getattr(self.agent_info, "current_agent_id", None) if self.agent_info else None
+        if isinstance(current_agent_id, str) and current_agent_id:
+            return current_agent_id
+        return "default"
+
+    def _get_active_steps_map(self) -> Dict[str, List[StepLifecycleRecord]]:
+        active_steps = self.context_info.get("active_steps", {})
+        if not isinstance(active_steps, dict):
+            return {}
+        return active_steps
+
+    def _get_step_lineage(self) -> List[Dict[str, str]]:
+        lineage = self.context_info.get("step_lineage", [])
+        if not isinstance(lineage, list):
+            return []
+        return lineage
+
+    def _push_step_lineage(self, record: StepLifecycleRecord) -> None:
+        lineage = self._get_step_lineage()
+        lineage.append({"step_id": record.step_id, "namespace": record.namespace})
+        self.context_info["step_lineage"] = lineage
+
+    def _remove_step_lineage(self, step_id: str) -> None:
+        lineage = self._get_step_lineage()
+        for index in range(len(lineage) - 1, -1, -1):
+            item = lineage[index]
+            if isinstance(item, dict) and item.get("step_id") == step_id:
+                lineage.pop(index)
+                break
+        self.context_info["step_lineage"] = lineage
+
+    def _current_step_lineage_id(self) -> str | None:
+        lineage = self._get_step_lineage()
+        for item in reversed(lineage):
+            if isinstance(item, dict):
+                step_id = item.get("step_id")
+                if isinstance(step_id, str) and step_id:
+                    return step_id
+        return None
+
+    def _get_inherited_step_id(self) -> str | None:
+        inherited_step_id = self.context_info.get("inherited_step_id")
+        if isinstance(inherited_step_id, str) and inherited_step_id:
+            return inherited_step_id
+        return None
 
     """
     Agent Skills Support

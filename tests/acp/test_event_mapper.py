@@ -111,3 +111,67 @@ def test_final_text_maps_to_terminal_agent_message_chunk() -> None:
 
     assert update["update"]["sessionUpdate"] == "agent_message_chunk"
     assert update["update"]["content"]["text"] == "done"
+
+
+def test_step_start_maps_to_tool_call_with_step_metadata() -> None:
+    update = map_runtime_event_to_session_update(
+        "session-1",
+        {
+            "event_type": "step_start",
+            "seq": 4,
+            "step_id": "native-step-1",
+            "parent_step_id": "parent-step-0",
+            "name": "planner.agent",
+            "display_name": "Planner",
+            "step_num": 0,
+            "status": "START",
+            "payload": None,
+        },
+    )
+
+    assert update["update"]["sessionUpdate"] == "tool_call"
+    assert update["update"]["toolCallId"] == "native-step-1"
+    assert update["update"]["kind"] == "step"
+    assert update["update"]["title"] == "Planner"
+    assert update["update"]["content"] == {
+        "type": "step",
+        "stepId": "native-step-1",
+        "parentStepId": "parent-step-0",
+        "name": "planner.agent",
+        "displayName": "Planner",
+        "stepNum": 0,
+        "status": "START",
+    }
+
+
+def test_step_end_maps_to_tool_call_update_with_completion_status() -> None:
+    update = map_runtime_event_to_session_update(
+        "session-1",
+        {
+            "event_type": "step_end",
+            "seq": 5,
+            "step_id": "native-step-1",
+            "parent_step_id": "parent-step-0",
+            "name": "planner.agent",
+            "display_name": "Planner",
+            "step_num": 0,
+            "status": "FINISHED",
+            "payload": {"summary": "done"},
+        },
+    )
+
+    assert update["update"]["sessionUpdate"] == "tool_call_update"
+    assert update["update"]["toolCallId"] == "native-step-1"
+    assert update["update"]["kind"] == "step"
+    assert update["update"]["title"] == "Planner"
+    assert update["update"]["status"] == "completed"
+    assert update["update"]["content"] == {
+        "type": "step",
+        "stepId": "native-step-1",
+        "parentStepId": "parent-step-0",
+        "name": "planner.agent",
+        "displayName": "Planner",
+        "stepNum": 0,
+        "status": "FINISHED",
+        "data": {"summary": "done"},
+    }
