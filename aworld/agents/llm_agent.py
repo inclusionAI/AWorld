@@ -425,6 +425,45 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             return self.conf.llm_provider
         return "openai"
 
+    def _get_agent_context_cache_config(self, context: Any):
+        if context is None or not hasattr(context, "get_agent_context_config"):
+            return None
+        namespaces = [self.id(), self.name(), "default"]
+        for namespace in namespaces:
+            try:
+                config = context.get_agent_context_config(namespace)
+            except Exception:
+                continue
+            if config is not None and hasattr(config, "context_cache"):
+                return config.context_cache
+        return None
+
+    def _get_model_context_cache_config(self):
+        llm_config = getattr(self.conf, "llm_config", None)
+        if llm_config is not None and hasattr(llm_config, "context_cache"):
+            return llm_config.context_cache
+        return None
+
+    def _is_context_cache_enabled(self, context: Any) -> bool:
+        agent_config = self._get_agent_context_cache_config(context)
+        model_config = self._get_model_context_cache_config()
+        agent_enabled = True if agent_config is None else bool(getattr(agent_config, "enabled", True))
+        model_enabled = True if model_config is None else bool(getattr(model_config, "enabled", True))
+        return agent_enabled and model_enabled
+
+    def _allow_provider_native_cache(self, context: Any) -> bool:
+        if not self._is_context_cache_enabled(context):
+            return False
+        agent_config = self._get_agent_context_cache_config(context)
+        model_config = self._get_model_context_cache_config()
+        agent_enabled = True if agent_config is None else bool(
+            getattr(agent_config, "allow_provider_native_cache", True)
+        )
+        model_enabled = True if model_config is None else bool(
+            getattr(model_config, "allow_provider_native_cache", True)
+        )
+        return agent_enabled and model_enabled
+
     def _usage_has_cache_tokens(self, usage: Dict[str, Any] | None) -> bool:
         if not isinstance(usage, dict):
             return False
@@ -432,9 +471,12 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
 
     def _provider_native_cache_requested(
         self,
+        context: Any,
         provider_name: str,
         request_kwargs: Dict[str, Any] | None,
     ) -> bool:
+        if not self._allow_provider_native_cache(context):
+            return False
         request_kwargs = request_kwargs or {}
         if provider_name == "openai":
             if request_kwargs.get("prompt_cache_key"):
@@ -447,6 +489,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
     def _build_prompt_cache_observability(
         self,
         *,
+        context: Any = None,
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]] | None = None,
         request_kwargs: Dict[str, Any] | None = None,
@@ -468,8 +511,9 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
         return {
             "assembly_provider": "LegacyMessageAssembly",
             "provider_name": provider_name,
+            "context_cache_enabled": self._is_context_cache_enabled(context),
             "cache_aware_assembly": False,
-            "provider_native_cache": self._provider_native_cache_requested(provider_name, request_kwargs),
+            "provider_native_cache": self._provider_native_cache_requested(context, provider_name, request_kwargs),
             "stable_prefix_hash": stable_prefix_hash,
         }
 
@@ -1210,6 +1254,7 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
                     message,
                     llm_call_id,
                     self._build_prompt_cache_observability(
+                        context=message.context,
                         messages=messages,
                         tools=tools,
                         request_kwargs=kwargs,
