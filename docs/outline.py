@@ -117,7 +117,8 @@ def scan(path: str) -> dict:
 
 
 if __name__ == '__main__':
-    outline = scan_path(docs)
+    outline = [{"Home": "index.md"}]
+    outline.extend(scan_path(docs))
     site_url = os.getenv("AWORLD_DOCS_SITE_URL", "https://www.inclusion-ai.org/AWorld/").strip()
 
     theme_cfg = {
