@@ -59,3 +59,25 @@ The AWorld context system MUST allow both agent-level and model-level configurat
 - **WHEN** the agent config or model config explicitly disables context cache assembly
 - **THEN** AWorld MUST fall back to ordinary prompt assembly behavior for that request path
 - **AND** it MUST NOT require provider-native prompt cache handling to keep the request functional
+
+### Requirement: Runtime context MUST preserve per-call LLM request snapshots without overwrite
+
+The AWorld context system MUST preserve real LLM request snapshots as append-only per-call runtime records instead of relying on a single mutable `llm_input` slot.
+
+#### Scenario: One agent message triggers multiple LLM calls
+
+- **WHEN** the same agent message causes more than one LLM call during a single task flow
+- **THEN** AWorld MUST preserve a distinct runtime call record for each LLM call rather than overwriting the previous request snapshot
+- **AND** each record MUST include a unique call identifier together with the request messages actually sent for that call
+- **AND** legacy single-value fields MAY continue to expose only the latest call for backward compatibility
+
+### Requirement: Trajectory prompt snapshots MUST prefer captured per-call request messages
+
+The AWorld context system MUST prefer captured per-call request snapshots over post-hoc reconstruction when generating trajectory prompt data.
+
+#### Scenario: Trajectory is generated for a message that has LLM call snapshots
+
+- **WHEN** `trajectory.log` or equivalent trajectory data is generated for a message whose runtime context contains captured LLM call snapshots
+- **THEN** the trajectory prompt snapshot MUST use the corresponding captured request messages from those call records
+- **AND** it MUST NOT fall back to memory-based prompt reconstruction for that message unless the captured request snapshot is unavailable
+- **AND** trajectory output MUST NOT be required to include normalized prompt-cache token usage

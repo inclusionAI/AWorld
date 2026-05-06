@@ -36,6 +36,9 @@
 - [ ] 5.2 Add regression coverage for task-finished usage output with cache hit/write token fields.
 - [ ] 5.3 Extend `prompt_logger.log` output with prompt-level cache observability, including assembly/lowering path and normalized cache token usage when available.
 - [ ] 5.4 Add regression coverage for prompt logger cache observability output.
+- [ ] 5.5 Replace single-value `context_info["llm_input"]` / `llm_output` / `llm_call_start_time` as the primary truth source with append-only `llm_calls` records, while preserving latest-call aliases for backward compatibility.
+- [ ] 5.6 Update trajectory generation to prefer `llm_calls[*].request.messages` as the real prompt snapshot for each LLM call and keep cache token usage out of trajectory output.
+- [ ] 5.7 Add regression coverage for multi-call same-message snapshot preservation and trajectory prompt-snapshot fidelity.
 
 ## 6. Validation
 
