@@ -2,13 +2,23 @@
 
 ### Requirement: AWorld MUST separate context content production from prompt assembly
 
-The AWorld context system MUST keep `amni` responsible for context content production and governance, while a separate assembly layer is responsible for prompt structuring.
+The AWorld context system MUST keep `amni` responsible for context content production and governance, while a separate prompt-assembly provider is responsible for prompt structuring.
 
 #### Scenario: Existing `amni` context producers remain the source of content
 
 - **WHEN** AWorld prepares a model request using AWORLD.md, relevant memory, summaries, history, or other neuron-produced content
 - **THEN** `amni` MUST remain the source of those content items
-- **AND** the assembly layer MUST consume those items without taking over their underlying production logic
+- **AND** the prompt-assembly provider MUST consume those items without taking over their underlying production logic
+
+### Requirement: AWorld MUST extend `amni` through an injected prompt-assembly provider rather than a parallel context backend
+
+The AWorld context system MUST introduce cache-friendly prompt assembly through an injected provider or strategy beneath `amni`, and MUST NOT require a parallel replacement for `AmniContext` in phase 1.
+
+#### Scenario: Enabling cache-friendly prompt assembly
+
+- **WHEN** contributors add the phase-1 context cache assembly capability
+- **THEN** they MUST extend `amni` through an injected prompt-assembly provider or equivalent strategy
+- **AND** they MUST NOT require a separate parallel context backend to preserve existing `amni` content-governance behavior
 
 ### Requirement: AWorld MUST build a provider-neutral prompt assembly plan
 

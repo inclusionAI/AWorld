@@ -20,7 +20,7 @@ AWorld 当前的 `amni` context 体系已经提供了成熟的内容治理能力
 
 **Goals**
 
-- 在不重写 `amni` 内容生产逻辑的前提下，新增 cache-friendly prompt assembly 能力。
+- 在不重写 `amni` 内容生产逻辑的前提下，新增基于 provider/strategy 注入的 cache-friendly prompt assembly 能力。
 - 把 stable prefix / dynamic suffix 结构从字符串拼接中显式提出来。
 - 让 context cache 能力作为 AWorld 的通用高级特性存在，而不是 Anthropic 专属实现。
 - 支持双层配置：agent 和 model 都能控制启用/禁用。
@@ -55,9 +55,26 @@ Why:
 - `amni` 已经承担 context 内容治理职责，强行把 provider cache 逻辑塞进去会扩大回归面。
 - 内容生产与请求投递属于不同职责边界。
 
+### Decision: Do not introduce a parallel `AmniContext`; inject a `PromptAssemblyProvider` beneath `amni`
+
+本次扩展不引入新的平行 context backend，也不通过替换 `AmniContext` 的方式接入新能力。新增能力应通过 `amni` 下游可注入的 `PromptAssemblyProvider` 或等价 strategy 来实现。
+
+推荐形态：
+
+- `DefaultPromptAssemblyProvider`
+  - 尽量贴近当前 system prompt 拼接行为
+- `CacheAwarePromptAssemblyProvider`
+  - 负责 stable / dynamic 分段、stable hash 复用和 `PromptAssemblyPlan` 生成
+
+Why:
+
+- 当前 `amni` 的主要扩展点是 processor / op / neuron 机制，而不是完整 context backend provider 替换。
+- 如果引入平行 `AmniContext`，长期很容易演化为两套漂移的 context 系统。
+- 在 `amni` 之下注入 assembly provider，可以最大化复用现有能力并降低回归面。
+
 ### Decision: Introduce a provider-neutral `PromptAssemblyPlan`
 
-新增 assembly 层输出 provider-neutral 的 `PromptAssemblyPlan`。该对象仅表达 prompt 的结构和稳定性，而不表达任何厂商专有字段。
+新增 `PromptAssemblyProvider` 输出 provider-neutral 的 `PromptAssemblyPlan`。该对象仅表达 prompt 的结构和稳定性，而不表达任何厂商专有字段。
 
 `PromptAssemblyPlan` 包含：
 
@@ -165,9 +182,9 @@ Why:
 
 这一层不关心 provider cache，也不需要理解 provider-specific 降级语义。
 
-### Layer 2: Prompt assembly
+### Layer 2: Prompt assembly provider
 
-新增 assembly builder，负责：
+新增可注入的 `PromptAssemblyProvider`，负责：
 
 - 接收上游 system prompt 与 augment 内容
 - 将内容拆分为 stable / dynamic sections
@@ -175,7 +192,7 @@ Why:
 - 计算 stable hash
 - 维护 request-time runtime state
 
-这一层仍然完全 provider-neutral。
+这一层仍然完全 provider-neutral。默认 provider 保持接近当前行为，cache-aware provider 才开启结构化分段。
 
 ### Layer 3: Provider lowering
 
@@ -199,6 +216,17 @@ Anthropic 首期实现 native lowering；默认 lowerer 必须始终可用。
 - `allow_provider_native_cache: bool = True`
 - `stable_prefix_strategy: Literal["hash"] = "hash"`
 - `provider_overrides: dict[str, Any] = {}`
+
+### `PromptAssemblyProvider`
+
+用于将 `amni` 产出的内容装配成 request-time prompt plan 的可注入 provider/strategy。
+
+建议职责：
+
+- 读取 system prompt 与 augment 内容
+- 输出 `PromptAssemblyPlan`
+- 管理 stable hash 相关 runtime state
+- 在禁用增强能力时回退到默认装配路径
 
 ### `PromptSection`
 
@@ -266,11 +294,13 @@ provider 能力声明。
   - 给 `ModelConfig` 增加 `context_cache`
 - `aworld/core/context/amni/prompt/assembly/`
   - `plan.py`
-  - `builder.py`
+  - `provider.py`
+  - `default_provider.py`
+  - `cache_aware_provider.py`
   - `state.py`
   - `hash_utils.py`
 - `aworld/core/context/amni/processor/op/system_prompt_augment_op.py`
-  - 做薄接线改造
+  - 做薄接线改造，调用注入的 `PromptAssemblyProvider`
 - `aworld/models/`
   - `prompt_cache_capability.py`
   - `prompt_plan_lowerer.py`
@@ -304,7 +334,7 @@ provider 能力声明。
 
 ## Risks
 
-- 如果 assembly builder 侵入 `system_prompt_augment_op` 过深，会扩大回归面。
+- 如果 `PromptAssemblyProvider` 设计不清晰，容易重新滑回到在 `system_prompt_augment_op` 中硬编码所有装配逻辑。
 - 如果 provider-lowering 接口设计不清晰，后续很容易重新把 Anthropic 特化泄漏进公共层。
 - 如果 stable/dynamic 分类过于激进，可能破坏现有系统提示语义。
 
