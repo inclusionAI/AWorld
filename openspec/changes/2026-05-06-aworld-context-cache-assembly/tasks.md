@@ -6,13 +6,13 @@
 
 ## 2. Prompt Assembly
 
-- [ ] 2.1 Create `aworld/core/context/amni/prompt/assembly/` with plan, provider, state, and hashing modules.
+- [x] 2.1 Create `aworld/core/context/amni/prompt/assembly/` with plan, provider, state, and hashing modules.
 - [x] 2.2 Implement a provider-neutral `PromptAssemblyPlan` and `PromptSection` model.
-- [ ] 2.3 Implement `PromptAssemblyProvider` plus `DefaultPromptAssemblyProvider` and `CacheAwarePromptAssemblyProvider`.
-- [ ] 2.4 Implement stable/dynamic section classification for phase-1 content sources inside the cache-aware provider.
-- [ ] 2.5 Implement hash-based stable prefix reuse in request-time runtime state only.
-- [ ] 2.6 Keep stable prefix out of history/memory persistence paths.
-- [ ] 2.7 Add unit tests for provider selection, section classification, hash stability, and runtime-state reuse.
+- [x] 2.3 Implement `PromptAssemblyProvider` plus `DefaultPromptAssemblyProvider` and `CacheAwarePromptAssemblyProvider`.
+- [x] 2.4 Implement stable/dynamic section classification for phase-1 content sources inside the cache-aware provider.
+- [x] 2.5 Implement hash-based stable prefix reuse in request-time runtime state only.
+- [x] 2.6 Keep stable prefix out of history/memory persistence paths.
+- [x] 2.7 Add unit tests for provider selection, section classification, hash stability, and runtime-state reuse.
 
 ## 3. AMNI Integration
 

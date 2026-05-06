@@ -4,6 +4,7 @@ import pytest
 
 from aworld.core.context.amni import ApplicationContext
 from aworld.core.context.amni.prompt.assembly import (
+    CacheAwarePromptAssemblyProvider,
     DefaultPromptAssemblyProvider,
     PromptAssemblyPlan,
 )
@@ -70,6 +71,11 @@ def test_application_context_resolves_default_and_agent_prompt_assembly_provider
     custom_provider = object()
     agent = SimpleNamespace(prompt_assembly_provider=custom_provider)
     assert context.get_prompt_assembly_provider(agent=agent) is custom_provider
+
+    cache_aware_provider = context.get_prompt_assembly_provider(
+        agent=SimpleNamespace(prompt_assembly_provider=None, _is_context_cache_enabled=lambda _context: True)
+    )
+    assert isinstance(cache_aware_provider, CacheAwarePromptAssemblyProvider)
 
 
 @pytest.mark.asyncio
