@@ -182,6 +182,42 @@ Why:
 - 任务完成日志适合看累计结果，但不适合判断“单次 prompt 到底走了哪条 cache 路径”。
 - `prompt_logger.log` 本身就是 prompt 级观测面，适合承载 cache-aware 装配与 lowering 的调试信息。
 
+### Decision: Real request snapshots MUST be captured per LLM call in append-only runtime records
+
+每次 LLM call 的真实请求快照必须以 append-only 记录写入 runtime context，而不是继续使用单值 `llm_input` / `llm_output` / `llm_call_start_time` 作为唯一真相源。
+
+推荐形态：
+
+- `context_info["llm_calls"] = list[LlmCallRecord]`
+- 每条 record 至少包含：
+  - `call_id`
+  - `step_id`
+  - `agent_id`
+  - `started_at`
+  - `request.messages`
+- 旧字段 `llm_input` / `llm_output` / `llm_call_start_time` 可保留为“最后一次调用别名”以兼容现有读路径
+
+Why:
+
+- 同一条 message 可能触发多次 LLM call，单值字段天然会发生覆盖。
+- `ContextState` 是分层 KV；如果未来改成 list 但直接原地修改继承对象，也可能污染父 context。
+- append-only 调用记录可以同时支撑 observability、trajectory snapshot fidelity 和后续 provider 级调试。
+
+### Decision: `trajectory.log` should prefer per-call request snapshots, not post-hoc reconstructed memory
+
+`trajectory.log` 的 prompt 快照应优先来自逐次捕获的 `llm_calls[*].request.messages`，而不是默认从 memory 进行事后重建。
+
+首期约束：
+
+- trajectory 不要求承载 `cache_hit_tokens` / `cache_write_tokens`
+- trajectory 关注的是“真实发给模型的 request messages”
+- 仅当调用快照缺失时，才允许退回 memory reconstruction 作为兼容 fallback
+
+Why:
+
+- memory reconstruction 无法保证与真实请求完全一致，特别是在引入 cache-aware assembly 后更容易漂移。
+- trajectory 训练/调试价值取决于 prompt snapshot fidelity，而不是 token observability。
+
 ### Decision: Tools are represented as a stable semantic section, but serialized by providers
 
 assembly 层只表达 tools 属于 stable section 的语义，不定义 tools 的最终 wire format。
@@ -321,6 +357,20 @@ provider-neutral 的 request-time 中间对象。
 - `last_stable_plan`
 - `provider_cache_eligible: bool`
 
+### `LlmCallRecord`
+
+runtime context 中逐次记录一次 LLM call 的最小快照对象。
+
+建议字段：
+
+- `call_id: str`
+- `step_id: str | None`
+- `agent_id: str`
+- `started_at: str`
+- `request: dict[str, Any]`
+- `response: dict[str, Any] | None`
+- `usage: dict[str, Any] | None`
+
 ### `ProviderPromptCacheCapability`
 
 provider 能力声明。
@@ -394,12 +444,15 @@ provider 能力声明。
 - 普通 provider 请求仍然可用
 - `event_runner` 任务完成日志继续可用，并在有 cache usage 时带上统一 cache token 字段
 - `prompt_logger.log` 继续可用，并在 cache-aware 请求下带上 prompt 级 cache 路径与 usage 信息
+- 同一条 message 内多次 LLM call 时，`llm_calls` 记录不会覆盖前一次请求快照
+- `trajectory.log` 在有调用快照时优先输出真实 request messages，而不是 memory reconstruction
 
 ## Risks
 
 - 如果 `PromptAssemblyProvider` 设计不清晰，容易重新滑回到在 `system_prompt_augment_op` 中硬编码所有装配逻辑。
 - 如果 provider-lowering 接口设计不清晰，后续很容易重新把 Anthropic 特化泄漏进公共层。
 - 如果 stable/dynamic 分类过于激进，可能破坏现有系统提示语义。
+- 如果 `llm_calls` 采用原地 mutation 而不是 copy-on-write，可能污染继承得到的父 context runtime 状态。
 
 ## Rollout
 
