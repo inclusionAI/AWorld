@@ -27,6 +27,7 @@ from aworld.core.llm_provider import LLMProviderBase
 from aworld.logs.util import logger, log_llm_record
 from aworld.models.llm_http_handler import LLMHTTPHandler
 from aworld.models.model_response import ModelResponse, LLMResponseError
+from aworld.models.prompt_cache import DefaultPromptAssemblyLowerer
 
 
 class OpenAIProvider(LLMProviderBase):
@@ -143,7 +144,7 @@ class OpenAIProvider(LLMProviderBase):
         return ["gpt-4o", "gpt-4", "gpt-3.5-turbo", "o3-mini", "gpt-4o-mini", "deepseek-chat", "deepseek-reasoner",
                 r"qwq-.*", r"qwen-.*"]
 
-    def preprocess_messages(self, messages: List[Dict[str, str]]) -> List[Dict[str, str]]:
+    def preprocess_messages(self, messages: List[Dict[str, str]], **kwargs) -> List[Dict[str, str]]:
         """Preprocess messages, use OpenAI format directly.
 
         Args:
@@ -152,6 +153,11 @@ class OpenAIProvider(LLMProviderBase):
         Returns:
             Processed message list.
         """
+        prompt_assembly_plan = kwargs.get("prompt_assembly_plan")
+        if prompt_assembly_plan is not None:
+            lowered = DefaultPromptAssemblyLowerer().lower(plan=prompt_assembly_plan)
+            messages = lowered.messages
+
         for message in messages:
             if message["role"] == "assistant" and "tool_calls" in message and message["tool_calls"]:
                 if message["content"] is None: message["content"] = ""
@@ -331,7 +337,7 @@ class OpenAIProvider(LLMProviderBase):
             raise RuntimeError(
                 "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
 
-        processed_messages = self.preprocess_messages(messages)
+        processed_messages = self.preprocess_messages(messages, **kwargs)
 
         try:
             openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
@@ -383,7 +389,7 @@ class OpenAIProvider(LLMProviderBase):
             raise RuntimeError(
                 "Sync provider not initialized. Make sure 'sync_enabled' parameter is set to True in initialization.")
 
-        processed_messages = self.preprocess_messages(messages)
+        processed_messages = self.preprocess_messages(messages, **kwargs)
         usage={
             "completion_tokens": 0,
             "prompt_tokens": 0,
@@ -444,7 +450,7 @@ class OpenAIProvider(LLMProviderBase):
             raise RuntimeError(
                 "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
-        processed_messages = self.preprocess_messages(messages)
+        processed_messages = self.preprocess_messages(messages, **kwargs)
         usage = {
             "completion_tokens": 0,
             "prompt_tokens": 0,
@@ -520,7 +526,7 @@ class OpenAIProvider(LLMProviderBase):
             raise RuntimeError(
                 "Async provider not initialized. Make sure 'async_enabled' parameter is set to True in initialization.")
 
-        processed_messages = self.preprocess_messages(messages)
+        processed_messages = self.preprocess_messages(messages, **kwargs)
         try:
             openai_params = self.get_openai_params(processed_messages, temperature, max_tokens, stop, **kwargs)
             logger.debug(f"openai_params: {json.dumps(openai_params)}")
@@ -573,6 +579,8 @@ class OpenAIProvider(LLMProviderBase):
         llm_params.update(kwargs)
         llm_params.pop("response_parse_args", None)
         llm_params.pop("context", None)
+        llm_params.pop("prompt_assembly_plan", None)
+        llm_params.pop("provider_native_prompt_cache", None)
         llm_params.update({
             "temperature": temperature,
             "max_tokens": max_tokens,

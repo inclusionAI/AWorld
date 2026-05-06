@@ -23,12 +23,12 @@
 
 ## 4. Provider Capability and Lowering
 
-- [ ] 4.1 Add provider-native prompt cache capability declarations under `aworld/models/`.
-- [ ] 4.2 Add a default lowerer that converts `PromptAssemblyPlan` into ordinary provider request payloads.
-- [ ] 4.3 Add an Anthropic lowerer that emits native prompt-cache-aware request structure when enabled.
-- [ ] 4.4 Ensure provider-native lowering is skipped whenever agent/model config disables the feature.
+- [x] 4.1 Add provider-native prompt cache capability declarations under `aworld/models/`.
+- [x] 4.2 Add a default lowerer that converts `PromptAssemblyPlan` into ordinary provider request payloads.
+- [x] 4.3 Add an Anthropic lowerer that emits native prompt-cache-aware request structure when enabled.
+- [x] 4.4 Ensure provider-native lowering is skipped whenever agent/model config disables the feature.
 - [x] 4.5 Normalize provider cache usage into common `cache_hit_tokens` and `cache_write_tokens` fields.
-- [ ] 4.6 Add unit tests for fallback behavior, Anthropic native lowering behavior, and cache usage normalization.
+- [x] 4.6 Add unit tests for fallback behavior, Anthropic native lowering behavior, and cache usage normalization.
 
 ## 5. Logging and Observability
 
@@ -43,6 +43,6 @@
 ## 6. Validation
 
 - [x] 6.1 Run targeted context assembly tests.
-- [ ] 6.2 Run targeted provider lowering tests.
+- [x] 6.2 Run targeted provider lowering tests.
 - [x] 6.3 Run relevant regression tests for existing `amni` prompt augmentation behavior.
 - [x] 6.4 Validate the OpenSpec change with `openspec validate 2026-05-06-aworld-context-cache-assembly`.
