@@ -12,7 +12,7 @@ from aworld.core.context.prompts.dynamic_variables import ALL_PREDEFINED_DYNAMIC
 from aworld.logs.util import digest_logger, prompt_logger
 from aworld.memory.models import MemorySummary, MemoryItem
 from aworld.models.utils import num_tokens_from_messages
-from aworld.models.utils import num_tokens_from_string, ModelUtils
+from aworld.models.utils import num_tokens_from_string, ModelUtils, normalize_usage
 
 # Log display configuration constants
 BORDER_WIDTH = 100  # Border content area width
@@ -116,6 +116,78 @@ def _format_tools(tools: list) -> str:
 
 class PromptLogger:
     """Logger class for handling prompt-related logging operations"""
+
+    @staticmethod
+    def _latest_llm_call_record(context: "ApplicationContext") -> Dict[str, Any] | None:
+        if not context or not hasattr(context, "context_info"):
+            return None
+        llm_calls = context.context_info.get("llm_calls", [])
+        if not isinstance(llm_calls, list):
+            return None
+        for record in reversed(llm_calls):
+            if isinstance(record, dict):
+                return record
+        return None
+
+    @staticmethod
+    def _format_observability_status(value: Any) -> str:
+        if value is True:
+            return "enabled"
+        if value is False:
+            return "disabled"
+        return "unknown"
+
+    @staticmethod
+    def log_prompt_cache_observability(
+        agent: BaseAgent,
+        context: "ApplicationContext",
+        usage: Dict[str, Any] | None = None,
+    ) -> None:
+        """Log prompt-cache path metadata and normalized cache usage for one LLM call."""
+        latest_call = PromptLogger._latest_llm_call_record(context)
+        context_meta = {}
+        if context and hasattr(context, "context_info"):
+            raw_meta = context.context_info.get("prompt_cache_observability", {})
+            if isinstance(raw_meta, dict):
+                context_meta = raw_meta
+        call_meta = latest_call.get("cache_observability", {}) if isinstance(latest_call, dict) else {}
+        if not isinstance(call_meta, dict):
+            call_meta = {}
+        observability = {**context_meta, **call_meta}
+
+        normalized_usage = normalize_usage(
+            usage if usage is not None else (latest_call.get("usage") if isinstance(latest_call, dict) else None)
+        )
+        cache_hit_tokens = normalized_usage.get("cache_hit_tokens", 0)
+        cache_write_tokens = normalized_usage.get("cache_write_tokens", 0)
+
+        should_log = bool(observability) or cache_hit_tokens > 0 or cache_write_tokens > 0
+        if not should_log:
+            return
+
+        call_id = latest_call.get("call_id") if isinstance(latest_call, dict) else ""
+        assembly_provider = observability.get("assembly_provider", "unknown")
+        stable_prefix_hash = observability.get("stable_prefix_hash") or observability.get("stable_hash") or "n/a"
+        cache_aware_assembly = PromptLogger._format_observability_status(
+            observability.get("cache_aware_assembly")
+        )
+        provider_native_cache = PromptLogger._format_observability_status(
+            observability.get("provider_native_cache")
+        )
+
+        prompt_logger.info(_generate_top_border())
+        prompt_logger.info(f"│{'🧩 PROMPT CACHE OBSERVABILITY':^{BORDER_WIDTH}}│")
+        prompt_logger.info(_generate_separator())
+        prompt_logger.info(f"│ 🤖 Agent ID: {agent.id():<{BORDER_WIDTH - 12}} │")
+        prompt_logger.info(f"│ 📋 Task ID:  {context.task_id:<{BORDER_WIDTH - 12}} │")
+        prompt_logger.info(f"│ 🆔 Call ID: {str(call_id):<{BORDER_WIDTH - 11}} │")
+        prompt_logger.info(f"│ 🏗️ Assembly Provider: {str(assembly_provider):<{BORDER_WIDTH - 23}} │")
+        prompt_logger.info(f"│ ♻️ Cache-Aware Assembly: {cache_aware_assembly:<{BORDER_WIDTH - 26}} │")
+        prompt_logger.info(f"│ 🔌 Provider Native Cache: {provider_native_cache:<{BORDER_WIDTH - 25}} │")
+        prompt_logger.info(f"│ 🔐 Stable Prefix Hash: {str(stable_prefix_hash):<{BORDER_WIDTH - 21}} │")
+        prompt_logger.info(f"│ 💥 cache_hit_tokens: {cache_hit_tokens:<{BORDER_WIDTH - 21}} │")
+        prompt_logger.info(f"│ 📝 cache_write_tokens: {cache_write_tokens:<{BORDER_WIDTH - 23}} │")
+        prompt_logger.info(_generate_bottom_border())
 
     @staticmethod
     def log_agent_call_llm_messages(agent: BaseAgent, context: "ApplicationContext", messages: list[dict],
