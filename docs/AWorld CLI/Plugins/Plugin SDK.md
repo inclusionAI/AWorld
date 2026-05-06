@@ -5,7 +5,7 @@ This document describes the current host-supported contract for framework plugin
 ## Manifest Contract
 
 - Canonical manifest path: `plugin_root/.aworld-plugin/plugin.json`
-- JSON Schema: [aworld/plugins/plugin.schema.json](/Users/wuman/Documents/workspace/aworld/aworld/plugins/plugin.schema.json)
+- JSON schema file: `aworld/plugins/plugin.schema.json`
 - Required fields:
   - `id`
   - `version`
@@ -41,6 +41,8 @@ Validation currently checks:
 - manifest shape can be loaded
 - entrypoint targets resolve inside the plugin root
 - legacy plugin roots still expose `agents/` or `skills/`
+
+If you only need to manage installed plugins from the interactive session, see [Plugins](../Commands/Plugins.md).
 
 ## Activation Resolution
 

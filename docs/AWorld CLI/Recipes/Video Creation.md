@@ -1,4 +1,4 @@
-# Video Generation Recipe
+# Video Creation
 
 This recipe explains how to use AWorld-CLI for **one-shot video generation from a single user prompt**.  
 Current product focus is: user writes one paragraph of requirements, then AWorld generates the video directly.
@@ -19,10 +19,10 @@ The current video capabilities align with the README "Create Video" section:
 
 ## Install and Configure AWorld-CLI
 
-Installation and activation steps remain the same as the main README:
+Installation and activation follow the same CLI flow used elsewhere in this docs section:
 
-- [Your Journey with AWorld-CLI](../../README.md#your-journey-with-aworld-cli)
-- [Environment configuration](../../README_env_config.md)
+- [Installation](../Installation.md)
+- [Configuration](../Configuration.md)
 
 During `aworld-cli --config`, recommended models are:
 
@@ -58,4 +58,4 @@ The following table lists 5 practical examples, including exact input prompt and
 
 - Prompt text can be used directly as shown above.
 - When a case needs local files, make sure those files are already in your current directory before running.
-- For feature updates, always refer to [README](../../README.md) as the source of truth.
+- Keep required local media files in the current working directory before you start the run.

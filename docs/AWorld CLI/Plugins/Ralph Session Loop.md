@@ -1,4 +1,4 @@
-# Ralph Session Loop Plugin
+# Ralph Session Loop
 
 This document explains how to use the built-in Ralph session-loop plugin in AWorld CLI.
 
@@ -32,6 +32,8 @@ The intended boundary is:
 - inner runner controls whether a single task execution has converged
 
 That means Ralph support in AWorld is **not** limited to the CLI plugin. Framework users can still use Ralph through runner-level APIs, while CLI users can use the session-loop plugin as a separate interaction model.
+
+For the framework-side runtime, see [Ralph Runner](../../Agents/Runtime/Ralph%20Runner.md).
 
 ## Commands
 
