@@ -1,0 +1,75 @@
+import pytest
+
+from aworld.agents.llm_agent import Agent
+from aworld.config.conf import AgentConfig
+from aworld.core.context.base import Context
+from aworld.core.context.context_state import ContextState
+from aworld.core.event.base import Constants, Message
+from aworld.core.task import Task
+from aworld.models.model_response import ModelResponse
+
+
+def _build_agent(name: str = "Aworld") -> Agent:
+    return Agent(
+        name=name,
+        conf=AgentConfig(
+            llm_provider="openai",
+            llm_model_name="fake-model",
+            llm_api_key="fake-key",
+        ),
+    )
+
+
+def _build_context(task_id: str = "task-1") -> Context:
+    context = Context(task_id=task_id)
+    context.set_task(Task(id=task_id, name="test-task"))
+    return context
+
+
+@pytest.mark.asyncio
+async def test_llm_call_records_append_without_mutating_parent_state():
+    agent = _build_agent()
+    parent_context = _build_context()
+    parent_context.context_info["llm_calls"] = [
+        {
+            "call_id": "parent-call",
+            "request": {"messages": [{"role": "system", "content": "parent"}]},
+        }
+    ]
+
+    child_context = _build_context()
+    child_context.context_info = ContextState(parent_state=parent_context.context_info)
+    message = Message(
+        category=Constants.AGENT,
+        sender="user",
+        receiver=agent.name(),
+        headers={"context": child_context},
+    )
+
+    call_id = agent._record_llm_call_request(
+        message,
+        [{"role": "user", "content": "hello"}],
+        started_at="2026-05-06T12:00:00",
+    )
+    response = ModelResponse(
+        id="resp-1",
+        model="fake-model",
+        content="done",
+        usage={"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+    )
+    agent._record_llm_call_response(message, call_id, response)
+
+    child_calls = message.context.context_info["llm_calls"]
+    assert [record["call_id"] for record in child_calls] == ["parent-call", call_id]
+    assert child_calls[-1]["request"]["messages"] == [{"role": "user", "content": "hello"}]
+    assert child_calls[-1]["usage"]["total_tokens"] == 5
+    assert message.context.context_info["llm_input"] == [{"role": "user", "content": "hello"}]
+    assert message.context.context_info["llm_call_start_time"] == "2026-05-06T12:00:00"
+    assert message.context.context_info["llm_output"] is response
+
+    assert parent_context.context_info["llm_calls"] == [
+        {
+            "call_id": "parent-call",
+            "request": {"messages": [{"role": "system", "content": "parent"}]},
+        }
+    ]
