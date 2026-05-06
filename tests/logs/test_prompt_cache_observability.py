@@ -55,6 +55,7 @@ def test_prompt_logger_logs_prompt_cache_observability(monkeypatch):
     context.context_info["prompt_cache_observability"] = {
         "assembly_provider": "LegacyMessageAssembly",
         "provider_name": "openai",
+        "context_cache_enabled": True,
         "cache_aware_assembly": False,
         "provider_native_cache": True,
         "stable_prefix_hash": "stable-hash-123",
@@ -81,6 +82,7 @@ def test_prompt_logger_logs_prompt_cache_observability(monkeypatch):
     assert "PROMPT CACHE OBSERVABILITY" in joined
     assert "LegacyMessageAssembly" in joined
     assert "openai" in joined
+    assert "Context Cache" in joined
     assert "stable-hash-123" in joined
     assert "80" in joined
     assert "40" in joined
