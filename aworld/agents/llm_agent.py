@@ -895,6 +895,8 @@ class LLMAgent(BaseAgent[Observation, List[ActionModel]]):
             raise AWorldRuntimeException(str(e))
         finally:
             self._record_llm_call_response(message, llm_call_id, llm_response)
+            if llm_response is not None:
+                PromptLogger.log_prompt_cache_observability(self, message.context, llm_response.usage)
             if llm_response:
                 if llm_response.error:
                     logger.info(f"llm result error: {llm_response.error}")
