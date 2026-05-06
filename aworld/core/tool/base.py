@@ -717,11 +717,21 @@ class AsyncTool(AsyncBaseTool[Observation, List[ActionModel]]):
 
         logger.info("[tag for memory tool]======= Send memory message finished")
 
+        agent_name = f"{action[0].agent_name if action else ''}"
+        closed_step = context.close_step(
+            namespace=agent_name or None,
+            expected_name=agent_name or None,
+        ) if context is not None else None
         await send_message(Message(
             category=Constants.OUTPUT,
-            payload=StepOutput.build_finished_output(name=f"{action[0].agent_name if action else ''}",
-                                                     step_num=0,
-                                                     task_id=context.task_id),
+            payload=StepOutput.build_finished_output(
+                name=closed_step["name"] if closed_step else agent_name,
+                alias_name=closed_step["alias_name"] if closed_step else None,
+                step_num=closed_step["step_num"] if closed_step else 0,
+                task_id=context.task_id,
+                step_id=closed_step["step_id"] if closed_step else None,
+                parent_step_id=closed_step["parent_step_id"] if closed_step else None,
+            ),
             sender=self.name(),
             receiver=action[0].agent_name,
             session_id=context.session_id if context else "",

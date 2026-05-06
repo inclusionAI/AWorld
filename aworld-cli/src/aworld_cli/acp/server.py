@@ -690,19 +690,13 @@ class AcpStdioServer:
         )
 
     async def _write_session_update(self, params: dict[str, Any]) -> None:
-        if self._session_update_method == "session/update" and not self._should_emit_current_session_update(params):
-            return
         if self._session_update_method == "session/update":
             params = self._to_current_session_update(params)
         await self._write_message(self._notification(self._session_update_method, params))
 
     @staticmethod
     def _should_emit_current_session_update(params: dict[str, Any]) -> bool:
-        update = params.get("update")
-        if not isinstance(update, dict):
-            return True
-        update_type = update.get("sessionUpdate")
-        return update_type not in {"tool_call", "tool_call_update"}
+        return True
 
     @staticmethod
     def _to_current_session_update(params: dict[str, Any]) -> dict[str, Any]:
@@ -719,27 +713,33 @@ class AcpStdioServer:
 
         if update_type == "tool_call":
             raw_input = update.get("content")
-            title = str(update.get("kind") or "tool")
+            title = str(update.get("title") or update.get("kind") or "tool")
             update["title"] = title
             update["kind"] = AcpStdioServer._current_tool_kind(update.get("kind"))
             update["rawInput"] = raw_input
-            update["content"] = AcpStdioServer._current_tool_content(raw_input)
+            if update["kind"] == "step" and isinstance(raw_input, dict):
+                update["content"] = raw_input
+            else:
+                update["content"] = AcpStdioServer._current_tool_content(raw_input)
             return converted
 
         if update_type == "tool_call_update":
             raw_output = update.get("content")
-            title = str(update.get("kind") or "tool")
+            title = str(update.get("title") or update.get("kind") or "tool")
             update["title"] = title
             update["kind"] = AcpStdioServer._current_tool_kind(update.get("kind"))
             update["rawOutput"] = raw_output
-            update["content"] = AcpStdioServer._current_tool_content(raw_output)
+            if update["kind"] == "step" and isinstance(raw_output, dict):
+                update["content"] = raw_output
+            else:
+                update["content"] = AcpStdioServer._current_tool_content(raw_output)
             return converted
 
         return converted
 
     @staticmethod
     def _current_tool_kind(kind: Any) -> str:
-        if kind in {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other"}:
+        if kind in {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other", "step"}:
             return str(kind)
         if kind in {"shell", "terminal", "bash", "command"}:
             return "execute"

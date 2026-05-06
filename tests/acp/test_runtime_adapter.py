@@ -4,7 +4,7 @@ import sys
 from pathlib import Path
 
 from aworld.models.model_response import Function, ModelResponse, ToolCall
-from aworld.output.base import ChunkOutput, MessageOutput, ToolResultOutput
+from aworld.output.base import ChunkOutput, MessageOutput, StepOutput, ToolResultOutput
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
@@ -171,3 +171,65 @@ def test_message_output_text_emits_when_routed_runtime_message_is_finished() -> 
     events = adapt_output_to_runtime_events(state, output)
 
     assert events == [{"event_type": "final_text", "seq": 1, "text": "final answer"}]
+
+
+def test_step_output_start_maps_to_step_start_event() -> None:
+    state: dict[str, object] = {}
+    output = StepOutput.build_start_output(
+        name="planner.agent",
+        alias_name="Planner",
+        step_num=0,
+        step_id="native-step-1",
+        parent_step_id="parent-step-0",
+    )
+
+    events = adapt_output_to_runtime_events(state, output)
+
+    assert events == [
+        {
+            "event_type": "step_start",
+            "seq": 1,
+            "step_id": "native-step-1",
+            "parent_step_id": "parent-step-0",
+            "name": "planner.agent",
+            "display_name": "Planner",
+            "step_num": 0,
+            "status": "START",
+            "payload": None,
+        }
+    ]
+
+
+def test_step_output_finish_reuses_matching_step_id() -> None:
+    state: dict[str, object] = {}
+    start = StepOutput.build_start_output(
+        name="planner.agent",
+        alias_name="Planner",
+        step_num=0,
+        step_id="native-step-1",
+    )
+    finish = StepOutput.build_finished_output(
+        name="planner.agent",
+        alias_name="Planner",
+        step_num=0,
+        data={"summary": "done"},
+        step_id="native-step-1",
+    )
+
+    start_events = adapt_output_to_runtime_events(state, start)
+    finish_events = adapt_output_to_runtime_events(state, finish)
+
+    assert start_events[0]["step_id"] == "native-step-1"
+    assert finish_events == [
+        {
+            "event_type": "step_end",
+            "seq": 2,
+            "step_id": "native-step-1",
+            "parent_step_id": None,
+            "name": "planner.agent",
+            "display_name": "Planner",
+            "step_num": 0,
+            "status": "FINISHED",
+            "payload": {"summary": "done"},
+        }
+    ]
