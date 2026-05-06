@@ -27,11 +27,19 @@
 - [ ] 4.2 Add a default lowerer that converts `PromptAssemblyPlan` into ordinary provider request payloads.
 - [ ] 4.3 Add an Anthropic lowerer that emits native prompt-cache-aware request structure when enabled.
 - [ ] 4.4 Ensure provider-native lowering is skipped whenever agent/model config disables the feature.
-- [ ] 4.5 Add unit tests for fallback behavior and Anthropic native lowering behavior.
+- [ ] 4.5 Normalize provider cache usage into common `cache_hit_tokens` and `cache_write_tokens` fields.
+- [ ] 4.6 Add unit tests for fallback behavior, Anthropic native lowering behavior, and cache usage normalization.
 
-## 5. Validation
+## 5. Logging and Observability
 
-- [ ] 5.1 Run targeted context assembly tests.
-- [ ] 5.2 Run targeted provider lowering tests.
-- [ ] 5.3 Run relevant regression tests for existing `amni` prompt augmentation behavior.
-- [ ] 5.4 Validate the OpenSpec change with `openspec validate 2026-05-06-aworld-context-cache-assembly`.
+- [ ] 5.1 Update task-finished logging and related payload assembly to include normalized cache token usage when present.
+- [ ] 5.2 Add regression coverage for task-finished usage output with cache hit/write token fields.
+- [ ] 5.3 Extend `prompt_logger.log` output with prompt-level cache observability, including assembly/lowering path and normalized cache token usage when available.
+- [ ] 5.4 Add regression coverage for prompt logger cache observability output.
+
+## 6. Validation
+
+- [ ] 6.1 Run targeted context assembly tests.
+- [ ] 6.2 Run targeted provider lowering tests.
+- [ ] 6.3 Run relevant regression tests for existing `amni` prompt augmentation behavior.
+- [ ] 6.4 Validate the OpenSpec change with `openspec validate 2026-05-06-aworld-context-cache-assembly`.

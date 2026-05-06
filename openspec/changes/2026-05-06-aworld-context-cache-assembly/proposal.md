@@ -32,6 +32,11 @@ AWorld 目前已经具备 `amni` context 的内容治理能力，例如 AWORLD.m
   - Anthropic 首期实现 provider-native cache lowering
 - 将 tools 视为 stable section 的语义成员，但 tools 的 wire-format 序列化仍由具体 provider 负责。
 - 明确不引入平行的 `AmniContext` 或替代性的 context backend；新能力通过 `amni` 下游的 provider/strategy 注入。
+- 统一扩展 token usage schema，在已有 `prompt_tokens / completion_tokens / total_tokens` 之外新增：
+  - `cache_hit_tokens`
+  - `cache_write_tokens`
+- 要求任务完成日志和相关 hook payload 能输出 cache hit / write token 统计，便于观察 prompt cache 收益。
+- 要求 `prompt_logger.log` 能输出本次 prompt 的 cache 相关观测信息，至少包括是否启用 cache-aware assembly、是否走 provider-native cache lowering，以及可用时的 cache token 统计。
 
 ## Capabilities
 
@@ -59,6 +64,7 @@ AWorld 目前已经具备 `amni` context 的内容治理能力，例如 AWORLD.m
   - 默认情况下，context assembly 增强能力可以参与请求装配，但用户可通过 agent/model 配置显式关闭。
   - provider 不支持原生 cache 时，请求行为仍保持普通路径，不阻塞主流程。
   - Anthropic 在开启 provider-native cache 时，可以输出 cache-aware 的原生请求形态。
+  - 当 provider 返回原生 cache usage 时，AWorld 会统一汇总并在任务完成日志中输出 `cache_hit_tokens` 和 `cache_write_tokens`。
 - Constraints preserved:
   - 不重写 `amni` 的 neurons、summary、recall、offload 主逻辑。
   - 不把 Anthropic 专有字段泄漏到 `amni` 公共对象。
