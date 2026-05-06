@@ -169,7 +169,9 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
     async def build_trajectory_state(self, source: Any, **kwargs) -> Optional[TrajectoryState]:
         """Build TrajectoryItem (SAR) from a source."""
         # State (S)
-        history_messages = self._get_llm_messages_from_memory(source, kwargs.get("use_tools_in_prompt", False))
+        history_messages = self._get_llm_messages_from_context(source)
+        if history_messages is None:
+            history_messages = self._get_llm_messages_from_memory(source, kwargs.get("use_tools_in_prompt", False))
         ctx_obj = getattr(source, "context", None)
         ctx_dict = {}
         if ctx_obj and hasattr(ctx_obj, "context_info"):
@@ -250,7 +252,11 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
         if not agent_name:
             agent_name = source.receiver
         agent = AgentFactory.agent_instance(agent_name)
-        action = TrajectoryAction(content=action_content, tool_calls=tool_calls, is_agent_finished=agent._finished)
+        action = TrajectoryAction(
+            content=action_content,
+            tool_calls=tool_calls,
+            is_agent_finished=agent._finished if agent else False,
+        )
         return action
 
     async def build_trajectory_reward(self, source: Any, **kwargs) -> Optional[TrajectoryReward]:
@@ -305,12 +311,48 @@ class DefaultTrajectoryStrategy(TrajectoryStrategy):
                                                     use_tools_in_prompt=use_tools_in_prompt)
 
         return TrajectoryItem(
-            id=str(message.id),
+            id=self._build_trajectory_item_id(message),
             meta=meta,
             state=state,
             action=action,
             reward=reward
         )
+
+    def _get_latest_llm_call_record(self, message: Any) -> Optional[Dict[str, Any]]:
+        ctx_obj = getattr(message, "context", None)
+        if not ctx_obj or not hasattr(ctx_obj, "context_info"):
+            return None
+        llm_calls = ctx_obj.context_info.get("llm_calls", [])
+        if not isinstance(llm_calls, list) or not llm_calls:
+            return None
+        for record in reversed(llm_calls):
+            if isinstance(record, dict):
+                return record
+        return None
+
+    def _get_llm_messages_from_context(self, message: Any) -> Optional[List[Dict[str, Any]]]:
+        record = self._get_latest_llm_call_record(message)
+        if record:
+            request = record.get("request", {})
+            messages = request.get("messages")
+            if isinstance(messages, list):
+                return to_serializable(messages)
+
+        ctx_obj = getattr(message, "context", None)
+        if not ctx_obj or not hasattr(ctx_obj, "context_info"):
+            return None
+        legacy_messages = ctx_obj.context_info.get("llm_input")
+        if isinstance(legacy_messages, list):
+            return to_serializable(legacy_messages)
+        return None
+
+    def _build_trajectory_item_id(self, message: Message) -> str:
+        record = self._get_latest_llm_call_record(message)
+        if record:
+            call_id = record.get("call_id")
+            if isinstance(call_id, str) and call_id:
+                return f"{message.id}:{call_id}"
+        return str(message.id)
 
     def _get_llm_messages_from_memory(self, message: Any, use_tools_in_prompt: bool):
         from aworld.memory.main import MemoryFactory
@@ -577,5 +619,4 @@ class MemoryTrajectoryStrategy(TrajectoryStrategy):
 
     def validate_trajectory(self, trajectory: List[Dict[str, Any]]) -> bool:
         return True
-
 
