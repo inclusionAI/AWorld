@@ -3,6 +3,7 @@ import pytest
 from aworld.agents.llm_agent import Agent
 from aworld.config.conf import AgentConfig, ModelConfig
 from aworld.core.context.amni.config import AgentContextConfig, ContextCacheConfig
+from aworld.core.context.amni.prompt.assembly import PromptAssemblyPlan
 from aworld.core.context.base import Context
 from aworld.core.context.context_state import ContextState
 from aworld.core.event.base import Constants, Message
@@ -110,7 +111,7 @@ def test_prompt_cache_observability_metadata_is_attached_to_call_record():
 
     record = message.context.context_info["llm_calls"][-1]
     observability = record["cache_observability"]
-    assert observability["assembly_provider"] == "LegacyMessageAssembly"
+    assert observability["assembly_provider"] == "DefaultPromptAssemblyProvider"
     assert observability["provider_name"] == "openai"
     assert observability["cache_aware_assembly"] is False
     assert observability["provider_native_cache"] is True
@@ -136,7 +137,7 @@ def test_llm_call_response_upgrades_native_cache_flag_when_cache_tokens_exist():
         message,
         call_id,
         metadata={
-            "assembly_provider": "LegacyMessageAssembly",
+            "assembly_provider": "DefaultPromptAssemblyProvider",
             "provider_name": "anthropic",
             "cache_aware_assembly": False,
             "provider_native_cache": False,
@@ -158,6 +159,36 @@ def test_llm_call_response_upgrades_native_cache_flag_when_cache_tokens_exist():
 
     record = message.context.context_info["llm_calls"][-1]
     assert record["cache_observability"]["provider_native_cache"] is True
+
+
+def test_prompt_cache_observability_uses_injected_prompt_assembly_provider():
+    class CustomPromptAssemblyProvider:
+        def build_plan(self, *, messages, tools=None, metadata=None):
+            observability = dict(metadata or {})
+            observability["assembly_provider"] = "CustomPromptAssemblyProvider"
+            observability["stable_prefix_hash"] = "custom-stable-hash"
+            return PromptAssemblyPlan(
+                messages=messages,
+                stable_hash="custom-stable-hash",
+                observability=observability,
+                metadata=dict(metadata or {}),
+            )
+
+    agent = _build_agent()
+    agent.prompt_assembly_provider = CustomPromptAssemblyProvider()
+
+    observability = agent._build_prompt_cache_observability(
+        messages=[
+            {"role": "system", "content": "rules"},
+            {"role": "user", "content": "hello"},
+        ],
+        tools=[{"function": {"name": "search"}}],
+        request_kwargs={"prompt_cache_key": "cache-key-1"},
+    )
+
+    assert observability["assembly_provider"] == "CustomPromptAssemblyProvider"
+    assert observability["stable_prefix_hash"] == "custom-stable-hash"
+    assert observability["provider_native_cache"] is True
 
 
 def test_context_cache_effective_enablement_defaults_to_true_without_amni_context():
