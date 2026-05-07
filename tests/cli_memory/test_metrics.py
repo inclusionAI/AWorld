@@ -121,7 +121,7 @@ def test_promotion_metrics_summary_reports_quality_and_threshold_readiness(
     assert summary.default_rollout_ready is False
 
 
-def test_promotion_metrics_rollout_readiness_requires_explanations_and_source_linkage(
+def test_promotion_metrics_rollout_readiness_requires_full_minimum_explanation_payload(
     tmp_path,
 ) -> None:
     workspace = tmp_path / "workspace"
@@ -159,9 +159,13 @@ def test_promotion_metrics_rollout_readiness_requires_explanations_and_source_li
                     "policy_mode": "governed",
                     "policy_version": "2026-05-07",
                     "decision": "durable_memory",
-                    "reason": "",
+                    "reason": "governed_policy_pass",
                     "confidence": "high",
-                    "source_ref": {"session_id": "session-1"},
+                    "source_ref": {
+                        "session_id": "session-1",
+                        "task_id": "task-incomplete",
+                        "candidate_id": "cand-incomplete",
+                    },
                     "blockers": [],
                 }
             )
