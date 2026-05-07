@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from aworld_cli.memory.governance import append_governed_decision
+from aworld_cli.memory.governance import append_governed_decision, evaluate_governed_candidate
 from aworld_cli.memory.provider import CliDurableMemoryProvider
 
 
@@ -229,3 +229,153 @@ def test_provider_active_durable_records_revert_by_decision_id_not_content(tmp_p
     assert len(active_records) == 1
     assert active_records[0].decision_id == "gdec_active"
     assert active_records[0].content == "Use pnpm for workspace package management"
+
+
+def test_reverted_governed_memory_no_longer_blocks_repromotion(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    provider = CliDurableMemoryProvider()
+
+    provider.append_durable_memory_record(
+        workspace_path=workspace,
+        text="Use pnpm for workspace package management",
+        memory_type="workspace",
+        source="governed_auto_promotion",
+        decision_id="gdec_123",
+        source_ref={
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "candidate_id": "cand-123",
+        },
+    )
+    append_governed_decision(
+        workspace,
+        {
+            "decision_id": "gdec_123",
+            "candidate_id": "cand-123",
+            "decision": "durable_memory",
+            "policy_mode": "governed",
+            "policy_version": "2026-05-07",
+            "reason": "governed_policy_pass",
+            "blockers": [],
+            "confidence": "high",
+            "memory_type": "workspace",
+            "content": "Use pnpm for workspace package management",
+            "source_ref": {
+                "session_id": "session-1",
+                "task_id": "task-1",
+                "candidate_id": "cand-123",
+            },
+            "evaluated_at": "2026-05-07T00:00:00+00:00",
+        },
+    )
+    provider.record_governed_review(
+        workspace,
+        decision_id="gdec_123",
+        review_action="reverted",
+    )
+
+    decision = evaluate_governed_candidate(
+        workspace_path=workspace,
+        candidate={
+            "candidate_id": "cand-456",
+            "content": "Use pnpm for workspace package management",
+            "memory_type": "workspace",
+            "confidence": "high",
+            "source_ref": {
+                "session_id": "session-2",
+                "task_id": "task-2",
+                "candidate_id": "cand-456",
+            },
+        },
+        mode="governed",
+    )
+    write_result = provider.append_durable_memory_record(
+        workspace_path=workspace,
+        text="Use pnpm for workspace package management",
+        memory_type="workspace",
+        source="remember_command",
+    )
+
+    assert decision.decision == "durable_memory"
+    assert "duplicate_active_durable_memory" not in decision.blockers
+    assert write_result.record_created is True
+
+
+def test_latest_review_state_controls_activity_and_duplicate_blocking(tmp_path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    provider = CliDurableMemoryProvider()
+
+    provider.append_durable_memory_record(
+        workspace_path=workspace,
+        text="Use pnpm for workspace package management",
+        memory_type="workspace",
+        source="governed_auto_promotion",
+        decision_id="gdec_123",
+        source_ref={
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "candidate_id": "cand-123",
+        },
+    )
+    append_governed_decision(
+        workspace,
+        {
+            "decision_id": "gdec_123",
+            "candidate_id": "cand-123",
+            "decision": "durable_memory",
+            "policy_mode": "governed",
+            "policy_version": "2026-05-07",
+            "reason": "governed_policy_pass",
+            "blockers": [],
+            "confidence": "high",
+            "memory_type": "workspace",
+            "content": "Use pnpm for workspace package management",
+            "source_ref": {
+                "session_id": "session-1",
+                "task_id": "task-1",
+                "candidate_id": "cand-123",
+            },
+            "evaluated_at": "2026-05-07T00:00:00+00:00",
+        },
+    )
+    provider.record_governed_review(
+        workspace,
+        decision_id="gdec_123",
+        review_action="reverted",
+    )
+    provider.record_governed_review(
+        workspace,
+        decision_id="gdec_123",
+        review_action="confirmed",
+    )
+
+    active_records = provider.get_active_durable_memory_records(workspace)
+    decision = evaluate_governed_candidate(
+        workspace_path=workspace,
+        candidate={
+            "candidate_id": "cand-456",
+            "content": "Use pnpm for workspace package management",
+            "memory_type": "workspace",
+            "confidence": "high",
+            "source_ref": {
+                "session_id": "session-2",
+                "task_id": "task-2",
+                "candidate_id": "cand-456",
+            },
+        },
+        mode="governed",
+    )
+    write_result = provider.append_durable_memory_record(
+        workspace_path=workspace,
+        text="Use pnpm for workspace package management",
+        memory_type="workspace",
+        source="remember_command",
+    )
+
+    assert len(active_records) == 1
+    assert active_records[0].decision_id == "gdec_123"
+    assert decision.decision == "rejected"
+    assert "duplicate_active_durable_memory" in decision.blockers
+    assert write_result.record_created is False
