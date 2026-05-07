@@ -241,6 +241,8 @@ async def test_memory_plugin_status_reports_workspace_layers(tmp_path, monkeypat
         assert "- workspace: 1" in result
         assert "Promotion evaluations: 2" in result
         assert "Eligible for auto-promotion: 1" in result
+        assert "Governance mode: shadow" in result
+        assert "Governed default rollout ready: no" in result
         assert "Auto-promotion enabled: no" in result
         assert "- medium: 1" in result
         assert "- low: 1" in result
@@ -383,6 +385,76 @@ async def test_memory_plugin_status_reports_auto_promotion_flag_enabled(tmp_path
         result = await command.execute(CommandContext(cwd=str(workspace), user_args="status"))
 
         assert "Auto-promotion enabled: yes" in result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_status_reports_governed_mode_and_rollout_ready(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    monkeypatch.setenv("AWORLD_CLI_PROMOTION_MODE", "governed")
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+
+    decisions_path = (
+        workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl"
+    )
+    reviews_path = (
+        workspace / ".aworld" / "memory" / "metrics" / "promotion_reviews.jsonl"
+    )
+    with decisions_path.open("w", encoding="utf-8") as decisions_handle, reviews_path.open(
+        "w",
+        encoding="utf-8",
+    ) as reviews_handle:
+        for index in range(100):
+            decision_id = f"gdec_{index}"
+            decisions_handle.write(
+                json.dumps(
+                    {
+                        "decision_id": decision_id,
+                        "candidate_id": f"cand_{index}",
+                        "policy_mode": "governed",
+                        "policy_version": "2026-05-07",
+                        "decision": "durable_memory",
+                        "reason": "governed_policy_pass",
+                        "confidence": "high",
+                        "memory_type": "workspace",
+                        "content": f"Use pnpm rule {index}",
+                        "source_ref": {
+                            "session_id": "session-1",
+                            "task_id": f"task-{index}",
+                            "candidate_id": f"cand_{index}",
+                        },
+                        "blockers": [],
+                        "evaluated_at": f"2026-05-07T00:{index % 60:02d}:00+00:00",
+                    },
+                    ensure_ascii=False,
+                )
+            )
+            decisions_handle.write("\n")
+            reviews_handle.write(
+                json.dumps(
+                    {"decision_id": decision_id, "review_action": "confirmed"},
+                    ensure_ascii=False,
+                )
+            )
+            reviews_handle.write("\n")
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(CommandContext(cwd=str(workspace), user_args="status"))
+
+        assert "Governance mode: governed" in result
+        assert "Governed default rollout ready: yes" in result
     finally:
         CommandRegistry.restore(snapshot)
 
