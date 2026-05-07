@@ -43,7 +43,37 @@ def durable_memory_file(workspace_path: str | os.PathLike[str]) -> Path:
     return workspace / ".aworld" / "memory" / "durable.jsonl"
 
 
+def promotion_reviews_file(workspace_path: str | os.PathLike[str]) -> Path:
+    workspace = Path(workspace_path).expanduser().resolve()
+    return workspace / ".aworld" / "memory" / "metrics" / "promotion_reviews.jsonl"
+
+
 def read_durable_memory_records(
+    workspace_path: str | os.PathLike[str],
+    *,
+    memory_type: str | None = None,
+) -> tuple[DurableMemoryRecord, ...]:
+    records = read_all_durable_memory_records(
+        workspace_path,
+        memory_type=memory_type,
+    )
+    inactive_governed_decision_ids = _inactive_governed_decision_ids(workspace_path)
+    if not inactive_governed_decision_ids:
+        return records
+
+    active_records: list[DurableMemoryRecord] = []
+    for record in records:
+        if (
+            record.source == "governed_auto_promotion"
+            and record.decision_id
+            and record.decision_id in inactive_governed_decision_ids
+        ):
+            continue
+        active_records.append(record)
+    return tuple(active_records)
+
+
+def read_all_durable_memory_records(
     workspace_path: str | os.PathLike[str],
     *,
     memory_type: str | None = None,
@@ -154,3 +184,38 @@ def _normalize_source_ref(source_ref: object) -> dict[str, str] | None:
             continue
         normalized[key] = str(value)
     return normalized or None
+
+
+def _inactive_governed_decision_ids(
+    workspace_path: str | os.PathLike[str],
+) -> set[str]:
+    target = promotion_reviews_file(workspace_path)
+    if not target.exists():
+        return set()
+
+    latest_review_actions: dict[str, str] = {}
+    try:
+        lines = target.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return set()
+
+    for line in lines:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        decision_id = payload.get("decision_id")
+        review_action = payload.get("review_action")
+        if not isinstance(decision_id, str) or not decision_id.strip():
+            continue
+        if not isinstance(review_action, str) or not review_action.strip():
+            continue
+        latest_review_actions[decision_id.strip()] = review_action.strip().lower()
+
+    return {
+        decision_id
+        for decision_id, review_action in latest_review_actions.items()
+        if review_action == "reverted"
+    }
