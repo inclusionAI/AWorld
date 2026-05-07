@@ -411,7 +411,9 @@ class OpenAIProvider(LLMProviderBase):
                             id = resp.id,
                             model = resp.model,
                             finish_reason=finish_reason,
-                            usage=usage)
+                            usage=usage,
+                            raw_usage=resp.raw_usage,
+                            provider_request_id=resp.provider_request_id)
 
         except Exception as e:
             if isinstance(e, LLMResponseError):
@@ -470,7 +472,9 @@ class OpenAIProvider(LLMProviderBase):
                                 id=resp.id,
                                 model=resp.model,
                                 finish_reason=finish_reason,
-                                usage=usage)
+                                usage=usage,
+                                raw_usage=resp.raw_usage,
+                                provider_request_id=resp.provider_request_id)
             else:
                 response_stream = await self.async_provider.chat.completions.create(**openai_params)
                 async for chunk in response_stream:
@@ -487,7 +491,9 @@ class OpenAIProvider(LLMProviderBase):
                                 model=resp.model,
                                 content="",
                                 finish_reason=finish_reason,
-                                usage=usage)
+                                usage=usage,
+                                raw_usage=resp.raw_usage,
+                                provider_request_id=resp.provider_request_id)
 
         except Exception as e:
             if isinstance(e, LLMResponseError):
