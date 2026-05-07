@@ -15,6 +15,7 @@ from aworld.plugins.discovery import discover_plugins
 from aworld_cli.plugin_capabilities.commands import PluginPromptCommand, register_plugin_commands, sync_plugin_commands
 from aworld_cli.plugin_capabilities.state import PluginStateStore
 from aworld_cli.runtime.base import BaseCliRuntime
+from aworld_cli.memory.provider import CliDurableMemoryProvider
 
 
 def _build_dummy_runtime(tmp_path):
@@ -499,11 +500,43 @@ async def test_memory_plugin_promotions_accept_confirms_and_promotes_shadow_cand
 
 
 @pytest.mark.asyncio
+async def test_memory_plugin_promotions_invalid_accept_does_not_write_review(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        with pytest.raises(ValueError, match="Unknown governed decision: missing"):
+            await command.execute(
+                CommandContext(cwd=str(workspace), user_args="promotions accept missing")
+            )
+
+        review_file = (
+            workspace
+            / ".aworld"
+            / "memory"
+            / "metrics"
+            / "promotion_reviews.jsonl"
+        )
+        assert not review_file.exists()
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("user_args", "expected_action"),
     [
         ("promotions reject gdec_1", "declined"),
-        ("promotions revert gdec_1", "reverted"),
     ],
 )
 async def test_memory_plugin_promotions_non_accept_review_actions_record_reviews(
@@ -549,6 +582,68 @@ async def test_memory_plugin_promotions_non_accept_review_actions_record_reviews
             )
         )
         assert not durable_file.exists()
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_promotions_revert_deactivates_promoted_governed_record(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").write_text(
+        '{"decision_id":"gdec_1","candidate_id":"cand_1","decision":"durable_memory","policy_mode":"governed","policy_version":"2026-05-07","reason":"governed_policy_pass","confidence":"high","blockers":[],"memory_type":"workspace","content":"Use pnpm","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_1"},"evaluated_at":"2026-05-07T00:00:00+00:00"}\n',
+        encoding="utf-8",
+    )
+
+    provider = CliDurableMemoryProvider()
+    provider.append_durable_memory_record(
+        workspace_path=workspace,
+        text="Use pnpm",
+        memory_type="workspace",
+        source="governed_auto_promotion",
+        decision_id="gdec_1",
+        source_ref={
+            "session_id": "s1",
+            "task_id": "t1",
+            "candidate_id": "cand_1",
+        },
+    )
+    assert [record.decision_id for record in provider.get_active_durable_memory_records(workspace)] == [
+        "gdec_1"
+    ]
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(
+            CommandContext(cwd=str(workspace), user_args="promotions revert gdec_1")
+        )
+
+        review_file = (
+            workspace
+            / ".aworld"
+            / "memory"
+            / "metrics"
+            / "promotion_reviews.jsonl"
+        )
+        assert result == "Recorded review action: reverted for gdec_1"
+        assert review_file.exists()
+        assert (
+            review_file.read_text(encoding="utf-8").strip()
+            == json.dumps(
+                {"decision_id": "gdec_1", "review_action": "reverted"},
+                ensure_ascii=False,
+            )
+        )
+        assert provider.get_active_durable_memory_records(workspace) == ()
     finally:
         CommandRegistry.restore(snapshot)
 
