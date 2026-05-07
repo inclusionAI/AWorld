@@ -12,6 +12,79 @@ except ImportError:
     ModelUtils = None
 
 
+def build_llm_usage_observability(
+    llm_calls: Optional[List[Dict[str, Any]]],
+    *,
+    task_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build a HUD/plugin-friendly usage snapshot from captured llm_calls."""
+    if not llm_calls:
+        return {}
+
+    candidate_calls = []
+    for llm_call in reversed(llm_calls):
+        if not isinstance(llm_call, dict):
+            continue
+        if task_id is not None:
+            llm_call_task_id = llm_call.get("task_id")
+            if llm_call_task_id == task_id:
+                candidate_calls.append(llm_call)
+                continue
+            if llm_call_task_id is not None:
+                continue
+        candidate_calls.append(llm_call)
+
+    if task_id is not None:
+        exact_task_calls = [call for call in candidate_calls if call.get("task_id") == task_id]
+        if exact_task_calls:
+            candidate_calls = exact_task_calls
+        elif any(isinstance(call, dict) and call.get("task_id") is not None for call in llm_calls):
+            return {}
+
+    for llm_call in candidate_calls:
+        
+        usage_normalized = llm_call.get("usage_normalized")
+        if not isinstance(usage_normalized, dict):
+            usage_normalized = {}
+
+        usage_raw = llm_call.get("usage_raw")
+        if not isinstance(usage_raw, dict):
+            usage_raw = dict(usage_normalized)
+
+        input_tokens = usage_normalized.get("prompt_tokens") or 0
+        output_tokens = usage_normalized.get("completion_tokens") or 0
+        total_tokens = usage_normalized.get("total_tokens") or (input_tokens + output_tokens)
+
+        cache_usage = {
+            key: value
+            for key, value in usage_raw.items()
+            if key in {
+                "cache_hit_tokens",
+                "cache_write_tokens",
+                "prompt_tokens_details",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+                "input_tokens_details",
+            }
+        }
+
+        snapshot = {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
+            "context_used": total_tokens,
+            "request_id": llm_call.get("request_id"),
+            "provider_request_id": llm_call.get("provider_request_id"),
+            "model": llm_call.get("model"),
+            "raw_usage": usage_raw,
+        }
+        if cache_usage:
+            snapshot["cache_usage"] = cache_usage
+        return snapshot
+
+    return {}
+
+
 def format_tokens(n: int) -> str:
     """Format token count: 2900 -> 2.9k, 1000 -> 1k, 100 -> 100."""
     if n >= 1000:
