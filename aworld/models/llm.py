@@ -2,6 +2,7 @@ import re
 import time
 import uuid
 import traceback
+import copy
 from typing import (
     List,
     Dict,
@@ -419,6 +420,63 @@ class LLMModel:
         """
         return self.provider.supported_models() if self.provider else []
 
+    @staticmethod
+    def _safe_copy(value: Any) -> Any:
+        try:
+            return copy.deepcopy(value)
+        except Exception:
+            return value
+
+    def _append_llm_call_record(
+        self,
+        *,
+        context: Context,
+        request_id: str,
+        messages: List[Dict[str, str]],
+        temperature: float,
+        max_tokens: int,
+        stop: List[str],
+        response: ModelResponse,
+        started_at: float,
+        finished_at: float,
+        **kwargs,
+    ) -> None:
+        if context is None or response is None:
+            return
+
+        usage_normalized = self._safe_copy(getattr(response, "usage", None) or {})
+        usage_raw = self._safe_copy(getattr(response, "raw_usage", None) or usage_normalized)
+        agent_id = getattr(context.agent_info, "current_agent_id", None) if context.agent_info else None
+
+        llm_call = {
+            "request_id": request_id,
+            "provider_request_id": getattr(response, "provider_request_id", None),
+            "task_id": context.task_id,
+            "agent_id": agent_id,
+            "model": self.provider.model_name,
+            "provider_name": self.provider_name,
+            "status": "success",
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "request": {
+                "messages": self._safe_copy(messages),
+                "tools": self._safe_copy(kwargs.get("tools")),
+                "params": {
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                    "stop": self._safe_copy(stop),
+                },
+            },
+            "response": {
+                "id": getattr(response, "id", None),
+                "message": self._safe_copy(getattr(response, "message", None)),
+                "finish_reason": getattr(response, "finish_reason", None),
+            },
+            "usage_normalized": usage_normalized,
+            "usage_raw": usage_raw,
+        }
+        context.append_llm_call(llm_call)
+
     async def acompletion(self,
                           messages: List[Dict[str, str]],
                           temperature: float = 0.0,
@@ -563,6 +621,18 @@ class LLMModel:
                 except Exception as e:
                     logger.warning(f"AFTER_LLM_CALL hook execution failed: {e}")
 
+            self._append_llm_call_record(
+                context=context,
+                request_id=request_id,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                stop=stop,
+                response=resp,
+                started_at=start_ms,
+                finished_at=time.time(),
+                **kwargs,
+            )
             return resp
         except AttributeError as e:
             logger.error(f"Provider {self.provider_name} does not support acompletion: {e}")
@@ -723,6 +793,18 @@ class LLMModel:
             except Exception as e:
                 logger.warning(f"AFTER_LLM_CALL hook execution failed: {e}")
 
+        self._append_llm_call_record(
+            context=context,
+            request_id=request_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            response=resp,
+            started_at=start_ms,
+            finished_at=time.time(),
+            **kwargs,
+        )
         return resp
 
     def stream_completion(self,
