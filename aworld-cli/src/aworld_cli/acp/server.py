@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import io
-import json
 import os
 import sys
 from pathlib import Path
@@ -720,7 +719,7 @@ class AcpStdioServer:
             if update["kind"] == "step" and isinstance(raw_input, dict):
                 update["content"] = raw_input
             else:
-                update["content"] = AcpStdioServer._current_tool_content(raw_input)
+                update["content"] = AcpStdioServer._current_tool_input_content(update["kind"], raw_input)
             return converted
 
         if update_type == "tool_call_update":
@@ -732,28 +731,62 @@ class AcpStdioServer:
             if update["kind"] == "step" and isinstance(raw_output, dict):
                 update["content"] = raw_output
             else:
-                update["content"] = AcpStdioServer._current_tool_content(raw_output)
+                update["content"] = AcpStdioServer._current_tool_output_content(raw_output)
             return converted
 
         return converted
 
     @staticmethod
     def _current_tool_kind(kind: Any) -> str:
-        if kind in {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "other", "step"}:
-            return str(kind)
-        if kind in {"shell", "terminal", "bash", "command"}:
+        normalized = str(kind or "").strip()
+        lowered = normalized.lower()
+        if normalized in {"Agent", "Task", "AskUserQuestion"}:
+            return normalized
+        if lowered in {"read", "edit", "delete", "move", "search", "execute", "think", "fetch", "switch_mode", "step"}:
+            return lowered
+        if lowered in {"shell", "terminal", "bash", "command"}:
             return "execute"
+        if "spawn_subagent" in lowered or "subagent" in lowered:
+            return "Agent"
+        if "ask_user" in lowered or "question" in lowered:
+            return "AskUserQuestion"
+        if lowered.startswith("task") or lowered.endswith("_task"):
+            return "Task"
+        if lowered:
+            return "think"
         return "other"
 
     @staticmethod
-    def _current_tool_content(value: Any) -> list[dict[str, Any]] | None:
-        if value is None:
-            return None
+    def _current_tool_input_content(kind: str, value: Any) -> Any:
+        if kind == "execute" and isinstance(value, dict):
+            command_title = AcpStdioServer._command_title(value.get("command"))
+            if command_title:
+                content = dict(value)
+                tool_call = content.get("toolCall")
+                if not isinstance(tool_call, dict):
+                    tool_call = {}
+                else:
+                    tool_call = dict(tool_call)
+                tool_call.setdefault("title", command_title)
+                content["toolCall"] = tool_call
+                return content
         if isinstance(value, str):
-            text = value
-        else:
-            text = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        return [{"type": "content", "content": {"type": "text", "text": text}}]
+            return {"text": value}
+        return value
+
+    @staticmethod
+    def _current_tool_output_content(value: Any) -> Any:
+        return value
+
+    @staticmethod
+    def _command_title(command: Any) -> str | None:
+        if isinstance(command, str):
+            stripped = command.strip()
+            return stripped or None
+        if isinstance(command, list):
+            parts = [str(part).strip() for part in command if str(part).strip()]
+            return " ".join(parts) or None
+        return None
 
     async def _ensure_cron_runtime_started(self) -> None:
         if self._cron_runtime_started:
