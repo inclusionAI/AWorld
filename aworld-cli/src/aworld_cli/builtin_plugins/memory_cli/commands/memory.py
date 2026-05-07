@@ -238,11 +238,6 @@ class MemoryCommand(PluginBoundCommand):
             review_action = review_actions.get(normalized_action)
             if review_action is None or not normalized_decision_id:
                 return self._usage()
-            provider.record_governed_review(
-                context.cwd,
-                decision_id=normalized_decision_id,
-                review_action=review_action,
-            )
             if normalized_action == "accept":
                 decisions = provider.list_governed_decisions(context.cwd)
                 decision = next(
@@ -272,6 +267,11 @@ class MemoryCommand(PluginBoundCommand):
                     decision_id=normalized_decision_id,
                     source_ref=source_ref if isinstance(source_ref, dict) else None,
                 )
+                provider.record_governed_review(
+                    context.cwd,
+                    decision_id=normalized_decision_id,
+                    review_action=review_action,
+                )
                 lines = [
                     f"Recorded review action: {review_action} for {normalized_decision_id}",
                     f"Promoted to durable memory: {promoted.memory_type}",
@@ -281,6 +281,11 @@ class MemoryCommand(PluginBoundCommand):
                 else:
                     lines.append("Durable memory already contained this content.")
                 return "\n".join(lines)
+            provider.record_governed_review(
+                context.cwd,
+                decision_id=normalized_decision_id,
+                review_action=review_action,
+            )
             return (
                 f"Recorded review action: {review_action} "
                 f"for {normalized_decision_id}"
