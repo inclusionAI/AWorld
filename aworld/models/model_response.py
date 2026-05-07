@@ -199,6 +199,8 @@ class ModelResponse:
             content: str = None,
             tool_calls: List[ToolCall] = None,
             usage: Dict[str, int] = None,
+            raw_usage: Dict[str, Any] = None,
+            provider_request_id: Optional[str] = None,
             error: str = None,
             raw_response: Any = None,
             message: Dict[str, Any] = None,
@@ -230,6 +232,8 @@ class ModelResponse:
             "prompt_tokens": 0,
             "total_tokens": 0
         }
+        self.raw_usage = raw_usage or dict(self.usage)
+        self.provider_request_id = provider_request_id
         self.error = error
         self.raw_response = raw_response
         self.video_result = video_result
@@ -265,6 +269,36 @@ class ModelResponse:
         elif isinstance(message, dict):
             return message.get(key, default_value)
         return default_value
+
+    @classmethod
+    def _normalize_openai_usage(cls, usage: Any) -> Dict[str, int]:
+        return {
+            "completion_tokens": cls._get_item_from_openai_message(usage, 'completion_tokens', 0) or 0,
+            "prompt_tokens": cls._get_item_from_openai_message(usage, 'prompt_tokens', 0) or 0,
+            "total_tokens": cls._get_item_from_openai_message(usage, 'total_tokens', 0) or 0,
+        }
+
+    @classmethod
+    def _extract_openai_raw_usage(cls, usage: Any) -> Dict[str, Any]:
+        if not usage:
+            return {}
+        if isinstance(usage, dict):
+            return dict(usage)
+        if hasattr(usage, "model_dump"):
+            return usage.model_dump(exclude_none=True)
+        if hasattr(usage, "__dict__"):
+            return {
+                key: value
+                for key, value in usage.__dict__.items()
+                if not key.startswith("_") and value is not None
+            }
+        return cls._normalize_openai_usage(usage)
+
+    @classmethod
+    def _extract_openai_provider_request_id(cls, response: Any) -> Optional[str]:
+        if isinstance(response, dict):
+            return response.get("request_id") or response.get("_request_id")
+        return getattr(response, "request_id", None) or getattr(response, "_request_id", None)
 
     @classmethod
     def from_openai_response(cls, response: Any) -> 'ModelResponse':
@@ -307,15 +341,10 @@ class ModelResponse:
             )
 
         # Extract usage information
-        usage = {}
-        if hasattr(response, 'usage'):
-            usage = {
-                "completion_tokens": cls._get_item_from_openai_message(response.usage, 'completion_tokens', 0),
-                "prompt_tokens": cls._get_item_from_openai_message(response.usage, 'prompt_tokens', 0),
-                "total_tokens": cls._get_item_from_openai_message(response.usage, 'total_tokens', 0)
-            }
-        elif isinstance(response, dict) and response.get('usage'):
-            usage = response['usage']
+        response_usage = response.usage if hasattr(response, 'usage') else response.get('usage') if isinstance(response, dict) else None
+        usage = cls._normalize_openai_usage(response_usage) if response_usage else {}
+        raw_usage = cls._extract_openai_raw_usage(response_usage)
+        provider_request_id = cls._extract_openai_provider_request_id(response)
 
         # Build message object
         message_dict = {}
@@ -396,6 +425,8 @@ class ModelResponse:
             content=cls._get_item_from_openai_message(message, 'content', ""),
             tool_calls=processed_tool_calls or None,
             usage=usage,
+            raw_usage=raw_usage,
+            provider_request_id=provider_request_id,
             raw_response=response,
             message=message_dict,
             reasoning_content=reasoning_content,
@@ -427,21 +458,10 @@ class ModelResponse:
             )
 
         # Extract usage information
-        usage = {}
-        if hasattr(chunk, 'usage') and chunk.usage:
-            usage = {
-                "completion_tokens": cls._get_item_from_openai_message(chunk.usage, 'completion_tokens', 0),
-                "prompt_tokens": cls._get_item_from_openai_message(chunk.usage, 'prompt_tokens', 0),
-                "total_tokens": cls._get_item_from_openai_message(chunk.usage, 'total_tokens', 0)
-            }
-        elif isinstance(chunk, dict) and chunk.get('usage'):
-            # Normalize dict usage to ensure all values are integers, not None
-            raw_usage = chunk['usage']
-            usage = {
-                "completion_tokens": raw_usage.get('completion_tokens') or 0,
-                "prompt_tokens": raw_usage.get('prompt_tokens') or 0,
-                "total_tokens": raw_usage.get('total_tokens') or 0
-            }
+        chunk_usage = chunk.usage if hasattr(chunk, 'usage') else chunk.get('usage') if isinstance(chunk, dict) else None
+        usage = cls._normalize_openai_usage(chunk_usage) if chunk_usage else {}
+        raw_usage = cls._extract_openai_raw_usage(chunk_usage)
+        provider_request_id = cls._extract_openai_provider_request_id(chunk)
 
         # Handle finish reason chunk (end of stream)
         finish_reason = None
@@ -458,6 +478,8 @@ class ModelResponse:
                     model=chunk.get('model', 'unknown'),
                     content=delta.get('content'),
                     usage=usage,
+                    raw_usage=raw_usage,
+                    provider_request_id=provider_request_id,
                     raw_response=chunk,
                     tool_calls=delta.get('tool_calls'),
                     message={"role": "assistant", "content": "", "finish_reason": finish_reason},
@@ -471,6 +493,8 @@ class ModelResponse:
                     model=chunk.model if hasattr(chunk, 'model') else 'unknown',
                     content=delta.content if hasattr(delta, 'content') else None,
                     usage=usage,
+                    raw_usage=raw_usage,
+                    provider_request_id=provider_request_id,
                     raw_response=chunk,
                     tool_calls=delta.tool_calls if hasattr(delta, 'tool_calls') else None,
                     message={"role": "assistant", "content": "", "finish_reason": chunk.choices[0].finish_reason},
@@ -531,6 +555,8 @@ class ModelResponse:
             content=content or "",
             tool_calls=processed_tool_calls or None,
             usage=usage,
+            raw_usage=raw_usage,
+            provider_request_id=provider_request_id,
             raw_response=chunk,
             message=message
         )
@@ -738,6 +764,8 @@ class ModelResponse:
             "content": self.content,
             "tool_calls": tool_calls_dict,
             "usage": self.usage,
+            "raw_usage": self.raw_usage,
+            "provider_request_id": self.provider_request_id,
             "error": self.error,
             "message": self.message,
             "reasoning_content": self.reasoning_content,
