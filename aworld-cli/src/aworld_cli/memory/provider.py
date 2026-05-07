@@ -9,6 +9,7 @@ from aworld_cli.memory.durable import (
     DurableMemoryRecord,
     DurableMemoryWriteResult,
     append_durable_memory_record,
+    read_all_durable_memory_records,
     read_durable_memory_records,
 )
 from aworld_cli.memory.discovery import (
@@ -83,7 +84,7 @@ class CliDurableMemoryProvider:
         workspace_path: str | Path,
         memory_type: str | None = None,
     ) -> tuple[DurableMemoryRecord, ...]:
-        return read_durable_memory_records(
+        return read_all_durable_memory_records(
             workspace_path=workspace_path,
             memory_type=memory_type,
         )
@@ -114,24 +115,10 @@ class CliDurableMemoryProvider:
         workspace_path: str | Path,
         memory_type: str | None = None,
     ) -> tuple[DurableMemoryRecord, ...]:
-        records = self.get_durable_memory_records(
+        return read_durable_memory_records(
             workspace_path,
             memory_type=memory_type,
         )
-        reverted_governed_keys = self._reverted_governed_record_keys(workspace_path)
-        if not reverted_governed_keys:
-            return records
-
-        active_records: list[DurableMemoryRecord] = []
-        for record in records:
-            if (
-                record.source == "governed_auto_promotion"
-                and record.decision_id
-                and record.decision_id in reverted_governed_keys
-            ):
-                continue
-            active_records.append(record)
-        return tuple(active_records)
 
     def append_durable_memory_record(
         self,
@@ -167,21 +154,3 @@ class CliDurableMemoryProvider:
             instruction_target=instruction_target,
             instruction_updated=instruction_updated,
         )
-
-    def _reverted_governed_record_keys(
-        self,
-        workspace_path: str | Path,
-    ) -> set[str]:
-        reverted_keys: set[str] = set()
-        for decision in self.list_governed_decisions(workspace_path):
-            if decision.get("decision") != "durable_memory":
-                continue
-            decision_id = str(decision.get("decision_id") or "").strip()
-            if not decision_id:
-                continue
-            reviews = decision.get("reviews")
-            if not isinstance(reviews, list):
-                continue
-            if any(review.get("review_action") == "reverted" for review in reviews):
-                reverted_keys.add(decision_id)
-        return reverted_keys
