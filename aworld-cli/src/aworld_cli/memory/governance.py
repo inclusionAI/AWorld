@@ -70,6 +70,8 @@ def evaluate_governed_candidate(
     content = str(candidate.get("content") or "").strip()
     memory_type = str(candidate.get("memory_type") or "workspace").strip().lower()
     confidence = str(candidate.get("confidence") or "").strip()
+    normalized_confidence = confidence.lower()
+    eligible_for_auto_promotion = candidate.get("eligible_for_auto_promotion")
     source_ref = _normalize_source_ref(candidate.get("source_ref"))
     blockers: list[str] = []
 
@@ -81,6 +83,10 @@ def evaluate_governed_candidate(
         blockers.append("ineligible_memory_type")
     if not confidence:
         blockers.append("missing_confidence")
+    if eligible_for_auto_promotion is False:
+        blockers.append("ineligible_extraction_candidate")
+    if normalized_confidence and normalized_confidence != "high":
+        blockers.append("insufficient_confidence_for_auto_promotion")
     if not _has_stable_source_ref(source_ref):
         blockers.append("missing_source_ref")
     if (

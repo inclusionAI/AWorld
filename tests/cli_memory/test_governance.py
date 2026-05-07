@@ -149,6 +149,31 @@ def test_evaluate_governed_candidate_blocks_temporary_content(tmp_path):
     assert "temporary_candidate" in decision.blockers
 
 
+def test_evaluate_governed_candidate_rejects_ineligible_extraction_candidates(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    decision = evaluate_governed_candidate(
+        workspace_path=workspace,
+        candidate={
+            "candidate_id": "cand-1",
+            "content": "I updated the workspace and ran the tests successfully.",
+            "memory_type": "workspace",
+            "confidence": "low",
+            "eligible_for_auto_promotion": False,
+            "source_ref": {
+                "session_id": "s1",
+                "task_id": "t1",
+                "candidate_id": "cand-1",
+            },
+        },
+        mode="governed",
+    )
+
+    assert decision.decision == "rejected"
+    assert "ineligible_extraction_candidate" in decision.blockers
+
+
 def test_governed_decision_payload_exposes_inspectable_contract():
     decision = GovernedDecision(
         decision_id="dec-1",
