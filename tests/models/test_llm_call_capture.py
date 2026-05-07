@@ -231,6 +231,21 @@ async def test_merge_context_appends_only_child_local_llm_calls():
     ]
 
 
+def test_merge_context_from_deep_copy_appends_only_new_llm_calls():
+    parent = Context(task_id="parent-task")
+    parent.context_info["llm_calls"] = [{"request_id": "parent-call"}]
+
+    child = parent.deep_copy()
+    child.append_llm_call({"request_id": "child-call"})
+
+    parent.merge_context(child)
+
+    assert parent.context_info.get("llm_calls") == [
+        {"request_id": "parent-call"},
+        {"request_id": "child-call"},
+    ]
+
+
 def test_stream_completion_appends_one_final_llm_call_record():
     provider = RecordingLLMProvider()
     llm_model = LLMModel(custom_provider=provider)
