@@ -110,6 +110,27 @@ Why it matters:
 - the branch now has strong observability and storage primitives
 - product-grade operator control still needs dedicated UI/UX work
 
+Current evaluation result:
+
+- no additional memory-specific HUD surface is required for the current branch
+- current HUD already exposes live session / task / token / context state and
+  request-linked usage observability
+- current `/memory status`, `/memory promotions`, and `/memory cache` surfaces
+  already cover governance state, review actions, and cache analysis without
+  introducing another control plane
+- richer plugin-local workflow state should stay deferred until there is a
+  concrete need for interactive candidate queues, explainability drill-down, or
+  durable-memory prune / expire workflows
+
+Decision for now:
+
+- treat memory HUD or plugin-local workflow state as a later UX follow-up, not
+  a blocker for the governed-promotion milestone
+- prefer extending existing `/memory` command surfaces before inventing a new
+  plugin-local state model
+- revisit only after typed durable-memory taxonomy and explainability UX needs
+  become concrete
+
 ### 5. Prompt Cache Strategy Beyond Observability
 
 Not yet delivered:
