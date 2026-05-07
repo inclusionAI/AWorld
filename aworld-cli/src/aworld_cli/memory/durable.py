@@ -18,6 +18,8 @@ class DurableMemoryRecord:
     source: str
     recorded_at: str
     source_file: Path
+    decision_id: str = ""
+    source_ref: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -67,6 +69,8 @@ def read_durable_memory_records(
         record_type = payload.get("memory_type")
         source = payload.get("source")
         recorded_at = payload.get("recorded_at")
+        decision_id = payload.get("decision_id")
+        source_ref = payload.get("source_ref")
         if not isinstance(content, str) or not content.strip():
             continue
         if not isinstance(record_type, str):
@@ -84,6 +88,8 @@ def read_durable_memory_records(
                 source=source if isinstance(source, str) and source.strip() else "unknown",
                 recorded_at=recorded_at if isinstance(recorded_at, str) else "",
                 source_file=target,
+                decision_id=decision_id.strip() if isinstance(decision_id, str) else "",
+                source_ref=_normalize_source_ref(source_ref),
             )
         )
 
@@ -96,6 +102,8 @@ def append_durable_memory_record(
     memory_type: str,
     text: str,
     source: str,
+    decision_id: str | None = None,
+    source_ref: dict[str, str] | None = None,
 ) -> DurableMemoryWriteResult:
     normalized_type = normalize_durable_memory_type(memory_type)
     normalized_text = (text or "").strip()
@@ -119,6 +127,11 @@ def append_durable_memory_record(
         "content": normalized_text,
         "source": source,
     }
+    if isinstance(decision_id, str) and decision_id.strip():
+        payload["decision_id"] = decision_id.strip()
+    normalized_source_ref = _normalize_source_ref(source_ref)
+    if normalized_source_ref:
+        payload["source_ref"] = normalized_source_ref
     with target.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(payload, ensure_ascii=False))
         handle.write("\n")
@@ -128,3 +141,16 @@ def append_durable_memory_record(
         memory_type=normalized_type,
         record_created=True,
     )
+
+
+def _normalize_source_ref(source_ref: object) -> dict[str, str] | None:
+    if not isinstance(source_ref, dict):
+        return None
+    normalized: dict[str, str] = {}
+    for key, value in source_ref.items():
+        if not isinstance(key, str):
+            continue
+        if value is None:
+            continue
+        normalized[key] = str(value)
+    return normalized or None
