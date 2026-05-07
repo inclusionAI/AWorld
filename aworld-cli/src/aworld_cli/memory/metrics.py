@@ -6,6 +6,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
+from aworld_cli.memory.governance import list_governed_decisions
 from aworld_cli.memory.promotion import PromotionDecision
 
 
@@ -20,6 +21,13 @@ class PromotionMetricsSummary:
     latest_decision: dict | None = None
     last_auto_promoted: dict | None = None
     last_eligible_blocked: dict | None = None
+    reviewed_promotions: int = 0
+    confirmed_promotions: int = 0
+    reverted_promotions: int = 0
+    pending_review: int = 0
+    precision_proxy: float = 0.0
+    pollution_proxy: float = 0.0
+    default_rollout_ready: bool = False
 
 
 def promotion_metrics_file(workspace_path: str | os.PathLike[str]) -> Path:
@@ -49,12 +57,52 @@ def append_promotion_metric(
     return target
 
 
+def _latest_review_action(decision: dict) -> str:
+    reviews = decision.get("reviews")
+    if not isinstance(reviews, list) or not reviews:
+        return ""
+    latest = reviews[-1]
+    if not isinstance(latest, dict):
+        return ""
+    action = latest.get("review_action")
+    return action.strip().lower() if isinstance(action, str) else ""
+
+
 def summarize_promotion_metrics(
     workspace_path: str | os.PathLike[str],
     *,
     max_records: int = 500,
 ) -> PromotionMetricsSummary:
     target = promotion_metrics_file(workspace_path)
+    decisions = list_governed_decisions(workspace_path)
+
+    reviewed_promotions = 0
+    confirmed_promotions = 0
+    reverted_promotions = 0
+    pending_review = 0
+    for decision in decisions[-max_records:]:
+        latest_review_action = _latest_review_action(decision)
+        if not latest_review_action:
+            pending_review += 1
+            continue
+        reviewed_promotions += 1
+        if latest_review_action == "confirmed":
+            confirmed_promotions += 1
+        elif latest_review_action == "reverted":
+            reverted_promotions += 1
+
+    precision_proxy = (
+        confirmed_promotions / reviewed_promotions if reviewed_promotions else 0.0
+    )
+    pollution_proxy = (
+        reverted_promotions / reviewed_promotions if reviewed_promotions else 0.0
+    )
+    default_rollout_ready = (
+        reviewed_promotions >= 100
+        and precision_proxy >= 0.90
+        and pollution_proxy <= 0.05
+    )
+
     if not target.exists():
         return PromotionMetricsSummary(
             metrics_path=target,
@@ -66,6 +114,13 @@ def summarize_promotion_metrics(
             latest_decision=None,
             last_auto_promoted=None,
             last_eligible_blocked=None,
+            reviewed_promotions=reviewed_promotions,
+            confirmed_promotions=confirmed_promotions,
+            reverted_promotions=reverted_promotions,
+            pending_review=pending_review,
+            precision_proxy=precision_proxy,
+            pollution_proxy=pollution_proxy,
+            default_rollout_ready=default_rollout_ready,
         )
 
     by_confidence: Counter[str] = Counter()
@@ -115,4 +170,11 @@ def summarize_promotion_metrics(
         latest_decision=latest_decision,
         last_auto_promoted=last_auto_promoted,
         last_eligible_blocked=last_eligible_blocked,
+        reviewed_promotions=reviewed_promotions,
+        confirmed_promotions=confirmed_promotions,
+        reverted_promotions=reverted_promotions,
+        pending_review=pending_review,
+        precision_proxy=precision_proxy,
+        pollution_proxy=pollution_proxy,
+        default_rollout_ready=default_rollout_ready,
     )
