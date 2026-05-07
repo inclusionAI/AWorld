@@ -789,6 +789,60 @@ async def test_memory_plugin_promotions_revert_keeps_guidance_when_duplicate_act
 
 
 @pytest.mark.asyncio
+async def test_memory_plugin_promotions_revert_removes_multiline_guidance(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    multiline_content = "Use pnpm for workspace package management\nand avoid npm install here."
+    provider = CliDurableMemoryProvider()
+    provider.append_durable_memory_record(
+        workspace_path=workspace,
+        text=multiline_content,
+        memory_type="workspace",
+        source="governed_auto_promotion",
+        decision_id="gdec_multiline",
+        source_ref={
+            "session_id": "s1",
+            "task_id": "t1",
+            "candidate_id": "cand_multiline",
+        },
+    )
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").write_text(
+        '{"decision_id":"gdec_multiline","candidate_id":"cand_multiline","decision":"durable_memory","policy_mode":"governed","policy_version":"2026-05-07","reason":"governed_policy_pass","confidence":"high","blockers":[],"memory_type":"workspace","content":"Use pnpm for workspace package management\\nand avoid npm install here.","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_multiline"},"evaluated_at":"2026-05-07T00:00:00+00:00"}\n',
+        encoding="utf-8",
+    )
+
+    workspace_memory_file = workspace / ".aworld" / "AWORLD.md"
+    assert (
+        "- Use pnpm for workspace package management and avoid npm install here."
+        in workspace_memory_file.read_text(encoding="utf-8")
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(
+            CommandContext(
+                cwd=str(workspace),
+                user_args="promotions revert gdec_multiline",
+            )
+        )
+
+        assert result == "Recorded review action: reverted for gdec_multiline"
+        content = workspace_memory_file.read_text(encoding="utf-8")
+        assert "Use pnpm for workspace package management and avoid npm install here." not in content
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
 async def test_memory_plugin_view_includes_explicit_durable_records(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
