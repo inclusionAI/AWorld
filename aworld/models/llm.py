@@ -477,6 +477,38 @@ class LLMModel:
         }
         context.append_llm_call(llm_call)
 
+    def _apply_updated_output(self, response: ModelResponse, updated_output: Any, *, sync_mode: bool = False) -> ModelResponse:
+        if updated_output is None:
+            return response
+
+        if hasattr(updated_output, "content") and not isinstance(updated_output, dict):
+            logger.info(f"AFTER_LLM_CALL hook replaced response object{' (sync)' if sync_mode else ''}")
+            return updated_output
+
+        if not isinstance(updated_output, dict):
+            return response
+
+        if 'content' in updated_output:
+            response.content = updated_output['content']
+            if isinstance(getattr(response, "message", None), dict):
+                response.message["content"] = updated_output["content"]
+
+        if 'token_usage' in updated_output:
+            response.usage = updated_output['token_usage']
+        if 'usage' in updated_output:
+            response.usage = updated_output['usage']
+        if 'raw_usage' in updated_output:
+            response.raw_usage = updated_output['raw_usage']
+
+        for key, value in updated_output.items():
+            if key == 'token_usage':
+                continue
+            if hasattr(response, key):
+                setattr(response, key, value)
+
+        logger.info(f"AFTER_LLM_CALL hook modified response fields{' (sync)' if sync_mode else ''}")
+        return response
+
     async def acompletion(self,
                           messages: List[Dict[str, str]],
                           temperature: float = 0.0,
@@ -606,17 +638,7 @@ class LLMModel:
                             if updated_output:
                                 # Update resp with modified output
                                 # Accept either complete response object or dict with specific fields
-                                if hasattr(updated_output, 'content'):
-                                    # Direct response object replacement
-                                    resp = updated_output
-                                    logger.info(f"AFTER_LLM_CALL hook replaced response object")
-                                elif isinstance(updated_output, dict):
-                                    # Partial update of response fields
-                                    if 'content' in updated_output:
-                                        resp.content = updated_output['content']
-                                    if 'token_usage' in updated_output:
-                                        resp.token_usage = updated_output['token_usage']
-                                    logger.info(f"AFTER_LLM_CALL hook modified response fields")
+                                resp = self._apply_updated_output(resp, updated_output)
                                 # Continue to next hook to allow chaining
                 except Exception as e:
                     logger.warning(f"AFTER_LLM_CALL hook execution failed: {e}")
@@ -775,19 +797,7 @@ class LLMModel:
                         if hook_event and hasattr(hook_event, 'headers'):
                             updated_output = hook_event.headers.get('updated_output')
                             if updated_output:
-                                # Update resp with modified output
-                                if isinstance(updated_output, dict):
-                                    if 'content' in updated_output:
-                                        resp.content = updated_output['content']
-                                        logger.info(f"AFTER_LLM_CALL hook modified response content (sync)")
-                                    # Allow other fields to be updated as well
-                                    for key, value in updated_output.items():
-                                        if hasattr(resp, key):
-                                            setattr(resp, key, value)
-                                elif hasattr(updated_output, '__dict__'):
-                                    # If it's an object, replace resp entirely
-                                    resp = updated_output
-                                    logger.info(f"AFTER_LLM_CALL hook replaced response object (sync)")
+                                resp = self._apply_updated_output(resp, updated_output, sync_mode=True)
 
                 sync_exec(_run_after_hooks)
             except Exception as e:
@@ -826,14 +836,47 @@ class LLMModel:
         Returns:
             Generator yielding ModelResponse chunks.
         """
-        # Call provider's stream_completion method directly
-        return self.provider.stream_completion(
+        start_ms = time.time()
+        request_id = LLMModel._generate_llm_request_id()
+        context_task_id = context.task_id if context else None
+        context_trace_id = context.trace_id if context else None
+        log_params = {
+            "task_id": context_task_id,
+            "request_id": request_id,
+        }
+        kwargs["llm_request_id"] = request_id
+        log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
+        stream_started_at = start_ms
+
+        final_chunk = None
+        for chunk in self.provider.stream_completion(
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
             stop=stop,
             context=context,
             **kwargs
+        ):
+            if self.llm_response_parser:
+                response_parse_args = kwargs.get("response_parse_args") or {}
+                chunk = sync_exec(self.llm_response_parser.parse_chunk, chunk, **response_parse_args)
+            log_params["time_cost"] = round(time.time() - start_ms, 3)
+            log_llm_record("CHUNK", self.provider.model_name, chunk, log_params, context_trace_id)
+            start_ms = time.time()
+            final_chunk = chunk
+            yield chunk
+
+        self._append_llm_call_record(
+            context=context,
+            request_id=request_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            response=final_chunk,
+            started_at=stream_started_at,
+            finished_at=time.time(),
+            **kwargs,
         )
 
     async def astream_completion(self,
@@ -869,6 +912,8 @@ class LLMModel:
         }
         kwargs["llm_request_id"] = request_id
         log_llm_record("INPUT", self.provider.model_name, messages, log_params, context_trace_id)
+        stream_started_at = start_ms
+        final_chunk = None
         async for chunk in self.provider.astream_completion(
                 messages=messages,
                 temperature=temperature,
@@ -883,7 +928,21 @@ class LLMModel:
             log_params["time_cost"] = round(time.time() - start_ms, 3)
             log_llm_record("CHUNK", self.provider.model_name, chunk, log_params, context_trace_id)
             start_ms = time.time()
+            final_chunk = chunk
             yield chunk
+
+        self._append_llm_call_record(
+            context=context,
+            request_id=request_id,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stop=stop,
+            response=final_chunk,
+            started_at=stream_started_at,
+            finished_at=time.time(),
+            **kwargs,
+        )
 
     def speech_to_text(self,
                        audio_file: str,

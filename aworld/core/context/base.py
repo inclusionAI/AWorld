@@ -330,6 +330,7 @@ class Context:
         self._deep_copy(new_context)
         new_context.task_id = sub_task_id
         new_context.task_input = sub_task_content
+        new_context._merge_llm_calls_baseline = len(new_context.get_llm_calls())
         self.add_task_node(sub_task_id, self.task_id, caller_agent_info=self.agent_info, **kwargs)
         return new_context
 
@@ -414,6 +415,9 @@ class Context:
             except Exception:
                 new_context._agent_token_id_traj = copy.copy(self._agent_token_id_traj)
 
+        if hasattr(self, '_merge_llm_calls_baseline'):
+            new_context._merge_llm_calls_baseline = self._merge_llm_calls_baseline
+
         return new_context
 
     def merge_context(self, other_context: 'Context') -> None:
@@ -430,7 +434,8 @@ class Context:
                         child_llm_calls = local_state.pop("llm_calls", None)
                         self.context_info.update(local_state)
                         if isinstance(child_llm_calls, list):
-                            for llm_call in child_llm_calls:
+                            baseline = max(0, min(getattr(other_context, "_merge_llm_calls_baseline", 0), len(child_llm_calls)))
+                            for llm_call in child_llm_calls[baseline:]:
                                 self.append_llm_call(copy.deepcopy(llm_call))
                 else:
                     # If no local_dict method, directly update all states
@@ -438,7 +443,8 @@ class Context:
                     child_llm_calls = merged_state.pop("llm_calls", None)
                     self.context_info.update(merged_state)
                     if isinstance(child_llm_calls, list):
-                        for llm_call in child_llm_calls:
+                        baseline = max(0, min(getattr(other_context, "_merge_llm_calls_baseline", 0), len(child_llm_calls)))
+                        for llm_call in child_llm_calls[baseline:]:
                             self.append_llm_call(copy.deepcopy(llm_call))
             except Exception as e:
                 logger.warning(f"Failed to merge context_info: {e}")
