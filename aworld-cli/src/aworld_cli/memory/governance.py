@@ -294,8 +294,7 @@ def _is_listable_decision_payload(payload: object) -> bool:
         return False
     decision_id = str(payload.get("decision_id") or "").strip()
     decision = str(payload.get("decision") or "").strip()
-    reason = str(payload.get("reason") or "").strip()
-    return bool(decision_id and decision and reason)
+    return bool(decision_id and decision)
 
 
 def _has_required_decision_field(field_name: str, value: object) -> bool:
