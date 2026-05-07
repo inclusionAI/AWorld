@@ -392,8 +392,8 @@ async def test_memory_plugin_promotions_lists_governed_decisions(tmp_path):
     workspace.mkdir(parents=True)
     (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
     (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").write_text(
-        '{"decision_id":"gdec_1","candidate_id":"cand_1","decision":"session_log_only","policy_mode":"shadow","policy_version":"2026-05-07","reason":"shadow_mode_no_auto_promotion","confidence":"high","blockers":[],"memory_type":"workspace","content":"Use pnpm for workspace package management","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_1"},"evaluated_at":"2026-05-07T00:00:00+00:00"}\n'
-        '{"decision_id":"gdec_2","candidate_id":"cand_2","decision":"durable_memory","policy_mode":"governed","policy_version":"2026-05-07","reason":"governed_policy_pass","confidence":"high","blockers":[],"memory_type":"workspace","content":"Keep release notes current","source_ref":{"session_id":"s2","task_id":"t2","candidate_id":"cand_2"},"evaluated_at":"2026-05-07T00:01:00+00:00"}\n',
+        '{"decision_id":"gdec_1","candidate_id":"cand_1","decision":"session_log_only","policy_mode":"shadow","policy_version":"2026-05-07","reason":"shadow_mode_no_auto_promotion","confidence":"high","blockers":["review_required"],"memory_type":"workspace","content":"Use pnpm for workspace package management","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_1"},"evaluated_at":"2026-05-07T00:00:00+00:00"}\n'
+        '{"decision_id":"gdec_2","candidate_id":"cand_2","decision":"durable_memory","policy_mode":"governed","policy_version":"2026-05-07","reason":"governed_policy_pass","confidence":"medium","blockers":[],"memory_type":"workspace","content":"Keep release notes current","source_ref":{"session_id":"s2","task_id":"t2","candidate_id":"cand_2"},"evaluated_at":"2026-05-07T00:01:00+00:00"}\n',
         encoding="utf-8",
     )
     (workspace / ".aworld" / "memory" / "metrics" / "promotion_reviews.jsonl").write_text(
@@ -414,10 +414,86 @@ async def test_memory_plugin_promotions_lists_governed_decisions(tmp_path):
         )
 
         assert "Governed promotions" in result
-        assert "gdec_1 session_log_only [shadow] shadow_mode_no_auto_promotion" in result
-        assert "gdec_2 durable_memory [governed] governed_policy_pass" in result
+        assert "decision_id=gdec_1" in result
+        assert "policy_mode=shadow" in result
+        assert "policy_version=2026-05-07" in result
+        assert "decision=session_log_only" in result
+        assert "reason=shadow_mode_no_auto_promotion" in result
+        assert "confidence=high" in result
+        assert "source_ref=session_id=s1, task_id=t1, candidate_id=cand_1" in result
+        assert "blockers=review_required" in result
+        assert "decision_id=gdec_2" in result
+        assert "policy_mode=governed" in result
+        assert "decision=durable_memory" in result
+        assert "confidence=medium" in result
         assert "reviews=declined" in result
         assert "content=Keep release notes current" in result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_promotions_accept_confirms_and_promotes_shadow_candidate(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").write_text(
+        '{"decision_id":"gdec_1","candidate_id":"cand_1","decision":"session_log_only","policy_mode":"shadow","policy_version":"2026-05-07","reason":"shadow_mode_no_auto_promotion","confidence":"high","blockers":[],"memory_type":"workspace","content":"Use pnpm","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_1"},"evaluated_at":"2026-05-07T00:00:00+00:00"}\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(
+            CommandContext(cwd=str(workspace), user_args="promotions accept gdec_1")
+        )
+
+        review_file = (
+            workspace
+            / ".aworld"
+            / "memory"
+            / "metrics"
+            / "promotion_reviews.jsonl"
+        )
+        durable_file = workspace / ".aworld" / "memory" / "durable.jsonl"
+        workspace_memory_file = workspace / ".aworld" / "AWORLD.md"
+        assert "Recorded review action: confirmed for gdec_1" in result
+        assert "Promoted to durable memory: workspace" in result
+        assert review_file.exists()
+        assert (
+            review_file.read_text(encoding="utf-8").strip()
+            == json.dumps(
+                {"decision_id": "gdec_1", "review_action": "confirmed"},
+                ensure_ascii=False,
+            )
+        )
+        assert durable_file.exists()
+        durable_records = [json.loads(line) for line in durable_file.read_text(encoding="utf-8").splitlines()]
+        assert durable_records == [
+            {
+                "recorded_at": durable_records[0]["recorded_at"],
+                "memory_type": "workspace",
+                "content": "Use pnpm",
+                "source": "governed_auto_promotion",
+                "decision_id": "gdec_1",
+                "source_ref": {
+                    "session_id": "s1",
+                    "task_id": "t1",
+                    "candidate_id": "cand_1",
+                },
+            }
+        ]
+        assert workspace_memory_file.exists()
+        assert "## Remembered Guidance" in workspace_memory_file.read_text(encoding="utf-8")
+        assert "- Use pnpm" in workspace_memory_file.read_text(encoding="utf-8")
     finally:
         CommandRegistry.restore(snapshot)
 
@@ -426,12 +502,11 @@ async def test_memory_plugin_promotions_lists_governed_decisions(tmp_path):
 @pytest.mark.parametrize(
     ("user_args", "expected_action"),
     [
-        ("promotions accept gdec_1", "confirmed"),
         ("promotions reject gdec_1", "declined"),
         ("promotions revert gdec_1", "reverted"),
     ],
 )
-async def test_memory_plugin_promotions_review_actions_record_reviews(
+async def test_memory_plugin_promotions_non_accept_review_actions_record_reviews(
     tmp_path,
     user_args,
     expected_action,
@@ -463,6 +538,7 @@ async def test_memory_plugin_promotions_review_actions_record_reviews(
             / "metrics"
             / "promotion_reviews.jsonl"
         )
+        durable_file = workspace / ".aworld" / "memory" / "durable.jsonl"
         assert f"Recorded review action: {expected_action} for gdec_1" == result
         assert review_file.exists()
         assert (
@@ -472,6 +548,7 @@ async def test_memory_plugin_promotions_review_actions_record_reviews(
                 ensure_ascii=False,
             )
         )
+        assert not durable_file.exists()
     finally:
         CommandRegistry.restore(snapshot)
 
