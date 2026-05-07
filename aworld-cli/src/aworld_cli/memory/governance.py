@@ -144,9 +144,9 @@ def append_governed_review(
 
 def list_governed_decisions(workspace_path: str | os.PathLike[str]) -> list[dict]:
     decisions = [
-        payload
+        _normalize_listed_decision_payload(payload)
         for payload in _read_jsonl(decisions_file(workspace_path))
-        if _is_valid_decision_payload(payload)
+        if _is_listable_decision_payload(payload)
     ]
     reviews_by_decision: dict[str, list[dict]] = {}
     for review in _read_jsonl(reviews_file(workspace_path)):
@@ -232,7 +232,8 @@ def _normalize_decision_payload(payload: object) -> dict:
 
     normalized = dict(payload)
     normalized["decision_id"] = str(normalized.get("decision_id") or "").strip()
-    normalized["policy_mode"] = _normalize_governance_mode(normalized.get("policy_mode"))
+    policy_mode = normalized.get("policy_mode")
+    normalized["policy_mode"] = str(policy_mode or "").strip().lower()
     normalized["policy_version"] = str(normalized.get("policy_version") or "").strip()
     normalized["decision"] = str(normalized.get("decision") or "").strip()
     normalized["reason"] = str(normalized.get("reason") or "").strip()
@@ -255,16 +256,46 @@ def _normalize_decision_payload(payload: object) -> dict:
         raise ValueError(
             "Missing required decision fields: " + ", ".join(missing_fields)
         )
+    if normalized["policy_mode"] not in VALID_GOVERNANCE_MODES:
+        raise ValueError(f"Invalid policy_mode: {normalized['policy_mode']}")
 
     return normalized
 
 
-def _is_valid_decision_payload(payload: object) -> bool:
-    try:
-        _normalize_decision_payload(payload)
-    except ValueError:
+def _normalize_listed_decision_payload(payload: object) -> dict:
+    if not isinstance(payload, dict):
+        raise ValueError("Governed decision payload must be a dictionary")
+
+    normalized = dict(payload)
+    normalized["decision_id"] = str(normalized.get("decision_id") or "").strip()
+    normalized["decision"] = str(normalized.get("decision") or "").strip()
+    normalized["reason"] = str(normalized.get("reason") or "").strip()
+    policy_mode = str(normalized.get("policy_mode") or "").strip().lower()
+    normalized["policy_mode"] = (
+        policy_mode if policy_mode in VALID_GOVERNANCE_MODES else ""
+    )
+    normalized["policy_version"] = str(normalized.get("policy_version") or "").strip()
+    normalized["confidence"] = str(normalized.get("confidence") or "").strip()
+    normalized["source_ref"] = _normalize_source_ref(normalized.get("source_ref"))
+    blockers = normalized.get("blockers")
+    if isinstance(blockers, (list, tuple)):
+        normalized["blockers"] = [str(blocker) for blocker in blockers]
+    elif blockers is None:
+        normalized["blockers"] = []
+    else:
+        normalized["blockers"] = [str(blockers)]
+    if not _has_complete_decision_contract(normalized):
+        normalized["legacy_incomplete"] = True
+    return normalized
+
+
+def _is_listable_decision_payload(payload: object) -> bool:
+    if not isinstance(payload, dict):
         return False
-    return True
+    decision_id = str(payload.get("decision_id") or "").strip()
+    decision = str(payload.get("decision") or "").strip()
+    reason = str(payload.get("reason") or "").strip()
+    return bool(decision_id and decision and reason)
 
 
 def _has_required_decision_field(field_name: str, value: object) -> bool:
@@ -273,3 +304,10 @@ def _has_required_decision_field(field_name: str, value: object) -> bool:
     if field_name == "blockers":
         return isinstance(value, list)
     return isinstance(value, str) and bool(value.strip())
+
+
+def _has_complete_decision_contract(payload: dict) -> bool:
+    return all(
+        _has_required_decision_field(field_name, payload.get(field_name))
+        for field_name in REQUIRED_DECISION_FIELDS
+    )
