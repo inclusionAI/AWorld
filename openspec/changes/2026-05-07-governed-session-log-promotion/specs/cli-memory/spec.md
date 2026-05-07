@@ -112,3 +112,18 @@ requested by the operator.
   write surface
 - **THEN** that write MUST update active durable memory immediately
 - **AND** it MUST NOT require governed auto-promotion mode to be enabled
+
+### Requirement: Governed promotion MUST preserve runtime message-memory behavior
+
+This change MUST compose with the existing hybrid-memory seam without changing
+runtime message-memory semantics for existing consumers.
+
+#### Scenario: Existing runtime message-memory consumers execute under the hybrid provider
+
+- **WHEN** `aworld-cli` runs with the hybrid provider and governed
+  session-log promotion enabled
+- **THEN** existing runtime-memory operations such as message history access,
+  summary generation, and long-term extraction MUST continue to behave as they
+  did before this change
+- **AND** governed durable-memory decisions MUST remain confined to the CLI
+  durable-memory path

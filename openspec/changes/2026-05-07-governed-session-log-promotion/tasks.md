@@ -44,3 +44,14 @@
 - [ ] 5.3 Add command coverage for review/status surfaces.
 - [ ] 5.4 Add acceptance coverage proving explicit `/remember` writes still
   bypass governed auto-promotion gates.
+- [ ] 5.5 Add regression coverage proving runtime message-memory behavior is
+  unchanged under the hybrid provider path.
+
+## 6. Implementation Guardrails
+
+- [ ] 6.1 Keep governed-promotion policy inside CLI durable-memory modules and
+  plugin surfaces.
+- [ ] 6.2 Keep bootstrap and prompt-neuron changes limited to narrow adapter
+  work only.
+- [ ] 6.3 Do not modify `AworldMemory` runtime message-memory semantics as part
+  of this change.
