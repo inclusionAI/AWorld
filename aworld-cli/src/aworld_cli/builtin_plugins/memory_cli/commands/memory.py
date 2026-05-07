@@ -34,6 +34,10 @@ class MemoryCommand(PluginBoundCommand):
             "/memory reload": "Explain current memory reload behavior",
             "/memory status": "Show workspace memory status",
             "/memory cache": "Summarize request-linked cache observability from session logs",
+            "/memory promotions": "List governed promotion decisions",
+            "/memory promotions accept <decision-id>": "Confirm a reviewed promotion decision",
+            "/memory promotions reject <decision-id>": "Record a declined review label",
+            "/memory promotions revert <decision-id>": "Disable a previously promoted governed record",
         }
 
     async def execute(self, context: CommandContext) -> str:
@@ -41,17 +45,40 @@ class MemoryCommand(PluginBoundCommand):
         if isinstance(parsed, str):
             return parsed
 
-        subcommand, memory_type = parsed
+        subcommand, memory_type, positional_args = parsed
         if not subcommand or subcommand == "edit":
+            if positional_args:
+                return self._usage()
             return self._edit_workspace_memory(context)
         if subcommand == "view":
+            if positional_args:
+                return self._usage()
             return self._view_workspace_memory(context, memory_type=memory_type)
         if subcommand == "status":
+            if positional_args:
+                return self._usage()
             return self._status_workspace_memory(context)
         if subcommand == "cache":
+            if positional_args:
+                return self._usage()
             return self._cache_workspace_memory(context)
         if subcommand == "reload":
+            if positional_args:
+                return self._usage()
             return self._reload_workspace_memory()
+        if subcommand == "promotions":
+            if memory_type is not None:
+                return self._usage()
+            if not positional_args:
+                return self._promotions_workspace_memory(context)
+            if len(positional_args) != 2:
+                return self._usage()
+            action, decision_id = positional_args
+            return self._promotions_workspace_memory(
+                context,
+                action=action,
+                decision_id=decision_id,
+            )
         return self._usage()
 
     def _workspace_layers(self, context: CommandContext):
@@ -192,17 +219,70 @@ class MemoryCommand(PluginBoundCommand):
         summary = summarize_cache_observability(context.cwd)
         return format_cache_observability_summary(summary)
 
-    def _parse_args(self, user_args: str) -> tuple[str, str | None] | str:
+    def _promotions_workspace_memory(
+        self,
+        context: CommandContext,
+        *,
+        action: str | None = None,
+        decision_id: str | None = None,
+    ) -> str:
+        provider = self._provider()
+        if action is not None or decision_id is not None:
+            review_actions = {
+                "accept": "confirmed",
+                "reject": "declined",
+                "revert": "reverted",
+            }
+            normalized_action = (action or "").strip().lower()
+            normalized_decision_id = (decision_id or "").strip()
+            review_action = review_actions.get(normalized_action)
+            if review_action is None or not normalized_decision_id:
+                return self._usage()
+            provider.record_governed_review(
+                context.cwd,
+                decision_id=normalized_decision_id,
+                review_action=review_action,
+            )
+            return (
+                f"Recorded review action: {review_action} "
+                f"for {normalized_decision_id}"
+            )
+
+        decisions = provider.list_governed_decisions(context.cwd)
+        lines = ["Governed promotions"]
+        if not decisions:
+            lines.append("No governed promotion decisions found.")
+            return "\n".join(lines)
+
+        for item in decisions[-10:]:
+            review_summary = _review_summary(item.get("reviews"))
+            lines.append(
+                f"- {item.get('decision_id', 'unknown')} "
+                f"{item.get('decision', 'unknown')} "
+                f"[{item.get('policy_mode', 'unknown')}] "
+                f"{item.get('reason', 'unknown')} "
+                f"reviews={review_summary}"
+            )
+            content = _one_line(item.get("content"))
+            if content:
+                lines.append(f"  content={content}")
+        return "\n".join(lines)
+
+    def _parse_args(
+        self,
+        user_args: str,
+    ) -> tuple[str, str | None, tuple[str, ...]] | str:
         try:
             tokens = shlex.split(user_args)
         except ValueError as exc:
             return f"Unable to parse /memory arguments: {exc}"
 
         if not tokens:
-            return "", None
+            return "", None, ()
 
         subcommand = tokens[0]
         memory_type: str | None = None
+        positional_args: list[str] = []
         index = 1
         while index < len(tokens):
             token = tokens[index]
@@ -222,9 +302,10 @@ class MemoryCommand(PluginBoundCommand):
                     return str(exc)
                 index += 1
                 continue
-            return self._usage()
+            positional_args.append(token)
+            index += 1
 
-        return subcommand, memory_type
+        return subcommand, memory_type, tuple(positional_args)
 
     def _reload_workspace_memory(self) -> str:
         return (
@@ -234,7 +315,8 @@ class MemoryCommand(PluginBoundCommand):
 
     def _usage(self) -> str:
         return (
-            "Usage: /memory [view|status|cache|reload] [--type <memory-type>]\n"
+            "Usage: /memory [view|status|cache|reload|promotions] [--type <memory-type>]\n"
+            "       /memory promotions [accept|reject|revert] <decision-id>\n"
             "Default action opens the workspace AWORLD.md file in your editor."
         )
 
@@ -248,3 +330,16 @@ def _one_line(value) -> str | None:
         return None
     text = " ".join(value.split()).strip()
     return text or None
+
+
+def _review_summary(value) -> str:
+    if not isinstance(value, list) or not value:
+        return "none"
+    actions = [
+        str(item.get("review_action")).strip()
+        for item in value
+        if isinstance(item, dict) and str(item.get("review_action") or "").strip()
+    ]
+    if not actions:
+        return "none"
+    return ",".join(actions)
