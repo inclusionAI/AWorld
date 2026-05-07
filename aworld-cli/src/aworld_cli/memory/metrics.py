@@ -76,14 +76,31 @@ def _promoted_decision_has_complete_explainability(decision: dict) -> bool:
         return True
     if decision.get("legacy_incomplete") is True:
         return False
-    reason = decision.get("reason")
-    source_ref = decision.get("source_ref")
-    if not isinstance(reason, str) or not reason.strip():
+    required_text_fields = (
+        "decision_id",
+        "policy_mode",
+        "policy_version",
+        "decision",
+        "reason",
+        "confidence",
+        "memory_type",
+        "evaluated_at",
+    )
+    for field_name in required_text_fields:
+        value = decision.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            return False
+    blockers = decision.get("blockers")
+    if not isinstance(blockers, list):
         return False
+    source_ref = decision.get("source_ref")
     if not isinstance(source_ref, dict):
         return False
     required_keys = ("session_id", "task_id", "candidate_id")
-    return all(isinstance(source_ref.get(key), str) and source_ref[key].strip() for key in required_keys)
+    return all(
+        isinstance(source_ref.get(key), str) and source_ref[key].strip()
+        for key in required_keys
+    )
 
 
 def summarize_promotion_metrics(
