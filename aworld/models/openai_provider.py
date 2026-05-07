@@ -281,6 +281,9 @@ class OpenAIProvider(LLMProviderBase):
                         "id": chunk.id if hasattr(chunk, 'id') else chunk.get("id"),
                         "model": chunk.model if hasattr(chunk, 'model') else chunk.get("model"),
                         "object": chunk.object if hasattr(chunk, 'object') else chunk.get("object"),
+                        "usage": chunk.usage if hasattr(chunk, 'usage') else chunk.get("usage"),
+                        "request_id": getattr(chunk, "request_id", None) if not isinstance(chunk, dict) else chunk.get("request_id"),
+                        "_request_id": getattr(chunk, "_request_id", None) if not isinstance(chunk, dict) else chunk.get("_request_id"),
                         "choices": [
                             {
                                 "delta": {
