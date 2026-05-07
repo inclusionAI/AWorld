@@ -18,6 +18,10 @@ def handle_event(event, state):
         return {"action": "allow"}
 
     final_answer = event.get("final_answer") or ""
+    usage = event.get("usage")
+    llm_calls = event.get("llm_calls")
+    if not isinstance(llm_calls, list):
+        llm_calls = []
     candidates = []
     if final_answer:
         decision = evaluate_turn_end_candidate(final_answer)
@@ -50,6 +54,8 @@ def handle_event(event, state):
             "task_status": event.get("task_status") or "idle",
             "workspace_path": workspace_path,
             "final_answer": final_answer,
+            "usage": usage if isinstance(usage, dict) else {},
+            "llm_calls": llm_calls,
             "candidates": candidates,
         },
     )
