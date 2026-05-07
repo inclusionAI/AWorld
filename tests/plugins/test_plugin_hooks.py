@@ -793,3 +793,53 @@ async def test_memory_plugin_task_completed_hook_does_not_auto_promote_non_works
     metrics_payload = json.loads(metrics_file.read_text(encoding="utf-8").strip())
     assert metrics_payload["promotion"] == "session_log_only"
     assert metrics_payload["reason"] == "instructional_candidate_auto_promotion_disabled"
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_task_completed_hook_governed_mode_does_not_auto_promote_low_confidence_candidate(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+
+    monkeypatch.setenv("AWORLD_CLI_PROMOTION_MODE", "governed")
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    result = await hooks["task_completed"][0].run(
+        event={
+            "session_id": "session-1",
+            "task_id": "task-3",
+            "task_status": "idle",
+            "workspace_path": str(workspace),
+            "final_answer": "I updated the workspace and ran the tests successfully.",
+        },
+        state={"workspace_path": str(workspace)},
+    )
+
+    log_file = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
+    metrics_file = workspace / ".aworld" / "memory" / "metrics" / "promotion.jsonl"
+    decisions_file = workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl"
+    durable_file = workspace / ".aworld" / "memory" / "durable.jsonl"
+
+    assert result.action == "allow"
+    assert log_file.exists()
+    assert metrics_file.exists()
+    assert decisions_file.exists()
+    assert not durable_file.exists()
+
+    session_payload = json.loads(log_file.read_text(encoding="utf-8").strip())
+    candidate = session_payload["candidates"][0]
+    assert candidate["confidence"] == "low"
+    assert candidate["reason"] == "non_instructional_turn_end_observation"
+    assert candidate["eligible_for_auto_promotion"] is False
+
+    metrics_payload = json.loads(metrics_file.read_text(encoding="utf-8").strip())
+    assert metrics_payload["promotion"] == "session_log_only"
+    assert metrics_payload["reason"] == "non_instructional_turn_end_observation"
+
+    decision_payload = json.loads(decisions_file.read_text(encoding="utf-8").strip())
+    assert decision_payload["decision"] == "rejected"
+    assert "ineligible_extraction_candidate" in decision_payload["blockers"]

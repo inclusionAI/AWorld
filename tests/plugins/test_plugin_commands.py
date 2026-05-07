@@ -606,6 +606,60 @@ async def test_memory_plugin_promotions_invalid_accept_does_not_write_review(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("decision_payload", "expected_error"),
+    [
+        (
+            '{"decision_id":"gdec_1","candidate_id":"cand_1","decision":"rejected","policy_mode":"governed","policy_version":"2026-05-07","reason":"ineligible_extraction_candidate","confidence":"low","blockers":["ineligible_extraction_candidate"],"memory_type":"workspace","content":"I updated the workspace and ran the tests successfully.","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_1"},"evaluated_at":"2026-05-07T00:00:00+00:00"}\n',
+            "Governed decision gdec_1 is not reviewable for acceptance",
+        ),
+        (
+            '{"decision_id":"gdec_1","candidate_id":"cand_1","decision":"session_log_only","policy_mode":"shadow","policy_version":"2026-05-07","reason":"temporary_candidate","confidence":"high","blockers":["temporary_candidate"],"memory_type":"workspace","content":"Temporary debug note for the current task only.","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_1"},"evaluated_at":"2026-05-07T00:00:00+00:00"}\n',
+            "Governed decision gdec_1 is not reviewable for acceptance",
+        ),
+    ],
+)
+async def test_memory_plugin_promotions_accept_rejects_non_reviewable_decisions(
+    tmp_path,
+    decision_payload,
+    expected_error,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").write_text(
+        decision_payload,
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        with pytest.raises(ValueError, match=expected_error):
+            await command.execute(
+                CommandContext(cwd=str(workspace), user_args="promotions accept gdec_1")
+            )
+
+        review_file = (
+            workspace
+            / ".aworld"
+            / "memory"
+            / "metrics"
+            / "promotion_reviews.jsonl"
+        )
+        durable_file = workspace / ".aworld" / "memory" / "durable.jsonl"
+        assert not review_file.exists()
+        assert not durable_file.exists()
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("user_args", "expected_action"),
     [
         ("promotions reject gdec_1", "declined"),
@@ -654,6 +708,39 @@ async def test_memory_plugin_promotions_non_accept_review_actions_record_reviews
             )
         )
         assert not durable_file.exists()
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("user_args", ["promotions reject missing", "promotions revert missing"])
+async def test_memory_plugin_promotions_non_accept_unknown_decision_fails_safely(
+    tmp_path,
+    user_args,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        with pytest.raises(ValueError, match="Unknown governed decision: missing"):
+            await command.execute(CommandContext(cwd=str(workspace), user_args=user_args))
+
+        review_file = (
+            workspace
+            / ".aworld"
+            / "memory"
+            / "metrics"
+            / "promotion_reviews.jsonl"
+        )
+        assert not review_file.exists()
     finally:
         CommandRegistry.restore(snapshot)
 
