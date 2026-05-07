@@ -124,10 +124,10 @@ class CliDurableMemoryProvider:
 
         active_records: list[DurableMemoryRecord] = []
         for record in records:
-            record_key = (record.memory_type, record.content)
             if (
                 record.source == "governed_auto_promotion"
-                and record_key in reverted_governed_keys
+                and record.decision_id
+                and record.decision_id in reverted_governed_keys
             ):
                 continue
             active_records.append(record)
@@ -140,12 +140,16 @@ class CliDurableMemoryProvider:
         text: str,
         memory_type: str,
         source: str,
+        decision_id: str | None = None,
+        source_ref: dict[str, str] | None = None,
     ) -> ExplicitDurableWriteResult:
         write_result: DurableMemoryWriteResult = append_durable_memory_record(
             workspace_path=workspace_path,
             text=text,
             memory_type=memory_type,
             source=source,
+            decision_id=decision_id,
+            source_ref=source_ref,
         )
 
         instruction_target: Path | None = None
@@ -167,18 +171,17 @@ class CliDurableMemoryProvider:
     def _reverted_governed_record_keys(
         self,
         workspace_path: str | Path,
-    ) -> set[tuple[str, str]]:
-        reverted_keys: set[tuple[str, str]] = set()
+    ) -> set[str]:
+        reverted_keys: set[str] = set()
         for decision in self.list_governed_decisions(workspace_path):
             if decision.get("decision") != "durable_memory":
                 continue
-            memory_type = str(decision.get("memory_type") or "").strip()
-            content = str(decision.get("content") or "").strip()
-            if not memory_type or not content:
+            decision_id = str(decision.get("decision_id") or "").strip()
+            if not decision_id:
                 continue
             reviews = decision.get("reviews")
             if not isinstance(reviews, list):
                 continue
             if any(review.get("review_action") == "reverted" for review in reviews):
-                reverted_keys.add((memory_type, content))
+                reverted_keys.add(decision_id)
         return reverted_keys
