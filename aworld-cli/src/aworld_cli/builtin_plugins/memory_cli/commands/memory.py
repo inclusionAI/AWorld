@@ -14,6 +14,7 @@ from aworld_cli.memory.cache_observability import (
 )
 from aworld_cli.memory.metrics import summarize_promotion_metrics
 from aworld_cli.memory.discovery import discover_workspace_instruction_layers
+from aworld_cli.memory.governance import governance_mode
 from aworld_cli.memory.promotion import auto_promotion_enabled
 from aworld_cli.memory.provider import CliDurableMemoryProvider
 from aworld_cli.builtin_plugins.memory_cli.common import (
@@ -142,6 +143,11 @@ class MemoryCommand(PluginBoundCommand):
         lines.append(f"Promotion metrics file: {metrics.metrics_path}")
         lines.append(f"Promotion evaluations: {metrics.total_evaluations}")
         lines.append(f"Eligible for auto-promotion: {metrics.eligible_for_auto_promotion}")
+        lines.append(f"Governance mode: {governance_mode()}")
+        lines.append(
+            "Governed default rollout ready: "
+            f"{'yes' if metrics.default_rollout_ready else 'no'}"
+        )
         lines.append(f"Auto-promotion enabled: {'yes' if auto_promotion_enabled() else 'no'}")
         if metrics.by_confidence:
             lines.append("Promotion confidence:")
