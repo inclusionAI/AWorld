@@ -415,8 +415,7 @@ class Context:
             except Exception:
                 new_context._agent_token_id_traj = copy.copy(self._agent_token_id_traj)
 
-        if hasattr(self, '_merge_llm_calls_baseline'):
-            new_context._merge_llm_calls_baseline = self._merge_llm_calls_baseline
+        new_context._merge_llm_calls_baseline = len(new_context.get_llm_calls())
 
         return new_context
 
