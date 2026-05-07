@@ -8,6 +8,8 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "aworld-cli" / "src"))
 
 from aworld.plugins.discovery import discover_plugins
+from aworld_cli.builtin_plugins.memory_cli.common import append_workspace_session_log
+from aworld_cli.builtin_plugins.memory_cli.hooks import task_completed as task_completed_hook_module
 from aworld_cli.plugin_capabilities.hooks import PluginHookResult, load_plugin_hooks
 from aworld_cli.plugin_capabilities.state import PluginStateStore
 from aworld_cli.runtime.base import BaseCliRuntime
@@ -405,6 +407,56 @@ async def test_memory_plugin_task_completed_hook_governed_mode_writes_durable_me
     assert decision_payload["source_ref"]["session_log_recorded_at"] == session_payload["recorded_at"]
     assert durable_payload["decision_id"] == decision_payload["decision_id"]
     assert durable_payload["source_ref"] == decision_payload["source_ref"]
+
+
+def test_task_completed_resolves_persisted_candidate_by_identity_not_last_line(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    session_log_path = append_workspace_session_log(
+        workspace_path=workspace,
+        session_id="session-1",
+        payload={
+            "event": "task_completed",
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "candidates": [
+                {
+                    "candidate_id": "session-1:task-1:0",
+                    "content": "Use pnpm for workspace package management",
+                    "confidence": "high",
+                    "memory_type": "workspace",
+                }
+            ],
+        },
+    )
+    append_workspace_session_log(
+        workspace_path=workspace,
+        session_id="session-1",
+        payload={
+            "event": "task_completed",
+            "session_id": "session-1",
+            "task_id": "task-other",
+            "candidates": [
+                {
+                    "candidate_id": "session-1:task-other:0",
+                    "content": "Unrelated later append",
+                    "confidence": "low",
+                    "memory_type": "workspace",
+                }
+            ],
+        },
+    )
+
+    persisted_entry, persisted_candidate = task_completed_hook_module._read_persisted_candidate_entry(
+        session_log_path=session_log_path,
+        session_id="session-1",
+        task_id="task-1",
+        candidate_id="session-1:task-1:0",
+    )
+
+    assert persisted_entry["task_id"] == "task-1"
+    assert persisted_candidate["candidate_id"] == "session-1:task-1:0"
+    assert persisted_candidate["content"] == "Use pnpm for workspace package management"
 
 
 @pytest.mark.asyncio
