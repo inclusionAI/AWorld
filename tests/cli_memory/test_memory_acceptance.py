@@ -256,7 +256,28 @@ async def test_governed_mode_promotions_become_active_durable_memory(
 
 
 @pytest.mark.asyncio
-async def test_hybrid_runtime_message_memory_contract_is_unchanged(tmp_path) -> None:
+async def test_hybrid_runtime_message_memory_contract_is_unchanged(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    monkeypatch.setenv("AWORLD_CLI_PROMOTION_MODE", "governed")
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    await hooks["task_completed"][0].run(
+        event={
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "task_status": "idle",
+            "workspace_path": str(workspace),
+            "final_answer": "Always use pnpm for workspace package management and never run npm install here.",
+        },
+        state={"workspace_path": str(workspace)},
+    )
+
     memory = _build_hybrid_memory(tmp_path)
     metadata = _message_metadata()
 
@@ -268,6 +289,13 @@ async def test_hybrid_runtime_message_memory_contract_is_unchanged(tmp_path) -> 
         "task_id": "task-1",
     }
 
+    active_records = memory.get_active_durable_memory_records(workspace)
+
+    assert len(active_records) == 1
+    assert active_records[0].content == (
+        "Always use pnpm for workspace package management and never run npm install here."
+    )
+    assert active_records[0].source == "governed_auto_promotion"
     assert [item.content for item in memory.get_all(filters=filters)] == ["hybrid hello"]
     assert [item.content for item in memory.get_last_n(1, filters=filters)] == [
         "hybrid hello"
