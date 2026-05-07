@@ -8,6 +8,10 @@ from pathlib import Path
 from aworld_cli.core.command_system import CommandContext
 from aworld_cli.plugin_capabilities.commands import PluginBoundCommand
 from aworld_cli.memory.durable import durable_memory_file, normalize_durable_memory_type
+from aworld_cli.memory.cache_observability import (
+    format_cache_observability_summary,
+    summarize_cache_observability,
+)
 from aworld_cli.memory.metrics import summarize_promotion_metrics
 from aworld_cli.memory.discovery import discover_workspace_instruction_layers
 from aworld_cli.memory.promotion import auto_promotion_enabled
@@ -29,6 +33,7 @@ class MemoryCommand(PluginBoundCommand):
             "/memory view": "View effective workspace memory instructions",
             "/memory reload": "Explain current memory reload behavior",
             "/memory status": "Show workspace memory status",
+            "/memory cache": "Summarize request-linked cache observability from session logs",
         }
 
     async def execute(self, context: CommandContext) -> str:
@@ -43,6 +48,8 @@ class MemoryCommand(PluginBoundCommand):
             return self._view_workspace_memory(context, memory_type=memory_type)
         if subcommand == "status":
             return self._status_workspace_memory(context)
+        if subcommand == "cache":
+            return self._cache_workspace_memory(context)
         if subcommand == "reload":
             return self._reload_workspace_memory()
         return self._usage()
@@ -181,6 +188,10 @@ class MemoryCommand(PluginBoundCommand):
                 lines.append(f"- [{record.memory_type}] {record.content}")
         return "\n".join(lines)
 
+    def _cache_workspace_memory(self, context: CommandContext) -> str:
+        summary = summarize_cache_observability(context.cwd)
+        return format_cache_observability_summary(summary)
+
     def _parse_args(self, user_args: str) -> tuple[str, str | None] | str:
         try:
             tokens = shlex.split(user_args)
@@ -223,7 +234,7 @@ class MemoryCommand(PluginBoundCommand):
 
     def _usage(self) -> str:
         return (
-            "Usage: /memory [view|status|reload] [--type <memory-type>]\n"
+            "Usage: /memory [view|status|cache|reload] [--type <memory-type>]\n"
             "Default action opens the workspace AWORLD.md file in your editor."
         )
 
