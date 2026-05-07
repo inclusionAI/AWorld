@@ -16,6 +16,10 @@ from aworld_cli.memory.discovery import (
     discover_workspace_instruction_layers,
     load_instruction_text,
 )
+from aworld_cli.memory.governance import (
+    append_governed_review,
+    list_governed_decisions as load_governed_decisions,
+)
 from aworld_cli.memory.relevance import recall_relevant_session_log_texts
 
 
@@ -84,6 +88,51 @@ class CliDurableMemoryProvider:
             memory_type=memory_type,
         )
 
+    def list_governed_decisions(
+        self,
+        workspace_path: str | Path,
+    ) -> tuple[dict, ...]:
+        return tuple(load_governed_decisions(workspace_path))
+
+    def record_governed_review(
+        self,
+        workspace_path: str | Path,
+        *,
+        decision_id: str,
+        review_action: str,
+    ) -> Path:
+        return append_governed_review(
+            workspace_path,
+            {
+                "decision_id": decision_id,
+                "review_action": review_action,
+            },
+        )
+
+    def get_active_durable_memory_records(
+        self,
+        workspace_path: str | Path,
+        memory_type: str | None = None,
+    ) -> tuple[DurableMemoryRecord, ...]:
+        records = self.get_durable_memory_records(
+            workspace_path,
+            memory_type=memory_type,
+        )
+        reverted_governed_keys = self._reverted_governed_record_keys(workspace_path)
+        if not reverted_governed_keys:
+            return records
+
+        active_records: list[DurableMemoryRecord] = []
+        for record in records:
+            record_key = (record.memory_type, record.content)
+            if (
+                record.source == "governed_auto_promotion"
+                and record_key in reverted_governed_keys
+            ):
+                continue
+            active_records.append(record)
+        return tuple(active_records)
+
     def append_durable_memory_record(
         self,
         workspace_path: str | Path,
@@ -114,3 +163,22 @@ class CliDurableMemoryProvider:
             instruction_target=instruction_target,
             instruction_updated=instruction_updated,
         )
+
+    def _reverted_governed_record_keys(
+        self,
+        workspace_path: str | Path,
+    ) -> set[tuple[str, str]]:
+        reverted_keys: set[tuple[str, str]] = set()
+        for decision in self.list_governed_decisions(workspace_path):
+            if decision.get("decision") != "durable_memory":
+                continue
+            memory_type = str(decision.get("memory_type") or "").strip()
+            content = str(decision.get("content") or "").strip()
+            if not memory_type or not content:
+                continue
+            reviews = decision.get("reviews")
+            if not isinstance(reviews, list):
+                continue
+            if any(review.get("review_action") == "reverted" for review in reviews):
+                reverted_keys.add((memory_type, content))
+        return reverted_keys

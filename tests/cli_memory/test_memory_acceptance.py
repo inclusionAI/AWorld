@@ -206,3 +206,37 @@ async def test_relevant_recall_injects_only_matching_session_log_memories(
     assert "Relevant Memory Recall" in formatted
     assert "Use pnpm and keep tests fast in this workspace." in formatted
     assert "Coordinate launch notes with the marketing team." not in formatted
+
+
+@pytest.mark.asyncio
+async def test_governed_mode_promotions_become_active_durable_memory(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    monkeypatch.setenv("AWORLD_CLI_PROMOTION_MODE", "governed")
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    await hooks["task_completed"][0].run(
+        event={
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "task_status": "idle",
+            "workspace_path": str(workspace),
+            "final_answer": "Always use pnpm for workspace package management and never run npm install here.",
+        },
+        state={"workspace_path": str(workspace)},
+    )
+
+    memory = _build_hybrid_memory(tmp_path)
+    active_records = memory.get_active_durable_memory_records(workspace)
+    decisions = memory.list_governed_decisions(workspace)
+
+    assert len(active_records) == 1
+    assert active_records[0].content == "Always use pnpm for workspace package management and never run npm install here."
+    assert active_records[0].source == "governed_auto_promotion"
+    assert decisions[0]["decision"] == "durable_memory"
+    assert decisions[0]["reason"] == "governed_policy_pass"
