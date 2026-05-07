@@ -319,6 +319,81 @@ async def test_ralph_stop_hook_blocks_and_continues_when_active(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_memory_plugin_task_completed_hook_records_shadow_decision_without_durable_write(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    monkeypatch.setenv("AWORLD_CLI_PROMOTION_MODE", "shadow")
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    await hooks["task_completed"][0].run(
+        event={
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "workspace_path": str(workspace),
+            "task_status": "idle",
+            "final_answer": "Always use pnpm for workspace package management and never run npm install here.",
+        },
+        state={"workspace_path": str(workspace)},
+    )
+
+    assert not (workspace / ".aworld" / "memory" / "durable.jsonl").exists()
+
+    decisions = (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "shadow_mode_no_auto_promotion" in decisions
+
+    session_log = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
+    session_payload = json.loads(session_log.read_text(encoding="utf-8").strip())
+    assert session_payload["candidates"][0]["governed_decision"] == "session_log_only"
+    assert session_payload["candidates"][0]["auto_promoted"] is False
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_task_completed_hook_governed_mode_writes_durable_memory(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    monkeypatch.setenv("AWORLD_CLI_PROMOTION_MODE", "governed")
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+    hooks = load_plugin_hooks([plugin])
+
+    await hooks["task_completed"][0].run(
+        event={
+            "session_id": "session-1",
+            "task_id": "task-1",
+            "workspace_path": str(workspace),
+            "task_status": "idle",
+            "final_answer": "Always use pnpm for workspace package management and never run npm install here.",
+        },
+        state={"workspace_path": str(workspace)},
+    )
+
+    durable_payload = json.loads(
+        (workspace / ".aworld" / "memory" / "durable.jsonl").read_text(encoding="utf-8").strip()
+    )
+    assert durable_payload["source"] == "governed_auto_promotion"
+
+    decisions = (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").read_text(
+        encoding="utf-8"
+    )
+    assert "governed_policy_pass" in decisions
+
+    session_log = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
+    session_payload = json.loads(session_log.read_text(encoding="utf-8").strip())
+    assert session_payload["candidates"][0]["governed_decision"] == "durable_memory"
+    assert session_payload["candidates"][0]["auto_promoted"] is True
+
+
+@pytest.mark.asyncio
 async def test_ralph_stop_hook_denies_when_handle_is_missing_for_active_state(tmp_path):
     plugin_root = _get_builtin_ralph_plugin_root()
     plugin = discover_plugins([plugin_root])[0]
@@ -542,14 +617,14 @@ async def test_memory_plugin_task_completed_hook_extracts_instructional_candidat
 
 
 @pytest.mark.asyncio
-async def test_memory_plugin_task_completed_hook_auto_promotes_only_high_confidence_when_enabled(
+async def test_memory_plugin_task_completed_hook_governed_mode_promotes_high_confidence_instruction(
     tmp_path,
     monkeypatch,
 ):
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
 
-    monkeypatch.setenv("AWORLD_CLI_ENABLE_AUTO_PROMOTION", "1")
+    monkeypatch.setenv("AWORLD_CLI_PROMOTION_MODE", "governed")
 
     plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
     hooks = load_plugin_hooks([plugin])
@@ -580,18 +655,20 @@ async def test_memory_plugin_task_completed_hook_auto_promotes_only_high_confide
     candidate = session_payload["candidates"][0]
     assert candidate["confidence"] == "high"
     assert candidate["promotion"] == "durable_memory"
-    assert candidate["reason"] == "high_confidence_workspace_instruction_auto_promoted"
+    assert candidate["reason"] == "high_confidence_workspace_instruction_candidate"
     assert candidate["eligible_for_auto_promotion"] is True
     assert candidate["auto_promoted"] is True
+    assert candidate["governed_decision"] == "durable_memory"
+    assert candidate["governed_reason"] == "governed_policy_pass"
 
     metrics_payload = json.loads(metrics_file.read_text(encoding="utf-8").strip())
     assert metrics_payload["promotion"] == "durable_memory"
-    assert metrics_payload["reason"] == "high_confidence_workspace_instruction_auto_promoted"
+    assert metrics_payload["reason"] == "high_confidence_workspace_instruction_candidate"
 
     durable_payload = json.loads(durable_file.read_text(encoding="utf-8").strip())
     assert durable_payload["memory_type"] == "workspace"
     assert durable_payload["content"] == "Always use pnpm for workspace package management and never run npm install here."
-    assert durable_payload["source"] == "auto_promotion"
+    assert durable_payload["source"] == "governed_auto_promotion"
     assert "Always use pnpm for workspace package management" in instruction_file.read_text(
         encoding="utf-8"
     )
