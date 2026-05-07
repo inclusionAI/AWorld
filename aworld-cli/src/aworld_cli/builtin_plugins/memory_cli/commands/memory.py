@@ -19,6 +19,7 @@ from aworld_cli.memory.provider import CliDurableMemoryProvider
 from aworld_cli.builtin_plugins.memory_cli.common import (
     ensure_workspace_memory_file,
     open_in_editor,
+    remove_remembered_guidance,
 )
 
 
@@ -112,7 +113,7 @@ class MemoryCommand(PluginBoundCommand):
 
     def _status_workspace_memory(self, context: CommandContext) -> str:
         layers = self._workspace_layers(context)
-        durable_records = self._provider().get_durable_memory_records(context.cwd)
+        durable_records = self._provider().get_active_durable_memory_records(context.cwd)
         durable_path = durable_memory_file(context.cwd)
         metrics = summarize_promotion_metrics(context.cwd)
         lines = [
@@ -192,7 +193,10 @@ class MemoryCommand(PluginBoundCommand):
         layers = self._workspace_layers(context)
         provider = self._provider()
         instruction = provider.get_instruction_context(context.cwd)
-        durable_records = provider.get_durable_memory_records(context.cwd, memory_type=memory_type)
+        durable_records = provider.get_active_durable_memory_records(
+            context.cwd,
+            memory_type=memory_type,
+        )
         if not instruction.texts and not durable_records:
             return (
                 "No workspace memory instructions found.\n"
@@ -286,6 +290,21 @@ class MemoryCommand(PluginBoundCommand):
                 decision_id=normalized_decision_id,
                 review_action=review_action,
             )
+            if normalized_action == "revert":
+                decisions = provider.list_governed_decisions(context.cwd)
+                decision = next(
+                    (
+                        item
+                        for item in decisions
+                        if item.get("decision_id") == normalized_decision_id
+                    ),
+                    None,
+                )
+                content = _one_line(decision.get("content")) if isinstance(decision, dict) else None
+                if content is not None:
+                    active_records = provider.get_active_durable_memory_records(context.cwd)
+                    if not any(record.content == content for record in active_records):
+                        remove_remembered_guidance(context.cwd, content)
             return (
                 f"Recorded review action: {review_action} "
                 f"for {normalized_decision_id}"

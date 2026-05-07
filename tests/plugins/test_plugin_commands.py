@@ -649,6 +649,146 @@ async def test_memory_plugin_promotions_revert_deactivates_promoted_governed_rec
 
 
 @pytest.mark.asyncio
+async def test_memory_plugin_status_and_view_hide_reverted_governed_records(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld").mkdir(parents=True)
+    (workspace / ".aworld" / "AWORLD.md").write_text(
+        "# Workspace Instructions\n\n## Remembered Guidance\n- Use pnpm\n- Keep release notes current\n",
+        encoding="utf-8",
+    )
+    (workspace / ".aworld" / "memory").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "durable.jsonl").write_text(
+        '{"recorded_at":"2026-05-07T00:00:00+00:00","memory_type":"workspace","content":"Use pnpm","source":"governed_auto_promotion","decision_id":"gdec_1","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_1"}}\n'
+        '{"recorded_at":"2026-05-07T00:01:00+00:00","memory_type":"workspace","content":"Keep release notes current","source":"remember_command"}\n',
+        encoding="utf-8",
+    )
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics" / "promotion_reviews.jsonl").write_text(
+        '{"decision_id":"gdec_1","review_action":"reverted"}\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        status_result = await command.execute(
+            CommandContext(cwd=str(workspace), user_args="status")
+        )
+        view_result = await command.execute(
+            CommandContext(cwd=str(workspace), user_args="view")
+        )
+
+        assert "Durable record count: 1" in status_result
+        assert "- workspace: 1" in status_result
+        assert "- [workspace] Keep release notes current" in view_result
+        assert "- [workspace] Use pnpm" not in view_result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_promotions_revert_removes_guidance_when_no_active_record_remains(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld").mkdir(parents=True)
+    workspace_memory_file = workspace / ".aworld" / "AWORLD.md"
+    workspace_memory_file.write_text(
+        "# Workspace Instructions\n\n## Remembered Guidance\n- Use pnpm\n- Keep release notes current\n",
+        encoding="utf-8",
+    )
+    (workspace / ".aworld" / "memory").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "durable.jsonl").write_text(
+        '{"recorded_at":"2026-05-07T00:00:00+00:00","memory_type":"workspace","content":"Use pnpm","source":"governed_auto_promotion","decision_id":"gdec_1","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_1"}}\n',
+        encoding="utf-8",
+    )
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").write_text(
+        '{"decision_id":"gdec_1","candidate_id":"cand_1","decision":"durable_memory","policy_mode":"governed","policy_version":"2026-05-07","reason":"governed_policy_pass","confidence":"high","blockers":[],"memory_type":"workspace","content":"Use pnpm","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_1"},"evaluated_at":"2026-05-07T00:00:00+00:00"}\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(
+            CommandContext(cwd=str(workspace), user_args="promotions revert gdec_1")
+        )
+        view_result = await command.execute(
+            CommandContext(cwd=str(workspace), user_args="view")
+        )
+
+        assert result == "Recorded review action: reverted for gdec_1"
+        content = workspace_memory_file.read_text(encoding="utf-8")
+        assert "- Use pnpm" not in content
+        assert "- Keep release notes current" in content
+        assert "Use pnpm" not in view_result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
+async def test_memory_plugin_promotions_revert_keeps_guidance_when_duplicate_active_record_remains(
+    tmp_path,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld").mkdir(parents=True)
+    workspace_memory_file = workspace / ".aworld" / "AWORLD.md"
+    workspace_memory_file.write_text(
+        "# Workspace Instructions\n\n## Remembered Guidance\n- Use pnpm\n",
+        encoding="utf-8",
+    )
+    (workspace / ".aworld" / "memory").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "durable.jsonl").write_text(
+        '{"recorded_at":"2026-05-07T00:00:00+00:00","memory_type":"workspace","content":"Use pnpm","source":"governed_auto_promotion","decision_id":"gdec_1","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_1"}}\n'
+        '{"recorded_at":"2026-05-07T00:01:00+00:00","memory_type":"workspace","content":"Use pnpm","source":"remember_command"}\n',
+        encoding="utf-8",
+    )
+    (workspace / ".aworld" / "memory" / "metrics").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").write_text(
+        '{"decision_id":"gdec_1","candidate_id":"cand_1","decision":"durable_memory","policy_mode":"governed","policy_version":"2026-05-07","reason":"governed_policy_pass","confidence":"high","blockers":[],"memory_type":"workspace","content":"Use pnpm","source_ref":{"session_id":"s1","task_id":"t1","candidate_id":"cand_1"},"evaluated_at":"2026-05-07T00:00:00+00:00"}\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(
+            CommandContext(cwd=str(workspace), user_args="promotions revert gdec_1")
+        )
+        view_result = await command.execute(
+            CommandContext(cwd=str(workspace), user_args="view")
+        )
+
+        assert result == "Recorded review action: reverted for gdec_1"
+        content = workspace_memory_file.read_text(encoding="utf-8")
+        assert "- Use pnpm" in content
+        assert "- [workspace] Use pnpm" in view_result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
 async def test_memory_plugin_view_includes_explicit_durable_records(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
