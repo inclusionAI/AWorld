@@ -110,47 +110,6 @@ class CliDurableMemoryProvider:
             },
         )
 
-    def promote_governed_decision(
-        self,
-        workspace_path: str | Path,
-        *,
-        decision_id: str,
-    ) -> ExplicitDurableWriteResult:
-        normalized_decision_id = decision_id.strip()
-        if not normalized_decision_id:
-            raise ValueError("decision_id must not be empty")
-
-        decisions = self.list_governed_decisions(workspace_path)
-        decision = next(
-            (
-                item
-                for item in decisions
-                if item.get("decision_id") == normalized_decision_id
-            ),
-            None,
-        )
-        if decision is None:
-            raise ValueError(
-                f"Unknown governed decision: {normalized_decision_id}"
-            )
-
-        content = str(decision.get("content") or "").strip()
-        memory_type = str(decision.get("memory_type") or "").strip()
-        source_ref = decision.get("source_ref")
-        if not content:
-            raise ValueError(
-                f"Governed decision {normalized_decision_id} has no content to promote"
-            )
-
-        return self.append_durable_memory_record(
-            workspace_path=workspace_path,
-            text=content,
-            memory_type=memory_type,
-            source="governed_auto_promotion",
-            decision_id=normalized_decision_id,
-            source_ref=source_ref if isinstance(source_ref, dict) else None,
-        )
-
     def get_active_durable_memory_records(
         self,
         workspace_path: str | Path,
