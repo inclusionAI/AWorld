@@ -243,6 +243,20 @@ class MemoryCommand(PluginBoundCommand):
                 decision_id=normalized_decision_id,
                 review_action=review_action,
             )
+            if normalized_action == "accept":
+                promoted = provider.promote_governed_decision(
+                    context.cwd,
+                    decision_id=normalized_decision_id,
+                )
+                lines = [
+                    f"Recorded review action: {review_action} for {normalized_decision_id}",
+                    f"Promoted to durable memory: {promoted.memory_type}",
+                ]
+                if promoted.record_created:
+                    lines.append(f"Durable record file: {promoted.record_path}")
+                else:
+                    lines.append("Durable memory already contained this content.")
+                return "\n".join(lines)
             return (
                 f"Recorded review action: {review_action} "
                 f"for {normalized_decision_id}"
@@ -257,12 +271,23 @@ class MemoryCommand(PluginBoundCommand):
         for item in decisions[-10:]:
             review_summary = _review_summary(item.get("reviews"))
             lines.append(
-                f"- {item.get('decision_id', 'unknown')} "
-                f"{item.get('decision', 'unknown')} "
-                f"[{item.get('policy_mode', 'unknown')}] "
-                f"{item.get('reason', 'unknown')} "
-                f"reviews={review_summary}"
+                "  ".join(
+                    (
+                        f"decision_id={item.get('decision_id', 'unknown')}",
+                        f"policy_mode={item.get('policy_mode', 'unknown')}",
+                        f"policy_version={item.get('policy_version', 'unknown')}",
+                        f"decision={item.get('decision', 'unknown')}",
+                        f"reason={item.get('reason', 'unknown')}",
+                        f"confidence={item.get('confidence', 'unknown')}",
+                    )
+                )
             )
+            source_ref = _source_ref_summary(item.get("source_ref"))
+            lines.append(f"  source_ref={source_ref}")
+            blockers = _blockers_summary(item.get("blockers"))
+            if blockers is not None:
+                lines.append(f"  blockers={blockers}")
+            lines.append(f"  reviews={review_summary}")
             content = _one_line(item.get("content"))
             if content:
                 lines.append(f"  content={content}")
@@ -343,3 +368,27 @@ def _review_summary(value) -> str:
     if not actions:
         return "none"
     return ",".join(actions)
+
+
+def _source_ref_summary(value) -> str:
+    if not isinstance(value, dict) or not value:
+        return "none"
+    ordered_keys = ("session_id", "task_id", "candidate_id")
+    parts: list[str] = []
+    for key in ordered_keys:
+        if key in value:
+            parts.append(f"{key}={value[key]}")
+    for key in sorted(value):
+        if key not in ordered_keys:
+            parts.append(f"{key}={value[key]}")
+    return ", ".join(parts) if parts else "none"
+
+
+def _blockers_summary(value) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        text = str(value).strip()
+        return text or None
+    blockers = [str(item).strip() for item in value if str(item).strip()]
+    return ",".join(blockers) if blockers else None
