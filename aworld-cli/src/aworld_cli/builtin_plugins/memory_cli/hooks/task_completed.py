@@ -46,8 +46,12 @@ def handle_event(event, state):
                 "candidates": [initial_candidate],
             },
         )
-        persisted_entry = _read_last_session_log_entry(session_log_path)
-        persisted_candidate = _find_persisted_candidate(persisted_entry, candidate_id)
+        persisted_entry, persisted_candidate = _read_persisted_candidate_entry(
+            session_log_path=session_log_path,
+            session_id=session_id,
+            task_id=str(event.get("task_id") or ""),
+            candidate_id=candidate_id,
+        )
         governed_source_ref = {
             "session_id": session_id,
             "task_id": str(event.get("task_id") or ""),
@@ -106,14 +110,34 @@ def handle_event(event, state):
     return {"action": "allow"}
 
 
-def _read_last_session_log_entry(session_log_path):
-    lines = session_log_path.read_text(encoding="utf-8").splitlines()
-    if not lines:
-        return {}
-    payload = json.loads(lines[-1])
-    if isinstance(payload, dict):
-        return payload
-    return {}
+def _read_persisted_candidate_entry(
+    session_log_path,
+    *,
+    session_id: str,
+    task_id: str,
+    candidate_id: str,
+):
+    try:
+        lines = session_log_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return {}, {}
+
+    for line in reversed(lines):
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if session_id and str(payload.get("session_id") or "") != session_id:
+            continue
+        if task_id and str(payload.get("task_id") or "") != task_id:
+            continue
+        candidate = _find_persisted_candidate(payload, candidate_id)
+        if candidate:
+            return payload, candidate
+
+    return {}, {}
 
 
 def _find_persisted_candidate(payload, candidate_id: str):
