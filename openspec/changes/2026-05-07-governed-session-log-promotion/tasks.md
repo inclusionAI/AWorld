@@ -29,9 +29,9 @@
 
 ## 4. Metrics And Rollout
 
-- [ ] 4.1 Extend promotion metrics beyond raw counts to include reviewed,
+- [x] 4.1 Extend promotion metrics beyond raw counts to include reviewed,
   confirmed, reverted, and pending-review states.
-- [ ] 4.2 Compute precision and pollution proxies from explicit review labels.
+- [x] 4.2 Compute precision and pollution proxies from explicit review labels.
 - [ ] 4.3 Report governance mode and rollout-threshold readiness through the
   memory command surface.
 - [ ] 4.4 Keep default mode at `shadow` until rollout thresholds are met.
@@ -44,7 +44,7 @@
 - [ ] 5.3 Add command coverage for review/status surfaces.
 - [ ] 5.4 Add acceptance coverage proving explicit `/remember` writes still
   bypass governed auto-promotion gates.
-- [ ] 5.5 Add regression coverage proving runtime message-memory behavior is
+- [x] 5.5 Add regression coverage proving runtime message-memory behavior is
   unchanged under the hybrid provider path.
 
 ## 6. Implementation Guardrails

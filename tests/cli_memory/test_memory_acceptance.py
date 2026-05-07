@@ -17,6 +17,7 @@ from aworld.core.context.amni.state import (
 from aworld.core.memory import MemoryConfig
 from aworld.memory.db.filesystem import FileSystemMemoryStore
 from aworld.memory.main import MemoryFactory
+from aworld.memory.models import MemoryHumanMessage, MessageMetadata
 from aworld.plugins.discovery import discover_plugins
 from aworld_cli.core.command_system import CommandContext, CommandRegistry
 from aworld_cli.memory.bootstrap import register_cli_memory_provider
@@ -60,6 +61,16 @@ def _build_hybrid_memory(tmp_path) -> object:
 def _patch_memory_factory(monkeypatch: pytest.MonkeyPatch, module, memory: object) -> None:
     memory_factory = type("MemoryFactory", (), {"instance": staticmethod(lambda: memory)})
     monkeypatch.setattr(module, "MemoryFactory", memory_factory, raising=False)
+
+
+def _message_metadata() -> MessageMetadata:
+    return MessageMetadata(
+        agent_id="agent-1",
+        agent_name="Aworld",
+        session_id="session-1",
+        task_id="task-1",
+        user_id="user-1",
+    )
 
 
 @pytest.mark.asyncio
@@ -242,3 +253,23 @@ async def test_governed_mode_promotions_become_active_durable_memory(
     assert active_records[0].source_ref == decisions[0]["source_ref"]
     assert decisions[0]["decision"] == "durable_memory"
     assert decisions[0]["reason"] == "governed_policy_pass"
+
+
+@pytest.mark.asyncio
+async def test_hybrid_runtime_message_memory_contract_is_unchanged(tmp_path) -> None:
+    memory = _build_hybrid_memory(tmp_path)
+    metadata = _message_metadata()
+
+    await memory.add(MemoryHumanMessage(content="hybrid hello", metadata=metadata))
+
+    filters = {
+        "agent_id": "agent-1",
+        "session_id": "session-1",
+        "task_id": "task-1",
+    }
+
+    assert [item.content for item in memory.get_all(filters=filters)] == ["hybrid hello"]
+    assert [item.content for item in memory.get_last_n(1, filters=filters)] == [
+        "hybrid hello"
+    ]
+    assert memory.search("anything") == []
