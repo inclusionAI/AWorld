@@ -324,3 +324,32 @@ def test_list_governed_decisions_preserves_legacy_partial_rows(tmp_path):
             "legacy_incomplete": True,
         }
     ]
+
+
+def test_list_governed_decisions_preserves_legacy_rows_without_reason(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    decisions_path = workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl"
+    decisions_path.parent.mkdir(parents=True, exist_ok=True)
+    decisions_path.write_text(
+        '{"decision_id":"legacy-2","decision":"session_log_only"}\n',
+        encoding="utf-8",
+    )
+
+    decisions = list_governed_decisions(workspace)
+
+    assert decisions == [
+        {
+            "decision_id": "legacy-2",
+            "decision": "session_log_only",
+            "reason": "",
+            "policy_mode": "",
+            "policy_version": "",
+            "confidence": "",
+            "source_ref": {},
+            "blockers": [],
+            "reviews": [],
+            "legacy_incomplete": True,
+        }
+    ]
