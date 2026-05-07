@@ -204,6 +204,37 @@ def test_append_governed_decision_requires_inspectable_decision_fields(tmp_path)
         )
 
 
+def test_append_governed_decision_rejects_missing_policy_mode_without_env_fallback(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setenv("AWORLD_CLI_PROMOTION_MODE", "governed")
+
+    with pytest.raises(ValueError, match="Missing required decision fields: policy_mode"):
+        append_governed_decision(
+            workspace,
+            {
+                "decision_id": "dec-2",
+                "candidate_id": "cand-2",
+                "decision": "session_log_only",
+                "policy_version": "2026-05-07",
+                "reason": "shadow_mode_no_auto_promotion",
+                "blockers": [],
+                "confidence": "low",
+                "memory_type": "workspace",
+                "content": "Legacy note.",
+                "source_ref": {
+                    "session_id": "s1",
+                    "task_id": "t1",
+                    "candidate_id": "cand-2",
+                },
+                "evaluated_at": "2026-05-07T00:00:00+00:00",
+            },
+        )
+
+
 def test_append_governed_decision_and_review_are_append_only(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -262,5 +293,34 @@ def test_append_governed_decision_and_review_are_append_only(tmp_path):
                     "review_action": "confirmed",
                 }
             ],
+        }
+    ]
+
+
+def test_list_governed_decisions_preserves_legacy_partial_rows(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    decisions_path = workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl"
+    decisions_path.parent.mkdir(parents=True, exist_ok=True)
+    decisions_path.write_text(
+        '{"decision_id":"legacy-1","decision":"session_log_only","reason":"legacy_row"}\n',
+        encoding="utf-8",
+    )
+
+    decisions = list_governed_decisions(workspace)
+
+    assert decisions == [
+        {
+            "decision_id": "legacy-1",
+            "decision": "session_log_only",
+            "reason": "legacy_row",
+            "policy_mode": "",
+            "policy_version": "",
+            "confidence": "",
+            "source_ref": {},
+            "blockers": [],
+            "reviews": [],
+            "legacy_incomplete": True,
         }
     ]
