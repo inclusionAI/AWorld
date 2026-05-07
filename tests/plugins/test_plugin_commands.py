@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from pathlib import Path
@@ -252,6 +253,86 @@ async def test_memory_plugin_status_reports_workspace_layers(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
+async def test_memory_plugin_cache_reports_request_linked_cache_observability(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "sessions").mkdir(parents=True)
+    (workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl").write_text(
+        '\n'.join(
+            [
+                json.dumps(
+                    {
+                        "recorded_at": "2026-05-07T00:00:00+00:00",
+                        "event": "task_completed",
+                        "task_id": "task-1",
+                        "llm_calls": [
+                            {
+                                "task_id": "task-1",
+                                "request_id": "llm_req_1",
+                                "provider_request_id": "req_provider_1",
+                                "model": "gpt-4.1",
+                                "request": {
+                                    "messages": [
+                                        {"role": "system", "content": "You are Aworld. Follow workspace guidance carefully."},
+                                        {"role": "user", "content": "Inspect the repo and explain the failing tests."},
+                                    ]
+                                },
+                                "usage_raw": {
+                                    "cache_hit_tokens": 80,
+                                    "cache_write_tokens": 20,
+                                    "prompt_tokens_details": {"cached_tokens": 80},
+                                },
+                            },
+                            {
+                                "task_id": "task-1",
+                                "request_id": "llm_req_2",
+                                "provider_request_id": "req_provider_2",
+                                "model": "gpt-4.1",
+                                "request": {
+                                    "messages": [
+                                        {"role": "system", "content": "You are Aworld. Follow workspace guidance carefully."},
+                                        {"role": "user", "content": "Inspect the repo and explain the failing tests."},
+                                        {"role": "assistant", "content": "Working..."},
+                                    ]
+                                },
+                                "usage_raw": {
+                                    "cache_hit_tokens": 40,
+                                    "prompt_tokens_details": {"cached_tokens": 40},
+                                },
+                            },
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            ]
+        )
+        + '\n',
+        encoding="utf-8",
+    )
+
+    plugin = discover_plugins([_get_builtin_memory_plugin_root()])[0]
+
+    snapshot = CommandRegistry.snapshot()
+    try:
+        CommandRegistry.clear()
+        register_plugin_commands([plugin])
+
+        command = CommandRegistry.get("memory")
+        result = await command.execute(CommandContext(cwd=str(workspace), user_args="cache"))
+
+        assert "Cache observability summary" in result
+        assert "LLM calls analyzed: 2" in result
+        assert "Calls with cache usage: 2" in result
+        assert "Total cache hit tokens: 120" in result
+        assert "llm_req_2" in result
+        assert "req_provider_2" in result
+        assert "Stable cacheable prefix candidates" in result
+        assert "You are Aworld" in result
+    finally:
+        CommandRegistry.restore(snapshot)
+
+
+@pytest.mark.asyncio
 async def test_memory_plugin_status_reports_recent_promotion_explanations(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
@@ -379,9 +460,11 @@ async def test_memory_plugin_view_filters_explicit_durable_records_by_type(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_memory_plugin_view_shows_filtered_durable_records_without_instruction_file(tmp_path):
+async def test_memory_plugin_view_shows_filtered_durable_records_without_instruction_file(tmp_path, monkeypatch):
     workspace = tmp_path / "workspace"
     workspace.mkdir(parents=True)
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", lambda: home)
 
     (workspace / ".aworld" / "memory").mkdir(parents=True)
     (workspace / ".aworld" / "memory" / "durable.jsonl").write_text(
