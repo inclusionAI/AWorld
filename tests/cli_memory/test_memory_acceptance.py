@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -140,12 +141,24 @@ async def test_session_log_only_memory_does_not_mutate_primary_instruction_file(
             "task_status": "idle",
             "workspace_path": str(workspace),
             "final_answer": "Temporary debug note for the current task only.",
+            "llm_calls": [
+                {
+                    "request_id": "llm_req_123",
+                    "provider_request_id": "req_provider_123",
+                    "request": {"messages": [{"role": "user", "content": "debug"}]},
+                    "usage_raw": {"cache_hit_tokens": 3},
+                }
+            ],
         },
         state={"workspace_path": str(workspace)},
     )
 
     assert not (workspace / ".aworld" / "AWORLD.md").exists()
-    assert (workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl").exists()
+    session_log = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
+    assert session_log.exists()
+    payload = json.loads(session_log.read_text(encoding="utf-8").strip())
+    assert payload["llm_calls"][0]["request_id"] == "llm_req_123"
+    assert payload["llm_calls"][0]["usage_raw"]["cache_hit_tokens"] == 3
 
 
 @pytest.mark.asyncio

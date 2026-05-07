@@ -467,6 +467,18 @@ async def test_memory_plugin_task_completed_hook_appends_workspace_session_log(t
             "task_status": "idle",
             "workspace_path": str(workspace),
             "final_answer": "Use pnpm and keep tests fast.",
+            "usage": {
+                "request_id": "llm_req_123",
+                "provider_request_id": "req_provider_123",
+            },
+            "llm_calls": [
+                {
+                    "request_id": "llm_req_123",
+                    "provider_request_id": "req_provider_123",
+                    "request": {"messages": [{"role": "user", "content": "hi"}]},
+                    "usage_raw": {"cache_hit_tokens": 80},
+                }
+            ],
         },
         state={"workspace_path": str(workspace)},
     )
@@ -482,6 +494,9 @@ async def test_memory_plugin_task_completed_hook_appends_workspace_session_log(t
     assert '"task_id": "task-1"' in lines[0]
     assert '"final_answer": "Use pnpm and keep tests fast."' in lines[0]
     payload = json.loads(lines[0])
+    assert payload["usage"]["request_id"] == "llm_req_123"
+    assert payload["llm_calls"][0]["provider_request_id"] == "req_provider_123"
+    assert payload["llm_calls"][0]["usage_raw"]["cache_hit_tokens"] == 80
     assert payload["candidates"][0]["confidence"] == "medium"
     assert payload["candidates"][0]["promotion"] == "session_log_only"
     assert payload["candidates"][0]["reason"] == "instructional_candidate_auto_promotion_disabled"
