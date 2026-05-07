@@ -238,5 +238,7 @@ async def test_governed_mode_promotions_become_active_durable_memory(
     assert len(active_records) == 1
     assert active_records[0].content == "Always use pnpm for workspace package management and never run npm install here."
     assert active_records[0].source == "governed_auto_promotion"
+    assert active_records[0].decision_id == decisions[0]["decision_id"]
+    assert active_records[0].source_ref == decisions[0]["source_ref"]
     assert decisions[0]["decision"] == "durable_memory"
     assert decisions[0]["reason"] == "governed_policy_pass"

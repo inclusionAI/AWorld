@@ -343,15 +343,22 @@ async def test_memory_plugin_task_completed_hook_records_shadow_decision_without
 
     assert not (workspace / ".aworld" / "memory" / "durable.jsonl").exists()
 
-    decisions = (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").read_text(
-        encoding="utf-8"
-    )
-    assert "shadow_mode_no_auto_promotion" in decisions
-
     session_log = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
     session_payload = json.loads(session_log.read_text(encoding="utf-8").strip())
-    assert session_payload["candidates"][0]["governed_decision"] == "session_log_only"
-    assert session_payload["candidates"][0]["auto_promoted"] is False
+    candidate = session_payload["candidates"][0]
+    assert candidate["candidate_id"]
+    assert "governed_decision" not in candidate
+    assert candidate["auto_promoted"] is False
+
+    decision_payload = json.loads(
+        (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").read_text(
+            encoding="utf-8"
+        ).strip()
+    )
+    assert decision_payload["reason"] == "shadow_mode_no_auto_promotion"
+    assert decision_payload["source_ref"]["candidate_id"] == candidate["candidate_id"]
+    assert decision_payload["source_ref"]["session_log_recorded_at"] == session_payload["recorded_at"]
+    assert decision_payload["source_ref"]["session_log_path"] == str(session_log)
 
 
 @pytest.mark.asyncio
@@ -382,15 +389,22 @@ async def test_memory_plugin_task_completed_hook_governed_mode_writes_durable_me
     )
     assert durable_payload["source"] == "governed_auto_promotion"
 
-    decisions = (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").read_text(
-        encoding="utf-8"
-    )
-    assert "governed_policy_pass" in decisions
-
     session_log = workspace / ".aworld" / "memory" / "sessions" / "session-1.jsonl"
     session_payload = json.loads(session_log.read_text(encoding="utf-8").strip())
-    assert session_payload["candidates"][0]["governed_decision"] == "durable_memory"
-    assert session_payload["candidates"][0]["auto_promoted"] is True
+    candidate = session_payload["candidates"][0]
+    assert "governed_decision" not in candidate
+    assert candidate["auto_promoted"] is False
+
+    decision_payload = json.loads(
+        (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").read_text(
+            encoding="utf-8"
+        ).strip()
+    )
+    assert decision_payload["reason"] == "governed_policy_pass"
+    assert decision_payload["source_ref"]["candidate_id"] == candidate["candidate_id"]
+    assert decision_payload["source_ref"]["session_log_recorded_at"] == session_payload["recorded_at"]
+    assert durable_payload["decision_id"] == decision_payload["decision_id"]
+    assert durable_payload["source_ref"] == decision_payload["source_ref"]
 
 
 @pytest.mark.asyncio
@@ -654,21 +668,31 @@ async def test_memory_plugin_task_completed_hook_governed_mode_promotes_high_con
     session_payload = json.loads(log_file.read_text(encoding="utf-8").strip())
     candidate = session_payload["candidates"][0]
     assert candidate["confidence"] == "high"
-    assert candidate["promotion"] == "durable_memory"
+    assert candidate["promotion"] == "session_log_only"
     assert candidate["reason"] == "high_confidence_workspace_instruction_candidate"
     assert candidate["eligible_for_auto_promotion"] is True
-    assert candidate["auto_promoted"] is True
-    assert candidate["governed_decision"] == "durable_memory"
-    assert candidate["governed_reason"] == "governed_policy_pass"
+    assert candidate["auto_promoted"] is False
+    assert candidate["candidate_id"]
 
     metrics_payload = json.loads(metrics_file.read_text(encoding="utf-8").strip())
     assert metrics_payload["promotion"] == "durable_memory"
     assert metrics_payload["reason"] == "high_confidence_workspace_instruction_candidate"
 
+    decisions_payload = json.loads(
+        (workspace / ".aworld" / "memory" / "metrics" / "promotion_decisions.jsonl").read_text(
+            encoding="utf-8"
+        ).strip()
+    )
+    assert decisions_payload["decision"] == "durable_memory"
+    assert decisions_payload["source_ref"]["candidate_id"] == candidate["candidate_id"]
+    assert decisions_payload["source_ref"]["session_log_recorded_at"] == session_payload["recorded_at"]
+
     durable_payload = json.loads(durable_file.read_text(encoding="utf-8").strip())
     assert durable_payload["memory_type"] == "workspace"
     assert durable_payload["content"] == "Always use pnpm for workspace package management and never run npm install here."
     assert durable_payload["source"] == "governed_auto_promotion"
+    assert durable_payload["decision_id"] == decisions_payload["decision_id"]
+    assert durable_payload["source_ref"] == decisions_payload["source_ref"]
     assert "Always use pnpm for workspace package management" in instruction_file.read_text(
         encoding="utf-8"
     )
