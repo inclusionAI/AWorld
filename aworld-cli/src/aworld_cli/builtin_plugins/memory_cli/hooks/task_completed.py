@@ -66,6 +66,9 @@ def handle_event(event, state):
                 "content": str(persisted_candidate.get("content") or ""),
                 "memory_type": str(persisted_candidate.get("memory_type") or decision.memory_type),
                 "confidence": str(persisted_candidate.get("confidence") or ""),
+                "eligible_for_auto_promotion": persisted_candidate.get(
+                    "eligible_for_auto_promotion"
+                ),
                 "source_ref": governed_source_ref,
             },
         )

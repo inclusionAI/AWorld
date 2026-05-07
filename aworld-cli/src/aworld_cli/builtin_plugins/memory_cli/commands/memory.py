@@ -248,19 +248,14 @@ class MemoryCommand(PluginBoundCommand):
             review_action = review_actions.get(normalized_action)
             if review_action is None or not normalized_decision_id:
                 return self._usage()
+            decisions = provider.list_governed_decisions(context.cwd)
+            decision = _find_governed_decision(decisions, normalized_decision_id)
+            if decision is None:
+                raise ValueError(f"Unknown governed decision: {normalized_decision_id}")
             if normalized_action == "accept":
-                decisions = provider.list_governed_decisions(context.cwd)
-                decision = next(
-                    (
-                        item
-                        for item in decisions
-                        if item.get("decision_id") == normalized_decision_id
-                    ),
-                    None,
-                )
-                if decision is None:
+                if not _is_accept_reviewable_decision(decision):
                     raise ValueError(
-                        f"Unknown governed decision: {normalized_decision_id}"
+                        f"Governed decision {normalized_decision_id} is not reviewable for acceptance"
                     )
                 content = str(decision.get("content") or "").strip()
                 if not content:
@@ -297,15 +292,6 @@ class MemoryCommand(PluginBoundCommand):
                 review_action=review_action,
             )
             if normalized_action == "revert":
-                decisions = provider.list_governed_decisions(context.cwd)
-                decision = next(
-                    (
-                        item
-                        for item in decisions
-                        if item.get("decision_id") == normalized_decision_id
-                    ),
-                    None,
-                )
                 content = _one_line(decision.get("content")) if isinstance(decision, dict) else None
                 if content is not None:
                     active_records = provider.get_active_durable_memory_records(context.cwd)
@@ -446,3 +432,16 @@ def _blockers_summary(value) -> str | None:
         return text or None
     blockers = [str(item).strip() for item in value if str(item).strip()]
     return ",".join(blockers) if blockers else None
+
+
+def _find_governed_decision(decisions: tuple[dict, ...], decision_id: str) -> dict | None:
+    return next((item for item in decisions if item.get("decision_id") == decision_id), None)
+
+
+def _is_accept_reviewable_decision(decision: dict) -> bool:
+    if str(decision.get("decision") or "").strip().lower() != "session_log_only":
+        return False
+    blockers = decision.get("blockers")
+    if isinstance(blockers, (list, tuple)) and any(str(blocker).strip() for blocker in blockers):
+        return False
+    return bool(str(decision.get("content") or "").strip())
