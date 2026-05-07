@@ -14,6 +14,7 @@ CONFIDENCE_BONUS = {
 PROMOTION_BONUS = {
     "durable_memory": 200,
     "session_log_only": 0,
+    "rejected": -200,
 }
 
 
