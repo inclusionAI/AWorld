@@ -62,17 +62,18 @@ def append_remembered_guidance(
 ) -> tuple[Path, bool]:
     target, _, _ = ensure_workspace_memory_file(workspace_path)
     content = target.read_text(encoding="utf-8").rstrip()
+    normalized_text = _normalize_remembered_guidance_text(text)
+    bullet = f"- {normalized_text}"
 
     if REMEMBERED_GUIDANCE_HEADER not in content:
         if content:
-            content = f"{content}\n\n{REMEMBERED_GUIDANCE_HEADER}\n- {text}"
+            content = f"{content}\n\n{REMEMBERED_GUIDANCE_HEADER}\n{bullet}"
         else:
-            content = f"{REMEMBERED_GUIDANCE_HEADER}\n- {text}"
+            content = f"{REMEMBERED_GUIDANCE_HEADER}\n{bullet}"
         target.write_text(f"{content}\n", encoding="utf-8")
         return target, True
 
     existing_lines = content.splitlines()
-    bullet = f"- {text}"
     if bullet in existing_lines:
         return target, False
 
@@ -102,7 +103,7 @@ def remove_remembered_guidance(
             section_end = index
             break
 
-    bullet = f"- {text}"
+    bullet = f"- {_normalize_remembered_guidance_text(text)}"
     section_lines = lines[header_index + 1 : section_end]
     filtered_section_lines = [line for line in section_lines if line != bullet]
     if filtered_section_lines == section_lines:
@@ -163,3 +164,7 @@ def _collapse_blank_lines(lines: list[str]) -> list[str]:
         normalized.append(line)
         previous_blank = is_blank
     return normalized
+
+
+def _normalize_remembered_guidance_text(text: str) -> str:
+    return " ".join(str(text).split()).strip()
