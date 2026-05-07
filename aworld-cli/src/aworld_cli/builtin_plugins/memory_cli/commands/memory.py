@@ -244,9 +244,33 @@ class MemoryCommand(PluginBoundCommand):
                 review_action=review_action,
             )
             if normalized_action == "accept":
-                promoted = provider.promote_governed_decision(
+                decisions = provider.list_governed_decisions(context.cwd)
+                decision = next(
+                    (
+                        item
+                        for item in decisions
+                        if item.get("decision_id") == normalized_decision_id
+                    ),
+                    None,
+                )
+                if decision is None:
+                    raise ValueError(
+                        f"Unknown governed decision: {normalized_decision_id}"
+                    )
+                content = str(decision.get("content") or "").strip()
+                if not content:
+                    raise ValueError(
+                        f"Governed decision {normalized_decision_id} has no content to promote"
+                    )
+                memory_type = str(decision.get("memory_type") or "").strip()
+                source_ref = decision.get("source_ref")
+                promoted = provider.append_durable_memory_record(
                     context.cwd,
+                    text=content,
+                    memory_type=memory_type,
+                    source="governed_auto_promotion",
                     decision_id=normalized_decision_id,
+                    source_ref=source_ref if isinstance(source_ref, dict) else None,
                 )
                 lines = [
                     f"Recorded review action: {review_action} for {normalized_decision_id}",
